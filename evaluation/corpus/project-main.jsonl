@@ -1,0 +1,5 @@
+{"type":"session","version":3,"id":"eval-project-main","timestamp":"2026-07-21T10:00:00Z","cwd":"/evaluation/repository/main"}
+{"type":"message","id":"main-question","parentId":null,"timestamp":"2026-07-21T10:01:00Z","message":{"role":"user","content":"What marker did the main checkout choose for reverse worktree recall?"}}
+{"type":"message","id":"main-answer","parentId":"main-question","timestamp":"2026-07-21T10:02:00Z","message":{"role":"assistant","content":"The main checkout chose obsidian-main-52 and retained the phrase reverse worktree bridge for the feature checkout."}}
+{"type":"message","id":"similarity-question","parentId":"main-answer","timestamp":"2026-07-21T10:03:00Z","message":{"role":"user","content":"Which similarly named project owns the canonical answer?"}}
+{"type":"message","id":"similarity-answer","parentId":"similarity-question","timestamp":"2026-07-21T10:04:00Z","message":{"role":"assistant","content":"The canonical repository owns similarity fence token aurora-same-19; nearby names do not establish project identity."}}

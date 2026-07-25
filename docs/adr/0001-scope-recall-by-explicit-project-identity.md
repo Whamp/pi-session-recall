@@ -10,4 +10,6 @@ Project scope admits candidates by exact project identity inside dense, lexical,
 
 The index manifest records the lineage policy identity and a digest of normalized declarations. A lineage change requires an explicit metadata rebuild, while embedding-cache identity remains independent of project metadata so unchanged text reuses vectors.
 
+Production indexing also requires clean version-4 bounded evidence. That evidence binds the default project-scope policy, repository and lineage policy versions, fixture lineage digest, hybrid rank-fusion constants, 512/64 chunk geometry, eight candidates per channel, and five final results. The fixed corpus measures project and global latency separately and proves all three retrieval channels filter before their limits. Pre-scope or stale-policy evidence cannot authorize rollout.
+
 We rejected path-name similarity, content inference, automatic fallback, mixed scopes, environment or repository-local lineage settings, project graphs, and document path-reference machinery. Those alternatives blur the stated boundary or add unmeasured admission rules. Global search remains the explicit escape hatch, and an empty project search recommends that explicit retry without broadening automatically.

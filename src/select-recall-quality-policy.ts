@@ -25,8 +25,14 @@ export interface RecallQualityGateCombination {
   finalRecall: number;
   contextUsefulness: number;
   sourceOccurrencePreservation: number;
+  sessionOriginVerification: number;
+  evidenceRelationVerification: number;
+  contributingEntryVerification: number;
+  branchVerification: number;
   finalDuplicateRate: number;
   queryLatencyMilliseconds: { median: number; p95: number };
+  queryLatencyByScope: RecallQualityMeasurement['queryLatencyByScope'];
+  policyFailureCaseIds: string[];
   gatePassed: boolean;
   failures: string[];
 }
@@ -74,6 +80,17 @@ function findRecallQualityGateFailures(
       `source occurrence preservation ${formatQualityRate(finalCount.sourceOccurrencePreservation)} is below ${formatQualityRate(gate.minimumSourceOccurrencePreservation)}`,
     );
   }
+  const exactVerificationRates: Array<[string, number]> = [
+    ['session-origin verification', finalCount.sessionOriginVerification],
+    ['evidence-relation verification', finalCount.evidenceRelationVerification],
+    ['contributing-entry verification', finalCount.contributingEntryVerification],
+    ['branch verification', finalCount.branchVerification],
+  ];
+  for (const [label, rate] of exactVerificationRates) {
+    if (rate !== 1) {
+      failures.push(`${label} ${formatQualityRate(rate)} is below 1.000`);
+    }
+  }
   if (finalCount.finalDuplicateRate > gate.maximumFinalDuplicateRate) {
     failures.push(
       `final duplicate rate ${formatQualityRate(finalCount.finalDuplicateRate)} exceeds ${formatQualityRate(gate.maximumFinalDuplicateRate)}`,
@@ -82,6 +99,18 @@ function findRecallQualityGateFailures(
   if (measurement.queryLatencyMilliseconds.p95 > gate.maximumQueryP95Milliseconds) {
     failures.push(
       `query p95 ${formatLatency(measurement.queryLatencyMilliseconds.p95)} exceeds ${formatLatency(gate.maximumQueryP95Milliseconds)}`,
+    );
+  }
+  for (const [scope, latency] of Object.entries(measurement.queryLatencyByScope)) {
+    if (latency && latency.p95 > gate.maximumQueryP95Milliseconds) {
+      failures.push(
+        `${scope} query p95 ${formatLatency(latency.p95)} exceeds ${formatLatency(gate.maximumQueryP95Milliseconds)}`,
+      );
+    }
+  }
+  if (measurement.policyFailureCaseIds.length > 0) {
+    failures.push(
+      `project-scope policy assertions failed for ${measurement.policyFailureCaseIds.join(', ')}`,
     );
   }
   return failures;
@@ -104,8 +133,14 @@ function createRecallQualityGateCombination(
     finalRecall: finalCount.finalRecall,
     contextUsefulness: finalCount.contextUsefulness,
     sourceOccurrencePreservation: finalCount.sourceOccurrencePreservation,
+    sessionOriginVerification: finalCount.sessionOriginVerification,
+    evidenceRelationVerification: finalCount.evidenceRelationVerification,
+    contributingEntryVerification: finalCount.contributingEntryVerification,
+    branchVerification: finalCount.branchVerification,
     finalDuplicateRate: finalCount.finalDuplicateRate,
     queryLatencyMilliseconds: { ...configuration.measurement.queryLatencyMilliseconds },
+    queryLatencyByScope: structuredClone(configuration.measurement.queryLatencyByScope),
+    policyFailureCaseIds: [...configuration.measurement.policyFailureCaseIds],
     gatePassed: failures.length === 0,
     failures,
   };
@@ -135,6 +170,10 @@ function compareBlockedRecallQualityCombinations(
     right.finalRecall - left.finalRecall ||
     right.contextUsefulness - left.contextUsefulness ||
     right.sourceOccurrencePreservation - left.sourceOccurrencePreservation ||
+    right.sessionOriginVerification - left.sessionOriginVerification ||
+    right.evidenceRelationVerification - left.evidenceRelationVerification ||
+    right.contributingEntryVerification - left.contributingEntryVerification ||
+    right.branchVerification - left.branchVerification ||
     left.finalDuplicateRate - right.finalDuplicateRate ||
     comparePassingRecallQualityCombinations(left, right)
   );

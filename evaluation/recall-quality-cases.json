@@ -1,7 +1,7 @@
 {
-  "version": 2,
+  "version": 3,
   "corpus": {
-    "id": "recall-quality-hybrid-bounded-v2",
+    "id": "recall-quality-project-scoped-bounded-v3",
     "sessionDirectory": "corpus",
     "sessionFiles": [
       {
@@ -35,16 +35,45 @@
       {
         "fileName": "distractors.jsonl",
         "sha256": "6d63fefcb2e6fda2580985bbef4cf39bd073a3e15c9d2df7b67d2000847e4194"
+      },
+      {
+        "fileName": "project-worktree.jsonl",
+        "sha256": "d265edfb754072020869ef1ba49f472e6a4f81f25a18be96335a5f87edf6db80"
+      },
+      {
+        "fileName": "project-main.jsonl",
+        "sha256": "dafa31d86195f920bc7ce6d5c21a679320815fa683ed4c5e93a77e428d4bea92"
+      },
+      {
+        "fileName": "equivalent-clone.jsonl",
+        "sha256": "21dad11c36b18a971acd49a891967bfe1a1c6269c938d5e4c0ef31876ada19c1"
+      },
+      {
+        "fileName": "historical-prototype.jsonl",
+        "sha256": "173a2e479ae517d6f7935d711b0e483fcedcd46adde443986a89fad3e765b5b9"
+      },
+      {
+        "fileName": "unrelated-similar-project.jsonl",
+        "sha256": "59aaf838436d857fc67073ffbe8de0d64cd5cbf894fd2f16f0004bdf7bfd1756"
+      },
+      {
+        "fileName": "non-git-exact.jsonl",
+        "sha256": "d41df315b0a25e3e0e6cd5a14c58837e5ee492e68a15e84e87b411384176aebd"
+      },
+      {
+        "fileName": "non-git-nearby.jsonl",
+        "sha256": "8e576068c09966c5a286cd04a56a486c5f16a42a46670cfe83328e61657d9ddc"
       }
     ]
   },
   "bounds": {
-    "maximumSessionFiles": 8,
-    "maximumEvaluationCases": 10,
+    "maximumSessionFiles": 15,
+    "maximumEvaluationCases": 17,
     "maximumChunkPolicies": 1,
-    "maximumCandidateCounts": 4,
+    "maximumCandidateCounts": 1,
     "maximumFinalCounts": 1,
-    "maximumSearchRequests": 44
+    "maximumSearchRequests": 20,
+    "maximumChunkEmbeddingRequests": 20
   },
   "chunkPolicies": [
     {
@@ -53,7 +82,7 @@
       "overlapTokens": 64
     }
   ],
-  "candidateCounts": [8, 16, 24, 32],
+  "candidateCounts": [8],
   "finalCounts": [5],
   "warmupQueriesPerCombination": 1,
   "qualityGate": {
@@ -74,11 +103,16 @@
           "sessionFile": "semantic-context.jsonl",
           "entryId": "queue-answer",
           "requiredText": ["append-only SQLite outbox", "remote acknowledgement"],
-          "expectedBranch": "active"
+          "expectedBranch": "active",
+          "expectedSessionOrigin": "/evaluation/fulfillment",
+          "expectedEvidenceRelation": "unrestricted_global_evidence",
+          "requiredContributingEntryIds": ["queue-answer"]
         }
       ],
       "requiredContext": ["append-only SQLite outbox", "remote acknowledgement"],
-      "minimumPreservedSourceOccurrences": 1
+      "minimumPreservedSourceOccurrences": 1,
+      "scope": "global",
+      "excludedSessionFiles": []
     },
     {
       "id": "semantic-image-retry-budget",
@@ -89,11 +123,16 @@
           "sessionFile": "long-boundary.jsonl",
           "entryId": "image-retry-answer",
           "requiredText": ["decorrelated jitter capped at forty-two seconds", "amber-orbit-17"],
-          "expectedBranch": "active"
+          "expectedBranch": "active",
+          "expectedSessionOrigin": "/evaluation/media",
+          "expectedEvidenceRelation": "unrestricted_global_evidence",
+          "requiredContributingEntryIds": ["image-retry-answer"]
         }
       ],
       "requiredContext": ["decorrelated jitter capped at forty-two seconds", "amber-orbit-17"],
-      "minimumPreservedSourceOccurrences": 1
+      "minimumPreservedSourceOccurrences": 1,
+      "scope": "global",
+      "excludedSessionFiles": []
     },
     {
       "id": "exact-read-node-error-code",
@@ -104,11 +143,16 @@
           "sessionFile": "identifiers-tools.jsonl",
           "entryId": "identifier-answer",
           "requiredText": ["readNodeErrorCode", "src/read-node-error-code.ts", "EPERM"],
-          "expectedBranch": "active"
+          "expectedBranch": "active",
+          "expectedSessionOrigin": "/evaluation/runtime",
+          "expectedEvidenceRelation": "unrestricted_global_evidence",
+          "requiredContributingEntryIds": ["identifier-answer"]
         }
       ],
       "requiredContext": ["readNodeErrorCode", "src/read-node-error-code.ts"],
-      "minimumPreservedSourceOccurrences": 1
+      "minimumPreservedSourceOccurrences": 1,
+      "scope": "global",
+      "excludedSessionFiles": []
     },
     {
       "id": "tool-evidence-lease-token",
@@ -120,11 +164,16 @@
           "entryId": "lease-tool-result",
           "requiredText": ["ELOCKED", "cobalt-7f31", "src/lease-owner.ts"],
           "expectedEvidenceKind": "tool_result",
-          "expectedBranch": "active"
+          "expectedBranch": "active",
+          "expectedSessionOrigin": "/evaluation/runtime",
+          "expectedEvidenceRelation": "unrestricted_global_evidence",
+          "requiredContributingEntryIds": ["lease-tool-result"]
         }
       ],
       "requiredContext": ["ELOCKED", "cobalt-7f31"],
-      "minimumPreservedSourceOccurrences": 1
+      "minimumPreservedSourceOccurrences": 1,
+      "scope": "global",
+      "excludedSessionFiles": []
     },
     {
       "id": "context-europe-rollout-conditions",
@@ -135,7 +184,10 @@
           "sessionFile": "semantic-context.jsonl",
           "entryId": "rollout-answer",
           "requiredText": ["draining the Paris queue below twenty jobs", "Frankfurt replica"],
-          "expectedBranch": "active"
+          "expectedBranch": "active",
+          "expectedSessionOrigin": "/evaluation/fulfillment",
+          "expectedEvidenceRelation": "unrestricted_global_evidence",
+          "requiredContributingEntryIds": ["rollout-answer"]
         }
       ],
       "requiredContext": [
@@ -143,7 +195,9 @@
         "draining the Paris queue below twenty jobs",
         "Frankfurt replica"
       ],
-      "minimumPreservedSourceOccurrences": 1
+      "minimumPreservedSourceOccurrences": 1,
+      "scope": "global",
+      "excludedSessionFiles": []
     },
     {
       "id": "branch-abandoned-redis-group",
@@ -154,11 +208,16 @@
           "sessionFile": "branches.jsonl",
           "entryId": "redis-abandoned",
           "requiredText": ["Redis Streams", "glacier-lantern"],
-          "expectedBranch": "abandoned"
+          "expectedBranch": "abandoned",
+          "expectedSessionOrigin": "/evaluation/sync",
+          "expectedEvidenceRelation": "unrestricted_global_evidence",
+          "requiredContributingEntryIds": ["redis-abandoned"]
         }
       ],
       "requiredContext": ["Redis Streams", "glacier-lantern"],
-      "minimumPreservedSourceOccurrences": 1
+      "minimumPreservedSourceOccurrences": 1,
+      "scope": "global",
+      "excludedSessionFiles": []
     },
     {
       "id": "branch-active-offline-queue",
@@ -169,11 +228,16 @@
           "sessionFile": "branches.jsonl",
           "entryId": "sqlite-active",
           "requiredText": ["local SQLite WAL queue", "monotonic sequence numbers"],
-          "expectedBranch": "active"
+          "expectedBranch": "active",
+          "expectedSessionOrigin": "/evaluation/sync",
+          "expectedEvidenceRelation": "unrestricted_global_evidence",
+          "requiredContributingEntryIds": ["sqlite-active"]
         }
       ],
       "requiredContext": ["local SQLite WAL queue", "idempotent upload acknowledgements"],
-      "minimumPreservedSourceOccurrences": 1
+      "minimumPreservedSourceOccurrences": 1,
+      "scope": "global",
+      "excludedSessionFiles": []
     },
     {
       "id": "branch-summary-hosted-services",
@@ -186,11 +250,16 @@
           "requiredText": ["rejected hosted queue services", "without a network connection"],
           "expectedEvidenceKind": "branch_summary",
           "expectedSummaryKind": "branch",
-          "expectedBranch": "active"
+          "expectedBranch": "active",
+          "expectedSessionOrigin": "/evaluation/sync",
+          "expectedEvidenceRelation": "unrestricted_global_evidence",
+          "requiredContributingEntryIds": ["hosted-branch-summary"]
         }
       ],
       "requiredContext": ["rejected hosted queue services", "without a network connection"],
-      "minimumPreservedSourceOccurrences": 1
+      "minimumPreservedSourceOccurrences": 1,
+      "scope": "global",
+      "excludedSessionFiles": []
     },
     {
       "id": "compaction-copper-finch",
@@ -203,11 +272,16 @@
           "requiredText": ["Copper Finch", "snapshot delta-29", "rotate the device certificate"],
           "expectedEvidenceKind": "compaction_summary",
           "expectedSummaryKind": "compaction",
-          "expectedBranch": "active"
+          "expectedBranch": "active",
+          "expectedSessionOrigin": "/evaluation/desktop",
+          "expectedEvidenceRelation": "unrestricted_global_evidence",
+          "requiredContributingEntryIds": ["recovery-compaction"]
         }
       ],
       "requiredContext": ["Copper Finch", "snapshot delta-29", "rotate the device certificate"],
-      "minimumPreservedSourceOccurrences": 1
+      "minimumPreservedSourceOccurrences": 1,
+      "scope": "global",
+      "excludedSessionFiles": []
     },
     {
       "id": "duplicate-meridian-release",
@@ -218,17 +292,224 @@
           "sessionFile": "duplicate-a.jsonl",
           "entryId": "release-copy-a",
           "requiredText": ["sha256:4c91d7e2", "meridian-safe-3"],
-          "expectedBranch": "active"
+          "expectedBranch": "active",
+          "expectedSessionOrigin": "/evaluation/releases",
+          "expectedEvidenceRelation": "unrestricted_global_evidence",
+          "requiredContributingEntryIds": ["release-copy-a"]
         },
         {
           "sessionFile": "duplicate-b.jsonl",
           "entryId": "release-copy-b",
           "requiredText": ["sha256:4c91d7e2", "meridian-safe-3"],
-          "expectedBranch": "active"
+          "expectedBranch": "active",
+          "expectedSessionOrigin": "/evaluation/releases",
+          "expectedEvidenceRelation": "unrestricted_global_evidence",
+          "requiredContributingEntryIds": ["release-copy-b"]
         }
       ],
       "requiredContext": ["sha256:4c91d7e2", "meridian-safe-3"],
-      "minimumPreservedSourceOccurrences": 2
+      "minimumPreservedSourceOccurrences": 2,
+      "scope": "global",
+      "excludedSessionFiles": []
+    },
+    {
+      "id": "project-main-retrieves-worktree-before-limits",
+      "category": "project_scope",
+      "query": "SCOPE_LIMIT_PROBE SCOPE_LIMIT_IDENTIFIER channel budget",
+      "scope": "project",
+      "invocationDirectory": "/evaluation/repository/main",
+      "expectedInvocationProjectIdentity": "git-origin:github.com/whamp/quality-fixture",
+      "expectedSources": [
+        {
+          "sessionFile": "project-worktree.jsonl",
+          "entryId": "worktree-answer",
+          "requiredText": ["cedar-worktree-41", "SCOPE_LIMIT_PROBE", "SCOPE_LIMIT_IDENTIFIER"],
+          "expectedSessionOrigin": "/evaluation/repository/worktrees/feature",
+          "expectedEvidenceRelation": "same_repository",
+          "requiredContributingEntryIds": ["worktree-answer"],
+          "expectedBranch": "active"
+        }
+      ],
+      "excludedSessionFiles": ["unrelated-similar-project.jsonl"],
+      "preLimitChannelProof": {
+        "pollutingSessionFiles": ["unrelated-similar-project.jsonl"],
+        "requiredChannels": ["dense", "lexical", "identifier"],
+        "minimumPollutingCandidatesPerChannel": 8
+      },
+      "requiredContext": ["cedar-worktree-41", "project evidence"],
+      "minimumPreservedSourceOccurrences": 1
+    },
+    {
+      "id": "project-worktree-retrieves-main",
+      "category": "project_scope",
+      "query": "What reverse worktree bridge marker did the main checkout choose?",
+      "scope": "project",
+      "invocationDirectory": "/evaluation/repository/worktrees/feature",
+      "expectedInvocationProjectIdentity": "git-origin:github.com/whamp/quality-fixture",
+      "expectedSources": [
+        {
+          "sessionFile": "project-main.jsonl",
+          "entryId": "main-answer",
+          "requiredText": ["obsidian-main-52", "reverse worktree bridge"],
+          "expectedSessionOrigin": "/evaluation/repository/main",
+          "expectedEvidenceRelation": "same_repository",
+          "requiredContributingEntryIds": ["main-answer"],
+          "expectedBranch": "active"
+        }
+      ],
+      "excludedSessionFiles": ["unrelated-similar-project.jsonl"],
+      "requiredContext": ["obsidian-main-52", "reverse worktree bridge"],
+      "minimumPreservedSourceOccurrences": 1
+    },
+    {
+      "id": "project-equivalent-clone-origin",
+      "category": "project_scope",
+      "query": "Which marker proves the equivalent clone shares canonical origin identity?",
+      "scope": "project",
+      "invocationDirectory": "/evaluation/repository/clones/a",
+      "expectedInvocationProjectIdentity": "git-origin:github.com/whamp/quality-fixture",
+      "expectedSources": [
+        {
+          "sessionFile": "equivalent-clone.jsonl",
+          "entryId": "clone-answer",
+          "requiredText": ["cobalt-clone-63", "canonical origin identity"],
+          "expectedSessionOrigin": "/evaluation/repository/clones/b",
+          "expectedEvidenceRelation": "same_repository",
+          "requiredContributingEntryIds": ["clone-answer"],
+          "expectedBranch": "active"
+        }
+      ],
+      "excludedSessionFiles": ["unrelated-similar-project.jsonl"],
+      "requiredContext": ["cobalt-clone-63", "canonical origin identity"],
+      "minimumPreservedSourceOccurrences": 1
+    },
+    {
+      "id": "project-configured-lineage",
+      "category": "project_scope",
+      "query": "What historical prototype marker did configured project lineage preserve?",
+      "scope": "project",
+      "invocationDirectory": "/evaluation/repository/main",
+      "expectedInvocationProjectIdentity": "git-origin:github.com/whamp/quality-fixture",
+      "expectedSources": [
+        {
+          "sessionFile": "historical-prototype.jsonl",
+          "entryId": "lineage-answer",
+          "requiredText": ["linen-lineage-74", "Configured project lineage"],
+          "expectedSessionOrigin": "/evaluation/historical/quality-prototype/phase-one",
+          "expectedEvidenceRelation": "configured_project_lineage",
+          "requiredContributingEntryIds": ["lineage-answer"],
+          "expectedBranch": "active"
+        }
+      ],
+      "excludedSessionFiles": ["unrelated-similar-project.jsonl"],
+      "requiredContext": ["linen-lineage-74", "successor repository"],
+      "minimumPreservedSourceOccurrences": 1
+    },
+    {
+      "id": "project-similar-name-remains-unrelated",
+      "category": "project_scope",
+      "query": "Who owns similarity fence token aurora-same-19?",
+      "scope": "project",
+      "invocationDirectory": "/evaluation/repository/main",
+      "expectedInvocationProjectIdentity": "git-origin:github.com/whamp/quality-fixture",
+      "expectedSources": [
+        {
+          "sessionFile": "project-main.jsonl",
+          "entryId": "similarity-answer",
+          "requiredText": ["similarity fence token aurora-same-19", "canonical repository"],
+          "expectedSessionOrigin": "/evaluation/repository/main",
+          "expectedEvidenceRelation": "same_repository",
+          "requiredContributingEntryIds": ["similarity-answer"],
+          "expectedBranch": "active"
+        }
+      ],
+      "excludedSessionFiles": ["unrelated-similar-project.jsonl"],
+      "requiredContext": ["aurora-same-19", "nearby names do not establish project identity"],
+      "minimumPreservedSourceOccurrences": 1
+    },
+    {
+      "id": "project-exact-non-git-origin",
+      "category": "project_scope",
+      "query": "What exact non-Git session origin marker excludes nearby directories?",
+      "scope": "project",
+      "invocationDirectory": "/evaluation/non-git/exact",
+      "expectedInvocationProjectIdentity": "non-git-session-origin:/evaluation/non-git/exact",
+      "expectedSources": [
+        {
+          "sessionFile": "non-git-exact.jsonl",
+          "entryId": "non-git-answer",
+          "requiredText": ["quartz-origin-85", "Exact non-Git session origin"],
+          "expectedSessionOrigin": "/evaluation/non-git/exact",
+          "expectedEvidenceRelation": "same_session_origin",
+          "requiredContributingEntryIds": ["non-git-answer"],
+          "expectedBranch": "active"
+        }
+      ],
+      "excludedSessionFiles": ["non-git-nearby.jsonl"],
+      "requiredContext": ["quartz-origin-85", "no nearby directory"],
+      "minimumPreservedSourceOccurrences": 1
+    },
+    {
+      "id": "global-explicit-cross-project",
+      "category": "project_scope",
+      "query": "Which foreign project marker may explicit global recall reuse?",
+      "scope": "global",
+      "invocationDirectory": "/evaluation/repository/main",
+      "expectedInvocationProjectIdentity": "git-origin:github.com/whamp/quality-fixture",
+      "expectedSources": [
+        {
+          "sessionFile": "unrelated-similar-project.jsonl",
+          "entryId": "global-foreign-answer",
+          "requiredText": ["violet-global-96", "Explicit global recall"],
+          "expectedSessionOrigin": "/evaluation/repository/quality-fixture-similar",
+          "expectedEvidenceRelation": "unrestricted_global_evidence",
+          "requiredContributingEntryIds": ["global-foreign-answer"],
+          "expectedBranch": "active"
+        }
+      ],
+      "excludedSessionFiles": [],
+      "requiredContext": ["violet-global-96", "deliberately broadens scope"],
+      "minimumPreservedSourceOccurrences": 1
     }
-  ]
+  ],
+  "projectIdentityFixtures": [
+    {
+      "workingDirectory": "/evaluation/repository/main",
+      "projectIdentity": "git-origin:github.com/whamp/quality-fixture",
+      "identitySource": "git_origin"
+    },
+    {
+      "workingDirectory": "/evaluation/repository/worktrees/feature",
+      "projectIdentity": "git-origin:github.com/whamp/quality-fixture",
+      "identitySource": "git_origin"
+    },
+    {
+      "workingDirectory": "/evaluation/repository/clones/a",
+      "projectIdentity": "git-origin:github.com/whamp/quality-fixture",
+      "identitySource": "git_origin"
+    },
+    {
+      "workingDirectory": "/evaluation/repository/clones/b",
+      "projectIdentity": "git-origin:github.com/whamp/quality-fixture",
+      "identitySource": "git_origin"
+    },
+    {
+      "workingDirectory": "/evaluation/repository/quality-fixture-similar",
+      "projectIdentity": "git-origin:github.com/whamp/quality-fixture-similar",
+      "identitySource": "git_origin"
+    },
+    {
+      "workingDirectory": "/evaluation/non-git/exact",
+      "projectIdentity": "non-git-session-origin:/evaluation/non-git/exact",
+      "identitySource": "non_git_session_origin"
+    },
+    {
+      "workingDirectory": "/evaluation/non-git/exact-nearby",
+      "projectIdentity": "non-git-session-origin:/evaluation/non-git/exact-nearby",
+      "identitySource": "non_git_session_origin"
+    }
+  ],
+  "projectLineages": {
+    "git-origin:github.com/whamp/quality-fixture": ["/evaluation/historical/quality-prototype"]
+  }
 }

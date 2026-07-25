@@ -1,12 +1,18 @@
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, normalize, resolve } from 'node:path';
 
 import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 
+import { RecallEvidenceRelation, RecallProjectIdentitySource, RecallSearchScope } from './enums.js';
 import { isUnknownRecord } from './is-unknown-record.js';
 import type { RecallChunkPolicy } from './recall-chunk-policy.js';
+import {
+  isCanonicalRepositoryIdentity,
+  normalizeRecallProjectLineages,
+  type RecallProjectLineages,
+} from './resolve-project-identity.js';
 import type { SessionConversationChunk } from './session-conversation-index.js';
 
 /** One immutable session file in the bounded recall quality corpus. */
@@ -20,12 +26,32 @@ export interface RecallQualityExpectedSource {
   sessionFile: string;
   entryId: string;
   requiredText: string[];
+  expectedSessionOrigin: string;
+  expectedEvidenceRelation: RecallEvidenceRelation;
+  requiredContributingEntryIds: string[];
   expectedEvidenceKind?: SessionConversationChunk['evidenceKind'];
   expectedSummaryKind?: Exclude<SessionConversationChunk['summaryKind'], null>;
   expectedBranch?: 'active' | 'abandoned';
 }
 
-/** One fixed query and its independently declared source and context requirements. */
+/** Controlled repository or exact-origin answer used only by the bounded evaluation. */
+export interface RecallQualityProjectIdentityFixture {
+  workingDirectory: string;
+  projectIdentity: string;
+  identitySource: Exclude<
+    RecallProjectIdentitySource,
+    RecallProjectIdentitySource.CONFIGURED_PROJECT_LINEAGE
+  >;
+}
+
+/** Evidence that every retrieval channel exhausted its limit on unrelated candidates globally. */
+export interface RecallQualityPreLimitChannelProof {
+  pollutingSessionFiles: string[];
+  requiredChannels: Array<'dense' | 'lexical' | 'identifier'>;
+  minimumPollutingCandidatesPerChannel: number;
+}
+
+/** One fixed query and its independently declared source, scope, and context requirements. */
 export interface RecallQualityEvaluationCase {
   id: string;
   category:
@@ -35,9 +61,15 @@ export interface RecallQualityEvaluationCase {
     | 'context_dependent_reply'
     | 'branch'
     | 'summary'
-    | 'duplicate_content';
+    | 'duplicate_content'
+    | 'project_scope';
   query: string;
+  scope: RecallSearchScope;
+  invocationDirectory?: string;
+  expectedInvocationProjectIdentity?: string;
   expectedSources: RecallQualityExpectedSource[];
+  excludedSessionFiles: string[];
+  preLimitChannelProof?: RecallQualityPreLimitChannelProof;
   requiredContext: string[];
   minimumPreservedSourceOccurrences: number;
 }
@@ -65,20 +97,23 @@ export interface RecallQualityWorkBounds {
   maximumCandidateCounts: number;
   maximumFinalCounts: number;
   maximumSearchRequests: number;
+  maximumChunkEmbeddingRequests: number;
 }
 
-/** Complete independent corpus, count grid, work bounds, and quality gate specification. */
+/** Complete independent corpus, fixed policy, project fixtures, work bounds, and quality gate. */
 export interface RecallQualityCorpusSpecification {
-  version: 2;
+  version: 3;
   corpus: {
     id: string;
     sessionDirectory: 'corpus';
     sessionFiles: RecallQualitySessionFile[];
   };
+  projectIdentityFixtures: RecallQualityProjectIdentityFixture[];
+  projectLineages: RecallProjectLineages;
   bounds: RecallQualityWorkBounds;
-  chunkPolicies: RecallQualityChunkPolicy[];
-  candidateCounts: number[];
-  finalCounts: number[];
+  chunkPolicies: [RecallQualityChunkPolicy];
+  candidateCounts: [8];
+  finalCounts: [5];
   warmupQueriesPerCombination: number;
   qualityGate: RecallQualityGate;
   cases: RecallQualityEvaluationCase[];
@@ -103,6 +138,9 @@ const expectedSourceSchema = Type.Object(
     sessionFile: Type.String({ pattern: '^[a-z0-9][a-z0-9-]*\\.jsonl$' }),
     entryId: nonemptyStringSchema,
     requiredText: Type.Array(nonemptyStringSchema, { minItems: 1 }),
+    expectedSessionOrigin: nonemptyStringSchema,
+    expectedEvidenceRelation: Type.Enum(RecallEvidenceRelation),
+    requiredContributingEntryIds: Type.Array(nonemptyStringSchema, { minItems: 1 }),
     expectedEvidenceKind: Type.Optional(
       Type.Union([
         Type.Literal('conversation'),
@@ -133,9 +171,34 @@ const evaluationCaseSchema = Type.Object(
       Type.Literal('branch'),
       Type.Literal('summary'),
       Type.Literal('duplicate_content'),
+      Type.Literal('project_scope'),
     ]),
     query: nonemptyStringSchema,
+    scope: Type.Enum(RecallSearchScope),
+    invocationDirectory: Type.Optional(nonemptyStringSchema),
+    expectedInvocationProjectIdentity: Type.Optional(nonemptyStringSchema),
     expectedSources: Type.Array(expectedSourceSchema, { minItems: 1 }),
+    excludedSessionFiles: Type.Array(Type.String({ pattern: '^[a-z0-9][a-z0-9-]*\\.jsonl$' })),
+    preLimitChannelProof: Type.Optional(
+      Type.Object(
+        {
+          pollutingSessionFiles: Type.Array(
+            Type.String({ pattern: '^[a-z0-9][a-z0-9-]*\\.jsonl$' }),
+            { minItems: 1 },
+          ),
+          requiredChannels: Type.Array(
+            Type.Union([
+              Type.Literal('dense'),
+              Type.Literal('lexical'),
+              Type.Literal('identifier'),
+            ]),
+            { minItems: 1 },
+          ),
+          minimumPollutingCandidatesPerChannel: positiveIntegerSchema,
+        },
+        { additionalProperties: false },
+      ),
+    ),
     requiredContext: Type.Array(nonemptyStringSchema, { minItems: 1 }),
     minimumPreservedSourceOccurrences: positiveIntegerSchema,
   },
@@ -153,9 +216,22 @@ function createChunkPolicySchema(id: string, maxTokens: number, overlapTokens: n
   );
 }
 
+const projectIdentityFixtureSchema = Type.Object(
+  {
+    workingDirectory: nonemptyStringSchema,
+    projectIdentity: nonemptyStringSchema,
+    identitySource: Type.Union([
+      Type.Literal(RecallProjectIdentitySource.GIT_ORIGIN),
+      Type.Literal(RecallProjectIdentitySource.GIT_COMMON_DIRECTORY),
+      Type.Literal(RecallProjectIdentitySource.NON_GIT_SESSION_ORIGIN),
+    ]),
+  },
+  { additionalProperties: false },
+);
+
 const recallQualityCorpusSchema = Type.Object(
   {
-    version: Type.Literal(2),
+    version: Type.Literal(3),
     corpus: Type.Object(
       {
         id: Type.String({ pattern: '^[a-z0-9][a-z0-9-]*$' }),
@@ -173,6 +249,8 @@ const recallQualityCorpusSchema = Type.Object(
       },
       { additionalProperties: false },
     ),
+    projectIdentityFixtures: Type.Array(projectIdentityFixtureSchema),
+    projectLineages: Type.Record(Type.String({ minLength: 1 }), Type.Array(nonemptyStringSchema)),
     bounds: Type.Object(
       {
         maximumSessionFiles: positiveIntegerSchema,
@@ -181,12 +259,13 @@ const recallQualityCorpusSchema = Type.Object(
         maximumCandidateCounts: positiveIntegerSchema,
         maximumFinalCounts: positiveIntegerSchema,
         maximumSearchRequests: positiveIntegerSchema,
+        maximumChunkEmbeddingRequests: positiveIntegerSchema,
       },
       { additionalProperties: false },
     ),
     chunkPolicies: Type.Tuple([createChunkPolicySchema('512-64', 512, 64)]),
-    candidateCounts: Type.Array(Type.Integer({ minimum: 1, maximum: 200 }), { minItems: 1 }),
-    finalCounts: Type.Array(Type.Integer({ minimum: 1, maximum: 200 }), { minItems: 1 }),
+    candidateCounts: Type.Tuple([Type.Literal(8)]),
+    finalCounts: Type.Tuple([Type.Literal(5)]),
     warmupQueriesPerCombination: Type.Integer({ minimum: 0, maximum: 3 }),
     qualityGate: Type.Object(
       {
@@ -224,6 +303,67 @@ function assertAscendingIntegers(values: readonly number[], label: string): void
   }
 }
 
+function assertRecallQualityProjectFixtures(specification: RecallQualityCorpusSpecification): void {
+  normalizeRecallProjectLineages(specification.projectLineages);
+  assertUniqueValues(
+    specification.projectIdentityFixtures.map(({ workingDirectory }) => workingDirectory),
+    'project identity fixture working directories',
+  );
+  for (const fixture of specification.projectIdentityFixtures) {
+    if (
+      !isAbsolute(fixture.workingDirectory) ||
+      normalize(fixture.workingDirectory) !== fixture.workingDirectory
+    ) {
+      throw new Error(
+        `Recall quality corpus invalid: project identity fixture directory must be normalized and absolute: ${fixture.workingDirectory}`,
+      );
+    }
+    if (fixture.identitySource === RecallProjectIdentitySource.NON_GIT_SESSION_ORIGIN) {
+      const expectedIdentity = `non-git-session-origin:${fixture.workingDirectory}`;
+      if (fixture.projectIdentity !== expectedIdentity) {
+        throw new Error(
+          `Recall quality corpus invalid: exact non-Git fixture identity must be ${expectedIdentity}`,
+        );
+      }
+    } else if (!isCanonicalRepositoryIdentity(fixture.projectIdentity)) {
+      throw new Error(
+        `Recall quality corpus invalid: repository fixture identity must be canonical: ${fixture.projectIdentity}`,
+      );
+    }
+  }
+  for (const evaluationCase of specification.cases) {
+    if (evaluationCase.scope === RecallSearchScope.PROJECT) {
+      if (
+        !evaluationCase.invocationDirectory ||
+        !evaluationCase.expectedInvocationProjectIdentity
+      ) {
+        throw new Error(
+          `Recall quality corpus invalid: project case ${evaluationCase.id} requires invocation directory and expected project identity`,
+        );
+      }
+    }
+    if (evaluationCase.preLimitChannelProof) {
+      if (evaluationCase.scope !== RecallSearchScope.PROJECT) {
+        throw new Error(
+          `Recall quality corpus invalid: pre-limit proof ${evaluationCase.id} requires project scope`,
+        );
+      }
+      if (
+        evaluationCase.preLimitChannelProof.minimumPollutingCandidatesPerChannel <
+        specification.candidateCounts[0]
+      ) {
+        throw new Error(
+          `Recall quality corpus invalid: pre-limit proof ${evaluationCase.id} requires at least ${specification.candidateCounts[0]} polluting candidates per channel`,
+        );
+      }
+      assertUniqueValues(
+        evaluationCase.preLimitChannelProof.requiredChannels,
+        `pre-limit proof channels for ${evaluationCase.id}`,
+      );
+    }
+  }
+}
+
 function assertRecallQualityBounds(specification: RecallQualityCorpusSpecification): void {
   const { bounds } = specification;
   const dimensions: Array<[number, number, string]> = [
@@ -240,10 +380,16 @@ function assertRecallQualityBounds(specification: RecallQualityCorpusSpecificati
       );
     }
   }
+  const preLimitProofRequests = specification.cases.filter(
+    ({ preLimitChannelProof }) => preLimitChannelProof !== undefined,
+  ).length;
+  const representedScopes = new Set(specification.cases.map(({ scope }) => scope)).size;
   const searchRequests =
     specification.chunkPolicies.length *
     specification.candidateCounts.length *
-    (specification.cases.length + specification.warmupQueriesPerCombination);
+    (specification.cases.length +
+      preLimitProofRequests +
+      specification.warmupQueriesPerCombination * representedScopes);
   if (searchRequests > bounds.maximumSearchRequests) {
     throw new Error(
       `Recall quality corpus bound exceeded: search requests ${searchRequests} exceeds maximum ${bounds.maximumSearchRequests}`,
@@ -265,6 +411,7 @@ function assertRecallQualityBounds(specification: RecallQualityCorpusSpecificati
   );
   assertAscendingIntegers(specification.candidateCounts, 'candidate counts');
   assertAscendingIntegers(specification.finalCounts, 'final counts');
+  assertRecallQualityProjectFixtures(specification);
 }
 
 interface RecallQualitySourceEntry {
@@ -275,6 +422,7 @@ interface RecallQualitySourceEntry {
 }
 
 interface RecallQualitySourceEvidence {
+  sessionOrigin: string;
   entries: ReadonlyMap<string, RecallQualitySourceEntry>;
   activeEntryIds: ReadonlySet<string>;
 }
@@ -336,6 +484,7 @@ function readSourceEvidenceKinds(
 function readSourceEvidence(content: string, fileName: string): RecallQualitySourceEvidence {
   const entries = new Map<string, RecallQualitySourceEntry>();
   const orderedEntryIds: string[] = [];
+  let sessionOrigin: string | undefined;
   let leafTargetId: string | null | undefined;
   for (const [index, line] of content.split('\n').entries()) {
     if (!line.trim()) {
@@ -358,6 +507,13 @@ function readSourceEvidence(content: string, fileName: string): RecallQualitySou
     }
     const recordType = Reflect.get(parsed, 'type');
     if (recordType === 'session') {
+      const cwd = Reflect.get(parsed, 'cwd');
+      if (sessionOrigin !== undefined || typeof cwd !== 'string' || !cwd) {
+        throw new Error(
+          `Recall quality corpus source invalid at ${fileName}:${index + 1}: one session origin is required`,
+        );
+      }
+      sessionOrigin = cwd;
       continue;
     }
     if (recordType === 'leaf') {
@@ -388,6 +544,11 @@ function readSourceEvidence(content: string, fileName: string): RecallQualitySou
     orderedEntryIds.push(id);
   }
 
+  if (sessionOrigin === undefined) {
+    throw new Error(
+      `Recall quality corpus source invalid: session header missing from ${fileName}`,
+    );
+  }
   const activeEntryIds = new Set<string>();
   let currentId = leafTargetId === undefined ? (orderedEntryIds.at(-1) ?? null) : leafTargetId;
   while (currentId !== null) {
@@ -405,7 +566,7 @@ function readSourceEvidence(content: string, fileName: string): RecallQualitySou
     activeEntryIds.add(currentId);
     currentId = entry.parentId;
   }
-  return { entries, activeEntryIds };
+  return { sessionOrigin, entries, activeEntryIds };
 }
 
 function assertExpectedSourcesExist(
@@ -414,6 +575,21 @@ function assertExpectedSourcesExist(
 ): void {
   const declaredFiles = new Set(specification.corpus.sessionFiles.map(({ fileName }) => fileName));
   for (const evaluationCase of specification.cases) {
+    for (const excludedSessionFile of evaluationCase.excludedSessionFiles) {
+      if (!declaredFiles.has(excludedSessionFile)) {
+        throw new Error(
+          `Recall quality case ${evaluationCase.id} excludes undeclared session file ${excludedSessionFile}`,
+        );
+      }
+    }
+    for (const pollutingSessionFile of evaluationCase.preLimitChannelProof?.pollutingSessionFiles ??
+      []) {
+      if (!declaredFiles.has(pollutingSessionFile)) {
+        throw new Error(
+          `Recall quality case ${evaluationCase.id} uses undeclared polluting session file ${pollutingSessionFile}`,
+        );
+      }
+    }
     for (const expectedSource of evaluationCase.expectedSources) {
       if (!declaredFiles.has(expectedSource.sessionFile)) {
         throw new Error(
@@ -426,6 +602,18 @@ function assertExpectedSourcesExist(
         throw new Error(
           `Recall quality case ${evaluationCase.id} source missing: ${expectedSource.sessionFile}#${expectedSource.entryId}`,
         );
+      }
+      if (sourceEvidence?.sessionOrigin !== expectedSource.expectedSessionOrigin) {
+        throw new Error(
+          `Recall quality case ${evaluationCase.id} session origin mismatch at ${expectedSource.sessionFile}: expected ${expectedSource.expectedSessionOrigin}, received ${sourceEvidence?.sessionOrigin ?? 'missing'}`,
+        );
+      }
+      for (const contributingEntryId of expectedSource.requiredContributingEntryIds) {
+        if (!sourceEvidence.entries.has(contributingEntryId)) {
+          throw new Error(
+            `Recall quality case ${evaluationCase.id} contributing entry missing: ${expectedSource.sessionFile}#${contributingEntryId}`,
+          );
+        }
       }
       for (const requiredText of expectedSource.requiredText) {
         if (!sourceEntry.sourceText.includes(requiredText)) {

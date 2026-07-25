@@ -241,14 +241,14 @@ Run the fixed quality and latency gate before approving a full corpus backfill:
 npm run evaluate:recall
 ```
 
-The command reads only the eight checksum-fixed sessions under `evaluation/corpus/`. It builds one temporary 512/64 index under the ignored `.recall-data/recall-quality-evaluation/` directory, measures fused top-five quality for the frozen 8, 16, 24, and 32 candidates-per-channel grid, makes zero reranker requests, and writes:
+The command reads only the 15 checksum-fixed sessions under `evaluation/corpus/`. It builds one temporary 512/64 index under the ignored `evaluation/.recall-data/recall-quality-evaluation/` directory and measures the approved policy of 8 candidates per channel and 5 final results. The 17 cases preserve the established global retrieval classes and add main/worktree, equivalent-clone, configured-lineage, unrelated-similar-project, exact non-Git, and explicit-global coverage. A global control proves dense, lexical, and identifier project restrictions apply before each channel limit. The default hybrid run makes zero reranker requests and writes:
 
 - `docs/evaluation/recall-quality-report.md`
 - `docs/evaluation/recall-quality-results.json`
 
 The command never scans the configured production session directory or starts the full backfill. It exits with status 2 when no measured configuration passes every frozen quality and latency threshold. The Pi index command reads the committed result and refuses to scan production sessions unless the run is clean, the automated gate passes, and it selects chunk, candidate, and final-result counts. Invoking the unblocked index command remains the human approval step.
 
-The committed clean version-3 report records **PASS** with 100% fused top-five recall, context usefulness, and source-occurrence preservation, zero final duplicate slots, and 72 ms query p95. It selects 512/64 chunks, 8 candidates per channel, and 5 final results. `/pi-session-recall-index` rejects missing, stale, dirty, or failed evidence.
+Only clean version-4 evidence can unblock production indexing. The gate binds the result to the current default project scope, repository-identity and lineage policies, lineage digest, hybrid rank-fusion constants, 512/64 chunk geometry, per-channel candidate limits, and final-result count. `/pi-session-recall-index` rejects missing, pre-scope, stale-policy, dirty, failed, or unapproved-policy evidence.
 
 ## Develop
 

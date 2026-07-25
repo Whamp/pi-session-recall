@@ -1,0 +1,3 @@
+{"type":"session","version":3,"id":"eval-historical-prototype","timestamp":"2026-07-21T12:00:00Z","cwd":"/evaluation/historical/quality-prototype/phase-one"}
+{"type":"message","id":"lineage-question","parentId":null,"timestamp":"2026-07-21T12:01:00Z","message":{"role":"user","content":"Which decision survived from the historical prototype?"}}
+{"type":"message","id":"lineage-answer","parentId":"lineage-question","timestamp":"2026-07-21T12:02:00Z","message":{"role":"assistant","content":"Configured project lineage preserves prototype marker linen-lineage-74 for the successor repository."}}

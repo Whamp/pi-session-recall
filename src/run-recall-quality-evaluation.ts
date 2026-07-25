@@ -1,8 +1,8 @@
 import { mkdir, rm } from 'node:fs/promises';
-import { basename, isAbsolute, join, relative, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { performance } from 'node:perf_hooks';
 
-import { RecallSearchScope } from './enums.js';
+import { RECALL_PROJECT_SCOPE_POLICY_VERSION, RecallSearchScope } from './enums.js';
 import {
   RECALL_RANK_FUSION_VERSION,
   RECALL_RRF_RANK_CONSTANT,
@@ -22,6 +22,7 @@ import {
   createRecallConversationService,
   type RecallConversationConfig,
   type RecallConversationDependencies,
+  type RecallConversationSearchOptions,
 } from './recall-conversation-service.js';
 import {
   selectRecallQualityPolicy,
@@ -29,6 +30,13 @@ import {
   type RecallQualityPolicySelection,
 } from './select-recall-quality-policy.js';
 import { RECALL_ACTIVE_BRANCH_PRIOR } from './rank-recall-search-results.js';
+import {
+  createRecallProjectLineageDigest,
+  RECALL_PROJECT_IDENTITY_METADATA_SCHEMA_VERSION,
+  RECALL_PROJECT_IDENTITY_POLICY_VERSION,
+  RECALL_PROJECT_LINEAGE_POLICY_VERSION,
+  type ResolvedProjectIdentity,
+} from './resolve-project-identity.js';
 import type { ConversationTextTokenizer } from './session-conversation-index.js';
 
 const RECALL_QUALITY_FULL_POOL_LIMIT = 200;
@@ -67,18 +75,26 @@ export interface RecallQualityExecutedWork {
   maximumCandidatesPerSearch: number;
 }
 
-/** Ranking constants that bind quality evidence to the hybrid policy it measured. */
-export interface RecallQualityRankingIdentity {
+/** Project admission, lineage, ranking, and result counts bound to one evaluation result. */
+export interface RecallQualityEvaluationIdentity {
+  defaultScope: RecallSearchScope.PROJECT;
+  projectScopePolicyVersion: number;
+  repositoryIdentityPolicyVersion: number;
+  projectIdentityMetadataSchemaVersion: number;
+  lineagePolicyVersion: number;
+  lineageDigest: string;
   rankingMode: 'hybrid';
   rankFusionVersion: number;
   reciprocalRankConstant: number;
   activeBranchPrior: number;
+  candidateLimits: { dense: 8; lexical: 8; identifier: 8 };
+  finalResultCount: 5;
 }
 
 /** Raw measured configurations, gate selection, and bounded-work evidence from one run. */
 export interface RecallQualityEvaluationResult {
-  version: 3;
-  rankingIdentity: RecallQualityRankingIdentity;
+  version: 4;
+  evaluationIdentity: RecallQualityEvaluationIdentity;
   startedAt: string;
   completedAt: string;
   durationMilliseconds: number;
@@ -105,6 +121,12 @@ function assertSafeRecallQualityPaths(
   if (basename(resolvedWorkDirectory) !== RECALL_QUALITY_WORK_DIRECTORY_NAME) {
     throw new Error(
       `Recall quality work directory invalid: basename must be ${RECALL_QUALITY_WORK_DIRECTORY_NAME}`,
+    );
+  }
+  const evaluationDirectory = dirname(corpus.specificationPath);
+  if (!isPathInside(evaluationDirectory, resolvedWorkDirectory)) {
+    throw new Error(
+      `Recall quality work directory must stay inside evaluation data area: ${resolvedWorkDirectory} is outside ${evaluationDirectory}`,
     );
   }
   const protectedPaths = [
@@ -160,6 +182,7 @@ function createChunkPolicyConfig(
     manifestPath: join(policyDirectory, 'index-manifest.json'),
     embeddingCacheDirectory: join(policyDirectory, 'embedding-cache'),
     lockPath: join(policyDirectory, 'operation.lock'),
+    projectLineages: corpus.specification.projectLineages,
     chunkPolicy: {
       maxTokens: chunkPolicy.maxTokens,
       overlapTokens: chunkPolicy.overlapTokens,
@@ -172,15 +195,44 @@ function createChunkPolicyConfig(
   };
 }
 
+function createEvaluationProjectIdentityResolver(
+  corpus: LoadedRecallQualityCorpus,
+): (workingDirectory: string) => Promise<ResolvedProjectIdentity | null> {
+  const fixtures = new Map(
+    corpus.specification.projectIdentityFixtures.map((fixture) => [
+      fixture.workingDirectory,
+      {
+        projectIdentity: fixture.projectIdentity,
+        identitySource: fixture.identitySource,
+      },
+    ]),
+  );
+  return async (workingDirectory) => fixtures.get(workingDirectory) ?? null;
+}
+
 function createServiceDependencies(
   embeddings: LocalEmbeddingClient,
   reranker: LocalRerankerClient,
+  resolveProjectIdentity: (workingDirectory: string) => Promise<ResolvedProjectIdentity | null>,
   loadTokenizer?: () => Promise<ConversationTextTokenizer>,
 ): RecallConversationDependencies {
   return {
     embeddings,
     reranker,
+    resolveProjectIdentity,
     ...(loadTokenizer ? { loadTokenizer } : {}),
+  };
+}
+
+function createEvaluationSearchOptions(
+  evaluationCase: LoadedRecallQualityCorpus['specification']['cases'][number],
+): RecallConversationSearchOptions {
+  return {
+    mode: 'hybrid',
+    scope: evaluationCase.scope,
+    ...(evaluationCase.invocationDirectory
+      ? { invocationDirectory: evaluationCase.invocationDirectory }
+      : {}),
   };
 }
 
@@ -215,6 +267,7 @@ export async function runRecallQualityEvaluation(
     options.baseConfig,
     options.dependencies?.embeddings,
   );
+  const resolveProjectIdentity = createEvaluationProjectIdentityResolver(options.corpus);
   const indexRuns: RecallQualityIndexRun[] = [];
   const configurations: RecallQualityConfigurationMeasurement[] = [];
   let executedSearchRequests = 0;
@@ -240,7 +293,12 @@ export async function runRecallQualityEvaluation(
     );
     const indexService = createRecallConversationService(
       indexConfig,
-      createServiceDependencies(embeddings, rejectingReranker, options.dependencies?.loadTokenizer),
+      createServiceDependencies(
+        embeddings,
+        rejectingReranker,
+        resolveProjectIdentity,
+        options.dependencies?.loadTokenizer,
+      ),
     );
     const indexStarted = performance.now();
     const indexed = await indexService.index({ optimize: true });
@@ -276,23 +334,30 @@ export async function runRecallQualityEvaluation(
         createServiceDependencies(
           embeddings,
           rejectingReranker,
+          resolveProjectIdentity,
           options.dependencies?.loadTokenizer,
         ),
       );
-      const warmupCase = specification.cases[0];
-      if (!warmupCase) {
+      const warmupCases = specification.cases.filter(
+        (evaluationCase, index, cases) =>
+          cases.findIndex(({ scope }) => scope === evaluationCase.scope) === index,
+      );
+      if (warmupCases.length === 0) {
         throw new Error('Recall quality evaluation requires at least one case');
       }
-      for (
-        let warmupIndex = 0;
-        warmupIndex < specification.warmupQueriesPerCombination;
-        warmupIndex += 1
-      ) {
-        await searchService.search(warmupCase.query, RECALL_QUALITY_FULL_POOL_LIMIT, {
-          mode: 'hybrid',
-          scope: RecallSearchScope.GLOBAL,
-        });
-        executedSearchRequests += 1;
+      for (const warmupCase of warmupCases) {
+        for (
+          let warmupIndex = 0;
+          warmupIndex < specification.warmupQueriesPerCombination;
+          warmupIndex += 1
+        ) {
+          await searchService.search(
+            warmupCase.query,
+            RECALL_QUALITY_FULL_POOL_LIMIT,
+            createEvaluationSearchOptions(warmupCase),
+          );
+          executedSearchRequests += 1;
+        }
       }
 
       const observations: RecallQualitySearchObservation[] = [];
@@ -301,13 +366,34 @@ export async function runRecallQualityEvaluation(
         const search = await searchService.search(
           evaluationCase.query,
           RECALL_QUALITY_FULL_POOL_LIMIT,
-          { mode: 'hybrid', scope: RecallSearchScope.GLOBAL },
+          createEvaluationSearchOptions(evaluationCase),
         );
         const queryLatencyMilliseconds = performance.now() - queryStarted;
         executedSearchRequests += 1;
+        let globalControlResults;
+        if (evaluationCase.preLimitChannelProof) {
+          const globalControl = await searchService.search(
+            evaluationCase.query,
+            RECALL_QUALITY_FULL_POOL_LIMIT,
+            {
+              mode: 'hybrid',
+              scope: RecallSearchScope.GLOBAL,
+              ...(evaluationCase.invocationDirectory
+                ? { invocationDirectory: evaluationCase.invocationDirectory }
+                : {}),
+            },
+          );
+          globalControlResults = globalControl.results;
+          executedSearchRequests += 1;
+        }
         observations.push({
           evaluationCase,
           results: search.results,
+          searchPolicy: {
+            scope: search.searchPolicy.scope,
+            invocationProjectIdentity: search.searchPolicy.invocationProjectIdentity,
+          },
+          ...(globalControlResults ? { globalControlResults } : {}),
           queryLatencyMilliseconds,
         });
       }
@@ -331,14 +417,31 @@ export async function runRecallQualityEvaluation(
       `Recall quality search bound exceeded after run: executed ${executedSearchRequests}, maximum ${specification.bounds.maximumSearchRequests}`,
     );
   }
+  const chunkEmbeddingRequests = indexRuns.reduce(
+    (total, indexRun) => total + indexRun.indexSummary.embeddingRequestCount,
+    0,
+  );
+  if (chunkEmbeddingRequests > specification.bounds.maximumChunkEmbeddingRequests) {
+    throw new Error(
+      `Recall quality chunk-embedding request bound exceeded: executed ${chunkEmbeddingRequests}, maximum ${specification.bounds.maximumChunkEmbeddingRequests}`,
+    );
+  }
   const completedAt = new Date();
   return {
-    version: 3,
-    rankingIdentity: {
+    version: 4,
+    evaluationIdentity: {
+      defaultScope: RecallSearchScope.PROJECT,
+      projectScopePolicyVersion: RECALL_PROJECT_SCOPE_POLICY_VERSION,
+      repositoryIdentityPolicyVersion: RECALL_PROJECT_IDENTITY_POLICY_VERSION,
+      projectIdentityMetadataSchemaVersion: RECALL_PROJECT_IDENTITY_METADATA_SCHEMA_VERSION,
+      lineagePolicyVersion: RECALL_PROJECT_LINEAGE_POLICY_VERSION,
+      lineageDigest: createRecallProjectLineageDigest(specification.projectLineages),
       rankingMode: 'hybrid',
       rankFusionVersion: RECALL_RANK_FUSION_VERSION,
       reciprocalRankConstant: RECALL_RRF_RANK_CONSTANT,
       activeBranchPrior: RECALL_ACTIVE_BRANCH_PRIOR,
+      candidateLimits: { dense: 8, lexical: 8, identifier: 8 },
+      finalResultCount: 5,
     },
     startedAt: startedAt.toISOString(),
     completedAt: completedAt.toISOString(),
@@ -355,10 +458,7 @@ export async function runRecallQualityEvaluation(
       indexRuns: indexRuns.length,
       executedSearchRequests,
       rerankerRequests,
-      chunkEmbeddingRequests: indexRuns.reduce(
-        (total, indexRun) => total + indexRun.indexSummary.embeddingRequestCount,
-        0,
-      ),
+      chunkEmbeddingRequests,
       maximumCandidatesPerSearch: Math.max(...specification.candidateCounts) * 3,
     },
   };

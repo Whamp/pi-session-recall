@@ -1,16 +1,22 @@
 import { basename } from 'node:path';
 
+import { RecallSearchScope } from './enums.js';
 import type { RecallSearchResult } from './fuse-recall-search-candidates.js';
 import type {
   RecallQualityEvaluationCase,
   RecallQualityExpectedSource,
 } from './recall-quality-corpus.js';
-import type { RankedRecallSearchResult } from './rank-recall-search-results.js';
+import type { RecallConversationSearchResult } from './recall-conversation-service.js';
 
 /** One ordered hybrid search plus its measured total-query latency. */
 export interface RecallQualitySearchObservation {
   evaluationCase: RecallQualityEvaluationCase;
-  results: readonly RankedRecallSearchResult[];
+  results: readonly RecallConversationSearchResult[];
+  searchPolicy: {
+    scope: RecallSearchScope;
+    invocationProjectIdentity: string | null;
+  };
+  globalControlResults?: readonly RecallConversationSearchResult[];
   queryLatencyMilliseconds: number;
 }
 
@@ -27,14 +33,33 @@ export interface RecallQualityCaseFinalMeasurement {
   contextUseful: boolean;
   sourceOccurrencesPreserved: boolean;
   preservedSourceOccurrences: number;
+  sessionOriginsVerified: boolean;
+  evidenceRelationsVerified: boolean;
+  contributingEntriesVerified: boolean;
+  branchesVerified: boolean;
   finalDuplicateSlots: number;
   finalResultSlots: number;
 }
 
-/** Source, duplicate, context, and latency evidence for one fixed query. */
+/** One channel's proof that global pollution displaced project evidence before its limit. */
+export interface RecallQualityPreLimitChannelMeasurement {
+  channel: 'dense' | 'lexical' | 'identifier';
+  projectSourceAdmitted: boolean;
+  globalSourceDisplaced: boolean;
+  pollutingCandidateCount: number;
+  passed: boolean;
+}
+
+/** Source, scope, exclusion, duplicate, context, and latency evidence for one fixed query. */
 export interface RecallQualityCaseMeasurement {
   caseId: string;
   category: RecallQualityEvaluationCase['category'];
+  scope: RecallSearchScope;
+  searchScopeVerified: boolean;
+  invocationProjectIdentityVerified: boolean;
+  excludedSessionFilesAbsent: boolean;
+  preLimitChannelsVerified: boolean;
+  preLimitChannelMeasurements: RecallQualityPreLimitChannelMeasurement[];
   candidatePoolRecalled: boolean;
   rawCandidateCount: number;
   groupedCandidateCount: number;
@@ -49,10 +74,18 @@ export interface RecallQualityFinalCountMeasurement {
   finalRecall: number;
   contextUsefulness: number;
   sourceOccurrencePreservation: number;
+  sessionOriginVerification: number;
+  evidenceRelationVerification: number;
+  contributingEntryVerification: number;
+  branchVerification: number;
   finalDuplicateRate: number;
   missedCaseIds: string[];
   contextFailureCaseIds: string[];
   sourceOccurrenceFailureCaseIds: string[];
+  sessionOriginFailureCaseIds: string[];
+  evidenceRelationFailureCaseIds: string[];
+  contributingEntryFailureCaseIds: string[];
+  branchFailureCaseIds: string[];
   finalDuplicateSlots: number;
   finalResultSlots: number;
 }
@@ -63,12 +96,17 @@ export interface RecallQualityMeasurement {
   candidatePoolRecall: number;
   candidatePoolDuplicateRate: number;
   queryLatencyMilliseconds: RecallQualityLatencySummary;
+  queryLatencyByScope: {
+    project: RecallQualityLatencySummary | null;
+    global: RecallQualityLatencySummary | null;
+  };
+  policyFailureCaseIds: string[];
   missedCandidatePoolCaseIds: string[];
   caseMeasurements: RecallQualityCaseMeasurement[];
   finalCounts: RecallQualityFinalCountMeasurement[];
 }
 
-function getRecallResultGroupMembers(result: RankedRecallSearchResult): RecallSearchResult[] {
+function getRecallResultGroupMembers(result: RecallConversationSearchResult): RecallSearchResult[] {
   return [result, ...result.duplicateOccurrences];
 }
 
@@ -99,23 +137,44 @@ function matchesExpectedRecallSource(
   ) {
     return false;
   }
-  if (
+  return !(
     expectedSource.expectedSummaryKind &&
     candidate.summaryKind !== expectedSource.expectedSummaryKind
-  ) {
-    return false;
-  }
-  if (expectedSource.expectedBranch === 'active' && !candidate.isOnActiveBranch) {
-    return false;
-  }
-  if (expectedSource.expectedBranch === 'abandoned' && candidate.isOnActiveBranch) {
-    return false;
-  }
-  return true;
+  );
+}
+
+function matchesExpectedRecallBranch(
+  candidate: RecallSearchResult,
+  expectedSource: RecallQualityExpectedSource,
+): boolean {
+  return !(
+    (expectedSource.expectedBranch === 'active' && !candidate.isOnActiveBranch) ||
+    (expectedSource.expectedBranch === 'abandoned' && candidate.isOnActiveBranch)
+  );
+}
+
+function verifiesEveryExpectedSource(
+  results: readonly RecallConversationSearchResult[],
+  evaluationCase: RecallQualityEvaluationCase,
+  verify: (
+    result: RecallConversationSearchResult,
+    candidate: RecallSearchResult,
+    expectedSource: RecallQualityExpectedSource,
+  ) => boolean,
+): boolean {
+  return evaluationCase.expectedSources.every((expectedSource) =>
+    results.some((result) =>
+      getRecallResultGroupMembers(result).some(
+        (candidate) =>
+          matchesExpectedRecallSource(candidate, expectedSource) &&
+          verify(result, candidate, expectedSource),
+      ),
+    ),
+  );
 }
 
 function resultGroupMatchesEvaluationCase(
-  result: RankedRecallSearchResult,
+  result: RecallConversationSearchResult,
   evaluationCase: RecallQualityEvaluationCase,
 ): boolean {
   return getRecallResultGroupMembers(result).some((candidate) =>
@@ -126,7 +185,7 @@ function resultGroupMatchesEvaluationCase(
 }
 
 function countPreservedExpectedSources(
-  results: readonly RankedRecallSearchResult[],
+  results: readonly RecallConversationSearchResult[],
   evaluationCase: RecallQualityEvaluationCase,
 ): number {
   const candidates = results.flatMap(getRecallResultGroupMembers);
@@ -136,7 +195,7 @@ function countPreservedExpectedSources(
 }
 
 function hasUsefulRecallContext(
-  results: readonly RankedRecallSearchResult[],
+  results: readonly RecallConversationSearchResult[],
   evaluationCase: RecallQualityEvaluationCase,
 ): boolean {
   const requiredFragments = evaluationCase.requiredContext.map((fragment) =>
@@ -271,14 +330,87 @@ function assertRecallQualityInputs(
   }
 }
 
+function hasRecallCandidateChannel(
+  candidate: RecallSearchResult,
+  channel: RecallQualityPreLimitChannelMeasurement['channel'],
+): boolean {
+  return candidate[channel] !== null;
+}
+
+function measurePreLimitChannels(
+  observation: RecallQualitySearchObservation,
+): RecallQualityPreLimitChannelMeasurement[] {
+  const proof = observation.evaluationCase.preLimitChannelProof;
+  if (!proof) {
+    return [];
+  }
+  const globalCandidates = observation.globalControlResults?.flatMap(getRecallResultGroupMembers);
+  if (!globalCandidates) {
+    return proof.requiredChannels.map((channel) => ({
+      channel,
+      projectSourceAdmitted: false,
+      globalSourceDisplaced: false,
+      pollutingCandidateCount: 0,
+      passed: false,
+    }));
+  }
+  const projectCandidates = observation.results.flatMap(getRecallResultGroupMembers);
+  return proof.requiredChannels.map((channel) => {
+    const projectSourceAdmitted = observation.evaluationCase.expectedSources.every(
+      (expectedSource) =>
+        projectCandidates.some(
+          (candidate) =>
+            matchesExpectedRecallSource(candidate, expectedSource) &&
+            hasRecallCandidateChannel(candidate, channel),
+        ),
+    );
+    const globalSourceDisplaced = observation.evaluationCase.expectedSources.every(
+      (expectedSource) =>
+        !globalCandidates.some(
+          (candidate) =>
+            matchesExpectedRecallSource(candidate, expectedSource) &&
+            hasRecallCandidateChannel(candidate, channel),
+        ),
+    );
+    const pollutingCandidateCount = globalCandidates.filter(
+      (candidate) =>
+        proof.pollutingSessionFiles.includes(basename(candidate.sessionPath)) &&
+        hasRecallCandidateChannel(candidate, channel),
+    ).length;
+    return {
+      channel,
+      projectSourceAdmitted,
+      globalSourceDisplaced,
+      pollutingCandidateCount,
+      passed:
+        projectSourceAdmitted &&
+        globalSourceDisplaced &&
+        pollutingCandidateCount >= proof.minimumPollutingCandidatesPerChannel,
+    };
+  });
+}
+
 function measureRecallQualityCase(
   observation: RecallQualitySearchObservation,
   finalCounts: readonly number[],
 ): RecallQualityCaseMeasurement {
   const rawCandidates = observation.results.flatMap(getRecallResultGroupMembers);
+  const preLimitChannelMeasurements = measurePreLimitChannels(observation);
+  const expectedInvocationProjectIdentity =
+    observation.evaluationCase.expectedInvocationProjectIdentity ?? null;
   return {
     caseId: observation.evaluationCase.id,
     category: observation.evaluationCase.category,
+    scope: observation.evaluationCase.scope,
+    searchScopeVerified: observation.searchPolicy.scope === observation.evaluationCase.scope,
+    invocationProjectIdentityVerified:
+      observation.searchPolicy.invocationProjectIdentity === expectedInvocationProjectIdentity,
+    excludedSessionFilesAbsent: rawCandidates.every(
+      (candidate) =>
+        !observation.evaluationCase.excludedSessionFiles.includes(basename(candidate.sessionPath)),
+    ),
+    preLimitChannelsVerified: preLimitChannelMeasurements.every(({ passed }) => passed),
+    preLimitChannelMeasurements,
     candidatePoolRecalled: rawCandidates.some((candidate) =>
       observation.evaluationCase.expectedSources.some((expectedSource) =>
         matchesExpectedRecallSource(candidate, expectedSource),
@@ -304,6 +436,32 @@ function measureRecallQualityCase(
           preservedSourceOccurrences >=
           observation.evaluationCase.minimumPreservedSourceOccurrences,
         preservedSourceOccurrences,
+        sessionOriginsVerified: verifiesEveryExpectedSource(
+          results,
+          observation.evaluationCase,
+          (result, candidate, expectedSource) =>
+            candidate.cwd === expectedSource.expectedSessionOrigin,
+        ),
+        evidenceRelationsVerified: verifiesEveryExpectedSource(
+          results,
+          observation.evaluationCase,
+          (result, candidate, expectedSource) =>
+            result.evidenceRelation === expectedSource.expectedEvidenceRelation,
+        ),
+        contributingEntriesVerified: verifiesEveryExpectedSource(
+          results,
+          observation.evaluationCase,
+          (result, candidate, expectedSource) =>
+            expectedSource.requiredContributingEntryIds.every((requiredEntryId) =>
+              candidate.contributingEntryIds.some(({ value }) => value === requiredEntryId),
+            ),
+        ),
+        branchesVerified: verifiesEveryExpectedSource(
+          results,
+          observation.evaluationCase,
+          (result, candidate, expectedSource) =>
+            matchesExpectedRecallBranch(candidate, expectedSource),
+        ),
         finalDuplicateSlots: countDuplicateRecallSlots(results),
         finalResultSlots: results.length,
       };
@@ -331,6 +489,21 @@ export function measureRecallQuality(
     (total, measurement) => total + measurement.candidatePoolDuplicateSlots,
     0,
   );
+  const policyFailureCaseIds = caseMeasurements
+    .filter(
+      (measurement) =>
+        !measurement.searchScopeVerified ||
+        !measurement.invocationProjectIdentityVerified ||
+        !measurement.excludedSessionFilesAbsent ||
+        !measurement.preLimitChannelsVerified,
+    )
+    .map(({ caseId }) => caseId);
+  const latencyByScope = (scope: RecallSearchScope): RecallQualityLatencySummary | null => {
+    const values = caseMeasurements
+      .filter((measurement) => measurement.scope === scope)
+      .map(({ queryLatencyMilliseconds }) => queryLatencyMilliseconds);
+    return values.length > 0 ? summarizeRecallLatency(values) : null;
+  };
   return {
     caseCount: caseMeasurements.length,
     candidatePoolRecall: createRate(
@@ -341,6 +514,11 @@ export function measureRecallQuality(
     queryLatencyMilliseconds: summarizeRecallLatency(
       caseMeasurements.map(({ queryLatencyMilliseconds }) => queryLatencyMilliseconds),
     ),
+    queryLatencyByScope: {
+      project: latencyByScope(RecallSearchScope.PROJECT),
+      global: latencyByScope(RecallSearchScope.GLOBAL),
+    },
+    policyFailureCaseIds,
     missedCandidatePoolCaseIds,
     caseMeasurements,
     finalCounts: finalCounts.map((finalCount) => {
@@ -364,6 +542,18 @@ export function measureRecallQuality(
       const sourceOccurrenceFailureCaseIds = outcomes
         .filter(({ outcome }) => !outcome.sourceOccurrencesPreserved)
         .map(({ caseId }) => caseId);
+      const sessionOriginFailureCaseIds = outcomes
+        .filter(({ outcome }) => !outcome.sessionOriginsVerified)
+        .map(({ caseId }) => caseId);
+      const evidenceRelationFailureCaseIds = outcomes
+        .filter(({ outcome }) => !outcome.evidenceRelationsVerified)
+        .map(({ caseId }) => caseId);
+      const contributingEntryFailureCaseIds = outcomes
+        .filter(({ outcome }) => !outcome.contributingEntriesVerified)
+        .map(({ caseId }) => caseId);
+      const branchFailureCaseIds = outcomes
+        .filter(({ outcome }) => !outcome.branchesVerified)
+        .map(({ caseId }) => caseId);
       const finalDuplicateSlots = outcomes.reduce(
         (total, { outcome }) => total + outcome.finalDuplicateSlots,
         0,
@@ -383,10 +573,30 @@ export function measureRecallQuality(
           outcomes.length - sourceOccurrenceFailureCaseIds.length,
           outcomes.length,
         ),
+        sessionOriginVerification: createRate(
+          outcomes.length - sessionOriginFailureCaseIds.length,
+          outcomes.length,
+        ),
+        evidenceRelationVerification: createRate(
+          outcomes.length - evidenceRelationFailureCaseIds.length,
+          outcomes.length,
+        ),
+        contributingEntryVerification: createRate(
+          outcomes.length - contributingEntryFailureCaseIds.length,
+          outcomes.length,
+        ),
+        branchVerification: createRate(
+          outcomes.length - branchFailureCaseIds.length,
+          outcomes.length,
+        ),
         finalDuplicateRate: createRate(finalDuplicateSlots, finalResultSlots),
         missedCaseIds,
         contextFailureCaseIds,
         sourceOccurrenceFailureCaseIds,
+        sessionOriginFailureCaseIds,
+        evidenceRelationFailureCaseIds,
+        contributingEntryFailureCaseIds,
+        branchFailureCaseIds,
         finalDuplicateSlots,
         finalResultSlots,
       };

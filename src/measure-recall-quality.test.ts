@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
+import { RecallEvidenceRelation, RecallSearchScope } from './enums.js';
 import type { RecallSearchResult } from './fuse-recall-search-candidates.js';
 import { measureRecallQuality } from './measure-recall-quality.js';
 import type { RecallQualityEvaluationCase } from './recall-quality-corpus.js';
@@ -75,8 +76,11 @@ void test('recall quality measures candidate-pool and fused final source preserv
   assert.ok(second);
   const representative = createSearchResult(first, 0.03);
   const duplicate = createSearchResult(second, 0.02);
-  const rerankedResult: RankedRecallSearchResult = {
+  const rerankedResult: RankedRecallSearchResult & {
+    evidenceRelation: RecallEvidenceRelation;
+  } = {
     ...representative,
+    evidenceRelation: RecallEvidenceRelation.UNRESTRICTED_GLOBAL,
     rerankerScore: 0.99,
     activeBranchPrior: 0.01,
     rankingScore: 1,
@@ -87,20 +91,28 @@ void test('recall quality measures candidate-pool and fused final source preserv
     id: 'duplicate-meridian',
     category: 'duplicate_content',
     query: 'What release checksum did Meridian use?',
+    scope: RecallSearchScope.GLOBAL,
     expectedSources: [
       {
         sessionFile: 'copy-a.jsonl',
         entryId: 'entry-a',
         requiredText: ['sha256:4c91d7e2'],
+        expectedSessionOrigin: '/evaluation',
+        expectedEvidenceRelation: RecallEvidenceRelation.UNRESTRICTED_GLOBAL,
+        requiredContributingEntryIds: ['entry-a'],
         expectedBranch: 'active',
       },
       {
         sessionFile: 'copy-b.jsonl',
         entryId: 'entry-b',
         requiredText: ['sha256:4c91d7e2'],
+        expectedSessionOrigin: '/evaluation',
+        expectedEvidenceRelation: RecallEvidenceRelation.UNRESTRICTED_GLOBAL,
+        requiredContributingEntryIds: ['entry-b'],
         expectedBranch: 'active',
       },
     ],
+    excludedSessionFiles: [],
     requiredContext: ['sha256:4c91d7e2', 'meridian-safe-3'],
     minimumPreservedSourceOccurrences: 2,
   };
@@ -110,6 +122,10 @@ void test('recall quality measures candidate-pool and fused final source preserv
       {
         evaluationCase,
         results: [rerankedResult],
+        searchPolicy: {
+          scope: RecallSearchScope.GLOBAL,
+          invocationProjectIdentity: null,
+        },
         queryLatencyMilliseconds: 120,
       },
     ],
@@ -119,33 +135,47 @@ void test('recall quality measures candidate-pool and fused final source preserv
   assert.equal(measurement.candidatePoolRecall, 1);
   assert.equal(measurement.candidatePoolDuplicateRate, 0.5);
   assert.deepEqual(measurement.queryLatencyMilliseconds, { median: 120, p95: 120 });
+  assert.deepEqual(measurement.caseMeasurements[0]?.finalCounts[0], {
+    finalCount: 1,
+    finalRecalled: true,
+    contextUseful: true,
+    sourceOccurrencesPreserved: true,
+    preservedSourceOccurrences: 2,
+    sessionOriginsVerified: true,
+    evidenceRelationsVerified: true,
+    contributingEntriesVerified: true,
+    branchesVerified: true,
+    finalDuplicateSlots: 0,
+    finalResultSlots: 1,
+  });
   assert.deepEqual(
     measurement.finalCounts.map((finalCount) => ({
       finalCount: finalCount.finalCount,
       finalRecall: finalCount.finalRecall,
       contextUsefulness: finalCount.contextUsefulness,
       sourceOccurrencePreservation: finalCount.sourceOccurrencePreservation,
+      sessionOriginVerification: finalCount.sessionOriginVerification,
+      evidenceRelationVerification: finalCount.evidenceRelationVerification,
+      contributingEntryVerification: finalCount.contributingEntryVerification,
+      branchVerification: finalCount.branchVerification,
       finalDuplicateRate: finalCount.finalDuplicateRate,
     })),
-    [
-      {
-        finalCount: 1,
-        finalRecall: 1,
-        contextUsefulness: 1,
-        sourceOccurrencePreservation: 1,
-        finalDuplicateRate: 0,
-      },
-      {
-        finalCount: 2,
-        finalRecall: 1,
-        contextUsefulness: 1,
-        sourceOccurrencePreservation: 1,
-        finalDuplicateRate: 0,
-      },
-    ],
+    [1, 2].map((finalCount) => ({
+      finalCount,
+      finalRecall: 1,
+      contextUsefulness: 1,
+      sourceOccurrencePreservation: 1,
+      sessionOriginVerification: 1,
+      evidenceRelationVerification: 1,
+      contributingEntryVerification: 1,
+      branchVerification: 1,
+      finalDuplicateRate: 0,
+    })),
   );
 
-  const unrelatedSameEntry: RankedRecallSearchResult = {
+  const unrelatedSameEntry: RankedRecallSearchResult & {
+    evidenceRelation: RecallEvidenceRelation;
+  } = {
     ...rerankedResult,
     id: 'unrelated-same-entry',
     checksum: 'unrelated-checksum',
@@ -157,6 +187,10 @@ void test('recall quality measures candidate-pool and fused final source preserv
       {
         evaluationCase,
         results: [unrelatedSameEntry],
+        searchPolicy: {
+          scope: RecallSearchScope.GLOBAL,
+          invocationProjectIdentity: null,
+        },
         queryLatencyMilliseconds: 10,
       },
     ],

@@ -12,7 +12,7 @@ void test('recall quality CLI help states bounded work and report outputs withou
     { cwd: process.cwd(), encoding: 'utf8' },
   );
 
-  assert.match(stdout, /fixed 8-file evaluation corpus/);
+  assert.match(stdout, /checksum-fixed evaluation corpus/);
   assert.match(stdout, /never scans the production session corpus/);
   assert.match(stdout, /docs\/evaluation\/recall-quality-report\.md/);
   assert.match(stdout, /docs\/evaluation\/recall-quality-results\.json/);

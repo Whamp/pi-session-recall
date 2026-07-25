@@ -46,6 +46,9 @@ function formatExpectedSource(
     expectedSource.expectedEvidenceKind,
     expectedSource.expectedSummaryKind,
     expectedSource.expectedBranch,
+    expectedSource.expectedEvidenceRelation,
+    `origin ${expectedSource.expectedSessionOrigin}`,
+    `contributors ${expectedSource.requiredContributingEntryIds.join('+')}`,
   ].filter((value) => value !== undefined);
   const suffix = qualifiers.length > 0 ? ` (${qualifiers.join(', ')})` : '';
   return `${expectedSource.sessionFile}#${expectedSource.entryId}${suffix}`;
@@ -66,12 +69,12 @@ function formatGateThresholds(gate: RecallQualityGate): string[] {
 
 function formatQualityMatrix(combinations: readonly RecallQualityGateCombination[]): string[] {
   const lines = [
-    '| Chunk | Candidates/channel | Final | Pool recall | Final recall | Pool duplicates | Final duplicates | Context | Sources | Query p50/p95 | Gate |',
-    '| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |',
+    '| Chunk | Candidates/channel | Final | Pool recall | Final recall | Pool duplicates | Final duplicates | Context | Sources | Provenance | Project p95 | Global p95 | Gate |',
+    '| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |',
   ];
   for (const combination of combinations) {
     lines.push(
-      `| ${formatChunkPolicy(combination.chunkPolicy)} | ${combination.candidateCount} | ${combination.finalCount} | ${formatRate(combination.candidatePoolRecall)} | ${formatRate(combination.finalRecall)} | ${formatRate(combination.candidatePoolDuplicateRate)} | ${formatRate(combination.finalDuplicateRate)} | ${formatRate(combination.contextUsefulness)} | ${formatRate(combination.sourceOccurrencePreservation)} | ${formatMilliseconds(combination.queryLatencyMilliseconds.median)} / ${formatMilliseconds(combination.queryLatencyMilliseconds.p95)} | ${combination.gatePassed ? 'PASS' : 'FAIL'} |`,
+      `| ${formatChunkPolicy(combination.chunkPolicy)} | ${combination.candidateCount} | ${combination.finalCount} | ${formatRate(combination.candidatePoolRecall)} | ${formatRate(combination.finalRecall)} | ${formatRate(combination.candidatePoolDuplicateRate)} | ${formatRate(combination.finalDuplicateRate)} | ${formatRate(combination.contextUsefulness)} | ${formatRate(combination.sourceOccurrencePreservation)} | ${formatRate(Math.min(combination.sessionOriginVerification, combination.evidenceRelationVerification, combination.contributingEntryVerification, combination.branchVerification))} | ${combination.queryLatencyByScope.project ? formatMilliseconds(combination.queryLatencyByScope.project.p95) : '—'} | ${combination.queryLatencyByScope.global ? formatMilliseconds(combination.queryLatencyByScope.global.p95) : '—'} | ${combination.gatePassed ? 'PASS' : 'FAIL'} |`,
     );
   }
   return lines;
@@ -90,6 +93,10 @@ function hasNoDiscriminatingRecallQualityVariance(
         combination.finalRecall,
         combination.contextUsefulness,
         combination.sourceOccurrencePreservation,
+        combination.sessionOriginVerification,
+        combination.evidenceRelationVerification,
+        combination.contributingEntryVerification,
+        combination.branchVerification,
         combination.finalDuplicateRate,
       ].join('|'),
     ),
@@ -139,8 +146,8 @@ function formatCaseOutcomes(
   const lines = [
     `Shown for ${formatChunkPolicy(decision.chunkPolicy)}, ${decision.candidateCount} candidates/channel, and ${decision.finalCount} final results.`,
     '',
-    '| Case | Category | Pool | Final | Context | Sources | Raw/grouped | Query |',
-    '| --- | --- | --- | --- | --- | --- | ---: | ---: |',
+    '| Case | Scope | Boundary | Pool | Final | Context | Sources | Origin | Relation | Contributors | Branch | Raw/grouped | Query |',
+    '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | ---: | ---: |',
   ];
   for (const caseMeasurement of configuration.measurement.caseMeasurements) {
     const finalMeasurement = caseMeasurement.finalCounts.find(
@@ -150,16 +157,43 @@ function formatCaseOutcomes(
       continue;
     }
     lines.push(
-      `| ${escapeMarkdownTable(caseMeasurement.caseId)} | ${caseMeasurement.category} | ${caseMeasurement.candidatePoolRecalled ? 'hit' : 'miss'} | ${finalMeasurement.finalRecalled ? 'hit' : 'miss'} | ${finalMeasurement.contextUseful ? 'useful' : 'fail'} | ${finalMeasurement.sourceOccurrencesPreserved ? `${finalMeasurement.preservedSourceOccurrences} kept` : `${finalMeasurement.preservedSourceOccurrences} fail`} | ${caseMeasurement.rawCandidateCount}/${caseMeasurement.groupedCandidateCount} | ${formatMilliseconds(caseMeasurement.queryLatencyMilliseconds)} |`,
+      `| ${escapeMarkdownTable(caseMeasurement.caseId)} | ${caseMeasurement.scope} | ${caseMeasurement.searchScopeVerified && caseMeasurement.invocationProjectIdentityVerified && caseMeasurement.excludedSessionFilesAbsent && caseMeasurement.preLimitChannelsVerified ? 'pass' : 'fail'} | ${caseMeasurement.candidatePoolRecalled ? 'hit' : 'miss'} | ${finalMeasurement.finalRecalled ? 'hit' : 'miss'} | ${finalMeasurement.contextUseful ? 'useful' : 'fail'} | ${finalMeasurement.sourceOccurrencesPreserved ? `${finalMeasurement.preservedSourceOccurrences} kept` : `${finalMeasurement.preservedSourceOccurrences} fail`} | ${finalMeasurement.sessionOriginsVerified ? 'pass' : 'fail'} | ${finalMeasurement.evidenceRelationsVerified ? 'pass' : 'fail'} | ${finalMeasurement.contributingEntriesVerified ? 'pass' : 'fail'} | ${finalMeasurement.branchesVerified ? 'pass' : 'fail'} | ${caseMeasurement.rawCandidateCount}/${caseMeasurement.groupedCandidateCount} | ${formatMilliseconds(caseMeasurement.queryLatencyMilliseconds)} |`,
     );
   }
   if (configuration.measurement.caseMeasurements.length === 0) {
-    lines.push('| _No per-case rows in this fixture_ | — | — | — | — | — | — | — |');
+    lines.push(
+      '| _No per-case rows in this fixture_ | — | — | — | — | — | — | — | — | — | — | — | — |',
+    );
   }
   return lines;
 }
 
-/** Formats one reproducible, reviewable issue-8 decision report from raw measurements. */
+function formatPreLimitChannelProofs(
+  result: RecallQualityEvaluationResult,
+  decision?: RecallQualityGateCombination,
+): string[] {
+  const configuration = findDecisionConfiguration(result, decision);
+  const proofs =
+    configuration?.measurement.caseMeasurements.flatMap((measurement) =>
+      measurement.preLimitChannelMeasurements.map((channel) => ({
+        caseId: measurement.caseId,
+        ...channel,
+      })),
+    ) ?? [];
+  if (proofs.length === 0) {
+    return ['No pre-limit channel proof was declared.'];
+  }
+  return [
+    '| Case | Channel | Project source admitted | Global source displaced | Polluters inside limit | Proof |',
+    '| --- | --- | --- | --- | ---: | --- |',
+    ...proofs.map(
+      (proof) =>
+        `| ${proof.caseId} | ${proof.channel} | ${proof.projectSourceAdmitted ? 'yes' : 'no'} | ${proof.globalSourceDisplaced ? 'yes' : 'no'} | ${proof.pollutingCandidateCount} | ${proof.passed ? 'PASS' : 'FAIL'} |`,
+    ),
+  ];
+}
+
+/** Formats one reproducible, reviewable project-scoped recall quality decision report. */
 export function formatRecallQualityReport(
   result: RecallQualityEvaluationResult,
   corpus: LoadedRecallQualityCorpus,
@@ -168,7 +202,7 @@ export function formatRecallQualityReport(
   const { specification } = corpus;
   const decision = findDecisionCombination(result);
   const lines: string[] = [
-    '# Recall quality evaluation before backfill',
+    '# Project-scoped recall quality evaluation before backfill',
     '',
     `Generated ${result.completedAt} from corpus \`${result.corpusId}\`.`,
     '',
@@ -192,6 +226,14 @@ export function formatRecallQualityReport(
     '',
     '**Full corpus backfill remains blocked pending human approval.** The command evaluated only the committed bounded corpus and did not read the configured production sessions directory.',
     '',
+    '## Evaluation identity',
+    '',
+    `- Default scope: \`${result.evaluationIdentity.defaultScope}\` (policy v${result.evaluationIdentity.projectScopePolicyVersion})`,
+    `- Repository identity policy: v${result.evaluationIdentity.repositoryIdentityPolicyVersion}; metadata schema v${result.evaluationIdentity.projectIdentityMetadataSchemaVersion}`,
+    `- Project lineage policy: v${result.evaluationIdentity.lineagePolicyVersion}; digest \`${result.evaluationIdentity.lineageDigest}\``,
+    `- Hybrid ranking: fusion v${result.evaluationIdentity.rankFusionVersion}, RRF k=${result.evaluationIdentity.reciprocalRankConstant}, active prior +${result.evaluationIdentity.activeBranchPrior.toFixed(4)}`,
+    `- Candidate limits: dense ${result.evaluationIdentity.candidateLimits.dense}, lexical ${result.evaluationIdentity.candidateLimits.lexical}, identifier ${result.evaluationIdentity.candidateLimits.identifier}; final results ${result.evaluationIdentity.finalResultCount}`,
+    '',
     '## Frozen quality gate',
     '',
     ...formatGateThresholds(specification.qualityGate),
@@ -207,10 +249,10 @@ export function formatRecallQualityReport(
     `| Temporary index runs | ${result.boundedWork.indexRuns} | ${specification.bounds.maximumChunkPolicies} |`,
     `| Search requests, including warmups | ${result.boundedWork.executedSearchRequests} | ${specification.bounds.maximumSearchRequests} |`,
     `| Reranker requests | ${result.boundedWork.rerankerRequests} | 0 |`,
-    `| Chunk-embedding HTTP batches | ${result.boundedWork.chunkEmbeddingRequests} | bounded by ${result.boundedWork.sessionFiles} files/index |`,
+    `| Chunk-embedding HTTP batches | ${result.boundedWork.chunkEmbeddingRequests} | ${specification.bounds.maximumChunkEmbeddingRequests} |`,
     `| Maximum fused candidates/search | ${result.boundedWork.maximumCandidatesPerSearch} | 200 |`,
     '',
-    `Run duration: ${formatMilliseconds(result.durationMilliseconds)}. Work data stayed under \`.recall-data/${RECALL_QUALITY_WORK_DIRECTORY_NAME_FOR_REPORT}/\` and used only ${result.boundedWork.sessionFiles} checksum-fixed JSONL files.`,
+    `Run duration: ${formatMilliseconds(result.durationMilliseconds)}. Work data stayed under \`evaluation/.recall-data/${RECALL_QUALITY_WORK_DIRECTORY_NAME_FOR_REPORT}/\` and used only ${result.boundedWork.sessionFiles} checksum-fixed JSONL files.`,
     '',
     '## Metric definitions',
     '',
@@ -219,7 +261,7 @@ export function formatRecallQualityReport(
     '- **Duplicate-result rate:** slots duplicating an earlier exact cross-session copy or overlapping source span, divided by all slots. Candidate-pool measurement reconstructs raw candidates; final measurement uses visible result groups.',
     '- **Context usefulness:** fraction of cases whose first _N_ matching displayed results contain every independently declared context fragment. Neighbor-expanded text is used when present.',
     '- **Source-occurrence preservation:** fraction of cases retaining the required count of distinct declared source locations, including suppressed duplicate occurrences.',
-    `- **Query latency:** wall time for the full read-only hybrid service search. Tables report nearest-rank median and p95 across ${specification.cases.length} fixed cases after ${specification.warmupQueriesPerCombination} warmup request per configuration.`,
+    `- **Query latency:** wall time for the full read-only hybrid service search, measured and gated independently for project and global scope. Tables report nearest-rank p95 across ${specification.cases.length} fixed cases after ${specification.warmupQueriesPerCombination} warmup request per represented scope and configuration.`,
     '',
     '## Chunk-policy index comparison',
     '',
@@ -237,14 +279,18 @@ export function formatRecallQualityReport(
     '',
     ...formatQualityMatrix(result.selection.combinations),
     '',
+    '## Pre-limit channel proof',
+    '',
+    ...formatPreLimitChannelProofs(result, decision),
+    '',
     '## Fixed cases and independent source evidence',
     '',
-    '| Case | Category | Query | Expected source evidence | Required context |',
-    '| --- | --- | --- | --- | --- |',
+    '| Case | Category | Scope | Invocation | Query | Expected source evidence | Excluded sessions | Required context |',
+    '| --- | --- | --- | --- | --- | --- | --- | --- |',
   );
   for (const evaluationCase of specification.cases) {
     lines.push(
-      `| ${evaluationCase.id} | ${evaluationCase.category} | ${escapeMarkdownTable(evaluationCase.query)} | ${escapeMarkdownTable(evaluationCase.expectedSources.map(formatExpectedSource).join('<br>'))} | ${escapeMarkdownTable(evaluationCase.requiredContext.join('; '))} |`,
+      `| ${evaluationCase.id} | ${evaluationCase.category} | ${evaluationCase.scope} | ${escapeMarkdownTable(evaluationCase.invocationDirectory ?? 'none')} | ${escapeMarkdownTable(evaluationCase.query)} | ${escapeMarkdownTable(evaluationCase.expectedSources.map(formatExpectedSource).join('<br>'))} | ${escapeMarkdownTable(evaluationCase.excludedSessionFiles.join('; ') || 'none')} | ${escapeMarkdownTable(evaluationCase.requiredContext.join('; '))} |`,
     );
   }
   lines.push(
@@ -273,7 +319,7 @@ export function formatRecallQualityReport(
     `- Platform: \`${environment.platform}/${environment.architecture}\``,
     `- CPU: ${environment.cpuModel}`,
     `- Embedding: \`${environment.embeddingModel}\` → \`${environment.embeddingServedModelId}\`, \`${environment.embeddingArtifact}\`, ${environment.embeddingDimensions} dimensions at \`${environment.embeddingBaseUrl}\``,
-    `- Hybrid ranking identity: fusion v${result.rankingIdentity.rankFusionVersion}, RRF k=${result.rankingIdentity.reciprocalRankConstant}, active prior +${result.rankingIdentity.activeBranchPrior.toFixed(4)}`,
+    `- Hybrid ranking identity: fusion v${result.evaluationIdentity.rankFusionVersion}, RRF k=${result.evaluationIdentity.reciprocalRankConstant}, active prior +${result.evaluationIdentity.activeBranchPrior.toFixed(4)}`,
     `- Optional deep reranker, not used by this evaluation: \`${environment.rerankerModel}\` at \`${environment.rerankerBaseUrl}\``,
     `- Specification: \`${corpus.specificationPath}\``,
     `- Specification SHA-256: \`${corpus.specificationSha256}\``,
@@ -288,7 +334,7 @@ export function formatRecallQualityReport(
     '',
     '## Limits of this evidence',
     '',
-    '- The corpus is a committed synthetic-but-session-shaped fixture, not a sample of private production logs. It covers every required retrieval class and includes 48 distractors plus a long boundary case, but it cannot estimate all real-corpus failure modes.',
+    '- The corpus is a committed synthetic-but-session-shaped fixture, not a sample of private production logs. It covers the required retrieval and project-identity classes but cannot estimate all real-corpus failure modes.',
     ...(hasNoDiscriminatingRecallQualityVariance(result.selection.combinations)
       ? [
           '- The measured grid has no discriminating quality variance across gated recall, context, source-preservation, and visible-duplicate metrics; it can identify the smallest passing candidate pool but cannot rank quality among passing pools.',

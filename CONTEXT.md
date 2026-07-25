@@ -111,3 +111,7 @@ _Avoid_: Project ranking, affinity filter
 **Evidence relation**:
 The explicit relationship between one recall result and the invoking project: same repository, configured project lineage, same non-Git session origin, or unrestricted global evidence.
 _Avoid_: Relevance relation, project score
+
+**Evaluation identity**:
+The versioned project-scope, repository, lineage, ranking, candidate-limit, and final-result policy measured by one bounded quality result.
+_Avoid_: Benchmark settings, test configuration

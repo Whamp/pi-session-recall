@@ -18,7 +18,7 @@ import {
 
 const RECALL_QUALITY_HELP = `Usage: npm run evaluate:recall
 
-Builds three temporary indexes over the fixed 8-file evaluation corpus and never scans the production session corpus.
+Builds one temporary index over the checksum-fixed evaluation corpus and never scans the production session corpus.
 
 Outputs:
   docs/evaluation/recall-quality-report.md
@@ -68,7 +68,7 @@ function createReportEnvironment(
   };
 }
 
-/** Runs the fixed issue-8 evaluation and atomically writes its Markdown and JSON evidence. */
+/** Runs the fixed project-scope evaluation and atomically writes its Markdown and JSON evidence. */
 export async function evaluateRecallQuality(
   projectDirectory: string = process.cwd(),
 ): Promise<RecallQualityEvaluationResult> {
@@ -81,7 +81,12 @@ export async function evaluateRecallQuality(
   const result = await runRecallQualityEvaluation({
     corpus,
     baseConfig: config,
-    workDirectory: join(resolvedProjectDirectory, '.recall-data', 'recall-quality-evaluation'),
+    workDirectory: join(
+      resolvedProjectDirectory,
+      'evaluation',
+      '.recall-data',
+      'recall-quality-evaluation',
+    ),
   });
   const reportPath = join(
     resolvedProjectDirectory,
@@ -99,7 +104,7 @@ export async function evaluateRecallQuality(
     resultsPath,
     `${JSON.stringify(
       {
-        version: 1,
+        version: 2,
         environment,
         specification: corpus.specification,
         result,

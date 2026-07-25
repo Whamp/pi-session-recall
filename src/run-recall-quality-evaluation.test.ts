@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
+import { RecallEvidenceRelation, RecallProjectIdentitySource, RecallSearchScope } from './enums.js';
 import type { LocalEmbeddingClient } from './local-embedding-client.js';
 import { loadRecallQualityCorpus } from './recall-quality-corpus.js';
 import type { RecallConversationConfig } from './recall-conversation-service.js';
@@ -44,12 +45,20 @@ void test('recall quality runner indexes and searches only the bounded declared 
   await writeFile(join(corpusDirectory, sessionFileName), sessionContent);
   const sha256 = createHash('sha256').update(sessionContent).digest('hex');
   const specification = {
-    version: 2,
+    version: 3,
     corpus: {
       id: 'bounded-runner-v1',
       sessionDirectory: 'corpus',
       sessionFiles: [{ fileName: sessionFileName, sha256 }],
     },
+    projectIdentityFixtures: [
+      {
+        workingDirectory: '/bounded',
+        projectIdentity: 'non-git-session-origin:/bounded',
+        identitySource: RecallProjectIdentitySource.NON_GIT_SESSION_ORIGIN,
+      },
+    ],
+    projectLineages: {},
     bounds: {
       maximumSessionFiles: 1,
       maximumEvaluationCases: 1,
@@ -57,10 +66,11 @@ void test('recall quality runner indexes and searches only the bounded declared 
       maximumCandidateCounts: 1,
       maximumFinalCounts: 1,
       maximumSearchRequests: 3,
+      maximumChunkEmbeddingRequests: 3,
     },
     chunkPolicies: [{ id: '512-64', maxTokens: 512, overlapTokens: 64 }],
-    candidateCounts: [2],
-    finalCounts: [1],
+    candidateCounts: [8],
+    finalCounts: [5],
     warmupQueriesPerCombination: 0,
     qualityGate: {
       minimumCandidatePoolRecall: 1,
@@ -75,14 +85,21 @@ void test('recall quality runner indexes and searches only the bounded declared 
         id: 'bounded-answer',
         category: 'exact_identifier',
         query: 'quartz-heron',
+        scope: RecallSearchScope.PROJECT,
+        invocationDirectory: '/bounded',
+        expectedInvocationProjectIdentity: 'non-git-session-origin:/bounded',
         expectedSources: [
           {
             sessionFile: sessionFileName,
             entryId: 'bounded-answer',
             requiredText: ['quartz-heron'],
+            expectedSessionOrigin: '/bounded',
+            expectedEvidenceRelation: RecallEvidenceRelation.SAME_SESSION_ORIGIN,
+            requiredContributingEntryIds: ['bounded-answer'],
             expectedBranch: 'active',
           },
         ],
+        excludedSessionFiles: [],
         requiredContext: ['quartz-heron'],
         minimumPreservedSourceOccurrences: 1,
       },
@@ -110,7 +127,7 @@ void test('recall quality runner indexes and searches only the bounded declared 
     rerankerBaseUrl: 'http://unused-reranker.test/v1',
     rerankerModel: 'test-reranker',
     projectLineages: {},
-    searchCandidateLimits: { dense: 2, lexical: 2, identifier: 2 },
+    searchCandidateLimits: { dense: 8, lexical: 8, identifier: 8 },
   };
   const embeddings: LocalEmbeddingClient = {
     async embedTexts(texts) {
@@ -128,7 +145,7 @@ void test('recall quality runner indexes and searches only the bounded declared 
   const result = await runRecallQualityEvaluation({
     corpus,
     baseConfig,
-    workDirectory: join(directory, 'recall-quality-evaluation'),
+    workDirectory: join(evaluationDirectory, '.recall-data', 'recall-quality-evaluation'),
     dependencies: {
       embeddings,
       async loadTokenizer() {
@@ -137,20 +154,47 @@ void test('recall quality runner indexes and searches only the bounded declared 
     },
   });
 
-  assert.equal(result.version, 3);
+  assert.equal(result.version, 4);
   assert.equal(result.boundedWork.indexRuns, 1);
   assert.equal(result.boundedWork.executedSearchRequests, 1);
   assert.equal(result.boundedWork.rerankerRequests, 0);
-  assert.deepEqual(result.rankingIdentity, {
+  assert.deepEqual(result.evaluationIdentity, {
+    defaultScope: RecallSearchScope.PROJECT,
+    projectScopePolicyVersion: 1,
+    repositoryIdentityPolicyVersion: 3,
+    projectIdentityMetadataSchemaVersion: 3,
+    lineagePolicyVersion: 1,
+    lineageDigest: '44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a',
     rankingMode: 'hybrid',
     rankFusionVersion: 1,
     reciprocalRankConstant: 60,
     activeBranchPrior: 0.01,
+    candidateLimits: { dense: 8, lexical: 8, identifier: 8 },
+    finalResultCount: 5,
   });
   assert.equal(result.indexRuns.length, 1);
   assert.ok(result.indexRuns.every(({ indexSummary }) => indexSummary.scannedSessions === 1));
   assert.equal(result.configurations.length, 1);
   assert.equal(result.selection.passed, true);
-  assert.equal(result.selection.selected?.candidateCount, 2);
-  assert.equal(result.selection.selected?.finalCount, 1);
+  assert.equal(result.selection.selected?.candidateCount, 8);
+  assert.equal(result.selection.selected?.finalCount, 5);
+  assert.deepEqual(result.configurations[0]?.measurement.policyFailureCaseIds, []);
+  assert.deepEqual(result.configurations[0]?.measurement.queryLatencyByScope.global, null);
+  assert.ok(result.configurations[0]?.measurement.queryLatencyByScope.project);
+
+  await assert.rejects(
+    () =>
+      runRecallQualityEvaluation({
+        corpus,
+        baseConfig,
+        workDirectory: join(directory, 'recall-quality-evaluation'),
+        dependencies: {
+          embeddings,
+          async loadTokenizer() {
+            return tokenizer;
+          },
+        },
+      }),
+    /work directory must stay inside evaluation data area/,
+  );
 });

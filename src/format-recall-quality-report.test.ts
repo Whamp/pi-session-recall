@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { RecallEvidenceRelation, RecallSearchScope } from './enums.js';
 import { formatRecallQualityReport } from './format-recall-quality-report.js';
 import type { LoadedRecallQualityCorpus } from './recall-quality-corpus.js';
 import type { RecallQualityEvaluationResult } from './run-recall-quality-evaluation.js';
@@ -18,8 +19,17 @@ void test('recall quality report records verdict, measured counts, sources, and 
     finalRecall: 1,
     contextUsefulness: 1,
     sourceOccurrencePreservation: 1,
+    sessionOriginVerification: 1,
+    evidenceRelationVerification: 1,
+    contributingEntryVerification: 1,
+    branchVerification: 1,
     finalDuplicateRate: 0,
     queryLatencyMilliseconds: { median: 500, p95: 800 },
+    queryLatencyByScope: {
+      project: { median: 500, p95: 800 },
+      global: null,
+    },
+    policyFailureCaseIds: [],
     gatePassed: true,
     failures: [],
   };
@@ -35,12 +45,14 @@ void test('recall quality report records verdict, measured counts, sources, and 
       },
     ],
     specification: {
-      version: 2,
+      version: 3,
       corpus: {
         id: 'report-fixture-v1',
         sessionDirectory: 'corpus',
         sessionFiles: [{ fileName: 'semantic-context.jsonl', sha256: 'b'.repeat(64) }],
       },
+      projectIdentityFixtures: [],
+      projectLineages: {},
       bounds: {
         maximumSessionFiles: 1,
         maximumEvaluationCases: 1,
@@ -48,6 +60,7 @@ void test('recall quality report records verdict, measured counts, sources, and 
         maximumCandidateCounts: 1,
         maximumFinalCounts: 1,
         maximumSearchRequests: 3,
+        maximumChunkEmbeddingRequests: 6,
       },
       chunkPolicies: [{ id: '512-64', maxTokens: 512, overlapTokens: 64 }],
       candidateCounts: [8],
@@ -66,14 +79,21 @@ void test('recall quality report records verdict, measured counts, sources, and 
           id: 'semantic-outbox',
           category: 'semantic_paraphrase',
           query: 'How do queued jobs survive a crash?',
+          scope: RecallSearchScope.PROJECT,
+          invocationDirectory: '/evaluation/fulfillment',
+          expectedInvocationProjectIdentity: 'git-origin:github.com/whamp/fixture',
           expectedSources: [
             {
               sessionFile: 'semantic-context.jsonl',
               entryId: 'queue-answer',
               requiredText: ['append-only SQLite outbox'],
+              expectedSessionOrigin: '/evaluation/fulfillment',
+              expectedEvidenceRelation: RecallEvidenceRelation.SAME_REPOSITORY,
+              requiredContributingEntryIds: ['queue-answer'],
               expectedBranch: 'active',
             },
           ],
+          excludedSessionFiles: [],
           requiredContext: ['append-only SQLite outbox'],
           minimumPreservedSourceOccurrences: 1,
         },
@@ -81,12 +101,20 @@ void test('recall quality report records verdict, measured counts, sources, and 
     },
   };
   const result: RecallQualityEvaluationResult = {
-    version: 3,
-    rankingIdentity: {
+    version: 4,
+    evaluationIdentity: {
+      defaultScope: RecallSearchScope.PROJECT,
+      projectScopePolicyVersion: 1,
+      repositoryIdentityPolicyVersion: 3,
+      projectIdentityMetadataSchemaVersion: 3,
+      lineagePolicyVersion: 1,
+      lineageDigest: 'a'.repeat(64),
       rankingMode: 'hybrid',
       rankFusionVersion: 1,
       reciprocalRankConstant: 60,
       activeBranchPrior: 0.01,
+      candidateLimits: { dense: 8, lexical: 8, identifier: 8 },
+      finalResultCount: 5,
     },
     startedAt: '2026-07-25T12:00:00.000Z',
     completedAt: '2026-07-25T12:01:00.000Z',
@@ -122,6 +150,11 @@ void test('recall quality report records verdict, measured counts, sources, and 
           candidatePoolRecall: 1,
           candidatePoolDuplicateRate: 0.1,
           queryLatencyMilliseconds: { median: 500, p95: 800 },
+          queryLatencyByScope: {
+            project: { median: 500, p95: 800 },
+            global: null,
+          },
+          policyFailureCaseIds: [],
           missedCandidatePoolCaseIds: [],
           caseMeasurements: [],
           finalCounts: [
@@ -130,10 +163,18 @@ void test('recall quality report records verdict, measured counts, sources, and 
               finalRecall: 1,
               contextUsefulness: 1,
               sourceOccurrencePreservation: 1,
+              sessionOriginVerification: 1,
+              evidenceRelationVerification: 1,
+              contributingEntryVerification: 1,
+              branchVerification: 1,
               finalDuplicateRate: 0,
               missedCaseIds: [],
               contextFailureCaseIds: [],
               sourceOccurrenceFailureCaseIds: [],
+              sessionOriginFailureCaseIds: [],
+              evidenceRelationFailureCaseIds: [],
+              contributingEntryFailureCaseIds: [],
+              branchFailureCaseIds: [],
               finalDuplicateSlots: 0,
               finalResultSlots: 5,
             },

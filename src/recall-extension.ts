@@ -1,0 +1,123 @@
+import { Type } from 'typebox';
+
+import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
+import {
+  DEFAULT_MAX_BYTES,
+  DEFAULT_MAX_LINES,
+  formatSize,
+  truncateHead,
+} from '@earendil-works/pi-coding-agent';
+
+import { formatRecallSearchResults } from './format-recall-search-results.js';
+import { loadRecallConversationConfig } from './recall-conversation-config.js';
+import { createRecallConversationService } from './recall-conversation-service.js';
+
+/** Registers semantic recall of past Pi conversations. Pi requires extension factories to be default exports. */
+export default async function recallExtension(pi: ExtensionAPI): Promise<void> {
+  const config = await loadRecallConversationConfig();
+  const service = createRecallConversationService(config);
+
+  pi.registerTool({
+    name: 'recall',
+    label: 'Recall Conversations',
+    description:
+      'Search all past Pi conversations using local semantic embeddings and zvec. Incrementally indexes changed sessions before searching, excludes hidden reasoning and tool output, and returns excerpts with exact session-file and entry-id provenance. Output is truncated to 2000 lines or 50KB.',
+    promptSnippet: 'Search past Pi conversations and recover remembered decisions or details',
+    promptGuidelines: [
+      'Use recall when a task depends on a conversation or detail from a past session and the current context does not contain reliable source evidence.',
+      'Treat recall results as search leads; cite their session path and entry ID when relying on a recovered detail.',
+    ],
+    parameters: Type.Object({
+      query: Type.String({
+        minLength: 1,
+        description: 'Natural-language description of the past conversation or detail to recover',
+      }),
+      limit: Type.Optional(
+        Type.Integer({
+          minimum: 1,
+          maximum: 10,
+          description: 'Maximum matches to return (default 5)',
+        }),
+      ),
+    }),
+
+    async execute(toolCallId, parameters, signal, onUpdate) {
+      void toolCallId;
+      const query = parameters.query.trim();
+      if (!query) {
+        throw new Error('Recall query must not be blank');
+      }
+      let lastReportedCount = 0;
+      const search = await service.search(query, parameters.limit ?? 5, signal, (progress) => {
+        if (
+          progress.scannedSessions - lastReportedCount < 50 &&
+          progress.scannedSessions !== progress.totalSessions
+        ) {
+          return;
+        }
+        lastReportedCount = progress.scannedSessions;
+        onUpdate?.({
+          content: [
+            {
+              type: 'text',
+              text: `Indexing conversations: ${progress.scannedSessions}/${progress.totalSessions} sessions scanned`,
+            },
+          ],
+          details: { progress },
+        });
+      });
+      const formatted = formatRecallSearchResults(search);
+      const truncation = truncateHead(formatted, {
+        maxLines: DEFAULT_MAX_LINES,
+        maxBytes: DEFAULT_MAX_BYTES,
+      });
+      const text = truncation.truncated
+        ? `${truncation.content}\n\n[Recall output truncated to ${formatSize(DEFAULT_MAX_BYTES)}.]`
+        : truncation.content;
+      return {
+        content: [{ type: 'text', text }],
+        details: {
+          totalChunks: search.totalChunks,
+          indexSummary: search.indexSummary,
+          sources: search.results.map((result) => ({
+            sessionPath: result.sessionPath,
+            entryId: result.entryId.value,
+            score: result.score,
+          })),
+        },
+      };
+    },
+  });
+
+  pi.registerCommand('recall-index', {
+    description: 'Incrementally index all Pi conversations into zvec and optimize the collection',
+    async handler(argumentsText, context) {
+      void argumentsText;
+      context.ui.setStatus('recall', 'indexing conversations…');
+      try {
+        const result = await service.index(
+          undefined,
+          (progress) => {
+            context.ui.setStatus(
+              'recall',
+              `indexing ${progress.scannedSessions}/${progress.totalSessions}`,
+            );
+          },
+          true,
+        );
+        const failures = result.indexSummary.failedSessions.length;
+        const message = [
+          `Recall index ready: ${result.totalChunks} chunks`,
+          `${result.indexSummary.embeddedChunks} embedded`,
+          `${result.indexSummary.deletedChunks} removed`,
+          failures > 0 ? `${failures} failed sessions` : undefined,
+        ]
+          .filter((part) => part !== undefined)
+          .join(' · ');
+        context.ui.notify(message, failures > 0 ? 'warning' : 'info');
+      } finally {
+        context.ui.setStatus('recall', undefined);
+      }
+    },
+  });
+}

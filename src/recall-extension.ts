@@ -13,7 +13,9 @@ import { loadRecallConversationConfig } from './recall-conversation-config.js';
 import { createRecallConversationService } from './recall-conversation-service.js';
 
 /** Registers semantic recall of past Pi conversations. Pi requires extension factories to be default exports. */
-export default async function recallExtension(pi: ExtensionAPI): Promise<void> {
+export default async function recallExtension(
+  pi: Pick<ExtensionAPI, 'registerTool' | 'registerCommand'>,
+): Promise<void> {
   const config = await loadRecallConversationConfig();
   const service = createRecallConversationService(config);
 

@@ -138,3 +138,51 @@ void test('incremental index embeds only new content and removes deleted session
   assert.equal(store.count(), 0);
   assert.equal(store.deleted.length, 2);
 });
+
+void test('incremental index fails fast when the local embedding model is unavailable', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-indexer-failure-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionsDirectory = join(directory, 'sessions');
+  await mkdir(sessionsDirectory);
+  const sessionHeader = {
+    type: 'session',
+    version: 3,
+    id: 'session',
+    timestamp: '2026-07-24T10:00:00Z',
+    cwd: '/project',
+  };
+  for (const name of ['one', 'two']) {
+    await writeFile(
+      join(sessionsDirectory, `${name}.jsonl`),
+      sessionLines([
+        { ...sessionHeader, id: name },
+        {
+          type: 'message',
+          id: `${name}-entry`,
+          parentId: null,
+          timestamp: '2026-07-24T10:01:00Z',
+          message: { role: 'user', content: `Remember ${name}` },
+        },
+      ]),
+    );
+  }
+  let embeddingCalls = 0;
+  const embeddings: LocalEmbeddingClient = {
+    async embedTexts() {
+      embeddingCalls += 1;
+      throw new Error('Recall embedding request failed (503): unavailable');
+    },
+  };
+
+  await assert.rejects(
+    () =>
+      indexChangedConversationSessions({
+        sessionsDirectory,
+        statePath: join(directory, 'state.json'),
+        store: new MemoryConversationStore(),
+        embeddings,
+      }),
+    /Recall embedding request failed/,
+  );
+  assert.equal(embeddingCalls, 1);
+});

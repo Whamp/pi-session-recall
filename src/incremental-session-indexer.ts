@@ -26,16 +26,15 @@ const conversationIndexStateSchema = Type.Object({
   ),
 });
 
+interface IndexedSessionState {
+  size: number;
+  mtimeMs: number;
+  chunks: Array<{ id: string; checksum: string }>;
+}
+
 interface ConversationIndexState {
   version: 1;
-  sessions: Record<
-    string,
-    {
-      size: number;
-      mtimeMs: number;
-      chunks: Array<{ id: string; checksum: string }>;
-    }
-  >;
+  sessions: Record<string, IndexedSessionState>;
 }
 
 /** Progress from scanning session files before embedding changed conversation chunks. */
@@ -113,6 +112,28 @@ async function writeConversationIndexState(
   await rename(temporaryPath, statePath);
 }
 
+async function readChangedSessionChunks(
+  sessionPath: string,
+  previous: IndexedSessionState | undefined,
+): Promise<
+  | {
+      size: number;
+      mtimeMs: number;
+      chunks: Awaited<ReturnType<typeof readSessionConversationChunks>>;
+    }
+  | undefined
+> {
+  const fileStats = await stat(sessionPath);
+  if (previous && previous.size === fileStats.size && previous.mtimeMs === fileStats.mtimeMs) {
+    return undefined;
+  }
+  return {
+    size: fileStats.size,
+    mtimeMs: fileStats.mtimeMs,
+    chunks: await readSessionConversationChunks(sessionPath),
+  };
+}
+
 function throwIfIndexingAborted(signal: AbortSignal | undefined): void {
   if (signal?.aborted) {
     throw new Error('Recall conversation indexing cancelled', { cause: signal.reason });
@@ -160,59 +181,60 @@ export async function indexChangedConversationSessions(
       sessionPath,
     });
 
+    const previous = state.sessions[sessionPath];
+    let changedSession: Awaited<ReturnType<typeof readChangedSessionChunks>>;
     try {
-      const fileStats = await stat(sessionPath);
-      const previous = state.sessions[sessionPath];
-      if (previous && previous.size === fileStats.size && previous.mtimeMs === fileStats.mtimeMs) {
-        continue;
-      }
-
-      const chunks = await readSessionConversationChunks(sessionPath);
-      const currentIds = new Set(chunks.map((chunk) => chunk.id));
-      const removedIds =
-        previous?.chunks.filter((chunk) => !currentIds.has(chunk.id)).map((chunk) => chunk.id) ??
-        [];
-      options.store.deleteChunks(removedIds);
-      summary.deletedChunks += removedIds.length;
-
-      const storedChecksums = options.store.fetchChecksums(chunks.map((chunk) => chunk.id));
-      const changedChunks = chunks.filter(
-        (chunk) => storedChecksums.get(chunk.id) !== chunk.checksum,
-      );
-      for (let start = 0; start < changedChunks.length; start += 128) {
-        const chunkBatch = changedChunks.slice(start, start + 128);
-        const vectors = await options.embeddings.embedTexts(
-          chunkBatch.map((chunk) => chunk.content),
-          options.signal,
-        );
-        options.store.upsertChunks(
-          chunkBatch.map((chunk, index) => {
-            const embedding = vectors[index];
-            if (!embedding) {
-              throw new Error(`Recall embedding missing for conversation chunk ${chunk.id}`);
-            }
-            return { ...chunk, embedding };
-          }),
-        );
-      }
-
-      state.sessions[sessionPath] = {
-        size: fileStats.size,
-        mtimeMs: fileStats.mtimeMs,
-        chunks: chunks.map(({ id, checksum }) => ({ id, checksum })),
-      };
-      summary.indexedSessions += 1;
-      summary.embeddedChunks += changedChunks.length;
-      sessionsSinceCheckpoint += 1;
-      if (sessionsSinceCheckpoint >= 100) {
-        await writeConversationIndexState(options.statePath, state);
-        sessionsSinceCheckpoint = 0;
-      }
+      changedSession = await readChangedSessionChunks(sessionPath, previous);
     } catch (error) {
       summary.failedSessions.push({
         sessionPath,
         error: error instanceof Error ? error.message : String(error),
       });
+      continue;
+    }
+    if (!changedSession) {
+      continue;
+    }
+
+    const { chunks } = changedSession;
+    const currentIds = new Set(chunks.map((chunk) => chunk.id));
+    const removedIds =
+      previous?.chunks.filter((chunk) => !currentIds.has(chunk.id)).map((chunk) => chunk.id) ?? [];
+    options.store.deleteChunks(removedIds);
+    summary.deletedChunks += removedIds.length;
+
+    const storedChecksums = options.store.fetchChecksums(chunks.map((chunk) => chunk.id));
+    const changedChunks = chunks.filter(
+      (chunk) => storedChecksums.get(chunk.id) !== chunk.checksum,
+    );
+    for (let start = 0; start < changedChunks.length; start += 128) {
+      const chunkBatch = changedChunks.slice(start, start + 128);
+      const vectors = await options.embeddings.embedTexts(
+        chunkBatch.map((chunk) => chunk.content),
+        options.signal,
+      );
+      options.store.upsertChunks(
+        chunkBatch.map((chunk, index) => {
+          const embedding = vectors[index];
+          if (!embedding) {
+            throw new Error(`Recall embedding missing for conversation chunk ${chunk.id}`);
+          }
+          return { ...chunk, embedding };
+        }),
+      );
+    }
+
+    state.sessions[sessionPath] = {
+      size: changedSession.size,
+      mtimeMs: changedSession.mtimeMs,
+      chunks: chunks.map(({ id, checksum }) => ({ id, checksum })),
+    };
+    summary.indexedSessions += 1;
+    summary.embeddedChunks += changedChunks.length;
+    sessionsSinceCheckpoint += 1;
+    if (sessionsSinceCheckpoint >= 100) {
+      await writeConversationIndexState(options.statePath, state);
+      sessionsSinceCheckpoint = 0;
     }
   }
 

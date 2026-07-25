@@ -20,7 +20,7 @@ const NON_GIT_SESSION_ORIGIN_IDENTITY_PREFIX = 'non-git-session-origin:';
 const HOSTED_GIT_PROTOCOLS = new Set(['git:', 'http:', 'https:', 'ssh:']);
 declare const PROJECT_IDENTITY_BRAND: unique symbol;
 declare const REPOSITORY_IDENTITY_BRAND: unique symbol;
-declare const RECALL_PROJECT_LINEAGES_BRAND: unique symbol;
+const RECALL_PROJECT_LINEAGES_BRAND = Symbol('RecallProjectLineages');
 
 /** Stable scalar used to enforce one exact recall project boundary. */
 export type ProjectIdentity = string & { readonly [PROJECT_IDENTITY_BRAND]: true };
@@ -56,9 +56,8 @@ export interface RecallProjectLineageInput {
 }
 
 /** Validated project lineages keyed only by canonical repository identities. */
-export interface RecallProjectLineages {
+export interface RecallProjectLineages extends ReadonlyMap<RepositoryIdentity, readonly string[]> {
   readonly [RECALL_PROJECT_LINEAGES_BRAND]: true;
-  entries(): IterableIterator<[RepositoryIdentity, readonly string[]]>;
 }
 
 interface ProjectLineageDeclaration {
@@ -66,19 +65,11 @@ interface ProjectLineageDeclaration {
   historicalRoot: string;
 }
 
-class ValidatedRecallProjectLineages implements RecallProjectLineages {
-  declare readonly [RECALL_PROJECT_LINEAGES_BRAND]: true;
-
-  constructor(
-    private readonly historicalRootsByRepositoryIdentity: ReadonlyMap<
-      RepositoryIdentity,
-      readonly string[]
-    >,
-  ) {}
-
-  entries(): IterableIterator<[RepositoryIdentity, readonly string[]]> {
-    return this.historicalRootsByRepositoryIdentity.entries();
-  }
+class ValidatedRecallProjectLineages
+  extends Map<RepositoryIdentity, string[]>
+  implements RecallProjectLineages
+{
+  readonly [RECALL_PROJECT_LINEAGES_BRAND]: true = true;
 }
 
 function isPathAtOrBelow(path: string, root: string): boolean {
@@ -129,7 +120,7 @@ export function normalizeRecallProjectLineages(
       }
     }
   }
-  const normalized = new Map<RepositoryIdentity, string[]>();
+  const normalized = new ValidatedRecallProjectLineages();
   for (const declaration of declarations) {
     const roots = normalized.get(declaration.repositoryIdentity) ?? [];
     if (!roots.includes(declaration.historicalRoot)) {
@@ -137,7 +128,7 @@ export function normalizeRecallProjectLineages(
     }
     normalized.set(declaration.repositoryIdentity, roots);
   }
-  return new ValidatedRecallProjectLineages(normalized);
+  return normalized;
 }
 
 /** Hashes validated personal lineage declarations without consulting the filesystem. */

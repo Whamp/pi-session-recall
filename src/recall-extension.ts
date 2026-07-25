@@ -85,15 +85,18 @@ export default async function recallExtension(
     ingestionWarningHandler?.(message);
   });
   if (qualityGateDecision.automatedGatePassed && selectedPolicy) {
-    pi.on('session_start', (_event, context) => {
+    pi.on('session_start', (event, context) => {
+      void event;
       ingestionWarningHandler = (message) => context.ui.notify(message, 'warning');
       void liveSessionIngestion.catchUpSessions();
     });
-    pi.on('agent_settled', (_event, context) => {
+    pi.on('agent_settled', (event, context) => {
+      void event;
       ingestionWarningHandler = (message) => context.ui.notify(message, 'warning');
       void liveSessionIngestion.reconcileActiveSession(context.sessionManager.getSessionFile());
     });
-    pi.on('session_shutdown', async (_event, context) => {
+    pi.on('session_shutdown', async (event, context) => {
+      void event;
       ingestionWarningHandler = (message) => context.ui.notify(message, 'warning');
       await liveSessionIngestion.shutdownActiveSession(context.sessionManager.getSessionFile());
     });

@@ -122,7 +122,7 @@ export interface RecallConversationSearch {
   searchPolicy: RecallSearchPolicy;
 }
 
-/** Cancellation, progress, optimization, and generation replacement for explicit indexing. */
+/** Cancellation, lock-wait milliseconds, and generation controls for conversation indexing. */
 export interface RecallConversationIndexOptions {
   signal?: AbortSignal;
   lockWaitMilliseconds?: number;

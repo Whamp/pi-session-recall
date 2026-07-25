@@ -53,6 +53,49 @@ void test('live session ingestion serializes startup catch-up, settled refresh, 
   assert.deepEqual(warnings, []);
 });
 
+void test('live session shutdown cancels corpus catch-up before final active-session reconciliation', async () => {
+  const calls: string[] = [];
+  let catchUpSignal: AbortSignal | undefined;
+  const service: Pick<RecallConversationService, 'index' | 'reconcileSession'> = {
+    async index(options) {
+      calls.push('catch-up-started');
+      catchUpSignal = options?.signal;
+      await new Promise<void>((resolve, reject) => {
+        void resolve;
+        if (catchUpSignal?.aborted) {
+          reject(new Error('Recall conversation operation cancelled'));
+          return;
+        }
+        catchUpSignal?.addEventListener(
+          'abort',
+          () => {
+            reject(new Error('Recall conversation operation cancelled'));
+          },
+          { once: true },
+        );
+      });
+      return createEmptyIndexResult(3);
+    },
+    async reconcileSession(sessionPath) {
+      calls.push(`final:${sessionPath}`);
+      return createEmptyIndexResult(1);
+    },
+  };
+  const warnings: string[] = [];
+  const ingestion = createRecallLiveSessionIngestion(service, (message) => warnings.push(message));
+
+  const catchUp = ingestion.catchUpSessions();
+  await new Promise<void>((resolve) => {
+    setImmediate(resolve);
+  });
+  const shutdown = ingestion.shutdownActiveSession('/sessions/active.jsonl');
+  await Promise.all([catchUp, shutdown]);
+
+  assert.equal(catchUpSignal?.aborted, true);
+  assert.deepEqual(calls, ['catch-up-started', 'final:/sessions/active.jsonl']);
+  assert.deepEqual(warnings, []);
+});
+
 void test('live session ingestion defers quiet lock contention until the next lifecycle event', async () => {
   const calls: string[] = [];
   const service: Pick<RecallConversationService, 'index' | 'reconcileSession'> = {

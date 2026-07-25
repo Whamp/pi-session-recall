@@ -15,6 +15,7 @@ export function createRecallLiveSessionIngestion(
   notifyWarning: (message: string) => void,
 ): RecallLiveSessionIngestion {
   let pendingIngestion = Promise.resolve();
+  let catchUpAbortController: AbortController | undefined;
 
   function scheduleIngestion(operation: () => Promise<unknown>): Promise<void> {
     pendingIngestion = pendingIngestion
@@ -43,14 +44,31 @@ export function createRecallLiveSessionIngestion(
 
   return {
     catchUpSessions() {
-      return scheduleIngestion(() =>
-        service.index({
-          lockWaitMilliseconds: BACKGROUND_RECALL_LOCK_WAIT_MILLISECONDS,
-          requireExistingGeneration: true,
-        }),
-      );
+      catchUpAbortController?.abort();
+      const abortController = new AbortController();
+      catchUpAbortController = abortController;
+      return scheduleIngestion(async () => {
+        try {
+          await service.index({
+            signal: abortController.signal,
+            lockWaitMilliseconds: BACKGROUND_RECALL_LOCK_WAIT_MILLISECONDS,
+            requireExistingGeneration: true,
+          });
+        } catch (error) {
+          if (!abortController.signal.aborted) {
+            throw error;
+          }
+        } finally {
+          if (catchUpAbortController === abortController) {
+            catchUpAbortController = undefined;
+          }
+        }
+      });
     },
     reconcileActiveSession,
-    shutdownActiveSession: reconcileActiveSession,
+    shutdownActiveSession(sessionPath) {
+      catchUpAbortController?.abort();
+      return reconcileActiveSession(sessionPath);
+    },
   };
 }

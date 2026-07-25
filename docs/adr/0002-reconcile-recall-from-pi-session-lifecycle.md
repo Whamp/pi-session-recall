@@ -10,7 +10,7 @@ The extension starts a bounded full catch-up on `session_start`, reconciles the 
 
 Targeted reconciliation reprocesses one complete session instead of appending only its latest line. Resume, branch, compaction, and fork activity can change provenance attached to earlier documents. Stable document IDs, checksums, and the embedding cache keep that full-session reconciliation incremental in storage and model work.
 
-Automatic maintenance uses the existing process-local serializer and PID-owned writer lock. Background hooks wait at most 250 milliseconds for another writer and then defer to the next lifecycle event. A tool's freshness barrier waits under the tool cancellation signal rather than silently searching stale active-session evidence. The manual command remains the repair, optimization, and incompatible-generation rebuild path.
+Automatic maintenance uses the existing process-local serializer and PID-owned writer lock. Background hooks wait at most 250 milliseconds for another writer and then defer to the next lifecycle event. Session shutdown cancels an unfinished corpus catch-up before queuing the final active-session reconciliation, so quit, reload, resume, and fork do not wait for unrelated sessions. A tool's freshness barrier waits under the tool cancellation signal rather than silently searching stale active-session evidence. The manual command remains the repair, optimization, and incompatible-generation rebuild path.
 
 The index excludes `pi-session-recall` calls and their linked results. Those records contain the search query and derived search output; indexing them would feed recalled evidence back into later retrieval. Other tool calls and results remain lexical evidence.
 

@@ -6,13 +6,13 @@ import test from 'node:test';
 
 import { indexChangedConversationSessions } from './incremental-session-indexer.js';
 import type { LocalEmbeddingClient } from './local-embedding-client.js';
+import type { ConversationTextTokenizer } from './session-conversation-index.js';
 import type {
+  ConversationChunkStore,
   EmbeddedSessionConversationChunk,
-  RecallSearchResult,
-  ZvecConversationStore,
 } from './zvec-conversation-store.js';
 
-class MemoryConversationStore implements ZvecConversationStore {
+class MemoryConversationStore implements ConversationChunkStore {
   readonly chunks = new Map<string, EmbeddedSessionConversationChunk>();
   readonly deleted: string[] = [];
 
@@ -27,9 +27,6 @@ class MemoryConversationStore implements ZvecConversationStore {
       this.chunks.delete(id);
     }
   }
-  search(): RecallSearchResult[] {
-    return [];
-  }
   fetchChecksums(ids: string[]): Map<string, string> {
     const checksums = new Map<string, string>();
     for (const id of ids) {
@@ -40,8 +37,6 @@ class MemoryConversationStore implements ZvecConversationStore {
     }
     return checksums;
   }
-  async optimize(): Promise<void> {}
-  close(): void {}
   count(): number {
     return this.chunks.size;
   }
@@ -50,6 +45,17 @@ class MemoryConversationStore implements ZvecConversationStore {
 function sessionLines(entries: object[]): string {
   return entries.map((entry) => JSON.stringify(entry)).join('\n') + '\n';
 }
+
+const tokenizer: ConversationTextTokenizer = {
+  encodeConversationText(text) {
+    return {
+      ids: text
+        .split(/\s+/u)
+        .filter(Boolean)
+        .map((_, index) => index),
+    };
+  },
+};
 
 void test('incremental index embeds only new content and removes deleted sessions', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'recall-indexer-'));
@@ -90,6 +96,7 @@ void test('incremental index embeds only new content and removes deleted session
     statePath,
     store,
     embeddings,
+    tokenizer,
   });
   assert.equal(first.indexedSessions, 1);
   assert.equal(first.embeddedChunks, 1);
@@ -100,6 +107,7 @@ void test('incremental index embeds only new content and removes deleted session
     statePath,
     store,
     embeddings,
+    tokenizer,
   });
   assert.equal(second.indexedSessions, 0);
   assert.equal(second.embeddedChunks, 0);
@@ -121,6 +129,7 @@ void test('incremental index embeds only new content and removes deleted session
     statePath,
     store,
     embeddings,
+    tokenizer,
   });
   assert.equal(third.indexedSessions, 1);
   assert.equal(third.embeddedChunks, 1);
@@ -133,6 +142,7 @@ void test('incremental index embeds only new content and removes deleted session
     statePath,
     store,
     embeddings,
+    tokenizer,
   });
   assert.equal(fourth.removedSessions, 1);
   assert.equal(store.count(), 0);
@@ -181,6 +191,7 @@ void test('incremental index fails fast when the local embedding model is unavai
         statePath: join(directory, 'state.json'),
         store: new MemoryConversationStore(),
         embeddings,
+        tokenizer,
       }),
     /Recall embedding request failed/,
   );

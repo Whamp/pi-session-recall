@@ -23,7 +23,7 @@ export default async function recallExtension(
     name: 'pi-session-recall',
     label: 'Pi Session Recall',
     description:
-      'Search all past Pi conversations using local semantic embeddings and zvec. Incrementally indexes changed sessions before searching, excludes hidden reasoning and tool output, and returns excerpts with exact session-file and entry-id provenance. Output is truncated to 2000 lines or 50KB.',
+      'Search a prebuilt compatible index of past Pi conversations using local semantic embeddings and zvec. Excludes hidden reasoning and tool output, and returns excerpts with exact session-file and entry-id provenance. Run /pi-session-recall-index explicitly to update the index. Output is truncated to 2000 lines or 50KB.',
     promptSnippet: 'Search past Pi conversations and recover remembered decisions or details',
     promptGuidelines: [
       'Use pi-session-recall when a task depends on a conversation or detail from a past session and the current context does not contain reliable source evidence.',
@@ -43,31 +43,13 @@ export default async function recallExtension(
       ),
     }),
 
-    async execute(toolCallId, parameters, signal, onUpdate) {
+    async execute(toolCallId, parameters, signal) {
       void toolCallId;
       const query = parameters.query.trim();
       if (!query) {
         throw new Error('Recall query must not be blank');
       }
-      let lastReportedCount = 0;
-      const search = await service.search(query, parameters.limit ?? 5, signal, (progress) => {
-        if (
-          progress.scannedSessions - lastReportedCount < 50 &&
-          progress.scannedSessions !== progress.totalSessions
-        ) {
-          return;
-        }
-        lastReportedCount = progress.scannedSessions;
-        onUpdate?.({
-          content: [
-            {
-              type: 'text',
-              text: `Indexing conversations: ${progress.scannedSessions}/${progress.totalSessions} sessions scanned`,
-            },
-          ],
-          details: { progress },
-        });
-      });
+      const search = await service.search(query, parameters.limit ?? 5, signal);
       const formatted = formatRecallSearchResults(search);
       const truncation = truncateHead(formatted, {
         maxLines: DEFAULT_MAX_LINES,
@@ -80,7 +62,6 @@ export default async function recallExtension(
         content: [{ type: 'text', text }],
         details: {
           totalChunks: search.totalChunks,
-          indexSummary: search.indexSummary,
           sources: search.results.map((result) => ({
             sessionPath: result.sessionPath,
             entryId: result.entryId.value,

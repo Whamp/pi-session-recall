@@ -14,6 +14,10 @@ const recallConfigFileSchema = Type.Object(
     dataDirectory: Type.Optional(Type.String({ minLength: 1 })),
     embeddingBaseUrl: Type.Optional(Type.String({ minLength: 1 })),
     embeddingModel: Type.Optional(Type.String({ minLength: 1 })),
+    embeddingServedModelId: Type.Optional(Type.String({ minLength: 1 })),
+    embeddingArtifact: Type.Optional(Type.String({ minLength: 1 })),
+    embeddingQuantization: Type.Optional(Type.String({ minLength: 1 })),
+    embeddingPooling: Type.Optional(Type.String({ minLength: 1 })),
     embeddingDimensions: Type.Optional(Type.Integer({ minimum: 1 })),
     embeddingBatchSize: Type.Optional(Type.Integer({ minimum: 1 })),
   },
@@ -73,12 +77,25 @@ export async function loadRecallConversationConfig(
       join(homeDirectory, '.pi', 'agent', 'sessions'),
     databasePath: join(dataDirectory, 'zvec'),
     statePath: join(dataDirectory, 'index-state.json'),
+    manifestPath: join(dataDirectory, 'index-manifest.json'),
+    tokenizerCacheDirectory: join(dataDirectory, 'tokenizers'),
     lockPath: join(dataDirectory, 'operation.lock'),
     embeddingBaseUrl:
       environment.PI_RECALL_EMBEDDING_BASE_URL ??
       file.embeddingBaseUrl ??
       'http://192.168.0.67:8090/v1',
     embeddingModel: environment.PI_RECALL_EMBEDDING_MODEL ?? file.embeddingModel ?? 'octen-embed',
+    embeddingServedModelId:
+      environment.PI_RECALL_EMBEDDING_SERVED_MODEL_ID ??
+      file.embeddingServedModelId ??
+      'Octen/Octen-Embedding-4B',
+    embeddingArtifact:
+      environment.PI_RECALL_EMBEDDING_ARTIFACT ??
+      file.embeddingArtifact ??
+      'Octen-Embedding-4B.Q8_0.gguf',
+    embeddingQuantization:
+      environment.PI_RECALL_EMBEDDING_QUANTIZATION ?? file.embeddingQuantization ?? 'Q8_0',
+    embeddingPooling: environment.PI_RECALL_EMBEDDING_POOLING ?? file.embeddingPooling ?? 'last',
     embeddingDimensions: environment.PI_RECALL_EMBEDDING_DIMENSIONS
       ? parsePositiveInteger(
           environment.PI_RECALL_EMBEDDING_DIMENSIONS,

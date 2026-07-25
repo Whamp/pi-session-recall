@@ -1,4 +1,5 @@
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 
@@ -8,40 +9,52 @@ import {
   type ConversationIndexSummary,
 } from './incremental-session-indexer.js';
 import { createLocalEmbeddingClient, type LocalEmbeddingClient } from './local-embedding-client.js';
+import { loadOctenConversationTokenizer } from './octen-conversation-tokenizer.js';
+import {
+  assertRecallIndexManifestCompatible,
+  createRecallEmbeddingCanaryFingerprint,
+  createRecallIndexManifest,
+  readRecallIndexManifest,
+  RECALL_EMBEDDING_CANARY_TEXT,
+  writeRecallIndexManifest,
+  type RecallEmbeddingModelIdentity,
+  type RecallIndexManifest,
+} from './recall-index-manifest.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
+import type { ConversationTextTokenizer } from './session-conversation-index.js';
 import {
   openZvecConversationStore,
   type RecallSearchResult,
   type ZvecConversationStore,
 } from './zvec-conversation-store.js';
 
-/** Runtime paths and local embedding settings for conversation recall. */
+/** Runtime paths plus complete local embedding identity for conversation recall. */
 export interface RecallConversationConfig {
   sessionsDirectory: string;
   databasePath: string;
   statePath: string;
+  manifestPath: string;
+  tokenizerCacheDirectory: string;
   lockPath: string;
   embeddingBaseUrl: string;
   embeddingModel: string;
+  embeddingServedModelId: string;
+  embeddingArtifact: string;
+  embeddingQuantization: string;
+  embeddingPooling: string;
   embeddingDimensions: number;
   embeddingBatchSize: number;
 }
 
-/** One completed recall query, including incremental-index work performed first. */
+/** One read-only recall query against a previously built compatible index. */
 export interface RecallConversationSearch {
   results: RecallSearchResult[];
-  indexSummary: ConversationIndexSummary;
   totalChunks: number;
 }
 
-/** Search and maintenance operations exposed by the recall extension. */
+/** Read-only search and explicit index-maintenance operations exposed by the extension. */
 export interface RecallConversationService {
-  search(
-    query: string,
-    limit: number,
-    signal?: AbortSignal,
-    onProgress?: (progress: ConversationIndexProgress) => void,
-  ): Promise<RecallConversationSearch>;
+  search(query: string, limit: number, signal?: AbortSignal): Promise<RecallConversationSearch>;
   index(
     signal?: AbortSignal,
     onProgress?: (progress: ConversationIndexProgress) => void,
@@ -51,7 +64,8 @@ export interface RecallConversationService {
 
 interface RecallConversationDependencies {
   embeddings?: LocalEmbeddingClient;
-  openStore?: () => ZvecConversationStore;
+  loadTokenizer?: () => Promise<ConversationTextTokenizer>;
+  openStore?: (mode: 'read' | 'write') => ZvecConversationStore;
 }
 
 function readLockOwnerProcessId(value: string): number | undefined {
@@ -125,7 +139,45 @@ async function acquireRecallConversationLock(
   }
 }
 
-/** Creates the incremental indexing and semantic search service used by the Pi recall tool. */
+async function assertRecallIndexUnlockedForSearch(lockPath: string): Promise<void> {
+  try {
+    await stat(lockPath);
+  } catch (error) {
+    if (readNodeErrorCode(error) === 'ENOENT') {
+      return;
+    }
+    throw error;
+  }
+  let ownerDescription = 'an unreadable owner';
+  try {
+    const processId = readLockOwnerProcessId(await readFile(`${lockPath}/owner.json`, 'utf8'));
+    if (processId !== undefined) {
+      ownerDescription = `process ${processId}`;
+    }
+  } catch (error) {
+    if (readNodeErrorCode(error) !== 'ENOENT') {
+      throw error;
+    }
+  }
+  throw new Error(
+    `Recall index write lock at ${lockPath} is held by ${ownerDescription}; read-only search did not remove the lock`,
+  );
+}
+
+function createEmbeddingModelIdentity(
+  config: RecallConversationConfig,
+): RecallEmbeddingModelIdentity {
+  return {
+    requestModel: config.embeddingModel,
+    servedModelId: config.embeddingServedModelId,
+    artifact: config.embeddingArtifact,
+    dimensions: config.embeddingDimensions,
+    quantization: config.embeddingQuantization,
+    pooling: config.embeddingPooling,
+  };
+}
+
+/** Creates the explicit indexing and read-only search service used by the Pi recall extension. */
 export function createRecallConversationService(
   config: RecallConversationConfig,
   dependencies: RecallConversationDependencies = {},
@@ -138,14 +190,21 @@ export function createRecallConversationService(
       dimensions: config.embeddingDimensions,
       batchSize: config.embeddingBatchSize,
     });
+  const loadTokenizer =
+    dependencies.loadTokenizer ??
+    (() => loadOctenConversationTokenizer({ cacheDirectory: config.tokenizerCacheDirectory }));
   const openStore =
     dependencies.openStore ??
-    (() =>
+    ((mode) =>
       openZvecConversationStore({
         databasePath: config.databasePath,
         dimensions: config.embeddingDimensions,
+        createIfMissing: mode === 'write',
+        readOnly: mode === 'read',
       }));
   let activeOperation: Promise<void> | undefined;
+  let conversationTokenizer: ConversationTextTokenizer | undefined;
+  let embeddingCanaryFingerprint: string | undefined;
 
   async function runSerialized<T>(operation: () => Promise<T>): Promise<T> {
     while (activeOperation) {
@@ -161,25 +220,64 @@ export function createRecallConversationService(
     }
   }
 
-  async function withLockedStore<T>(
-    signal: AbortSignal | undefined,
-    operation: (store: ZvecConversationStore) => Promise<T>,
-  ): Promise<T> {
-    return runSerialized(async () => {
-      const releaseLock = await acquireRecallConversationLock(config.lockPath, signal);
-      let store: ZvecConversationStore | undefined;
-      try {
-        store = openStore();
-        return await operation(store);
-      } finally {
-        store?.close();
-        await releaseLock();
+  async function getConversationTokenizer(): Promise<ConversationTextTokenizer> {
+    if (!conversationTokenizer) {
+      conversationTokenizer = await loadTokenizer();
+    }
+    return conversationTokenizer;
+  }
+
+  async function getEmbeddingCanaryFingerprint(signal?: AbortSignal): Promise<string> {
+    if (!embeddingCanaryFingerprint) {
+      const embedding = (await embeddings.embedTexts([RECALL_EMBEDDING_CANARY_TEXT], signal))[0];
+      if (!embedding) {
+        throw new Error('Recall embedding response missing canary vector');
       }
+      embeddingCanaryFingerprint = createRecallEmbeddingCanaryFingerprint(
+        embedding,
+        config.embeddingDimensions,
+      );
+    }
+    return embeddingCanaryFingerprint;
+  }
+
+  async function createExpectedManifest(signal?: AbortSignal): Promise<RecallIndexManifest> {
+    return createRecallIndexManifest({
+      embeddingIdentity: createEmbeddingModelIdentity(config),
+      canaryFingerprint: await getEmbeddingCanaryFingerprint(signal),
     });
+  }
+
+  async function readRequiredManifest(): Promise<RecallIndexManifest> {
+    const actual = await readRecallIndexManifest(config.manifestPath);
+    if (!actual) {
+      throw new Error(
+        `Recall index manifest missing at ${config.manifestPath}; reindex with /pi-session-recall-index --rebuild`,
+      );
+    }
+    return actual;
+  }
+
+  async function prepareIndexForWrite(signal?: AbortSignal): Promise<ConversationTextTokenizer> {
+    const actual = await readRecallIndexManifest(config.manifestPath);
+    if (!actual && (existsSync(config.databasePath) || existsSync(config.statePath))) {
+      throw new Error(
+        `Recall index manifest missing at ${config.manifestPath} for existing index data; reindex with /pi-session-recall-index --rebuild`,
+      );
+    }
+    const tokenizer = await getConversationTokenizer();
+    const expected = await createExpectedManifest(signal);
+    if (actual) {
+      assertRecallIndexManifestCompatible(actual, expected, config.manifestPath);
+    } else {
+      await writeRecallIndexManifest(config.manifestPath, expected);
+    }
+    return tokenizer;
   }
 
   async function updateConversationIndex(
     store: ZvecConversationStore,
+    tokenizer: ConversationTextTokenizer,
     signal?: AbortSignal,
     onProgress?: (progress: ConversationIndexProgress) => void,
   ): Promise<ConversationIndexSummary> {
@@ -188,33 +286,50 @@ export function createRecallConversationService(
       statePath: config.statePath,
       store,
       embeddings,
+      tokenizer,
       ...(signal ? { signal } : {}),
       ...(onProgress ? { onProgress } : {}),
     });
   }
 
   return {
-    search(query, limit, signal, onProgress) {
-      return withLockedStore(signal, async (store) => {
-        const indexSummary = await updateConversationIndex(store, signal, onProgress);
-        const queryEmbedding = (await embeddings.embedTexts([query], signal))[0];
-        if (!queryEmbedding) {
-          throw new Error('Recall embedding response missing query vector');
+    search(query, limit, signal) {
+      return runSerialized(async () => {
+        const actualManifest = await readRequiredManifest();
+        await assertRecallIndexUnlockedForSearch(config.lockPath);
+        const expectedManifest = await createExpectedManifest(signal);
+        assertRecallIndexManifestCompatible(actualManifest, expectedManifest, config.manifestPath);
+        const store = openStore('read');
+        try {
+          const queryEmbedding = (await embeddings.embedTexts([query], signal))[0];
+          if (!queryEmbedding) {
+            throw new Error('Recall embedding response missing query vector');
+          }
+          return {
+            results: store.search(queryEmbedding, limit),
+            totalChunks: store.count(),
+          };
+        } finally {
+          store.close();
         }
-        return {
-          results: store.search(queryEmbedding, limit),
-          indexSummary,
-          totalChunks: store.count(),
-        };
       });
     },
     index(signal, onProgress, optimize = false) {
-      return withLockedStore(signal, async (store) => {
-        const indexSummary = await updateConversationIndex(store, signal, onProgress);
-        if (optimize && (indexSummary.embeddedChunks > 0 || indexSummary.deletedChunks > 0)) {
-          await store.optimize();
+      return runSerialized(async () => {
+        const releaseLock = await acquireRecallConversationLock(config.lockPath, signal);
+        let store: ZvecConversationStore | undefined;
+        try {
+          const tokenizer = await prepareIndexForWrite(signal);
+          store = openStore('write');
+          const indexSummary = await updateConversationIndex(store, tokenizer, signal, onProgress);
+          if (optimize && (indexSummary.embeddedChunks > 0 || indexSummary.deletedChunks > 0)) {
+            await store.optimize();
+          }
+          return { indexSummary, totalChunks: store.count() };
+        } finally {
+          store?.close();
+          await releaseLock();
         }
-        return { indexSummary, totalChunks: store.count() };
       });
     },
   };

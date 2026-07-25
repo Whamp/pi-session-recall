@@ -16,6 +16,7 @@
     "format:check": "oxfmt --check ."
   },
   "dependencies": {
+    "@huggingface/tokenizers": "0.1.3",
     "@zvec/zvec": "0.6.0"
   },
   "devDependencies": {

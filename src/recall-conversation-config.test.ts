@@ -28,7 +28,13 @@ void test('recall config uses local octen embeddings and supports file plus envi
   assert.equal(config.embeddingModel, 'environment-model');
   assert.equal(config.embeddingDimensions, 2560);
   assert.equal(config.embeddingBatchSize, 12);
+  assert.equal(config.embeddingServedModelId, 'Octen/Octen-Embedding-4B');
+  assert.equal(config.embeddingArtifact, 'Octen-Embedding-4B.Q8_0.gguf');
+  assert.equal(config.embeddingQuantization, 'Q8_0');
+  assert.equal(config.embeddingPooling, 'last');
   assert.equal(config.databasePath, join(directory, 'file-data', 'zvec'));
+  assert.equal(config.manifestPath, join(directory, 'file-data', 'index-manifest.json'));
+  assert.equal(config.tokenizerCacheDirectory, join(directory, 'file-data', 'tokenizers'));
   assert.equal(config.sessionsDirectory, join(directory, '.pi', 'agent', 'sessions'));
 });
 

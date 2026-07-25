@@ -6,8 +6,11 @@ import { Value } from 'typebox/value';
 
 import type { LocalEmbeddingClient } from './local-embedding-client.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
-import { readSessionConversationChunks } from './session-conversation-index.js';
-import type { ZvecConversationStore } from './zvec-conversation-store.js';
+import {
+  readSessionConversationChunks,
+  type ConversationTextTokenizer,
+} from './session-conversation-index.js';
+import type { ConversationChunkStore } from './zvec-conversation-store.js';
 
 const conversationIndexStateSchema = Type.Object({
   version: Type.Literal(1),
@@ -58,8 +61,9 @@ export interface ConversationIndexSummary {
 export interface IncrementalSessionIndexerOptions {
   sessionsDirectory: string;
   statePath: string;
-  store: ZvecConversationStore;
+  store: ConversationChunkStore;
   embeddings: LocalEmbeddingClient;
+  tokenizer: ConversationTextTokenizer;
   signal?: AbortSignal;
   onProgress?: (progress: ConversationIndexProgress) => void;
 }
@@ -115,6 +119,7 @@ async function writeConversationIndexState(
 async function readChangedSessionChunks(
   sessionPath: string,
   previous: IndexedSessionState | undefined,
+  tokenizer: ConversationTextTokenizer,
 ): Promise<
   | {
       size: number;
@@ -130,7 +135,7 @@ async function readChangedSessionChunks(
   return {
     size: fileStats.size,
     mtimeMs: fileStats.mtimeMs,
-    chunks: await readSessionConversationChunks(sessionPath),
+    chunks: await readSessionConversationChunks(sessionPath, { tokenizer }),
   };
 }
 
@@ -184,7 +189,7 @@ export async function indexChangedConversationSessions(
     const previous = state.sessions[sessionPath];
     let changedSession: Awaited<ReturnType<typeof readChangedSessionChunks>>;
     try {
-      changedSession = await readChangedSessionChunks(sessionPath, previous);
+      changedSession = await readChangedSessionChunks(sessionPath, previous, options.tokenizer);
     } catch (error) {
       summary.failedSessions.push({
         sessionPath,

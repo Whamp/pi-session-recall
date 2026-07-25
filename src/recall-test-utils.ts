@@ -1,5 +1,6 @@
+import { RecallEvidenceRelation } from './enums.js';
 import type { RecallSearchResult } from './fuse-recall-search-candidates.js';
-import type { RankedRecallSearchResult } from './rank-recall-search-results.js';
+import type { RecallConversationSearchResult } from './recall-conversation-service.js';
 import type { SessionConversationChunk } from './session-conversation-index.js';
 
 /** Test-only overrides for one complete recall evidence document fixture. */
@@ -13,7 +14,7 @@ export function createTestSessionConversationChunk(
 ): SessionConversationChunk {
   const content = options.content ?? `content ${options.id}`;
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     documentKind: 'conversation',
     summaryKind: null,
     evidenceKind: 'conversation',
@@ -25,6 +26,8 @@ export function createTestSessionConversationChunk(
     parentSessionPath: null,
     cwd: '/project',
     projectPath: '/project',
+    projectIdentity: null,
+    projectIdentitySource: null,
     sessionName: `Session ${options.id}`,
     entryId: { value: `entry-${options.id}` },
     parentEntryId: null,
@@ -83,8 +86,8 @@ export function createTestRecallSearchResult(
 
 /** Builds one reranked recall-result fixture with no duplicates or neighbor expansion. */
 export function createTestRankedRecallSearchResult(
-  options: TestSessionConversationChunkOptions & Partial<RankedRecallSearchResult>,
-): RankedRecallSearchResult {
+  options: TestSessionConversationChunkOptions & Partial<RecallConversationSearchResult>,
+): RecallConversationSearchResult {
   return {
     ...createTestRecallSearchResult(options),
     rerankerScore: 0.9,
@@ -92,6 +95,7 @@ export function createTestRankedRecallSearchResult(
     rankingScore: 0.9,
     duplicateOccurrences: [],
     neighborContext: null,
+    evidenceRelation: RecallEvidenceRelation.UNRESTRICTED_GLOBAL,
     ...options,
   };
 }

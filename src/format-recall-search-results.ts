@@ -1,3 +1,4 @@
+import { RecallSearchScope } from './enums.js';
 import type { RecallSearchResult } from './fuse-recall-search-candidates.js';
 import type { RecallConversationSearch } from './recall-conversation-service.js';
 import type { RankedRecallSearchResult } from './rank-recall-search-results.js';
@@ -45,6 +46,10 @@ function formatRecallBranchLabel(result: Pick<RecallSearchResult, 'isOnActiveBra
   return result.isOnActiveBranch ? 'active branch' : 'abandoned branch';
 }
 
+function formatRecallEvidenceRelation(result: RecallConversationSearch['results'][number]): string {
+  return result.evidenceRelation.replaceAll('_', ' ');
+}
+
 function formatRecallDuplicateOccurrence(occurrence: RecallSearchResult): string {
   return [
     `Duplicate occurrence: ${formatRecallBranchLabel(occurrence)}`,
@@ -89,8 +94,12 @@ export function formatRecallSearchResults(
     search.searchPolicy.rankingMode === 'deep-rerank'
       ? `fusion v${search.searchPolicy.rankFusionVersion} (RRF k=${search.searchPolicy.reciprocalRankConstant}) and Qwen ${search.searchPolicy.rerankerModel} policy v${search.searchPolicy.rerankPolicyVersion}`
       : `deterministic fusion v${search.searchPolicy.rankFusionVersion} (RRF k=${search.searchPolicy.reciprocalRankConstant}) without Qwen reranking`;
+  const scopeDescription =
+    search.searchPolicy.scope === RecallSearchScope.PROJECT
+      ? `project scope for ${search.searchPolicy.invocationProjectIdentity ?? 'an unresolved project'}`
+      : 'global scope';
   const lines = [
-    `Recall searched ${search.totalChunks} indexed evidence documents with ${rankingDescription} (active prior +${search.searchPolicy.activeBranchPrior.toFixed(4)}).`,
+    `Recall searched ${scopeDescription} across ${search.totalChunks} indexed evidence documents with ${rankingDescription} (active prior +${search.searchPolicy.activeBranchPrior.toFixed(4)}).`,
   ];
   if (search.results.length === 0) {
     lines.push('No matching past conversations found.');
@@ -102,7 +111,7 @@ export function formatRecallSearchResults(
     lines.push(
       '',
       `${index + 1}. ${title} (${formatRecallScoreComponents(result)})`,
-      `${result.timestamp || 'unknown time'} · ${result.role} · ${formatRecallDocumentMetadata(result)} · ${formatRecallBranchLabel(result)} · ${result.cwd || 'unknown project'}`,
+      `${result.timestamp || 'unknown time'} · ${result.role} · ${formatRecallDocumentMetadata(result)} · ${formatRecallBranchLabel(result)} · session origin ${result.cwd || 'unknown'} · ${formatRecallEvidenceRelation(result)}`,
       truncateRecallExcerpt(
         result.neighborContext?.content ?? result.content,
         maxExcerptCharacters,

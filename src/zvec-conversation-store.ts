@@ -18,6 +18,7 @@ import {
   type ZVecVector,
 } from '@zvec/zvec';
 
+import { RecallProjectIdentitySource } from './enums.js';
 import type {
   RecallDenseCandidate,
   RecallFullTextCandidate,
@@ -29,7 +30,7 @@ import type {
 } from './session-conversation-index.js';
 
 /** Version of the scalar/vector schema persisted in the zvec collection. */
-export const ZVEC_CONVERSATION_SCHEMA_VERSION = 4;
+export const ZVEC_CONVERSATION_SCHEMA_VERSION = 5;
 
 /** Version of ordinary and case-preserving full text search (FTS) fields in zvec. */
 export const ZVEC_FTS_CONFIGURATION_VERSION = 2;
@@ -68,9 +69,21 @@ export interface ConversationChunkStore {
 
 /** Durable conversation operations plus zvec evolution and bounded-query capabilities. */
 export interface ZvecConversationStore extends ConversationChunkStore {
-  searchDenseCandidates(embedding: number[], limit: number): RecallDenseCandidate[];
-  searchLexicalCandidates(query: string, limit: number): RecallFullTextCandidate[];
-  searchIdentifierCandidates(query: string, limit: number): RecallFullTextCandidate[];
+  searchDenseCandidates(
+    embedding: number[],
+    limit: number,
+    projectIdentity?: string,
+  ): RecallDenseCandidate[];
+  searchLexicalCandidates(
+    query: string,
+    limit: number,
+    projectIdentity?: string,
+  ): RecallFullTextCandidate[];
+  searchIdentifierCandidates(
+    query: string,
+    limit: number,
+    projectIdentity?: string,
+  ): RecallFullTextCandidate[];
   fetchConversationChunks(this: void, ids: string[]): Map<string, SessionConversationChunk>;
   fetchVectors(ids: string[]): Map<string, number[]>;
   groupDenseCandidates(
@@ -100,6 +113,8 @@ const RECALL_FIELD_SCHEMAS: ZVecFieldSchema[] = [
   { name: 'parentSessionPath', dataType: ZVecDataType.STRING },
   { name: 'cwd', dataType: ZVecDataType.STRING },
   { name: 'projectPath', dataType: ZVecDataType.STRING },
+  { name: 'projectIdentity', dataType: ZVecDataType.STRING },
+  { name: 'projectIdentitySource', dataType: ZVecDataType.STRING },
   { name: 'sessionName', dataType: ZVecDataType.STRING },
   { name: 'entryId', dataType: ZVecDataType.STRING },
   { name: 'parentEntryId', dataType: ZVecDataType.STRING },
@@ -178,6 +193,8 @@ function serializeConversationChunk(chunk: SessionConversationChunk): Record<str
     parentSessionPath: chunk.parentSessionPath ?? '',
     cwd: chunk.cwd,
     projectPath: chunk.projectPath,
+    projectIdentity: chunk.projectIdentity ?? '',
+    projectIdentitySource: chunk.projectIdentitySource ?? '',
     sessionName: chunk.sessionName,
     entryId: chunk.entryId.value,
     parentEntryId: serializeNullableEntryId(chunk.parentEntryId),
@@ -257,6 +274,21 @@ function parseNullableString(value: string): string | null {
 
 function parseNullableEntryId(value: string): PiSessionEntryId | null {
   return value ? { value } : null;
+}
+
+function parseRecallProjectIdentitySource(
+  value: string,
+): SessionConversationChunk['projectIdentitySource'] {
+  if (value === '') {
+    return null;
+  }
+  if (value === 'git_origin') {
+    return RecallProjectIdentitySource.GIT_ORIGIN;
+  }
+  if (value === 'git_common_directory') {
+    return RecallProjectIdentitySource.GIT_COMMON_DIRECTORY;
+  }
+  throw new Error(`Recall zvec projectIdentitySource invalid: ${value}`);
 }
 
 function parseRecallDocumentKind(value: string): SessionConversationChunk['documentKind'] {
@@ -357,6 +389,10 @@ function deserializeConversationChunk(doc: ZVecDoc): SessionConversationChunk {
     parentSessionPath: parseNullableString(readStringField(fields, 'parentSessionPath')),
     cwd: readStringField(fields, 'cwd'),
     projectPath: readStringField(fields, 'projectPath'),
+    projectIdentity: parseNullableString(readStringField(fields, 'projectIdentity')),
+    projectIdentitySource: parseRecallProjectIdentitySource(
+      readStringField(fields, 'projectIdentitySource'),
+    ),
     sessionName: readStringField(fields, 'sessionName'),
     entryId: { value: readStringField(fields, 'entryId') } satisfies PiSessionEntryId,
     parentEntryId: parseNullableEntryId(readStringField(fields, 'parentEntryId')),
@@ -420,6 +456,12 @@ function assertRecallCandidateLimit(limit: number, channelName: string): void {
       `Recall candidate limit invalid (${channelName}): expected an integer from 1 to 200`,
     );
   }
+}
+
+function createRecallProjectIdentityFilter(projectIdentity?: string): string | undefined {
+  return projectIdentity
+    ? `projectIdentity = '${projectIdentity.replaceAll("'", "''")}'`
+    : undefined;
 }
 
 function createRecallFullTextQuery(query: string): ZVecFtsQuery {
@@ -488,8 +530,10 @@ export function openZvecConversationStore(config: {
     limit: number,
     channelName: string,
     defaultOperator: 'AND' | 'OR',
+    projectIdentity?: string,
   ): RecallFullTextCandidate[] => {
     assertRecallCandidateLimit(limit, channelName);
+    const projectFilter = createRecallProjectIdentityFilter(projectIdentity);
     return collection
       .querySync({
         fieldName,
@@ -497,6 +541,7 @@ export function openZvecConversationStore(config: {
         topk: limit,
         outputFields: RECALL_OUTPUT_FIELDS,
         includeVector: false,
+        ...(projectFilter ? { filter: projectFilter } : {}),
         params: { indexType: ZVecIndexType.FTS, defaultOperator },
       })
       .map((doc) => ({
@@ -533,8 +578,9 @@ export function openZvecConversationStore(config: {
         collection.deleteSync(ids);
       }
     },
-    searchDenseCandidates(embedding, limit) {
+    searchDenseCandidates(embedding, limit, projectIdentity) {
       assertRecallCandidateLimit(limit, 'dense');
+      const projectFilter = createRecallProjectIdentityFilter(projectIdentity);
       return collection
         .querySync({
           fieldName: 'embedding',
@@ -542,7 +588,9 @@ export function openZvecConversationStore(config: {
           topk: limit,
           outputFields: RECALL_OUTPUT_FIELDS,
           includeVector: false,
-          filter: 'isDenseSearchable = true',
+          filter: projectFilter
+            ? `isDenseSearchable = true AND ${projectFilter}`
+            : 'isDenseSearchable = true',
           params: { indexType: ZVecIndexType.HNSW, ef: ZVEC_HNSW_EF_SEARCH },
         })
         .map((doc) => ({
@@ -550,11 +598,18 @@ export function openZvecConversationStore(config: {
           cosineDistance: doc.score,
         }));
     },
-    searchLexicalCandidates(query, limit) {
-      return searchFullTextCandidates('content', query, limit, 'lexical', 'OR');
+    searchLexicalCandidates(query, limit, projectIdentity) {
+      return searchFullTextCandidates('content', query, limit, 'lexical', 'OR', projectIdentity);
     },
-    searchIdentifierCandidates(query, limit) {
-      return searchFullTextCandidates('identifierContent', query, limit, 'identifier', 'AND');
+    searchIdentifierCandidates(query, limit, projectIdentity) {
+      return searchFullTextCandidates(
+        'identifierContent',
+        query,
+        limit,
+        'identifier',
+        'AND',
+        projectIdentity,
+      );
     },
     fetchConversationChunks(ids) {
       if (ids.length === 0) {

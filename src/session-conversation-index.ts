@@ -2,11 +2,12 @@ import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { createInterface } from 'node:readline';
 
+import type { RecallProjectIdentitySource } from './enums.js';
 import { isUnknownRecord } from './is-unknown-record.js';
 import { assertRecallChunkPolicy } from './recall-chunk-policy.js';
 
 /** Version of the source and graph provenance stored on recall evidence documents. */
-export const SESSION_CONVERSATION_SCHEMA_VERSION = 4;
+export const SESSION_CONVERSATION_SCHEMA_VERSION = 5;
 
 /** A Pi session ID that cannot be passed where a session entry ID is required. */
 export interface PiSessionId {
@@ -57,6 +58,8 @@ export interface SessionConversationChunk {
   parentSessionPath: string | null;
   cwd: string;
   projectPath: string;
+  projectIdentity: string | null;
+  projectIdentitySource: RecallProjectIdentitySource | null;
   sessionName: string;
   entryId: PiSessionEntryId;
   parentEntryId: PiSessionEntryId | null;
@@ -1646,6 +1649,8 @@ function createSessionConversationChunks(
       parentSessionPath: graph.header.parentSessionPath,
       cwd: graph.header.cwd,
       projectPath: graph.header.cwd,
+      projectIdentity: null,
+      projectIdentitySource: null,
       sessionName: graph.sessionName,
       entryId,
       parentEntryId: pending.entry.parentId ? createPiSessionEntryId(pending.entry.parentId) : null,

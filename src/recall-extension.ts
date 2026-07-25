@@ -1,6 +1,7 @@
 import { Type } from 'typebox';
 
-import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
+import { StringEnum } from '@earendil-works/pi-ai';
+import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import {
   DEFAULT_MAX_BYTES,
   DEFAULT_MAX_LINES,
@@ -8,15 +9,45 @@ import {
   truncateHead,
 } from '@earendil-works/pi-coding-agent';
 
+import { RecallSearchScope } from './enums.js';
 import { formatRecallSearchResults } from './format-recall-search-results.js';
 import { loadRecallConversationConfig } from './recall-conversation-config.js';
-import { createRecallConversationService } from './recall-conversation-service.js';
+import {
+  createRecallConversationService,
+  type RecallConversationSearch,
+  type RecallConversationService,
+  type RecallSearchMode,
+} from './recall-conversation-service.js';
 import { runRecallIndexCommand } from './recall-index-command.js';
 import {
   MAX_RECALL_FINAL_RESULT_COUNT,
   readRecallQualityGateDecision,
   RECALL_QUALITY_RESULTS_PATH,
 } from './recall-quality-gate.js';
+
+/** Model-visible parameters for recall search; invocation directory is intentionally absent. */
+export interface RecallPiToolSearchParameters {
+  query: string;
+  limit?: number;
+  mode?: RecallSearchMode;
+  scope?: 'project' | 'global';
+}
+
+/** Applies trusted Pi tool context and transitional global scope to one recall service search. */
+export async function searchRecallFromPiToolContext(
+  service: RecallConversationService,
+  parameters: RecallPiToolSearchParameters,
+  signal: AbortSignal | undefined,
+  context: Pick<ExtensionContext, 'cwd'>,
+  defaultResultLimit: number,
+): Promise<RecallConversationSearch> {
+  return service.search(parameters.query.trim(), parameters.limit ?? defaultResultLimit, {
+    mode: parameters.mode ?? 'hybrid',
+    scope: parameters.scope === 'project' ? RecallSearchScope.PROJECT : RecallSearchScope.GLOBAL,
+    invocationDirectory: context.cwd,
+    ...(signal ? { signal } : {}),
+  });
+}
 
 /** Registers hybrid recall of past Pi conversations. Pi requires extension factories to be default exports. */
 export default async function recallExtension(
@@ -46,7 +77,7 @@ export default async function recallExtension(
     name: 'pi-session-recall',
     label: 'Pi Session Recall',
     description:
-      'Search a prebuilt compatible index of past Pi conversations with dense, lexical, and case-preserving identifier retrieval. Search defaults to deterministic hybrid ranking; choose deep-rerank only when ambiguous evidence warrants slower local Qwen scoring. Excludes hidden reasoning, keeps raw tool evidence lexical-only, labels active and abandoned branches, and expands only valid same-run atomic neighbors with exact provenance. After the committed quality gate passes, run /pi-session-recall-index explicitly to update the index. Output is truncated to 2000 lines or 50KB.',
+      'Search a prebuilt compatible index of past Pi conversations with dense, lexical, and case-preserving identifier retrieval. Scope accepts explicit project or global search and temporarily defaults to global; the current project comes only from Pi trusted execution context. Search defaults to deterministic hybrid ranking; choose deep-rerank only when ambiguous evidence warrants slower local Qwen scoring. Excludes hidden reasoning, keeps raw tool evidence lexical-only, labels active and abandoned branches, and expands only valid same-run atomic neighbors with exact provenance. After the committed quality gate passes, run /pi-session-recall-index explicitly to update the index. Output is truncated to 2000 lines or 50KB.',
     promptSnippet:
       'Search past Pi conversations by meaning or exact text and recover remembered details',
     promptGuidelines: [
@@ -72,18 +103,28 @@ export default async function recallExtension(
             'Ranking depth: hybrid is the fast default; deep-rerank adds slower local Qwen scoring',
         }),
       ),
+      scope: Type.Optional(
+        StringEnum(['project', 'global'] as const, {
+          description:
+            'Corpus boundary: project uses Pi trusted cwd; global is the transitional default',
+        }),
+      ),
     }),
 
-    async execute(toolCallId, parameters, signal) {
+    async execute(toolCallId, parameters, signal, onUpdate, context) {
+      void onUpdate;
       void toolCallId;
       const query = parameters.query.trim();
       if (!query) {
         throw new Error('Recall query must not be blank');
       }
-      const search = await service.search(query, parameters.limit ?? defaultResultLimit, {
-        mode: parameters.mode ?? 'hybrid',
-        ...(signal ? { signal } : {}),
-      });
+      const search = await searchRecallFromPiToolContext(
+        service,
+        { ...parameters, query },
+        signal,
+        context,
+        defaultResultLimit,
+      );
       const formatted = formatRecallSearchResults(search);
       const truncation = truncateHead(formatted, {
         maxLines: DEFAULT_MAX_LINES,
@@ -101,6 +142,10 @@ export default async function recallExtension(
             documentKind: result.documentKind,
             summaryKind: result.summaryKind,
             evidenceKind: result.evidenceKind,
+            evidenceRelation: result.evidenceRelation,
+            sessionOrigin: result.cwd,
+            projectIdentity: result.projectIdentity,
+            projectIdentitySource: result.projectIdentitySource,
             sessionPath: result.sessionPath,
             entryId: result.entryId.value,
             contributingEntryIds: result.contributingEntryIds.map((id) => id.value),

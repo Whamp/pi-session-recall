@@ -79,3 +79,27 @@ _Avoid_: Expanded transcript, joined messages
 **Index manifest**:
 The versioned identity of the model, tokenizer, chunk policy, provenance schema, and zvec schema used by one index generation.
 _Avoid_: Index state, configuration
+
+**Session origin**:
+The working directory recorded when a Pi session began. It applies to the whole session, not individual entries.
+_Avoid_: Project path, current directory
+
+**Project identity**:
+The stable scalar that determines whether indexed evidence and an invocation belong to the same project boundary.
+_Avoid_: Project path, affinity
+
+**Repository identity**:
+A Git project identity shared by equivalent clones and worktrees of one repository.
+_Avoid_: Checkout path, worktree identity
+
+**Project identity source**:
+The explicit basis that established a project identity, such as a canonical Git origin or shared local Git directory.
+_Avoid_: Project hint, inferred relation
+
+**Recall scope**:
+The candidate-eligibility boundary for one search: project scope admits one exact project identity, while global scope admits the whole corpus.
+_Avoid_: Project ranking, affinity filter
+
+**Evidence relation**:
+The explicit relationship between one recall result and the invoking project, derived from project identity rather than text similarity.
+_Avoid_: Relevance relation, project score

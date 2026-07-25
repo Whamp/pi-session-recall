@@ -32,7 +32,7 @@ void test('index manifest round-trips the complete reproducibility identity atom
 
   assert.deepEqual(await readRecallIndexManifest(manifestPath), manifest);
   assert.deepEqual(await readdir(directory), ['index-manifest.json']);
-  assert.equal(manifest.manifestVersion, 2);
+  assert.equal(manifest.manifestVersion, 3);
   assert.equal(
     manifest.embedding.canaryFingerprint,
     createRecallEmbeddingCanaryFingerprint(canaryEmbedding, 3),
@@ -48,9 +48,13 @@ void test('index manifest round-trips the complete reproducibility identity atom
     boundaryAlgorithm: 'markdown-structure-v1',
     normalization: 'unicode-nfc-v1',
   });
-  assert.equal(manifest.conversationSchemaVersion, 4);
-  assert.equal(manifest.provenanceSchemaVersion, 4);
-  assert.equal(manifest.zvec.schemaVersion, 4);
+  assert.equal(manifest.conversationSchemaVersion, 5);
+  assert.equal(manifest.provenanceSchemaVersion, 5);
+  assert.deepEqual(manifest.projectIdentity, {
+    policyVersion: 1,
+    metadataSchemaVersion: 1,
+  });
+  assert.equal(manifest.zvec.schemaVersion, 5);
   assert.equal(manifest.zvec.ftsConfigurationVersion, 2);
 });
 
@@ -111,6 +115,7 @@ void test('index manifest incompatibility reports every mismatch with the rebuil
   actual.tokenizer.revision = 'mutable-main';
   actual.chunkPolicy.maxTokens = 512;
   actual.conversationSchemaVersion = 1;
+  actual.projectIdentity.policyVersion = 99;
   actual.zvec.ftsConfigurationVersion = 99;
 
   assert.throws(
@@ -122,6 +127,7 @@ void test('index manifest incompatibility reports every mismatch with the rebuil
       assert.match(error.message, /tokenizer\.revision/);
       assert.match(error.message, /chunkPolicy\.maxTokens/);
       assert.match(error.message, /conversationSchemaVersion/);
+      assert.match(error.message, /projectIdentity\.policyVersion/);
       assert.match(error.message, /zvec\.ftsConfigurationVersion/);
       assert.match(error.message, /\/pi-session-recall-index --rebuild/);
       return true;
@@ -138,8 +144,16 @@ void test('index manifest reader rejects malformed or unversioned data actionabl
   t.after(() => rm(directory, { recursive: true, force: true }));
   const malformedPath = join(directory, 'malformed.json');
   const unversionedPath = join(directory, 'unversioned.json');
+  const preScopePath = join(directory, 'pre-scope.json');
+  const currentManifest = createRecallIndexManifest({
+    embeddingIdentity,
+    canaryEmbedding: [0.25, -0.5, 1],
+  });
+  const { projectIdentity, ...preScopeManifest } = currentManifest;
+  void projectIdentity;
   await writeFile(malformedPath, '{');
   await writeFile(unversionedPath, '{}');
+  await writeFile(preScopePath, JSON.stringify(preScopeManifest));
 
   await assert.rejects(
     () => readRecallIndexManifest(malformedPath),
@@ -148,6 +162,10 @@ void test('index manifest reader rejects malformed or unversioned data actionabl
   await assert.rejects(
     () => readRecallIndexManifest(unversionedPath),
     /Recall index manifest invalid.*\/pi-session-recall-index --rebuild/,
+  );
+  await assert.rejects(
+    () => readRecallIndexManifest(preScopePath),
+    /Recall index manifest invalid.*\/pi-session-recall-index --rebuild/s,
   );
   assert.equal(await readRecallIndexManifest(join(directory, 'missing.json')), null);
 });

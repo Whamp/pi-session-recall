@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { RecallEvidenceRelation, RecallProjectIdentitySource, RecallSearchScope } from './enums.js';
 import { formatRecallSearchResults } from './format-recall-search-results.js';
 import { createTestRankedRecallSearchResult } from './recall-test-utils.js';
 import type { RankedRecallSearchResult } from './rank-recall-search-results.js';
@@ -32,6 +33,8 @@ void test('recall results include concise excerpts and exact source provenance',
       totalChunks: 42,
       results: [result],
       searchPolicy: {
+        scope: RecallSearchScope.GLOBAL,
+        invocationProjectIdentity: null,
         rankingMode: 'deep-rerank',
         rankFusionVersion: 1,
         reciprocalRankConstant: 60,
@@ -48,7 +51,7 @@ void test('recall results include concise excerpts and exact source provenance',
   assert.match(output, /1\. Queue design/);
   assert.match(
     output,
-    /2026-07-24T10:00:00Z · assistant · atomic conversation · active branch · \/project/,
+    /2026-07-24T10:00:00Z · assistant · atomic conversation · active branch · session origin \/project · unrestricted global evidence/,
   );
   assert.match(output, /Source: \/sessions\/one\.jsonl#entry-1/);
   assert.match(output, /ranking 0\.9223/);
@@ -63,11 +66,45 @@ void test('recall results include concise excerpts and exact source provenance',
   assert.ok(!output.includes('checksum'));
 });
 
+void test('project-scoped output explains invocation identity, session origin, and repository relationship', () => {
+  const projectIdentity = 'git-origin:github.com/Whamp/pi-session-recall';
+  const output = formatRecallSearchResults({
+    totalChunks: 42,
+    results: [
+      {
+        ...result,
+        cwd: '/workspace/pi-session-recall',
+        projectIdentity,
+        projectIdentitySource: RecallProjectIdentitySource.GIT_ORIGIN,
+        evidenceRelation: RecallEvidenceRelation.SAME_REPOSITORY,
+      },
+    ],
+    searchPolicy: {
+      scope: RecallSearchScope.PROJECT,
+      invocationProjectIdentity: projectIdentity,
+      rankingMode: 'hybrid',
+      rankFusionVersion: 1,
+      reciprocalRankConstant: 60,
+      rerankPolicyVersion: null,
+      rerankerModel: null,
+      activeBranchPrior: 0.01,
+      candidateLimits: { dense: 8, lexical: 8, identifier: 8 },
+    },
+  });
+
+  assert.match(output, /project scope/);
+  assert.match(output, /git-origin:github\.com\/Whamp\/pi-session-recall/);
+  assert.match(output, /session origin \/workspace\/pi-session-recall/);
+  assert.match(output, /same repository/);
+});
+
 void test('hybrid recall output does not claim Qwen reranking ran', () => {
   const output = formatRecallSearchResults({
     totalChunks: 42,
     results: [{ ...result, rerankerScore: null, rankingScore: result.fusedScore + 0.01 }],
     searchPolicy: {
+      scope: RecallSearchScope.GLOBAL,
+      invocationProjectIdentity: null,
       rankingMode: 'hybrid',
       rankFusionVersion: 1,
       reciprocalRankConstant: 60,
@@ -86,7 +123,7 @@ void test('hybrid recall output does not claim Qwen reranking ran', () => {
 void test('turn-context results identify their kind and every contributing entry', () => {
   const turnContextResult = {
     ...result,
-    schemaVersion: 4,
+    schemaVersion: 5,
     documentKind: 'turn_context',
     evidenceKind: 'turn_context',
     id: 'turn-context-chunk',
@@ -102,6 +139,8 @@ void test('turn-context results identify their kind and every contributing entry
     totalChunks: 1,
     results: [turnContextResult],
     searchPolicy: {
+      scope: RecallSearchScope.GLOBAL,
+      invocationProjectIdentity: null,
       rankingMode: 'deep-rerank',
       rankFusionVersion: 1,
       reciprocalRankConstant: 60,
@@ -112,7 +151,10 @@ void test('turn-context results identify their kind and every contributing entry
     },
   });
 
-  assert.match(output, /turn · turn context · active branch · \/project/);
+  assert.match(
+    output,
+    /turn · turn context · active branch · session origin \/project · unrestricted global evidence/,
+  );
   assert.match(output, /Contributing entries: user-request → assistant-reply/);
   assert.match(output, /Source: \/sessions\/one\.jsonl#user-request/);
 });
@@ -140,6 +182,8 @@ void test('tool evidence results identify the exact call relationship and source
     totalChunks: 1,
     results: [toolResult],
     searchPolicy: {
+      scope: RecallSearchScope.GLOBAL,
+      invocationProjectIdentity: null,
       rankingMode: 'deep-rerank',
       rankFusionVersion: 1,
       reciprocalRankConstant: 60,
@@ -203,6 +247,8 @@ void test('recall results format stitched neighbors and every suppressed provena
     totalChunks: 4,
     results: [expandedResult],
     searchPolicy: {
+      scope: RecallSearchScope.GLOBAL,
+      invocationProjectIdentity: null,
       rankingMode: 'deep-rerank',
       rankFusionVersion: 1,
       reciprocalRankConstant: 60,

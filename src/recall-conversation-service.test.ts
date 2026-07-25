@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { promisify } from 'node:util';
 
+import { RecallProjectIdentitySource, RecallSearchScope } from './enums.js';
 import type { LocalEmbeddingClient } from './local-embedding-client.js';
 import type { LocalRerankerClient } from './local-reranker-client.js';
 import {
@@ -15,6 +18,8 @@ import {
 } from './recall-index-manifest.js';
 import { createRecallConversationService as createProductionRecallConversationService } from './recall-conversation-service.js';
 import type { ConversationTextTokenizer } from './session-conversation-index.js';
+
+const execFileAsync = promisify(execFile);
 
 const tokenizer: ConversationTextTokenizer = {
   encodeConversationText(text) {
@@ -168,6 +173,255 @@ void test('recall service indexes explicitly and searches a compatible index wit
   assert.equal(await readFile(join(directory, 'recall.lock', 'owner.json'), 'utf8'), lockOwner);
 });
 
+void test('explicit project scope filters dense, lexical, and identifier candidates before channel limits', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-service-project-scope-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionsDirectory = join(directory, 'sessions');
+  const projectDirectory = join(directory, 'selected-project');
+  const unrelatedDirectory = join(directory, 'unrelated-project');
+  await Promise.all([mkdir(sessionsDirectory), mkdir(projectDirectory), mkdir(unrelatedDirectory)]);
+  await execFileAsync('git', ['init'], { cwd: projectDirectory });
+  await execFileAsync('git', ['remote', 'add', 'origin', 'git@github.com:Whamp/scoped.git'], {
+    cwd: projectDirectory,
+  });
+  await execFileAsync('git', ['init'], { cwd: unrelatedDirectory });
+  await execFileAsync('git', ['remote', 'add', 'origin', 'https://github.com/Whamp/other.git'], {
+    cwd: unrelatedDirectory,
+  });
+  const writeSession = async (
+    fileName: string,
+    sessionId: string,
+    sessionOrigin: string,
+    entryId: string,
+    content: string,
+  ): Promise<void> => {
+    await writeFile(
+      join(sessionsDirectory, fileName),
+      [
+        {
+          type: 'session',
+          version: 3,
+          id: sessionId,
+          timestamp: '2026-07-24T10:00:00Z',
+          cwd: sessionOrigin,
+        },
+        {
+          type: 'message',
+          id: entryId,
+          parentId: null,
+          timestamp: '2026-07-24T10:01:00Z',
+          message: { role: 'assistant', content },
+        },
+      ]
+        .map((entry) => JSON.stringify(entry))
+        .join('\n') + '\n',
+    );
+  };
+  await writeSession(
+    'selected.jsonl',
+    'selected-session',
+    projectDirectory,
+    'selected-entry',
+    'queue readNodeErrorCode',
+  );
+  await writeSession(
+    'unrelated.jsonl',
+    'unrelated-session',
+    unrelatedDirectory,
+    'unrelated-entry',
+    'queue queue queue readNodeErrorCode readNodeErrorCode',
+  );
+  const query = 'queue readNodeErrorCode';
+  const service = createRecallConversationService(createTestConfig(directory, sessionsDirectory), {
+    embeddings: {
+      async embedTexts(texts) {
+        return texts.map((text) => {
+          if (text === RECALL_EMBEDDING_CANARY_TEXT) {
+            return [0, 0, 1];
+          }
+          if (text === query || text.includes('queue queue')) {
+            return [1, 0, 0];
+          }
+          return [0.8, 0.2, 0];
+        });
+      },
+    },
+    async loadTokenizer() {
+      return tokenizer;
+    },
+  });
+
+  await service.index();
+  const projectSearch = await service.search(query, 3, {
+    scope: RecallSearchScope.PROJECT,
+    invocationDirectory: projectDirectory,
+  });
+
+  assert.deepEqual(
+    projectSearch.results.map((result) => result.entryId.value),
+    ['selected-entry'],
+  );
+  assert.ok(projectSearch.results[0]?.dense);
+  assert.ok(projectSearch.results[0]?.lexical);
+  assert.ok(projectSearch.results[0]?.identifier);
+  assert.equal(projectSearch.searchPolicy.scope, 'project');
+  assert.equal(
+    projectSearch.searchPolicy.invocationProjectIdentity,
+    'git-origin:github.com/Whamp/scoped',
+  );
+  assert.equal(projectSearch.results[0]?.evidenceRelation, 'same_repository');
+
+  const globalSearch = await service.search(query, 1, {
+    scope: RecallSearchScope.GLOBAL,
+    invocationDirectory: projectDirectory,
+  });
+  assert.equal(globalSearch.results[0]?.entryId.value, 'unrelated-entry');
+  assert.equal(globalSearch.searchPolicy.scope, 'global');
+});
+
+void test('indexing resolves each distinct session origin once and keeps unresolved origins globally searchable', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-service-project-assignment-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionsDirectory = join(directory, 'sessions');
+  await mkdir(sessionsDirectory);
+  const sessionFixtures = [
+    { file: 'one.jsonl', id: 'one', origin: '/historical/repository', content: 'memoized first' },
+    { file: 'two.jsonl', id: 'two', origin: '/historical/repository', content: 'memoized second' },
+    {
+      file: 'missing.jsonl',
+      id: 'missing',
+      origin: '/deleted/repository',
+      content: 'memoized missing',
+    },
+  ];
+  for (const fixture of sessionFixtures) {
+    await writeFile(
+      join(sessionsDirectory, fixture.file),
+      [
+        {
+          type: 'session',
+          version: 3,
+          id: `session-${fixture.id}`,
+          timestamp: '2026-07-24T10:00:00Z',
+          cwd: fixture.origin,
+        },
+        {
+          type: 'message',
+          id: `entry-${fixture.id}`,
+          parentId: null,
+          timestamp: '2026-07-24T10:01:00Z',
+          message: { role: 'assistant', content: fixture.content },
+        },
+      ]
+        .map((entry) => JSON.stringify(entry))
+        .join('\n') + '\n',
+    );
+  }
+  const resolvedOrigins: string[] = [];
+  const config = {
+    ...createTestConfig(directory, sessionsDirectory),
+    searchCandidateLimits: { dense: 3, lexical: 3, identifier: 3 },
+  };
+  const service = createRecallConversationService(config, {
+    embeddings: {
+      async embedTexts(texts) {
+        return texts.map((text) => (text === RECALL_EMBEDDING_CANARY_TEXT ? [0, 0, 1] : [1, 0, 0]));
+      },
+    },
+    async loadTokenizer() {
+      return tokenizer;
+    },
+    async resolveProjectIdentity(sessionOrigin) {
+      resolvedOrigins.push(sessionOrigin);
+      return sessionOrigin === '/historical/repository'
+        ? {
+            projectIdentity: 'git-origin:github.com/Whamp/historical',
+            identitySource: RecallProjectIdentitySource.GIT_ORIGIN,
+          }
+        : null;
+    },
+  });
+
+  await service.index();
+  const search = await service.search('memoized', 3);
+
+  assert.deepEqual(resolvedOrigins.toSorted(), ['/deleted/repository', '/historical/repository']);
+  assert.equal(
+    search.results.find((result) => result.entryId.value === 'entry-one')?.projectIdentity,
+    'git-origin:github.com/Whamp/historical',
+  );
+  assert.equal(
+    search.results.find((result) => result.entryId.value === 'entry-two')?.projectIdentitySource,
+    RecallProjectIdentitySource.GIT_ORIGIN,
+  );
+  assert.equal(
+    search.results.find((result) => result.entryId.value === 'entry-missing')?.projectIdentity,
+    null,
+  );
+});
+
+void test('project metadata rebuild reuses cached vectors while replacing repository assignment', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-service-project-metadata-rebuild-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionsDirectory = join(directory, 'sessions');
+  await mkdir(sessionsDirectory);
+  await writeFile(
+    join(sessionsDirectory, 'metadata.jsonl'),
+    [
+      {
+        type: 'session',
+        version: 3,
+        id: 'metadata-session',
+        timestamp: '2026-07-24T10:00:00Z',
+        cwd: '/relocated/repository',
+      },
+      {
+        type: 'message',
+        id: 'metadata-entry',
+        parentId: null,
+        timestamp: '2026-07-24T10:01:00Z',
+        message: { role: 'assistant', content: 'Metadata changes must reuse this vector.' },
+      },
+    ]
+      .map((entry) => JSON.stringify(entry))
+      .join('\n') + '\n',
+  );
+  let repositoryName = 'before-relocation';
+  const embeddedInputs: string[] = [];
+  const service = createRecallConversationService(createTestConfig(directory, sessionsDirectory), {
+    embeddings: {
+      async embedTexts(texts) {
+        embeddedInputs.push(...texts);
+        return texts.map((text) => (text === RECALL_EMBEDDING_CANARY_TEXT ? [0, 0, 1] : [1, 0, 0]));
+      },
+    },
+    async loadTokenizer() {
+      return tokenizer;
+    },
+    async resolveProjectIdentity() {
+      return {
+        projectIdentity: `git-origin:github.com/Whamp/${repositoryName}`,
+        identitySource: RecallProjectIdentitySource.GIT_ORIGIN,
+      };
+    },
+  });
+
+  const first = await service.index();
+  repositoryName = 'after-relocation';
+  const rebuilt = await service.index({ rebuild: true });
+  const search = await service.search('Metadata changes', 1);
+
+  assert.equal(first.indexSummary.newlyEmbeddedChunks, 1);
+  assert.equal(rebuilt.indexSummary.cacheHits, 1);
+  assert.equal(rebuilt.indexSummary.newlyEmbeddedChunks, 0);
+  assert.equal(rebuilt.indexSummary.embeddingRequestCount, 0);
+  assert.equal(search.results[0]?.projectIdentity, 'git-origin:github.com/Whamp/after-relocation');
+  assert.equal(
+    embeddedInputs.filter((text) => text === 'Metadata changes must reuse this vector.').length,
+    1,
+  );
+});
+
 void test('recall service builds a temporary index with an explicit chunk policy', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'recall-service-chunk-policy-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -299,6 +553,8 @@ void test('recall service fuses bounded dense, lexical, and identifier candidate
 
   const denseResult = await service.search(semanticParaphraseQuery, 1);
   assert.deepEqual(denseResult.searchPolicy, {
+    scope: RecallSearchScope.GLOBAL,
+    invocationProjectIdentity: null,
     rankingMode: 'hybrid',
     rankFusionVersion: 1,
     reciprocalRankConstant: 60,

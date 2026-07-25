@@ -652,7 +652,7 @@ void test('session chunks expose branch, summary, sibling, and source geometry p
       },
     ],
   );
-  assert.ok(activeRuns.every((chunk) => chunk.schemaVersion === 4));
+  assert.ok(activeRuns.every((chunk) => chunk.schemaVersion === 5));
   assert.ok(activeRuns.every((chunk) => chunk.contributingEntryIds[0]?.value === 'active'));
   assert.ok(activeRuns.every((chunk) => chunk.textRunId.length === 40));
   assert.ok(activeRuns.every((chunk) => chunk.chunkCount === 1));

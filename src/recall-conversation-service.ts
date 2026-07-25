@@ -7,6 +7,7 @@ import {
   createEmbeddingVectorCache,
   createEmbeddingVectorCacheIdentity,
 } from './embedding-vector-cache.js';
+import { RecallEvidenceRelation, RecallSearchScope } from './enums.js';
 import {
   fuseRecallSearchCandidates,
   RECALL_RANK_FUSION_VERSION,
@@ -32,6 +33,10 @@ import {
 } from './recall-index-manifest.js';
 import type { RecallChunkPolicy } from './recall-chunk-policy.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
+import {
+  resolveGitProjectIdentity,
+  type ResolvedGitProjectIdentity,
+} from './resolve-git-project-identity.js';
 import {
   rankFusedRecallSearchResults,
   rerankRecallSearchResults,
@@ -81,11 +86,15 @@ export type RecallSearchMode = 'hybrid' | 'deep-rerank';
 /** Cancellation and optional deep reranking for one read-only recall search. */
 export interface RecallConversationSearchOptions {
   mode?: RecallSearchMode;
+  scope?: RecallSearchScope;
+  invocationDirectory?: string;
   signal?: AbortSignal;
 }
 
 /** Exact fusion, optional Qwen reranking, branch-prior, and neighbor policy for one search. */
 export interface RecallSearchPolicy {
+  scope: RecallSearchScope;
+  invocationProjectIdentity: string | null;
   rankingMode: RecallSearchMode;
   rankFusionVersion: number;
   reciprocalRankConstant: number;
@@ -95,9 +104,14 @@ export interface RecallSearchPolicy {
   candidateLimits: RecallSearchCandidateLimits;
 }
 
+/** One ranked recall result labeled by its explicit relationship to the invocation project. */
+export interface RecallConversationSearchResult extends RankedRecallSearchResult {
+  evidenceRelation: RecallEvidenceRelation;
+}
+
 /** One read-only hybrid query against a previously built compatible index. */
 export interface RecallConversationSearch {
-  results: RankedRecallSearchResult[];
+  results: RecallConversationSearchResult[];
   totalChunks: number;
   searchPolicy: RecallSearchPolicy;
 }
@@ -128,6 +142,7 @@ export interface RecallConversationDependencies {
   reranker?: LocalRerankerClient;
   loadTokenizer?: () => Promise<ConversationTextTokenizer>;
   openStore?: (mode: 'read' | 'write') => ZvecConversationStore;
+  resolveProjectIdentity?: (workingDirectory: string) => Promise<ResolvedGitProjectIdentity | null>;
 }
 
 function readLockOwnerProcessId(value: string): number | undefined {
@@ -263,6 +278,7 @@ export function createRecallConversationService(
   const loadTokenizer =
     dependencies.loadTokenizer ??
     (() => loadOctenConversationTokenizer({ cacheDirectory: config.tokenizerCacheDirectory }));
+  const resolveProjectIdentity = dependencies.resolveProjectIdentity ?? resolveGitProjectIdentity;
   const openStore =
     dependencies.openStore ??
     ((mode) =>
@@ -422,6 +438,7 @@ export function createRecallConversationService(
         maxTokens: manifest.chunkPolicy.maxTokens,
         overlapTokens: manifest.chunkPolicy.overlapTokens,
       },
+      resolveProjectIdentity,
       ...(signal ? { signal } : {}),
       ...(onProgress ? { onProgress } : {}),
     });
@@ -430,7 +447,12 @@ export function createRecallConversationService(
   return {
     search(query, limit, options = {}) {
       return runSerialized(async () => {
-        const { mode = 'hybrid', signal } = options;
+        const {
+          mode = 'hybrid',
+          scope = RecallSearchScope.GLOBAL,
+          invocationDirectory,
+          signal,
+        } = options;
         const searchQuery = query.trim();
         if (!searchQuery) {
           throw new Error('Recall query must not be blank');
@@ -439,6 +461,19 @@ export function createRecallConversationService(
         await assertRecallIndexUnlockedForSearch(config.lockPath);
         const expectedManifest = createExpectedManifest(await readCurrentEmbeddingCanary(signal));
         assertRecallIndexManifestCompatible(actualManifest, expectedManifest, config.manifestPath);
+        if (scope === RecallSearchScope.PROJECT && !invocationDirectory) {
+          throw new Error('Project-scoped recall requires Pi trusted invocation directory context');
+        }
+        const invocationProject = invocationDirectory
+          ? await resolveProjectIdentity(invocationDirectory)
+          : null;
+        if (scope === RecallSearchScope.PROJECT && !invocationProject) {
+          throw new Error(
+            `Project-scoped recall could not resolve a Git repository from Pi invocation directory ${invocationDirectory}`,
+          );
+        }
+        const projectIdentityPredicate =
+          scope === RecallSearchScope.PROJECT ? invocationProject?.projectIdentity : undefined;
         const store = openStore('read');
         try {
           const queryEmbedding = (await embeddings.embedTexts([searchQuery], signal))[0];
@@ -450,21 +485,24 @@ export function createRecallConversationService(
               denseCandidates: store.searchDenseCandidates(
                 queryEmbedding,
                 config.searchCandidateLimits.dense,
+                projectIdentityPredicate,
               ),
               lexicalCandidates: store.searchLexicalCandidates(
                 searchQuery,
                 config.searchCandidateLimits.lexical,
+                projectIdentityPredicate,
               ),
               identifierCandidates: store.searchIdentifierCandidates(
                 searchQuery,
                 config.searchCandidateLimits.identifier,
+                projectIdentityPredicate,
               ),
             },
             config.searchCandidateLimits.dense +
               config.searchCandidateLimits.lexical +
               config.searchCandidateLimits.identifier,
           );
-          const results =
+          const rankedResults =
             mode === 'deep-rerank'
               ? await rerankRecallSearchResults({
                   query: searchQuery,
@@ -475,10 +513,19 @@ export function createRecallConversationService(
                   ...(signal ? { signal } : {}),
                 })
               : rankFusedRecallSearchResults(fusedCandidates, limit, store.fetchConversationChunks);
+          const results: RecallConversationSearchResult[] = rankedResults.map((result) => ({
+            ...result,
+            evidenceRelation:
+              invocationProject?.projectIdentity === result.projectIdentity
+                ? RecallEvidenceRelation.SAME_REPOSITORY
+                : RecallEvidenceRelation.UNRESTRICTED_GLOBAL,
+          }));
           return {
             results,
             totalChunks: store.count(),
             searchPolicy: {
+              scope,
+              invocationProjectIdentity: invocationProject?.projectIdentity ?? null,
               rankingMode: mode,
               rankFusionVersion: RECALL_RANK_FUSION_VERSION,
               reciprocalRankConstant: RECALL_RRF_RANK_CONSTANT,

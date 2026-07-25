@@ -7,6 +7,7 @@ import { Value } from 'typebox/value';
 import type { EmbeddingVectorCache } from './embedding-vector-cache.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
 import type { RecallChunkPolicy } from './recall-chunk-policy.js';
+import type { ResolvedGitProjectIdentity } from './resolve-git-project-identity.js';
 import {
   readSessionConversationChunks,
   type ConversationTextTokenizer,
@@ -70,6 +71,7 @@ export interface IncrementalSessionIndexerOptions {
   embeddingCache: EmbeddingVectorCache;
   tokenizer: ConversationTextTokenizer;
   chunkPolicy?: RecallChunkPolicy;
+  resolveProjectIdentity?: (sessionOrigin: string) => Promise<ResolvedGitProjectIdentity | null>;
   signal?: AbortSignal;
   onProgress?: (progress: ConversationIndexProgress) => void;
 }
@@ -162,6 +164,23 @@ export async function indexChangedConversationSessions(
   const state = await readConversationIndexState(options.statePath);
   const sessionFiles = await listSessionFiles(options.sessionsDirectory);
   const liveSessionPaths = new Set(sessionFiles);
+  const projectIdentityBySessionOrigin = new Map<
+    string,
+    Promise<ResolvedGitProjectIdentity | null>
+  >();
+  function resolveSessionProjectIdentity(
+    sessionOrigin: string,
+  ): Promise<ResolvedGitProjectIdentity | null> {
+    const existing = projectIdentityBySessionOrigin.get(sessionOrigin);
+    if (existing) {
+      return existing;
+    }
+    const resolution = options.resolveProjectIdentity
+      ? options.resolveProjectIdentity(sessionOrigin)
+      : Promise.resolve(null);
+    projectIdentityBySessionOrigin.set(sessionOrigin, resolution);
+    return resolution;
+  }
   const summary: ConversationIndexSummary = {
     scannedSessions: 0,
     indexedSessions: 0,
@@ -219,14 +238,23 @@ export async function indexChangedConversationSessions(
     }
 
     const { chunks } = changedSession;
-    const currentIds = new Set(chunks.map((chunk) => chunk.id));
+    const sessionOrigin = chunks[0]?.cwd;
+    const resolvedProjectIdentity = sessionOrigin
+      ? await resolveSessionProjectIdentity(sessionOrigin)
+      : null;
+    const attributedChunks = chunks.map((chunk) => ({
+      ...chunk,
+      projectIdentity: resolvedProjectIdentity?.projectIdentity ?? null,
+      projectIdentitySource: resolvedProjectIdentity?.identitySource ?? null,
+    }));
+    const currentIds = new Set(attributedChunks.map((chunk) => chunk.id));
     const removedIds =
       previous?.chunks.filter((chunk) => !currentIds.has(chunk.id)).map((chunk) => chunk.id) ?? [];
     options.store.deleteChunks(removedIds);
     summary.deletedChunks += removedIds.length;
 
-    for (let start = 0; start < chunks.length; start += 128) {
-      const chunkBatch = chunks.slice(start, start + 128);
+    for (let start = 0; start < attributedChunks.length; start += 128) {
+      const chunkBatch = attributedChunks.slice(start, start + 128);
       const denseChunkBatch = chunkBatch.filter((chunk) => chunk.isDenseSearchable);
       const cacheResult = await options.embeddingCache.resolveEmbeddingVectors(
         denseChunkBatch.map((chunk) => chunk.content),

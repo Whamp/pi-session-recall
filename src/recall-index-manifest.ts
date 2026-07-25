@@ -16,6 +16,10 @@ import {
   type ConversationTokenizerAssetIdentity,
 } from './octen-conversation-tokenizer.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
+import {
+  RECALL_GIT_PROJECT_IDENTITY_POLICY_VERSION,
+  RECALL_PROJECT_IDENTITY_METADATA_SCHEMA_VERSION,
+} from './resolve-git-project-identity.js';
 import { SESSION_CONVERSATION_SCHEMA_VERSION } from './session-conversation-index.js';
 import {
   ZVEC_CONVERSATION_SCHEMA_VERSION,
@@ -26,7 +30,7 @@ import {
 } from './zvec-conversation-store.js';
 
 /** Version of the index-manifest file format, independent from document and zvec schemas. */
-export const RECALL_INDEX_MANIFEST_VERSION = 2;
+export const RECALL_INDEX_MANIFEST_VERSION = 3;
 
 /** Lowest accepted cosine similarity across parallel slots serving the same embedding model. */
 export const RECALL_EMBEDDING_CANARY_MINIMUM_COSINE_SIMILARITY = 0.9995;
@@ -55,7 +59,7 @@ export interface RecallEmbeddingModelIdentity {
 
 /** Versioned identity required before one zvec index generation can be read or updated. */
 export interface RecallIndexManifest {
-  manifestVersion: 2;
+  manifestVersion: 3;
   embedding: {
     requestModel: string;
     servedModelId: string;
@@ -85,6 +89,10 @@ export interface RecallIndexManifest {
   conversationSchemaVersion: number;
   provenanceSchemaVersion: number;
   embeddingCacheVersion: number;
+  projectIdentity: {
+    policyVersion: number;
+    metadataSchemaVersion: number;
+  };
   zvec: {
     schemaVersion: number;
     ftsConfigurationVersion: number;
@@ -105,7 +113,7 @@ const manifestAssetSchema = Type.Object(
 
 const recallIndexManifestSchema = Type.Object(
   {
-    manifestVersion: Type.Literal(2),
+    manifestVersion: Type.Literal(3),
     embedding: Type.Object(
       {
         requestModel: Type.String({ minLength: 1 }),
@@ -158,6 +166,13 @@ const recallIndexManifestSchema = Type.Object(
     conversationSchemaVersion: Type.Integer({ minimum: 1 }),
     provenanceSchemaVersion: Type.Integer({ minimum: 1 }),
     embeddingCacheVersion: Type.Integer({ minimum: 1 }),
+    projectIdentity: Type.Object(
+      {
+        policyVersion: Type.Literal(RECALL_GIT_PROJECT_IDENTITY_POLICY_VERSION),
+        metadataSchemaVersion: Type.Literal(RECALL_PROJECT_IDENTITY_METADATA_SCHEMA_VERSION),
+      },
+      { additionalProperties: false },
+    ),
     zvec: Type.Object(
       {
         schemaVersion: Type.Integer({ minimum: 1 }),
@@ -267,6 +282,10 @@ export function createRecallIndexManifest(options: {
     conversationSchemaVersion: SESSION_CONVERSATION_SCHEMA_VERSION,
     provenanceSchemaVersion: SESSION_CONVERSATION_SCHEMA_VERSION,
     embeddingCacheVersion: EMBEDDING_VECTOR_CACHE_VERSION,
+    projectIdentity: {
+      policyVersion: RECALL_GIT_PROJECT_IDENTITY_POLICY_VERSION,
+      metadataSchemaVersion: RECALL_PROJECT_IDENTITY_METADATA_SCHEMA_VERSION,
+    },
     zvec: {
       schemaVersion: ZVEC_CONVERSATION_SCHEMA_VERSION,
       ftsConfigurationVersion: ZVEC_FTS_CONFIGURATION_VERSION,

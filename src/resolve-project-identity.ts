@@ -9,7 +9,7 @@ import { RecallProjectIdentitySource } from './enums.js';
 export const PROJECT_IDENTITY_POLICY_VERSION = 4;
 
 /** Version of project identity and identity-source scalars persisted on recall evidence. */
-export const PROJECT_METADATA_SCHEMA_VERSION = 3;
+export const PROJECT_IDENTITY_METADATA_SCHEMA_VERSION = 3;
 
 /** Version of exact-root and deterministic-descendant project lineage assignment. */
 export const PROJECT_LINEAGE_POLICY_VERSION = 1;
@@ -20,6 +20,7 @@ const NON_GIT_SESSION_ORIGIN_IDENTITY_PREFIX = 'non-git-session-origin:';
 const HOSTED_GIT_PROTOCOLS = new Set(['git:', 'http:', 'https:', 'ssh:']);
 declare const PROJECT_IDENTITY_BRAND: unique symbol;
 declare const REPOSITORY_IDENTITY_BRAND: unique symbol;
+declare const RECALL_PROJECT_LINEAGES_BRAND: unique symbol;
 
 /** Stable scalar used to enforce one exact recall project boundary. */
 export type ProjectIdentity = string & { readonly [PROJECT_IDENTITY_BRAND]: true };
@@ -49,14 +50,35 @@ export function isCanonicalRepositoryIdentity(value: string): value is Repositor
   return false;
 }
 
-/** Canonical repository identities mapped to absolute historical session-origin roots. */
-export interface RecallProjectLineages {
+/** Raw repository-identity keys and historical roots before lineage validation. */
+export interface RecallProjectLineageInput {
   readonly [repositoryIdentity: string]: readonly string[];
+}
+
+/** Validated project lineages keyed only by canonical repository identities. */
+export interface RecallProjectLineages {
+  readonly [RECALL_PROJECT_LINEAGES_BRAND]: true;
+  entries(): IterableIterator<[RepositoryIdentity, readonly string[]]>;
 }
 
 interface ProjectLineageDeclaration {
   repositoryIdentity: RepositoryIdentity;
   historicalRoot: string;
+}
+
+class ValidatedRecallProjectLineages implements RecallProjectLineages {
+  declare readonly [RECALL_PROJECT_LINEAGES_BRAND]: true;
+
+  constructor(
+    private readonly historicalRootsByRepositoryIdentity: ReadonlyMap<
+      RepositoryIdentity,
+      readonly string[]
+    >,
+  ) {}
+
+  entries(): IterableIterator<[RepositoryIdentity, readonly string[]]> {
+    return this.historicalRootsByRepositoryIdentity.entries();
+  }
 }
 
 function isPathAtOrBelow(path: string, root: string): boolean {
@@ -69,7 +91,7 @@ function isPathAtOrBelow(path: string, root: string): boolean {
 
 /** Validates, normalizes, and orders personal project lineage declarations deterministically. */
 export function normalizeRecallProjectLineages(
-  projectLineages: RecallProjectLineages,
+  projectLineages: RecallProjectLineageInput,
 ): RecallProjectLineages {
   const declarations: ProjectLineageDeclaration[] = [];
   for (const [repositoryIdentity, configuredRoots] of Object.entries(projectLineages).toSorted(
@@ -107,21 +129,21 @@ export function normalizeRecallProjectLineages(
       }
     }
   }
-  const normalized: Record<string, string[]> = {};
+  const normalized = new Map<RepositoryIdentity, string[]>();
   for (const declaration of declarations) {
-    const roots = normalized[declaration.repositoryIdentity] ?? [];
+    const roots = normalized.get(declaration.repositoryIdentity) ?? [];
     if (!roots.includes(declaration.historicalRoot)) {
       roots.push(declaration.historicalRoot);
     }
-    normalized[declaration.repositoryIdentity] = roots;
+    normalized.set(declaration.repositoryIdentity, roots);
   }
-  return normalized;
+  return new ValidatedRecallProjectLineages(normalized);
 }
 
-/** Hashes normalized personal lineage declarations without consulting the filesystem. */
+/** Hashes validated personal lineage declarations without consulting the filesystem. */
 export function createLineageDigest(projectLineages: RecallProjectLineages): string {
-  const normalizedLineages = normalizeRecallProjectLineages(projectLineages);
-  return createHash('sha256').update(JSON.stringify(normalizedLineages)).digest('hex');
+  const serializableLineages = Object.fromEntries(projectLineages.entries());
+  return createHash('sha256').update(JSON.stringify(serializableLineages)).digest('hex');
 }
 
 /** One exact project identity and the explicit source that established it. */
@@ -166,13 +188,9 @@ export function createLineageResolver(
   projectLineages: RecallProjectLineages,
   fallbackResolver: (workingDirectory: string) => Promise<ResolvedProjectIdentity | null>,
 ): (workingDirectory: string) => Promise<ResolvedProjectIdentity | null> {
-  const normalizedLineages = normalizeRecallProjectLineages(projectLineages);
-  const declarations = Object.entries(normalizedLineages)
+  const declarations = Array.from(projectLineages.entries())
     .flatMap(([repositoryIdentity, historicalRoots]) =>
-      historicalRoots.map((historicalRoot) => ({
-        repositoryIdentity: parseRepositoryIdentity(repositoryIdentity),
-        historicalRoot,
-      })),
+      historicalRoots.map((historicalRoot) => ({ repositoryIdentity, historicalRoot })),
     )
     .sort(
       (left, right) =>

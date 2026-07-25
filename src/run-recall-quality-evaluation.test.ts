@@ -10,6 +10,7 @@ import type { LocalEmbeddingClient } from './local-embedding-client.js';
 import { loadRecallQualityCorpus } from './recall-quality-corpus.js';
 import type { RecallConversationConfig } from './recall-conversation-service.js';
 import { RECALL_EMBEDDING_CANARY_TEXT } from './recall-index-manifest.js';
+import { normalizeRecallProjectLineages } from './resolve-project-identity.js';
 import { runRecallQualityEvaluation } from './run-recall-quality-evaluation.js';
 import type { ConversationTextTokenizer } from './session-conversation-index.js';
 
@@ -127,7 +128,7 @@ void test('recall quality runner indexes and searches only the bounded declared 
     embeddingBatchSize: 8,
     rerankerBaseUrl: 'http://unused-reranker.test/v1',
     rerankerModel: 'test-reranker',
-    projectLineages: {},
+    projectLineages: normalizeRecallProjectLineages({}),
     searchCandidateLimits: { dense: 8, lexical: 8, identifier: 8 },
   };
   const embeddings: LocalEmbeddingClient = {

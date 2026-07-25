@@ -17,7 +17,8 @@ import { RECALL_ACTIVE_BRANCH_PRIOR } from './rank-recall-search-results.js';
 import { parseQualityCaseId } from './recall-quality-corpus.js';
 import {
   createLineageDigest,
-  PROJECT_METADATA_SCHEMA_VERSION,
+  normalizeRecallProjectLineages,
+  PROJECT_IDENTITY_METADATA_SCHEMA_VERSION,
   PROJECT_IDENTITY_POLICY_VERSION,
   PROJECT_LINEAGE_POLICY_VERSION,
 } from './resolve-project-identity.js';
@@ -47,6 +48,19 @@ export interface RecallQualityGateDecision {
   automatedGatePassed: boolean;
   selectedPolicy: RecallQualityApprovedPolicy | null;
   blockers: string[];
+}
+
+function areRecallQualityPoliciesEqual(
+  left: RecallQualityApprovedPolicy,
+  right: RecallQualityApprovedPolicy,
+): boolean {
+  return (
+    left.chunkPolicy.id === right.chunkPolicy.id &&
+    left.chunkPolicy.maxTokens === right.chunkPolicy.maxTokens &&
+    left.chunkPolicy.overlapTokens === right.chunkPolicy.overlapTokens &&
+    left.candidateCount === right.candidateCount &&
+    left.finalCount === right.finalCount
+  );
 }
 
 const CHUNK_POLICY_SCHEMA = Type.Object({
@@ -303,7 +317,9 @@ export async function readRecallQualityGateDecision(
       `Recall quality gate evidence invalid at ${resultsPath}: project-scoped evidence requires complete specification, measurements, index runs, and bounded work`,
     );
   }
-  const expectedLineageDigest = createLineageDigest(specification.projectLineages);
+  const expectedLineageDigest = createLineageDigest(
+    normalizeRecallProjectLineages(specification.projectLineages),
+  );
   const repositoryFixtureCount = specification.projectIdentityFixtures.filter(
     ({ identitySource }) => identitySource !== RecallProjectIdentitySource.NON_GIT_SESSION_ORIGIN,
   ).length;
@@ -424,23 +440,14 @@ export async function readRecallQualityGateDecision(
   const selectedMatchesMeasurement =
     selection.selected !== null &&
     measuredSelection.selected !== null &&
-    selection.selected.chunkPolicy.id === measuredSelection.selected.chunkPolicy.id &&
-    selection.selected.chunkPolicy.maxTokens === measuredSelection.selected.chunkPolicy.maxTokens &&
-    selection.selected.chunkPolicy.overlapTokens ===
-      measuredSelection.selected.chunkPolicy.overlapTokens &&
-    selection.selected.candidateCount === measuredSelection.selected.candidateCount &&
-    selection.selected.finalCount === measuredSelection.selected.finalCount &&
+    areRecallQualityPoliciesEqual(selection.selected, measuredSelection.selected) &&
     selection.selected.gatePassed === measuredSelection.selected.gatePassed;
   const combinationsMatchMeasurements =
     selection.combinations?.length === measuredSelection.combinations.length &&
     measuredSelection.combinations.every((measured) =>
       selection.combinations?.some(
         (recorded) =>
-          recorded.chunkPolicy.id === measured.chunkPolicy.id &&
-          recorded.chunkPolicy.maxTokens === measured.chunkPolicy.maxTokens &&
-          recorded.chunkPolicy.overlapTokens === measured.chunkPolicy.overlapTokens &&
-          recorded.candidateCount === measured.candidateCount &&
-          recorded.finalCount === measured.finalCount &&
+          areRecallQualityPoliciesEqual(recorded, measured) &&
           recorded.gatePassed === measured.gatePassed,
       ),
     );
@@ -458,7 +465,8 @@ export async function readRecallQualityGateDecision(
     evaluationIdentity.defaultScope !== RecallSearchScope.PROJECT ||
     evaluationIdentity.projectScopePolicyVersion !== PROJECT_SCOPE_POLICY_VERSION ||
     evaluationIdentity.projectIdentityPolicyVersion !== PROJECT_IDENTITY_POLICY_VERSION ||
-    evaluationIdentity.projectIdentityMetadataSchemaVersion !== PROJECT_METADATA_SCHEMA_VERSION ||
+    evaluationIdentity.projectIdentityMetadataSchemaVersion !==
+      PROJECT_IDENTITY_METADATA_SCHEMA_VERSION ||
     evaluationIdentity.lineagePolicyVersion !== PROJECT_LINEAGE_POLICY_VERSION ||
     evaluationIdentity.lineageDigest !== expectedLineageDigest
   ) {
@@ -526,13 +534,7 @@ export async function readRecallQualityGateDecision(
     };
   }
   const wasMeasuredPassing = selection.combinations?.some(
-    (combination) =>
-      combination.gatePassed &&
-      combination.chunkPolicy.id === selected.chunkPolicy.id &&
-      combination.chunkPolicy.maxTokens === selected.chunkPolicy.maxTokens &&
-      combination.chunkPolicy.overlapTokens === selected.chunkPolicy.overlapTokens &&
-      combination.candidateCount === selected.candidateCount &&
-      combination.finalCount === selected.finalCount,
+    (combination) => combination.gatePassed && areRecallQualityPoliciesEqual(combination, selected),
   );
   if (!wasMeasuredPassing) {
     throw new Error(

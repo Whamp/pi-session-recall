@@ -17,11 +17,23 @@ import {
   RECALL_EMBEDDING_CANARY_TEXT,
   writeRecallIndexManifest,
 } from './recall-index-manifest.js';
-import { createRecallConversationService as createProductionRecallConversationService } from './recall-conversation-service.js';
-import { parseRepositoryIdentity } from './resolve-project-identity.js';
+import {
+  createRecallConversationService as createProductionRecallConversationService,
+  type RecallConversationConfig,
+} from './recall-conversation-service.js';
+import {
+  normalizeRecallProjectLineages,
+  parseRepositoryIdentity,
+} from './resolve-project-identity.js';
 import type { ConversationTextTokenizer } from './session-conversation-index.js';
 
 const EXEC_FILE_ASYNC = promisify(execFile);
+
+const rawProjectLineageInput: Readonly<Record<string, readonly string[]>> = {};
+// @ts-expect-error Recall service configuration requires validated project lineage identities.
+const invalidServiceProjectLineages: RecallConversationConfig['projectLineages'] =
+  rawProjectLineageInput;
+void invalidServiceProjectLineages;
 
 const tokenizer: ConversationTextTokenizer = {
   encodeConversationText(text) {
@@ -50,7 +62,7 @@ function createTestConfig(directory: string, sessionsDirectory: string) {
     embeddingBatchSize: 8,
     rerankerBaseUrl: 'http://unused-reranker.test/v1',
     rerankerModel: 'test-reranker-model',
-    projectLineages: {},
+    projectLineages: normalizeRecallProjectLineages({}),
     searchCandidateLimits: { dense: 1, lexical: 1, identifier: 1 },
   };
 }
@@ -354,9 +366,9 @@ void test('configured project lineage admits exact, descendant, deleted, and Git
   const query = 'lineage queue LineageIdentifier';
   const config = {
     ...createTestConfig(directory, sessionsDirectory),
-    projectLineages: {
+    projectLineages: normalizeRecallProjectLineages({
       'git-origin:github.com/Whamp/successor': [prototypeRoot, deletedRoot],
-    },
+    }),
     searchCandidateLimits: { dense: 3, lexical: 3, identifier: 3 },
   };
   const service = createRecallConversationService(config, {
@@ -667,18 +679,18 @@ void test('lineage metadata rebuild rejects stale policy and reuses cached vecto
   const firstService = createRecallConversationService(
     {
       ...createTestConfig(directory, sessionsDirectory),
-      projectLineages: {
+      projectLineages: normalizeRecallProjectLineages({
         'git-origin:github.com/Whamp/before-relocation': [historicalRoot],
-      },
+      }),
     },
     dependencies,
   );
   const changedService = createRecallConversationService(
     {
       ...createTestConfig(directory, sessionsDirectory),
-      projectLineages: {
+      projectLineages: normalizeRecallProjectLineages({
         'git-origin:github.com/Whamp/after-relocation': [historicalRoot],
-      },
+      }),
     },
     dependencies,
   );

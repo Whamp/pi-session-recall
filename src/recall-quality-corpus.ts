@@ -13,7 +13,7 @@ import {
   normalizeRecallProjectLineages,
   parseProjectIdentity,
   type ProjectIdentity,
-  type RecallProjectLineages,
+  type RecallProjectLineageInput,
 } from './resolve-project-identity.js';
 import type { SessionConversationChunk } from './session-conversation-index.js';
 
@@ -138,7 +138,7 @@ export interface RecallQualityCorpusSpecification {
     sessionFiles: RecallQualitySessionFile[];
   };
   projectIdentityFixtures: RecallProjectFixture[];
-  projectLineages: RecallProjectLineages;
+  projectLineages: RecallProjectLineageInput;
   bounds: RecallQualityWorkBounds;
   chunkPolicies: [RecallQualityChunkPolicy];
   candidateCounts: [8];

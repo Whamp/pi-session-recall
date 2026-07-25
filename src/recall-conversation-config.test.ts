@@ -72,10 +72,10 @@ void test('recall config accepts canonical repository identities mapped to absol
     environment: {},
   });
 
-  assert.deepEqual(config.projectLineages, {
-    'git-origin:github.com/Whamp/successor': [prototypeRoot],
-    [localRepositoryIdentity]: [localPrototypeRoot],
-  });
+  assert.deepEqual(Array.from(config.projectLineages.entries()), [
+    [localRepositoryIdentity, [localPrototypeRoot]],
+    ['git-origin:github.com/Whamp/successor', [prototypeRoot]],
+  ]);
 });
 
 void test('recall config rejects noncanonical targets and relative lineage roots', async (t) => {
@@ -146,7 +146,7 @@ void test('recall config defaults to the deployed local Qwen reranker', async (t
 
   assert.equal(config.rerankerBaseUrl, 'http://192.168.0.67:8091/v1');
   assert.equal(config.rerankerModel, 'qwen3-rerank');
-  assert.deepEqual(config.projectLineages, {});
+  assert.deepEqual(Array.from(config.projectLineages.entries()), []);
 });
 
 void test('recall config rejects invalid numeric environment settings', async () => {

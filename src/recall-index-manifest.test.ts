@@ -11,6 +11,10 @@ import {
   readRecallIndexManifest,
   writeRecallIndexManifest,
 } from './recall-index-manifest.js';
+import {
+  normalizeRecallProjectLineages,
+  PROJECT_IDENTITY_METADATA_SCHEMA_VERSION,
+} from './resolve-project-identity.js';
 
 const embeddingIdentity = {
   requestModel: 'octen-embed',
@@ -50,6 +54,7 @@ void test('index manifest round-trips the complete reproducibility identity atom
   });
   assert.equal(manifest.conversationSchemaVersion, 7);
   assert.equal(manifest.provenanceSchemaVersion, 7);
+  assert.equal(PROJECT_IDENTITY_METADATA_SCHEMA_VERSION, 3);
   assert.deepEqual(manifest.projectIdentity, {
     policyVersion: 4,
     metadataSchemaVersion: 3,
@@ -65,17 +70,23 @@ void test('index manifest canonically digests project lineage and rejects change
   const actual = createRecallIndexManifest({
     embeddingIdentity,
     canaryEmbedding: [0.25, -0.5, 1],
-    projectLineages: { [target]: ['/historical/zeta', '/historical/alpha'] },
+    projectLineages: normalizeRecallProjectLineages({
+      [target]: ['/historical/zeta', '/historical/alpha'],
+    }),
   });
   const equivalent = createRecallIndexManifest({
     embeddingIdentity,
     canaryEmbedding: [0.25, -0.5, 1],
-    projectLineages: { [target]: ['/historical/alpha', '/historical/zeta'] },
+    projectLineages: normalizeRecallProjectLineages({
+      [target]: ['/historical/alpha', '/historical/zeta'],
+    }),
   });
   const changed = createRecallIndexManifest({
     embeddingIdentity,
     canaryEmbedding: [0.25, -0.5, 1],
-    projectLineages: { [target]: ['/historical/alpha', '/historical/replacement'] },
+    projectLineages: normalizeRecallProjectLineages({
+      [target]: ['/historical/alpha', '/historical/replacement'],
+    }),
   });
 
   assert.equal(actual.projectIdentity.lineagePolicyVersion, 1);

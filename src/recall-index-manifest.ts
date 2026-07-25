@@ -18,7 +18,8 @@ import {
 import { readNodeErrorCode } from './read-node-error-code.js';
 import {
   createLineageDigest,
-  PROJECT_METADATA_SCHEMA_VERSION,
+  normalizeRecallProjectLineages,
+  PROJECT_IDENTITY_METADATA_SCHEMA_VERSION,
   PROJECT_IDENTITY_POLICY_VERSION,
   PROJECT_LINEAGE_POLICY_VERSION,
   type RecallProjectLineages,
@@ -174,7 +175,7 @@ const recallIndexManifestSchema = Type.Object(
     projectIdentity: Type.Object(
       {
         policyVersion: Type.Literal(PROJECT_IDENTITY_POLICY_VERSION),
-        metadataSchemaVersion: Type.Literal(PROJECT_METADATA_SCHEMA_VERSION),
+        metadataSchemaVersion: Type.Literal(PROJECT_IDENTITY_METADATA_SCHEMA_VERSION),
         lineagePolicyVersion: Type.Literal(PROJECT_LINEAGE_POLICY_VERSION),
         lineageDigest: Type.String({ pattern: '^[a-f0-9]{64}$' }),
       },
@@ -292,9 +293,11 @@ export function createRecallIndexManifest(options: {
     embeddingCacheVersion: EMBEDDING_VECTOR_CACHE_VERSION,
     projectIdentity: {
       policyVersion: PROJECT_IDENTITY_POLICY_VERSION,
-      metadataSchemaVersion: PROJECT_METADATA_SCHEMA_VERSION,
+      metadataSchemaVersion: PROJECT_IDENTITY_METADATA_SCHEMA_VERSION,
       lineagePolicyVersion: PROJECT_LINEAGE_POLICY_VERSION,
-      lineageDigest: createLineageDigest(options.projectLineages ?? {}),
+      lineageDigest: createLineageDigest(
+        options.projectLineages ?? normalizeRecallProjectLineages({}),
+      ),
     },
     zvec: {
       schemaVersion: ZVEC_CONVERSATION_SCHEMA_VERSION,

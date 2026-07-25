@@ -38,7 +38,8 @@ import {
 import { RECALL_ACTIVE_BRANCH_PRIOR } from './rank-recall-search-results.js';
 import {
   createLineageDigest,
-  PROJECT_METADATA_SCHEMA_VERSION,
+  normalizeRecallProjectLineages,
+  PROJECT_IDENTITY_METADATA_SCHEMA_VERSION,
   PROJECT_IDENTITY_POLICY_VERSION,
   PROJECT_LINEAGE_POLICY_VERSION,
   parseProjectIdentity,
@@ -192,7 +193,7 @@ function createChunkPolicyConfig(
     manifestPath: join(policyDirectory, 'index-manifest.json'),
     embeddingCacheDirectory: join(policyDirectory, 'embedding-cache'),
     lockPath: join(policyDirectory, 'operation.lock'),
-    projectLineages: corpus.specification.projectLineages,
+    projectLineages: normalizeRecallProjectLineages(corpus.specification.projectLineages),
     chunkPolicy: {
       maxTokens: chunkPolicy.maxTokens,
       overlapTokens: chunkPolicy.overlapTokens,
@@ -509,9 +510,11 @@ export async function runRecallQualityEvaluation(
       defaultScope: RecallSearchScope.PROJECT,
       projectScopePolicyVersion: PROJECT_SCOPE_POLICY_VERSION,
       projectIdentityPolicyVersion: PROJECT_IDENTITY_POLICY_VERSION,
-      projectIdentityMetadataSchemaVersion: PROJECT_METADATA_SCHEMA_VERSION,
+      projectIdentityMetadataSchemaVersion: PROJECT_IDENTITY_METADATA_SCHEMA_VERSION,
       lineagePolicyVersion: PROJECT_LINEAGE_POLICY_VERSION,
-      lineageDigest: createLineageDigest(specification.projectLineages),
+      lineageDigest: createLineageDigest(
+        normalizeRecallProjectLineages(specification.projectLineages),
+      ),
       rankingMode: 'hybrid',
       rankFusionVersion: RECALL_RANK_FUSION_VERSION,
       reciprocalRankConstant: RECALL_RRF_RANK_CONSTANT,

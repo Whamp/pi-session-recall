@@ -84,6 +84,51 @@ void test('quality evidence rejects a selected final count outside the tool cont
   );
 });
 
+void test('quality evidence rejects a selected policy absent from measured combinations', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-quality-unmeasured-policy-gate-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const resultsPath = join(directory, 'results.json');
+  await writeFile(
+    resultsPath,
+    JSON.stringify({
+      version: 1,
+      environment: { gitDirty: false },
+      result: {
+        version: 3,
+        rankingIdentity: {
+          rankingMode: 'hybrid',
+          rankFusionVersion: 1,
+          reciprocalRankConstant: 60,
+          activeBranchPrior: 0.01,
+        },
+        selection: {
+          passed: true,
+          selected: {
+            chunkPolicy: { id: '512-64', maxTokens: 512, overlapTokens: 64 },
+            candidateCount: 8,
+            finalCount: 5,
+            gatePassed: true,
+          },
+          blockers: [],
+          combinations: [
+            {
+              chunkPolicy: { id: '512-64', maxTokens: 512, overlapTokens: 64 },
+              candidateCount: 16,
+              finalCount: 5,
+              gatePassed: true,
+            },
+          ],
+        },
+      },
+    }),
+  );
+
+  await assert.rejects(
+    () => readRecallQualityGateDecision(resultsPath),
+    /selected policy was not a passing measured combination/,
+  );
+});
+
 void test('clean passing recall quality evidence returns its measured policy', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'recall-quality-gate-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -95,6 +140,12 @@ void test('clean passing recall quality evidence returns its measured policy', a
       environment: { gitDirty: false },
       result: {
         version: 3,
+        rankingIdentity: {
+          rankingMode: 'hybrid',
+          rankFusionVersion: 1,
+          reciprocalRankConstant: 60,
+          activeBranchPrior: 0.01,
+        },
         selection: {
           passed: true,
           selected: {
@@ -104,6 +155,14 @@ void test('clean passing recall quality evidence returns its measured policy', a
             gatePassed: true,
           },
           blockers: [],
+          combinations: [
+            {
+              chunkPolicy: { id: '512-64', maxTokens: 512, overlapTokens: 64 },
+              candidateCount: 4,
+              finalCount: 3,
+              gatePassed: true,
+            },
+          ],
         },
       },
     }),

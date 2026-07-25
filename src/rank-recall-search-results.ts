@@ -319,33 +319,51 @@ function expandRankedRecallNeighbors(
   });
 }
 
+function assertRecallRankingResultLimit(resultLimit: number, errorMessage: string): void {
+  if (!Number.isInteger(resultLimit) || resultLimit < 1 || resultLimit > 200) {
+    throw new Error(errorMessage);
+  }
+}
+
+function createRecallCandidateGroups(
+  candidates: readonly RecallSearchResult[],
+): RecallCandidateGroup[] {
+  return createCrossSessionCopyCandidateGroups(createSiblingOverlapCandidateGroups(candidates));
+}
+
+function getRecallCandidateGroupActivePrior(group: RecallCandidateGroup): number {
+  return getRecallCandidateGroupMembers(group).some((candidate) => candidate.isOnActiveBranch)
+    ? RECALL_ACTIVE_BRANCH_PRIOR
+    : 0;
+}
+
+function createRankedRecallSearchResult(
+  group: RecallCandidateGroup,
+  rerankerScore: number | null,
+): RankedRecallSearchResult {
+  const activeBranchPrior = getRecallCandidateGroupActivePrior(group);
+  return {
+    ...group.representative,
+    rerankerScore,
+    activeBranchPrior,
+    rankingScore: (rerankerScore ?? group.representative.fusedScore) + activeBranchPrior,
+    duplicateOccurrences: group.duplicateOccurrences,
+    neighborContext: null,
+  };
+}
+
 /** Ranks fused recall candidates without Qwen while preserving duplicate and neighbor provenance. */
 export function rankFusedRecallSearchResults(
   candidates: readonly RecallSearchResult[],
   resultLimit: number,
   fetchConversationChunks: (ids: string[]) => Map<string, SessionConversationChunk>,
 ): RankedRecallSearchResult[] {
-  if (!Number.isInteger(resultLimit) || resultLimit < 1 || resultLimit > 200) {
-    throw new Error('Recall fused result limit invalid: expected an integer from 1 to 200');
-  }
-  const rankedResults = createCrossSessionCopyCandidateGroups(
-    createSiblingOverlapCandidateGroups(candidates),
-  )
-    .map((group) => {
-      const activeBranchPrior = getRecallCandidateGroupMembers(group).some(
-        (candidate) => candidate.isOnActiveBranch,
-      )
-        ? RECALL_ACTIVE_BRANCH_PRIOR
-        : 0;
-      return {
-        ...group.representative,
-        rerankerScore: null,
-        activeBranchPrior,
-        rankingScore: group.representative.fusedScore + activeBranchPrior,
-        duplicateOccurrences: group.duplicateOccurrences,
-        neighborContext: null,
-      };
-    })
+  assertRecallRankingResultLimit(
+    resultLimit,
+    'Recall fused result limit invalid: expected an integer from 1 to 200',
+  );
+  const rankedResults = createRecallCandidateGroups(candidates)
+    .map((group) => createRankedRecallSearchResult(group, null))
     .toSorted(
       (left, right) =>
         right.rankingScore - left.rankingScore ||
@@ -360,19 +378,14 @@ export function rankFusedRecallSearchResults(
 export async function rerankRecallSearchResults(
   options: RerankRecallSearchResultsOptions,
 ): Promise<RankedRecallSearchResult[]> {
-  if (
-    !Number.isInteger(options.resultLimit) ||
-    options.resultLimit < 1 ||
-    options.resultLimit > 200
-  ) {
-    throw new Error('Recall reranked result limit invalid: expected an integer from 1 to 200');
-  }
+  assertRecallRankingResultLimit(
+    options.resultLimit,
+    'Recall reranked result limit invalid: expected an integer from 1 to 200',
+  );
   if (options.candidates.length === 0) {
     return [];
   }
-  const candidateGroups = createCrossSessionCopyCandidateGroups(
-    createSiblingOverlapCandidateGroups(options.candidates),
-  );
+  const candidateGroups = createRecallCandidateGroups(options.candidates);
   const scores = await options.reranker.rerankDocuments(
     options.query,
     candidateGroups.map((group) => group.representative.content),
@@ -391,24 +404,12 @@ export async function rerankRecallSearchResults(
           `Recall reranker score invalid for candidate index ${index}: expected finite number`,
         );
       }
-      const activeBranchPrior = getRecallCandidateGroupMembers(group).some(
-        (candidate) => candidate.isOnActiveBranch,
-      )
-        ? RECALL_ACTIVE_BRANCH_PRIOR
-        : 0;
-      return {
-        ...group.representative,
-        rerankerScore,
-        activeBranchPrior,
-        rankingScore: rerankerScore + activeBranchPrior,
-        duplicateOccurrences: group.duplicateOccurrences,
-        neighborContext: null,
-      };
+      return createRankedRecallSearchResult(group, rerankerScore);
     })
     .toSorted(
       (left, right) =>
         right.rankingScore - left.rankingScore ||
-        right.rerankerScore - left.rerankerScore ||
+        (right.rerankerScore ?? 0) - (left.rerankerScore ?? 0) ||
         right.fusedScore - left.fusedScore ||
         compareRecallDocumentIds(left.id, right.id),
     )

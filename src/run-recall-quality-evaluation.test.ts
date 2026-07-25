@@ -139,6 +139,13 @@ void test('recall quality runner indexes and searches only the bounded declared 
   assert.equal(result.version, 3);
   assert.equal(result.boundedWork.indexRuns, 1);
   assert.equal(result.boundedWork.executedSearchRequests, 1);
+  assert.equal(result.boundedWork.rerankerRequests, 0);
+  assert.deepEqual(result.rankingIdentity, {
+    rankingMode: 'hybrid',
+    rankFusionVersion: 1,
+    reciprocalRankConstant: 60,
+    activeBranchPrior: 0.01,
+  });
   assert.equal(result.indexRuns.length, 1);
   assert.ok(result.indexRuns.every(({ indexSummary }) => indexSummary.scannedSessions === 1));
   assert.equal(result.configurations.length, 1);

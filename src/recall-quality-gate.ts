@@ -4,6 +4,12 @@ import { fileURLToPath } from 'node:url';
 import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 
+import {
+  RECALL_RANK_FUSION_VERSION,
+  RECALL_RRF_RANK_CONSTANT,
+} from './fuse-recall-search-candidates.js';
+import { RECALL_ACTIVE_BRANCH_PRIOR } from './rank-recall-search-results.js';
+
 /** Highest final-result count accepted from evidence and exposed by the recall tool. */
 export const MAX_RECALL_FINAL_RESULT_COUNT = 10;
 
@@ -48,10 +54,19 @@ const recallQualityGateEvidenceSchema = Type.Object({
   }),
   result: Type.Object({
     version: Type.Integer({ minimum: 1 }),
+    rankingIdentity: Type.Optional(
+      Type.Object({
+        rankingMode: Type.String(),
+        rankFusionVersion: Type.Integer({ minimum: 1 }),
+        reciprocalRankConstant: Type.Number({ exclusiveMinimum: 0 }),
+        activeBranchPrior: Type.Number({ minimum: 0 }),
+      }),
+    ),
     selection: Type.Object({
       passed: Type.Boolean(),
       selected: Type.Union([Type.Null(), selectedPolicySchema]),
       blockers: Type.Array(Type.String()),
+      combinations: Type.Optional(Type.Array(selectedPolicySchema)),
     }),
   }),
 });
@@ -87,6 +102,23 @@ export async function readRecallQualityGateDecision(
       ],
     };
   }
+  const rankingIdentity = evidence.result.rankingIdentity;
+  if (
+    !rankingIdentity ||
+    rankingIdentity.rankingMode !== 'hybrid' ||
+    rankingIdentity.rankFusionVersion !== RECALL_RANK_FUSION_VERSION ||
+    rankingIdentity.reciprocalRankConstant !== RECALL_RRF_RANK_CONSTANT ||
+    rankingIdentity.activeBranchPrior !== RECALL_ACTIVE_BRANCH_PRIOR
+  ) {
+    return {
+      automatedGatePassed: false,
+      selectedPolicy: null,
+      blockers: [
+        ...selection.blockers,
+        'Recall quality ranking identity does not match the current hybrid policy; rerun npm run evaluate:recall',
+      ],
+    };
+  }
   if (!selection.passed) {
     return {
       automatedGatePassed: false,
@@ -105,6 +137,20 @@ export async function readRecallQualityGateDecision(
   if (!selected) {
     throw new Error(
       `Recall quality gate evidence inconsistent at ${resultsPath}: passing selection is missing`,
+    );
+  }
+  const wasMeasuredPassing = selection.combinations?.some(
+    (combination) =>
+      combination.gatePassed &&
+      combination.chunkPolicy.id === selected.chunkPolicy.id &&
+      combination.chunkPolicy.maxTokens === selected.chunkPolicy.maxTokens &&
+      combination.chunkPolicy.overlapTokens === selected.chunkPolicy.overlapTokens &&
+      combination.candidateCount === selected.candidateCount &&
+      combination.finalCount === selected.finalCount,
+  );
+  if (!wasMeasuredPassing) {
+    throw new Error(
+      `Recall quality gate evidence inconsistent at ${resultsPath}: selected policy was not a passing measured combination`,
     );
   }
   return {

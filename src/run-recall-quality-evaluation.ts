@@ -2,8 +2,13 @@ import { mkdir, rm } from 'node:fs/promises';
 import { basename, isAbsolute, join, relative, resolve } from 'node:path';
 import { performance } from 'node:perf_hooks';
 
+import {
+  RECALL_RANK_FUSION_VERSION,
+  RECALL_RRF_RANK_CONSTANT,
+} from './fuse-recall-search-candidates.js';
 import type { ConversationIndexSummary } from './incremental-session-indexer.js';
 import { createLocalEmbeddingClient, type LocalEmbeddingClient } from './local-embedding-client.js';
+import type { LocalRerankerClient } from './local-reranker-client.js';
 import {
   measureRecallQuality,
   type RecallQualitySearchObservation,
@@ -22,6 +27,7 @@ import {
   type RecallQualityConfigurationMeasurement,
   type RecallQualityPolicySelection,
 } from './select-recall-quality-policy.js';
+import { RECALL_ACTIVE_BRANCH_PRIOR } from './rank-recall-search-results.js';
 import type { ConversationTextTokenizer } from './session-conversation-index.js';
 
 const RECALL_QUALITY_FULL_POOL_LIMIT = 200;
@@ -55,13 +61,23 @@ export interface RecallQualityExecutedWork {
   evaluationCases: number;
   indexRuns: number;
   executedSearchRequests: number;
+  rerankerRequests: number;
   chunkEmbeddingRequests: number;
   maximumCandidatesPerSearch: number;
+}
+
+/** Ranking constants that bind quality evidence to the hybrid policy it measured. */
+export interface RecallQualityRankingIdentity {
+  rankingMode: 'hybrid';
+  rankFusionVersion: number;
+  reciprocalRankConstant: number;
+  activeBranchPrior: number;
 }
 
 /** Raw measured configurations, gate selection, and bounded-work evidence from one run. */
 export interface RecallQualityEvaluationResult {
   version: 3;
+  rankingIdentity: RecallQualityRankingIdentity;
   startedAt: string;
   completedAt: string;
   durationMilliseconds: number;
@@ -157,10 +173,12 @@ function createChunkPolicyConfig(
 
 function createServiceDependencies(
   embeddings: LocalEmbeddingClient,
+  reranker: LocalRerankerClient,
   loadTokenizer?: () => Promise<ConversationTextTokenizer>,
 ): RecallConversationDependencies {
   return {
     embeddings,
+    reranker,
     ...(loadTokenizer ? { loadTokenizer } : {}),
   };
 }
@@ -199,6 +217,13 @@ export async function runRecallQualityEvaluation(
   const indexRuns: RecallQualityIndexRun[] = [];
   const configurations: RecallQualityConfigurationMeasurement[] = [];
   let executedSearchRequests = 0;
+  let rerankerRequests = 0;
+  const rejectingReranker: LocalRerankerClient = {
+    async rerankDocuments() {
+      rerankerRequests += 1;
+      throw new Error('Recall quality evaluation attempted an unexpected reranker request');
+    },
+  };
 
   for (const chunkPolicy of specification.chunkPolicies) {
     const firstCandidateCount = specification.candidateCounts[0];
@@ -214,7 +239,7 @@ export async function runRecallQualityEvaluation(
     );
     const indexService = createRecallConversationService(
       indexConfig,
-      createServiceDependencies(embeddings, options.dependencies?.loadTokenizer),
+      createServiceDependencies(embeddings, rejectingReranker, options.dependencies?.loadTokenizer),
     );
     const indexStarted = performance.now();
     const indexed = await indexService.index({ optimize: true });
@@ -247,7 +272,11 @@ export async function runRecallQualityEvaluation(
       );
       const searchService = createRecallConversationService(
         searchConfig,
-        createServiceDependencies(embeddings, options.dependencies?.loadTokenizer),
+        createServiceDependencies(
+          embeddings,
+          rejectingReranker,
+          options.dependencies?.loadTokenizer,
+        ),
       );
       const warmupCase = specification.cases[0];
       if (!warmupCase) {
@@ -258,7 +287,9 @@ export async function runRecallQualityEvaluation(
         warmupIndex < specification.warmupQueriesPerCombination;
         warmupIndex += 1
       ) {
-        await searchService.search(warmupCase.query, RECALL_QUALITY_FULL_POOL_LIMIT);
+        await searchService.search(warmupCase.query, RECALL_QUALITY_FULL_POOL_LIMIT, {
+          mode: 'hybrid',
+        });
         executedSearchRequests += 1;
       }
 
@@ -268,6 +299,7 @@ export async function runRecallQualityEvaluation(
         const search = await searchService.search(
           evaluationCase.query,
           RECALL_QUALITY_FULL_POOL_LIMIT,
+          { mode: 'hybrid' },
         );
         const queryLatencyMilliseconds = performance.now() - queryStarted;
         executedSearchRequests += 1;
@@ -287,6 +319,11 @@ export async function runRecallQualityEvaluation(
     }
   }
 
+  if (rerankerRequests !== 0) {
+    throw new Error(
+      `Recall quality reranker request bound exceeded: executed ${rerankerRequests}, maximum 0`,
+    );
+  }
   if (executedSearchRequests > specification.bounds.maximumSearchRequests) {
     throw new Error(
       `Recall quality search bound exceeded after run: executed ${executedSearchRequests}, maximum ${specification.bounds.maximumSearchRequests}`,
@@ -295,6 +332,12 @@ export async function runRecallQualityEvaluation(
   const completedAt = new Date();
   return {
     version: 3,
+    rankingIdentity: {
+      rankingMode: 'hybrid',
+      rankFusionVersion: RECALL_RANK_FUSION_VERSION,
+      reciprocalRankConstant: RECALL_RRF_RANK_CONSTANT,
+      activeBranchPrior: RECALL_ACTIVE_BRANCH_PRIOR,
+    },
     startedAt: startedAt.toISOString(),
     completedAt: completedAt.toISOString(),
     durationMilliseconds: performance.now() - started,
@@ -309,6 +352,7 @@ export async function runRecallQualityEvaluation(
       evaluationCases: specification.cases.length,
       indexRuns: indexRuns.length,
       executedSearchRequests,
+      rerankerRequests,
       chunkEmbeddingRequests: indexRuns.reduce(
         (total, indexRun) => total + indexRun.indexSummary.embeddingRequestCount,
         0,

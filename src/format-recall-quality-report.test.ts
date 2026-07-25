@@ -82,6 +82,12 @@ void test('recall quality report records verdict, measured counts, sources, and 
   };
   const result: RecallQualityEvaluationResult = {
     version: 3,
+    rankingIdentity: {
+      rankingMode: 'hybrid',
+      rankFusionVersion: 1,
+      reciprocalRankConstant: 60,
+      activeBranchPrior: 0.01,
+    },
     startedAt: '2026-07-25T12:00:00.000Z',
     completedAt: '2026-07-25T12:01:00.000Z',
     durationMilliseconds: 60_000,
@@ -146,6 +152,7 @@ void test('recall quality report records verdict, measured counts, sources, and 
       evaluationCases: 1,
       indexRuns: 1,
       executedSearchRequests: 1,
+      rerankerRequests: 0,
       chunkEmbeddingRequests: 5,
       maximumCandidatesPerSearch: 24,
     },

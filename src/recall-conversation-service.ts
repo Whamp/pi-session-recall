@@ -33,11 +33,12 @@ import {
 import type { RecallChunkPolicy } from './recall-chunk-policy.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
 import {
+  rankFusedRecallSearchResults,
   rerankRecallSearchResults,
   RECALL_ACTIVE_BRANCH_PRIOR,
   RECALL_RERANK_POLICY_VERSION,
-  type RerankedRecallSearchResult,
-} from './rerank-recall-search-results.js';
+  type RankedRecallSearchResult,
+} from './rank-recall-search-results.js';
 import type { ConversationTextTokenizer } from './session-conversation-index.js';
 import {
   openZvecConversationStore,
@@ -74,19 +75,29 @@ export interface RecallSearchCandidateLimits {
   identifier: number;
 }
 
-/** Exact fusion, Qwen reranking, branch-prior, and neighbor policy for one search. */
+/** User-selected ranking depth for hybrid-only or local Qwen recall search. */
+export type RecallSearchMode = 'hybrid' | 'deep-rerank';
+
+/** Cancellation and optional deep reranking for one read-only recall search. */
+export interface RecallConversationSearchOptions {
+  mode?: RecallSearchMode;
+  signal?: AbortSignal;
+}
+
+/** Exact fusion, optional Qwen reranking, branch-prior, and neighbor policy for one search. */
 export interface RecallSearchPolicy {
+  rankingMode: RecallSearchMode;
   rankFusionVersion: number;
   reciprocalRankConstant: number;
-  rerankPolicyVersion: number;
-  rerankerModel: string;
+  rerankPolicyVersion: number | null;
+  rerankerModel: string | null;
   activeBranchPrior: number;
   candidateLimits: RecallSearchCandidateLimits;
 }
 
 /** One read-only hybrid query against a previously built compatible index. */
 export interface RecallConversationSearch {
-  results: RerankedRecallSearchResult[];
+  results: RankedRecallSearchResult[];
   totalChunks: number;
   searchPolicy: RecallSearchPolicy;
 }
@@ -101,7 +112,11 @@ export interface RecallConversationIndexOptions {
 
 /** Read-only search and explicit index-maintenance operations exposed by the extension. */
 export interface RecallConversationService {
-  search(query: string, limit: number, signal?: AbortSignal): Promise<RecallConversationSearch>;
+  search(
+    query: string,
+    limit: number,
+    options?: RecallConversationSearchOptions,
+  ): Promise<RecallConversationSearch>;
   index(
     options?: RecallConversationIndexOptions,
   ): Promise<{ indexSummary: ConversationIndexSummary; totalChunks: number }>;
@@ -413,8 +428,9 @@ export function createRecallConversationService(
   }
 
   return {
-    search(query, limit, signal) {
+    search(query, limit, options = {}) {
       return runSerialized(async () => {
+        const { mode = 'hybrid', signal } = options;
         const searchQuery = query.trim();
         if (!searchQuery) {
           throw new Error('Recall query must not be blank');
@@ -448,22 +464,26 @@ export function createRecallConversationService(
               config.searchCandidateLimits.lexical +
               config.searchCandidateLimits.identifier,
           );
-          const results = await rerankRecallSearchResults({
-            query: searchQuery,
-            candidates: fusedCandidates,
-            resultLimit: limit,
-            reranker,
-            fetchConversationChunks: store.fetchConversationChunks,
-            ...(signal ? { signal } : {}),
-          });
+          const results =
+            mode === 'deep-rerank'
+              ? await rerankRecallSearchResults({
+                  query: searchQuery,
+                  candidates: fusedCandidates,
+                  resultLimit: limit,
+                  reranker,
+                  fetchConversationChunks: store.fetchConversationChunks,
+                  ...(signal ? { signal } : {}),
+                })
+              : rankFusedRecallSearchResults(fusedCandidates, limit, store.fetchConversationChunks);
           return {
             results,
             totalChunks: store.count(),
             searchPolicy: {
+              rankingMode: mode,
               rankFusionVersion: RECALL_RANK_FUSION_VERSION,
               reciprocalRankConstant: RECALL_RRF_RANK_CONSTANT,
-              rerankPolicyVersion: RECALL_RERANK_POLICY_VERSION,
-              rerankerModel: config.rerankerModel,
+              rerankPolicyVersion: mode === 'deep-rerank' ? RECALL_RERANK_POLICY_VERSION : null,
+              rerankerModel: mode === 'deep-rerank' ? config.rerankerModel : null,
               activeBranchPrior: RECALL_ACTIVE_BRANCH_PRIOR,
               candidateLimits: { ...config.searchCandidateLimits },
             },

@@ -15,9 +15,9 @@ export interface RecallNeighborContext {
   chunks: SessionConversationChunk[];
 }
 
-/** One hybrid recall candidate after local Qwen relevance scoring. */
-export interface RerankedRecallSearchResult extends RecallSearchResult {
-  rerankerScore: number;
+/** One hybrid recall candidate after deterministic fusion or optional local Qwen scoring. */
+export interface RankedRecallSearchResult extends RecallSearchResult {
+  rerankerScore: number | null;
   activeBranchPrior: number;
   rankingScore: number;
   duplicateOccurrences: RecallSearchResult[];
@@ -274,10 +274,10 @@ function stitchAtomicNeighborChunks(chunks: readonly SessionConversationChunk[])
   return content;
 }
 
-function expandRerankedRecallNeighbors(
-  results: readonly RerankedRecallSearchResult[],
+function expandRankedRecallNeighbors(
+  results: readonly RankedRecallSearchResult[],
   fetchConversationChunks: (ids: string[]) => Map<string, SessionConversationChunk>,
-): RerankedRecallSearchResult[] {
+): RankedRecallSearchResult[] {
   const neighborIds = Array.from(
     new Set(
       results.flatMap((result) =>
@@ -319,10 +319,47 @@ function expandRerankedRecallNeighbors(
   });
 }
 
+/** Ranks fused recall candidates without Qwen while preserving duplicate and neighbor provenance. */
+export function rankFusedRecallSearchResults(
+  candidates: readonly RecallSearchResult[],
+  resultLimit: number,
+  fetchConversationChunks: (ids: string[]) => Map<string, SessionConversationChunk>,
+): RankedRecallSearchResult[] {
+  if (!Number.isInteger(resultLimit) || resultLimit < 1 || resultLimit > 200) {
+    throw new Error('Recall fused result limit invalid: expected an integer from 1 to 200');
+  }
+  const rankedResults = createCrossSessionCopyCandidateGroups(
+    createSiblingOverlapCandidateGroups(candidates),
+  )
+    .map((group) => {
+      const activeBranchPrior = getRecallCandidateGroupMembers(group).some(
+        (candidate) => candidate.isOnActiveBranch,
+      )
+        ? RECALL_ACTIVE_BRANCH_PRIOR
+        : 0;
+      return {
+        ...group.representative,
+        rerankerScore: null,
+        activeBranchPrior,
+        rankingScore: group.representative.fusedScore + activeBranchPrior,
+        duplicateOccurrences: group.duplicateOccurrences,
+        neighborContext: null,
+      };
+    })
+    .toSorted(
+      (left, right) =>
+        right.rankingScore - left.rankingScore ||
+        right.fusedScore - left.fusedScore ||
+        compareRecallDocumentIds(left.id, right.id),
+    )
+    .slice(0, resultLimit);
+  return expandRankedRecallNeighbors(rankedResults, fetchConversationChunks);
+}
+
 /** Reranks original recall candidate text while retaining every hybrid component score. */
 export async function rerankRecallSearchResults(
   options: RerankRecallSearchResultsOptions,
-): Promise<RerankedRecallSearchResult[]> {
+): Promise<RankedRecallSearchResult[]> {
   if (
     !Number.isInteger(options.resultLimit) ||
     options.resultLimit < 1 ||
@@ -376,5 +413,5 @@ export async function rerankRecallSearchResults(
         compareRecallDocumentIds(left.id, right.id),
     )
     .slice(0, options.resultLimit);
-  return expandRerankedRecallNeighbors(rerankedResults, options.fetchConversationChunks);
+  return expandRankedRecallNeighbors(rerankedResults, options.fetchConversationChunks);
 }

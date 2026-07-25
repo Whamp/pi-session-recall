@@ -4,7 +4,7 @@ import test from 'node:test';
 import type { RecallSearchResult } from './fuse-recall-search-candidates.js';
 import type { LocalRerankerClient } from './local-reranker-client.js';
 import { createTestRecallSearchResult } from './recall-test-utils.js';
-import { rerankRecallSearchResults } from './rerank-recall-search-results.js';
+import { rerankRecallSearchResults } from './rank-recall-search-results.js';
 
 function createRecallCandidate(
   id: string,

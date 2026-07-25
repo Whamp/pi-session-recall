@@ -7,7 +7,7 @@ import test from 'node:test';
 import type { RecallSearchResult } from './fuse-recall-search-candidates.js';
 import { measureRecallQuality } from './measure-recall-quality.js';
 import type { RecallQualityEvaluationCase } from './recall-quality-corpus.js';
-import type { RerankedRecallSearchResult } from './rerank-recall-search-results.js';
+import type { RankedRecallSearchResult } from './rank-recall-search-results.js';
 import {
   readSessionConversationChunks,
   type ConversationTextTokenizer,
@@ -35,7 +35,7 @@ function createSearchResult(
   };
 }
 
-void test('recall quality measures pre/post rerank duplicates and preserved source occurrences', async (t) => {
+void test('recall quality measures candidate-pool and fused final source preservation', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'measure-recall-quality-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const content = 'Release Meridian used sha256:4c91d7e2 and rollback tag meridian-safe-3.';
@@ -75,7 +75,7 @@ void test('recall quality measures pre/post rerank duplicates and preserved sour
   assert.ok(second);
   const representative = createSearchResult(first, 0.03);
   const duplicate = createSearchResult(second, 0.02);
-  const rerankedResult: RerankedRecallSearchResult = {
+  const rerankedResult: RankedRecallSearchResult = {
     ...representative,
     rerankerScore: 0.99,
     activeBranchPrior: 0.01,
@@ -111,43 +111,41 @@ void test('recall quality measures pre/post rerank duplicates and preserved sour
         evaluationCase,
         results: [rerankedResult],
         queryLatencyMilliseconds: 120,
-        rerankerLatencyMilliseconds: 80,
       },
     ],
     [1, 2],
   );
 
-  assert.equal(measurement.preRerankRecall, 1);
-  assert.equal(measurement.preRerankDuplicateRate, 0.5);
+  assert.equal(measurement.candidatePoolRecall, 1);
+  assert.equal(measurement.candidatePoolDuplicateRate, 0.5);
   assert.deepEqual(measurement.queryLatencyMilliseconds, { median: 120, p95: 120 });
-  assert.deepEqual(measurement.rerankerLatencyMilliseconds, { median: 80, p95: 80 });
   assert.deepEqual(
     measurement.finalCounts.map((finalCount) => ({
       finalCount: finalCount.finalCount,
-      postRerankRecall: finalCount.postRerankRecall,
+      finalRecall: finalCount.finalRecall,
       contextUsefulness: finalCount.contextUsefulness,
       sourceOccurrencePreservation: finalCount.sourceOccurrencePreservation,
-      postRerankDuplicateRate: finalCount.postRerankDuplicateRate,
+      finalDuplicateRate: finalCount.finalDuplicateRate,
     })),
     [
       {
         finalCount: 1,
-        postRerankRecall: 1,
+        finalRecall: 1,
         contextUsefulness: 1,
         sourceOccurrencePreservation: 1,
-        postRerankDuplicateRate: 0,
+        finalDuplicateRate: 0,
       },
       {
         finalCount: 2,
-        postRerankRecall: 1,
+        finalRecall: 1,
         contextUsefulness: 1,
         sourceOccurrencePreservation: 1,
-        postRerankDuplicateRate: 0,
+        finalDuplicateRate: 0,
       },
     ],
   );
 
-  const unrelatedSameEntry: RerankedRecallSearchResult = {
+  const unrelatedSameEntry: RankedRecallSearchResult = {
     ...rerankedResult,
     id: 'unrelated-same-entry',
     checksum: 'unrelated-checksum',
@@ -160,13 +158,12 @@ void test('recall quality measures pre/post rerank duplicates and preserved sour
         evaluationCase,
         results: [unrelatedSameEntry],
         queryLatencyMilliseconds: 10,
-        rerankerLatencyMilliseconds: 5,
       },
     ],
     [1],
   );
 
-  assert.equal(unrelatedMeasurement.preRerankRecall, 0);
-  assert.equal(unrelatedMeasurement.finalCounts[0]?.postRerankRecall, 0);
+  assert.equal(unrelatedMeasurement.candidatePoolRecall, 0);
+  assert.equal(unrelatedMeasurement.finalCounts[0]?.finalRecall, 0);
   assert.equal(unrelatedMeasurement.finalCounts[0]?.sourceOccurrencePreservation, 0);
 });

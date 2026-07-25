@@ -2,10 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { formatRecallSearchResults } from './format-recall-search-results.js';
-import { createTestRerankedRecallSearchResult } from './recall-test-utils.js';
-import type { RerankedRecallSearchResult } from './rerank-recall-search-results.js';
+import { createTestRankedRecallSearchResult } from './recall-test-utils.js';
+import type { RankedRecallSearchResult } from './rank-recall-search-results.js';
 
-const result = createTestRerankedRecallSearchResult({
+const result = createTestRankedRecallSearchResult({
   id: 'chunk-1',
   checksum: 'sum-1',
   sessionPath: '/sessions/one.jsonl',
@@ -32,6 +32,7 @@ void test('recall results include concise excerpts and exact source provenance',
       totalChunks: 42,
       results: [result],
       searchPolicy: {
+        rankingMode: 'deep-rerank',
         rankFusionVersion: 1,
         reciprocalRankConstant: 60,
         rerankPolicyVersion: 1,
@@ -62,6 +63,26 @@ void test('recall results include concise excerpts and exact source provenance',
   assert.ok(!output.includes('checksum'));
 });
 
+void test('hybrid recall output does not claim Qwen reranking ran', () => {
+  const output = formatRecallSearchResults({
+    totalChunks: 42,
+    results: [{ ...result, rerankerScore: null, rankingScore: result.fusedScore + 0.01 }],
+    searchPolicy: {
+      rankingMode: 'hybrid',
+      rankFusionVersion: 1,
+      reciprocalRankConstant: 60,
+      rerankPolicyVersion: null,
+      rerankerModel: null,
+      activeBranchPrior: 0.01,
+      candidateLimits: { dense: 8, lexical: 8, identifier: 8 },
+    },
+  });
+
+  assert.match(output, /deterministic fusion v1/);
+  assert.match(output, /without Qwen reranking/);
+  assert.ok(!output.includes('Qwen reranker 0.'));
+});
+
 void test('turn-context results identify their kind and every contributing entry', () => {
   const turnContextResult = {
     ...result,
@@ -75,12 +96,13 @@ void test('turn-context results identify their kind and every contributing entry
     sourceLineStart: 2,
     sourceLineEnd: 5,
     content: 'User:\nShip release Atlas.\n\nAssistant:\nYes, do it.',
-  } satisfies RerankedRecallSearchResult;
+  } satisfies RankedRecallSearchResult;
 
   const output = formatRecallSearchResults({
     totalChunks: 1,
     results: [turnContextResult],
     searchPolicy: {
+      rankingMode: 'deep-rerank',
       rankFusionVersion: 1,
       reciprocalRankConstant: 60,
       rerankPolicyVersion: 1,
@@ -112,12 +134,13 @@ void test('tool evidence results identify the exact call relationship and source
     toolError: true,
     content: 'EPERM readNodeErrorCode /tmp/locked-file',
     dense: null,
-  } satisfies RerankedRecallSearchResult;
+  } satisfies RankedRecallSearchResult;
 
   const output = formatRecallSearchResults({
     totalChunks: 1,
     results: [toolResult],
     searchPolicy: {
+      rankingMode: 'deep-rerank',
       rankFusionVersion: 1,
       reciprocalRankConstant: 60,
       rerankPolicyVersion: 1,
@@ -174,12 +197,13 @@ void test('recall results format stitched neighbors and every suppressed provena
       content: 'alpha beta gamma delta epsilon',
       chunks: [previous, winner, next],
     },
-  } satisfies RerankedRecallSearchResult;
+  } satisfies RankedRecallSearchResult;
 
   const output = formatRecallSearchResults({
     totalChunks: 4,
     results: [expandedResult],
     searchPolicy: {
+      rankingMode: 'deep-rerank',
       rankFusionVersion: 1,
       reciprocalRankConstant: 60,
       rerankPolicyVersion: 1,

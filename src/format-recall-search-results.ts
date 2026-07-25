@@ -1,6 +1,6 @@
 import type { RecallSearchResult } from './fuse-recall-search-candidates.js';
 import type { RecallConversationSearch } from './recall-conversation-service.js';
-import type { RerankedRecallSearchResult } from './rerank-recall-search-results.js';
+import type { RankedRecallSearchResult } from './rank-recall-search-results.js';
 
 function truncateRecallExcerpt(content: string, maxCharacters: number): string {
   const normalized = content.replace(/\s+/g, ' ').trim();
@@ -10,7 +10,7 @@ function truncateRecallExcerpt(content: string, maxCharacters: number): string {
   return `${normalized.slice(0, Math.max(0, maxCharacters - 1)).trimEnd()}…`;
 }
 
-function formatRecallToolEvidenceMetadata(result: RerankedRecallSearchResult): string | null {
+function formatRecallToolEvidenceMetadata(result: RankedRecallSearchResult): string | null {
   if (result.documentKind !== 'tool') {
     return null;
   }
@@ -27,7 +27,7 @@ function formatRecallToolEvidenceMetadata(result: RerankedRecallSearchResult): s
   return parts.join(' · ');
 }
 
-function formatRecallDocumentMetadata(result: RerankedRecallSearchResult): string {
+function formatRecallDocumentMetadata(result: RankedRecallSearchResult): string {
   const toolMetadata = formatRecallToolEvidenceMetadata(result);
   if (toolMetadata) {
     return toolMetadata;
@@ -55,10 +55,10 @@ function formatRecallDuplicateOccurrence(occurrence: RecallSearchResult): string
   ].join(' · ');
 }
 
-function formatRecallScoreComponents(result: RerankedRecallSearchResult): string {
+function formatRecallScoreComponents(result: RankedRecallSearchResult): string {
   const components = [
     `ranking ${result.rankingScore.toFixed(4)}`,
-    `Qwen reranker ${result.rerankerScore.toFixed(4)}`,
+    ...(result.rerankerScore === null ? [] : [`Qwen reranker ${result.rerankerScore.toFixed(4)}`]),
     `active prior +${result.activeBranchPrior.toFixed(4)}`,
     `fused RRF ${result.fusedScore.toFixed(4)}`,
   ];
@@ -80,13 +80,17 @@ function formatRecallScoreComponents(result: RerankedRecallSearchResult): string
   return components.join(' · ');
 }
 
-/** Formats reranked recall evidence with component scores and every source occurrence. */
+/** Formats hybrid or deeply reranked recall evidence with every source occurrence. */
 export function formatRecallSearchResults(
   search: RecallConversationSearch,
   maxExcerptCharacters = 2_000,
 ): string {
+  const rankingDescription =
+    search.searchPolicy.rankingMode === 'deep-rerank'
+      ? `fusion v${search.searchPolicy.rankFusionVersion} (RRF k=${search.searchPolicy.reciprocalRankConstant}) and Qwen ${search.searchPolicy.rerankerModel} policy v${search.searchPolicy.rerankPolicyVersion}`
+      : `deterministic fusion v${search.searchPolicy.rankFusionVersion} (RRF k=${search.searchPolicy.reciprocalRankConstant}) without Qwen reranking`;
   const lines = [
-    `Recall searched ${search.totalChunks} indexed evidence documents with fusion v${search.searchPolicy.rankFusionVersion} (RRF k=${search.searchPolicy.reciprocalRankConstant}) and Qwen ${search.searchPolicy.rerankerModel} policy v${search.searchPolicy.rerankPolicyVersion} (active prior +${search.searchPolicy.activeBranchPrior.toFixed(4)}).`,
+    `Recall searched ${search.totalChunks} indexed evidence documents with ${rankingDescription} (active prior +${search.searchPolicy.activeBranchPrior.toFixed(4)}).`,
   ];
   if (search.results.length === 0) {
     lines.push('No matching past conversations found.');

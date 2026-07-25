@@ -5,14 +5,13 @@ import type {
   RecallQualityEvaluationCase,
   RecallQualityExpectedSource,
 } from './recall-quality-corpus.js';
-import type { RerankedRecallSearchResult } from './rerank-recall-search-results.js';
+import type { RankedRecallSearchResult } from './rank-recall-search-results.js';
 
-/** One fully reranked search plus separately measured total-query and reranker latency. */
+/** One ordered hybrid search plus its measured total-query latency. */
 export interface RecallQualitySearchObservation {
   evaluationCase: RecallQualityEvaluationCase;
-  results: readonly RerankedRecallSearchResult[];
+  results: readonly RankedRecallSearchResult[];
   queryLatencyMilliseconds: number;
-  rerankerLatencyMilliseconds: number;
 }
 
 /** Median and nearest-rank p95 latency in milliseconds. */
@@ -24,54 +23,52 @@ export interface RecallQualityLatencySummary {
 /** Per-case outcome at one final-result count. */
 export interface RecallQualityCaseFinalMeasurement {
   finalCount: number;
-  postRerankRecalled: boolean;
+  finalRecalled: boolean;
   contextUseful: boolean;
   sourceOccurrencesPreserved: boolean;
   preservedSourceOccurrences: number;
-  postRerankDuplicateSlots: number;
-  postRerankResultSlots: number;
+  finalDuplicateSlots: number;
+  finalResultSlots: number;
 }
 
 /** Source, duplicate, context, and latency evidence for one fixed query. */
 export interface RecallQualityCaseMeasurement {
   caseId: string;
   category: RecallQualityEvaluationCase['category'];
-  preRerankRecalled: boolean;
+  candidatePoolRecalled: boolean;
   rawCandidateCount: number;
   groupedCandidateCount: number;
-  preRerankDuplicateSlots: number;
+  candidatePoolDuplicateSlots: number;
   queryLatencyMilliseconds: number;
-  rerankerLatencyMilliseconds: number;
   finalCounts: RecallQualityCaseFinalMeasurement[];
 }
 
-/** Aggregate post-rerank quality at one final-result count. */
+/** Aggregate ordered hybrid quality at one final-result count. */
 export interface RecallQualityFinalCountMeasurement {
   finalCount: number;
-  postRerankRecall: number;
+  finalRecall: number;
   contextUsefulness: number;
   sourceOccurrencePreservation: number;
-  postRerankDuplicateRate: number;
+  finalDuplicateRate: number;
   missedCaseIds: string[];
   contextFailureCaseIds: string[];
   sourceOccurrenceFailureCaseIds: string[];
-  postRerankDuplicateSlots: number;
-  postRerankResultSlots: number;
+  finalDuplicateSlots: number;
+  finalResultSlots: number;
 }
 
 /** Complete measured quality and latency for one candidate-count search configuration. */
 export interface RecallQualityMeasurement {
   caseCount: number;
-  preRerankRecall: number;
-  preRerankDuplicateRate: number;
+  candidatePoolRecall: number;
+  candidatePoolDuplicateRate: number;
   queryLatencyMilliseconds: RecallQualityLatencySummary;
-  rerankerLatencyMilliseconds: RecallQualityLatencySummary;
-  missedPreRerankCaseIds: string[];
+  missedCandidatePoolCaseIds: string[];
   caseMeasurements: RecallQualityCaseMeasurement[];
   finalCounts: RecallQualityFinalCountMeasurement[];
 }
 
-function getRecallResultGroupMembers(result: RerankedRecallSearchResult): RecallSearchResult[] {
+function getRecallResultGroupMembers(result: RankedRecallSearchResult): RecallSearchResult[] {
   return [result, ...result.duplicateOccurrences];
 }
 
@@ -118,7 +115,7 @@ function matchesExpectedRecallSource(
 }
 
 function resultGroupMatchesEvaluationCase(
-  result: RerankedRecallSearchResult,
+  result: RankedRecallSearchResult,
   evaluationCase: RecallQualityEvaluationCase,
 ): boolean {
   return getRecallResultGroupMembers(result).some((candidate) =>
@@ -129,7 +126,7 @@ function resultGroupMatchesEvaluationCase(
 }
 
 function countPreservedExpectedSources(
-  results: readonly RerankedRecallSearchResult[],
+  results: readonly RankedRecallSearchResult[],
   evaluationCase: RecallQualityEvaluationCase,
 ): number {
   const candidates = results.flatMap(getRecallResultGroupMembers);
@@ -139,7 +136,7 @@ function countPreservedExpectedSources(
 }
 
 function hasUsefulRecallContext(
-  results: readonly RerankedRecallSearchResult[],
+  results: readonly RankedRecallSearchResult[],
   evaluationCase: RecallQualityEvaluationCase,
 ): boolean {
   const requiredFragments = evaluationCase.requiredContext.map((fragment) =>
@@ -267,9 +264,7 @@ function assertRecallQualityInputs(
   for (const observation of observations) {
     if (
       !Number.isFinite(observation.queryLatencyMilliseconds) ||
-      observation.queryLatencyMilliseconds < 0 ||
-      !Number.isFinite(observation.rerankerLatencyMilliseconds) ||
-      observation.rerankerLatencyMilliseconds < 0
+      observation.queryLatencyMilliseconds < 0
     ) {
       throw new Error('Recall quality measurement latency must be a finite nonnegative number');
     }
@@ -284,16 +279,15 @@ function measureRecallQualityCase(
   return {
     caseId: observation.evaluationCase.id,
     category: observation.evaluationCase.category,
-    preRerankRecalled: rawCandidates.some((candidate) =>
+    candidatePoolRecalled: rawCandidates.some((candidate) =>
       observation.evaluationCase.expectedSources.some((expectedSource) =>
         matchesExpectedRecallSource(candidate, expectedSource),
       ),
     ),
     rawCandidateCount: rawCandidates.length,
     groupedCandidateCount: observation.results.length,
-    preRerankDuplicateSlots: countDuplicateRecallSlots(rawCandidates),
+    candidatePoolDuplicateSlots: countDuplicateRecallSlots(rawCandidates),
     queryLatencyMilliseconds: observation.queryLatencyMilliseconds,
-    rerankerLatencyMilliseconds: observation.rerankerLatencyMilliseconds,
     finalCounts: finalCounts.map((finalCount) => {
       const results = observation.results.slice(0, finalCount);
       const preservedSourceOccurrences = countPreservedExpectedSources(
@@ -302,7 +296,7 @@ function measureRecallQualityCase(
       );
       return {
         finalCount,
-        postRerankRecalled: results.some((result) =>
+        finalRecalled: results.some((result) =>
           resultGroupMatchesEvaluationCase(result, observation.evaluationCase),
         ),
         contextUseful: hasUsefulRecallContext(results, observation.evaluationCase),
@@ -310,14 +304,14 @@ function measureRecallQualityCase(
           preservedSourceOccurrences >=
           observation.evaluationCase.minimumPreservedSourceOccurrences,
         preservedSourceOccurrences,
-        postRerankDuplicateSlots: countDuplicateRecallSlots(results),
-        postRerankResultSlots: results.length,
+        finalDuplicateSlots: countDuplicateRecallSlots(results),
+        finalResultSlots: results.length,
       };
     }),
   };
 }
 
-/** Measures pre/post-rerank recall, duplicates, context, source preservation, and latency. */
+/** Measures candidate-pool and ordered final recall, context, provenance, duplicates, and latency. */
 export function measureRecallQuality(
   observations: readonly RecallQualitySearchObservation[],
   finalCounts: readonly number[],
@@ -326,31 +320,28 @@ export function measureRecallQuality(
   const caseMeasurements = observations.map((observation) =>
     measureRecallQualityCase(observation, finalCounts),
   );
-  const missedPreRerankCaseIds = caseMeasurements
-    .filter(({ preRerankRecalled }) => !preRerankRecalled)
+  const missedCandidatePoolCaseIds = caseMeasurements
+    .filter(({ candidatePoolRecalled }) => !candidatePoolRecalled)
     .map(({ caseId }) => caseId);
   const rawCandidateCount = caseMeasurements.reduce(
     (total, measurement) => total + measurement.rawCandidateCount,
     0,
   );
-  const preRerankDuplicateSlots = caseMeasurements.reduce(
-    (total, measurement) => total + measurement.preRerankDuplicateSlots,
+  const candidatePoolDuplicateSlots = caseMeasurements.reduce(
+    (total, measurement) => total + measurement.candidatePoolDuplicateSlots,
     0,
   );
   return {
     caseCount: caseMeasurements.length,
-    preRerankRecall: createRate(
-      caseMeasurements.length - missedPreRerankCaseIds.length,
+    candidatePoolRecall: createRate(
+      caseMeasurements.length - missedCandidatePoolCaseIds.length,
       caseMeasurements.length,
     ),
-    preRerankDuplicateRate: createRate(preRerankDuplicateSlots, rawCandidateCount),
+    candidatePoolDuplicateRate: createRate(candidatePoolDuplicateSlots, rawCandidateCount),
     queryLatencyMilliseconds: summarizeRecallLatency(
       caseMeasurements.map(({ queryLatencyMilliseconds }) => queryLatencyMilliseconds),
     ),
-    rerankerLatencyMilliseconds: summarizeRecallLatency(
-      caseMeasurements.map(({ rerankerLatencyMilliseconds }) => rerankerLatencyMilliseconds),
-    ),
-    missedPreRerankCaseIds,
+    missedCandidatePoolCaseIds,
     caseMeasurements,
     finalCounts: finalCounts.map((finalCount) => {
       const outcomes = caseMeasurements.map((measurement) => {
@@ -365,7 +356,7 @@ export function measureRecallQuality(
         return { caseId: measurement.caseId, outcome };
       });
       const missedCaseIds = outcomes
-        .filter(({ outcome }) => !outcome.postRerankRecalled)
+        .filter(({ outcome }) => !outcome.finalRecalled)
         .map(({ caseId }) => caseId);
       const contextFailureCaseIds = outcomes
         .filter(({ outcome }) => !outcome.contextUseful)
@@ -373,17 +364,17 @@ export function measureRecallQuality(
       const sourceOccurrenceFailureCaseIds = outcomes
         .filter(({ outcome }) => !outcome.sourceOccurrencesPreserved)
         .map(({ caseId }) => caseId);
-      const postRerankDuplicateSlots = outcomes.reduce(
-        (total, { outcome }) => total + outcome.postRerankDuplicateSlots,
+      const finalDuplicateSlots = outcomes.reduce(
+        (total, { outcome }) => total + outcome.finalDuplicateSlots,
         0,
       );
-      const postRerankResultSlots = outcomes.reduce(
-        (total, { outcome }) => total + outcome.postRerankResultSlots,
+      const finalResultSlots = outcomes.reduce(
+        (total, { outcome }) => total + outcome.finalResultSlots,
         0,
       );
       return {
         finalCount,
-        postRerankRecall: createRate(outcomes.length - missedCaseIds.length, outcomes.length),
+        finalRecall: createRate(outcomes.length - missedCaseIds.length, outcomes.length),
         contextUsefulness: createRate(
           outcomes.length - contextFailureCaseIds.length,
           outcomes.length,
@@ -392,12 +383,12 @@ export function measureRecallQuality(
           outcomes.length - sourceOccurrenceFailureCaseIds.length,
           outcomes.length,
         ),
-        postRerankDuplicateRate: createRate(postRerankDuplicateSlots, postRerankResultSlots),
+        finalDuplicateRate: createRate(finalDuplicateSlots, finalResultSlots),
         missedCaseIds,
         contextFailureCaseIds,
         sourceOccurrenceFailureCaseIds,
-        postRerankDuplicateSlots,
-        postRerankResultSlots,
+        finalDuplicateSlots,
+        finalResultSlots,
       };
     }),
   };

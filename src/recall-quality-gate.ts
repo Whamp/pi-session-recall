@@ -77,13 +77,13 @@ export async function readRecallQualityGateDecision(
       `Recall quality gate evidence inconsistent at ${resultsPath}: pass and selected-policy decisions disagree`,
     );
   }
-  if (evidence.result.version !== 2) {
+  if (evidence.result.version !== 3) {
     return {
       automatedGatePassed: false,
       selectedPolicy: null,
       blockers: [
         ...selection.blockers,
-        `Recall quality evidence version ${evidence.result.version} predates required-text source matching and fresh model-canary timing; rerun npm run evaluate:recall`,
+        `Recall quality evidence version ${evidence.result.version} predates rerank-free fused top-N measurement; rerun npm run evaluate:recall`,
       ],
     };
   }

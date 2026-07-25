@@ -299,10 +299,11 @@ void test('recall service fuses bounded dense, lexical, and identifier candidate
 
   const denseResult = await service.search(semanticParaphraseQuery, 1);
   assert.deepEqual(denseResult.searchPolicy, {
+    rankingMode: 'hybrid',
     rankFusionVersion: 1,
     reciprocalRankConstant: 60,
-    rerankPolicyVersion: 1,
-    rerankerModel: 'test-reranker-model',
+    rerankPolicyVersion: null,
+    rerankerModel: null,
     activeBranchPrior: 0.01,
     candidateLimits: { dense: 1, lexical: 1, identifier: 1 },
   });
@@ -345,7 +346,7 @@ void test('recall service fuses bounded dense, lexical, and identifier candidate
   );
 });
 
-void test('recall service reranks the full fused pool before applying the final result limit', async (t) => {
+void test('recall service defaults to fused ranking and reranks only in explicit deep mode', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'recall-service-reranked-pool-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const sessionsDirectory = join(directory, 'sessions');
@@ -414,16 +415,25 @@ void test('recall service reranks the full fused pool before applying the final 
   });
   await service.index();
 
-  const search = await service.search(query, 1);
+  const defaultSearch = await service.search(query, 1);
+
+  assert.deepEqual(rerankerInputs, []);
+  assert.equal(defaultSearch.results.length, 1);
+  assert.equal(defaultSearch.results[0]?.entryId.value, 'fusion-favorite');
+  assert.equal(defaultSearch.results[0]?.rerankerScore, null);
+  assert.equal(defaultSearch.searchPolicy.rankingMode, 'hybrid');
+
+  const deepSearch = await service.search(query, 1, { mode: 'deep-rerank' });
 
   assert.deepEqual(rerankerInputs, [[fusionFavorite, rerankerFavorite]]);
-  assert.equal(search.results.length, 1);
-  assert.equal(search.results[0]?.entryId.value, 'reranker-favorite');
-  assert.equal(search.results[0]?.rerankerScore, 0.9);
-  assert.equal(search.results[0]?.dense?.rank, 2);
-  assert.ok(Number.isFinite(search.results[0]?.dense?.cosineDistance));
-  assert.equal(search.results[0]?.lexical, null);
-  assert.equal(search.results[0]?.identifier, null);
+  assert.equal(deepSearch.results.length, 1);
+  assert.equal(deepSearch.results[0]?.entryId.value, 'reranker-favorite');
+  assert.equal(deepSearch.results[0]?.rerankerScore, 0.9);
+  assert.equal(deepSearch.results[0]?.dense?.rank, 2);
+  assert.ok(Number.isFinite(deepSearch.results[0]?.dense?.cosineDistance));
+  assert.equal(deepSearch.results[0]?.lexical, null);
+  assert.equal(deepSearch.results[0]?.identifier, null);
+  assert.equal(deepSearch.searchPolicy.rankingMode, 'deep-rerank');
 });
 
 void test('recall service fails clearly when Qwen reranking is unavailable', async (t) => {
@@ -469,8 +479,11 @@ void test('recall service fails clearly when Qwen reranking is unavailable', asy
   });
   await service.index();
 
+  const defaultSearch = await service.search('must not require Qwen', 1);
+  assert.equal(defaultSearch.results[0]?.entryId.value, 'failure-entry');
+
   await assert.rejects(
-    () => service.search('must use Qwen', 1),
+    () => service.search('must use Qwen', 1, { mode: 'deep-rerank' }),
     /Recall reranker request failed at http:\/\/reranker\.test\/v1\/rerank: unavailable/,
   );
 });

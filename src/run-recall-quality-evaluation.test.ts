@@ -6,7 +6,6 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import type { LocalEmbeddingClient } from './local-embedding-client.js';
-import type { LocalRerankerClient } from './local-reranker-client.js';
 import { loadRecallQualityCorpus } from './recall-quality-corpus.js';
 import type { RecallConversationConfig } from './recall-conversation-service.js';
 import { RECALL_EMBEDDING_CANARY_TEXT } from './recall-index-manifest.js';
@@ -45,7 +44,7 @@ void test('recall quality runner indexes and searches only the bounded declared 
   await writeFile(join(corpusDirectory, sessionFileName), sessionContent);
   const sha256 = createHash('sha256').update(sessionContent).digest('hex');
   const specification = {
-    version: 1,
+    version: 2,
     corpus: {
       id: 'bounded-runner-v1',
       sessionDirectory: 'corpus',
@@ -54,27 +53,22 @@ void test('recall quality runner indexes and searches only the bounded declared 
     bounds: {
       maximumSessionFiles: 1,
       maximumEvaluationCases: 1,
-      maximumChunkPolicies: 3,
+      maximumChunkPolicies: 1,
       maximumCandidateCounts: 1,
       maximumFinalCounts: 1,
       maximumSearchRequests: 3,
     },
-    chunkPolicies: [
-      { id: '512-64', maxTokens: 512, overlapTokens: 64 },
-      { id: '768-96', maxTokens: 768, overlapTokens: 96 },
-      { id: '1024-128', maxTokens: 1024, overlapTokens: 128 },
-    ],
+    chunkPolicies: [{ id: '512-64', maxTokens: 512, overlapTokens: 64 }],
     candidateCounts: [2],
     finalCounts: [1],
     warmupQueriesPerCombination: 0,
     qualityGate: {
-      minimumPreRerankRecall: 1,
-      minimumPostRerankRecall: 1,
+      minimumCandidatePoolRecall: 1,
+      minimumFinalRecall: 1,
       minimumContextUsefulness: 1,
       minimumSourceOccurrencePreservation: 1,
-      maximumPostRerankDuplicateRate: 0,
+      maximumFinalDuplicateRate: 0,
       maximumQueryP95Milliseconds: 10_000,
-      maximumRerankerP95Milliseconds: 10_000,
     },
     cases: [
       {
@@ -122,12 +116,6 @@ void test('recall quality runner indexes and searches only the bounded declared 
       return texts.map((text) => (text === RECALL_EMBEDDING_CANARY_TEXT ? [0, 0, 1] : [1, 0, 0]));
     },
   };
-  const reranker: LocalRerankerClient = {
-    async rerankDocuments(query, documents) {
-      void query;
-      return documents.map((document) => (document.includes('quartz-heron') ? 1 : 0));
-    },
-  };
   const tokenizer: ConversationTextTokenizer = {
     encodeConversationText(text) {
       return {
@@ -142,19 +130,18 @@ void test('recall quality runner indexes and searches only the bounded declared 
     workDirectory: join(directory, 'recall-quality-evaluation'),
     dependencies: {
       embeddings,
-      reranker,
       async loadTokenizer() {
         return tokenizer;
       },
     },
   });
 
-  assert.equal(result.version, 2);
-  assert.equal(result.boundedWork.indexRuns, 3);
-  assert.equal(result.boundedWork.executedSearchRequests, 3);
-  assert.equal(result.indexRuns.length, 3);
+  assert.equal(result.version, 3);
+  assert.equal(result.boundedWork.indexRuns, 1);
+  assert.equal(result.boundedWork.executedSearchRequests, 1);
+  assert.equal(result.indexRuns.length, 1);
   assert.ok(result.indexRuns.every(({ indexSummary }) => indexSummary.scannedSessions === 1));
-  assert.equal(result.configurations.length, 3);
+  assert.equal(result.configurations.length, 1);
   assert.equal(result.selection.passed, true);
   assert.equal(result.selection.selected?.candidateCount, 2);
   assert.equal(result.selection.selected?.finalCount, 1);

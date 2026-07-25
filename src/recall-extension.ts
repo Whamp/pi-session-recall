@@ -46,7 +46,7 @@ export default async function recallExtension(
     name: 'pi-session-recall',
     label: 'Pi Session Recall',
     description:
-      'Search a prebuilt compatible index of past Pi conversations with dense, lexical, and case-preserving identifier retrieval, then deduplicate and rerank original candidate text with local Qwen. Excludes hidden reasoning, keeps raw tool evidence lexical-only, labels active and abandoned branches, and expands only valid same-run atomic neighbors with exact provenance. After the committed quality gate passes, run /pi-session-recall-index explicitly to update the index. Output is truncated to 2000 lines or 50KB.',
+      'Search a prebuilt compatible index of past Pi conversations with dense, lexical, and case-preserving identifier retrieval. Search defaults to deterministic hybrid ranking; choose deep-rerank only when ambiguous evidence warrants slower local Qwen scoring. Excludes hidden reasoning, keeps raw tool evidence lexical-only, labels active and abandoned branches, and expands only valid same-run atomic neighbors with exact provenance. After the committed quality gate passes, run /pi-session-recall-index explicitly to update the index. Output is truncated to 2000 lines or 50KB.',
     promptSnippet:
       'Search past Pi conversations by meaning or exact text and recover remembered details',
     promptGuidelines: [
@@ -66,6 +66,12 @@ export default async function recallExtension(
           description: `Maximum matches to return (default ${defaultResultLimit})`,
         }),
       ),
+      mode: Type.Optional(
+        Type.Union([Type.Literal('hybrid'), Type.Literal('deep-rerank')], {
+          description:
+            'Ranking depth: hybrid is the fast default; deep-rerank adds slower local Qwen scoring',
+        }),
+      ),
     }),
 
     async execute(toolCallId, parameters, signal) {
@@ -74,7 +80,10 @@ export default async function recallExtension(
       if (!query) {
         throw new Error('Recall query must not be blank');
       }
-      const search = await service.search(query, parameters.limit ?? defaultResultLimit, signal);
+      const search = await service.search(query, parameters.limit ?? defaultResultLimit, {
+        mode: parameters.mode ?? 'hybrid',
+        ...(signal ? { signal } : {}),
+      });
       const formatted = formatRecallSearchResults(search);
       const truncation = truncateHead(formatted, {
         maxLines: DEFAULT_MAX_LINES,

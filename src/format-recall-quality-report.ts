@@ -55,24 +55,23 @@ function formatGateThresholds(gate: RecallQualityGate): string[] {
   return [
     '| Metric | Frozen threshold |',
     '| --- | ---: |',
-    `| Pre-rerank recall | ≥ ${formatRate(gate.minimumPreRerankRecall)} |`,
-    `| Post-rerank recall | ≥ ${formatRate(gate.minimumPostRerankRecall)} |`,
+    `| Candidate-pool recall | ≥ ${formatRate(gate.minimumCandidatePoolRecall)} |`,
+    `| Fused top-N recall | ≥ ${formatRate(gate.minimumFinalRecall)} |`,
     `| Context usefulness | ≥ ${formatRate(gate.minimumContextUsefulness)} |`,
     `| Source-occurrence preservation | ≥ ${formatRate(gate.minimumSourceOccurrencePreservation)} |`,
-    `| Post-rerank duplicate-result rate | ≤ ${formatRate(gate.maximumPostRerankDuplicateRate)} |`,
+    `| Final duplicate-result rate | ≤ ${formatRate(gate.maximumFinalDuplicateRate)} |`,
     `| Query p95 | ≤ ${formatMilliseconds(gate.maximumQueryP95Milliseconds)} |`,
-    `| Reranker p95 | ≤ ${formatMilliseconds(gate.maximumRerankerP95Milliseconds)} |`,
   ];
 }
 
 function formatQualityMatrix(combinations: readonly RecallQualityGateCombination[]): string[] {
   const lines = [
-    '| Chunk | Candidates/channel | Final | Pre recall | Post recall | Pre duplicates | Post duplicates | Context | Sources | Query p50/p95 | Reranker p50/p95 | Gate |',
-    '| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |',
+    '| Chunk | Candidates/channel | Final | Pool recall | Final recall | Pool duplicates | Final duplicates | Context | Sources | Query p50/p95 | Gate |',
+    '| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |',
   ];
   for (const combination of combinations) {
     lines.push(
-      `| ${formatChunkPolicy(combination.chunkPolicy)} | ${combination.candidateCount} | ${combination.finalCount} | ${formatRate(combination.preRerankRecall)} | ${formatRate(combination.postRerankRecall)} | ${formatRate(combination.preRerankDuplicateRate)} | ${formatRate(combination.postRerankDuplicateRate)} | ${formatRate(combination.contextUsefulness)} | ${formatRate(combination.sourceOccurrencePreservation)} | ${formatMilliseconds(combination.queryLatencyMilliseconds.median)} / ${formatMilliseconds(combination.queryLatencyMilliseconds.p95)} | ${formatMilliseconds(combination.rerankerLatencyMilliseconds.median)} / ${formatMilliseconds(combination.rerankerLatencyMilliseconds.p95)} | ${combination.gatePassed ? 'PASS' : 'FAIL'} |`,
+      `| ${formatChunkPolicy(combination.chunkPolicy)} | ${combination.candidateCount} | ${combination.finalCount} | ${formatRate(combination.candidatePoolRecall)} | ${formatRate(combination.finalRecall)} | ${formatRate(combination.candidatePoolDuplicateRate)} | ${formatRate(combination.finalDuplicateRate)} | ${formatRate(combination.contextUsefulness)} | ${formatRate(combination.sourceOccurrencePreservation)} | ${formatMilliseconds(combination.queryLatencyMilliseconds.median)} / ${formatMilliseconds(combination.queryLatencyMilliseconds.p95)} | ${combination.gatePassed ? 'PASS' : 'FAIL'} |`,
     );
   }
   return lines;
@@ -87,11 +86,11 @@ function hasNoDiscriminatingRecallQualityVariance(
   const qualitySignatures = new Set(
     combinations.map((combination) =>
       [
-        combination.preRerankRecall,
-        combination.postRerankRecall,
+        combination.candidatePoolRecall,
+        combination.finalRecall,
         combination.contextUsefulness,
         combination.sourceOccurrencePreservation,
-        combination.postRerankDuplicateRate,
+        combination.finalDuplicateRate,
       ].join('|'),
     ),
   );
@@ -107,8 +106,8 @@ function findDecisionCombination(
   return result.selection.combinations.toSorted(
     (left, right) =>
       left.failures.length - right.failures.length ||
-      right.preRerankRecall - left.preRerankRecall ||
-      right.postRerankRecall - left.postRerankRecall ||
+      right.candidatePoolRecall - left.candidatePoolRecall ||
+      right.finalRecall - left.finalRecall ||
       right.contextUsefulness - left.contextUsefulness ||
       left.candidateCount - right.candidateCount ||
       left.finalCount - right.finalCount,
@@ -140,8 +139,8 @@ function formatCaseOutcomes(
   const lines = [
     `Shown for ${formatChunkPolicy(decision.chunkPolicy)}, ${decision.candidateCount} candidates/channel, and ${decision.finalCount} final results.`,
     '',
-    '| Case | Category | Pre | Post | Context | Sources | Raw/grouped | Query | Reranker |',
-    '| --- | --- | --- | --- | --- | --- | ---: | ---: | ---: |',
+    '| Case | Category | Pool | Final | Context | Sources | Raw/grouped | Query |',
+    '| --- | --- | --- | --- | --- | --- | ---: | ---: |',
   ];
   for (const caseMeasurement of configuration.measurement.caseMeasurements) {
     const finalMeasurement = caseMeasurement.finalCounts.find(
@@ -151,11 +150,11 @@ function formatCaseOutcomes(
       continue;
     }
     lines.push(
-      `| ${escapeMarkdownTable(caseMeasurement.caseId)} | ${caseMeasurement.category} | ${caseMeasurement.preRerankRecalled ? 'hit' : 'miss'} | ${finalMeasurement.postRerankRecalled ? 'hit' : 'miss'} | ${finalMeasurement.contextUseful ? 'useful' : 'fail'} | ${finalMeasurement.sourceOccurrencesPreserved ? `${finalMeasurement.preservedSourceOccurrences} kept` : `${finalMeasurement.preservedSourceOccurrences} fail`} | ${caseMeasurement.rawCandidateCount}/${caseMeasurement.groupedCandidateCount} | ${formatMilliseconds(caseMeasurement.queryLatencyMilliseconds)} | ${formatMilliseconds(caseMeasurement.rerankerLatencyMilliseconds)} |`,
+      `| ${escapeMarkdownTable(caseMeasurement.caseId)} | ${caseMeasurement.category} | ${caseMeasurement.candidatePoolRecalled ? 'hit' : 'miss'} | ${finalMeasurement.finalRecalled ? 'hit' : 'miss'} | ${finalMeasurement.contextUseful ? 'useful' : 'fail'} | ${finalMeasurement.sourceOccurrencesPreserved ? `${finalMeasurement.preservedSourceOccurrences} kept` : `${finalMeasurement.preservedSourceOccurrences} fail`} | ${caseMeasurement.rawCandidateCount}/${caseMeasurement.groupedCandidateCount} | ${formatMilliseconds(caseMeasurement.queryLatencyMilliseconds)} |`,
     );
   }
   if (configuration.measurement.caseMeasurements.length === 0) {
-    lines.push('| _No per-case rows in this fixture_ | — | — | — | — | — | — | — | — |');
+    lines.push('| _No per-case rows in this fixture_ | — | — | — | — | — | — | — |');
   }
   return lines;
 }
@@ -181,7 +180,7 @@ export function formatRecallQualityReport(
   if (result.selection.selected) {
     const selected = result.selection.selected;
     lines.push(
-      `Selected **${formatChunkPolicy(selected.chunkPolicy)} tokens/overlap**, **${selected.candidateCount} candidates/channel**, and **${selected.finalCount} final results**. This is the smallest measured candidate count, then the smallest final count, that passes every frozen gate; p95 query and reranker latency break ties.`,
+      `Selected **${formatChunkPolicy(selected.chunkPolicy)} tokens/overlap**, **${selected.candidateCount} candidates/channel**, and **${selected.finalCount} final results**. This is the smallest measured candidate count, then the smallest final count, that passes every frozen hybrid-search gate; p95 query latency breaks ties.`,
     );
   } else {
     lines.push('No candidate or final-result count passed every frozen gate.');
@@ -207,7 +206,7 @@ export function formatRecallQualityReport(
     `| Evaluation cases | ${result.boundedWork.evaluationCases} | ${specification.bounds.maximumEvaluationCases} |`,
     `| Temporary index runs | ${result.boundedWork.indexRuns} | ${specification.bounds.maximumChunkPolicies} |`,
     `| Search requests, including warmups | ${result.boundedWork.executedSearchRequests} | ${specification.bounds.maximumSearchRequests} |`,
-    `| Reranker requests | ${result.boundedWork.rerankerRequests} | ${specification.bounds.maximumSearchRequests} |`,
+    '| Reranker requests | 0 | 0 |',
     `| Chunk-embedding HTTP batches | ${result.boundedWork.chunkEmbeddingRequests} | bounded by ${result.boundedWork.sessionFiles} files/index |`,
     `| Maximum fused candidates/search | ${result.boundedWork.maximumCandidatesPerSearch} | 200 |`,
     '',
@@ -215,12 +214,12 @@ export function formatRecallQualityReport(
     '',
     '## Metric definitions',
     '',
-    '- **Pre-rerank recall:** fraction of cases whose declared source appears anywhere in the complete bounded fused pool before duplicate grouping and reranking.',
-    '- **Post-rerank recall:** fraction of cases whose declared source appears in the first _N_ reranked result groups.',
-    '- **Duplicate-result rate:** slots duplicating an earlier exact cross-session copy or overlapping source span, divided by all slots. Pre-rerank uses reconstructed raw candidates; post-rerank uses visible result groups.',
+    '- **Candidate-pool recall:** fraction of cases whose declared source appears anywhere in the complete bounded fused pool before duplicate grouping.',
+    '- **Fused top-N recall:** fraction of cases whose declared source appears in the first _N_ deterministic hybrid result groups.',
+    '- **Duplicate-result rate:** slots duplicating an earlier exact cross-session copy or overlapping source span, divided by all slots. Candidate-pool measurement reconstructs raw candidates; final measurement uses visible result groups.',
     '- **Context usefulness:** fraction of cases whose first _N_ matching displayed results contain every independently declared context fragment. Neighbor-expanded text is used when present.',
     '- **Source-occurrence preservation:** fraction of cases retaining the required count of distinct declared source locations, including suppressed duplicate occurrences.',
-    `- **Query latency:** wall time for the full read-only service search. **Reranker latency:** wall time inside the local reranker request. Tables report nearest-rank median and p95 across ${specification.cases.length} fixed cases after ${specification.warmupQueriesPerCombination} warmup request per configuration.`,
+    `- **Query latency:** wall time for the full read-only hybrid service search. Tables report nearest-rank median and p95 across ${specification.cases.length} fixed cases after ${specification.warmupQueriesPerCombination} warmup request per configuration.`,
     '',
     '## Chunk-policy index comparison',
     '',
@@ -256,7 +255,7 @@ export function formatRecallQualityReport(
     '',
     '## Reproduce',
     '',
-    'Prerequisites: the pinned Octen tokenizer assets and the configured local embedding and reranker endpoints must be available. The command deletes and recreates only the dedicated ignored evaluation work directory.',
+    'Prerequisites: the pinned Octen tokenizer assets and configured local embedding endpoint must be available. The optional reranker is not called. The command deletes and recreates only the dedicated ignored evaluation work directory.',
     '',
     '```bash',
     environment.command,
@@ -274,7 +273,7 @@ export function formatRecallQualityReport(
     `- Platform: \`${environment.platform}/${environment.architecture}\``,
     `- CPU: ${environment.cpuModel}`,
     `- Embedding: \`${environment.embeddingModel}\` → \`${environment.embeddingServedModelId}\`, \`${environment.embeddingArtifact}\`, ${environment.embeddingDimensions} dimensions at \`${environment.embeddingBaseUrl}\``,
-    `- Reranker: \`${environment.rerankerModel}\` at \`${environment.rerankerBaseUrl}\``,
+    `- Optional deep reranker, not used by this evaluation: \`${environment.rerankerModel}\` at \`${environment.rerankerBaseUrl}\``,
     `- Specification: \`${corpus.specificationPath}\``,
     `- Specification SHA-256: \`${corpus.specificationSha256}\``,
     '',
@@ -291,7 +290,7 @@ export function formatRecallQualityReport(
     '- The corpus is a committed synthetic-but-session-shaped fixture, not a sample of private production logs. It covers every required retrieval class and includes 48 distractors plus a long boundary case, but it cannot estimate all real-corpus failure modes.',
     ...(hasNoDiscriminatingRecallQualityVariance(result.selection.combinations)
       ? [
-          '- The measured grid has no discriminating quality variance across gated recall, context, source-preservation, and visible-duplicate metrics; it can compare latency but cannot rank policy quality.',
+          '- The measured grid has no discriminating quality variance across gated recall, context, source-preservation, and visible-duplicate metrics; it can identify the smallest passing candidate pool but cannot rank quality among passing pools.',
         ]
       : []),
     '- Latency uses one measured request per case after one warmup, so it compares configurations on this host rather than establishing a capacity benchmark.',

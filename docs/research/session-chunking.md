@@ -1,5 +1,7 @@
 # Pi session chunking research
 
+> **Implementation decision, 2026-07-25:** Subsequent bounded evaluation and latency measurements selected a 512-token ceiling with 64-token overlap. Deterministic hybrid fusion is the default ranking path; Qwen reranking remains an optional deep-search mode. The 1,024/128 policy below records the earlier research recommendation rather than the final production choice.
+
 ## Recommendation
 
 Index **visible semantic text runs** with a hard limit of **1,024 Octen tokens** and **128 tokens of overlap** (12.5%). Treat Pi's structural boundaries as stronger than the size target:

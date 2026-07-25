@@ -6,40 +6,38 @@ import type { RecallQualityGate } from './recall-quality-corpus.js';
 import { selectRecallQualityPolicy } from './select-recall-quality-policy.js';
 
 const gate: RecallQualityGate = {
-  minimumPreRerankRecall: 1,
-  minimumPostRerankRecall: 0.9,
+  minimumCandidatePoolRecall: 1,
+  minimumFinalRecall: 0.9,
   minimumContextUsefulness: 0.9,
   minimumSourceOccurrencePreservation: 1,
-  maximumPostRerankDuplicateRate: 0,
+  maximumFinalDuplicateRate: 0,
   maximumQueryP95Milliseconds: 2_000,
-  maximumRerankerP95Milliseconds: 1_500,
 };
 
 function createMeasurement(
-  preRerankRecall: number,
+  candidatePoolRecall: number,
   finalCounts: Array<{
     finalCount: number;
-    postRerankRecall: number;
+    finalRecall: number;
     contextUsefulness: number;
   }>,
 ): RecallQualityMeasurement {
   return {
     caseCount: 10,
-    preRerankRecall,
-    preRerankDuplicateRate: 0.2,
+    candidatePoolRecall,
+    candidatePoolDuplicateRate: 0.2,
     queryLatencyMilliseconds: { median: 700, p95: 900 },
-    rerankerLatencyMilliseconds: { median: 500, p95: 650 },
-    missedPreRerankCaseIds: preRerankRecall === 1 ? [] : ['semantic-miss'],
+    missedCandidatePoolCaseIds: candidatePoolRecall === 1 ? [] : ['semantic-miss'],
     caseMeasurements: [],
     finalCounts: finalCounts.map((measurement) => ({
       ...measurement,
       sourceOccurrencePreservation: 1,
-      postRerankDuplicateRate: 0,
-      missedCaseIds: measurement.postRerankRecall >= 0.9 ? [] : ['semantic-miss'],
+      finalDuplicateRate: 0,
+      missedCaseIds: measurement.finalRecall >= 0.9 ? [] : ['semantic-miss'],
       contextFailureCaseIds: measurement.contextUsefulness >= 0.9 ? [] : ['context-miss'],
       sourceOccurrenceFailureCaseIds: [],
-      postRerankDuplicateSlots: 0,
-      postRerankResultSlots: measurement.finalCount * 10,
+      finalDuplicateSlots: 0,
+      finalResultSlots: measurement.finalCount * 10,
     })),
   };
 }
@@ -53,8 +51,8 @@ void test('recall quality policy selects the smallest measured counts that pass 
         totalChunks: 90,
         indexLatencyMilliseconds: 1_200,
         measurement: createMeasurement(0.9, [
-          { finalCount: 3, postRerankRecall: 0.8, contextUsefulness: 0.8 },
-          { finalCount: 5, postRerankRecall: 0.9, contextUsefulness: 0.9 },
+          { finalCount: 3, finalRecall: 0.8, contextUsefulness: 0.8 },
+          { finalCount: 5, finalRecall: 0.9, contextUsefulness: 0.9 },
         ]),
       },
       {
@@ -63,8 +61,8 @@ void test('recall quality policy selects the smallest measured counts that pass 
         totalChunks: 76,
         indexLatencyMilliseconds: 1_000,
         measurement: createMeasurement(1, [
-          { finalCount: 3, postRerankRecall: 0.9, contextUsefulness: 0.8 },
-          { finalCount: 5, postRerankRecall: 1, contextUsefulness: 0.9 },
+          { finalCount: 3, finalRecall: 0.9, contextUsefulness: 0.8 },
+          { finalCount: 5, finalRecall: 1, contextUsefulness: 0.9 },
         ]),
       },
       {
@@ -73,7 +71,7 @@ void test('recall quality policy selects the smallest measured counts that pass 
         totalChunks: 68,
         indexLatencyMilliseconds: 900,
         measurement: createMeasurement(1, [
-          { finalCount: 3, postRerankRecall: 1, contextUsefulness: 1 },
+          { finalCount: 3, finalRecall: 1, contextUsefulness: 1 },
         ]),
       },
     ],

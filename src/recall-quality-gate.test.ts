@@ -9,13 +9,12 @@ import {
   RECALL_QUALITY_RESULTS_PATH,
 } from './recall-quality-gate.js';
 
-void test('committed failed recall quality evidence approves no backfill policy', async () => {
+void test('committed legacy recall quality evidence approves no backfill policy', async () => {
   const decision = await readRecallQualityGateDecision(RECALL_QUALITY_RESULTS_PATH);
 
   assert.equal(decision.automatedGatePassed, false);
   assert.equal(decision.selectedPolicy, null);
-  assert.ok(decision.blockers.some((blocker) => blocker.includes('query p95')));
-  assert.ok(decision.blockers.some((blocker) => blocker.includes('reranker p95')));
+  assert.ok(decision.blockers.some((blocker) => blocker.includes('rerank-free fused top-N')));
 });
 
 void test('legacy passing recall quality evidence approves no policy', async (t) => {
@@ -60,7 +59,7 @@ void test('quality evidence rejects a selected final count outside the tool cont
       version: 1,
       environment: { gitDirty: false },
       result: {
-        version: 2,
+        version: 3,
         selection: {
           passed: true,
           selected: {
@@ -91,7 +90,7 @@ void test('clean passing recall quality evidence returns its measured policy', a
       version: 1,
       environment: { gitDirty: false },
       result: {
-        version: 2,
+        version: 3,
         selection: {
           passed: true,
           selected: {

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
-  createTestRerankedRecallSearchResult,
+  createTestRankedRecallSearchResult,
   createTestSessionConversationChunk,
 } from './recall-test-utils.js';
 
@@ -12,7 +12,7 @@ void test('recall test fixtures derive source geometry and preserve explicit ove
     content: 'fixture text',
     role: 'user',
   });
-  const result = createTestRerankedRecallSearchResult({
+  const result = createTestRankedRecallSearchResult({
     id: 'result',
     content: 'result text',
     rerankerScore: 0.75,

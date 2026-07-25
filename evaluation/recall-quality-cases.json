@@ -1,7 +1,7 @@
 {
-  "version": 1,
+  "version": 2,
   "corpus": {
-    "id": "recall-quality-bounded-v1",
+    "id": "recall-quality-hybrid-bounded-v2",
     "sessionDirectory": "corpus",
     "sessionFiles": [
       {
@@ -41,39 +41,28 @@
   "bounds": {
     "maximumSessionFiles": 8,
     "maximumEvaluationCases": 10,
-    "maximumChunkPolicies": 3,
+    "maximumChunkPolicies": 1,
     "maximumCandidateCounts": 4,
-    "maximumFinalCounts": 3,
-    "maximumSearchRequests": 132
+    "maximumFinalCounts": 1,
+    "maximumSearchRequests": 44
   },
   "chunkPolicies": [
     {
       "id": "512-64",
       "maxTokens": 512,
       "overlapTokens": 64
-    },
-    {
-      "id": "768-96",
-      "maxTokens": 768,
-      "overlapTokens": 96
-    },
-    {
-      "id": "1024-128",
-      "maxTokens": 1024,
-      "overlapTokens": 128
     }
   ],
-  "candidateCounts": [4, 8, 16, 32],
-  "finalCounts": [3, 5, 8],
+  "candidateCounts": [8, 16, 24, 32],
+  "finalCounts": [5],
   "warmupQueriesPerCombination": 1,
   "qualityGate": {
-    "minimumPreRerankRecall": 1,
-    "minimumPostRerankRecall": 0.9,
+    "minimumCandidatePoolRecall": 1,
+    "minimumFinalRecall": 0.9,
     "minimumContextUsefulness": 0.9,
     "minimumSourceOccurrencePreservation": 1,
-    "maximumPostRerankDuplicateRate": 0,
-    "maximumQueryP95Milliseconds": 2000,
-    "maximumRerankerP95Milliseconds": 1500
+    "maximumFinalDuplicateRate": 0,
+    "maximumQueryP95Milliseconds": 2000
   },
   "cases": [
     {

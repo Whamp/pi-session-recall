@@ -47,15 +47,14 @@ export interface RecallQualityChunkPolicy extends RecallChunkPolicy {
   id: string;
 }
 
-/** Fixed quality and interactive-latency thresholds applied without post-run changes. */
+/** Fixed hybrid quality and interactive-latency thresholds applied without post-run changes. */
 export interface RecallQualityGate {
-  minimumPreRerankRecall: number;
-  minimumPostRerankRecall: number;
+  minimumCandidatePoolRecall: number;
+  minimumFinalRecall: number;
   minimumContextUsefulness: number;
   minimumSourceOccurrencePreservation: number;
-  maximumPostRerankDuplicateRate: number;
+  maximumFinalDuplicateRate: number;
   maximumQueryP95Milliseconds: number;
-  maximumRerankerP95Milliseconds: number;
 }
 
 /** Hard limits that prevent the evaluation command from becoming a corpus backfill. */
@@ -70,7 +69,7 @@ export interface RecallQualityWorkBounds {
 
 /** Complete independent corpus, count grid, work bounds, and quality gate specification. */
 export interface RecallQualityCorpusSpecification {
-  version: 1;
+  version: 2;
   corpus: {
     id: string;
     sessionDirectory: 'corpus';
@@ -156,7 +155,7 @@ function createChunkPolicySchema(id: string, maxTokens: number, overlapTokens: n
 
 const recallQualityCorpusSchema = Type.Object(
   {
-    version: Type.Literal(1),
+    version: Type.Literal(2),
     corpus: Type.Object(
       {
         id: Type.String({ pattern: '^[a-z0-9][a-z0-9-]*$' }),
@@ -185,23 +184,18 @@ const recallQualityCorpusSchema = Type.Object(
       },
       { additionalProperties: false },
     ),
-    chunkPolicies: Type.Tuple([
-      createChunkPolicySchema('512-64', 512, 64),
-      createChunkPolicySchema('768-96', 768, 96),
-      createChunkPolicySchema('1024-128', 1_024, 128),
-    ]),
+    chunkPolicies: Type.Tuple([createChunkPolicySchema('512-64', 512, 64)]),
     candidateCounts: Type.Array(Type.Integer({ minimum: 1, maximum: 200 }), { minItems: 1 }),
     finalCounts: Type.Array(Type.Integer({ minimum: 1, maximum: 200 }), { minItems: 1 }),
     warmupQueriesPerCombination: Type.Integer({ minimum: 0, maximum: 3 }),
     qualityGate: Type.Object(
       {
-        minimumPreRerankRecall: probabilitySchema,
-        minimumPostRerankRecall: probabilitySchema,
+        minimumCandidatePoolRecall: probabilitySchema,
+        minimumFinalRecall: probabilitySchema,
         minimumContextUsefulness: probabilitySchema,
         minimumSourceOccurrencePreservation: probabilitySchema,
-        maximumPostRerankDuplicateRate: probabilitySchema,
+        maximumFinalDuplicateRate: probabilitySchema,
         maximumQueryP95Milliseconds: Type.Number({ exclusiveMinimum: 0 }),
-        maximumRerankerP95Milliseconds: Type.Number({ exclusiveMinimum: 0 }),
       },
       { additionalProperties: false },
     ),

@@ -1,6 +1,6 @@
 # Pi Session Recall
 
-`pi-session-recall` gives Pi a `pi-session-recall` tool for searching past conversations by meaning or exact text. It reads Pi session JSONL files, embeds user-visible conversation text with a local OpenAI-compatible model, stores durable FP32 vectors in a content-addressed cache, and builds dense plus full-text indexes in an in-process [zvec](https://github.com/alibaba/zvec) collection. Search fuses every bounded retrieval channel, suppresses duplicate evidence, and reranks the original candidate text with a local Qwen3 reranker.
+`pi-session-recall` gives Pi a `pi-session-recall` tool for searching past conversations by meaning or exact text. It reads Pi session JSONL files, embeds user-visible conversation text with a local OpenAI-compatible model, stores durable FP32 vectors in a content-addressed cache, and builds dense plus full-text indexes in an in-process [zvec](https://github.com/alibaba/zvec) collection. Search fuses every bounded retrieval channel and suppresses duplicate evidence. Fast deterministic hybrid ranking is the default; local Qwen3 reranking is an explicit deep-search option.
 
 ## What it indexes
 
@@ -22,7 +22,7 @@ Turn-context documents are secondary evidence. Each starts with visible user tex
 
 Tool calls, results, and direct bash executions follow a separate lexical-only evidence path. Names, compact JSON argument objects, result text, commands, and shell output are stored without redaction. Every document stays within one tool source block or bash message field and records its evidence part, tool name, available call linkage, error state, and source path. Thinking and images are never tool evidence.
 
-All evidence uses the exact pinned Octen tokenizer for bounded geometry. Atomic, turn-context, and summary chunks contain at most 1,024 tokens and overlap adjacent siblings by at most 128 tokens. Tool evidence also contains at most 1,024 tokens, uses no overlap, and preserves every source character. Splitting prefers Markdown sections, paragraphs, fenced-code boundaries, lines, and sentences before a hard token cut.
+All evidence uses the exact pinned Octen tokenizer for bounded geometry. The approved policy targets at most 512 tokens with 64 tokens of overlap between adjacent siblings. Tool evidence also contains at most 512 tokens, uses no overlap, and preserves every source character. Splitting prefers Markdown sections, paragraphs, fenced-code boundaries, lines, and sentences before a hard token cut.
 
 Every stored document includes:
 
@@ -64,11 +64,12 @@ Pi can call the tool with a semantic paraphrase or exact source token:
 ```text
 pi-session-recall({ query: "What did we decide about the job queue?", limit: 5 })
 pi-session-recall({ query: "readNodeErrorCode", limit: 5 })
+pi-session-recall({ query: "Which queue decision survived later objections?", limit: 5, mode: "deep-rerank" })
 ```
 
 The extension tells Pi to use `pi-session-recall` when a task depends on a past conversation or a detail absent from current context. Each result contains:
 
-- final ranking score, Qwen relevance score, active-branch prior, fused score, and available dense, lexical, and identifier ranks and scores;
+- final ranking score, optional Qwen relevance score, active-branch prior, fused score, and available dense, lexical, and identifier ranks and scores;
 - document and summary kind, session name, date, role, branch label, and project directory;
 - original candidate text or stitched same-run neighbor context;
 - source provenance in `SESSION_FILE#ENTRY_ID` form, plus every contributing entry for turn context;
@@ -88,19 +89,19 @@ Search asks each channel for a bounded candidate set, deduplicates identical doc
 
 Application-side fusion is deliberate. Zvec 0.6.0 supports native hybrid RRF through `multiQuerySync()`, but native results omit the component ranks and scores required for evaluation and source-backed diagnostics.
 
-## Qwen reranking and evidence shaping
+## Ranking and evidence shaping
 
 Search shapes the full fused candidate pool before applying the requested result limit:
 
 1. Merge identical document IDs while retaining each channel rank and score.
 2. Group overlapping reciprocal siblings from the same source run.
 3. Group exact-content copies across sessions. Raw evidence never groups with a compaction or branch summary.
-4. Send each representative's original text to the configured Qwen3 reranker. The client requires one unique, in-range, finite score for every submitted index and maps scores by index rather than response order.
-5. Add a fixed `0.01` prior when the representative or any preserved occurrence is on the active branch. Abandoned evidence remains eligible and carries an explicit label.
+4. By default, rank groups deterministically by fused score plus a fixed `0.01` active-branch prior. Abandoned evidence remains eligible and carries an explicit label.
+5. In explicit `deep-rerank` mode, send each representative's original text to Qwen3 and rank by its relevance score plus the same active-branch prior. The client requires one unique, in-range, finite score for every submitted index and maps scores by index rather than response order.
 6. Apply the final result limit.
 7. For winning atomic conversation chunks, fetch at most one immediate sibling on each side. Expansion requires reciprocal pointers and matching session, entry, role, evidence kind, visible text run, source geometry, and overlap text. Turn context, tool evidence, images, thinking, and summaries cannot become neighbors.
 
-Each duplicate group retains every suppressed candidate with its source geometry and fusion components. Neighbor context retains every contributing atomic chunk. Reranker HTTP, JSON, coverage, index, or score failures reject recall; search never returns a silent empty or fusion-only fallback.
+Each duplicate group retains every suppressed candidate with its source geometry and fusion components. Neighbor context retains every contributing atomic chunk. A deep-rerank HTTP, JSON, coverage, index, or score failure rejects that deep search; default hybrid search never calls the reranker.
 
 After the quality gate passes, run `/pi-session-recall-index` to scan changed sessions and optimize zvec. Use `/pi-session-recall-index --rebuild` when a compatibility error requires a replacement generation. A search against a missing, locked, or incompatible generation fails without changing the index or its lock.
 
@@ -152,7 +153,7 @@ The embedding endpoint must implement `POST /v1/embeddings` with the OpenAI requ
 
 The manifest stores one canonical FP32 canary vector and uses its exact hash as embedding-cache identity. Compatibility compares a fresh canary by cosine similarity with a minimum of `0.9995`. This tolerates the measured geometry variation across llama.cpp parallel slots while rejecting larger drift. A tolerated rebuild retains the persisted canonical hash and can reuse vectors; a canary below the floor creates a new identity and misses the old cache.
 
-The reranker defaults are:
+Optional deep-rerank defaults are:
 
 | Setting       | Default                       |
 | ------------- | ----------------------------- |
@@ -160,7 +161,7 @@ The reranker defaults are:
 | Request model | `qwen3-rerank`                |
 | Endpoint      | `POST /v1/rerank`             |
 
-The reranker request is `{ model, query, documents, top_n }`. The response must contain `{ model, object, usage, results }`, with one `{ index, relevance_score }` result for every submitted document. Embedding and reranker HTTP requests abort after 60 seconds unless the caller cancels first.
+In `deep-rerank` mode, the request is `{ model, query, documents, top_n }`. The response must contain `{ model, object, usage, results }`, with one `{ index, relevance_score }` result for every submitted document. Embedding and reranker HTTP requests abort after 60 seconds unless the caller cancels first.
 
 ## Configure
 
@@ -224,7 +225,7 @@ A process-local mutex and PID-owned writer lock serialize explicit indexing. Sea
 
 The embedding cache is a sibling of zvec rather than part of the collection. Each entry has a versioned identity header, FP32 payload, and SHA-256 checksum. Writers fsync a unique temporary file and atomically rename it only after validation. Readers reject identity, dimension, byte-length, checksum, and non-finite-value failures. Rebuilding only zvec and index state leaves the cache available, so unchanged chunks need zero chunk-embedding requests. Index completion reports cache hits, newly embedded chunks, and chunk-embedding request count separately; the model-identity canary request is not a chunk-embedding request.
 
-Conversation text and vectors remain local. The extension sends dense-searchable atomic, turn-context, and summary text only to the configured embedding endpoint. Tool evidence remains lexical-only and is never sent for embedding. After retrieval, the extension sends original text from every representative candidate kind—including tool evidence—to the configured local reranker.
+Conversation text and vectors remain local. The extension sends dense-searchable atomic, turn-context, and summary text only to the configured embedding endpoint. Tool evidence remains lexical-only and is never sent for embedding. Default hybrid search sends nothing to the reranker. Explicit `deep-rerank` sends original text from every representative candidate kind—including tool evidence—to the configured local reranker.
 
 ## Evaluate before backfill
 
@@ -234,14 +235,14 @@ Run the fixed quality and latency gate before approving a full corpus backfill:
 npm run evaluate:recall
 ```
 
-The command reads only the eight checksum-fixed sessions under `evaluation/corpus/`. It builds three temporary indexes for 512/64, 768/96, and 1,024/128 under the ignored `.recall-data/recall-quality-evaluation/` directory, measures the frozen candidate/final count grid, and writes:
+The command reads only the eight checksum-fixed sessions under `evaluation/corpus/`. It builds one temporary 512/64 index under the ignored `.recall-data/recall-quality-evaluation/` directory, measures fused top-five quality for the frozen 8, 16, 24, and 32 candidates-per-channel grid, makes zero reranker requests, and writes:
 
 - `docs/evaluation/recall-quality-report.md`
 - `docs/evaluation/recall-quality-results.json`
 
 The command never scans the configured production session directory or starts the full backfill. It exits with status 2 when no measured configuration passes every frozen quality and latency threshold. The Pi index command reads the committed result and refuses to scan production sessions unless the run is clean, the automated gate passes, and it selects chunk, candidate, and final-result counts. Invoking the unblocked index command remains the human approval step.
 
-The committed report is historical v1 evidence and is now stale because source matching and per-search canary timing changed. It also records **FAIL**: no candidate or final-result count passed both latency thresholds. Rerun the bounded evaluation before approval; until then no policy is selected and `/pi-session-recall-index` remains blocked.
+The committed report is valid only when its version-3 rerank-free gate was generated from a clean worktree. Until that gate passes and selects a policy, `/pi-session-recall-index` remains blocked.
 
 ## Develop
 

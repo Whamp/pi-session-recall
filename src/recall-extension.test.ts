@@ -35,7 +35,8 @@ void test('Pi session recall registers collision-free tool guidance and index co
     toolDescriptions[0] ?? '',
     /dense, lexical, and case-preserving identifier retrieval/,
   );
-  assert.match(toolDescriptions[0] ?? '', /deduplicate and rerank original candidate text/);
+  assert.match(toolDescriptions[0] ?? '', /defaults to deterministic hybrid ranking/);
+  assert.match(toolDescriptions[0] ?? '', /deep-rerank.*Qwen/);
   assert.match(toolDescriptions[0] ?? '', /labels active and abandoned branches/);
   assert.match(toolDescriptions[0] ?? '', /valid same-run atomic neighbors/);
   assert.ok(

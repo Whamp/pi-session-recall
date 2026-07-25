@@ -11,7 +11,7 @@ void test('fixed recall quality corpus resolves every independently declared sou
     join(process.cwd(), 'evaluation', 'recall-quality-cases.json'),
   );
 
-  assert.equal(loaded.specification.corpus.id, 'recall-quality-bounded-v1');
+  assert.equal(loaded.specification.corpus.id, 'recall-quality-hybrid-bounded-v2');
   assert.equal(loaded.sessionFiles.length, 8);
   assert.equal(loaded.specification.cases.length, 10);
   assert.deepEqual(

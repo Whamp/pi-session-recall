@@ -20,14 +20,13 @@ export interface RecallQualityGateCombination {
   finalCount: number;
   totalChunks: number;
   indexLatencyMilliseconds: number;
-  preRerankRecall: number;
-  preRerankDuplicateRate: number;
-  postRerankRecall: number;
+  candidatePoolRecall: number;
+  candidatePoolDuplicateRate: number;
+  finalRecall: number;
   contextUsefulness: number;
   sourceOccurrencePreservation: number;
-  postRerankDuplicateRate: number;
+  finalDuplicateRate: number;
   queryLatencyMilliseconds: { median: number; p95: number };
-  rerankerLatencyMilliseconds: { median: number; p95: number };
   gatePassed: boolean;
   failures: string[];
 }
@@ -55,14 +54,14 @@ function findRecallQualityGateFailures(
 ): string[] {
   const failures: string[] = [];
   const { measurement } = configuration;
-  if (measurement.preRerankRecall < gate.minimumPreRerankRecall) {
+  if (measurement.candidatePoolRecall < gate.minimumCandidatePoolRecall) {
     failures.push(
-      `pre-rerank recall ${formatQualityRate(measurement.preRerankRecall)} is below ${formatQualityRate(gate.minimumPreRerankRecall)}`,
+      `candidate-pool recall ${formatQualityRate(measurement.candidatePoolRecall)} is below ${formatQualityRate(gate.minimumCandidatePoolRecall)}`,
     );
   }
-  if (finalCount.postRerankRecall < gate.minimumPostRerankRecall) {
+  if (finalCount.finalRecall < gate.minimumFinalRecall) {
     failures.push(
-      `post-rerank recall ${formatQualityRate(finalCount.postRerankRecall)} is below ${formatQualityRate(gate.minimumPostRerankRecall)}`,
+      `fused top-N recall ${formatQualityRate(finalCount.finalRecall)} is below ${formatQualityRate(gate.minimumFinalRecall)}`,
     );
   }
   if (finalCount.contextUsefulness < gate.minimumContextUsefulness) {
@@ -75,19 +74,14 @@ function findRecallQualityGateFailures(
       `source occurrence preservation ${formatQualityRate(finalCount.sourceOccurrencePreservation)} is below ${formatQualityRate(gate.minimumSourceOccurrencePreservation)}`,
     );
   }
-  if (finalCount.postRerankDuplicateRate > gate.maximumPostRerankDuplicateRate) {
+  if (finalCount.finalDuplicateRate > gate.maximumFinalDuplicateRate) {
     failures.push(
-      `post-rerank duplicate rate ${formatQualityRate(finalCount.postRerankDuplicateRate)} exceeds ${formatQualityRate(gate.maximumPostRerankDuplicateRate)}`,
+      `final duplicate rate ${formatQualityRate(finalCount.finalDuplicateRate)} exceeds ${formatQualityRate(gate.maximumFinalDuplicateRate)}`,
     );
   }
   if (measurement.queryLatencyMilliseconds.p95 > gate.maximumQueryP95Milliseconds) {
     failures.push(
       `query p95 ${formatLatency(measurement.queryLatencyMilliseconds.p95)} exceeds ${formatLatency(gate.maximumQueryP95Milliseconds)}`,
-    );
-  }
-  if (measurement.rerankerLatencyMilliseconds.p95 > gate.maximumRerankerP95Milliseconds) {
-    failures.push(
-      `reranker p95 ${formatLatency(measurement.rerankerLatencyMilliseconds.p95)} exceeds ${formatLatency(gate.maximumRerankerP95Milliseconds)}`,
     );
   }
   return failures;
@@ -105,14 +99,13 @@ function createRecallQualityGateCombination(
     finalCount: finalCount.finalCount,
     totalChunks: configuration.totalChunks,
     indexLatencyMilliseconds: configuration.indexLatencyMilliseconds,
-    preRerankRecall: configuration.measurement.preRerankRecall,
-    preRerankDuplicateRate: configuration.measurement.preRerankDuplicateRate,
-    postRerankRecall: finalCount.postRerankRecall,
+    candidatePoolRecall: configuration.measurement.candidatePoolRecall,
+    candidatePoolDuplicateRate: configuration.measurement.candidatePoolDuplicateRate,
+    finalRecall: finalCount.finalRecall,
     contextUsefulness: finalCount.contextUsefulness,
     sourceOccurrencePreservation: finalCount.sourceOccurrencePreservation,
-    postRerankDuplicateRate: finalCount.postRerankDuplicateRate,
+    finalDuplicateRate: finalCount.finalDuplicateRate,
     queryLatencyMilliseconds: { ...configuration.measurement.queryLatencyMilliseconds },
-    rerankerLatencyMilliseconds: { ...configuration.measurement.rerankerLatencyMilliseconds },
     gatePassed: failures.length === 0,
     failures,
   };
@@ -126,7 +119,6 @@ function comparePassingRecallQualityCombinations(
     left.candidateCount - right.candidateCount ||
     left.finalCount - right.finalCount ||
     left.queryLatencyMilliseconds.p95 - right.queryLatencyMilliseconds.p95 ||
-    left.rerankerLatencyMilliseconds.p95 - right.rerankerLatencyMilliseconds.p95 ||
     left.totalChunks - right.totalChunks ||
     left.indexLatencyMilliseconds - right.indexLatencyMilliseconds ||
     left.chunkPolicy.maxTokens - right.chunkPolicy.maxTokens
@@ -139,11 +131,11 @@ function compareBlockedRecallQualityCombinations(
 ): number {
   return (
     left.failures.length - right.failures.length ||
-    right.preRerankRecall - left.preRerankRecall ||
-    right.postRerankRecall - left.postRerankRecall ||
+    right.candidatePoolRecall - left.candidatePoolRecall ||
+    right.finalRecall - left.finalRecall ||
     right.contextUsefulness - left.contextUsefulness ||
     right.sourceOccurrencePreservation - left.sourceOccurrencePreservation ||
-    left.postRerankDuplicateRate - right.postRerankDuplicateRate ||
+    left.finalDuplicateRate - right.finalDuplicateRate ||
     comparePassingRecallQualityCombinations(left, right)
   );
 }

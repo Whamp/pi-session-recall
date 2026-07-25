@@ -8,19 +8,18 @@ import type { RecallQualityGateCombination } from './select-recall-quality-polic
 
 void test('recall quality report records verdict, measured counts, sources, and reproduction', () => {
   const combination: RecallQualityGateCombination = {
-    chunkPolicy: { id: '768-96', maxTokens: 768, overlapTokens: 96 },
+    chunkPolicy: { id: '512-64', maxTokens: 512, overlapTokens: 64 },
     candidateCount: 8,
     finalCount: 5,
     totalChunks: 72,
     indexLatencyMilliseconds: 1_200,
-    preRerankRecall: 1,
-    preRerankDuplicateRate: 0.1,
-    postRerankRecall: 1,
+    candidatePoolRecall: 1,
+    candidatePoolDuplicateRate: 0.1,
+    finalRecall: 1,
     contextUsefulness: 1,
     sourceOccurrencePreservation: 1,
-    postRerankDuplicateRate: 0,
+    finalDuplicateRate: 0,
     queryLatencyMilliseconds: { median: 500, p95: 800 },
-    rerankerLatencyMilliseconds: { median: 300, p95: 450 },
     gatePassed: true,
     failures: [],
   };
@@ -36,7 +35,7 @@ void test('recall quality report records verdict, measured counts, sources, and 
       },
     ],
     specification: {
-      version: 1,
+      version: 2,
       corpus: {
         id: 'report-fixture-v1',
         sessionDirectory: 'corpus',
@@ -45,27 +44,22 @@ void test('recall quality report records verdict, measured counts, sources, and 
       bounds: {
         maximumSessionFiles: 1,
         maximumEvaluationCases: 1,
-        maximumChunkPolicies: 3,
+        maximumChunkPolicies: 1,
         maximumCandidateCounts: 1,
         maximumFinalCounts: 1,
         maximumSearchRequests: 3,
       },
-      chunkPolicies: [
-        { id: '512-64', maxTokens: 512, overlapTokens: 64 },
-        { id: '768-96', maxTokens: 768, overlapTokens: 96 },
-        { id: '1024-128', maxTokens: 1_024, overlapTokens: 128 },
-      ],
+      chunkPolicies: [{ id: '512-64', maxTokens: 512, overlapTokens: 64 }],
       candidateCounts: [8],
       finalCounts: [5],
       warmupQueriesPerCombination: 0,
       qualityGate: {
-        minimumPreRerankRecall: 1,
-        minimumPostRerankRecall: 0.9,
+        minimumCandidatePoolRecall: 1,
+        minimumFinalRecall: 0.9,
         minimumContextUsefulness: 0.9,
         minimumSourceOccurrencePreservation: 1,
-        maximumPostRerankDuplicateRate: 0,
+        maximumFinalDuplicateRate: 0,
         maximumQueryP95Milliseconds: 2_000,
-        maximumRerankerP95Milliseconds: 1_500,
       },
       cases: [
         {
@@ -87,7 +81,7 @@ void test('recall quality report records verdict, measured counts, sources, and 
     },
   };
   const result: RecallQualityEvaluationResult = {
-    version: 2,
+    version: 3,
     startedAt: '2026-07-25T12:00:00.000Z',
     completedAt: '2026-07-25T12:01:00.000Z',
     durationMilliseconds: 60_000,
@@ -119,24 +113,23 @@ void test('recall quality report records verdict, measured counts, sources, and 
         indexLatencyMilliseconds: 1_200,
         measurement: {
           caseCount: 1,
-          preRerankRecall: 1,
-          preRerankDuplicateRate: 0.1,
+          candidatePoolRecall: 1,
+          candidatePoolDuplicateRate: 0.1,
           queryLatencyMilliseconds: { median: 500, p95: 800 },
-          rerankerLatencyMilliseconds: { median: 300, p95: 450 },
-          missedPreRerankCaseIds: [],
+          missedCandidatePoolCaseIds: [],
           caseMeasurements: [],
           finalCounts: [
             {
               finalCount: 5,
-              postRerankRecall: 1,
+              finalRecall: 1,
               contextUsefulness: 1,
               sourceOccurrencePreservation: 1,
-              postRerankDuplicateRate: 0,
+              finalDuplicateRate: 0,
               missedCaseIds: [],
               contextFailureCaseIds: [],
               sourceOccurrenceFailureCaseIds: [],
-              postRerankDuplicateSlots: 0,
-              postRerankResultSlots: 5,
+              finalDuplicateSlots: 0,
+              finalResultSlots: 5,
             },
           ],
         },
@@ -151,10 +144,9 @@ void test('recall quality report records verdict, measured counts, sources, and 
     boundedWork: {
       sessionFiles: 1,
       evaluationCases: 1,
-      indexRuns: 3,
-      executedSearchRequests: 3,
-      rerankerRequests: 3,
-      chunkEmbeddingRequests: 15,
+      indexRuns: 1,
+      executedSearchRequests: 1,
+      chunkEmbeddingRequests: 5,
       maximumCandidatesPerSearch: 24,
     },
   };
@@ -177,7 +169,7 @@ void test('recall quality report records verdict, measured counts, sources, and 
   });
 
   assert.match(report, /Automated gate: PASS/);
-  assert.match(report, /768\/96/);
+  assert.match(report, /512\/64/);
   assert.match(report, /8 candidates\/channel/);
   assert.match(report, /semantic-context\.jsonl#queue-answer/);
   assert.match(report, /npm run evaluate:recall/);

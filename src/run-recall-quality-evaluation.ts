@@ -4,7 +4,6 @@ import { performance } from 'node:perf_hooks';
 
 import type { ConversationIndexSummary } from './incremental-session-indexer.js';
 import { createLocalEmbeddingClient, type LocalEmbeddingClient } from './local-embedding-client.js';
-import { createLocalRerankerClient, type LocalRerankerClient } from './local-reranker-client.js';
 import {
   measureRecallQuality,
   type RecallQualitySearchObservation,
@@ -31,7 +30,6 @@ const RECALL_QUALITY_WORK_DIRECTORY_NAME = 'recall-quality-evaluation';
 /** Local model and tokenizer boundaries that make the bounded runner integration-testable. */
 export interface RecallQualityEvaluationDependencies {
   embeddings?: LocalEmbeddingClient;
-  reranker?: LocalRerankerClient;
   loadTokenizer?: () => Promise<ConversationTextTokenizer>;
 }
 
@@ -57,14 +55,13 @@ export interface RecallQualityExecutedWork {
   evaluationCases: number;
   indexRuns: number;
   executedSearchRequests: number;
-  rerankerRequests: number;
   chunkEmbeddingRequests: number;
   maximumCandidatesPerSearch: number;
 }
 
 /** Raw measured configurations, gate selection, and bounded-work evidence from one run. */
 export interface RecallQualityEvaluationResult {
-  version: 2;
+  version: 3;
   startedAt: string;
   completedAt: string;
   durationMilliseconds: number;
@@ -130,19 +127,6 @@ function createEvaluationEmbeddingClient(
   );
 }
 
-function createEvaluationRerankerClient(
-  config: RecallConversationConfig,
-  dependency?: LocalRerankerClient,
-): LocalRerankerClient {
-  return (
-    dependency ??
-    createLocalRerankerClient({
-      baseUrl: config.rerankerBaseUrl,
-      model: config.rerankerModel,
-    })
-  );
-}
-
 function createChunkPolicyConfig(
   baseConfig: RecallConversationConfig,
   corpus: LoadedRecallQualityCorpus,
@@ -173,12 +157,10 @@ function createChunkPolicyConfig(
 
 function createServiceDependencies(
   embeddings: LocalEmbeddingClient,
-  reranker: LocalRerankerClient,
   loadTokenizer?: () => Promise<ConversationTextTokenizer>,
 ): RecallConversationDependencies {
   return {
     embeddings,
-    reranker,
     ...(loadTokenizer ? { loadTokenizer } : {}),
   };
 }
@@ -214,14 +196,9 @@ export async function runRecallQualityEvaluation(
     options.baseConfig,
     options.dependencies?.embeddings,
   );
-  const baseReranker = createEvaluationRerankerClient(
-    options.baseConfig,
-    options.dependencies?.reranker,
-  );
   const indexRuns: RecallQualityIndexRun[] = [];
   const configurations: RecallQualityConfigurationMeasurement[] = [];
   let executedSearchRequests = 0;
-  let rerankerRequests = 0;
 
   for (const chunkPolicy of specification.chunkPolicies) {
     const firstCandidateCount = specification.candidateCounts[0];
@@ -237,7 +214,7 @@ export async function runRecallQualityEvaluation(
     );
     const indexService = createRecallConversationService(
       indexConfig,
-      createServiceDependencies(embeddings, baseReranker, options.dependencies?.loadTokenizer),
+      createServiceDependencies(embeddings, options.dependencies?.loadTokenizer),
     );
     const indexStarted = performance.now();
     const indexed = await indexService.index({ optimize: true });
@@ -261,18 +238,6 @@ export async function runRecallQualityEvaluation(
     });
 
     for (const candidateCount of specification.candidateCounts) {
-      let latestRerankerLatencyMilliseconds = 0;
-      const timedReranker: LocalRerankerClient = {
-        async rerankDocuments(query, documents, signal) {
-          const rerankerStarted = performance.now();
-          rerankerRequests += 1;
-          try {
-            return await baseReranker.rerankDocuments(query, documents, signal);
-          } finally {
-            latestRerankerLatencyMilliseconds = performance.now() - rerankerStarted;
-          }
-        },
-      };
       const searchConfig = createChunkPolicyConfig(
         options.baseConfig,
         options.corpus,
@@ -282,7 +247,7 @@ export async function runRecallQualityEvaluation(
       );
       const searchService = createRecallConversationService(
         searchConfig,
-        createServiceDependencies(embeddings, timedReranker, options.dependencies?.loadTokenizer),
+        createServiceDependencies(embeddings, options.dependencies?.loadTokenizer),
       );
       const warmupCase = specification.cases[0];
       if (!warmupCase) {
@@ -299,7 +264,6 @@ export async function runRecallQualityEvaluation(
 
       const observations: RecallQualitySearchObservation[] = [];
       for (const evaluationCase of specification.cases) {
-        latestRerankerLatencyMilliseconds = 0;
         const queryStarted = performance.now();
         const search = await searchService.search(
           evaluationCase.query,
@@ -311,7 +275,6 @@ export async function runRecallQualityEvaluation(
           evaluationCase,
           results: search.results,
           queryLatencyMilliseconds,
-          rerankerLatencyMilliseconds: latestRerankerLatencyMilliseconds,
         });
       }
       configurations.push({
@@ -331,7 +294,7 @@ export async function runRecallQualityEvaluation(
   }
   const completedAt = new Date();
   return {
-    version: 2,
+    version: 3,
     startedAt: startedAt.toISOString(),
     completedAt: completedAt.toISOString(),
     durationMilliseconds: performance.now() - started,
@@ -346,7 +309,6 @@ export async function runRecallQualityEvaluation(
       evaluationCases: specification.cases.length,
       indexRuns: indexRuns.length,
       executedSearchRequests,
-      rerankerRequests,
       chunkEmbeddingRequests: indexRuns.reduce(
         (total, indexRun) => total + indexRun.indexSummary.embeddingRequestCount,
         0,

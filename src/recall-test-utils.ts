@@ -1,5 +1,5 @@
 import type { RecallSearchResult } from './fuse-recall-search-candidates.js';
-import type { RerankedRecallSearchResult } from './rerank-recall-search-results.js';
+import type { RankedRecallSearchResult } from './rank-recall-search-results.js';
 import type { SessionConversationChunk } from './session-conversation-index.js';
 
 /** Test-only overrides for one complete recall evidence document fixture. */
@@ -82,9 +82,9 @@ export function createTestRecallSearchResult(
 }
 
 /** Builds one reranked recall-result fixture with no duplicates or neighbor expansion. */
-export function createTestRerankedRecallSearchResult(
-  options: TestSessionConversationChunkOptions & Partial<RerankedRecallSearchResult>,
-): RerankedRecallSearchResult {
+export function createTestRankedRecallSearchResult(
+  options: TestSessionConversationChunkOptions & Partial<RankedRecallSearchResult>,
+): RankedRecallSearchResult {
   return {
     ...createTestRecallSearchResult(options),
     rerankerScore: 0.9,

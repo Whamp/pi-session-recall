@@ -9,12 +9,16 @@ import {
   RECALL_QUALITY_RESULTS_PATH,
 } from './recall-quality-gate.js';
 
-void test('committed legacy recall quality evidence approves no backfill policy', async () => {
+void test('committed passing hybrid quality evidence approves its measured backfill policy', async () => {
   const decision = await readRecallQualityGateDecision(RECALL_QUALITY_RESULTS_PATH);
 
-  assert.equal(decision.automatedGatePassed, false);
-  assert.equal(decision.selectedPolicy, null);
-  assert.ok(decision.blockers.some((blocker) => blocker.includes('rerank-free fused top-N')));
+  assert.equal(decision.automatedGatePassed, true);
+  assert.deepEqual(decision.selectedPolicy, {
+    chunkPolicy: { id: '512-64', maxTokens: 512, overlapTokens: 64 },
+    candidateCount: 8,
+    finalCount: 5,
+  });
+  assert.deepEqual(decision.blockers, []);
 });
 
 void test('legacy passing recall quality evidence approves no policy', async (t) => {

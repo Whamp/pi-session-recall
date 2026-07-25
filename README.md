@@ -43,7 +43,7 @@ pi install /home/will/projects/pi-session-recall
 
 Reload a running Pi session with `/reload`.
 
-The committed quality report currently fails its latency gate, so the extension blocks production indexing. Do not start the full backfill. After a clean bounded evaluation passes, build or update the production index explicitly:
+The committed version-3 quality report passes and selects 512/64 chunks, 8 candidates per channel, and 5 final results. Build or update the production index explicitly:
 
 ```text
 /pi-session-recall-index
@@ -242,7 +242,7 @@ The command reads only the eight checksum-fixed sessions under `evaluation/corpu
 
 The command never scans the configured production session directory or starts the full backfill. It exits with status 2 when no measured configuration passes every frozen quality and latency threshold. The Pi index command reads the committed result and refuses to scan production sessions unless the run is clean, the automated gate passes, and it selects chunk, candidate, and final-result counts. Invoking the unblocked index command remains the human approval step.
 
-The committed report is valid only when its version-3 rerank-free gate was generated from a clean worktree. Until that gate passes and selects a policy, `/pi-session-recall-index` remains blocked.
+The committed clean version-3 report records **PASS** with 100% fused top-five recall, context usefulness, and source-occurrence preservation, zero final duplicate slots, and 72 ms query p95. It selects 512/64 chunks, 8 candidates per channel, and 5 final results. `/pi-session-recall-index` rejects missing, stale, dirty, or failed evidence.
 
 ## Develop
 

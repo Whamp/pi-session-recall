@@ -1,17 +1,19 @@
 import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 
+const DEFAULT_LOCAL_RERANKER_REQUEST_TIMEOUT_MILLISECONDS = 60_000;
+
 const LOCAL_RERANKER_RESPONSE_SCHEMA = Type.Object({
   model: Type.String({ minLength: 1 }),
   object: Type.Literal('list'),
   usage: Type.Object({
-    prompt_tokens: Type.Integer({ minimum: 0 }),
-    total_tokens: Type.Integer({ minimum: 0 }),
+    'prompt_tokens': Type.Integer({ minimum: 0 }),
+    'total_tokens': Type.Integer({ minimum: 0 }),
   }),
   results: Type.Array(
     Type.Object({
       index: Type.Integer({ minimum: 0 }),
-      relevance_score: Type.Number(),
+      'relevance_score': Type.Number(),
     }),
   ),
 });
@@ -20,6 +22,7 @@ const LOCAL_RERANKER_RESPONSE_SCHEMA = Type.Object({
 export interface LocalRerankerClientConfig {
   baseUrl: string;
   model: string;
+  requestTimeoutMilliseconds?: number;
 }
 
 /** Scores candidate documents against one query in the candidates' original order. */
@@ -50,9 +53,18 @@ export function createLocalRerankerClient(config: LocalRerankerClientConfig): Lo
   if (!model) {
     throw new Error('Recall reranker model invalid: expected a non-blank model name');
   }
+  const requestTimeoutMilliseconds =
+    config.requestTimeoutMilliseconds ?? DEFAULT_LOCAL_RERANKER_REQUEST_TIMEOUT_MILLISECONDS;
+  if (!Number.isInteger(requestTimeoutMilliseconds) || requestTimeoutMilliseconds < 1) {
+    throw new Error(
+      `Recall reranker request timeout invalid: expected a positive integer, received ${requestTimeoutMilliseconds}`,
+    );
+  }
 
   return {
     async rerankDocuments(query, documents, signal) {
+      const timeoutSignal = AbortSignal.timeout(requestTimeoutMilliseconds);
+      const requestSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
       let response: Response;
       try {
         response = await fetch(endpoint, {
@@ -62,11 +74,17 @@ export function createLocalRerankerClient(config: LocalRerankerClientConfig): Lo
             model,
             query,
             documents,
-            top_n: documents.length,
+            'top_n': documents.length,
           }),
-          ...(signal ? { signal } : {}),
+          signal: requestSignal,
         });
       } catch (error) {
+        if (timeoutSignal.aborted && !signal?.aborted) {
+          throw new Error(
+            `Recall reranker request timed out after ${requestTimeoutMilliseconds} ms at ${endpoint}`,
+            { cause: error },
+          );
+        }
         const message = error instanceof Error ? error.message : String(error);
         throw new Error(`Recall reranker request failed at ${endpoint}: ${message}`, {
           cause: error,
@@ -101,7 +119,7 @@ export function createLocalRerankerClient(config: LocalRerankerClientConfig): Lo
         if (scoresByIndex.has(result.index)) {
           throw new Error(`Recall reranker response duplicate candidate index ${result.index}`);
         }
-        scoresByIndex.set(result.index, result.relevance_score);
+        scoresByIndex.set(result.index, result['relevance_score']);
       }
       const orderedScores: number[] = [];
       for (let index = 0; index < documents.length; index += 1) {

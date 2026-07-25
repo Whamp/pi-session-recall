@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import type { RecallSearchResult } from './fuse-recall-search-candidates.js';
 import type { LocalRerankerClient } from './local-reranker-client.js';
+import { createTestRecallSearchResult } from './recall-test-utils.js';
 import { rerankRecallSearchResults } from './rerank-recall-search-results.js';
 
 function createRecallCandidate(
@@ -10,63 +11,14 @@ function createRecallCandidate(
   content: string,
   overrides: Partial<RecallSearchResult> = {},
 ): RecallSearchResult {
-  return {
-    schemaVersion: 4,
-    documentKind: 'conversation',
-    summaryKind: null,
-    evidenceKind: 'conversation',
-    evidencePart: 'content',
-    isDenseSearchable: true,
+  return createTestRecallSearchResult({
     id,
-    checksum: `checksum-${id}`,
-    sessionId: { value: `session-${id}` },
-    sessionPath: `/sessions/${id}.jsonl`,
-    parentSessionPath: null,
-    cwd: '/project',
-    projectPath: '/project',
-    sessionName: `Session ${id}`,
-    entryId: { value: `entry-${id}` },
-    parentEntryId: null,
-    childEntryIds: [],
-    contributingEntryIds: [{ value: `entry-${id}` }],
-    currentLeafId: { value: `entry-${id}` },
-    branchPathLeafIds: [{ value: `entry-${id}` }],
+    content,
     isOnActiveBranch: false,
     isVisibleInActiveContext: false,
-    compactedByEntryIds: [],
-    compactionFirstKeptEntryId: null,
-    branchSummaryFromEntryId: null,
-    role: 'assistant',
     timestamp: '2026-07-25T10:00:00Z',
-    sourceLineStart: 2,
-    sourceLineEnd: 2,
-    sourceBlockStart: 0,
-    sourceBlockEnd: 0,
-    characterStart: 0,
-    characterEnd: content.length,
-    tokenStart: 0,
-    tokenEnd: 4,
-    tokenCount: 4,
-    overlapTokenCount: 0,
-    textRunId: `run-${id}`,
-    textRunIndex: 0,
-    chunkIndex: 0,
-    chunkCount: 1,
-    siblingIds: [],
-    previousSiblingId: null,
-    nextSiblingId: null,
-    toolCallId: null,
-    toolName: null,
-    toolCallEntryId: null,
-    toolResultEntryId: null,
-    toolError: null,
-    content,
-    dense: { rank: 1, cosineDistance: 0.1 },
-    lexical: null,
-    identifier: null,
-    fusedScore: 0.02,
     ...overrides,
-  };
+  });
 }
 
 void test('recall reranking sends every candidate kind as original text and preserves component scores', async () => {

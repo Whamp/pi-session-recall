@@ -407,7 +407,7 @@ function deserializeConversationChunk(doc: ZVecDoc): SessionConversationChunk {
   };
 }
 
-function convertDenseVector(vector: ZVecVector | undefined, id: string): number[] {
+function convertDenseVector(id: string, vector?: ZVecVector): number[] {
   if (Array.isArray(vector) || vector instanceof Float32Array || vector instanceof Int8Array) {
     return Array.from(vector, Number);
   }
@@ -575,7 +575,7 @@ export function openZvecConversationStore(config: {
       return new Map(
         Object.values(docs).map((doc) => [
           doc.id,
-          convertDenseVector(doc.vectors.embedding, doc.id),
+          convertDenseVector(doc.id, doc.vectors.embedding),
         ]),
       );
     },

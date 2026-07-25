@@ -78,6 +78,26 @@ function formatQualityMatrix(combinations: readonly RecallQualityGateCombination
   return lines;
 }
 
+function hasNoDiscriminatingRecallQualityVariance(
+  combinations: readonly RecallQualityGateCombination[],
+): boolean {
+  if (combinations.length < 2) {
+    return false;
+  }
+  const qualitySignatures = new Set(
+    combinations.map((combination) =>
+      [
+        combination.preRerankRecall,
+        combination.postRerankRecall,
+        combination.contextUsefulness,
+        combination.sourceOccurrencePreservation,
+        combination.postRerankDuplicateRate,
+      ].join('|'),
+    ),
+  );
+  return qualitySignatures.size === 1;
+}
+
 function findDecisionCombination(
   result: RecallQualityEvaluationResult,
 ): RecallQualityGateCombination | undefined {
@@ -269,6 +289,11 @@ export function formatRecallQualityReport(
     '## Limits of this evidence',
     '',
     '- The corpus is a committed synthetic-but-session-shaped fixture, not a sample of private production logs. It covers every required retrieval class and includes 48 distractors plus a long boundary case, but it cannot estimate all real-corpus failure modes.',
+    ...(hasNoDiscriminatingRecallQualityVariance(result.selection.combinations)
+      ? [
+          '- The measured grid has no discriminating quality variance across gated recall, context, source-preservation, and visible-duplicate metrics; it can compare latency but cannot rank policy quality.',
+        ]
+      : []),
     '- Latency uses one measured request per case after one warmup, so it compares configurations on this host rather than establishing a capacity benchmark.',
     '- A passing automated gate supports a candidate policy; it does not authorize the full corpus backfill. Human review of this report remains the approval boundary.',
     '',

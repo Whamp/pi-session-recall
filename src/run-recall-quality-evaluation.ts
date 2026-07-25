@@ -64,7 +64,7 @@ export interface RecallQualityExecutedWork {
 
 /** Raw measured configurations, gate selection, and bounded-work evidence from one run. */
 export interface RecallQualityEvaluationResult {
-  version: 1;
+  version: 2;
   startedAt: string;
   completedAt: string;
   durationMilliseconds: number;
@@ -240,7 +240,7 @@ export async function runRecallQualityEvaluation(
       createServiceDependencies(embeddings, baseReranker, options.dependencies?.loadTokenizer),
     );
     const indexStarted = performance.now();
-    const indexed = await indexService.index(undefined, undefined, true);
+    const indexed = await indexService.index({ optimize: true });
     const indexLatencyMilliseconds = performance.now() - indexStarted;
     if (indexed.indexSummary.failedSessions.length > 0) {
       const failures = indexed.indexSummary.failedSessions
@@ -331,7 +331,7 @@ export async function runRecallQualityEvaluation(
   }
   const completedAt = new Date();
   return {
-    version: 1,
+    version: 2,
     startedAt: startedAt.toISOString(),
     completedAt: completedAt.toISOString(),
     durationMilliseconds: performance.now() - started,

@@ -1,6 +1,8 @@
 import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 
+const DEFAULT_LOCAL_EMBEDDING_REQUEST_TIMEOUT_MILLISECONDS = 60_000;
+
 const localEmbeddingResponseSchema = Type.Object({
   data: Type.Array(
     Type.Object({
@@ -16,6 +18,7 @@ export interface LocalEmbeddingClientConfig {
   model: string;
   dimensions: number;
   batchSize?: number;
+  requestTimeoutMilliseconds?: number;
 }
 
 /** Batch embedding capability used for both stored conversation text and recall queries. */
@@ -28,6 +31,13 @@ export function createLocalEmbeddingClient(
   config: LocalEmbeddingClientConfig,
 ): LocalEmbeddingClient {
   const batchSize = config.batchSize ?? 16;
+  const requestTimeoutMilliseconds =
+    config.requestTimeoutMilliseconds ?? DEFAULT_LOCAL_EMBEDDING_REQUEST_TIMEOUT_MILLISECONDS;
+  if (!Number.isInteger(requestTimeoutMilliseconds) || requestTimeoutMilliseconds < 1) {
+    throw new Error(
+      `Recall embedding request timeout invalid: expected a positive integer, received ${requestTimeoutMilliseconds}`,
+    );
+  }
   const endpoint = `${config.baseUrl.replace(/\/$/, '')}/embeddings`;
 
   return {
@@ -35,12 +45,28 @@ export function createLocalEmbeddingClient(
       const vectors: number[][] = [];
       for (let start = 0; start < texts.length; start += batchSize) {
         const input = texts.slice(start, start + batchSize);
-        const response = await fetch(endpoint, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ model: config.model, input }),
-          ...(signal ? { signal } : {}),
-        });
+        const timeoutSignal = AbortSignal.timeout(requestTimeoutMilliseconds);
+        const requestSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+        let response: Response;
+        try {
+          response = await fetch(endpoint, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ model: config.model, input }),
+            signal: requestSignal,
+          });
+        } catch (error) {
+          if (timeoutSignal.aborted && !signal?.aborted) {
+            throw new Error(
+              `Recall embedding request timed out after ${requestTimeoutMilliseconds} ms at ${endpoint}`,
+              { cause: error },
+            );
+          }
+          const message = error instanceof Error ? error.message : String(error);
+          throw new Error(`Recall embedding request failed at ${endpoint}: ${message}`, {
+            cause: error,
+          });
+        }
         if (!response.ok) {
           const body = await response.text();
           throw new Error(

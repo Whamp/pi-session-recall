@@ -117,13 +117,13 @@ export async function evaluateRecallQuality(
   return result;
 }
 
-async function runRecallQualityCli(arguments_: readonly string[]): Promise<void> {
-  if (arguments_.includes('--help') || arguments_.includes('-h')) {
+async function runRecallQualityCli(args: readonly string[]): Promise<void> {
+  if (args.includes('--help') || args.includes('-h')) {
     process.stdout.write(RECALL_QUALITY_HELP);
     return;
   }
-  if (arguments_.length > 0) {
-    throw new Error(`Recall quality CLI argument unsupported: ${arguments_.join(' ')}`);
+  if (args.length > 0) {
+    throw new Error(`Recall quality CLI argument unsupported: ${args.join(' ')}`);
   }
   const result = await evaluateRecallQuality();
   const selected = result.selection.selected;

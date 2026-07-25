@@ -2,6 +2,9 @@ import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { createInterface } from 'node:readline';
 
+import { isUnknownRecord } from './is-unknown-record.js';
+import { assertRecallChunkPolicy } from './recall-chunk-policy.js';
+
 /** Version of the source and graph provenance stored on recall evidence documents. */
 export const SESSION_CONVERSATION_SCHEMA_VERSION = 4;
 
@@ -128,7 +131,7 @@ interface ParsedSessionFileRecords {
   headers: ParsedSessionHeader[];
   entries: ParsedSessionEntry[];
   entriesById: Map<string, ParsedSessionEntry>;
-  harnessLeafTarget: string | null | undefined;
+  harnessLeafTarget?: string | null;
   firstRecordLine: number;
 }
 
@@ -218,10 +221,6 @@ interface SessionConversationChunkContext {
   overlapTokens: number;
   sessionId: PiSessionId;
   currentLeafId: PiSessionEntryId | null;
-}
-
-function isUnknownRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 function hashConversationValue(value: string): string {
@@ -416,7 +415,6 @@ async function readSessionFileRecords(sessionPath: string): Promise<ParsedSessio
     headers: [],
     entries: [],
     entriesById: new Map(),
-    harnessLeafTarget: undefined,
     firstRecordLine: 0,
   };
   const lines = createInterface({
@@ -1363,12 +1361,16 @@ function createTurnContextTextsForBudgets(
     return [];
   }
   const pairCount = Math.max(userSegments.length, assistantSegments.length);
-  return Array.from({ length: pairCount }, (_, pairIndex) =>
-    formatTurnContextText({
-      userText: readTurnContextPairSegment(userSegments, pairIndex, pairCount),
-      assistantText: readTurnContextPairSegment(assistantSegments, pairIndex, pairCount),
-    }),
-  );
+  const pairedTexts: string[] = [];
+  for (let pairIndex = 0; pairIndex < pairCount; pairIndex += 1) {
+    pairedTexts.push(
+      formatTurnContextText({
+        userText: readTurnContextPairSegment(userSegments, pairIndex, pairCount),
+        assistantText: readTurnContextPairSegment(assistantSegments, pairIndex, pairCount),
+      }),
+    );
+  }
+  return pairedTexts;
 }
 
 function throwTurnContextTokenBudgetError(maxTokens: number): never {
@@ -1710,19 +1712,7 @@ export async function readSessionConversationChunks(
 ): Promise<SessionConversationChunk[]> {
   const maxTokens = options.maxTokens ?? 1_024;
   const overlapTokens = options.overlapTokens ?? 128;
-  if (
-    !Number.isInteger(maxTokens) ||
-    maxTokens < 1 ||
-    maxTokens > 1_024 ||
-    !Number.isInteger(overlapTokens) ||
-    overlapTokens < 0 ||
-    overlapTokens > 128 ||
-    overlapTokens >= maxTokens
-  ) {
-    throw new Error(
-      'Recall chunk policy invalid: maxTokens must be 1..1024 and overlapTokens must be 0..128 and smaller than maxTokens',
-    );
-  }
+  assertRecallChunkPolicy({ maxTokens, overlapTokens });
 
   const graph = await readValidatedSessionGraph(sessionPath);
   const context: SessionConversationChunkContext = {

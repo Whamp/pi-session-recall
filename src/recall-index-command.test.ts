@@ -1,0 +1,95 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+
+import { runRecallIndexCommand } from './recall-index-command.js';
+import type { RecallConversationIndexOptions } from './recall-conversation-service.js';
+
+void test('recall index command blocks before indexing when quality evidence failed', async () => {
+  let indexCalls = 0;
+  const statusUpdates: Array<string | undefined> = [];
+
+  await assert.rejects(
+    () =>
+      runRecallIndexCommand({
+        argumentsText: '',
+        qualityGateDecision: {
+          automatedGatePassed: false,
+          selectedPolicy: null,
+          blockers: ['512-64: query p95 exceeds 2000 ms'],
+        },
+        service: {
+          async index() {
+            indexCalls += 1;
+            throw new Error('index must remain blocked');
+          },
+        },
+        ui: {
+          setStatus(status) {
+            statusUpdates.push(status);
+          },
+          notify() {},
+        },
+      }),
+    /Recall full backfill blocked.*query p95 exceeds 2000 ms.*npm run evaluate:recall/s,
+  );
+
+  assert.equal(indexCalls, 0);
+  assert.deepEqual(statusUpdates, []);
+});
+
+void test('recall index command forwards explicit rebuild after a clean measured gate pass', async () => {
+  let receivedOptions: RecallConversationIndexOptions | undefined;
+  const statusUpdates: Array<string | undefined> = [];
+  const notifications: string[] = [];
+
+  await runRecallIndexCommand({
+    argumentsText: ' --rebuild ',
+    qualityGateDecision: {
+      automatedGatePassed: true,
+      selectedPolicy: {
+        chunkPolicy: { id: '512-64', maxTokens: 512, overlapTokens: 64 },
+        candidateCount: 4,
+        finalCount: 3,
+      },
+      blockers: [],
+    },
+    service: {
+      async index(options) {
+        receivedOptions = options;
+        options?.onProgress?.({
+          scannedSessions: 2,
+          totalSessions: 8,
+          sessionPath: '/sessions/two.jsonl',
+        });
+        return {
+          totalChunks: 42,
+          indexSummary: {
+            scannedSessions: 8,
+            indexedSessions: 8,
+            removedSessions: 0,
+            cacheHits: 10,
+            newlyEmbeddedChunks: 2,
+            embeddingRequestCount: 1,
+            deletedChunks: 3,
+            failedSessions: [],
+          },
+        };
+      },
+    },
+    ui: {
+      setStatus(status) {
+        statusUpdates.push(status);
+      },
+      notify(message) {
+        notifications.push(message);
+      },
+    },
+  });
+
+  assert.equal(receivedOptions?.rebuild, true);
+  assert.equal(receivedOptions?.optimize, true);
+  assert.deepEqual(statusUpdates, ['rebuilding conversations…', 'rebuilding 2/8', undefined]);
+  assert.deepEqual(notifications, [
+    'Recall index ready: 42 chunks · 10 cache hits · 2 newly embedded · 1 embedding requests · 3 removed',
+  ]);
+});

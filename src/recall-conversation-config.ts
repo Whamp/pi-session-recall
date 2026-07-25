@@ -64,9 +64,9 @@ function parseRecallCandidateLimit(value: string, settingName: string): number {
 }
 
 function resolveRecallCandidateLimit(
-  environmentValue: string | undefined,
-  fileValue: number | undefined,
   settingName: string,
+  environmentValue?: string,
+  fileValue?: number,
 ): number {
   return environmentValue === undefined
     ? (fileValue ?? DEFAULT_RECALL_CHANNEL_CANDIDATE_LIMIT)
@@ -150,19 +150,19 @@ export async function loadRecallConversationConfig(
     rerankerModel: environment.PI_RECALL_RERANKER_MODEL ?? file.rerankerModel ?? 'qwen3-rerank',
     searchCandidateLimits: {
       dense: resolveRecallCandidateLimit(
+        'PI_RECALL_DENSE_CANDIDATE_LIMIT',
         environment.PI_RECALL_DENSE_CANDIDATE_LIMIT,
         file.denseCandidateLimit,
-        'PI_RECALL_DENSE_CANDIDATE_LIMIT',
       ),
       lexical: resolveRecallCandidateLimit(
+        'PI_RECALL_LEXICAL_CANDIDATE_LIMIT',
         environment.PI_RECALL_LEXICAL_CANDIDATE_LIMIT,
         file.lexicalCandidateLimit,
-        'PI_RECALL_LEXICAL_CANDIDATE_LIMIT',
       ),
       identifier: resolveRecallCandidateLimit(
+        'PI_RECALL_IDENTIFIER_CANDIDATE_LIMIT',
         environment.PI_RECALL_IDENTIFIER_CANDIDATE_LIMIT,
         file.identifierCandidateLimit,
-        'PI_RECALL_IDENTIFIER_CANDIDATE_LIMIT',
       ),
     },
   };

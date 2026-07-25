@@ -13,10 +13,7 @@ function createWhitespaceConversationTokenizer(): ConversationTextTokenizer {
   return {
     encodeConversationText(text) {
       return {
-        ids: text
-          .split(/\s+/u)
-          .filter(Boolean)
-          .map((_, index) => index),
+        ids: Array.from(text.split(/\s+/u).filter(Boolean).keys()),
       };
     },
   };

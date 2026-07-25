@@ -9,6 +9,8 @@ import {
   EMBEDDING_TEXT_NORMALIZATION_VERSION,
   EMBEDDING_VECTOR_CACHE_VERSION,
 } from './embedding-vector-cache.js';
+import { assertRecallChunkPolicy, type RecallChunkPolicy } from './recall-chunk-policy.js';
+import { isUnknownRecord } from './is-unknown-record.js';
 import {
   OCTEN_TOKENIZER_IDENTITY,
   type ConversationTokenizerAssetIdentity,
@@ -24,17 +26,16 @@ import {
 } from './zvec-conversation-store.js';
 
 /** Version of the index-manifest file format, independent from document and zvec schemas. */
-export const RECALL_INDEX_MANIFEST_VERSION = 1;
+export const RECALL_INDEX_MANIFEST_VERSION = 2;
+
+/** Lowest accepted cosine similarity across parallel slots serving the same embedding model. */
+export const RECALL_EMBEDDING_CANARY_MINIMUM_COSINE_SIMILARITY = 0.9995;
 
 /** Fixed probe whose FP32 embedding fingerprint detects served-model drift across restarts. */
 export const RECALL_EMBEDDING_CANARY_TEXT =
   'pi-session-recall embedding identity canary v1: durable source provenance';
 
-/** Token ceiling and sibling overlap that define one recall index's chunk geometry. */
-export interface RecallChunkPolicy {
-  maxTokens: number;
-  overlapTokens: number;
-}
+export type { RecallChunkPolicy } from './recall-chunk-policy.js';
 
 /** Production chunk geometry used unless a bounded evaluation supplies another policy. */
 export const DEFAULT_RECALL_CHUNK_POLICY: Readonly<RecallChunkPolicy> = {
@@ -54,7 +55,7 @@ export interface RecallEmbeddingModelIdentity {
 
 /** Versioned identity required before one zvec index generation can be read or updated. */
 export interface RecallIndexManifest {
-  manifestVersion: 1;
+  manifestVersion: 2;
   embedding: {
     requestModel: string;
     servedModelId: string;
@@ -64,6 +65,8 @@ export interface RecallIndexManifest {
     pooling: string;
     canaryProbe: string;
     canaryFingerprint: string;
+    canaryVector: number[];
+    canaryMinimumCosineSimilarity: number;
   };
   tokenizer: {
     model: string;
@@ -102,7 +105,7 @@ const manifestAssetSchema = Type.Object(
 
 const recallIndexManifestSchema = Type.Object(
   {
-    manifestVersion: Type.Literal(1),
+    manifestVersion: Type.Literal(2),
     embedding: Type.Object(
       {
         requestModel: Type.String({ minLength: 1 }),
@@ -113,6 +116,10 @@ const recallIndexManifestSchema = Type.Object(
         pooling: Type.String({ minLength: 1 }),
         canaryProbe: Type.String({ minLength: 1 }),
         canaryFingerprint: Type.String({ pattern: '^[a-f0-9]{64}$' }),
+        canaryVector: Type.Array(Type.Number(), { minItems: 1 }),
+        canaryMinimumCosineSimilarity: Type.Literal(
+          RECALL_EMBEDDING_CANARY_MINIMUM_COSINE_SIMILARITY,
+        ),
       },
       { additionalProperties: false },
     ),
@@ -187,51 +194,54 @@ function createTokenizerManifestIdentity(
   };
 }
 
-/** Hashes one exact FP32 canary vector after validating dimensions and finite values. */
-export function createRecallEmbeddingCanaryFingerprint(
-  embedding: number[],
+function createCanonicalRecallEmbeddingCanary(
+  embedding: readonly number[],
   dimensions: number,
-): string {
+): number[] {
   if (embedding.length !== dimensions) {
     throw new Error(
       `Recall embedding canary dimension mismatch: expected ${dimensions}, received ${embedding.length}`,
     );
   }
-  const bytes = Buffer.alloc(dimensions * Float32Array.BYTES_PER_ELEMENT);
+  const canonical: number[] = [];
+  let squaredNorm = 0;
   for (const [index, value] of embedding.entries()) {
     if (!Number.isFinite(value)) {
       throw new Error(`Recall embedding canary invalid: value ${index} is not finite`);
     }
+    const float32Value = Math.fround(value);
+    canonical.push(float32Value);
+    squaredNorm += float32Value * float32Value;
+  }
+  if (squaredNorm === 0) {
+    throw new Error('Recall embedding canary invalid: vector norm must be positive');
+  }
+  return canonical;
+}
+
+/** Hashes one canonical FP32 canary vector after validating dimensions and finite values. */
+export function createRecallEmbeddingCanaryFingerprint(
+  embedding: readonly number[],
+  dimensions: number,
+): string {
+  const canonical = createCanonicalRecallEmbeddingCanary(embedding, dimensions);
+  const bytes = Buffer.alloc(dimensions * Float32Array.BYTES_PER_ELEMENT);
+  for (const [index, value] of canonical.entries()) {
     bytes.writeFloatLE(value, index * Float32Array.BYTES_PER_ELEMENT);
   }
   return createHash('sha256').update(bytes).digest('hex');
 }
 
-function assertRecallChunkPolicy(chunkPolicy: RecallChunkPolicy): void {
-  if (
-    !Number.isInteger(chunkPolicy.maxTokens) ||
-    chunkPolicy.maxTokens < 1 ||
-    chunkPolicy.maxTokens > 1_024 ||
-    !Number.isInteger(chunkPolicy.overlapTokens) ||
-    chunkPolicy.overlapTokens < 0 ||
-    chunkPolicy.overlapTokens > 128 ||
-    chunkPolicy.overlapTokens >= chunkPolicy.maxTokens
-  ) {
-    throw new Error(
-      'Recall chunk policy invalid: maxTokens must be 1..1024 and overlapTokens must be 0..128 and smaller than maxTokens',
-    );
-  }
-}
-
 /** Creates the expected manifest for the current model, tokenizer, policy, and store code. */
 export function createRecallIndexManifest(options: {
   embeddingIdentity: RecallEmbeddingModelIdentity;
-  canaryFingerprint: string;
+  canaryEmbedding: readonly number[];
   chunkPolicy?: RecallChunkPolicy;
 }): RecallIndexManifest {
-  if (!/^[a-f0-9]{64}$/u.test(options.canaryFingerprint)) {
-    throw new Error('Recall embedding canary fingerprint invalid: expected lowercase SHA-256');
-  }
+  const canaryVector = createCanonicalRecallEmbeddingCanary(
+    options.canaryEmbedding,
+    options.embeddingIdentity.dimensions,
+  );
   const chunkPolicy = options.chunkPolicy ?? DEFAULT_RECALL_CHUNK_POLICY;
   assertRecallChunkPolicy(chunkPolicy);
   return {
@@ -239,7 +249,12 @@ export function createRecallIndexManifest(options: {
     embedding: {
       ...options.embeddingIdentity,
       canaryProbe: RECALL_EMBEDDING_CANARY_TEXT,
-      canaryFingerprint: options.canaryFingerprint,
+      canaryFingerprint: createRecallEmbeddingCanaryFingerprint(
+        canaryVector,
+        options.embeddingIdentity.dimensions,
+      ),
+      canaryVector,
+      canaryMinimumCosineSimilarity: RECALL_EMBEDDING_CANARY_MINIMUM_COSINE_SIMILARITY,
     },
     tokenizer: createTokenizerManifestIdentity(OCTEN_TOKENIZER_IDENTITY),
     chunkPolicy: {
@@ -263,8 +278,40 @@ export function createRecallIndexManifest(options: {
   };
 }
 
-function isUnknownRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
+/** Computes cosine similarity between two validated canonical FP32 canary vectors. */
+export function calculateRecallEmbeddingCanaryCosineSimilarity(
+  actual: readonly number[],
+  expected: readonly number[],
+  dimensions: number,
+): number {
+  const actualCanonical = createCanonicalRecallEmbeddingCanary(actual, dimensions);
+  const expectedCanonical = createCanonicalRecallEmbeddingCanary(expected, dimensions);
+  let dotProduct = 0;
+  let actualSquaredNorm = 0;
+  let expectedSquaredNorm = 0;
+  for (let index = 0; index < dimensions; index += 1) {
+    const actualValue = actualCanonical[index];
+    const expectedValue = expectedCanonical[index];
+    if (actualValue === undefined || expectedValue === undefined) {
+      throw new Error(`Recall embedding canary invalid: missing value ${index}`);
+    }
+    dotProduct += actualValue * expectedValue;
+    actualSquaredNorm += actualValue * actualValue;
+    expectedSquaredNorm += expectedValue * expectedValue;
+  }
+  return dotProduct / Math.sqrt(actualSquaredNorm * expectedSquaredNorm);
+}
+
+function assertRecallIndexManifestCanaryIntegrity(manifest: RecallIndexManifest): void {
+  const actualFingerprint = createRecallEmbeddingCanaryFingerprint(
+    manifest.embedding.canaryVector,
+    manifest.embedding.dimensions,
+  );
+  if (actualFingerprint !== manifest.embedding.canaryFingerprint) {
+    throw new Error(
+      `Recall embedding canary fingerprint mismatch: expected ${manifest.embedding.canaryFingerprint}, received ${actualFingerprint}`,
+    );
+  }
 }
 
 function formatManifestValue(value: unknown): string {
@@ -278,6 +325,9 @@ function collectManifestMismatches(
   path: string,
   mismatches: string[],
 ): void {
+  if (path === 'embedding.canaryFingerprint' || path === 'embedding.canaryVector') {
+    return;
+  }
   if (Array.isArray(expected)) {
     if (!Array.isArray(actual)) {
       mismatches.push(`${path}: expected array, received ${formatManifestValue(actual)}`);
@@ -322,6 +372,21 @@ export function assertRecallIndexManifestCompatible(
   }
   const mismatches: string[] = [];
   collectManifestMismatches(actual, expected, '', mismatches);
+  try {
+    const canaryCosineSimilarity = calculateRecallEmbeddingCanaryCosineSimilarity(
+      actual.embedding.canaryVector,
+      expected.embedding.canaryVector,
+      expected.embedding.dimensions,
+    );
+    if (canaryCosineSimilarity < expected.embedding.canaryMinimumCosineSimilarity) {
+      mismatches.push(
+        `embedding.canaryCosineSimilarity: expected at least ${expected.embedding.canaryMinimumCosineSimilarity}, received ${canaryCosineSimilarity}`,
+      );
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    mismatches.push(`embedding.canaryVector: ${message}`);
+  }
   if (mismatches.length > 0) {
     throw new Error(
       `Recall index manifest incompatible at ${manifestPath}:\n- ${mismatches.join('\n- ')}\nReindex with /pi-session-recall-index --rebuild.`,
@@ -344,7 +409,9 @@ export async function readRecallIndexManifest(
   }
   try {
     const parsed: unknown = JSON.parse(content);
-    return Value.Parse(recallIndexManifestSchema, parsed);
+    const manifest = Value.Parse(recallIndexManifestSchema, parsed);
+    assertRecallIndexManifestCanaryIntegrity(manifest);
+    return manifest;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(
@@ -360,6 +427,7 @@ export async function writeRecallIndexManifest(
   manifest: RecallIndexManifest,
 ): Promise<void> {
   Value.Parse(recallIndexManifestSchema, manifest);
+  assertRecallIndexManifestCanaryIntegrity(manifest);
   await mkdir(dirname(manifestPath), { recursive: true });
   const temporaryPath = `${manifestPath}.${process.pid}.${randomUUID()}.tmp`;
   try {

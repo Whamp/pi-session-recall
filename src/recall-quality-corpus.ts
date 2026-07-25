@@ -5,7 +5,8 @@ import { dirname, join, resolve } from 'node:path';
 import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 
-import type { RecallChunkPolicy } from './recall-index-manifest.js';
+import { isUnknownRecord } from './is-unknown-record.js';
+import type { RecallChunkPolicy } from './recall-chunk-policy.js';
 import type { SessionConversationChunk } from './session-conversation-index.js';
 
 /** One immutable session file in the bounded recall quality corpus. */
@@ -284,10 +285,6 @@ interface RecallQualitySourceEvidence {
   activeEntryIds: ReadonlySet<string>;
 }
 
-function isRecallQualitySourceRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-
 function readSourceEvidenceKinds(
   record: Record<string, unknown>,
   recordType: unknown,
@@ -307,7 +304,7 @@ function readSourceEvidenceKinds(
     evidenceKinds.add('conversation');
   } else if (recordType === 'message') {
     const message = Reflect.get(record, 'message');
-    if (isRecallQualitySourceRecord(message)) {
+    if (isUnknownRecord(message)) {
       const role = Reflect.get(message, 'role');
       const messageContent = Reflect.get(message, 'content');
       if (role === 'toolResult') {
@@ -322,7 +319,7 @@ function readSourceEvidenceKinds(
         }
         if (Array.isArray(messageContent)) {
           for (const block of messageContent) {
-            if (!isRecallQualitySourceRecord(block)) {
+            if (!isUnknownRecord(block)) {
               continue;
             }
             if (Reflect.get(block, 'type') === 'text') {
@@ -360,7 +357,7 @@ function readSourceEvidence(content: string, fileName: string): RecallQualitySou
         { cause: error },
       );
     }
-    if (!isRecallQualitySourceRecord(parsed)) {
+    if (!isUnknownRecord(parsed)) {
       throw new Error(
         `Recall quality corpus source invalid at ${fileName}:${index + 1}: expected an object`,
       );

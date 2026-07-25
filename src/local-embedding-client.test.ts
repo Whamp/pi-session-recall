@@ -56,6 +56,54 @@ void test('local embedding client batches OpenAI-compatible requests and preserv
   assert.equal(requests.length, 2);
 });
 
+void test('local embedding client times out a request without relying on caller cancellation', async (t) => {
+  const server = createServer((request) => {
+    request.resume();
+  });
+  await new Promise<void>((resolve) => {
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  t.after(() => server.close());
+  const address = server.address();
+  assert.ok(address && typeof address === 'object');
+  const client = createLocalEmbeddingClient({
+    baseUrl: `http://127.0.0.1:${address.port}/v1`,
+    model: 'local-test',
+    dimensions: 3,
+    requestTimeoutMilliseconds: 25,
+  });
+
+  await assert.rejects(
+    () => client.embedTexts(['timeout'], AbortSignal.timeout(250)),
+    /Recall embedding request timed out after 25 ms at http:\/\/127\.0\.0\.1:\d+\/v1\/embeddings/,
+  );
+});
+
+void test('local embedding client rejects a non-finite vector value', async (t) => {
+  const server = createServer((request, response) => {
+    void request;
+    response.setHeader('content-type', 'application/json');
+    response.end('{"data":[{"index":0,"embedding":[1,2,1e400]}]}');
+  });
+  await new Promise<void>((resolve) => {
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  t.after(() => server.close());
+  const address = server.address();
+  assert.ok(address && typeof address === 'object');
+
+  const client = createLocalEmbeddingClient({
+    baseUrl: `http://127.0.0.1:${address.port}/v1`,
+    model: 'local-test',
+    dimensions: 3,
+  });
+
+  await assert.rejects(
+    () => client.embedTexts(['non-finite']),
+    /Recall embedding response invalid/,
+  );
+});
+
 void test('local embedding client rejects vectors with the wrong dimensions', async (t) => {
   const server = createServer((request, response) => {
     void request;

@@ -162,7 +162,14 @@ export function createEmbeddingVectorCacheIdentity(
 ): EmbeddingVectorCacheIdentity {
   return {
     embedding: {
-      ...manifest.embedding,
+      requestModel: manifest.embedding.requestModel,
+      servedModelId: manifest.embedding.servedModelId,
+      artifact: manifest.embedding.artifact,
+      dimensions: manifest.embedding.dimensions,
+      quantization: manifest.embedding.quantization,
+      pooling: manifest.embedding.pooling,
+      canaryProbe: manifest.embedding.canaryProbe,
+      canaryFingerprint: manifest.embedding.canaryFingerprint,
     },
     tokenizer: {
       ...manifest.tokenizer,

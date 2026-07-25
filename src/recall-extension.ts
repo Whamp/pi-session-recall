@@ -11,19 +11,42 @@ import {
 import { formatRecallSearchResults } from './format-recall-search-results.js';
 import { loadRecallConversationConfig } from './recall-conversation-config.js';
 import { createRecallConversationService } from './recall-conversation-service.js';
+import { runRecallIndexCommand } from './recall-index-command.js';
+import {
+  MAX_RECALL_FINAL_RESULT_COUNT,
+  readRecallQualityGateDecision,
+  RECALL_QUALITY_RESULTS_PATH,
+} from './recall-quality-gate.js';
 
 /** Registers hybrid recall of past Pi conversations. Pi requires extension factories to be default exports. */
 export default async function recallExtension(
   pi: Pick<ExtensionAPI, 'registerTool' | 'registerCommand'>,
 ): Promise<void> {
-  const config = await loadRecallConversationConfig();
+  const qualityGateDecision = await readRecallQualityGateDecision(RECALL_QUALITY_RESULTS_PATH);
+  const configured = await loadRecallConversationConfig();
+  const selectedPolicy = qualityGateDecision.selectedPolicy;
+  const config = selectedPolicy
+    ? {
+        ...configured,
+        chunkPolicy: {
+          maxTokens: selectedPolicy.chunkPolicy.maxTokens,
+          overlapTokens: selectedPolicy.chunkPolicy.overlapTokens,
+        },
+        searchCandidateLimits: {
+          dense: selectedPolicy.candidateCount,
+          lexical: selectedPolicy.candidateCount,
+          identifier: selectedPolicy.candidateCount,
+        },
+      }
+    : configured;
+  const defaultResultLimit = selectedPolicy?.finalCount ?? 5;
   const service = createRecallConversationService(config);
 
   pi.registerTool({
     name: 'pi-session-recall',
     label: 'Pi Session Recall',
     description:
-      'Search a prebuilt compatible index of past Pi conversations with dense, lexical, and case-preserving identifier retrieval, then deduplicate and rerank original candidate text with local Qwen. Excludes hidden reasoning, keeps raw tool evidence lexical-only, labels active and abandoned branches, and expands only valid same-run atomic neighbors with exact provenance. Run /pi-session-recall-index explicitly to update the index. Output is truncated to 2000 lines or 50KB.',
+      'Search a prebuilt compatible index of past Pi conversations with dense, lexical, and case-preserving identifier retrieval, then deduplicate and rerank original candidate text with local Qwen. Excludes hidden reasoning, keeps raw tool evidence lexical-only, labels active and abandoned branches, and expands only valid same-run atomic neighbors with exact provenance. After the committed quality gate passes, run /pi-session-recall-index explicitly to update the index. Output is truncated to 2000 lines or 50KB.',
     promptSnippet:
       'Search past Pi conversations by meaning or exact text and recover remembered details',
     promptGuidelines: [
@@ -39,8 +62,8 @@ export default async function recallExtension(
       limit: Type.Optional(
         Type.Integer({
           minimum: 1,
-          maximum: 10,
-          description: 'Maximum matches to return (default 5)',
+          maximum: MAX_RECALL_FINAL_RESULT_COUNT,
+          description: `Maximum matches to return (default ${defaultResultLimit})`,
         }),
       ),
     }),
@@ -51,7 +74,7 @@ export default async function recallExtension(
       if (!query) {
         throw new Error('Recall query must not be blank');
       }
-      const search = await service.search(query, parameters.limit ?? 5, signal);
+      const search = await service.search(query, parameters.limit ?? defaultResultLimit, signal);
       const formatted = formatRecallSearchResults(search);
       const truncation = truncateHead(formatted, {
         maxLines: DEFAULT_MAX_LINES,
@@ -115,36 +138,21 @@ export default async function recallExtension(
 
   pi.registerCommand('pi-session-recall-index', {
     description:
-      'Incrementally index all Pi conversations for dense and full-text search, then optimize zvec',
+      'Index production sessions only after the committed quality gate passes; use --rebuild to replace an incompatible generation',
     async handler(argumentsText, context) {
-      void argumentsText;
-      context.ui.setStatus('pi-session-recall', 'indexing conversations…');
-      try {
-        const result = await service.index(
-          undefined,
-          (progress) => {
-            context.ui.setStatus(
-              'pi-session-recall',
-              `indexing ${progress.scannedSessions}/${progress.totalSessions}`,
-            );
+      await runRecallIndexCommand({
+        argumentsText,
+        qualityGateDecision,
+        service,
+        ui: {
+          setStatus(status) {
+            context.ui.setStatus('pi-session-recall', status);
           },
-          true,
-        );
-        const failures = result.indexSummary.failedSessions.length;
-        const message = [
-          `Recall index ready: ${result.totalChunks} chunks`,
-          `${result.indexSummary.cacheHits} cache hits`,
-          `${result.indexSummary.newlyEmbeddedChunks} newly embedded`,
-          `${result.indexSummary.embeddingRequestCount} embedding requests`,
-          `${result.indexSummary.deletedChunks} removed`,
-          failures > 0 ? `${failures} failed sessions` : undefined,
-        ]
-          .filter((part) => part !== undefined)
-          .join(' · ');
-        context.ui.notify(message, failures > 0 ? 'warning' : 'info');
-      } finally {
-        context.ui.setStatus('pi-session-recall', undefined);
-      }
+          notify(message, level) {
+            context.ui.notify(message, level);
+          },
+        },
+      });
     },
   });
 }

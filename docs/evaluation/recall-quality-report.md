@@ -6,6 +6,8 @@ Generated 2026-07-25T07:44:31.134Z from corpus `recall-quality-bounded-v1`.
 
 **Automated gate: FAIL**
 
+**Evidence version: 1 (stale).** Required-source matching and per-search canary timing changed after this run. Rerun `npm run evaluate:recall` to produce v2 evidence before approval.
+
 No candidate or final-result count passed every frozen gate.
 
 - 512-64, 4 candidates/channel, 3 final: query p95 4719.2 ms exceeds 2000.0 ms
@@ -169,5 +171,6 @@ Corpus file checksums:
 ## Limits of this evidence
 
 - The corpus is a committed synthetic-but-session-shaped fixture, not a sample of private production logs. It covers every required retrieval class and includes 48 distractors plus a long boundary case, but it cannot estimate all real-corpus failure modes.
+- The measured grid has no discriminating quality variance across gated recall, context, source-preservation, and visible-duplicate metrics; it can compare latency but cannot rank policy quality.
 - Latency uses one measured request per case after one warmup, so it compares configurations on this host rather than establishing a capacity benchmark.
 - A passing automated gate supports a candidate policy; it does not authorize the full corpus backfill. Human review of this report remains the approval boundary.

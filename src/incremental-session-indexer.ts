@@ -6,7 +6,7 @@ import { Value } from 'typebox/value';
 
 import type { EmbeddingVectorCache } from './embedding-vector-cache.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
-import type { RecallChunkPolicy } from './recall-index-manifest.js';
+import type { RecallChunkPolicy } from './recall-chunk-policy.js';
 import {
   readSessionConversationChunks,
   type ConversationTextTokenizer,

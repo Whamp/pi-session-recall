@@ -45,10 +45,7 @@ function sessionLines(entries: object[]): string {
 const tokenizer: ConversationTextTokenizer = {
   encodeConversationText(text) {
     return {
-      ids: text
-        .split(/\s+/u)
-        .filter(Boolean)
-        .map((_, index) => index),
+      ids: Array.from(text.split(/\s+/u).filter(Boolean).keys()),
     };
   },
 };
@@ -66,7 +63,7 @@ function createTestEmbeddingCache(
       quantization: 'fp32',
       pooling: 'last',
     },
-    canaryFingerprint: 'a'.repeat(64),
+    canaryEmbedding: [0, 0, 1],
   });
   return createEmbeddingVectorCache({
     cacheDirectory: join(directory, 'embedding-cache'),

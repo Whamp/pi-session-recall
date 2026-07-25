@@ -2,61 +2,18 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { fuseRecallSearchCandidates } from './fuse-recall-search-candidates.js';
-import type { SessionConversationChunk } from './session-conversation-index.js';
+import { createTestSessionConversationChunk } from './recall-test-utils.js';
 
-function createTestConversationChunk(id: string): SessionConversationChunk {
-  return {
-    schemaVersion: 4,
-    documentKind: 'conversation',
-    summaryKind: null,
-    evidenceKind: 'conversation',
-    evidencePart: 'content',
-    isDenseSearchable: true,
+function createTestConversationChunk(id: string) {
+  return createTestSessionConversationChunk({
     id,
-    checksum: `checksum-${id}`,
     sessionId: { value: 'session-1' },
     sessionPath: '/sessions/session-1.jsonl',
-    parentSessionPath: null,
-    cwd: '/project',
-    projectPath: '/project',
     sessionName: 'Hybrid ranking',
-    entryId: { value: `entry-${id}` },
-    parentEntryId: null,
-    childEntryIds: [],
-    contributingEntryIds: [{ value: `entry-${id}` }],
-    currentLeafId: { value: `entry-${id}` },
-    branchPathLeafIds: [{ value: `entry-${id}` }],
-    isOnActiveBranch: true,
-    isVisibleInActiveContext: true,
-    compactedByEntryIds: [],
-    compactionFirstKeptEntryId: null,
-    branchSummaryFromEntryId: null,
-    role: 'assistant',
-    timestamp: '2026-07-24T10:00:00Z',
-    sourceLineStart: 2,
-    sourceLineEnd: 2,
-    sourceBlockStart: 0,
-    sourceBlockEnd: 0,
-    characterStart: 0,
     characterEnd: id.length,
-    tokenStart: 0,
     tokenEnd: 1,
     tokenCount: 1,
-    overlapTokenCount: 0,
-    textRunId: `run-${id}`,
-    textRunIndex: 0,
-    chunkIndex: 0,
-    chunkCount: 1,
-    siblingIds: [],
-    previousSiblingId: null,
-    nextSiblingId: null,
-    toolCallId: null,
-    toolName: null,
-    toolCallEntryId: null,
-    toolResultEntryId: null,
-    toolError: null,
-    content: `content ${id}`,
-  };
+  });
 }
 
 void test('recall rank fusion rejects a non-finite score from a one-item channel', () => {

@@ -4,6 +4,7 @@ import { basename, join } from 'node:path';
 
 import { Tokenizer } from '@huggingface/tokenizers';
 
+import { isUnknownRecord } from './is-unknown-record.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
 import type { ConversationTextTokenizer } from './session-conversation-index.js';
 
@@ -163,10 +164,6 @@ async function cacheVerifiedTokenizerAsset(
   }
 }
 
-function isTokenizerJsonObject(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-
 function parseTokenizerJson(content: Uint8Array, path: string): Record<string, unknown> {
   let parsed: unknown;
   try {
@@ -175,7 +172,7 @@ function parseTokenizerJson(content: Uint8Array, path: string): Record<string, u
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`Recall tokenizer JSON invalid at ${path}: ${message}`, { cause: error });
   }
-  if (!isTokenizerJsonObject(parsed)) {
+  if (!isUnknownRecord(parsed)) {
     throw new Error(`Recall tokenizer JSON invalid at ${path}: expected an object`);
   }
   return parsed;
@@ -208,8 +205,8 @@ export async function loadChecksummedConversationTokenizer(
   return {
     encodeConversationText(text) {
       const encoding = tokenizer.encode(text, {
-        add_special_tokens: options.identity.encodeOptions.addSpecialTokens,
-        return_token_type_ids: options.identity.encodeOptions.returnTokenTypeIds,
+        'add_special_tokens': options.identity.encodeOptions.addSpecialTokens,
+        'return_token_type_ids': options.identity.encodeOptions.returnTokenTypeIds,
       });
       return { ids: [...encoding.ids] };
     },

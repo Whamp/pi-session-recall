@@ -87,7 +87,7 @@ void test('recall quality report records verdict, measured counts, sources, and 
     },
   };
   const result: RecallQualityEvaluationResult = {
-    version: 1,
+    version: 2,
     startedAt: '2026-07-25T12:00:00.000Z',
     completedAt: '2026-07-25T12:01:00.000Z',
     durationMilliseconds: 60_000,
@@ -142,7 +142,12 @@ void test('recall quality report records verdict, measured counts, sources, and 
         },
       },
     ],
-    selection: { passed: true, selected: combination, blockers: [], combinations: [combination] },
+    selection: {
+      passed: true,
+      selected: combination,
+      blockers: [],
+      combinations: [combination, { ...combination, candidateCount: 16 }],
+    },
     boundedWork: {
       sessionFiles: 1,
       evaluationCases: 1,
@@ -177,4 +182,5 @@ void test('recall quality report records verdict, measured counts, sources, and 
   assert.match(report, /semantic-context\.jsonl#queue-answer/);
   assert.match(report, /npm run evaluate:recall/);
   assert.match(report, /Full corpus backfill remains blocked pending human approval\./);
+  assert.match(report, /no discriminating quality variance/);
 });

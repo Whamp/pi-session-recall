@@ -11,7 +11,7 @@ const LOCAL_RERANKER_REQUEST_SCHEMA = Type.Object({
   model: Type.String(),
   query: Type.String(),
   documents: Type.Array(Type.String()),
-  top_n: Type.Integer(),
+  'top_n': Type.Integer(),
 });
 
 void test('local reranker rejects an invalid base URL before sending a request', () => {
@@ -25,6 +25,28 @@ void test('local reranker rejects a blank model before sending a request', () =>
   assert.throws(
     () => createLocalRerankerClient({ baseUrl: 'http://reranker.test/v1', model: '   ' }),
     /Recall reranker model invalid: expected a non-blank model name/,
+  );
+});
+
+void test('local reranker times out a request without relying on caller cancellation', async (t) => {
+  const server = createServer((request) => {
+    request.resume();
+  });
+  await new Promise<void>((resolve) => {
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  t.after(() => server.close());
+  const address = server.address();
+  assert.ok(address && typeof address === 'object');
+  const client = createLocalRerankerClient({
+    baseUrl: `http://127.0.0.1:${address.port}/v1`,
+    model: 'qwen3-rerank',
+    requestTimeoutMilliseconds: 25,
+  });
+
+  await assert.rejects(
+    () => client.rerankDocuments('timeout', ['candidate'], AbortSignal.timeout(250)),
+    /Recall reranker request timed out after 25 ms at http:\/\/127\.0\.0\.1:\d+\/v1\/rerank/,
   );
 });
 
@@ -43,10 +65,10 @@ void test('local reranker maps relevance scores by returned candidate index', as
         JSON.stringify({
           model: 'qwen3-rerank',
           object: 'list',
-          usage: { prompt_tokens: 42, total_tokens: 42 },
+          usage: { 'prompt_tokens': 42, 'total_tokens': 42 },
           results: [
-            { index: 1, relevance_score: 0.125 },
-            { index: 0, relevance_score: 0.875 },
+            { index: 1, 'relevance_score': 0.125 },
+            { index: 0, 'relevance_score': 0.875 },
           ],
         }),
       );
@@ -74,7 +96,7 @@ void test('local reranker maps relevance scores by returned candidate index', as
     model: 'qwen3-rerank',
     query: 'source provenance',
     documents: ['Preserve exact source provenance.', 'The navigation bar is blue.'],
-    top_n: 2,
+    'top_n': 2,
   });
 });
 
@@ -86,10 +108,10 @@ void test('local reranker rejects duplicate candidate indexes', async (t) => {
       JSON.stringify({
         model: 'qwen3-rerank',
         object: 'list',
-        usage: { prompt_tokens: 42, total_tokens: 42 },
+        usage: { 'prompt_tokens': 42, 'total_tokens': 42 },
         results: [
-          { index: 0, relevance_score: 0.875 },
-          { index: 0, relevance_score: 0.125 },
+          { index: 0, 'relevance_score': 0.875 },
+          { index: 0, 'relevance_score': 0.125 },
         ],
       }),
     );
@@ -119,10 +141,10 @@ void test('local reranker rejects an out-of-range candidate index', async (t) =>
       JSON.stringify({
         model: 'qwen3-rerank',
         object: 'list',
-        usage: { prompt_tokens: 42, total_tokens: 42 },
+        usage: { 'prompt_tokens': 42, 'total_tokens': 42 },
         results: [
-          { index: 0, relevance_score: 0.875 },
-          { index: 2, relevance_score: 0.125 },
+          { index: 0, 'relevance_score': 0.875 },
+          { index: 2, 'relevance_score': 0.125 },
         ],
       }),
     );
@@ -152,8 +174,8 @@ void test('local reranker rejects incomplete candidate coverage', async (t) => {
       JSON.stringify({
         model: 'qwen3-rerank',
         object: 'list',
-        usage: { prompt_tokens: 21, total_tokens: 21 },
-        results: [{ index: 0, relevance_score: 0.875 }],
+        usage: { 'prompt_tokens': 21, 'total_tokens': 21 },
+        results: [{ index: 0, 'relevance_score': 0.875 }],
       }),
     );
   });

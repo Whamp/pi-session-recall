@@ -25,14 +25,20 @@ void test('index manifest round-trips the complete reproducibility identity atom
   const directory = await mkdtemp(join(tmpdir(), 'recall-manifest-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const manifestPath = join(directory, 'index-manifest.json');
-  const canaryFingerprint = createRecallEmbeddingCanaryFingerprint([0.25, -0.5, 1], 3);
-  const manifest = createRecallIndexManifest({ embeddingIdentity, canaryFingerprint });
+  const canaryEmbedding = [0.25, -0.5, 1];
+  const manifest = createRecallIndexManifest({ embeddingIdentity, canaryEmbedding });
 
   await writeRecallIndexManifest(manifestPath, manifest);
 
   assert.deepEqual(await readRecallIndexManifest(manifestPath), manifest);
   assert.deepEqual(await readdir(directory), ['index-manifest.json']);
-  assert.equal(manifest.embedding.canaryFingerprint.length, 64);
+  assert.equal(manifest.manifestVersion, 2);
+  assert.equal(
+    manifest.embedding.canaryFingerprint,
+    createRecallEmbeddingCanaryFingerprint(canaryEmbedding, 3),
+  );
+  assert.deepEqual(manifest.embedding.canaryVector, canaryEmbedding);
+  assert.equal(manifest.embedding.canaryMinimumCosineSimilarity, 0.9995);
   assert.equal(manifest.tokenizer.assets[0]?.fileName, 'tokenizer.json');
   assert.equal(manifest.tokenizer.assets[1]?.fileName, 'tokenizer_config.json');
   assert.deepEqual(manifest.chunkPolicy, {
@@ -51,7 +57,7 @@ void test('index manifest round-trips the complete reproducibility identity atom
 void test('index manifest records an explicitly bounded chunk policy', () => {
   const manifest = createRecallIndexManifest({
     embeddingIdentity,
-    canaryFingerprint: createRecallEmbeddingCanaryFingerprint([0.25, -0.5, 1], 3),
+    canaryEmbedding: [0.25, -0.5, 1],
     chunkPolicy: { maxTokens: 512, overlapTokens: 64 },
   });
 
@@ -64,17 +70,40 @@ void test('index manifest rejects invalid chunk geometry before indexing', () =>
     () =>
       createRecallIndexManifest({
         embeddingIdentity,
-        canaryFingerprint: createRecallEmbeddingCanaryFingerprint([0.25, -0.5, 1], 3),
+        canaryEmbedding: [0.25, -0.5, 1],
         chunkPolicy: { maxTokens: 512, overlapTokens: 512 },
       }),
     /Recall chunk policy invalid/,
   );
 });
 
+void test('index manifest tolerates same-model canary jitter and rejects material drift', () => {
+  const actual = createRecallIndexManifest({
+    embeddingIdentity,
+    canaryEmbedding: [1, 0, 0],
+  });
+  const slotJitter = createRecallIndexManifest({
+    embeddingIdentity,
+    canaryEmbedding: [1, 0.027, 0],
+  });
+  const materialDrift = createRecallIndexManifest({
+    embeddingIdentity,
+    canaryEmbedding: [0, 1, 0],
+  });
+
+  assert.doesNotThrow(() =>
+    assertRecallIndexManifestCompatible(actual, slotJitter, '/data/index-manifest.json'),
+  );
+  assert.throws(
+    () => assertRecallIndexManifestCompatible(actual, materialDrift, '/data/index-manifest.json'),
+    /embedding\.canaryCosineSimilarity.*\/pi-session-recall-index --rebuild/s,
+  );
+});
+
 void test('index manifest incompatibility reports every mismatch with the rebuild command', () => {
   const expected = createRecallIndexManifest({
     embeddingIdentity,
-    canaryFingerprint: createRecallEmbeddingCanaryFingerprint([0.25, -0.5, 1], 3),
+    canaryEmbedding: [0.25, -0.5, 1],
   });
   const actual = structuredClone(expected);
   actual.embedding.dimensions = 2;

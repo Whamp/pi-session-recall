@@ -1,3 +1,4 @@
+import { compareRecallDocumentIds } from './compare-recall-document-ids.js';
 import type { SessionConversationChunk } from './session-conversation-index.js';
 
 /** Version of the deterministic application-side hybrid rank-fusion policy. */
@@ -41,16 +42,6 @@ export interface RecallSearchResult extends SessionConversationChunk {
   lexical: RecallFullTextScore | null;
   identifier: RecallFullTextScore | null;
   fusedScore: number;
-}
-
-function compareRecallDocumentIds(leftId: string, rightId: string): number {
-  if (leftId < rightId) {
-    return -1;
-  }
-  if (leftId > rightId) {
-    return 1;
-  }
-  return 0;
 }
 
 function assertFiniteRecallCandidateScore(

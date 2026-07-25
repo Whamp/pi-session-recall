@@ -2,69 +2,29 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { formatRecallSearchResults } from './format-recall-search-results.js';
+import { createTestRerankedRecallSearchResult } from './recall-test-utils.js';
 import type { RerankedRecallSearchResult } from './rerank-recall-search-results.js';
 
-const result = {
-  schemaVersion: 4,
-  documentKind: 'conversation',
-  summaryKind: null,
-  evidenceKind: 'conversation',
-  evidencePart: 'content',
-  isDenseSearchable: true,
+const result = createTestRerankedRecallSearchResult({
   id: 'chunk-1',
   checksum: 'sum-1',
-  sessionId: { value: 'session-1' },
   sessionPath: '/sessions/one.jsonl',
-  parentSessionPath: null,
-  cwd: '/project',
-  projectPath: '/project',
   sessionName: 'Queue design',
   entryId: { value: 'entry-1' },
-  parentEntryId: null,
-  childEntryIds: [],
   contributingEntryIds: [{ value: 'entry-1' }],
   currentLeafId: { value: 'entry-1' },
   branchPathLeafIds: [{ value: 'entry-1' }],
-  isOnActiveBranch: true,
-  isVisibleInActiveContext: true,
-  compactedByEntryIds: [],
-  compactionFirstKeptEntryId: null,
-  branchSummaryFromEntryId: null,
-  role: 'assistant',
-  timestamp: '2026-07-24T10:00:00Z',
-  sourceLineStart: 2,
-  sourceLineEnd: 2,
-  sourceBlockStart: 0,
-  sourceBlockEnd: 0,
-  characterStart: 0,
-  characterEnd: 66,
-  tokenStart: 0,
   tokenEnd: 10,
   tokenCount: 10,
-  overlapTokenCount: 0,
   textRunId: 'text-run-1',
-  textRunIndex: 0,
-  chunkIndex: 0,
-  chunkCount: 1,
-  siblingIds: [],
-  previousSiblingId: null,
-  nextSiblingId: null,
-  toolCallId: null,
-  toolName: null,
-  toolCallEntryId: null,
-  toolResultEntryId: null,
-  toolError: null,
   content: 'The durable queue decision and its tradeoffs are documented here.',
   dense: { rank: 1, cosineDistance: 0.01234 },
   lexical: { rank: 2, fullTextScore: 0.87654 },
-  identifier: null,
   fusedScore: 0.03252,
   rerankerScore: 0.91234,
   activeBranchPrior: 0.01,
   rankingScore: 0.92234,
-  duplicateOccurrences: [],
-  neighborContext: null,
-} satisfies RerankedRecallSearchResult;
+});
 
 void test('recall results include concise excerpts and exact source provenance', () => {
   const output = formatRecallSearchResults(

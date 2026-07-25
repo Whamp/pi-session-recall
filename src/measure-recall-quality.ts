@@ -91,7 +91,8 @@ function matchesExpectedRecallSource(
 ): boolean {
   if (
     basename(candidate.sessionPath) !== expectedSource.sessionFile ||
-    !hasExpectedEntryId(candidate, expectedSource)
+    !hasExpectedEntryId(candidate, expectedSource) ||
+    !expectedSource.requiredText.every((requiredText) => candidate.content.includes(requiredText))
   ) {
     return false;
   }
@@ -165,7 +166,12 @@ function haveMatchingContributingEntryIds(
   );
 }
 
-function areExactCrossSessionCopies(left: RecallSearchResult, right: RecallSearchResult): boolean {
+// Keep this evaluation oracle independent from production grouping so one shared bug cannot
+// make duplicate suppression and the duplicate-rate metric agree incorrectly.
+function areExactCrossSessionCopiesForEvaluation(
+  left: RecallSearchResult,
+  right: RecallSearchResult,
+): boolean {
   return (
     left.sessionPath !== right.sessionPath &&
     left.checksum === right.checksum &&
@@ -201,7 +207,7 @@ function countDuplicateRecallSlots(candidates: readonly RecallSearchResult[]): n
     if (
       earlierCandidates.some(
         (earlier) =>
-          areExactCrossSessionCopies(candidate, earlier) ||
+          areExactCrossSessionCopiesForEvaluation(candidate, earlier) ||
           areOverlappingSourceSpans(candidate, earlier),
       )
     ) {

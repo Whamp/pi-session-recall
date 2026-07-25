@@ -1,3 +1,4 @@
+import { compareRecallDocumentIds } from './compare-recall-document-ids.js';
 import type { RecallSearchResult } from './fuse-recall-search-candidates.js';
 import type { LocalRerankerClient } from './local-reranker-client.js';
 import type { SessionConversationChunk } from './session-conversation-index.js';
@@ -36,16 +37,6 @@ export interface RerankRecallSearchResultsOptions {
   reranker: LocalRerankerClient;
   fetchConversationChunks: (ids: string[]) => Map<string, SessionConversationChunk>;
   signal?: AbortSignal;
-}
-
-function compareRecallDocumentIds(leftId: string, rightId: string): number {
-  if (leftId < rightId) {
-    return -1;
-  }
-  if (leftId > rightId) {
-    return 1;
-  }
-  return 0;
 }
 
 function compareRecallCandidatePreference(

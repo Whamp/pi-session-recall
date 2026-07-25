@@ -19,10 +19,7 @@ import type { ConversationTextTokenizer } from './session-conversation-index.js'
 const tokenizer: ConversationTextTokenizer = {
   encodeConversationText(text) {
     return {
-      ids: text
-        .split(/\s+/u)
-        .filter(Boolean)
-        .map((_, index) => index),
+      ids: Array.from(text.split(/\s+/u).filter(Boolean).keys()),
     };
   },
 };
@@ -155,7 +152,9 @@ void test('recall service indexes explicitly and searches a compatible index wit
     RECALL_EMBEDDING_CANARY_TEXT,
     'We chose a durable queue for job delivery.',
     'The navigation bar is blue.',
+    RECALL_EMBEDDING_CANARY_TEXT,
     'What did we decide about job queues?',
+    RECALL_EMBEDDING_CANARY_TEXT,
     'queue decision',
   ]);
 
@@ -164,7 +163,7 @@ void test('recall service indexes explicitly and searches a compatible index wit
   await writeFile(join(directory, 'recall.lock', 'owner.json'), lockOwner);
   await assert.rejects(
     () => service.search('must not clear a stale lock', 1),
-    /read-only search did not remove the lock/,
+    /stale lock from dead process 999999999.*\/pi-session-recall-index.*read-only search did not remove the lock/,
   );
   assert.equal(await readFile(join(directory, 'recall.lock', 'owner.json'), 'utf8'), lockOwner);
 });
@@ -701,6 +700,7 @@ void test('recall service fuses lexical-only tool evidence with dense conversati
   assert.deepEqual(embeddedInputs, [
     RECALL_EMBEDDING_CANARY_TEXT,
     conversationContent,
+    RECALL_EMBEDDING_CANARY_TEXT,
     'EPERM readNodeErrorCode',
   ]);
 
@@ -782,6 +782,67 @@ void test('fresh zvec rebuild reuses unchanged cached chunk vectors without embe
   assert.equal(embeddingInputs.length, 2);
 });
 
+void test('explicit rebuild keeps canonical cache identity across tolerated canary jitter', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-service-canary-jitter-rebuild-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionsDirectory = join(directory, 'sessions');
+  await mkdir(sessionsDirectory);
+  await writeFile(
+    join(sessionsDirectory, 'one.jsonl'),
+    [
+      JSON.stringify({
+        type: 'session',
+        version: 3,
+        id: 'canary-jitter-session',
+        timestamp: '2026-07-24T10:00:00Z',
+        cwd: '/project',
+      }),
+      JSON.stringify({
+        type: 'message',
+        id: 'canary-jitter-entry',
+        parentId: null,
+        timestamp: '2026-07-24T10:01:00Z',
+        message: { role: 'assistant', content: 'Reuse this vector across serving slots.' },
+      }),
+    ].join('\n') + '\n',
+  );
+  let useJitteredCanary = false;
+  let canaryRequests = 0;
+  const config = createTestConfig(directory, sessionsDirectory);
+  const service = createRecallConversationService(config, {
+    embeddings: {
+      async embedTexts(texts) {
+        return texts.map((text) => {
+          if (text === RECALL_EMBEDDING_CANARY_TEXT) {
+            canaryRequests += 1;
+            return useJitteredCanary ? [1, 0.001, 0] : [1, 0, 0];
+          }
+          return [0, 1, 0];
+        });
+      },
+    },
+    async loadTokenizer() {
+      return tokenizer;
+    },
+  });
+
+  const first = await service.index();
+  const firstManifest = await readRecallIndexManifest(config.manifestPath);
+  useJitteredCanary = true;
+  const rebuilt = await service.index({ rebuild: true });
+  const rebuiltManifest = await readRecallIndexManifest(config.manifestPath);
+
+  assert.equal(first.indexSummary.newlyEmbeddedChunks, 1);
+  assert.equal(rebuilt.indexSummary.cacheHits, 1);
+  assert.equal(rebuilt.indexSummary.newlyEmbeddedChunks, 0);
+  assert.equal(rebuilt.indexSummary.embeddingRequestCount, 0);
+  assert.equal(
+    rebuiltManifest?.embedding.canaryFingerprint,
+    firstManifest?.embedding.canaryFingerprint,
+  );
+  assert.equal(canaryRequests, 2);
+});
+
 void test('explicit indexing retries a transient embedding-canary failure in the same process', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'recall-service-canary-retry-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -848,6 +909,100 @@ void test('recall search refuses a missing manifest before opening or mutating i
   assert.equal(storeOpens, 0);
 });
 
+void test('recall search detects an embedding model swap in the same service process', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-service-live-model-swap-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionsDirectory = join(directory, 'sessions');
+  await mkdir(sessionsDirectory);
+  let modelSwapped = false;
+  let canaryRequests = 0;
+  const service = createRecallConversationService(createTestConfig(directory, sessionsDirectory), {
+    embeddings: {
+      async embedTexts(texts) {
+        return texts.map((text) => {
+          if (text === RECALL_EMBEDDING_CANARY_TEXT) {
+            canaryRequests += 1;
+            return modelSwapped ? [0, 1, 0] : [0, 0, 1];
+          }
+          return [1, 0, 0];
+        });
+      },
+    },
+    async loadTokenizer() {
+      return tokenizer;
+    },
+  });
+
+  await service.index();
+  await service.search('before model swap', 1);
+  modelSwapped = true;
+
+  await assert.rejects(
+    () => service.search('after model swap', 1),
+    /embedding\.canaryCosineSimilarity.*\/pi-session-recall-index --rebuild/s,
+  );
+
+  await service.index({ rebuild: true });
+  const rebuiltManifest = await readRecallIndexManifest(join(directory, 'index-manifest.json'));
+  assert.equal(
+    rebuiltManifest?.embedding.canaryFingerprint,
+    createRecallEmbeddingCanaryFingerprint([0, 1, 0], 3),
+  );
+  assert.equal(canaryRequests, 4);
+});
+
+void test('ordinary indexing detects a model swap before embedding new session content', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-service-index-model-swap-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionsDirectory = join(directory, 'sessions');
+  await mkdir(sessionsDirectory);
+  let modelSwapped = false;
+  let contentEmbeddingRequests = 0;
+  const service = createRecallConversationService(createTestConfig(directory, sessionsDirectory), {
+    embeddings: {
+      async embedTexts(texts) {
+        return texts.map((text) => {
+          if (text === RECALL_EMBEDDING_CANARY_TEXT) {
+            return modelSwapped ? [0, 0, 1] : [1, 0, 0];
+          }
+          contentEmbeddingRequests += 1;
+          return [0, 1, 0];
+        });
+      },
+    },
+    async loadTokenizer() {
+      return tokenizer;
+    },
+  });
+  await service.index();
+  await writeFile(
+    join(sessionsDirectory, 'new-after-swap.jsonl'),
+    [
+      JSON.stringify({
+        type: 'session',
+        version: 3,
+        id: 'new-after-swap',
+        timestamp: '2026-07-24T10:00:00Z',
+        cwd: '/project',
+      }),
+      JSON.stringify({
+        type: 'message',
+        id: 'new-after-swap-entry',
+        parentId: null,
+        timestamp: '2026-07-24T10:01:00Z',
+        message: { role: 'user', content: 'Never mix this new-model vector.' },
+      }),
+    ].join('\n') + '\n',
+  );
+  modelSwapped = true;
+
+  await assert.rejects(
+    () => service.index(),
+    /embedding\.canaryCosineSimilarity.*\/pi-session-recall-index --rebuild/s,
+  );
+  assert.equal(contentEmbeddingRequests, 0);
+});
+
 void test('recall search reports an incompatible manifest before opening zvec', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'recall-service-incompatible-manifest-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -863,7 +1018,7 @@ void test('recall search reports an incompatible manifest before opening zvec', 
       quantization: config.embeddingQuantization,
       pooling: 'mean',
     },
-    canaryFingerprint: createRecallEmbeddingCanaryFingerprint([0, 0, 1], 3),
+    canaryEmbedding: [0, 0, 1],
   });
   await writeRecallIndexManifest(config.manifestPath, actualManifest);
   let storeOpens = 0;
@@ -891,6 +1046,108 @@ void test('recall search reports an incompatible manifest before opening zvec', 
   );
   assert.equal(storeOpens, 0);
   assert.equal(tokenizerLoads, 0);
+});
+
+void test('explicit rebuild replaces incompatible index metadata while preserving vector cache', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-service-explicit-rebuild-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionsDirectory = join(directory, 'sessions');
+  await mkdir(sessionsDirectory);
+  const config = createTestConfig(directory, sessionsDirectory);
+  const incompatibleManifest = createRecallIndexManifest({
+    embeddingIdentity: {
+      requestModel: config.embeddingModel,
+      servedModelId: config.embeddingServedModelId,
+      artifact: config.embeddingArtifact,
+      dimensions: config.embeddingDimensions,
+      quantization: config.embeddingQuantization,
+      pooling: 'mean',
+    },
+    canaryEmbedding: [0, 0, 1],
+  });
+  await writeRecallIndexManifest(config.manifestPath, incompatibleManifest);
+  await mkdir(config.databasePath, { recursive: true });
+  await writeFile(config.statePath, '{"version":1,"sessions":{}}\n');
+  await mkdir(config.embeddingCacheDirectory, { recursive: true });
+  const cacheSentinelPath = join(config.embeddingCacheDirectory, 'preserve-me');
+  await writeFile(cacheSentinelPath, 'durable vector cache');
+  const service = createRecallConversationService(config, {
+    embeddings: {
+      async embedTexts() {
+        return [[0, 0, 1]];
+      },
+    },
+    async loadTokenizer() {
+      return tokenizer;
+    },
+  });
+
+  const rebuilt = await service.index({ rebuild: true });
+  const rebuiltManifest = await readRecallIndexManifest(config.manifestPath);
+
+  assert.equal(rebuilt.totalChunks, 0);
+  assert.equal(rebuiltManifest?.embedding.pooling, 'last');
+  assert.equal(await readFile(cacheSentinelPath, 'utf8'), 'durable vector cache');
+});
+
+void test('explicit rebuild preserves the old generation when model preflight fails', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-service-rebuild-preflight-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionsDirectory = join(directory, 'sessions');
+  await mkdir(sessionsDirectory);
+  const config = createTestConfig(directory, sessionsDirectory);
+  const oldManifest = createRecallIndexManifest({
+    embeddingIdentity: {
+      requestModel: config.embeddingModel,
+      servedModelId: config.embeddingServedModelId,
+      artifact: config.embeddingArtifact,
+      dimensions: config.embeddingDimensions,
+      quantization: config.embeddingQuantization,
+      pooling: 'mean',
+    },
+    canaryEmbedding: [0, 0, 1],
+  });
+  await writeRecallIndexManifest(config.manifestPath, oldManifest);
+  const oldState = '{"version":1,"sessions":{}}\n';
+  await writeFile(config.statePath, oldState);
+  await mkdir(config.databasePath, { recursive: true });
+  const databaseSentinelPath = join(config.databasePath, 'old-generation');
+  await writeFile(databaseSentinelPath, 'preserve old generation');
+  const service = createRecallConversationService(config, {
+    embeddings: {
+      async embedTexts() {
+        throw new Error('embedding preflight unavailable');
+      },
+    },
+    async loadTokenizer() {
+      return tokenizer;
+    },
+  });
+
+  await assert.rejects(() => service.index({ rebuild: true }), /embedding preflight unavailable/);
+
+  assert.deepEqual(await readRecallIndexManifest(config.manifestPath), oldManifest);
+  assert.equal(await readFile(config.statePath, 'utf8'), oldState);
+  assert.equal(await readFile(databaseSentinelPath, 'utf8'), 'preserve old generation');
+
+  const invalidCanaryService = createRecallConversationService(config, {
+    embeddings: {
+      async embedTexts() {
+        return [[0, 1]];
+      },
+    },
+    async loadTokenizer() {
+      return tokenizer;
+    },
+  });
+  await assert.rejects(
+    () => invalidCanaryService.index({ rebuild: true }),
+    /canary dimension mismatch: expected 3, received 2/,
+  );
+
+  assert.deepEqual(await readRecallIndexManifest(config.manifestPath), oldManifest);
+  assert.equal(await readFile(config.statePath, 'utf8'), oldState);
+  assert.equal(await readFile(databaseSentinelPath, 'utf8'), 'preserve old generation');
 });
 
 void test('explicit indexing refuses unmanifested legacy state before tokenizer or zvec access', async (t) => {

@@ -41,13 +41,21 @@ Pi does not assign branch IDs. Shared ancestors therefore record every endpoint 
 pi install /home/will/projects/pi-session-recall
 ```
 
-Reload a running Pi session with `/reload`. Build a fresh index explicitly:
+Reload a running Pi session with `/reload`.
+
+The committed quality report currently fails its latency gate, so the extension blocks production indexing. Do not start the full backfill. After a clean bounded evaluation passes, build or update the production index explicitly:
 
 ```text
 /pi-session-recall-index
 ```
 
-Search never starts or resumes indexing. It opens only an existing compatible zvec collection in read-only mode.
+Replace a missing or incompatible generation while preserving the tokenizer and embedding caches:
+
+```text
+/pi-session-recall-index --rebuild
+```
+
+Search never starts, resumes, or repairs indexing. It opens only an existing compatible zvec collection in read-only mode.
 
 ## Use
 
@@ -76,7 +84,7 @@ Each atomic conversation, turn-context, or summary document is stored once with 
 
 Tool evidence is stored only in the two FTS representations. Zvec 0.6.0 requires every row to contain a vector, so lexical-only rows receive a fixed zero sentinel generated inside the store; tool text is never sent to the embedding endpoint, and dense queries filter those rows out before ranking.
 
-Search asks each channel for a bounded candidate set, deduplicates identical document IDs, and applies application-side reciprocal rank fusion. A single double-quoted substring uses zvec phrase syntax, so its tokens must be adjacent and ordered even when the query includes surrounding prose. Fusion policy version 1 uses rank constant 60. Equal fused scores sort by document ID. The default cap is 40 candidates per channel; no channel accepts more than 200. Each response records the exact fusion version, constant, and channel caps it used.
+Search asks each channel for a bounded candidate set, deduplicates identical document IDs, and applies application-side reciprocal rank fusion. A single double-quoted substring uses zvec phrase syntax, so its tokens must be adjacent and ordered even when the query includes surrounding prose. Fusion policy version 1 uses rank constant 60. Equal fused scores sort by document ID. Before the gate selects a policy, the search-only fallback is 40 candidates per channel and 5 final results; no channel accepts more than 200 candidates. A clean passing evaluation replaces both fallback counts and the chunk policy with its measured selection. A failed gate approves no policy and blocks production indexing. Each response records the exact fusion version, constant, and channel caps it used.
 
 Application-side fusion is deliberate. Zvec 0.6.0 supports native hybrid RRF through `multiQuerySync()`, but native results omit the component ranks and scores required for evaluation and source-backed diagnostics.
 
@@ -94,7 +102,7 @@ Search shapes the full fused candidate pool before applying the requested result
 
 Each duplicate group retains every suppressed candidate with its source geometry and fusion components. Neighbor context retains every contributing atomic chunk. Reranker HTTP, JSON, coverage, index, or score failures reject recall; search never returns a silent empty or fusion-only fallback.
 
-Run `/pi-session-recall-index` when you explicitly want to scan changed sessions and optimize zvec. A search against a missing, locked, or incompatible generation fails without changing the index or its lock.
+After the quality gate passes, run `/pi-session-recall-index` to scan changed sessions and optimize zvec. Use `/pi-session-recall-index --rebuild` when a compatibility error requires a replacement generation. A search against a missing, locked, or incompatible generation fails without changing the index or its lock.
 
 ## Exact Octen tokenizer
 
@@ -115,13 +123,13 @@ The 11 MB `tokenizer.json` is not committed. Explicit indexing downloads a missi
 
 Each index generation has a separately versioned `index-manifest.json`. It identifies:
 
-- request model, served model ID, artifact, dimensions, quantization, pooling, and a runtime embedding-canary fingerprint;
+- request model, served model ID, artifact, dimensions, quantization, pooling, and a canonical FP32 embedding-canary vector, fingerprint, and cosine floor;
 - tokenizer model, immutable revision, asset checksums, library version, and encode options;
 - chunk limits, overlap, boundary algorithm, normalization, and policy version;
 - conversation and provenance schema versions;
 - zvec schema, ordinary and case-preserving FTS configuration, FP32 vector storage, and pinned HNSW parameters.
 
-The extension validates the complete manifest before opening or updating zvec. Missing or mismatched manifests are incompatible. The error reports every mismatched field and points to `/pi-session-recall-index --rebuild`; recall never mixes document geometry silently.
+The extension validates the complete manifest before opening or updating zvec. Missing or mismatched manifests are incompatible. The error reports every mismatched field and points to the implemented `/pi-session-recall-index --rebuild` operation. Rebuild removes only zvec, incremental state, and the old manifest under the writer lock; it preserves tokenizer assets and cached vectors. The quality gate must pass before the production command can run.
 
 Embedding text is normalized to Unicode NFC under `unicode-nfc-v1`. Cache identity includes the normalized-text SHA-256; full served-model identity and dimensions; tokenizer revision, assets, library, and encode options; chunk-policy version; and normalization version. A model, text, tokenizer, policy, normalization, or dimension change therefore misses rather than reusing incompatible geometry.
 
@@ -140,7 +148,9 @@ The checked-in embedding defaults match `~/.pi/agent/LOCAL-AI.md`:
 | Dimensions      | `2560`                         |
 | Batch size      | `16`                           |
 
-The embedding endpoint must implement `POST /v1/embeddings` with the OpenAI request and response shape. Each process embeds one fixed canary before opening a manifested index; a changed vector fingerprint makes the generation incompatible.
+The embedding endpoint must implement `POST /v1/embeddings` with the OpenAI request and response shape. Read-only search embeds the fixed canary before every query, so an in-process model swap is rejected before zvec opens. On ordinary indexing, an all-hit cache-only rebuild makes no Octen call; the first cache miss validates a fresh canary before any new chunk text reaches the model, preventing new-model vectors from entering an old generation. Explicit `--rebuild` refreshes and preflights the canary before deleting the old generation.
+
+The manifest stores one canonical FP32 canary vector and uses its exact hash as embedding-cache identity. Compatibility compares a fresh canary by cosine similarity with a minimum of `0.9995`. This tolerates the measured geometry variation across llama.cpp parallel slots while rejecting larger drift. A tolerated rebuild retains the persisted canonical hash and can reuse vectors; a canary below the floor creates a new identity and misses the old cache.
 
 The reranker defaults are:
 
@@ -150,7 +160,7 @@ The reranker defaults are:
 | Request model | `qwen3-rerank`                |
 | Endpoint      | `POST /v1/rerank`             |
 
-The reranker request is `{ model, query, documents, top_n }`. The response must contain `{ model, object, usage, results }`, with one `{ index, relevance_score }` result for every submitted document.
+The reranker request is `{ model, query, documents, top_n }`. The response must contain `{ model, object, usage, results }`, with one `{ index, relevance_score }` result for every submitted document. Embedding and reranker HTTP requests abort after 60 seconds unless the caller cancels first.
 
 ## Configure
 
@@ -210,7 +220,7 @@ Default data paths:
 ~/.pi/agent/recall/operation.lock/          explicit-index writer lock
 ```
 
-A process-local mutex and PID-owned writer lock serialize explicit indexing. Search does not acquire, clear, or repair the writer lock; it refuses to run while the lock exists. Changed sessions are checkpointed every 100 files, and embedding writes use bounded 128-chunk windows.
+A process-local mutex and PID-owned writer lock serialize explicit indexing. Search does not acquire, clear, or repair the writer lock. It distinguishes a live owner from a stale dead-process lock and directs stale-lock recovery through the explicit index command after the quality gate passes. Changed sessions are checkpointed every 100 files, and embedding writes use bounded 128-chunk windows.
 
 The embedding cache is a sibling of zvec rather than part of the collection. Each entry has a versioned identity header, FP32 payload, and SHA-256 checksum. Writers fsync a unique temporary file and atomically rename it only after validation. Readers reject identity, dimension, byte-length, checksum, and non-finite-value failures. Rebuilding only zvec and index state leaves the cache available, so unchanged chunks need zero chunk-embedding requests. Index completion reports cache hits, newly embedded chunks, and chunk-embedding request count separately; the model-identity canary request is not a chunk-embedding request.
 
@@ -229,7 +239,9 @@ The command reads only the eight checksum-fixed sessions under `evaluation/corpu
 - `docs/evaluation/recall-quality-report.md`
 - `docs/evaluation/recall-quality-results.json`
 
-The command never scans the configured production session directory or starts the full backfill. It exits with status 2 when no measured configuration passes every frozen quality and latency threshold. A passing automated gate still requires human approval before backfill.
+The command never scans the configured production session directory or starts the full backfill. It exits with status 2 when no measured configuration passes every frozen quality and latency threshold. The Pi index command reads the committed result and refuses to scan production sessions unless the run is clean, the automated gate passes, and it selects chunk, candidate, and final-result counts. Invoking the unblocked index command remains the human approval step.
+
+The committed report is historical v1 evidence and is now stale because source matching and per-search canary timing changed. It also records **FAIL**: no candidate or final-result count passed both latency thresholds. Rerun the bounded evaluation before approval; until then no policy is selected and `/pi-session-recall-index` remains blocked.
 
 ## Develop
 

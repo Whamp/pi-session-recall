@@ -22,15 +22,15 @@ import { createLocalRerankerClient, type LocalRerankerClient } from './local-rer
 import { loadOctenConversationTokenizer } from './octen-conversation-tokenizer.js';
 import {
   assertRecallIndexManifestCompatible,
-  createRecallEmbeddingCanaryFingerprint,
+  calculateRecallEmbeddingCanaryCosineSimilarity,
   createRecallIndexManifest,
   readRecallIndexManifest,
   RECALL_EMBEDDING_CANARY_TEXT,
   writeRecallIndexManifest,
-  type RecallChunkPolicy,
   type RecallEmbeddingModelIdentity,
   type RecallIndexManifest,
 } from './recall-index-manifest.js';
+import type { RecallChunkPolicy } from './recall-chunk-policy.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
 import {
   rerankRecallSearchResults,
@@ -91,13 +91,19 @@ export interface RecallConversationSearch {
   searchPolicy: RecallSearchPolicy;
 }
 
+/** Cancellation, progress, optimization, and generation replacement for explicit indexing. */
+export interface RecallConversationIndexOptions {
+  signal?: AbortSignal;
+  onProgress?: (progress: ConversationIndexProgress) => void;
+  optimize?: boolean;
+  rebuild?: boolean;
+}
+
 /** Read-only search and explicit index-maintenance operations exposed by the extension. */
 export interface RecallConversationService {
   search(query: string, limit: number, signal?: AbortSignal): Promise<RecallConversationSearch>;
   index(
-    signal?: AbortSignal,
-    onProgress?: (progress: ConversationIndexProgress) => void,
-    optimize?: boolean,
+    options?: RecallConversationIndexOptions,
   ): Promise<{ indexSummary: ConversationIndexSummary; totalChunks: number }>;
 }
 
@@ -189,11 +195,13 @@ async function assertRecallIndexUnlockedForSearch(lockPath: string): Promise<voi
     }
     throw error;
   }
-  let ownerDescription = 'an unreadable owner';
+  let ownerDescription = 'held by an unreadable owner';
   try {
     const processId = readLockOwnerProcessId(await readFile(`${lockPath}/owner.json`, 'utf8'));
     if (processId !== undefined) {
-      ownerDescription = `process ${processId}`;
+      ownerDescription = isProcessAlive(processId)
+        ? `held by process ${processId}`
+        : `a stale lock from dead process ${processId}; run /pi-session-recall-index after the quality gate passes to recover`;
     }
   } catch (error) {
     if (readNodeErrorCode(error) !== 'ENOENT') {
@@ -201,7 +209,7 @@ async function assertRecallIndexUnlockedForSearch(lockPath: string): Promise<voi
     }
   }
   throw new Error(
-    `Recall index write lock at ${lockPath} is held by ${ownerDescription}; read-only search did not remove the lock`,
+    `Recall index write lock at ${lockPath} is ${ownerDescription}; read-only search did not remove the lock`,
   );
 }
 
@@ -251,7 +259,6 @@ export function createRecallConversationService(
       }));
   let activeOperation: Promise<void> | undefined;
   let conversationTokenizer: ConversationTextTokenizer | undefined;
-  let embeddingCanaryFingerprint: string | undefined;
 
   async function runSerialized<T>(operation: () => Promise<T>): Promise<T> {
     while (activeOperation) {
@@ -274,26 +281,48 @@ export function createRecallConversationService(
     return conversationTokenizer;
   }
 
-  async function getEmbeddingCanaryFingerprint(signal?: AbortSignal): Promise<string> {
-    if (!embeddingCanaryFingerprint) {
-      const embedding = (await embeddings.embedTexts([RECALL_EMBEDDING_CANARY_TEXT], signal))[0];
-      if (!embedding) {
-        throw new Error('Recall embedding response missing canary vector');
-      }
-      embeddingCanaryFingerprint = createRecallEmbeddingCanaryFingerprint(
-        embedding,
-        config.embeddingDimensions,
-      );
+  async function readCurrentEmbeddingCanary(signal?: AbortSignal): Promise<number[]> {
+    const embedding = (await embeddings.embedTexts([RECALL_EMBEDDING_CANARY_TEXT], signal))[0];
+    if (!embedding) {
+      throw new Error('Recall embedding response missing canary vector');
     }
-    return embeddingCanaryFingerprint;
+    return [...embedding];
   }
 
-  async function createExpectedManifest(signal?: AbortSignal): Promise<RecallIndexManifest> {
+  function createExpectedManifest(canaryEmbedding: readonly number[]): RecallIndexManifest {
     return createRecallIndexManifest({
       embeddingIdentity: createEmbeddingModelIdentity(config),
-      canaryFingerprint: await getEmbeddingCanaryFingerprint(signal),
+      canaryEmbedding,
       ...(config.chunkPolicy ? { chunkPolicy: config.chunkPolicy } : {}),
     });
+  }
+
+  async function readCanonicalRebuildCanary(signal?: AbortSignal): Promise<number[]> {
+    const currentManifest = createExpectedManifest(await readCurrentEmbeddingCanary(signal));
+    const currentCanary = currentManifest.embedding.canaryVector;
+    let actualManifest: RecallIndexManifest | null;
+    try {
+      actualManifest = await readRecallIndexManifest(config.manifestPath);
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message.startsWith(`Recall index manifest invalid at ${config.manifestPath}:`)
+      ) {
+        return currentCanary;
+      }
+      throw error;
+    }
+    if (!actualManifest || actualManifest.embedding.dimensions !== config.embeddingDimensions) {
+      return currentCanary;
+    }
+    const cosineSimilarity = calculateRecallEmbeddingCanaryCosineSimilarity(
+      actualManifest.embedding.canaryVector,
+      currentCanary,
+      config.embeddingDimensions,
+    );
+    return cosineSimilarity >= actualManifest.embedding.canaryMinimumCosineSimilarity
+      ? [...actualManifest.embedding.canaryVector]
+      : currentCanary;
   }
 
   async function readRequiredManifest(): Promise<RecallIndexManifest> {
@@ -308,7 +337,12 @@ export function createRecallConversationService(
 
   async function prepareIndexForWrite(
     signal?: AbortSignal,
-  ): Promise<{ tokenizer: ConversationTextTokenizer; manifest: RecallIndexManifest }> {
+    preflightedCanary?: readonly number[],
+  ): Promise<{
+    tokenizer: ConversationTextTokenizer;
+    manifest: RecallIndexManifest;
+    embeddingModelPreflighted: boolean;
+  }> {
     const actual = await readRecallIndexManifest(config.manifestPath);
     if (!actual && (existsSync(config.databasePath) || existsSync(config.statePath))) {
       throw new Error(
@@ -316,27 +350,52 @@ export function createRecallConversationService(
       );
     }
     const tokenizer = await getConversationTokenizer();
-    const expected = await createExpectedManifest(signal);
     if (actual) {
+      const expected = createExpectedManifest(actual.embedding.canaryVector);
       assertRecallIndexManifestCompatible(actual, expected, config.manifestPath);
-    } else {
-      await writeRecallIndexManifest(config.manifestPath, expected);
+      return { tokenizer, manifest: actual, embeddingModelPreflighted: false };
     }
-    return { tokenizer, manifest: expected };
+    const expected = createExpectedManifest(
+      preflightedCanary ?? (await readCurrentEmbeddingCanary(signal)),
+    );
+    await writeRecallIndexManifest(config.manifestPath, expected);
+    return { tokenizer, manifest: expected, embeddingModelPreflighted: true };
+  }
+
+  async function removeRecallIndexGeneration(): Promise<void> {
+    await rm(config.databasePath, { recursive: true, force: true });
+    await rm(config.statePath, { force: true });
+    await rm(config.manifestPath, { force: true });
   }
 
   async function updateConversationIndex(
     store: ZvecConversationStore,
     tokenizer: ConversationTextTokenizer,
     manifest: RecallIndexManifest,
+    embeddingModelPreflighted: boolean,
     signal?: AbortSignal,
     onProgress?: (progress: ConversationIndexProgress) => void,
   ): Promise<ConversationIndexSummary> {
+    let modelPreflighted = embeddingModelPreflighted;
+    async function embedTextsAfterModelPreflight(
+      texts: string[],
+      embeddingSignal?: AbortSignal,
+    ): Promise<number[][]> {
+      if (!modelPreflighted) {
+        const expected = createExpectedManifest(await readCurrentEmbeddingCanary(embeddingSignal));
+        assertRecallIndexManifestCompatible(manifest, expected, config.manifestPath);
+        modelPreflighted = true;
+      }
+      return embeddings.embedTexts(texts, embeddingSignal);
+    }
+    const preflightedEmbeddings: LocalEmbeddingClient = {
+      embedTexts: embedTextsAfterModelPreflight,
+    };
     const embeddingCache = createEmbeddingVectorCache({
       cacheDirectory: config.embeddingCacheDirectory,
       identity: createEmbeddingVectorCacheIdentity(manifest),
       embeddingRequestBatchSize: config.embeddingBatchSize,
-      embeddings,
+      embeddings: preflightedEmbeddings,
     });
     return indexChangedConversationSessions({
       sessionsDirectory: config.sessionsDirectory,
@@ -362,7 +421,7 @@ export function createRecallConversationService(
         }
         const actualManifest = await readRequiredManifest();
         await assertRecallIndexUnlockedForSearch(config.lockPath);
-        const expectedManifest = await createExpectedManifest(signal);
+        const expectedManifest = createExpectedManifest(await readCurrentEmbeddingCanary(signal));
         assertRecallIndexManifestCompatible(actualManifest, expectedManifest, config.manifestPath);
         const store = openStore('read');
         try {
@@ -414,22 +473,29 @@ export function createRecallConversationService(
         }
       });
     },
-    index(signal, onProgress, optimize = false) {
+    index(options = {}) {
       return runSerialized(async () => {
-        const releaseLock = await acquireRecallConversationLock(config.lockPath, signal);
+        const releaseLock = await acquireRecallConversationLock(config.lockPath, options.signal);
         let store: ZvecConversationStore | undefined;
         try {
-          const preparedIndex = await prepareIndexForWrite(signal);
+          let rebuildCanary: number[] | undefined;
+          if (options.rebuild) {
+            await getConversationTokenizer();
+            rebuildCanary = await readCanonicalRebuildCanary(options.signal);
+            await removeRecallIndexGeneration();
+          }
+          const preparedIndex = await prepareIndexForWrite(options.signal, rebuildCanary);
           store = openStore('write');
           const indexSummary = await updateConversationIndex(
             store,
             preparedIndex.tokenizer,
             preparedIndex.manifest,
-            signal,
-            onProgress,
+            preparedIndex.embeddingModelPreflighted,
+            options.signal,
+            options.onProgress,
           );
           if (
-            optimize &&
+            options.optimize &&
             (indexSummary.cacheHits > 0 ||
               indexSummary.newlyEmbeddedChunks > 0 ||
               indexSummary.deletedChunks > 0)

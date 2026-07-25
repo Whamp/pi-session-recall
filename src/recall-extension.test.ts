@@ -10,14 +10,16 @@ void test('Pi session recall registers collision-free tool guidance and index co
   const toolDescriptions: string[] = [];
   const toolGuidelines: string[] = [];
   const commandNames: string[] = [];
+  const commandDescriptions: string[] = [];
   const registrar: Pick<ExtensionAPI, 'registerTool' | 'registerCommand'> = {
     registerTool(definition) {
       toolNames.push(definition.name);
       toolDescriptions.push(definition.description);
       toolGuidelines.push(...(definition.promptGuidelines ?? []));
     },
-    registerCommand(name) {
+    registerCommand(name, definition) {
       commandNames.push(name);
+      commandDescriptions.push(definition.description ?? '');
     },
   };
 
@@ -27,6 +29,8 @@ void test('Pi session recall registers collision-free tool guidance and index co
   assert.deepEqual(commandNames, ['pi-session-recall-index']);
   assert.ok(!toolNames.includes('recall'));
   assert.ok(!commandNames.includes('recall-index'));
+  assert.match(commandDescriptions[0] ?? '', /quality gate/);
+  assert.match(commandDescriptions[0] ?? '', /--rebuild/);
   assert.match(
     toolDescriptions[0] ?? '',
     /dense, lexical, and case-preserving identifier retrieval/,

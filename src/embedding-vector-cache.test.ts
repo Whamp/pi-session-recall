@@ -13,17 +13,22 @@ import type { LocalEmbeddingClient } from './local-embedding-client.js';
 import { createRecallIndexManifest } from './recall-index-manifest.js';
 
 function createTestCacheIdentity(options: { dimensions?: number; pooling?: string } = {}) {
+  const dimensions = options.dimensions ?? 3;
+  const canaryEmbedding: number[] = [];
+  for (let index = 0; index < dimensions; index += 1) {
+    canaryEmbedding.push(index === dimensions - 1 ? 1 : 0);
+  }
   return createEmbeddingVectorCacheIdentity(
     createRecallIndexManifest({
       embeddingIdentity: {
         requestModel: 'test-request-model',
         servedModelId: 'test-served-model',
         artifact: 'test-model.fp32',
-        dimensions: options.dimensions ?? 3,
+        dimensions,
         quantization: 'fp32',
         pooling: options.pooling ?? 'last',
       },
-      canaryFingerprint: 'a'.repeat(64),
+      canaryEmbedding,
     }),
   );
 }

@@ -17,10 +17,7 @@ import {
 const tokenizer: ConversationTextTokenizer = {
   encodeConversationText(text) {
     return {
-      ids: text
-        .split(/\s+/u)
-        .filter(Boolean)
-        .map((_, index) => index),
+      ids: Array.from(text.split(/\s+/u).filter(Boolean).keys()),
     };
   },
 };
@@ -149,4 +146,27 @@ void test('recall quality measures pre/post rerank duplicates and preserved sour
       },
     ],
   );
+
+  const unrelatedSameEntry: RerankedRecallSearchResult = {
+    ...rerankedResult,
+    id: 'unrelated-same-entry',
+    checksum: 'unrelated-checksum',
+    content: 'Release planning introduction without the required checksum or rollback tag.',
+    duplicateOccurrences: [],
+  };
+  const unrelatedMeasurement = measureRecallQuality(
+    [
+      {
+        evaluationCase,
+        results: [unrelatedSameEntry],
+        queryLatencyMilliseconds: 10,
+        rerankerLatencyMilliseconds: 5,
+      },
+    ],
+    [1],
+  );
+
+  assert.equal(unrelatedMeasurement.preRerankRecall, 0);
+  assert.equal(unrelatedMeasurement.finalCounts[0]?.postRerankRecall, 0);
+  assert.equal(unrelatedMeasurement.finalCounts[0]?.sourceOccurrencePreservation, 0);
 });

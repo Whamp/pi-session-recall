@@ -131,10 +131,7 @@ void test('recall quality runner indexes and searches only the bounded declared 
   const tokenizer: ConversationTextTokenizer = {
     encodeConversationText(text) {
       return {
-        ids: text
-          .split(/\s+/u)
-          .filter(Boolean)
-          .map((_, index) => index),
+        ids: Array.from(text.split(/\s+/u).filter(Boolean).keys()),
       };
     },
   };
@@ -152,6 +149,7 @@ void test('recall quality runner indexes and searches only the bounded declared 
     },
   });
 
+  assert.equal(result.version, 2);
   assert.equal(result.boundedWork.indexRuns, 3);
   assert.equal(result.boundedWork.executedSearchRequests, 3);
   assert.equal(result.indexRuns.length, 3);

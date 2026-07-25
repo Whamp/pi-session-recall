@@ -1,8 +1,8 @@
 {
-  "version": 1,
+  "version": 2,
   "environment": {
     "command": "npm run evaluate:recall",
-    "gitCommit": "b8f8461f4b0dc69e360a2a27f213fc303328d667",
+    "gitCommit": "ab18031942c585c9f0d0c9683c016fddb9b7eec6",
     "gitDirty": false,
     "nodeVersion": "v24.16.0",
     "platform": "linux",
@@ -17,9 +17,9 @@
     "rerankerModel": "qwen3-rerank"
   },
   "specification": {
-    "version": 2,
+    "version": 3,
     "corpus": {
-      "id": "recall-quality-hybrid-bounded-v2",
+      "id": "recall-quality-project-scoped-bounded-v3",
       "sessionDirectory": "corpus",
       "sessionFiles": [
         {
@@ -53,16 +53,45 @@
         {
           "fileName": "distractors.jsonl",
           "sha256": "6d63fefcb2e6fda2580985bbef4cf39bd073a3e15c9d2df7b67d2000847e4194"
+        },
+        {
+          "fileName": "project-worktree.jsonl",
+          "sha256": "d265edfb754072020869ef1ba49f472e6a4f81f25a18be96335a5f87edf6db80"
+        },
+        {
+          "fileName": "project-main.jsonl",
+          "sha256": "dafa31d86195f920bc7ce6d5c21a679320815fa683ed4c5e93a77e428d4bea92"
+        },
+        {
+          "fileName": "equivalent-clone.jsonl",
+          "sha256": "21dad11c36b18a971acd49a891967bfe1a1c6269c938d5e4c0ef31876ada19c1"
+        },
+        {
+          "fileName": "historical-prototype.jsonl",
+          "sha256": "173a2e479ae517d6f7935d711b0e483fcedcd46adde443986a89fad3e765b5b9"
+        },
+        {
+          "fileName": "unrelated-similar-project.jsonl",
+          "sha256": "59aaf838436d857fc67073ffbe8de0d64cd5cbf894fd2f16f0004bdf7bfd1756"
+        },
+        {
+          "fileName": "non-git-exact.jsonl",
+          "sha256": "d41df315b0a25e3e0e6cd5a14c58837e5ee492e68a15e84e87b411384176aebd"
+        },
+        {
+          "fileName": "non-git-nearby.jsonl",
+          "sha256": "8e576068c09966c5a286cd04a56a486c5f16a42a46670cfe83328e61657d9ddc"
         }
       ]
     },
     "bounds": {
-      "maximumSessionFiles": 8,
-      "maximumEvaluationCases": 10,
+      "maximumSessionFiles": 15,
+      "maximumEvaluationCases": 17,
       "maximumChunkPolicies": 1,
-      "maximumCandidateCounts": 4,
+      "maximumCandidateCounts": 1,
       "maximumFinalCounts": 1,
-      "maximumSearchRequests": 44
+      "maximumSearchRequests": 20,
+      "maximumChunkEmbeddingRequests": 20
     },
     "chunkPolicies": [
       {
@@ -71,7 +100,7 @@
         "overlapTokens": 64
       }
     ],
-    "candidateCounts": [8, 16, 24, 32],
+    "candidateCounts": [8],
     "finalCounts": [5],
     "warmupQueriesPerCombination": 1,
     "qualityGate": {
@@ -92,11 +121,16 @@
             "sessionFile": "semantic-context.jsonl",
             "entryId": "queue-answer",
             "requiredText": ["append-only SQLite outbox", "remote acknowledgement"],
-            "expectedBranch": "active"
+            "expectedBranch": "active",
+            "expectedSessionOrigin": "/evaluation/fulfillment",
+            "expectedEvidenceRelation": "unrestricted_global_evidence",
+            "requiredContributingEntryIds": ["queue-answer"]
           }
         ],
         "requiredContext": ["append-only SQLite outbox", "remote acknowledgement"],
-        "minimumPreservedSourceOccurrences": 1
+        "minimumPreservedSourceOccurrences": 1,
+        "scope": "global",
+        "excludedSessionFiles": []
       },
       {
         "id": "semantic-image-retry-budget",
@@ -107,11 +141,16 @@
             "sessionFile": "long-boundary.jsonl",
             "entryId": "image-retry-answer",
             "requiredText": ["decorrelated jitter capped at forty-two seconds", "amber-orbit-17"],
-            "expectedBranch": "active"
+            "expectedBranch": "active",
+            "expectedSessionOrigin": "/evaluation/media",
+            "expectedEvidenceRelation": "unrestricted_global_evidence",
+            "requiredContributingEntryIds": ["image-retry-answer"]
           }
         ],
         "requiredContext": ["decorrelated jitter capped at forty-two seconds", "amber-orbit-17"],
-        "minimumPreservedSourceOccurrences": 1
+        "minimumPreservedSourceOccurrences": 1,
+        "scope": "global",
+        "excludedSessionFiles": []
       },
       {
         "id": "exact-read-node-error-code",
@@ -122,11 +161,16 @@
             "sessionFile": "identifiers-tools.jsonl",
             "entryId": "identifier-answer",
             "requiredText": ["readNodeErrorCode", "src/read-node-error-code.ts", "EPERM"],
-            "expectedBranch": "active"
+            "expectedBranch": "active",
+            "expectedSessionOrigin": "/evaluation/runtime",
+            "expectedEvidenceRelation": "unrestricted_global_evidence",
+            "requiredContributingEntryIds": ["identifier-answer"]
           }
         ],
         "requiredContext": ["readNodeErrorCode", "src/read-node-error-code.ts"],
-        "minimumPreservedSourceOccurrences": 1
+        "minimumPreservedSourceOccurrences": 1,
+        "scope": "global",
+        "excludedSessionFiles": []
       },
       {
         "id": "tool-evidence-lease-token",
@@ -138,11 +182,16 @@
             "entryId": "lease-tool-result",
             "requiredText": ["ELOCKED", "cobalt-7f31", "src/lease-owner.ts"],
             "expectedEvidenceKind": "tool_result",
-            "expectedBranch": "active"
+            "expectedBranch": "active",
+            "expectedSessionOrigin": "/evaluation/runtime",
+            "expectedEvidenceRelation": "unrestricted_global_evidence",
+            "requiredContributingEntryIds": ["lease-tool-result"]
           }
         ],
         "requiredContext": ["ELOCKED", "cobalt-7f31"],
-        "minimumPreservedSourceOccurrences": 1
+        "minimumPreservedSourceOccurrences": 1,
+        "scope": "global",
+        "excludedSessionFiles": []
       },
       {
         "id": "context-europe-rollout-conditions",
@@ -153,7 +202,10 @@
             "sessionFile": "semantic-context.jsonl",
             "entryId": "rollout-answer",
             "requiredText": ["draining the Paris queue below twenty jobs", "Frankfurt replica"],
-            "expectedBranch": "active"
+            "expectedBranch": "active",
+            "expectedSessionOrigin": "/evaluation/fulfillment",
+            "expectedEvidenceRelation": "unrestricted_global_evidence",
+            "requiredContributingEntryIds": ["rollout-answer"]
           }
         ],
         "requiredContext": [
@@ -161,7 +213,9 @@
           "draining the Paris queue below twenty jobs",
           "Frankfurt replica"
         ],
-        "minimumPreservedSourceOccurrences": 1
+        "minimumPreservedSourceOccurrences": 1,
+        "scope": "global",
+        "excludedSessionFiles": []
       },
       {
         "id": "branch-abandoned-redis-group",
@@ -172,11 +226,16 @@
             "sessionFile": "branches.jsonl",
             "entryId": "redis-abandoned",
             "requiredText": ["Redis Streams", "glacier-lantern"],
-            "expectedBranch": "abandoned"
+            "expectedBranch": "abandoned",
+            "expectedSessionOrigin": "/evaluation/sync",
+            "expectedEvidenceRelation": "unrestricted_global_evidence",
+            "requiredContributingEntryIds": ["redis-abandoned"]
           }
         ],
         "requiredContext": ["Redis Streams", "glacier-lantern"],
-        "minimumPreservedSourceOccurrences": 1
+        "minimumPreservedSourceOccurrences": 1,
+        "scope": "global",
+        "excludedSessionFiles": []
       },
       {
         "id": "branch-active-offline-queue",
@@ -187,11 +246,16 @@
             "sessionFile": "branches.jsonl",
             "entryId": "sqlite-active",
             "requiredText": ["local SQLite WAL queue", "monotonic sequence numbers"],
-            "expectedBranch": "active"
+            "expectedBranch": "active",
+            "expectedSessionOrigin": "/evaluation/sync",
+            "expectedEvidenceRelation": "unrestricted_global_evidence",
+            "requiredContributingEntryIds": ["sqlite-active"]
           }
         ],
         "requiredContext": ["local SQLite WAL queue", "idempotent upload acknowledgements"],
-        "minimumPreservedSourceOccurrences": 1
+        "minimumPreservedSourceOccurrences": 1,
+        "scope": "global",
+        "excludedSessionFiles": []
       },
       {
         "id": "branch-summary-hosted-services",
@@ -204,11 +268,16 @@
             "requiredText": ["rejected hosted queue services", "without a network connection"],
             "expectedEvidenceKind": "branch_summary",
             "expectedSummaryKind": "branch",
-            "expectedBranch": "active"
+            "expectedBranch": "active",
+            "expectedSessionOrigin": "/evaluation/sync",
+            "expectedEvidenceRelation": "unrestricted_global_evidence",
+            "requiredContributingEntryIds": ["hosted-branch-summary"]
           }
         ],
         "requiredContext": ["rejected hosted queue services", "without a network connection"],
-        "minimumPreservedSourceOccurrences": 1
+        "minimumPreservedSourceOccurrences": 1,
+        "scope": "global",
+        "excludedSessionFiles": []
       },
       {
         "id": "compaction-copper-finch",
@@ -221,11 +290,16 @@
             "requiredText": ["Copper Finch", "snapshot delta-29", "rotate the device certificate"],
             "expectedEvidenceKind": "compaction_summary",
             "expectedSummaryKind": "compaction",
-            "expectedBranch": "active"
+            "expectedBranch": "active",
+            "expectedSessionOrigin": "/evaluation/desktop",
+            "expectedEvidenceRelation": "unrestricted_global_evidence",
+            "requiredContributingEntryIds": ["recovery-compaction"]
           }
         ],
         "requiredContext": ["Copper Finch", "snapshot delta-29", "rotate the device certificate"],
-        "minimumPreservedSourceOccurrences": 1
+        "minimumPreservedSourceOccurrences": 1,
+        "scope": "global",
+        "excludedSessionFiles": []
       },
       {
         "id": "duplicate-meridian-release",
@@ -236,34 +310,253 @@
             "sessionFile": "duplicate-a.jsonl",
             "entryId": "release-copy-a",
             "requiredText": ["sha256:4c91d7e2", "meridian-safe-3"],
-            "expectedBranch": "active"
+            "expectedBranch": "active",
+            "expectedSessionOrigin": "/evaluation/releases",
+            "expectedEvidenceRelation": "unrestricted_global_evidence",
+            "requiredContributingEntryIds": ["release-copy-a"]
           },
           {
             "sessionFile": "duplicate-b.jsonl",
             "entryId": "release-copy-b",
             "requiredText": ["sha256:4c91d7e2", "meridian-safe-3"],
-            "expectedBranch": "active"
+            "expectedBranch": "active",
+            "expectedSessionOrigin": "/evaluation/releases",
+            "expectedEvidenceRelation": "unrestricted_global_evidence",
+            "requiredContributingEntryIds": ["release-copy-b"]
           }
         ],
         "requiredContext": ["sha256:4c91d7e2", "meridian-safe-3"],
-        "minimumPreservedSourceOccurrences": 2
+        "minimumPreservedSourceOccurrences": 2,
+        "scope": "global",
+        "excludedSessionFiles": []
+      },
+      {
+        "id": "project-main-retrieves-worktree-before-limits",
+        "category": "project_scope",
+        "query": "SCOPE_LIMIT_PROBE SCOPE_LIMIT_IDENTIFIER channel budget",
+        "scope": "project",
+        "invocationDirectory": "/evaluation/repository/main",
+        "expectedInvocationProjectIdentity": "git-origin:github.com/whamp/quality-fixture",
+        "expectedSources": [
+          {
+            "sessionFile": "project-worktree.jsonl",
+            "entryId": "worktree-answer",
+            "requiredText": ["cedar-worktree-41", "SCOPE_LIMIT_PROBE", "SCOPE_LIMIT_IDENTIFIER"],
+            "expectedSessionOrigin": "/evaluation/repository/worktrees/feature",
+            "expectedEvidenceRelation": "same_repository",
+            "requiredContributingEntryIds": ["worktree-answer"],
+            "expectedBranch": "active"
+          }
+        ],
+        "excludedSessionFiles": ["unrelated-similar-project.jsonl"],
+        "preLimitChannelProof": {
+          "pollutingSessionFiles": ["unrelated-similar-project.jsonl"],
+          "requiredChannels": ["dense", "lexical", "identifier"],
+          "minimumPollutingCandidatesPerChannel": 8
+        },
+        "requiredContext": ["cedar-worktree-41", "project evidence"],
+        "minimumPreservedSourceOccurrences": 1
+      },
+      {
+        "id": "project-worktree-retrieves-main",
+        "category": "project_scope",
+        "query": "What reverse worktree bridge marker did the main checkout choose?",
+        "scope": "project",
+        "invocationDirectory": "/evaluation/repository/worktrees/feature",
+        "expectedInvocationProjectIdentity": "git-origin:github.com/whamp/quality-fixture",
+        "expectedSources": [
+          {
+            "sessionFile": "project-main.jsonl",
+            "entryId": "main-answer",
+            "requiredText": ["obsidian-main-52", "reverse worktree bridge"],
+            "expectedSessionOrigin": "/evaluation/repository/main",
+            "expectedEvidenceRelation": "same_repository",
+            "requiredContributingEntryIds": ["main-answer"],
+            "expectedBranch": "active"
+          }
+        ],
+        "excludedSessionFiles": ["unrelated-similar-project.jsonl"],
+        "requiredContext": ["obsidian-main-52", "reverse worktree bridge"],
+        "minimumPreservedSourceOccurrences": 1
+      },
+      {
+        "id": "project-equivalent-clone-origin",
+        "category": "project_scope",
+        "query": "Which marker proves the equivalent clone shares canonical origin identity?",
+        "scope": "project",
+        "invocationDirectory": "/evaluation/repository/clones/a",
+        "expectedInvocationProjectIdentity": "git-origin:github.com/whamp/quality-fixture",
+        "expectedSources": [
+          {
+            "sessionFile": "equivalent-clone.jsonl",
+            "entryId": "clone-answer",
+            "requiredText": ["cobalt-clone-63", "canonical origin identity"],
+            "expectedSessionOrigin": "/evaluation/repository/clones/b",
+            "expectedEvidenceRelation": "same_repository",
+            "requiredContributingEntryIds": ["clone-answer"],
+            "expectedBranch": "active"
+          }
+        ],
+        "excludedSessionFiles": ["unrelated-similar-project.jsonl"],
+        "requiredContext": ["cobalt-clone-63", "canonical origin identity"],
+        "minimumPreservedSourceOccurrences": 1
+      },
+      {
+        "id": "project-configured-lineage",
+        "category": "project_scope",
+        "query": "What historical prototype marker did configured project lineage preserve?",
+        "scope": "project",
+        "invocationDirectory": "/evaluation/repository/main",
+        "expectedInvocationProjectIdentity": "git-origin:github.com/whamp/quality-fixture",
+        "expectedSources": [
+          {
+            "sessionFile": "historical-prototype.jsonl",
+            "entryId": "lineage-answer",
+            "requiredText": ["linen-lineage-74", "Configured project lineage"],
+            "expectedSessionOrigin": "/evaluation/historical/quality-prototype/phase-one",
+            "expectedEvidenceRelation": "configured_project_lineage",
+            "requiredContributingEntryIds": ["lineage-answer"],
+            "expectedBranch": "active"
+          }
+        ],
+        "excludedSessionFiles": ["unrelated-similar-project.jsonl"],
+        "requiredContext": ["linen-lineage-74", "successor repository"],
+        "minimumPreservedSourceOccurrences": 1
+      },
+      {
+        "id": "project-similar-name-remains-unrelated",
+        "category": "project_scope",
+        "query": "Who owns similarity fence token aurora-same-19?",
+        "scope": "project",
+        "invocationDirectory": "/evaluation/repository/main",
+        "expectedInvocationProjectIdentity": "git-origin:github.com/whamp/quality-fixture",
+        "expectedSources": [
+          {
+            "sessionFile": "project-main.jsonl",
+            "entryId": "similarity-answer",
+            "requiredText": ["similarity fence token aurora-same-19", "canonical repository"],
+            "expectedSessionOrigin": "/evaluation/repository/main",
+            "expectedEvidenceRelation": "same_repository",
+            "requiredContributingEntryIds": ["similarity-answer"],
+            "expectedBranch": "active"
+          }
+        ],
+        "excludedSessionFiles": ["unrelated-similar-project.jsonl"],
+        "requiredContext": ["aurora-same-19", "nearby names do not establish project identity"],
+        "minimumPreservedSourceOccurrences": 1
+      },
+      {
+        "id": "project-exact-non-git-origin",
+        "category": "project_scope",
+        "query": "What exact non-Git session origin marker excludes nearby directories?",
+        "scope": "project",
+        "invocationDirectory": "/evaluation/non-git/exact",
+        "expectedInvocationProjectIdentity": "non-git-session-origin:/evaluation/non-git/exact",
+        "expectedSources": [
+          {
+            "sessionFile": "non-git-exact.jsonl",
+            "entryId": "non-git-answer",
+            "requiredText": ["quartz-origin-85", "Exact non-Git session origin"],
+            "expectedSessionOrigin": "/evaluation/non-git/exact",
+            "expectedEvidenceRelation": "same_session_origin",
+            "requiredContributingEntryIds": ["non-git-answer"],
+            "expectedBranch": "active"
+          }
+        ],
+        "excludedSessionFiles": ["non-git-nearby.jsonl"],
+        "requiredContext": ["quartz-origin-85", "no nearby directory"],
+        "minimumPreservedSourceOccurrences": 1
+      },
+      {
+        "id": "global-explicit-cross-project",
+        "category": "project_scope",
+        "query": "Which foreign project marker may explicit global recall reuse?",
+        "scope": "global",
+        "invocationDirectory": "/evaluation/repository/main",
+        "expectedInvocationProjectIdentity": "git-origin:github.com/whamp/quality-fixture",
+        "expectedSources": [
+          {
+            "sessionFile": "unrelated-similar-project.jsonl",
+            "entryId": "global-foreign-answer",
+            "requiredText": ["violet-global-96", "Explicit global recall"],
+            "expectedSessionOrigin": "/evaluation/repository/quality-fixture-similar",
+            "expectedEvidenceRelation": "unrestricted_global_evidence",
+            "requiredContributingEntryIds": ["global-foreign-answer"],
+            "expectedBranch": "active"
+          }
+        ],
+        "excludedSessionFiles": [],
+        "requiredContext": ["violet-global-96", "deliberately broadens scope"],
+        "minimumPreservedSourceOccurrences": 1
       }
-    ]
+    ],
+    "projectIdentityFixtures": [
+      {
+        "workingDirectory": "/evaluation/repository/main",
+        "projectIdentity": "git-origin:github.com/whamp/quality-fixture",
+        "identitySource": "git_origin"
+      },
+      {
+        "workingDirectory": "/evaluation/repository/worktrees/feature",
+        "projectIdentity": "git-origin:github.com/whamp/quality-fixture",
+        "identitySource": "git_origin"
+      },
+      {
+        "workingDirectory": "/evaluation/repository/clones/a",
+        "projectIdentity": "git-origin:github.com/whamp/quality-fixture",
+        "identitySource": "git_origin"
+      },
+      {
+        "workingDirectory": "/evaluation/repository/clones/b",
+        "projectIdentity": "git-origin:github.com/whamp/quality-fixture",
+        "identitySource": "git_origin"
+      },
+      {
+        "workingDirectory": "/evaluation/repository/quality-fixture-similar",
+        "projectIdentity": "git-origin:github.com/whamp/quality-fixture-similar",
+        "identitySource": "git_origin"
+      },
+      {
+        "workingDirectory": "/evaluation/non-git/exact",
+        "projectIdentity": "non-git-session-origin:/evaluation/non-git/exact",
+        "identitySource": "non_git_session_origin"
+      },
+      {
+        "workingDirectory": "/evaluation/non-git/exact-nearby",
+        "projectIdentity": "non-git-session-origin:/evaluation/non-git/exact-nearby",
+        "identitySource": "non_git_session_origin"
+      }
+    ],
+    "projectLineages": {
+      "git-origin:github.com/whamp/quality-fixture": ["/evaluation/historical/quality-prototype"]
+    }
   },
   "result": {
-    "version": 3,
-    "rankingIdentity": {
+    "version": 4,
+    "evaluationIdentity": {
+      "defaultScope": "project",
+      "projectScopePolicyVersion": 1,
+      "repositoryIdentityPolicyVersion": 3,
+      "projectIdentityMetadataSchemaVersion": 3,
+      "lineagePolicyVersion": 1,
+      "lineageDigest": "02023e9934990f61a81488144cb1b27d9002e0af750c38a1b83adc1de367bc4b",
       "rankingMode": "hybrid",
       "rankFusionVersion": 1,
       "reciprocalRankConstant": 60,
-      "activeBranchPrior": 0.01
+      "activeBranchPrior": 0.01,
+      "candidateLimits": {
+        "dense": 8,
+        "lexical": 8,
+        "identifier": 8
+      },
+      "finalResultCount": 5
     },
-    "startedAt": "2026-07-25T14:03:19.783Z",
-    "completedAt": "2026-07-25T14:03:28.078Z",
-    "durationMilliseconds": 8295.977132,
-    "specificationPath": "/home/will/projects/pi-session-recall/.worktrees/token-aware-reranked-recall/evaluation/recall-quality-cases.json",
-    "specificationSha256": "ea5ba76c777d4b7a1dc3d0c671a935659fa427de718860dab1b4c194a0db6503",
-    "corpusId": "recall-quality-hybrid-bounded-v2",
+    "startedAt": "2026-07-25T18:14:02.508Z",
+    "completedAt": "2026-07-25T18:14:24.821Z",
+    "durationMilliseconds": 22313.690888999998,
+    "specificationPath": "/home/will/projects/pi-session-recall/.worktrees/project-scoped-recall/evaluation/recall-quality-cases.json",
+    "specificationSha256": "1921bb0e7ebcc39346e7978b8ff9f95275c83a9f16b888cb92ba2102f0914849",
+    "corpusId": "recall-quality-project-scoped-bounded-v3",
     "indexRuns": [
       {
         "chunkPolicy": {
@@ -271,15 +564,15 @@
           "maxTokens": 512,
           "overlapTokens": 64
         },
-        "totalChunks": 96,
-        "indexLatencyMilliseconds": 5143.336577,
+        "totalChunks": 128,
+        "indexLatencyMilliseconds": 13955.070216,
         "indexSummary": {
-          "scannedSessions": 8,
-          "indexedSessions": 8,
+          "scannedSessions": 15,
+          "indexedSessions": 15,
           "removedSessions": 0,
           "cacheHits": 1,
-          "newlyEmbeddedChunks": 92,
-          "embeddingRequestCount": 10,
+          "newlyEmbeddedChunks": 124,
+          "embeddingRequestCount": 17,
           "deletedChunks": 0,
           "failedSessions": []
         }
@@ -293,26 +586,43 @@
           "overlapTokens": 64
         },
         "candidateCount": 8,
-        "totalChunks": 96,
-        "indexLatencyMilliseconds": 5143.336577,
+        "totalChunks": 128,
+        "indexLatencyMilliseconds": 13955.070216,
         "measurement": {
-          "caseCount": 10,
+          "caseCount": 17,
           "candidatePoolRecall": 1,
-          "candidatePoolDuplicateRate": 0.05,
+          "candidatePoolDuplicateRate": 0.02185792349726776,
           "queryLatencyMilliseconds": {
-            "median": 71.19474300000002,
-            "p95": 75.96820500000013
+            "median": 71.1770949999991,
+            "p95": 1948.7393119999979
           },
+          "queryLatencyByScope": {
+            "project": {
+              "median": 71.1770949999991,
+              "p95": 1341.035523999999
+            },
+            "global": {
+              "median": 70.46122699999978,
+              "p95": 1948.7393119999979
+            }
+          },
+          "policyFailureCaseIds": [],
           "missedCandidatePoolCaseIds": [],
           "caseMeasurements": [
             {
               "caseId": "semantic-crash-safe-outbox",
               "category": "semantic_paraphrase",
+              "scope": "global",
+              "searchScopeVerified": true,
+              "invocationProjectIdentityVerified": true,
+              "excludedSessionFilesAbsent": true,
+              "preLimitChannelsVerified": true,
+              "preLimitChannelMeasurements": [],
               "candidatePoolRecalled": true,
-              "rawCandidateCount": 12,
-              "groupedCandidateCount": 12,
+              "rawCandidateCount": 13,
+              "groupedCandidateCount": 13,
               "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 65.23204500000065,
+              "queryLatencyMilliseconds": 70.46122699999978,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -320,6 +630,10 @@
                   "contextUseful": true,
                   "sourceOccurrencesPreserved": true,
                   "preservedSourceOccurrences": 1,
+                  "sessionOriginsVerified": true,
+                  "evidenceRelationsVerified": true,
+                  "contributingEntriesVerified": true,
+                  "branchesVerified": true,
                   "finalDuplicateSlots": 0,
                   "finalResultSlots": 5
                 }
@@ -328,11 +642,17 @@
             {
               "caseId": "semantic-image-retry-budget",
               "category": "semantic_paraphrase",
+              "scope": "global",
+              "searchScopeVerified": true,
+              "invocationProjectIdentityVerified": true,
+              "excludedSessionFilesAbsent": true,
+              "preLimitChannelsVerified": true,
+              "preLimitChannelMeasurements": [],
               "candidatePoolRecalled": true,
               "rawCandidateCount": 16,
               "groupedCandidateCount": 15,
               "candidatePoolDuplicateSlots": 1,
-              "queryLatencyMilliseconds": 73.3564209999995,
+              "queryLatencyMilliseconds": 70.3784629999991,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -340,6 +660,10 @@
                   "contextUseful": true,
                   "sourceOccurrencesPreserved": true,
                   "preservedSourceOccurrences": 1,
+                  "sessionOriginsVerified": true,
+                  "evidenceRelationsVerified": true,
+                  "contributingEntriesVerified": true,
+                  "branchesVerified": true,
                   "finalDuplicateSlots": 0,
                   "finalResultSlots": 5
                 }
@@ -348,11 +672,17 @@
             {
               "caseId": "exact-read-node-error-code",
               "category": "exact_identifier",
+              "scope": "global",
+              "searchScopeVerified": true,
+              "invocationProjectIdentityVerified": true,
+              "excludedSessionFilesAbsent": true,
+              "preLimitChannelsVerified": true,
+              "preLimitChannelMeasurements": [],
               "candidatePoolRecalled": true,
               "rawCandidateCount": 10,
               "groupedCandidateCount": 10,
               "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 70.86970199999996,
+              "queryLatencyMilliseconds": 68.89685500000087,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -360,6 +690,10 @@
                   "contextUseful": true,
                   "sourceOccurrencesPreserved": true,
                   "preservedSourceOccurrences": 1,
+                  "sessionOriginsVerified": true,
+                  "evidenceRelationsVerified": true,
+                  "contributingEntriesVerified": true,
+                  "branchesVerified": true,
                   "finalDuplicateSlots": 0,
                   "finalResultSlots": 5
                 }
@@ -368,11 +702,17 @@
             {
               "caseId": "tool-evidence-lease-token",
               "category": "tool_evidence",
+              "scope": "global",
+              "searchScopeVerified": true,
+              "invocationProjectIdentityVerified": true,
+              "excludedSessionFilesAbsent": true,
+              "preLimitChannelsVerified": true,
+              "preLimitChannelMeasurements": [],
               "candidatePoolRecalled": true,
               "rawCandidateCount": 10,
-              "groupedCandidateCount": 8,
-              "candidatePoolDuplicateSlots": 2,
-              "queryLatencyMilliseconds": 71.08936499999982,
+              "groupedCandidateCount": 9,
+              "candidatePoolDuplicateSlots": 1,
+              "queryLatencyMilliseconds": 1948.7393119999979,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -380,6 +720,10 @@
                   "contextUseful": true,
                   "sourceOccurrencesPreserved": true,
                   "preservedSourceOccurrences": 1,
+                  "sessionOriginsVerified": true,
+                  "evidenceRelationsVerified": true,
+                  "contributingEntriesVerified": true,
+                  "branchesVerified": true,
                   "finalDuplicateSlots": 0,
                   "finalResultSlots": 5
                 }
@@ -388,11 +732,17 @@
             {
               "caseId": "context-europe-rollout-conditions",
               "category": "context_dependent_reply",
+              "scope": "global",
+              "searchScopeVerified": true,
+              "invocationProjectIdentityVerified": true,
+              "excludedSessionFilesAbsent": true,
+              "preLimitChannelsVerified": true,
+              "preLimitChannelMeasurements": [],
               "candidatePoolRecalled": true,
-              "rawCandidateCount": 13,
-              "groupedCandidateCount": 12,
+              "rawCandidateCount": 14,
+              "groupedCandidateCount": 13,
               "candidatePoolDuplicateSlots": 1,
-              "queryLatencyMilliseconds": 72.03335200000038,
+              "queryLatencyMilliseconds": 213.08947599999738,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -400,6 +750,10 @@
                   "contextUseful": true,
                   "sourceOccurrencesPreserved": true,
                   "preservedSourceOccurrences": 1,
+                  "sessionOriginsVerified": true,
+                  "evidenceRelationsVerified": true,
+                  "contributingEntriesVerified": true,
+                  "branchesVerified": true,
                   "finalDuplicateSlots": 0,
                   "finalResultSlots": 5
                 }
@@ -408,11 +762,17 @@
             {
               "caseId": "branch-abandoned-redis-group",
               "category": "branch",
+              "scope": "global",
+              "searchScopeVerified": true,
+              "invocationProjectIdentityVerified": true,
+              "excludedSessionFilesAbsent": true,
+              "preLimitChannelsVerified": true,
+              "preLimitChannelMeasurements": [],
               "candidatePoolRecalled": true,
               "rawCandidateCount": 14,
               "groupedCandidateCount": 14,
               "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 71.49248399999942,
+              "queryLatencyMilliseconds": 67.47449599999891,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -420,6 +780,10 @@
                   "contextUseful": true,
                   "sourceOccurrencesPreserved": true,
                   "preservedSourceOccurrences": 1,
+                  "sessionOriginsVerified": true,
+                  "evidenceRelationsVerified": true,
+                  "contributingEntriesVerified": true,
+                  "branchesVerified": true,
                   "finalDuplicateSlots": 0,
                   "finalResultSlots": 5
                 }
@@ -428,11 +792,47 @@
             {
               "caseId": "branch-active-offline-queue",
               "category": "branch",
+              "scope": "global",
+              "searchScopeVerified": true,
+              "invocationProjectIdentityVerified": true,
+              "excludedSessionFilesAbsent": true,
+              "preLimitChannelsVerified": true,
+              "preLimitChannelMeasurements": [],
+              "candidatePoolRecalled": true,
+              "rawCandidateCount": 12,
+              "groupedCandidateCount": 12,
+              "candidatePoolDuplicateSlots": 0,
+              "queryLatencyMilliseconds": 70.44479700000011,
+              "finalCounts": [
+                {
+                  "finalCount": 5,
+                  "finalRecalled": true,
+                  "contextUseful": true,
+                  "sourceOccurrencesPreserved": true,
+                  "preservedSourceOccurrences": 1,
+                  "sessionOriginsVerified": true,
+                  "evidenceRelationsVerified": true,
+                  "contributingEntriesVerified": true,
+                  "branchesVerified": true,
+                  "finalDuplicateSlots": 0,
+                  "finalResultSlots": 5
+                }
+              ]
+            },
+            {
+              "caseId": "branch-summary-hosted-services",
+              "category": "summary",
+              "scope": "global",
+              "searchScopeVerified": true,
+              "invocationProjectIdentityVerified": true,
+              "excludedSessionFilesAbsent": true,
+              "preLimitChannelsVerified": true,
+              "preLimitChannelMeasurements": [],
               "candidatePoolRecalled": true,
               "rawCandidateCount": 11,
               "groupedCandidateCount": 11,
               "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 74.72355200000038,
+              "queryLatencyMilliseconds": 68.03309099999751,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -440,26 +840,10 @@
                   "contextUseful": true,
                   "sourceOccurrencesPreserved": true,
                   "preservedSourceOccurrences": 1,
-                  "finalDuplicateSlots": 0,
-                  "finalResultSlots": 5
-                }
-              ]
-            },
-            {
-              "caseId": "branch-summary-hosted-services",
-              "category": "summary",
-              "candidatePoolRecalled": true,
-              "rawCandidateCount": 10,
-              "groupedCandidateCount": 10,
-              "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 70.62705499999993,
-              "finalCounts": [
-                {
-                  "finalCount": 5,
-                  "finalRecalled": true,
-                  "contextUseful": true,
-                  "sourceOccurrencesPreserved": true,
-                  "preservedSourceOccurrences": 1,
+                  "sessionOriginsVerified": true,
+                  "evidenceRelationsVerified": true,
+                  "contributingEntriesVerified": true,
+                  "branchesVerified": true,
                   "finalDuplicateSlots": 0,
                   "finalResultSlots": 5
                 }
@@ -468,11 +852,17 @@
             {
               "caseId": "compaction-copper-finch",
               "category": "summary",
+              "scope": "global",
+              "searchScopeVerified": true,
+              "invocationProjectIdentityVerified": true,
+              "excludedSessionFilesAbsent": true,
+              "preLimitChannelsVerified": true,
+              "preLimitChannelMeasurements": [],
               "candidatePoolRecalled": true,
-              "rawCandidateCount": 10,
-              "groupedCandidateCount": 10,
+              "rawCandidateCount": 12,
+              "groupedCandidateCount": 12,
               "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 71.19474300000002,
+              "queryLatencyMilliseconds": 1808.6745220000012,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -480,6 +870,10 @@
                   "contextUseful": true,
                   "sourceOccurrencesPreserved": true,
                   "preservedSourceOccurrences": 1,
+                  "sessionOriginsVerified": true,
+                  "evidenceRelationsVerified": true,
+                  "contributingEntriesVerified": true,
+                  "branchesVerified": true,
                   "finalDuplicateSlots": 0,
                   "finalResultSlots": 5
                 }
@@ -488,11 +882,17 @@
             {
               "caseId": "duplicate-meridian-release",
               "category": "duplicate_content",
+              "scope": "global",
+              "searchScopeVerified": true,
+              "invocationProjectIdentityVerified": true,
+              "excludedSessionFilesAbsent": true,
+              "preLimitChannelsVerified": true,
+              "preLimitChannelMeasurements": [],
               "candidatePoolRecalled": true,
               "rawCandidateCount": 14,
-              "groupedCandidateCount": 12,
-              "candidatePoolDuplicateSlots": 2,
-              "queryLatencyMilliseconds": 75.96820500000013,
+              "groupedCandidateCount": 13,
+              "candidatePoolDuplicateSlots": 1,
+              "queryLatencyMilliseconds": 224.26175700000022,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -500,6 +900,242 @@
                   "contextUseful": true,
                   "sourceOccurrencesPreserved": true,
                   "preservedSourceOccurrences": 2,
+                  "sessionOriginsVerified": true,
+                  "evidenceRelationsVerified": true,
+                  "contributingEntriesVerified": true,
+                  "branchesVerified": true,
+                  "finalDuplicateSlots": 0,
+                  "finalResultSlots": 5
+                }
+              ]
+            },
+            {
+              "caseId": "project-main-retrieves-worktree-before-limits",
+              "category": "project_scope",
+              "scope": "project",
+              "searchScopeVerified": true,
+              "invocationProjectIdentityVerified": true,
+              "excludedSessionFilesAbsent": true,
+              "preLimitChannelsVerified": true,
+              "preLimitChannelMeasurements": [
+                {
+                  "channel": "dense",
+                  "projectSourceAdmitted": true,
+                  "globalSourceDisplaced": true,
+                  "pollutingCandidateCount": 8,
+                  "passed": true
+                },
+                {
+                  "channel": "lexical",
+                  "projectSourceAdmitted": true,
+                  "globalSourceDisplaced": true,
+                  "pollutingCandidateCount": 8,
+                  "passed": true
+                },
+                {
+                  "channel": "identifier",
+                  "projectSourceAdmitted": true,
+                  "globalSourceDisplaced": true,
+                  "pollutingCandidateCount": 8,
+                  "passed": true
+                }
+              ],
+              "candidatePoolRecalled": true,
+              "rawCandidateCount": 8,
+              "groupedCandidateCount": 8,
+              "candidatePoolDuplicateSlots": 0,
+              "queryLatencyMilliseconds": 70.53341100000034,
+              "finalCounts": [
+                {
+                  "finalCount": 5,
+                  "finalRecalled": true,
+                  "contextUseful": true,
+                  "sourceOccurrencesPreserved": true,
+                  "preservedSourceOccurrences": 1,
+                  "sessionOriginsVerified": true,
+                  "evidenceRelationsVerified": true,
+                  "contributingEntriesVerified": true,
+                  "branchesVerified": true,
+                  "finalDuplicateSlots": 0,
+                  "finalResultSlots": 5
+                }
+              ]
+            },
+            {
+              "caseId": "project-worktree-retrieves-main",
+              "category": "project_scope",
+              "scope": "project",
+              "searchScopeVerified": true,
+              "invocationProjectIdentityVerified": true,
+              "excludedSessionFilesAbsent": true,
+              "preLimitChannelsVerified": true,
+              "preLimitChannelMeasurements": [],
+              "candidatePoolRecalled": true,
+              "rawCandidateCount": 8,
+              "groupedCandidateCount": 8,
+              "candidatePoolDuplicateSlots": 0,
+              "queryLatencyMilliseconds": 72.15500099999917,
+              "finalCounts": [
+                {
+                  "finalCount": 5,
+                  "finalRecalled": true,
+                  "contextUseful": true,
+                  "sourceOccurrencesPreserved": true,
+                  "preservedSourceOccurrences": 1,
+                  "sessionOriginsVerified": true,
+                  "evidenceRelationsVerified": true,
+                  "contributingEntriesVerified": true,
+                  "branchesVerified": true,
+                  "finalDuplicateSlots": 0,
+                  "finalResultSlots": 5
+                }
+              ]
+            },
+            {
+              "caseId": "project-equivalent-clone-origin",
+              "category": "project_scope",
+              "scope": "project",
+              "searchScopeVerified": true,
+              "invocationProjectIdentityVerified": true,
+              "excludedSessionFilesAbsent": true,
+              "preLimitChannelsVerified": true,
+              "preLimitChannelMeasurements": [],
+              "candidatePoolRecalled": true,
+              "rawCandidateCount": 11,
+              "groupedCandidateCount": 11,
+              "candidatePoolDuplicateSlots": 0,
+              "queryLatencyMilliseconds": 70.51725100000112,
+              "finalCounts": [
+                {
+                  "finalCount": 5,
+                  "finalRecalled": true,
+                  "contextUseful": true,
+                  "sourceOccurrencesPreserved": true,
+                  "preservedSourceOccurrences": 1,
+                  "sessionOriginsVerified": true,
+                  "evidenceRelationsVerified": true,
+                  "contributingEntriesVerified": true,
+                  "branchesVerified": true,
+                  "finalDuplicateSlots": 0,
+                  "finalResultSlots": 5
+                }
+              ]
+            },
+            {
+              "caseId": "project-configured-lineage",
+              "category": "project_scope",
+              "scope": "project",
+              "searchScopeVerified": true,
+              "invocationProjectIdentityVerified": true,
+              "excludedSessionFilesAbsent": true,
+              "preLimitChannelsVerified": true,
+              "preLimitChannelMeasurements": [],
+              "candidatePoolRecalled": true,
+              "rawCandidateCount": 9,
+              "groupedCandidateCount": 9,
+              "candidatePoolDuplicateSlots": 0,
+              "queryLatencyMilliseconds": 1341.035523999999,
+              "finalCounts": [
+                {
+                  "finalCount": 5,
+                  "finalRecalled": true,
+                  "contextUseful": true,
+                  "sourceOccurrencesPreserved": true,
+                  "preservedSourceOccurrences": 1,
+                  "sessionOriginsVerified": true,
+                  "evidenceRelationsVerified": true,
+                  "contributingEntriesVerified": true,
+                  "branchesVerified": true,
+                  "finalDuplicateSlots": 0,
+                  "finalResultSlots": 5
+                }
+              ]
+            },
+            {
+              "caseId": "project-similar-name-remains-unrelated",
+              "category": "project_scope",
+              "scope": "project",
+              "searchScopeVerified": true,
+              "invocationProjectIdentityVerified": true,
+              "excludedSessionFilesAbsent": true,
+              "preLimitChannelsVerified": true,
+              "preLimitChannelMeasurements": [],
+              "candidatePoolRecalled": true,
+              "rawCandidateCount": 8,
+              "groupedCandidateCount": 8,
+              "candidatePoolDuplicateSlots": 0,
+              "queryLatencyMilliseconds": 166.5247980000022,
+              "finalCounts": [
+                {
+                  "finalCount": 5,
+                  "finalRecalled": true,
+                  "contextUseful": true,
+                  "sourceOccurrencesPreserved": true,
+                  "preservedSourceOccurrences": 1,
+                  "sessionOriginsVerified": true,
+                  "evidenceRelationsVerified": true,
+                  "contributingEntriesVerified": true,
+                  "branchesVerified": true,
+                  "finalDuplicateSlots": 0,
+                  "finalResultSlots": 5
+                }
+              ]
+            },
+            {
+              "caseId": "project-exact-non-git-origin",
+              "category": "project_scope",
+              "scope": "project",
+              "searchScopeVerified": true,
+              "invocationProjectIdentityVerified": true,
+              "excludedSessionFilesAbsent": true,
+              "preLimitChannelsVerified": true,
+              "preLimitChannelMeasurements": [],
+              "candidatePoolRecalled": true,
+              "rawCandidateCount": 3,
+              "groupedCandidateCount": 3,
+              "candidatePoolDuplicateSlots": 0,
+              "queryLatencyMilliseconds": 71.1770949999991,
+              "finalCounts": [
+                {
+                  "finalCount": 5,
+                  "finalRecalled": true,
+                  "contextUseful": true,
+                  "sourceOccurrencesPreserved": true,
+                  "preservedSourceOccurrences": 1,
+                  "sessionOriginsVerified": true,
+                  "evidenceRelationsVerified": true,
+                  "contributingEntriesVerified": true,
+                  "branchesVerified": true,
+                  "finalDuplicateSlots": 0,
+                  "finalResultSlots": 3
+                }
+              ]
+            },
+            {
+              "caseId": "global-explicit-cross-project",
+              "category": "project_scope",
+              "scope": "global",
+              "searchScopeVerified": true,
+              "invocationProjectIdentityVerified": true,
+              "excludedSessionFilesAbsent": true,
+              "preLimitChannelsVerified": true,
+              "preLimitChannelMeasurements": [],
+              "candidatePoolRecalled": true,
+              "rawCandidateCount": 10,
+              "groupedCandidateCount": 10,
+              "candidatePoolDuplicateSlots": 0,
+              "queryLatencyMilliseconds": 73.70949499999915,
+              "finalCounts": [
+                {
+                  "finalCount": 5,
+                  "finalRecalled": true,
+                  "contextUseful": true,
+                  "sourceOccurrencesPreserved": true,
+                  "preservedSourceOccurrences": 1,
+                  "sessionOriginsVerified": true,
+                  "evidenceRelationsVerified": true,
+                  "contributingEntriesVerified": true,
+                  "branchesVerified": true,
                   "finalDuplicateSlots": 0,
                   "finalResultSlots": 5
                 }
@@ -512,720 +1148,20 @@
               "finalRecall": 1,
               "contextUsefulness": 1,
               "sourceOccurrencePreservation": 1,
+              "sessionOriginVerification": 1,
+              "evidenceRelationVerification": 1,
+              "contributingEntryVerification": 1,
+              "branchVerification": 1,
               "finalDuplicateRate": 0,
               "missedCaseIds": [],
               "contextFailureCaseIds": [],
               "sourceOccurrenceFailureCaseIds": [],
+              "sessionOriginFailureCaseIds": [],
+              "evidenceRelationFailureCaseIds": [],
+              "contributingEntryFailureCaseIds": [],
+              "branchFailureCaseIds": [],
               "finalDuplicateSlots": 0,
-              "finalResultSlots": 50
-            }
-          ]
-        }
-      },
-      {
-        "chunkPolicy": {
-          "id": "512-64",
-          "maxTokens": 512,
-          "overlapTokens": 64
-        },
-        "candidateCount": 16,
-        "totalChunks": 96,
-        "indexLatencyMilliseconds": 5143.336577,
-        "measurement": {
-          "caseCount": 10,
-          "candidatePoolRecall": 1,
-          "candidatePoolDuplicateRate": 0.05286343612334802,
-          "queryLatencyMilliseconds": {
-            "median": 71.88878899999963,
-            "p95": 74.95184000000063
-          },
-          "missedCandidatePoolCaseIds": [],
-          "caseMeasurements": [
-            {
-              "caseId": "semantic-crash-safe-outbox",
-              "category": "semantic_paraphrase",
-              "candidatePoolRecalled": true,
-              "rawCandidateCount": 23,
-              "groupedCandidateCount": 20,
-              "candidatePoolDuplicateSlots": 3,
-              "queryLatencyMilliseconds": 65.82538199999999,
-              "finalCounts": [
-                {
-                  "finalCount": 5,
-                  "finalRecalled": true,
-                  "contextUseful": true,
-                  "sourceOccurrencesPreserved": true,
-                  "preservedSourceOccurrences": 1,
-                  "finalDuplicateSlots": 0,
-                  "finalResultSlots": 5
-                }
-              ]
-            },
-            {
-              "caseId": "semantic-image-retry-budget",
-              "category": "semantic_paraphrase",
-              "candidatePoolRecalled": true,
-              "rawCandidateCount": 24,
-              "groupedCandidateCount": 22,
-              "candidatePoolDuplicateSlots": 2,
-              "queryLatencyMilliseconds": 74.9384970000001,
-              "finalCounts": [
-                {
-                  "finalCount": 5,
-                  "finalRecalled": true,
-                  "contextUseful": true,
-                  "sourceOccurrencesPreserved": true,
-                  "preservedSourceOccurrences": 1,
-                  "finalDuplicateSlots": 0,
-                  "finalResultSlots": 5
-                }
-              ]
-            },
-            {
-              "caseId": "exact-read-node-error-code",
-              "category": "exact_identifier",
-              "candidatePoolRecalled": true,
-              "rawCandidateCount": 18,
-              "groupedCandidateCount": 18,
-              "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 71.88878899999963,
-              "finalCounts": [
-                {
-                  "finalCount": 5,
-                  "finalRecalled": true,
-                  "contextUseful": true,
-                  "sourceOccurrencesPreserved": true,
-                  "preservedSourceOccurrences": 1,
-                  "finalDuplicateSlots": 0,
-                  "finalResultSlots": 5
-                }
-              ]
-            },
-            {
-              "caseId": "tool-evidence-lease-token",
-              "category": "tool_evidence",
-              "candidatePoolRecalled": true,
-              "rawCandidateCount": 18,
-              "groupedCandidateCount": 16,
-              "candidatePoolDuplicateSlots": 2,
-              "queryLatencyMilliseconds": 74.95184000000063,
-              "finalCounts": [
-                {
-                  "finalCount": 5,
-                  "finalRecalled": true,
-                  "contextUseful": true,
-                  "sourceOccurrencesPreserved": true,
-                  "preservedSourceOccurrences": 1,
-                  "finalDuplicateSlots": 0,
-                  "finalResultSlots": 5
-                }
-              ]
-            },
-            {
-              "caseId": "context-europe-rollout-conditions",
-              "category": "context_dependent_reply",
-              "candidatePoolRecalled": true,
-              "rawCandidateCount": 27,
-              "groupedCandidateCount": 26,
-              "candidatePoolDuplicateSlots": 1,
-              "queryLatencyMilliseconds": 69.05099900000005,
-              "finalCounts": [
-                {
-                  "finalCount": 5,
-                  "finalRecalled": true,
-                  "contextUseful": true,
-                  "sourceOccurrencesPreserved": true,
-                  "preservedSourceOccurrences": 1,
-                  "finalDuplicateSlots": 0,
-                  "finalResultSlots": 5
-                }
-              ]
-            },
-            {
-              "caseId": "branch-abandoned-redis-group",
-              "category": "branch",
-              "candidatePoolRecalled": true,
-              "rawCandidateCount": 27,
-              "groupedCandidateCount": 26,
-              "candidatePoolDuplicateSlots": 1,
-              "queryLatencyMilliseconds": 71.70543199999975,
-              "finalCounts": [
-                {
-                  "finalCount": 5,
-                  "finalRecalled": true,
-                  "contextUseful": true,
-                  "sourceOccurrencesPreserved": true,
-                  "preservedSourceOccurrences": 1,
-                  "finalDuplicateSlots": 0,
-                  "finalResultSlots": 5
-                }
-              ]
-            },
-            {
-              "caseId": "branch-active-offline-queue",
-              "category": "branch",
-              "candidatePoolRecalled": true,
-              "rawCandidateCount": 20,
-              "groupedCandidateCount": 20,
-              "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 72.7291580000001,
-              "finalCounts": [
-                {
-                  "finalCount": 5,
-                  "finalRecalled": true,
-                  "contextUseful": true,
-                  "sourceOccurrencesPreserved": true,
-                  "preservedSourceOccurrences": 1,
-                  "finalDuplicateSlots": 0,
-                  "finalResultSlots": 5
-                }
-              ]
-            },
-            {
-              "caseId": "branch-summary-hosted-services",
-              "category": "summary",
-              "candidatePoolRecalled": true,
-              "rawCandidateCount": 21,
-              "groupedCandidateCount": 21,
-              "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 71.32382499999949,
-              "finalCounts": [
-                {
-                  "finalCount": 5,
-                  "finalRecalled": true,
-                  "contextUseful": true,
-                  "sourceOccurrencesPreserved": true,
-                  "preservedSourceOccurrences": 1,
-                  "finalDuplicateSlots": 0,
-                  "finalResultSlots": 5
-                }
-              ]
-            },
-            {
-              "caseId": "compaction-copper-finch",
-              "category": "summary",
-              "candidatePoolRecalled": true,
-              "rawCandidateCount": 22,
-              "groupedCandidateCount": 21,
-              "candidatePoolDuplicateSlots": 1,
-              "queryLatencyMilliseconds": 73.1030009999995,
-              "finalCounts": [
-                {
-                  "finalCount": 5,
-                  "finalRecalled": true,
-                  "contextUseful": true,
-                  "sourceOccurrencesPreserved": true,
-                  "preservedSourceOccurrences": 1,
-                  "finalDuplicateSlots": 0,
-                  "finalResultSlots": 5
-                }
-              ]
-            },
-            {
-              "caseId": "duplicate-meridian-release",
-              "category": "duplicate_content",
-              "candidatePoolRecalled": true,
-              "rawCandidateCount": 27,
-              "groupedCandidateCount": 25,
-              "candidatePoolDuplicateSlots": 2,
-              "queryLatencyMilliseconds": 71.96696399999928,
-              "finalCounts": [
-                {
-                  "finalCount": 5,
-                  "finalRecalled": true,
-                  "contextUseful": true,
-                  "sourceOccurrencesPreserved": true,
-                  "preservedSourceOccurrences": 2,
-                  "finalDuplicateSlots": 0,
-                  "finalResultSlots": 5
-                }
-              ]
-            }
-          ],
-          "finalCounts": [
-            {
-              "finalCount": 5,
-              "finalRecall": 1,
-              "contextUsefulness": 1,
-              "sourceOccurrencePreservation": 1,
-              "finalDuplicateRate": 0,
-              "missedCaseIds": [],
-              "contextFailureCaseIds": [],
-              "sourceOccurrenceFailureCaseIds": [],
-              "finalDuplicateSlots": 0,
-              "finalResultSlots": 50
-            }
-          ]
-        }
-      },
-      {
-        "chunkPolicy": {
-          "id": "512-64",
-          "maxTokens": 512,
-          "overlapTokens": 64
-        },
-        "candidateCount": 24,
-        "totalChunks": 96,
-        "indexLatencyMilliseconds": 5143.336577,
-        "measurement": {
-          "caseCount": 10,
-          "candidatePoolRecall": 1,
-          "candidatePoolDuplicateRate": 0.08132530120481928,
-          "queryLatencyMilliseconds": {
-            "median": 69.58443100000022,
-            "p95": 74.36377100000027
-          },
-          "missedCandidatePoolCaseIds": [],
-          "caseMeasurements": [
-            {
-              "caseId": "semantic-crash-safe-outbox",
-              "category": "semantic_paraphrase",
-              "candidatePoolRecalled": true,
-              "rawCandidateCount": 35,
-              "groupedCandidateCount": 26,
-              "candidatePoolDuplicateSlots": 7,
-              "queryLatencyMilliseconds": 66.55822799999987,
-              "finalCounts": [
-                {
-                  "finalCount": 5,
-                  "finalRecalled": true,
-                  "contextUseful": true,
-                  "sourceOccurrencesPreserved": true,
-                  "preservedSourceOccurrences": 1,
-                  "finalDuplicateSlots": 0,
-                  "finalResultSlots": 5
-                }
-              ]
-            },
-            {
-              "caseId": "semantic-image-retry-budget",
-              "category": "semantic_paraphrase",
-              "candidatePoolRecalled": true,
-              "rawCandidateCount": 32,
-              "groupedCandidateCount": 27,
-              "candidatePoolDuplicateSlots": 5,
-              "queryLatencyMilliseconds": 71.80961800000023,
-              "finalCounts": [
-                {
-                  "finalCount": 5,
-                  "finalRecalled": true,
-                  "contextUseful": true,
-                  "sourceOccurrencesPreserved": true,
-                  "preservedSourceOccurrences": 1,
-                  "finalDuplicateSlots": 0,
-                  "finalResultSlots": 5
-                }
-              ]
-            },
-            {
-              "caseId": "exact-read-node-error-code",
-              "category": "exact_identifier",
-              "candidatePoolRecalled": true,
-              "rawCandidateCount": 26,
-              "groupedCandidateCount": 22,
-              "candidatePoolDuplicateSlots": 3,
-              "queryLatencyMilliseconds": 67.8775399999995,
-              "finalCounts": [
-                {
-                  "finalCount": 5,
-                  "finalRecalled": true,
-                  "contextUseful": true,
-                  "sourceOccurrencesPreserved": true,
-                  "preservedSourceOccurrences": 1,
-                  "finalDuplicateSlots": 0,
-                  "finalResultSlots": 5
-                }
-              ]
-            },
-            {
-              "caseId": "tool-evidence-lease-token",
-              "category": "tool_evidence",
-              "candidatePoolRecalled": true,
-              "rawCandidateCount": 26,
-              "groupedCandidateCount": 24,
-              "candidatePoolDuplicateSlots": 2,
-              "queryLatencyMilliseconds": 69.10720399999991,
-              "finalCounts": [
-                {
-                  "finalCount": 5,
-                  "finalRecalled": true,
-                  "contextUseful": true,
-                  "sourceOccurrencesPreserved": true,
-                  "preservedSourceOccurrences": 1,
-                  "finalDuplicateSlots": 0,
-                  "finalResultSlots": 5
-                }
-              ]
-            },
-            {
-              "caseId": "context-europe-rollout-conditions",
-              "category": "context_dependent_reply",
-              "candidatePoolRecalled": true,
-              "rawCandidateCount": 40,
-              "groupedCandidateCount": 39,
-              "candidatePoolDuplicateSlots": 1,
-              "queryLatencyMilliseconds": 68.71442500000012,
-              "finalCounts": [
-                {
-                  "finalCount": 5,
-                  "finalRecalled": true,
-                  "contextUseful": true,
-                  "sourceOccurrencesPreserved": true,
-                  "preservedSourceOccurrences": 1,
-                  "finalDuplicateSlots": 0,
-                  "finalResultSlots": 5
-                }
-              ]
-            },
-            {
-              "caseId": "branch-abandoned-redis-group",
-              "category": "branch",
-              "candidatePoolRecalled": true,
-              "rawCandidateCount": 39,
-              "groupedCandidateCount": 38,
-              "candidatePoolDuplicateSlots": 1,
-              "queryLatencyMilliseconds": 70.22048799999993,
-              "finalCounts": [
-                {
-                  "finalCount": 5,
-                  "finalRecalled": false,
-                  "contextUseful": false,
-                  "sourceOccurrencesPreserved": false,
-                  "preservedSourceOccurrences": 0,
-                  "finalDuplicateSlots": 0,
-                  "finalResultSlots": 5
-                }
-              ]
-            },
-            {
-              "caseId": "branch-active-offline-queue",
-              "category": "branch",
-              "candidatePoolRecalled": true,
-              "rawCandidateCount": 32,
-              "groupedCandidateCount": 32,
-              "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 70.54075999999986,
-              "finalCounts": [
-                {
-                  "finalCount": 5,
-                  "finalRecalled": true,
-                  "contextUseful": true,
-                  "sourceOccurrencesPreserved": true,
-                  "preservedSourceOccurrences": 1,
-                  "finalDuplicateSlots": 0,
-                  "finalResultSlots": 5
-                }
-              ]
-            },
-            {
-              "caseId": "branch-summary-hosted-services",
-              "category": "summary",
-              "candidatePoolRecalled": true,
-              "rawCandidateCount": 35,
-              "groupedCandidateCount": 33,
-              "candidatePoolDuplicateSlots": 2,
-              "queryLatencyMilliseconds": 74.36377100000027,
-              "finalCounts": [
-                {
-                  "finalCount": 5,
-                  "finalRecalled": true,
-                  "contextUseful": true,
-                  "sourceOccurrencesPreserved": true,
-                  "preservedSourceOccurrences": 1,
-                  "finalDuplicateSlots": 0,
-                  "finalResultSlots": 5
-                }
-              ]
-            },
-            {
-              "caseId": "compaction-copper-finch",
-              "category": "summary",
-              "candidatePoolRecalled": true,
-              "rawCandidateCount": 31,
-              "groupedCandidateCount": 28,
-              "candidatePoolDuplicateSlots": 3,
-              "queryLatencyMilliseconds": 71.54389600000013,
-              "finalCounts": [
-                {
-                  "finalCount": 5,
-                  "finalRecalled": true,
-                  "contextUseful": true,
-                  "sourceOccurrencesPreserved": true,
-                  "preservedSourceOccurrences": 1,
-                  "finalDuplicateSlots": 0,
-                  "finalResultSlots": 5
-                }
-              ]
-            },
-            {
-              "caseId": "duplicate-meridian-release",
-              "category": "duplicate_content",
-              "candidatePoolRecalled": true,
-              "rawCandidateCount": 36,
-              "groupedCandidateCount": 33,
-              "candidatePoolDuplicateSlots": 3,
-              "queryLatencyMilliseconds": 69.58443100000022,
-              "finalCounts": [
-                {
-                  "finalCount": 5,
-                  "finalRecalled": true,
-                  "contextUseful": true,
-                  "sourceOccurrencesPreserved": true,
-                  "preservedSourceOccurrences": 2,
-                  "finalDuplicateSlots": 0,
-                  "finalResultSlots": 5
-                }
-              ]
-            }
-          ],
-          "finalCounts": [
-            {
-              "finalCount": 5,
-              "finalRecall": 0.9,
-              "contextUsefulness": 0.9,
-              "sourceOccurrencePreservation": 0.9,
-              "finalDuplicateRate": 0,
-              "missedCaseIds": ["branch-abandoned-redis-group"],
-              "contextFailureCaseIds": ["branch-abandoned-redis-group"],
-              "sourceOccurrenceFailureCaseIds": ["branch-abandoned-redis-group"],
-              "finalDuplicateSlots": 0,
-              "finalResultSlots": 50
-            }
-          ]
-        }
-      },
-      {
-        "chunkPolicy": {
-          "id": "512-64",
-          "maxTokens": 512,
-          "overlapTokens": 64
-        },
-        "candidateCount": 32,
-        "totalChunks": 96,
-        "indexLatencyMilliseconds": 5143.336577,
-        "measurement": {
-          "caseCount": 10,
-          "candidatePoolRecall": 1,
-          "candidatePoolDuplicateRate": 0.09285714285714286,
-          "queryLatencyMilliseconds": {
-            "median": 70.42625399999997,
-            "p95": 73.56814500000019
-          },
-          "missedCandidatePoolCaseIds": [],
-          "caseMeasurements": [
-            {
-              "caseId": "semantic-crash-safe-outbox",
-              "category": "semantic_paraphrase",
-              "candidatePoolRecalled": true,
-              "rawCandidateCount": 41,
-              "groupedCandidateCount": 32,
-              "candidatePoolDuplicateSlots": 8,
-              "queryLatencyMilliseconds": 66.21706600000016,
-              "finalCounts": [
-                {
-                  "finalCount": 5,
-                  "finalRecalled": true,
-                  "contextUseful": true,
-                  "sourceOccurrencesPreserved": true,
-                  "preservedSourceOccurrences": 1,
-                  "finalDuplicateSlots": 0,
-                  "finalResultSlots": 5
-                }
-              ]
-            },
-            {
-              "caseId": "semantic-image-retry-budget",
-              "category": "semantic_paraphrase",
-              "candidatePoolRecalled": true,
-              "rawCandidateCount": 38,
-              "groupedCandidateCount": 27,
-              "candidatePoolDuplicateSlots": 8,
-              "queryLatencyMilliseconds": 73.56814500000019,
-              "finalCounts": [
-                {
-                  "finalCount": 5,
-                  "finalRecalled": true,
-                  "contextUseful": true,
-                  "sourceOccurrencesPreserved": true,
-                  "preservedSourceOccurrences": 1,
-                  "finalDuplicateSlots": 0,
-                  "finalResultSlots": 5
-                }
-              ]
-            },
-            {
-              "caseId": "exact-read-node-error-code",
-              "category": "exact_identifier",
-              "candidatePoolRecalled": true,
-              "rawCandidateCount": 34,
-              "groupedCandidateCount": 29,
-              "candidatePoolDuplicateSlots": 4,
-              "queryLatencyMilliseconds": 70.41575399999965,
-              "finalCounts": [
-                {
-                  "finalCount": 5,
-                  "finalRecalled": true,
-                  "contextUseful": true,
-                  "sourceOccurrencesPreserved": true,
-                  "preservedSourceOccurrences": 1,
-                  "finalDuplicateSlots": 0,
-                  "finalResultSlots": 5
-                }
-              ]
-            },
-            {
-              "caseId": "tool-evidence-lease-token",
-              "category": "tool_evidence",
-              "candidatePoolRecalled": true,
-              "rawCandidateCount": 34,
-              "groupedCandidateCount": 32,
-              "candidatePoolDuplicateSlots": 2,
-              "queryLatencyMilliseconds": 71.3889049999998,
-              "finalCounts": [
-                {
-                  "finalCount": 5,
-                  "finalRecalled": true,
-                  "contextUseful": true,
-                  "sourceOccurrencesPreserved": true,
-                  "preservedSourceOccurrences": 1,
-                  "finalDuplicateSlots": 0,
-                  "finalResultSlots": 5
-                }
-              ]
-            },
-            {
-              "caseId": "context-europe-rollout-conditions",
-              "category": "context_dependent_reply",
-              "candidatePoolRecalled": true,
-              "rawCandidateCount": 50,
-              "groupedCandidateCount": 49,
-              "candidatePoolDuplicateSlots": 1,
-              "queryLatencyMilliseconds": 70.2280009999995,
-              "finalCounts": [
-                {
-                  "finalCount": 5,
-                  "finalRecalled": true,
-                  "contextUseful": true,
-                  "sourceOccurrencesPreserved": true,
-                  "preservedSourceOccurrences": 1,
-                  "finalDuplicateSlots": 0,
-                  "finalResultSlots": 5
-                }
-              ]
-            },
-            {
-              "caseId": "branch-abandoned-redis-group",
-              "category": "branch",
-              "candidatePoolRecalled": true,
-              "rawCandidateCount": 51,
-              "groupedCandidateCount": 50,
-              "candidatePoolDuplicateSlots": 1,
-              "queryLatencyMilliseconds": 71.11573099999987,
-              "finalCounts": [
-                {
-                  "finalCount": 5,
-                  "finalRecalled": false,
-                  "contextUseful": false,
-                  "sourceOccurrencesPreserved": false,
-                  "preservedSourceOccurrences": 0,
-                  "finalDuplicateSlots": 0,
-                  "finalResultSlots": 5
-                }
-              ]
-            },
-            {
-              "caseId": "branch-active-offline-queue",
-              "category": "branch",
-              "candidatePoolRecalled": true,
-              "rawCandidateCount": 41,
-              "groupedCandidateCount": 41,
-              "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 70.9601279999988,
-              "finalCounts": [
-                {
-                  "finalCount": 5,
-                  "finalRecalled": true,
-                  "contextUseful": true,
-                  "sourceOccurrencesPreserved": true,
-                  "preservedSourceOccurrences": 1,
-                  "finalDuplicateSlots": 0,
-                  "finalResultSlots": 5
-                }
-              ]
-            },
-            {
-              "caseId": "branch-summary-hosted-services",
-              "category": "summary",
-              "candidatePoolRecalled": true,
-              "rawCandidateCount": 48,
-              "groupedCandidateCount": 45,
-              "candidatePoolDuplicateSlots": 3,
-              "queryLatencyMilliseconds": 70.42625399999997,
-              "finalCounts": [
-                {
-                  "finalCount": 5,
-                  "finalRecalled": true,
-                  "contextUseful": true,
-                  "sourceOccurrencesPreserved": true,
-                  "preservedSourceOccurrences": 1,
-                  "finalDuplicateSlots": 0,
-                  "finalResultSlots": 5
-                }
-              ]
-            },
-            {
-              "caseId": "compaction-copper-finch",
-              "category": "summary",
-              "candidatePoolRecalled": true,
-              "rawCandidateCount": 36,
-              "groupedCandidateCount": 33,
-              "candidatePoolDuplicateSlots": 3,
-              "queryLatencyMilliseconds": 68.44585800000095,
-              "finalCounts": [
-                {
-                  "finalCount": 5,
-                  "finalRecalled": true,
-                  "contextUseful": true,
-                  "sourceOccurrencesPreserved": true,
-                  "preservedSourceOccurrences": 1,
-                  "finalDuplicateSlots": 0,
-                  "finalResultSlots": 5
-                }
-              ]
-            },
-            {
-              "caseId": "duplicate-meridian-release",
-              "category": "duplicate_content",
-              "candidatePoolRecalled": true,
-              "rawCandidateCount": 47,
-              "groupedCandidateCount": 35,
-              "candidatePoolDuplicateSlots": 9,
-              "queryLatencyMilliseconds": 72.2197670000005,
-              "finalCounts": [
-                {
-                  "finalCount": 5,
-                  "finalRecalled": true,
-                  "contextUseful": true,
-                  "sourceOccurrencesPreserved": true,
-                  "preservedSourceOccurrences": 2,
-                  "finalDuplicateSlots": 0,
-                  "finalResultSlots": 5
-                }
-              ]
-            }
-          ],
-          "finalCounts": [
-            {
-              "finalCount": 5,
-              "finalRecall": 0.9,
-              "contextUsefulness": 0.9,
-              "sourceOccurrencePreservation": 0.9,
-              "finalDuplicateRate": 0,
-              "missedCaseIds": ["branch-abandoned-redis-group"],
-              "contextFailureCaseIds": ["branch-abandoned-redis-group"],
-              "sourceOccurrenceFailureCaseIds": ["branch-abandoned-redis-group"],
-              "finalDuplicateSlots": 0,
-              "finalResultSlots": 50
+              "finalResultSlots": 83
             }
           ]
         }
@@ -1241,18 +1177,33 @@
         },
         "candidateCount": 8,
         "finalCount": 5,
-        "totalChunks": 96,
-        "indexLatencyMilliseconds": 5143.336577,
+        "totalChunks": 128,
+        "indexLatencyMilliseconds": 13955.070216,
         "candidatePoolRecall": 1,
-        "candidatePoolDuplicateRate": 0.05,
+        "candidatePoolDuplicateRate": 0.02185792349726776,
         "finalRecall": 1,
         "contextUsefulness": 1,
         "sourceOccurrencePreservation": 1,
+        "sessionOriginVerification": 1,
+        "evidenceRelationVerification": 1,
+        "contributingEntryVerification": 1,
+        "branchVerification": 1,
         "finalDuplicateRate": 0,
         "queryLatencyMilliseconds": {
-          "median": 71.19474300000002,
-          "p95": 75.96820500000013
+          "median": 71.1770949999991,
+          "p95": 1948.7393119999979
         },
+        "queryLatencyByScope": {
+          "project": {
+            "median": 71.1770949999991,
+            "p95": 1341.035523999999
+          },
+          "global": {
+            "median": 70.46122699999978,
+            "p95": 1948.7393119999979
+          }
+        },
+        "policyFailureCaseIds": [],
         "gatePassed": true,
         "failures": []
       },
@@ -1266,100 +1217,46 @@
           },
           "candidateCount": 8,
           "finalCount": 5,
-          "totalChunks": 96,
-          "indexLatencyMilliseconds": 5143.336577,
+          "totalChunks": 128,
+          "indexLatencyMilliseconds": 13955.070216,
           "candidatePoolRecall": 1,
-          "candidatePoolDuplicateRate": 0.05,
+          "candidatePoolDuplicateRate": 0.02185792349726776,
           "finalRecall": 1,
           "contextUsefulness": 1,
           "sourceOccurrencePreservation": 1,
+          "sessionOriginVerification": 1,
+          "evidenceRelationVerification": 1,
+          "contributingEntryVerification": 1,
+          "branchVerification": 1,
           "finalDuplicateRate": 0,
           "queryLatencyMilliseconds": {
-            "median": 71.19474300000002,
-            "p95": 75.96820500000013
+            "median": 71.1770949999991,
+            "p95": 1948.7393119999979
           },
+          "queryLatencyByScope": {
+            "project": {
+              "median": 71.1770949999991,
+              "p95": 1341.035523999999
+            },
+            "global": {
+              "median": 70.46122699999978,
+              "p95": 1948.7393119999979
+            }
+          },
+          "policyFailureCaseIds": [],
           "gatePassed": true,
           "failures": []
-        },
-        {
-          "chunkPolicy": {
-            "id": "512-64",
-            "maxTokens": 512,
-            "overlapTokens": 64
-          },
-          "candidateCount": 16,
-          "finalCount": 5,
-          "totalChunks": 96,
-          "indexLatencyMilliseconds": 5143.336577,
-          "candidatePoolRecall": 1,
-          "candidatePoolDuplicateRate": 0.05286343612334802,
-          "finalRecall": 1,
-          "contextUsefulness": 1,
-          "sourceOccurrencePreservation": 1,
-          "finalDuplicateRate": 0,
-          "queryLatencyMilliseconds": {
-            "median": 71.88878899999963,
-            "p95": 74.95184000000063
-          },
-          "gatePassed": true,
-          "failures": []
-        },
-        {
-          "chunkPolicy": {
-            "id": "512-64",
-            "maxTokens": 512,
-            "overlapTokens": 64
-          },
-          "candidateCount": 24,
-          "finalCount": 5,
-          "totalChunks": 96,
-          "indexLatencyMilliseconds": 5143.336577,
-          "candidatePoolRecall": 1,
-          "candidatePoolDuplicateRate": 0.08132530120481928,
-          "finalRecall": 0.9,
-          "contextUsefulness": 0.9,
-          "sourceOccurrencePreservation": 0.9,
-          "finalDuplicateRate": 0,
-          "queryLatencyMilliseconds": {
-            "median": 69.58443100000022,
-            "p95": 74.36377100000027
-          },
-          "gatePassed": false,
-          "failures": ["source occurrence preservation 0.900 is below 1.000"]
-        },
-        {
-          "chunkPolicy": {
-            "id": "512-64",
-            "maxTokens": 512,
-            "overlapTokens": 64
-          },
-          "candidateCount": 32,
-          "finalCount": 5,
-          "totalChunks": 96,
-          "indexLatencyMilliseconds": 5143.336577,
-          "candidatePoolRecall": 1,
-          "candidatePoolDuplicateRate": 0.09285714285714286,
-          "finalRecall": 0.9,
-          "contextUsefulness": 0.9,
-          "sourceOccurrencePreservation": 0.9,
-          "finalDuplicateRate": 0,
-          "queryLatencyMilliseconds": {
-            "median": 70.42625399999997,
-            "p95": 73.56814500000019
-          },
-          "gatePassed": false,
-          "failures": ["source occurrence preservation 0.900 is below 1.000"]
         }
       ]
     },
     "boundedWork": {
-      "sessionFiles": 8,
-      "evaluationCases": 10,
+      "sessionFiles": 15,
+      "evaluationCases": 17,
       "indexRuns": 1,
-      "executedSearchRequests": 44,
+      "executedSearchRequests": 20,
       "rerankerRequests": 0,
-      "chunkEmbeddingRequests": 10,
-      "maximumCandidatesPerSearch": 96
+      "chunkEmbeddingRequests": 17,
+      "maximumCandidatesPerSearch": 24
     }
   }
 }

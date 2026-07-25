@@ -54,12 +54,16 @@ function createPassingQualityEvidence(evaluationIdentity: typeof currentEvaluati
   };
 }
 
-void test('committed pre-scope evidence approves no production policy', async () => {
+void test('committed project-scoped quality evidence approves its measured policy', async () => {
   const decision = await readRecallQualityGateDecision(RECALL_QUALITY_RESULTS_PATH);
 
-  assert.equal(decision.automatedGatePassed, false);
-  assert.equal(decision.selectedPolicy, null);
-  assert.match(decision.blockers.join('; '), /predates project-scoped measurement/i);
+  assert.equal(decision.automatedGatePassed, true);
+  assert.deepEqual(decision.selectedPolicy, {
+    chunkPolicy: { id: '512-64', maxTokens: 512, overlapTokens: 64 },
+    candidateCount: 8,
+    finalCount: 5,
+  });
+  assert.deepEqual(decision.blockers, []);
 });
 
 void test('legacy passing recall quality evidence approves no policy', async (t) => {

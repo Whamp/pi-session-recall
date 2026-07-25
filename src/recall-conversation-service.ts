@@ -8,6 +8,12 @@ import {
   createEmbeddingVectorCacheIdentity,
 } from './embedding-vector-cache.js';
 import {
+  fuseRecallSearchCandidates,
+  RECALL_RANK_FUSION_VERSION,
+  RECALL_RRF_RANK_CONSTANT,
+  type RecallSearchResult,
+} from './fuse-recall-search-candidates.js';
+import {
   indexChangedConversationSessions,
   type ConversationIndexProgress,
   type ConversationIndexSummary,
@@ -28,11 +34,10 @@ import { readNodeErrorCode } from './read-node-error-code.js';
 import type { ConversationTextTokenizer } from './session-conversation-index.js';
 import {
   openZvecConversationStore,
-  type RecallSearchResult,
   type ZvecConversationStore,
 } from './zvec-conversation-store.js';
 
-/** Runtime paths plus complete local embedding identity for conversation recall. */
+/** Runtime paths, bounded retrieval channels, and local embedding identity for recall. */
 export interface RecallConversationConfig {
   sessionsDirectory: string;
   databasePath: string;
@@ -49,12 +54,28 @@ export interface RecallConversationConfig {
   embeddingPooling: string;
   embeddingDimensions: number;
   embeddingBatchSize: number;
+  searchCandidateLimits: RecallSearchCandidateLimits;
 }
 
-/** One read-only recall query against a previously built compatible index. */
+/** Per-channel candidate caps applied before recall rank fusion. */
+export interface RecallSearchCandidateLimits {
+  dense: number;
+  lexical: number;
+  identifier: number;
+}
+
+/** Exact ranking and candidate-bound policy applied to one recall search. */
+export interface RecallSearchPolicy {
+  rankFusionVersion: number;
+  reciprocalRankConstant: number;
+  candidateLimits: RecallSearchCandidateLimits;
+}
+
+/** One read-only hybrid query against a previously built compatible index. */
 export interface RecallConversationSearch {
   results: RecallSearchResult[];
   totalChunks: number;
+  searchPolicy: RecallSearchPolicy;
 }
 
 /** Read-only search and explicit index-maintenance operations exposed by the extension. */
@@ -309,19 +330,45 @@ export function createRecallConversationService(
   return {
     search(query, limit, signal) {
       return runSerialized(async () => {
+        const searchQuery = query.trim();
+        if (!searchQuery) {
+          throw new Error('Recall query must not be blank');
+        }
         const actualManifest = await readRequiredManifest();
         await assertRecallIndexUnlockedForSearch(config.lockPath);
         const expectedManifest = await createExpectedManifest(signal);
         assertRecallIndexManifestCompatible(actualManifest, expectedManifest, config.manifestPath);
         const store = openStore('read');
         try {
-          const queryEmbedding = (await embeddings.embedTexts([query], signal))[0];
+          const queryEmbedding = (await embeddings.embedTexts([searchQuery], signal))[0];
           if (!queryEmbedding) {
             throw new Error('Recall embedding response missing query vector');
           }
+          const results = fuseRecallSearchCandidates(
+            {
+              denseCandidates: store.searchDenseCandidates(
+                queryEmbedding,
+                config.searchCandidateLimits.dense,
+              ),
+              lexicalCandidates: store.searchLexicalCandidates(
+                searchQuery,
+                config.searchCandidateLimits.lexical,
+              ),
+              identifierCandidates: store.searchIdentifierCandidates(
+                searchQuery,
+                config.searchCandidateLimits.identifier,
+              ),
+            },
+            limit,
+          );
           return {
-            results: store.search(queryEmbedding, limit),
+            results,
             totalChunks: store.count(),
+            searchPolicy: {
+              rankFusionVersion: RECALL_RANK_FUSION_VERSION,
+              reciprocalRankConstant: RECALL_RRF_RANK_CONSTANT,
+              candidateLimits: { ...config.searchCandidateLimits },
+            },
           };
         } finally {
           store.close();

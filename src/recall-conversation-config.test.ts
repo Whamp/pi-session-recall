@@ -12,7 +12,11 @@ void test('recall config uses local octen embeddings and supports file plus envi
   const configPath = join(directory, 'recall.json');
   await writeFile(
     configPath,
-    JSON.stringify({ embeddingBatchSize: 4, dataDirectory: join(directory, 'file-data') }),
+    JSON.stringify({
+      embeddingBatchSize: 4,
+      denseCandidateLimit: 7,
+      dataDirectory: join(directory, 'file-data'),
+    }),
   );
 
   const config = await loadRecallConversationConfig({
@@ -21,6 +25,7 @@ void test('recall config uses local octen embeddings and supports file plus envi
     environment: {
       PI_RECALL_EMBEDDING_MODEL: 'environment-model',
       PI_RECALL_EMBEDDING_BATCH_SIZE: '12',
+      PI_RECALL_LEXICAL_CANDIDATE_LIMIT: '9',
     },
   });
 
@@ -28,6 +33,7 @@ void test('recall config uses local octen embeddings and supports file plus envi
   assert.equal(config.embeddingModel, 'environment-model');
   assert.equal(config.embeddingDimensions, 2560);
   assert.equal(config.embeddingBatchSize, 12);
+  assert.deepEqual(config.searchCandidateLimits, { dense: 7, lexical: 9, identifier: 40 });
   assert.equal(config.embeddingServedModelId, 'Octen/Octen-Embedding-4B');
   assert.equal(config.embeddingArtifact, 'Octen-Embedding-4B.Q8_0.gguf');
   assert.equal(config.embeddingQuantization, 'Q8_0');
@@ -48,5 +54,14 @@ void test('recall config rejects invalid numeric environment settings', async ()
         environment: { PI_RECALL_EMBEDDING_DIMENSIONS: 'zero' },
       }),
     /Recall configuration invalid integer/,
+  );
+  await assert.rejects(
+    () =>
+      loadRecallConversationConfig({
+        homeDirectory: '/tmp',
+        configPath: '/missing',
+        environment: { PI_RECALL_IDENTIFIER_CANDIDATE_LIMIT: '201' },
+      }),
+    /candidate limit.*PI_RECALL_IDENTIFIER_CANDIDATE_LIMIT.*200/,
   );
 });

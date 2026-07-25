@@ -1,6 +1,6 @@
 # Pi Session Recall
 
-`pi-session-recall` gives Pi a `pi-session-recall` tool for searching past conversations. It reads Pi session JSONL files, embeds user-visible conversation text with a local OpenAI-compatible model, stores durable FP32 vectors in a content-addressed cache, and builds an in-process [zvec](https://github.com/alibaba/zvec) search collection from them.
+`pi-session-recall` gives Pi a `pi-session-recall` tool for searching past conversations by meaning or exact text. It reads Pi session JSONL files, embeds user-visible conversation text with a local OpenAI-compatible model, stores durable FP32 vectors in a content-addressed cache, and builds dense plus full-text indexes in an in-process [zvec](https://github.com/alibaba/zvec) collection.
 
 ## What it indexes
 
@@ -42,18 +42,31 @@ Search never starts or resumes indexing. It opens only an existing compatible zv
 
 ## Use
 
-Pi can call the tool directly:
+Pi can call the tool with a semantic paraphrase or exact source token:
 
 ```text
 pi-session-recall({ query: "What did we decide about the job queue?", limit: 5 })
+pi-session-recall({ query: "readNodeErrorCode", limit: 5 })
 ```
 
 The extension tells Pi to use `pi-session-recall` when a task depends on a past conversation or a detail absent from current context. Each result contains:
 
-- semantic distance;
+- fused score plus available dense, lexical, and identifier ranks and scores;
 - session name, date, role, and project directory;
 - a concise text excerpt;
 - source provenance in `SESSION_FILE#ENTRY_ID` form.
+
+## Hybrid retrieval
+
+Each atomic conversation chunk is stored once with three searchable representations:
+
+- an Octen embedding queried by cosine distance, where lower is better;
+- ordinary zvec FTS using the standard tokenizer and lowercase filter, where higher is better;
+- case-preserving zvec FTS using the standard tokenizer without filters and requiring every query token, where higher is better.
+
+Search asks each channel for a bounded candidate set, deduplicates identical document IDs, and applies application-side reciprocal rank fusion. A single double-quoted substring uses zvec phrase syntax, so its tokens must be adjacent and ordered even when the query includes surrounding prose. Fusion policy version 1 uses rank constant 60. Equal fused scores sort by document ID. The default cap is 40 candidates per channel; no channel accepts more than 200. Each response records the exact fusion version, constant, and channel caps it used.
+
+Application-side fusion is deliberate. Zvec 0.6.0 supports native hybrid RRF through `multiQuerySync()`, but native results omit the component ranks and scores required for evaluation and source-backed diagnostics.
 
 Run `/pi-session-recall-index` when you explicitly want to scan changed sessions and optimize zvec. A search against a missing, locked, or incompatible generation fails without changing the index or its lock.
 
@@ -80,7 +93,7 @@ Each index generation has a separately versioned `index-manifest.json`. It ident
 - tokenizer model, immutable revision, asset checksums, library version, and encode options;
 - chunk limits, overlap, boundary algorithm, normalization, and policy version;
 - conversation and provenance schema versions;
-- zvec schema, FTS configuration, FP32 vector storage, and pinned HNSW parameters.
+- zvec schema, ordinary and case-preserving FTS configuration, FP32 vector storage, and pinned HNSW parameters.
 
 The extension validates the complete manifest before opening or updating zvec. Missing or mismatched manifests are incompatible. The error reports every mismatched field and points to `/pi-session-recall-index --rebuild`; recall never mixes document geometry silently.
 
@@ -117,6 +130,9 @@ Create `~/.pi/agent/recall.json`:
   "embeddingPooling": "last",
   "embeddingDimensions": 2560,
   "embeddingBatchSize": 16,
+  "denseCandidateLimit": 40,
+  "lexicalCandidateLimit": 40,
+  "identifierCandidateLimit": 40,
   "sessionsDirectory": "/home/will/.pi/agent/sessions",
   "dataDirectory": "/home/will/.pi/agent/recall"
 }
@@ -133,6 +149,9 @@ Environment variables override the file:
 - `PI_RECALL_EMBEDDING_POOLING`
 - `PI_RECALL_EMBEDDING_DIMENSIONS`
 - `PI_RECALL_EMBEDDING_BATCH_SIZE`
+- `PI_RECALL_DENSE_CANDIDATE_LIMIT`
+- `PI_RECALL_LEXICAL_CANDIDATE_LIMIT`
+- `PI_RECALL_IDENTIFIER_CANDIDATE_LIMIT`
 - `PI_RECALL_SESSIONS_DIRECTORY`
 - `PI_RECALL_DATA_DIRECTORY`
 

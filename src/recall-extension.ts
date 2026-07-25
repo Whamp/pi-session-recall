@@ -12,7 +12,7 @@ import { formatRecallSearchResults } from './format-recall-search-results.js';
 import { loadRecallConversationConfig } from './recall-conversation-config.js';
 import { createRecallConversationService } from './recall-conversation-service.js';
 
-/** Registers semantic recall of past Pi conversations. Pi requires extension factories to be default exports. */
+/** Registers hybrid recall of past Pi conversations. Pi requires extension factories to be default exports. */
 export default async function recallExtension(
   pi: Pick<ExtensionAPI, 'registerTool' | 'registerCommand'>,
 ): Promise<void> {
@@ -23,8 +23,9 @@ export default async function recallExtension(
     name: 'pi-session-recall',
     label: 'Pi Session Recall',
     description:
-      'Search a prebuilt compatible index of past Pi conversations using local semantic embeddings and zvec. Excludes hidden reasoning and tool output, and returns excerpts with exact session-file and entry-id provenance. Run /pi-session-recall-index explicitly to update the index. Output is truncated to 2000 lines or 50KB.',
-    promptSnippet: 'Search past Pi conversations and recover remembered decisions or details',
+      'Search a prebuilt compatible index of past Pi conversations with dense, lexical, and case-preserving identifier retrieval backed by local embeddings and zvec FTS. Excludes hidden reasoning and tool output, and returns excerpts with exact session-file and entry-id provenance. Run /pi-session-recall-index explicitly to update the index. Output is truncated to 2000 lines or 50KB.',
+    promptSnippet:
+      'Search past Pi conversations by meaning or exact text and recover remembered details',
     promptGuidelines: [
       'Use pi-session-recall when a task depends on a conversation or detail from a past session and the current context does not contain reliable source evidence.',
       'Treat pi-session-recall results as search leads; cite their session path and entry ID when relying on a recovered detail.',
@@ -32,7 +33,8 @@ export default async function recallExtension(
     parameters: Type.Object({
       query: Type.String({
         minLength: 1,
-        description: 'Natural-language description of the past conversation or detail to recover',
+        description:
+          'Natural-language description, exact identifier, filename, command, hash, or quoted text to recover',
       }),
       limit: Type.Optional(
         Type.Integer({
@@ -62,10 +64,14 @@ export default async function recallExtension(
         content: [{ type: 'text', text }],
         details: {
           totalChunks: search.totalChunks,
+          searchPolicy: search.searchPolicy,
           sources: search.results.map((result) => ({
             sessionPath: result.sessionPath,
             entryId: result.entryId.value,
-            score: result.score,
+            fusedScore: result.fusedScore,
+            dense: result.dense,
+            lexical: result.lexical,
+            identifier: result.identifier,
           })),
         },
       };
@@ -73,7 +79,8 @@ export default async function recallExtension(
   });
 
   pi.registerCommand('pi-session-recall-index', {
-    description: 'Incrementally index all Pi conversations into zvec and optimize the collection',
+    description:
+      'Incrementally index all Pi conversations for dense and full-text search, then optimize zvec',
     async handler(argumentsText, context) {
       void argumentsText;
       context.ui.setStatus('pi-session-recall', 'indexing conversations…');

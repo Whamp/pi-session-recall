@@ -12,11 +12,16 @@ import {
   type ZVecDoc,
   type ZVecFieldSchema,
   type ZVecFtsIndexParams,
+  type ZVecFtsQuery,
   type ZVecGroupResult,
   type ZVecInvertIndexParams,
   type ZVecVector,
 } from '@zvec/zvec';
 
+import type {
+  RecallDenseCandidate,
+  RecallFullTextCandidate,
+} from './fuse-recall-search-candidates.js';
 import type {
   PiSessionEntryId,
   PiSessionId,
@@ -24,7 +29,10 @@ import type {
 } from './session-conversation-index.js';
 
 /** Version of the scalar/vector schema persisted in the zvec collection. */
-export const ZVEC_CONVERSATION_SCHEMA_VERSION = 2;
+export const ZVEC_CONVERSATION_SCHEMA_VERSION = 3;
+
+/** Version of ordinary and case-preserving full text search (FTS) fields in zvec. */
+export const ZVEC_FTS_CONFIGURATION_VERSION = 2;
 
 /** Pinned HNSW graph degree used to make index geometry reproducible. */
 export const ZVEC_HNSW_M = 50;
@@ -40,11 +48,6 @@ export interface EmbeddedSessionConversationChunk extends SessionConversationChu
   embedding: number[];
 }
 
-/** A ranked semantic match with exact Pi session provenance; cosine score is distance. */
-export interface RecallSearchResult extends SessionConversationChunk {
-  score: number;
-}
-
 /** The narrow persistence contract required by incremental conversation indexing. */
 export interface ConversationChunkStore {
   upsertChunks(chunks: EmbeddedSessionConversationChunk[]): void;
@@ -54,7 +57,9 @@ export interface ConversationChunkStore {
 
 /** Durable conversation operations plus zvec evolution and bounded-query capabilities. */
 export interface ZvecConversationStore extends ConversationChunkStore {
-  search(embedding: number[], limit: number): RecallSearchResult[];
+  searchDenseCandidates(embedding: number[], limit: number): RecallDenseCandidate[];
+  searchLexicalCandidates(query: string, limit: number): RecallFullTextCandidate[];
+  searchIdentifierCandidates(query: string, limit: number): RecallFullTextCandidate[];
   fetchVectors(ids: string[]): Map<string, number[]>;
   groupDenseCandidates(
     embedding: number[],
@@ -117,10 +122,29 @@ const RECALL_FIELD_SCHEMAS: ZVecFieldSchema[] = [
   { name: 'toolCallEntryId', dataType: ZVecDataType.STRING },
   { name: 'toolResultEntryId', dataType: ZVecDataType.STRING },
   { name: 'toolError', dataType: ZVecDataType.INT32 },
-  { name: 'content', dataType: ZVecDataType.STRING },
+  {
+    name: 'content',
+    dataType: ZVecDataType.STRING,
+    indexParams: {
+      indexType: ZVecIndexType.FTS,
+      tokenizerName: 'standard',
+      filters: ['lowercase'],
+    },
+  },
+  {
+    name: 'identifierContent',
+    dataType: ZVecDataType.STRING,
+    indexParams: {
+      indexType: ZVecIndexType.FTS,
+      tokenizerName: 'standard',
+      filters: [],
+    },
+  },
 ];
 
-const RECALL_OUTPUT_FIELDS = RECALL_FIELD_SCHEMAS.map((field) => field.name);
+const RECALL_OUTPUT_FIELDS = RECALL_FIELD_SCHEMAS.map((field) => field.name).filter(
+  (name) => name !== 'identifierContent',
+);
 
 function serializeNullableEntryId(value: PiSessionEntryId | null): string {
   return value?.value ?? '';
@@ -175,6 +199,7 @@ function serializeConversationChunk(chunk: SessionConversationChunk): Record<str
     toolResultEntryId: serializeNullableEntryId(chunk.toolResultEntryId),
     toolError: chunk.toolError === null ? -1 : Number(chunk.toolError),
     content: chunk.content,
+    identifierContent: chunk.content,
   };
 }
 
@@ -337,6 +362,28 @@ function convertDenseVector(vector: ZVecVector | undefined, id: string): number[
   throw new Error(`Recall zvec vector invalid for document ${id}: expected dense vector`);
 }
 
+function assertRecallCandidateLimit(limit: number, channelName: string): void {
+  if (!Number.isInteger(limit) || limit < 1 || limit > 200) {
+    throw new Error(
+      `Recall candidate limit invalid (${channelName}): expected an integer from 1 to 200`,
+    );
+  }
+}
+
+function createRecallFullTextQuery(query: string): ZVecFtsQuery {
+  const openingQuote = query.indexOf('"');
+  const closingQuote = query.indexOf('"', openingQuote + 1);
+  const hasOneQuotePair =
+    openingQuote >= 0 && closingQuote > openingQuote && query.indexOf('"', closingQuote + 1) < 0;
+  if (hasOneQuotePair) {
+    const quotedPhrase = query.slice(openingQuote + 1, closingQuote).trim();
+    if (quotedPhrase && !quotedPhrase.includes('\\')) {
+      return { queryString: `"${quotedPhrase}"` };
+    }
+  }
+  return { matchString: query };
+}
+
 /** Opens the durable zvec collection that stores embedded Pi conversation chunks. */
 export function openZvecConversationStore(config: {
   databasePath: string;
@@ -383,6 +430,29 @@ export function openZvecConversationStore(config: {
     );
   }
 
+  const searchFullTextCandidates = (
+    fieldName: string,
+    query: string,
+    limit: number,
+    channelName: string,
+    defaultOperator: 'AND' | 'OR',
+  ): RecallFullTextCandidate[] => {
+    assertRecallCandidateLimit(limit, channelName);
+    return collection
+      .querySync({
+        fieldName,
+        fts: createRecallFullTextQuery(query),
+        topk: limit,
+        outputFields: RECALL_OUTPUT_FIELDS,
+        includeVector: false,
+        params: { indexType: ZVecIndexType.FTS, defaultOperator },
+      })
+      .map((doc) => ({
+        ...deserializeConversationChunk(doc),
+        fullTextScore: doc.score,
+      }));
+  };
+
   return {
     upsertChunks(chunks) {
       if (chunks.length === 0) {
@@ -401,10 +471,8 @@ export function openZvecConversationStore(config: {
         collection.deleteSync(ids);
       }
     },
-    search(embedding, limit) {
-      if (!Number.isInteger(limit) || limit < 1 || limit > 200) {
-        throw new Error('Recall dense candidate limit invalid: expected an integer from 1 to 200');
-      }
+    searchDenseCandidates(embedding, limit) {
+      assertRecallCandidateLimit(limit, 'dense');
       return collection
         .querySync({
           fieldName: 'embedding',
@@ -414,7 +482,16 @@ export function openZvecConversationStore(config: {
           includeVector: false,
           params: { indexType: ZVecIndexType.HNSW, ef: ZVEC_HNSW_EF_SEARCH },
         })
-        .map((doc) => ({ ...deserializeConversationChunk(doc), score: doc.score }));
+        .map((doc) => ({
+          ...deserializeConversationChunk(doc),
+          cosineDistance: doc.score,
+        }));
+    },
+    searchLexicalCandidates(query, limit) {
+      return searchFullTextCandidates('content', query, limit, 'lexical', 'OR');
+    },
+    searchIdentifierCandidates(query, limit) {
+      return searchFullTextCandidates('identifierContent', query, limit, 'identifier', 'AND');
     },
     fetchChecksums(ids) {
       if (ids.length === 0) {

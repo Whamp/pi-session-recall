@@ -42,6 +42,7 @@ function createTestConfig(directory: string, sessionsDirectory: string) {
     embeddingPooling: 'last',
     embeddingDimensions: 3,
     embeddingBatchSize: 8,
+    searchCandidateLimits: { dense: 1, lexical: 1, identifier: 1 },
   };
 }
 
@@ -141,6 +142,131 @@ void test('recall service indexes explicitly and searches a compatible index wit
     /read-only search did not remove the lock/,
   );
   assert.equal(await readFile(join(directory, 'recall.lock', 'owner.json'), 'utf8'), lockOwner);
+});
+
+void test('recall service fuses bounded dense, lexical, and identifier candidates with component scores', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-service-hybrid-search-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionsDirectory = join(directory, 'sessions');
+  await mkdir(sessionsDirectory);
+  const sessionPath = join(sessionsDirectory, 'hybrid.jsonl');
+  const denseContent =
+    'An append-only queue prevents jobs from disappearing after process restarts.';
+  const identifierContent =
+    'The process probe uses readNodeErrorCode() when permission checks fail with EPERM.';
+  const quotedPhraseContent = 'The release marker contains alpha beta as one exact phrase.';
+  const separatedPhraseContent =
+    'The release marker contains alpha with unrelated words before beta.';
+  await writeFile(
+    sessionPath,
+    [
+      JSON.stringify({
+        type: 'session',
+        version: 3,
+        id: 'hybrid-session',
+        timestamp: '2026-07-24T10:00:00Z',
+        cwd: '/hybrid-project',
+      }),
+      JSON.stringify({
+        type: 'message',
+        id: 'dense-entry',
+        parentId: null,
+        timestamp: '2026-07-24T10:01:00Z',
+        message: { role: 'assistant', content: denseContent },
+      }),
+      JSON.stringify({
+        type: 'message',
+        id: 'identifier-entry',
+        parentId: 'dense-entry',
+        timestamp: '2026-07-24T10:02:00Z',
+        message: { role: 'assistant', content: identifierContent },
+      }),
+      JSON.stringify({
+        type: 'message',
+        id: 'quoted-phrase-entry',
+        parentId: 'identifier-entry',
+        timestamp: '2026-07-24T10:03:00Z',
+        message: { role: 'assistant', content: quotedPhraseContent },
+      }),
+      JSON.stringify({
+        type: 'message',
+        id: 'separated-phrase-entry',
+        parentId: 'quoted-phrase-entry',
+        timestamp: '2026-07-24T10:04:00Z',
+        message: { role: 'assistant', content: separatedPhraseContent },
+      }),
+    ].join('\n') + '\n',
+  );
+
+  const semanticParaphraseQuery = 'How did we make background task delivery resilient?';
+  const identifierQuery = 'readNodeErrorCode';
+  const service = createRecallConversationService(createTestConfig(directory, sessionsDirectory), {
+    embeddings: {
+      async embedTexts(texts) {
+        return texts.map((text) => {
+          if (text === RECALL_EMBEDDING_CANARY_TEXT) {
+            return [0, 0, 1];
+          }
+          if (
+            text === identifierContent ||
+            text === quotedPhraseContent ||
+            text === separatedPhraseContent
+          ) {
+            return [0, 1, 0];
+          }
+          return [1, 0, 0];
+        });
+      },
+    },
+    async loadTokenizer() {
+      return tokenizer;
+    },
+  });
+  await service.index();
+
+  const denseResult = await service.search(semanticParaphraseQuery, 1);
+  assert.deepEqual(denseResult.searchPolicy, {
+    rankFusionVersion: 1,
+    reciprocalRankConstant: 60,
+    candidateLimits: { dense: 1, lexical: 1, identifier: 1 },
+  });
+  assert.equal(denseResult.results[0]?.entryId.value, 'dense-entry');
+  assert.equal(denseResult.results[0]?.sessionPath, sessionPath);
+  assert.deepEqual(denseResult.results[0]?.dense, { rank: 1, cosineDistance: 0 });
+  assert.equal(denseResult.results[0]?.lexical, null);
+  assert.equal(denseResult.results[0]?.identifier, null);
+  assert.equal(denseResult.results[0]?.fusedScore, 0.01639344262295082);
+
+  const exactIdentifier = await service.search(identifierQuery, 2);
+  assert.equal(exactIdentifier.results[0]?.entryId.value, 'identifier-entry');
+  assert.equal(exactIdentifier.results[0]?.sessionPath, sessionPath);
+  assert.equal(exactIdentifier.results[0]?.dense, null);
+  assert.equal(exactIdentifier.results[0]?.lexical?.rank, 1);
+  assert.ok((exactIdentifier.results[0]?.lexical?.fullTextScore ?? 0) > 0);
+  assert.equal(exactIdentifier.results[0]?.identifier?.rank, 1);
+  assert.ok((exactIdentifier.results[0]?.identifier?.fullTextScore ?? 0) > 0);
+  assert.equal(exactIdentifier.results[0]?.fusedScore, 0.03278688524590164);
+  assert.equal(new Set(exactIdentifier.results.map((result) => result.id)).size, 2);
+
+  const wrongCase = await service.search('readnodeerrorcode', 2);
+  const wrongCaseIdentifier = wrongCase.results.find(
+    (result) => result.entryId.value === 'identifier-entry',
+  );
+  assert.equal(wrongCaseIdentifier?.lexical?.rank, 1);
+  assert.equal(wrongCaseIdentifier?.identifier, null);
+  assert.equal(wrongCase.results[0]?.fusedScore, wrongCase.results[1]?.fusedScore);
+  assert.deepEqual(
+    wrongCase.results.map((result) => result.id),
+    wrongCase.results.map((result) => result.id).toSorted(),
+  );
+
+  const quotedPhrase = await service.search('Where did we write "alpha beta"?', 2);
+  assert.equal(quotedPhrase.results[0]?.entryId.value, 'quoted-phrase-entry');
+  assert.equal(quotedPhrase.results[0]?.lexical?.rank, 1);
+  assert.equal(quotedPhrase.results[0]?.identifier?.rank, 1);
+  assert.ok(
+    !quotedPhrase.results.some((result) => result.entryId.value === 'separated-phrase-entry'),
+  );
 });
 
 void test('fresh zvec rebuild reuses unchanged cached chunk vectors without embedding requests', async (t) => {

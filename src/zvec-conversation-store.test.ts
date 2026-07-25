@@ -72,7 +72,7 @@ void test('zvec conversation search returns ranked text and exact session proven
   const firstChunk: EmbeddedSessionConversationChunk = {
     ...baseChunk,
     id: 'chunk-a',
-    content: 'We chose a durable queue for job delivery.',
+    content: 'We chose a durable queue; readNodeErrorCode() handles EPERM, during job delivery.',
     checksum: 'sum-a',
     embedding: [1, 0, 0],
   };
@@ -87,19 +87,59 @@ void test('zvec conversation search returns ranked text and exact session proven
       checksum: 'sum-b',
       embedding: [0, 1, 0],
     },
+    {
+      ...baseChunk,
+      id: 'chunk-c',
+      entryId: { value: 'entry-3' },
+      contributingEntryIds: [{ value: 'entry-3' }],
+      content: 'The marker contains alpha beta as one exact phrase.',
+      checksum: 'sum-c',
+      embedding: [0, 0, 1],
+    },
+    {
+      ...baseChunk,
+      id: 'chunk-d',
+      entryId: { value: 'entry-4' },
+      contributingEntryIds: [{ value: 'entry-4' }],
+      content: 'The marker contains alpha with unrelated words before beta.',
+      checksum: 'sum-d',
+      embedding: [-1, 0, 0],
+    },
   ]);
 
-  const results = store.search([1, 0, 0], 1);
+  const results = store.searchDenseCandidates([1, 0, 0], 1);
 
   assert.equal(results.length, 1);
   const result = results[0];
   assert.ok(result);
   const { embedding, ...expectedChunk } = firstChunk;
-  const { score, ...actualChunk } = result;
+  const { cosineDistance, ...actualChunk } = result;
   assert.deepEqual(actualChunk, expectedChunk);
-  assert.equal(typeof score, 'number');
+  assert.equal(typeof cosineDistance, 'number');
   assert.deepEqual(embedding, [1, 0, 0]);
   assert.deepEqual(store.fetchVectors(['chunk-a']), new Map([['chunk-a', [1, 0, 0]]]));
+  const lexicalResults = store.searchLexicalCandidates('readnodeerrorcode', 2);
+  assert.equal(lexicalResults[0]?.id, 'chunk-a');
+  assert.ok((lexicalResults[0]?.fullTextScore ?? 0) > 0);
+  const identifierResults = store.searchIdentifierCandidates('readNodeErrorCode EPERM', 2);
+  assert.equal(identifierResults[0]?.id, 'chunk-a');
+  assert.ok((identifierResults[0]?.fullTextScore ?? 0) > 0);
+  assert.deepEqual(store.searchIdentifierCandidates('readnodeerrorcode', 2), []);
+  assert.deepEqual(store.searchIdentifierCandidates('readNodeErrorCode missingIdentifier', 2), []);
+  assert.deepEqual(
+    store.searchLexicalCandidates('"alpha beta"', 10).map((candidate) => candidate.id),
+    ['chunk-c'],
+  );
+  assert.deepEqual(
+    store.searchIdentifierCandidates('"alpha beta"', 10).map((candidate) => candidate.id),
+    ['chunk-c'],
+  );
+  assert.deepEqual(
+    store
+      .searchLexicalCandidates('find "alpha beta" in the marker', 10)
+      .map((candidate) => candidate.id),
+    ['chunk-c'],
+  );
   const groups = store.groupDenseCandidates([1, 0, 0], 'entryId', 2, 1);
   assert.equal(groups[0]?.groupByValue, 'entry-1');
   assert.equal(groups[0]?.docs[0]?.id, 'chunk-a');
@@ -107,7 +147,18 @@ void test('zvec conversation search returns ranked text and exact session proven
     () => store.groupDenseCandidates([1, 0, 0], 'entryId', 201, 1),
     /dense grouping limits invalid/,
   );
-  assert.throws(() => store.search([1, 0, 0], 201), /dense candidate limit invalid/);
+  assert.throws(
+    () => store.searchDenseCandidates([1, 0, 0], 201),
+    /candidate limit invalid \(dense\)/,
+  );
+  assert.throws(
+    () => store.searchLexicalCandidates('queue', 201),
+    /candidate limit invalid \(lexical\)/,
+  );
+  assert.throws(
+    () => store.searchIdentifierCandidates('EPERM', 201),
+    /candidate limit invalid \(identifier\)/,
+  );
 });
 
 void test('zvec conversation store rejects an embedding dimension change that requires reindexing', async (t) => {

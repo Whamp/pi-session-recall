@@ -32,6 +32,22 @@ _Avoid_: Message text, joined content
 A token-bounded part of one visible text run. It never crosses an entry, role, run, tool, thinking, image, result, or summary boundary.
 _Avoid_: Character chunk, transcript chunk
 
+**Dense candidate**:
+An atomic conversation chunk surfaced because its meaning is close to the search query.
+_Avoid_: Semantic result
+
+**Lexical candidate**:
+An atomic conversation chunk surfaced by case-insensitive ordinary-text retrieval.
+_Avoid_: Keyword result
+
+**Identifier candidate**:
+An atomic conversation chunk surfaced by case-preserving retrieval of identifiers, filenames, hashes, or similar source tokens.
+_Avoid_: Exact result
+
+**Hybrid recall result**:
+One source document deduplicated across retrieval channels, with each component rank and score retained.
+_Avoid_: Semantic match
+
 **Index manifest**:
 The versioned identity of the model, tokenizer, chunk policy, provenance schema, and zvec schema used by one index generation.
 _Avoid_: Index state, configuration

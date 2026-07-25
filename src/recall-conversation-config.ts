@@ -8,6 +8,9 @@ import { Value } from 'typebox/value';
 import type { RecallConversationConfig } from './recall-conversation-service.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
 
+const DEFAULT_RECALL_CHANNEL_CANDIDATE_LIMIT = 40;
+const MAX_RECALL_CHANNEL_CANDIDATE_LIMIT = 200;
+
 const recallConfigFileSchema = Type.Object(
   {
     sessionsDirectory: Type.Optional(Type.String({ minLength: 1 })),
@@ -20,6 +23,15 @@ const recallConfigFileSchema = Type.Object(
     embeddingPooling: Type.Optional(Type.String({ minLength: 1 })),
     embeddingDimensions: Type.Optional(Type.Integer({ minimum: 1 })),
     embeddingBatchSize: Type.Optional(Type.Integer({ minimum: 1 })),
+    denseCandidateLimit: Type.Optional(
+      Type.Integer({ minimum: 1, maximum: MAX_RECALL_CHANNEL_CANDIDATE_LIMIT }),
+    ),
+    lexicalCandidateLimit: Type.Optional(
+      Type.Integer({ minimum: 1, maximum: MAX_RECALL_CHANNEL_CANDIDATE_LIMIT }),
+    ),
+    identifierCandidateLimit: Type.Optional(
+      Type.Integer({ minimum: 1, maximum: MAX_RECALL_CHANNEL_CANDIDATE_LIMIT }),
+    ),
   },
   { additionalProperties: false },
 );
@@ -37,6 +49,26 @@ function parsePositiveInteger(value: string, settingName: string): number {
     throw new Error(`Recall configuration invalid integer for ${settingName}: ${value}`);
   }
   return parsed;
+}
+
+function parseRecallCandidateLimit(value: string, settingName: string): number {
+  const parsed = parsePositiveInteger(value, settingName);
+  if (parsed > MAX_RECALL_CHANNEL_CANDIDATE_LIMIT) {
+    throw new Error(
+      `Recall configuration candidate limit for ${settingName} exceeds ${MAX_RECALL_CHANNEL_CANDIDATE_LIMIT}: ${value}`,
+    );
+  }
+  return parsed;
+}
+
+function resolveRecallCandidateLimit(
+  environmentValue: string | undefined,
+  fileValue: number | undefined,
+  settingName: string,
+): number {
+  return environmentValue === undefined
+    ? (fileValue ?? DEFAULT_RECALL_CHANNEL_CANDIDATE_LIMIT)
+    : parseRecallCandidateLimit(environmentValue, settingName);
 }
 
 async function readRecallConfigFile(
@@ -109,5 +141,22 @@ export async function loadRecallConversationConfig(
           'PI_RECALL_EMBEDDING_BATCH_SIZE',
         )
       : (file.embeddingBatchSize ?? 16),
+    searchCandidateLimits: {
+      dense: resolveRecallCandidateLimit(
+        environment.PI_RECALL_DENSE_CANDIDATE_LIMIT,
+        file.denseCandidateLimit,
+        'PI_RECALL_DENSE_CANDIDATE_LIMIT',
+      ),
+      lexical: resolveRecallCandidateLimit(
+        environment.PI_RECALL_LEXICAL_CANDIDATE_LIMIT,
+        file.lexicalCandidateLimit,
+        'PI_RECALL_LEXICAL_CANDIDATE_LIMIT',
+      ),
+      identifier: resolveRecallCandidateLimit(
+        environment.PI_RECALL_IDENTIFIER_CANDIDATE_LIMIT,
+        file.identifierCandidateLimit,
+        'PI_RECALL_IDENTIFIER_CANDIDATE_LIMIT',
+      ),
+    },
   };
 }

@@ -17,6 +17,7 @@ import { readNodeErrorCode } from './read-node-error-code.js';
 import { SESSION_CONVERSATION_SCHEMA_VERSION } from './session-conversation-index.js';
 import {
   ZVEC_CONVERSATION_SCHEMA_VERSION,
+  ZVEC_FTS_CONFIGURATION_VERSION,
   ZVEC_HNSW_EF_CONSTRUCTION,
   ZVEC_HNSW_EF_SEARCH,
   ZVEC_HNSW_M,
@@ -222,7 +223,7 @@ export function createRecallIndexManifest(options: {
     embeddingCacheVersion: EMBEDDING_VECTOR_CACHE_VERSION,
     zvec: {
       schemaVersion: ZVEC_CONVERSATION_SCHEMA_VERSION,
-      ftsConfigurationVersion: 1,
+      ftsConfigurationVersion: ZVEC_FTS_CONFIGURATION_VERSION,
       vectorQuantization: 'fp32',
       hnswM: ZVEC_HNSW_M,
       hnswEfConstruction: ZVEC_HNSW_EF_CONSTRUCTION,

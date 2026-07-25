@@ -7,7 +7,7 @@ import { Value } from 'typebox/value';
 import type { EmbeddingVectorCache } from './embedding-vector-cache.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
 import type { RecallChunkPolicy } from './recall-chunk-policy.js';
-import type { ResolvedGitProjectIdentity } from './resolve-git-project-identity.js';
+import type { ResolvedProjectIdentity } from './resolve-project-identity.js';
 import {
   readSessionConversationChunks,
   type ConversationTextTokenizer,
@@ -71,7 +71,7 @@ export interface IncrementalSessionIndexerOptions {
   embeddingCache: EmbeddingVectorCache;
   tokenizer: ConversationTextTokenizer;
   chunkPolicy?: RecallChunkPolicy;
-  resolveProjectIdentity?: (sessionOrigin: string) => Promise<ResolvedGitProjectIdentity | null>;
+  resolveProjectIdentity?: (sessionOrigin: string) => Promise<ResolvedProjectIdentity | null>;
   signal?: AbortSignal;
   onProgress?: (progress: ConversationIndexProgress) => void;
 }
@@ -164,13 +164,10 @@ export async function indexChangedConversationSessions(
   const state = await readConversationIndexState(options.statePath);
   const sessionFiles = await listSessionFiles(options.sessionsDirectory);
   const liveSessionPaths = new Set(sessionFiles);
-  const projectIdentityBySessionOrigin = new Map<
-    string,
-    Promise<ResolvedGitProjectIdentity | null>
-  >();
+  const projectIdentityBySessionOrigin = new Map<string, Promise<ResolvedProjectIdentity | null>>();
   function resolveSessionProjectIdentity(
     sessionOrigin: string,
-  ): Promise<ResolvedGitProjectIdentity | null> {
+  ): Promise<ResolvedProjectIdentity | null> {
     const existing = projectIdentityBySessionOrigin.get(sessionOrigin);
     if (existing) {
       return existing;

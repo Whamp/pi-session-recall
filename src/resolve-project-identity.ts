@@ -1,20 +1,21 @@
 import { execFile } from 'node:child_process';
-import { realpath } from 'node:fs';
+import { realpath, stat } from 'node:fs';
 
 import { RecallProjectIdentitySource } from './enums.js';
 
-/** Version of canonical origin and shared Git-directory repository identity resolution. */
-export const RECALL_GIT_PROJECT_IDENTITY_POLICY_VERSION = 1;
+/** Version of exact non-Git origin and canonical Git repository identity resolution. */
+export const RECALL_PROJECT_IDENTITY_POLICY_VERSION = 2;
 
 /** Version of project identity and identity-source scalars persisted on recall evidence. */
-export const RECALL_PROJECT_IDENTITY_METADATA_SCHEMA_VERSION = 1;
+export const RECALL_PROJECT_IDENTITY_METADATA_SCHEMA_VERSION = 2;
 
 const GIT_ORIGIN_IDENTITY_PREFIX = 'git-origin:';
 const GIT_COMMON_DIRECTORY_IDENTITY_PREFIX = 'git-common-directory:';
+const NON_GIT_SESSION_ORIGIN_IDENTITY_PREFIX = 'non-git-session-origin:';
 const HOSTED_GIT_PROTOCOLS = new Set(['git:', 'http:', 'https:', 'ssh:']);
 
-/** One canonical Git repository identity and the discovery source that established it. */
-export interface ResolvedGitProjectIdentity {
+/** One exact project identity and the explicit source that established it. */
+export interface ResolvedProjectIdentity {
   projectIdentity: string;
   identitySource: RecallProjectIdentitySource;
 }
@@ -87,10 +88,30 @@ function readRealGitCommonDirectory(commonDirectory: string): Promise<string | n
   });
 }
 
-/** Resolves a working directory to hosted-origin identity or its real shared Git directory. */
-export async function resolveGitProjectIdentity(
+function isExistingDirectory(workingDirectory: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    stat(workingDirectory, (error, workingDirectoryStats) => {
+      resolve(!error && workingDirectoryStats.isDirectory());
+    });
+  });
+}
+
+async function resolveExistingNonGitSessionOrigin(
   workingDirectory: string,
-): Promise<ResolvedGitProjectIdentity | null> {
+): Promise<ResolvedProjectIdentity | null> {
+  if (!(await isExistingDirectory(workingDirectory))) {
+    return null;
+  }
+  return {
+    projectIdentity: `${NON_GIT_SESSION_ORIGIN_IDENTITY_PREFIX}${workingDirectory}`,
+    identitySource: RecallProjectIdentitySource.NON_GIT_SESSION_ORIGIN,
+  };
+}
+
+/** Resolves Git repositories canonically and existing non-Git directories by exact session origin. */
+export async function resolveProjectIdentity(
+  workingDirectory: string,
+): Promise<ResolvedProjectIdentity | null> {
   const origin = await readGitOutput(workingDirectory, ['config', '--get', 'remote.origin.url']);
   const canonicalOrigin = origin ? normalizeHostedGitOrigin(origin) : null;
   if (canonicalOrigin) {
@@ -105,7 +126,7 @@ export async function resolveGitProjectIdentity(
     '--git-common-dir',
   ]);
   if (!commonDirectory) {
-    return null;
+    return resolveExistingNonGitSessionOrigin(workingDirectory);
   }
   const realCommonDirectory = await readRealGitCommonDirectory(commonDirectory);
   return realCommonDirectory

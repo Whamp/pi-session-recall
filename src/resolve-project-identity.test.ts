@@ -7,7 +7,7 @@ import test from 'node:test';
 import { promisify } from 'node:util';
 
 import { RecallProjectIdentitySource } from './enums.js';
-import { resolveGitProjectIdentity } from './resolve-git-project-identity.js';
+import { resolveProjectIdentity } from './resolve-project-identity.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -30,8 +30,8 @@ void test('Git project identity canonicalizes equivalent credentialed SSH and HT
     { cwd: httpsClone },
   );
 
-  const sshIdentity = await resolveGitProjectIdentity(sshClone);
-  const httpsIdentity = await resolveGitProjectIdentity(httpsClone);
+  const sshIdentity = await resolveProjectIdentity(sshClone);
+  const httpsIdentity = await resolveProjectIdentity(httpsClone);
 
   assert.deepEqual(sshIdentity, {
     projectIdentity: 'git-origin:github.com/Whamp/pi-session-recall',
@@ -69,18 +69,21 @@ void test('Git project identity uses one real common directory for a main checko
     cwd: mainCheckout,
   });
 
-  const mainIdentity = await resolveGitProjectIdentity(mainCheckout);
-  const worktreeIdentity = await resolveGitProjectIdentity(worktreeCheckout);
+  const mainIdentity = await resolveProjectIdentity(mainCheckout);
+  const worktreeIdentity = await resolveProjectIdentity(worktreeCheckout);
 
   assert.equal(mainIdentity?.identitySource, RecallProjectIdentitySource.GIT_COMMON_DIRECTORY);
   assert.equal(mainIdentity?.projectIdentity, `git-common-directory:${join(mainCheckout, '.git')}`);
   assert.deepEqual(worktreeIdentity, mainIdentity);
 });
 
-void test('Git project identity reports missing and non-Git historical origins as unresolved', async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), 'recall-git-unresolved-'));
+void test('project identity uses an exact existing non-Git session origin and rejects missing origins', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-non-git-origin-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
 
-  assert.equal(await resolveGitProjectIdentity(directory), null);
-  assert.equal(await resolveGitProjectIdentity(join(directory, 'deleted')), null);
+  assert.deepEqual(await resolveProjectIdentity(directory), {
+    projectIdentity: `non-git-session-origin:${directory}`,
+    identitySource: RecallProjectIdentitySource.NON_GIT_SESSION_ORIGIN,
+  });
+  assert.equal(await resolveProjectIdentity(join(directory, 'deleted')), null);
 });

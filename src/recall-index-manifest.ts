@@ -17,9 +17,9 @@ import {
 } from './octen-conversation-tokenizer.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
 import {
-  RECALL_GIT_PROJECT_IDENTITY_POLICY_VERSION,
   RECALL_PROJECT_IDENTITY_METADATA_SCHEMA_VERSION,
-} from './resolve-git-project-identity.js';
+  RECALL_PROJECT_IDENTITY_POLICY_VERSION,
+} from './resolve-project-identity.js';
 import { SESSION_CONVERSATION_SCHEMA_VERSION } from './session-conversation-index.js';
 import {
   ZVEC_CONVERSATION_SCHEMA_VERSION,
@@ -168,7 +168,7 @@ const recallIndexManifestSchema = Type.Object(
     embeddingCacheVersion: Type.Integer({ minimum: 1 }),
     projectIdentity: Type.Object(
       {
-        policyVersion: Type.Literal(RECALL_GIT_PROJECT_IDENTITY_POLICY_VERSION),
+        policyVersion: Type.Literal(RECALL_PROJECT_IDENTITY_POLICY_VERSION),
         metadataSchemaVersion: Type.Literal(RECALL_PROJECT_IDENTITY_METADATA_SCHEMA_VERSION),
       },
       { additionalProperties: false },
@@ -283,7 +283,7 @@ export function createRecallIndexManifest(options: {
     provenanceSchemaVersion: SESSION_CONVERSATION_SCHEMA_VERSION,
     embeddingCacheVersion: EMBEDDING_VECTOR_CACHE_VERSION,
     projectIdentity: {
-      policyVersion: RECALL_GIT_PROJECT_IDENTITY_POLICY_VERSION,
+      policyVersion: RECALL_PROJECT_IDENTITY_POLICY_VERSION,
       metadataSchemaVersion: RECALL_PROJECT_IDENTITY_METADATA_SCHEMA_VERSION,
     },
     zvec: {

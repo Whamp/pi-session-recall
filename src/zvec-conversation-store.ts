@@ -288,6 +288,9 @@ function parseRecallProjectIdentitySource(
   if (value === 'git_common_directory') {
     return RecallProjectIdentitySource.GIT_COMMON_DIRECTORY;
   }
+  if (value === 'non_git_session_origin') {
+    return RecallProjectIdentitySource.NON_GIT_SESSION_ORIGIN;
+  }
   throw new Error(`Recall zvec projectIdentitySource invalid: ${value}`);
 }
 

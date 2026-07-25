@@ -2,6 +2,7 @@ import { mkdir, rm } from 'node:fs/promises';
 import { basename, isAbsolute, join, relative, resolve } from 'node:path';
 import { performance } from 'node:perf_hooks';
 
+import { RecallSearchScope } from './enums.js';
 import {
   RECALL_RANK_FUSION_VERSION,
   RECALL_RRF_RANK_CONSTANT,
@@ -289,6 +290,7 @@ export async function runRecallQualityEvaluation(
       ) {
         await searchService.search(warmupCase.query, RECALL_QUALITY_FULL_POOL_LIMIT, {
           mode: 'hybrid',
+          scope: RecallSearchScope.GLOBAL,
         });
         executedSearchRequests += 1;
       }
@@ -299,7 +301,7 @@ export async function runRecallQualityEvaluation(
         const search = await searchService.search(
           evaluationCase.query,
           RECALL_QUALITY_FULL_POOL_LIMIT,
-          { mode: 'hybrid' },
+          { mode: 'hybrid', scope: RecallSearchScope.GLOBAL },
         );
         const queryLatencyMilliseconds = performance.now() - queryStarted;
         executedSearchRequests += 1;

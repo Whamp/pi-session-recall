@@ -42,6 +42,7 @@ void test('Pi session recall registers collision-free tool guidance and index co
     toolDescriptions[0] ?? '',
     /dense, lexical, and case-preserving identifier retrieval/,
   );
+  assert.match(toolDescriptions[0] ?? '', /defaults to project scope/);
   assert.match(toolDescriptions[0] ?? '', /defaults to deterministic hybrid ranking/);
   assert.match(toolDescriptions[0] ?? '', /deep-rerank.*Qwen/);
   assert.match(toolDescriptions[0] ?? '', /labels active and abandoned branches/);
@@ -59,7 +60,7 @@ void test('Pi session recall registers collision-free tool guidance and index co
   );
 });
 
-void test('Pi recall tool adapter propagates trusted cwd and explicit scope with global default', async () => {
+void test('Pi recall tool adapter propagates trusted cwd with project default and explicit global scope', async () => {
   const calls: Array<{
     query: string;
     limit: number;
@@ -72,7 +73,7 @@ void test('Pi recall tool adapter propagates trusted cwd and explicit scope with
         totalChunks: 0,
         results: [],
         searchPolicy: {
-          scope: options?.scope ?? RecallSearchScope.GLOBAL,
+          scope: options?.scope ?? RecallSearchScope.PROJECT,
           invocationProjectIdentity: null,
           rankingMode: options?.mode ?? 'hybrid',
           rankFusionVersion: 1,
@@ -104,14 +105,14 @@ void test('Pi recall tool adapter propagates trusted cwd and explicit scope with
 
   await searchRecallFromPiToolContext(
     service,
-    { query: 'global query', mode: 'hybrid' },
+    { query: 'project query', mode: 'hybrid' },
     undefined,
     context,
     5,
   );
   await searchRecallFromPiToolContext(
     service,
-    { query: 'project query', mode: 'deep-rerank', scope: 'project', limit: 2 },
+    { query: 'global query', mode: 'deep-rerank', scope: 'global', limit: 2 },
     undefined,
     context,
     5,
@@ -119,20 +120,20 @@ void test('Pi recall tool adapter propagates trusted cwd and explicit scope with
 
   assert.deepEqual(calls, [
     {
-      query: 'global query',
+      query: 'project query',
       limit: 5,
       options: {
         mode: 'hybrid',
-        scope: RecallSearchScope.GLOBAL,
+        scope: RecallSearchScope.PROJECT,
         invocationDirectory: '/trusted/invocation',
       },
     },
     {
-      query: 'project query',
+      query: 'global query',
       limit: 2,
       options: {
         mode: 'deep-rerank',
-        scope: RecallSearchScope.PROJECT,
+        scope: RecallSearchScope.GLOBAL,
         invocationDirectory: '/trusted/invocation',
       },
     },

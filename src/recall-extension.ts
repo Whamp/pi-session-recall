@@ -33,7 +33,7 @@ export interface RecallPiToolSearchParameters {
   scope?: 'project' | 'global';
 }
 
-/** Applies trusted Pi tool context and transitional global scope to one recall service search. */
+/** Applies trusted Pi tool context and project-default scope to one recall service search. */
 export async function searchRecallFromPiToolContext(
   service: RecallConversationService,
   parameters: RecallPiToolSearchParameters,
@@ -43,7 +43,7 @@ export async function searchRecallFromPiToolContext(
 ): Promise<RecallConversationSearch> {
   return service.search(parameters.query.trim(), parameters.limit ?? defaultResultLimit, {
     mode: parameters.mode ?? 'hybrid',
-    scope: parameters.scope === 'project' ? RecallSearchScope.PROJECT : RecallSearchScope.GLOBAL,
+    scope: parameters.scope === 'global' ? RecallSearchScope.GLOBAL : RecallSearchScope.PROJECT,
     invocationDirectory: context.cwd,
     ...(signal ? { signal } : {}),
   });
@@ -77,7 +77,7 @@ export default async function recallExtension(
     name: 'pi-session-recall',
     label: 'Pi Session Recall',
     description:
-      'Search a prebuilt compatible index of past Pi conversations with dense, lexical, and case-preserving identifier retrieval. Scope accepts explicit project or global search and temporarily defaults to global; the current project comes only from Pi trusted execution context. Search defaults to deterministic hybrid ranking; choose deep-rerank only when ambiguous evidence warrants slower local Qwen scoring. Excludes hidden reasoning, keeps raw tool evidence lexical-only, labels active and abandoned branches, and expands only valid same-run atomic neighbors with exact provenance. After the committed quality gate passes, run /pi-session-recall-index explicitly to update the index. Output is truncated to 2000 lines or 50KB.',
+      'Search a prebuilt compatible index of past Pi conversations with dense, lexical, and case-preserving identifier retrieval. Recall defaults to project scope from Pi trusted execution context; choose global scope explicitly for cross-project evidence. Search defaults to deterministic hybrid ranking; choose deep-rerank only when ambiguous evidence warrants slower local Qwen scoring. Excludes hidden reasoning, keeps raw tool evidence lexical-only, labels active and abandoned branches, and expands only valid same-run atomic neighbors with exact provenance. After the committed quality gate passes, run /pi-session-recall-index explicitly to update the index. Output is truncated to 2000 lines or 50KB.',
     promptSnippet:
       'Search past Pi conversations by meaning or exact text and recover remembered details',
     promptGuidelines: [
@@ -106,7 +106,7 @@ export default async function recallExtension(
       scope: Type.Optional(
         StringEnum(['project', 'global'] as const, {
           description:
-            'Corpus boundary: project uses Pi trusted cwd; global is the transitional default',
+            'Corpus boundary: project is the default from Pi trusted cwd; global searches every indexed session',
         }),
       ),
     }),

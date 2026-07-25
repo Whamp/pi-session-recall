@@ -7,7 +7,7 @@ import {
   createEmbeddingVectorCache,
   createEmbeddingVectorCacheIdentity,
 } from './embedding-vector-cache.js';
-import { RecallEvidenceRelation, RecallSearchScope } from './enums.js';
+import { RecallEvidenceRelation, RecallProjectIdentitySource, RecallSearchScope } from './enums.js';
 import {
   fuseRecallSearchCandidates,
   RECALL_RANK_FUSION_VERSION,
@@ -34,9 +34,9 @@ import {
 import type { RecallChunkPolicy } from './recall-chunk-policy.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
 import {
-  resolveGitProjectIdentity,
-  type ResolvedGitProjectIdentity,
-} from './resolve-git-project-identity.js';
+  resolveProjectIdentity,
+  type ResolvedProjectIdentity,
+} from './resolve-project-identity.js';
 import {
   rankFusedRecallSearchResults,
   rerankRecallSearchResults,
@@ -142,7 +142,7 @@ export interface RecallConversationDependencies {
   reranker?: LocalRerankerClient;
   loadTokenizer?: () => Promise<ConversationTextTokenizer>;
   openStore?: (mode: 'read' | 'write') => ZvecConversationStore;
-  resolveProjectIdentity?: (workingDirectory: string) => Promise<ResolvedGitProjectIdentity | null>;
+  resolveProjectIdentity?: (workingDirectory: string) => Promise<ResolvedProjectIdentity | null>;
 }
 
 function readLockOwnerProcessId(value: string): number | undefined {
@@ -278,7 +278,8 @@ export function createRecallConversationService(
   const loadTokenizer =
     dependencies.loadTokenizer ??
     (() => loadOctenConversationTokenizer({ cacheDirectory: config.tokenizerCacheDirectory }));
-  const resolveProjectIdentity = dependencies.resolveProjectIdentity ?? resolveGitProjectIdentity;
+  const resolveSearchProjectIdentity =
+    dependencies.resolveProjectIdentity ?? resolveProjectIdentity;
   const openStore =
     dependencies.openStore ??
     ((mode) =>
@@ -438,7 +439,7 @@ export function createRecallConversationService(
         maxTokens: manifest.chunkPolicy.maxTokens,
         overlapTokens: manifest.chunkPolicy.overlapTokens,
       },
-      resolveProjectIdentity,
+      resolveProjectIdentity: resolveSearchProjectIdentity,
       ...(signal ? { signal } : {}),
       ...(onProgress ? { onProgress } : {}),
     });
@@ -449,7 +450,7 @@ export function createRecallConversationService(
       return runSerialized(async () => {
         const {
           mode = 'hybrid',
-          scope = RecallSearchScope.GLOBAL,
+          scope = RecallSearchScope.PROJECT,
           invocationDirectory,
           signal,
         } = options;
@@ -465,11 +466,11 @@ export function createRecallConversationService(
           throw new Error('Project-scoped recall requires Pi trusted invocation directory context');
         }
         const invocationProject = invocationDirectory
-          ? await resolveProjectIdentity(invocationDirectory)
+          ? await resolveSearchProjectIdentity(invocationDirectory)
           : null;
         if (scope === RecallSearchScope.PROJECT && !invocationProject) {
           throw new Error(
-            `Project-scoped recall could not resolve a Git repository from Pi invocation directory ${invocationDirectory}`,
+            `Project-scoped recall could not resolve a project identity from Pi invocation directory ${invocationDirectory}`,
           );
         }
         const projectIdentityPredicate =
@@ -516,9 +517,12 @@ export function createRecallConversationService(
           const results: RecallConversationSearchResult[] = rankedResults.map((result) => ({
             ...result,
             evidenceRelation:
-              invocationProject?.projectIdentity === result.projectIdentity
-                ? RecallEvidenceRelation.SAME_REPOSITORY
-                : RecallEvidenceRelation.UNRESTRICTED_GLOBAL,
+              !invocationProject || invocationProject.projectIdentity !== result.projectIdentity
+                ? RecallEvidenceRelation.UNRESTRICTED_GLOBAL
+                : invocationProject.identitySource ===
+                    RecallProjectIdentitySource.NON_GIT_SESSION_ORIGIN
+                  ? RecallEvidenceRelation.SAME_SESSION_ORIGIN
+                  : RecallEvidenceRelation.SAME_REPOSITORY,
           }));
           return {
             results,

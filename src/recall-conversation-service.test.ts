@@ -6,7 +6,8 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { promisify } from 'node:util';
 
-import { RecallProjectIdentitySource, RecallSearchScope } from './enums.js';
+import { RecallEvidenceRelation, RecallProjectIdentitySource, RecallSearchScope } from './enums.js';
+import { formatRecallSearchResults } from './format-recall-search-results.js';
 import type { LocalEmbeddingClient } from './local-embedding-client.js';
 import type { LocalRerankerClient } from './local-reranker-client.js';
 import {
@@ -137,7 +138,9 @@ void test('recall service indexes explicitly and searches a compatible index wit
   assert.equal(indexed.indexSummary.embeddingRequestCount, 1);
   assert.equal(indexed.totalChunks, 2);
 
-  const first = await service.search('What did we decide about job queues?', 1);
+  const first = await service.search('What did we decide about job queues?', 1, {
+    scope: RecallSearchScope.GLOBAL,
+  });
   assert.equal(first.results[0]?.entryId.value, 'queue-entry');
   assert.equal(first.results[0]?.sessionPath, sessionPath);
   assert.equal(first.totalChunks, 2);
@@ -150,7 +153,9 @@ void test('recall service indexes explicitly and searches a compatible index wit
     message: { role: 'assistant', content: 'This must not be indexed by search.' },
   });
   await writeFile(sessionPath, entries.map((entry) => JSON.stringify(entry)).join('\n') + '\n');
-  const second = await service.search('queue decision', 1);
+  const second = await service.search('queue decision', 1, {
+    scope: RecallSearchScope.GLOBAL,
+  });
   assert.equal(second.totalChunks, 2);
   assert.equal(tokenizerLoads, 1);
   assert.deepEqual(embeddedInputs, [
@@ -167,7 +172,7 @@ void test('recall service indexes explicitly and searches a compatible index wit
   await mkdir(join(directory, 'recall.lock'));
   await writeFile(join(directory, 'recall.lock', 'owner.json'), lockOwner);
   await assert.rejects(
-    () => service.search('must not clear a stale lock', 1),
+    () => service.search('must not clear a stale lock', 1, { scope: RecallSearchScope.GLOBAL }),
     /stale lock from dead process 999999999.*\/pi-session-recall-index.*read-only search did not remove the lock/,
   );
   assert.equal(await readFile(join(directory, 'recall.lock', 'owner.json'), 'utf8'), lockOwner);
@@ -279,6 +284,132 @@ void test('explicit project scope filters dense, lexical, and identifier candida
   assert.equal(globalSearch.searchPolicy.scope, 'global');
 });
 
+void test('omitted scope admits only the exact non-Git session origin', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-service-non-git-scope-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionsDirectory = join(directory, 'sessions');
+  const invocationDirectory = join(directory, 'project');
+  const nearbyDirectory = join(directory, 'project-nearby');
+  const descendantDirectory = join(invocationDirectory, 'descendant');
+  const emptyInvocationDirectory = join(directory, 'empty-project');
+  await Promise.all([
+    mkdir(sessionsDirectory),
+    mkdir(invocationDirectory),
+    mkdir(nearbyDirectory),
+    mkdir(emptyInvocationDirectory),
+  ]);
+  await mkdir(descendantDirectory);
+
+  const sessionFixtures = [
+    {
+      fileName: 'exact.jsonl',
+      sessionOrigin: invocationDirectory,
+      entryId: 'exact-origin-entry',
+      content: 'exact local project memory',
+    },
+    {
+      fileName: 'nearby.jsonl',
+      sessionOrigin: nearbyDirectory,
+      entryId: 'nearby-origin-entry',
+      content: 'exact local project memory from a similarly named nearby origin',
+    },
+    {
+      fileName: 'parent.jsonl',
+      sessionOrigin: directory,
+      entryId: 'parent-origin-entry',
+      content: 'exact local project memory from a parent origin',
+    },
+    {
+      fileName: 'descendant.jsonl',
+      sessionOrigin: descendantDirectory,
+      entryId: 'descendant-origin-entry',
+      content: 'exact local project memory from a descendant origin',
+    },
+  ];
+  for (const { fileName, sessionOrigin, entryId, content } of sessionFixtures) {
+    await writeFile(
+      join(sessionsDirectory, fileName),
+      [
+        {
+          type: 'session',
+          version: 3,
+          id: `${entryId}-session`,
+          timestamp: '2026-07-24T10:00:00Z',
+          cwd: sessionOrigin,
+        },
+        {
+          type: 'message',
+          id: entryId,
+          parentId: null,
+          timestamp: '2026-07-24T10:01:00Z',
+          message: { role: 'assistant', content },
+        },
+      ]
+        .map((entry) => JSON.stringify(entry))
+        .join('\n') + '\n',
+    );
+  }
+
+  const config = {
+    ...createTestConfig(directory, sessionsDirectory),
+    searchCandidateLimits: { dense: 4, lexical: 4, identifier: 4 },
+  };
+  const service = createRecallConversationService(config, {
+    embeddings: {
+      async embedTexts(texts) {
+        return texts.map((text) => (text === RECALL_EMBEDDING_CANARY_TEXT ? [0, 0, 1] : [1, 0, 0]));
+      },
+    },
+    async loadTokenizer() {
+      return tokenizer;
+    },
+  });
+
+  await service.index();
+  const search = await service.search('exact local project memory', 4, {
+    invocationDirectory,
+  });
+
+  assert.deepEqual(
+    search.results.map((result) => result.entryId.value),
+    ['exact-origin-entry'],
+  );
+  assert.equal(search.searchPolicy.scope, 'project');
+  assert.equal(
+    search.searchPolicy.invocationProjectIdentity,
+    `non-git-session-origin:${invocationDirectory}`,
+  );
+  assert.equal(search.results[0]?.projectIdentitySource, 'non_git_session_origin');
+  assert.equal(search.results[0]?.evidenceRelation, 'same_session_origin');
+
+  const globalSearch = await service.search('exact local project memory', 4, {
+    scope: RecallSearchScope.GLOBAL,
+    invocationDirectory,
+  });
+  assert.deepEqual(globalSearch.results.map((result) => result.entryId.value).toSorted(), [
+    'descendant-origin-entry',
+    'exact-origin-entry',
+    'nearby-origin-entry',
+    'parent-origin-entry',
+  ]);
+  assert.equal(
+    globalSearch.results.find((result) => result.entryId.value === 'exact-origin-entry')
+      ?.evidenceRelation,
+    'same_session_origin',
+  );
+  assert.ok(
+    globalSearch.results
+      .filter((result) => result.entryId.value !== 'exact-origin-entry')
+      .every((result) => result.evidenceRelation === RecallEvidenceRelation.UNRESTRICTED_GLOBAL),
+  );
+
+  const emptyProjectSearch = await service.search('exact local project memory', 4, {
+    invocationDirectory: emptyInvocationDirectory,
+  });
+  assert.deepEqual(emptyProjectSearch.results, []);
+  assert.match(formatRecallSearchResults(emptyProjectSearch), /Retry with scope "global"/);
+});
+
 void test('indexing resolves each distinct session origin once and keeps unresolved origins globally searchable', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'recall-service-project-assignment-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -343,7 +474,7 @@ void test('indexing resolves each distinct session origin once and keeps unresol
   });
 
   await service.index();
-  const search = await service.search('memoized', 3);
+  const search = await service.search('memoized', 3, { scope: RecallSearchScope.GLOBAL });
 
   assert.deepEqual(resolvedOrigins.toSorted(), ['/deleted/repository', '/historical/repository']);
   assert.equal(
@@ -409,7 +540,9 @@ void test('project metadata rebuild reuses cached vectors while replacing reposi
   const first = await service.index();
   repositoryName = 'after-relocation';
   const rebuilt = await service.index({ rebuild: true });
-  const search = await service.search('Metadata changes', 1);
+  const search = await service.search('Metadata changes', 1, {
+    scope: RecallSearchScope.GLOBAL,
+  });
 
   assert.equal(first.indexSummary.newlyEmbeddedChunks, 1);
   assert.equal(rebuilt.indexSummary.cacheHits, 1);
@@ -551,7 +684,9 @@ void test('recall service fuses bounded dense, lexical, and identifier candidate
   });
   await service.index();
 
-  const denseResult = await service.search(semanticParaphraseQuery, 1);
+  const denseResult = await service.search(semanticParaphraseQuery, 1, {
+    scope: RecallSearchScope.GLOBAL,
+  });
   assert.deepEqual(denseResult.searchPolicy, {
     scope: RecallSearchScope.GLOBAL,
     invocationProjectIdentity: null,
@@ -570,7 +705,9 @@ void test('recall service fuses bounded dense, lexical, and identifier candidate
   assert.equal(denseResult.results[0]?.identifier, null);
   assert.equal(denseResult.results[0]?.fusedScore, 0.01639344262295082);
 
-  const exactIdentifier = await service.search(identifierQuery, 2);
+  const exactIdentifier = await service.search(identifierQuery, 2, {
+    scope: RecallSearchScope.GLOBAL,
+  });
   assert.equal(exactIdentifier.results[0]?.entryId.value, 'identifier-entry');
   assert.equal(exactIdentifier.results[0]?.sessionPath, sessionPath);
   assert.equal(exactIdentifier.results[0]?.dense, null);
@@ -581,7 +718,9 @@ void test('recall service fuses bounded dense, lexical, and identifier candidate
   assert.equal(exactIdentifier.results[0]?.fusedScore, 0.03278688524590164);
   assert.equal(new Set(exactIdentifier.results.map((result) => result.id)).size, 2);
 
-  const wrongCase = await service.search('readnodeerrorcode', 2);
+  const wrongCase = await service.search('readnodeerrorcode', 2, {
+    scope: RecallSearchScope.GLOBAL,
+  });
   const wrongCaseIdentifier = wrongCase.results.find(
     (result) => result.entryId.value === 'identifier-entry',
   );
@@ -593,7 +732,9 @@ void test('recall service fuses bounded dense, lexical, and identifier candidate
     wrongCase.results.map((result) => result.id).toSorted(),
   );
 
-  const quotedPhrase = await service.search('Where did we write "alpha beta"?', 2);
+  const quotedPhrase = await service.search('Where did we write "alpha beta"?', 2, {
+    scope: RecallSearchScope.GLOBAL,
+  });
   assert.equal(quotedPhrase.results[0]?.entryId.value, 'quoted-phrase-entry');
   assert.equal(quotedPhrase.results[0]?.lexical?.rank, 1);
   assert.equal(quotedPhrase.results[0]?.identifier?.rank, 1);
@@ -671,7 +812,7 @@ void test('recall service defaults to fused ranking and reranks only in explicit
   });
   await service.index();
 
-  const defaultSearch = await service.search(query, 1);
+  const defaultSearch = await service.search(query, 1, { scope: RecallSearchScope.GLOBAL });
 
   assert.deepEqual(rerankerInputs, []);
   assert.equal(defaultSearch.results.length, 1);
@@ -679,7 +820,10 @@ void test('recall service defaults to fused ranking and reranks only in explicit
   assert.equal(defaultSearch.results[0]?.rerankerScore, null);
   assert.equal(defaultSearch.searchPolicy.rankingMode, 'hybrid');
 
-  const deepSearch = await service.search(query, 1, { mode: 'deep-rerank' });
+  const deepSearch = await service.search(query, 1, {
+    mode: 'deep-rerank',
+    scope: RecallSearchScope.GLOBAL,
+  });
 
   assert.deepEqual(rerankerInputs, [[fusionFavorite, rerankerFavorite]]);
   assert.equal(deepSearch.results.length, 1);
@@ -735,11 +879,17 @@ void test('recall service fails clearly when Qwen reranking is unavailable', asy
   });
   await service.index();
 
-  const defaultSearch = await service.search('must not require Qwen', 1);
+  const defaultSearch = await service.search('must not require Qwen', 1, {
+    scope: RecallSearchScope.GLOBAL,
+  });
   assert.equal(defaultSearch.results[0]?.entryId.value, 'failure-entry');
 
   await assert.rejects(
-    () => service.search('must use Qwen', 1, { mode: 'deep-rerank' }),
+    () =>
+      service.search('must use Qwen', 1, {
+        mode: 'deep-rerank',
+        scope: RecallSearchScope.GLOBAL,
+      }),
     /Recall reranker request failed at http:\/\/reranker\.test\/v1\/rerank: unavailable/,
   );
 });
@@ -841,7 +991,7 @@ void test('recall service retrieves context-dependent replies and reuses turn-co
   });
 
   const indexed = await service.index();
-  const recalled = await service.search(query, 1);
+  const recalled = await service.search(query, 1, { scope: RecallSearchScope.GLOBAL });
   const turnContext = recalled.results[0];
 
   assert.equal(indexed.totalChunks, 7);
@@ -945,7 +1095,9 @@ void test('recall service fuses lexical-only tool evidence with dense conversati
   });
 
   const indexed = await service.index();
-  const exactError = await service.search('EPERM readNodeErrorCode', 2);
+  const exactError = await service.search('EPERM readNodeErrorCode', 2, {
+    scope: RecallSearchScope.GLOBAL,
+  });
   const toolEvidence = exactError.results.find((result) => result.documentKind === 'tool');
   const conversation = exactError.results.find((result) => result.documentKind === 'conversation');
 
@@ -973,18 +1125,24 @@ void test('recall service fuses lexical-only tool evidence with dense conversati
     'EPERM readNodeErrorCode',
   ]);
 
-  const exactCommand = await service.search(toolCommand, 2);
+  const exactCommand = await service.search(toolCommand, 2, {
+    scope: RecallSearchScope.GLOBAL,
+  });
   const callArguments = exactCommand.results.find((result) => result.evidencePart === 'arguments');
   assert.equal(callArguments?.content, `{"command":"${toolCommand}"}`);
   assert.equal(callArguments?.toolResultEntryId?.value, 'result-tools');
   assert.ok(exactCommand.results.every((result) => !result.content.includes('private plan')));
 
-  const exactUrl = await service.search('https://example.test/failure?id=EPERM', 2);
+  const exactUrl = await service.search('https://example.test/failure?id=EPERM', 2, {
+    scope: RecallSearchScope.GLOBAL,
+  });
   assert.equal(
     exactUrl.results.find((result) => result.evidencePart === 'result')?.content,
     toolResult,
   );
-  const exactToolName = await service.search('bash', 2);
+  const exactToolName = await service.search('bash', 2, {
+    scope: RecallSearchScope.GLOBAL,
+  });
   assert.equal(
     exactToolName.results.find((result) => result.evidencePart === 'name')?.content,
     'bash',
@@ -1170,7 +1328,7 @@ void test('recall search refuses a missing manifest before opening or mutating i
   });
 
   await assert.rejects(
-    () => service.search('must remain read only', 1),
+    () => service.search('must remain read only', 1, { scope: RecallSearchScope.GLOBAL }),
     /Recall index manifest missing.*\/pi-session-recall-index --rebuild/,
   );
   assert.equal(embeddingRequests, 0);
@@ -1203,11 +1361,11 @@ void test('recall search detects an embedding model swap in the same service pro
   });
 
   await service.index();
-  await service.search('before model swap', 1);
+  await service.search('before model swap', 1, { scope: RecallSearchScope.GLOBAL });
   modelSwapped = true;
 
   await assert.rejects(
-    () => service.search('after model swap', 1),
+    () => service.search('after model swap', 1, { scope: RecallSearchScope.GLOBAL }),
     /embedding\.canaryCosineSimilarity.*\/pi-session-recall-index --rebuild/s,
   );
 
@@ -1310,7 +1468,7 @@ void test('recall search reports an incompatible manifest before opening zvec', 
   });
 
   await assert.rejects(
-    () => service.search('incompatible', 1),
+    () => service.search('incompatible', 1, { scope: RecallSearchScope.GLOBAL }),
     /embedding\.pooling.*expected "last", received "mean".*\/pi-session-recall-index --rebuild/s,
   );
   assert.equal(storeOpens, 0);

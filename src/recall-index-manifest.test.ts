@@ -51,8 +51,8 @@ void test('index manifest round-trips the complete reproducibility identity atom
   assert.equal(manifest.conversationSchemaVersion, 5);
   assert.equal(manifest.provenanceSchemaVersion, 5);
   assert.deepEqual(manifest.projectIdentity, {
-    policyVersion: 1,
-    metadataSchemaVersion: 1,
+    policyVersion: 2,
+    metadataSchemaVersion: 2,
   });
   assert.equal(manifest.zvec.schemaVersion, 5);
   assert.equal(manifest.zvec.ftsConfigurationVersion, 2);
@@ -115,7 +115,8 @@ void test('index manifest incompatibility reports every mismatch with the rebuil
   actual.tokenizer.revision = 'mutable-main';
   actual.chunkPolicy.maxTokens = 512;
   actual.conversationSchemaVersion = 1;
-  actual.projectIdentity.policyVersion = 99;
+  actual.projectIdentity.policyVersion = 1;
+  actual.projectIdentity.metadataSchemaVersion = 1;
   actual.zvec.ftsConfigurationVersion = 99;
 
   assert.throws(
@@ -128,6 +129,7 @@ void test('index manifest incompatibility reports every mismatch with the rebuil
       assert.match(error.message, /chunkPolicy\.maxTokens/);
       assert.match(error.message, /conversationSchemaVersion/);
       assert.match(error.message, /projectIdentity\.policyVersion/);
+      assert.match(error.message, /projectIdentity\.metadataSchemaVersion/);
       assert.match(error.message, /zvec\.ftsConfigurationVersion/);
       assert.match(error.message, /\/pi-session-recall-index --rebuild/);
       return true;

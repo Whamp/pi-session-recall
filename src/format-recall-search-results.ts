@@ -103,6 +103,11 @@ export function formatRecallSearchResults(
   ];
   if (search.results.length === 0) {
     lines.push('No matching past conversations found.');
+    if (search.searchPolicy.scope === RecallSearchScope.PROJECT) {
+      lines.push(
+        'Retry with scope "global" to search every indexed session; project scope was not broadened automatically.',
+      );
+    }
     return lines.join('\n');
   }
 

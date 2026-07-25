@@ -93,7 +93,7 @@ A Git project identity shared by equivalent clones and worktrees of one reposito
 _Avoid_: Checkout path, worktree identity
 
 **Project identity source**:
-The explicit basis that established a project identity, such as a canonical Git origin or shared local Git directory.
+The explicit basis that established a project identity: a canonical Git origin, shared local Git directory, or exact non-Git session origin.
 _Avoid_: Project hint, inferred relation
 
 **Recall scope**:

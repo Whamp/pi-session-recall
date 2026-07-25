@@ -98,6 +98,28 @@ void test('project-scoped output explains invocation identity, session origin, a
   assert.match(output, /same repository/);
 });
 
+void test('empty project recall recommends an explicit global retry without widening scope', () => {
+  const output = formatRecallSearchResults({
+    totalChunks: 42,
+    results: [],
+    searchPolicy: {
+      scope: RecallSearchScope.PROJECT,
+      invocationProjectIdentity: 'non-git-session-origin:/workspace/local-project',
+      rankingMode: 'hybrid',
+      rankFusionVersion: 1,
+      reciprocalRankConstant: 60,
+      rerankPolicyVersion: null,
+      rerankerModel: null,
+      activeBranchPrior: 0.01,
+      candidateLimits: { dense: 8, lexical: 8, identifier: 8 },
+    },
+  });
+
+  assert.match(output, /No matching past conversations found/);
+  assert.match(output, /Retry with scope "global"/);
+  assert.match(output, /project scope was not broadened automatically/);
+});
+
 void test('hybrid recall output does not claim Qwen reranking ran', () => {
   const output = formatRecallSearchResults({
     totalChunks: 42,

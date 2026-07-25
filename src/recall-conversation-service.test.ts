@@ -88,7 +88,7 @@ function createRecallConversationService(
   });
 }
 
-void test('recall service indexes explicitly and searches a compatible index without updating it', async (t) => {
+void test('recall search keeps ordinary reads stable and refreshes resumed or forked active sessions', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'recall-service-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const sessionsDirectory = join(directory, 'sessions');
@@ -182,9 +182,56 @@ void test('recall service indexes explicitly and searches a compatible index wit
     'queue decision',
   ]);
 
+  const refreshed = await service.search('must not be indexed by search', 1, {
+    scope: RecallSearchScope.GLOBAL,
+    activeSessionPath: sessionPath,
+  });
+  assert.equal(refreshed.results[0]?.entryId.value, 'unindexed-entry');
+  assert.equal(refreshed.totalChunks, 3);
+
+  const forkSessionPath = join(sessionsDirectory, 'fork.jsonl');
+  await writeFile(
+    forkSessionPath,
+    [
+      {
+        type: 'session',
+        version: 3,
+        id: 'fork-session',
+        timestamp: '2026-07-24T11:00:00Z',
+        cwd: '/project',
+        parentSession: sessionPath,
+      },
+      {
+        type: 'message',
+        id: 'fork-entry',
+        parentId: null,
+        timestamp: '2026-07-24T11:01:00Z',
+        message: { role: 'user', content: 'fork lifecycle marker' },
+      },
+    ]
+      .map((entry) => JSON.stringify(entry))
+      .join('\n') + '\n',
+  );
+  const forked = await service.search('fork lifecycle marker', 1, {
+    scope: RecallSearchScope.GLOBAL,
+    activeSessionPath: forkSessionPath,
+  });
+  assert.equal(forked.results[0]?.entryId.value, 'fork-entry');
+  assert.equal(forked.results[0]?.parentSessionPath, sessionPath);
+  assert.equal(forked.totalChunks, 4);
+
+  const lockPath = join(directory, 'recall.lock');
+  await mkdir(lockPath);
+  await writeFile(join(lockPath, 'owner.json'), `${JSON.stringify({ pid: process.pid })}\n`);
+  await assert.rejects(
+    () => service.reconcileSession(sessionPath, { lockWaitMilliseconds: 10 }),
+    /Recall conversation operation cancelled/,
+  );
+  await rm(lockPath, { recursive: true });
+
   const lockOwner = `${JSON.stringify({ pid: 999_999_999 })}\n`;
-  await mkdir(join(directory, 'recall.lock'));
-  await writeFile(join(directory, 'recall.lock', 'owner.json'), lockOwner);
+  await mkdir(lockPath);
+  await writeFile(join(lockPath, 'owner.json'), lockOwner);
   await assert.rejects(
     () => service.search('must not clear a stale lock', 1, { scope: RecallSearchScope.GLOBAL }),
     /stale lock from dead process 999999999.*\/pi-session-recall-index.*read-only search did not remove the lock/,
@@ -1495,6 +1542,10 @@ void test('recall search refuses a missing manifest before opening or mutating i
   await assert.rejects(
     () => service.search('must remain read only', 1, { scope: RecallSearchScope.GLOBAL }),
     /Recall index manifest missing.*\/pi-session-recall-index --rebuild/,
+  );
+  await assert.rejects(
+    () => service.reconcileSession(join(sessionsDirectory, 'active.jsonl')),
+    /Recall automatic session ingestion requires an existing index generation.*\/pi-session-recall-index --rebuild/,
   );
   assert.equal(embeddingRequests, 0);
   assert.equal(tokenizerLoads, 0);

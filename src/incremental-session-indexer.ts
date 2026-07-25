@@ -76,6 +76,18 @@ export interface IncrementalSessionIndexerOptions {
   onProgress?: (progress: ConversationIndexProgress) => void;
 }
 
+/** Dependencies for reconciling one active Pi session without scanning sibling files. */
+export interface IncrementalConversationSessionIndexerOptions {
+  sessionPath: string;
+  statePath: string;
+  store: ConversationChunkStore;
+  embeddingCache: EmbeddingVectorCache;
+  tokenizer: ConversationTextTokenizer;
+  chunkPolicy?: RecallChunkPolicy;
+  resolveProjectIdentity?: (sessionOrigin: string) => Promise<ResolvedProjectIdentity | null>;
+  signal?: AbortSignal;
+}
+
 async function listSessionFiles(directory: string): Promise<string[]> {
   const files: string[] = [];
   async function visit(current: string): Promise<void> {
@@ -157,28 +169,8 @@ function throwIfIndexingAborted(signal: AbortSignal | undefined): void {
   }
 }
 
-/** Incrementally indexes changed Pi sessions while embedding only dense-searchable evidence. */
-export async function indexChangedConversationSessions(
-  options: IncrementalSessionIndexerOptions,
-): Promise<ConversationIndexSummary> {
-  const state = await readConversationIndexState(options.statePath);
-  const sessionFiles = await listSessionFiles(options.sessionsDirectory);
-  const liveSessionPaths = new Set(sessionFiles);
-  const projectIdentityBySessionOrigin = new Map<string, Promise<ResolvedProjectIdentity | null>>();
-  function resolveSessionProjectIdentity(
-    sessionOrigin: string,
-  ): Promise<ResolvedProjectIdentity | null> {
-    const existing = projectIdentityBySessionOrigin.get(sessionOrigin);
-    if (existing) {
-      return existing;
-    }
-    const resolution = options.resolveProjectIdentity
-      ? options.resolveProjectIdentity(sessionOrigin)
-      : Promise.resolve(null);
-    projectIdentityBySessionOrigin.set(sessionOrigin, resolution);
-    return resolution;
-  }
-  const summary: ConversationIndexSummary = {
+function createConversationIndexSummary(): ConversationIndexSummary {
+  return {
     scannedSessions: 0,
     indexedSessions: 0,
     removedSessions: 0,
@@ -188,22 +180,173 @@ export async function indexChangedConversationSessions(
     deletedChunks: 0,
     failedSessions: [],
   };
+}
+
+function removeIndexedConversationSession(
+  state: ConversationIndexState,
+  sessionPath: string,
+  store: ConversationChunkStore,
+  summary: ConversationIndexSummary,
+): boolean {
+  const previous = state.sessions[sessionPath];
+  if (!previous) {
+    return false;
+  }
+  const staleIds = previous.chunks.map((chunk) => chunk.id);
+  store.deleteChunks(staleIds);
+  summary.deletedChunks += staleIds.length;
+  summary.removedSessions += 1;
+  delete state.sessions[sessionPath];
+  return true;
+}
+
+async function indexChangedConversationSessionFile(
+  options: Omit<IncrementalSessionIndexerOptions, 'sessionsDirectory' | 'onProgress'>,
+  state: ConversationIndexState,
+  sessionPath: string,
+  summary: ConversationIndexSummary,
+  resolveSessionProjectIdentity: (sessionOrigin: string) => Promise<ResolvedProjectIdentity | null>,
+): Promise<boolean> {
+  const previous = state.sessions[sessionPath];
+  let changedSession: Awaited<ReturnType<typeof readChangedSessionChunks>>;
+  try {
+    changedSession = await readChangedSessionChunks(
+      sessionPath,
+      previous,
+      options.tokenizer,
+      options.chunkPolicy,
+    );
+  } catch (error) {
+    summary.failedSessions.push({
+      sessionPath,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return false;
+  }
+  if (!changedSession) {
+    return false;
+  }
+
+  const { chunks } = changedSession;
+  const sessionOrigin = chunks[0]?.cwd;
+  const resolvedProjectIdentity = sessionOrigin
+    ? await resolveSessionProjectIdentity(sessionOrigin)
+    : null;
+  const attributedChunks = chunks.map((chunk) => ({
+    ...chunk,
+    projectAttribution: resolvedProjectIdentity,
+  }));
+  const currentIds = new Set(attributedChunks.map((chunk) => chunk.id));
+  const removedIds =
+    previous?.chunks.filter((chunk) => !currentIds.has(chunk.id)).map((chunk) => chunk.id) ?? [];
+  options.store.deleteChunks(removedIds);
+  summary.deletedChunks += removedIds.length;
+
+  for (let start = 0; start < attributedChunks.length; start += 128) {
+    const chunkBatch = attributedChunks.slice(start, start + 128);
+    const denseChunkBatch = chunkBatch.filter((chunk) => chunk.isDenseSearchable);
+    const cacheResult = await options.embeddingCache.resolveEmbeddingVectors(
+      denseChunkBatch.map((chunk) => chunk.content),
+      options.signal,
+    );
+    let denseChunkIndex = 0;
+    const indexedChunks: IndexedSessionConversationChunk[] = chunkBatch.map((chunk) => {
+      if (!chunk.isDenseSearchable) {
+        return { ...chunk, isDenseSearchable: false };
+      }
+      const embedding = cacheResult.vectors[denseChunkIndex];
+      denseChunkIndex += 1;
+      if (!embedding) {
+        throw new Error(`Recall embedding missing for conversation chunk ${chunk.id}`);
+      }
+      return { ...chunk, isDenseSearchable: true, embedding };
+    });
+    options.store.upsertChunks(indexedChunks);
+    summary.cacheHits += cacheResult.cacheHits;
+    summary.newlyEmbeddedChunks += cacheResult.newlyEmbeddedChunks;
+    summary.embeddingRequestCount += cacheResult.embeddingRequestCount;
+  }
+
+  state.sessions[sessionPath] = {
+    size: changedSession.size,
+    mtimeMs: changedSession.mtimeMs,
+    chunks: chunks.map(({ id }) => ({ id })),
+  };
+  summary.indexedSessions += 1;
+  return true;
+}
+
+function createSessionProjectIdentityResolver(
+  resolveProjectIdentity?: (sessionOrigin: string) => Promise<ResolvedProjectIdentity | null>,
+): (sessionOrigin: string) => Promise<ResolvedProjectIdentity | null> {
+  const projectIdentityBySessionOrigin = new Map<string, Promise<ResolvedProjectIdentity | null>>();
+  return (sessionOrigin) => {
+    const existing = projectIdentityBySessionOrigin.get(sessionOrigin);
+    if (existing) {
+      return existing;
+    }
+    const resolution = resolveProjectIdentity
+      ? resolveProjectIdentity(sessionOrigin)
+      : Promise.resolve(null);
+    projectIdentityBySessionOrigin.set(sessionOrigin, resolution);
+    return resolution;
+  };
+}
+
+/** Reconciles one active Pi session while embedding only new dense-searchable evidence. */
+export async function indexChangedConversationSession(
+  options: IncrementalConversationSessionIndexerOptions,
+): Promise<ConversationIndexSummary> {
+  const state = await readConversationIndexState(options.statePath);
+  const summary = createConversationIndexSummary();
+  throwIfIndexingAborted(options.signal);
+  summary.scannedSessions = 1;
+  try {
+    await stat(options.sessionPath);
+  } catch (error) {
+    if (readNodeErrorCode(error) !== 'ENOENT') {
+      throw error;
+    }
+    if (removeIndexedConversationSession(state, options.sessionPath, options.store, summary)) {
+      await writeConversationIndexState(options.statePath, state);
+    }
+    return summary;
+  }
+  const changed = await indexChangedConversationSessionFile(
+    options,
+    state,
+    options.sessionPath,
+    summary,
+    createSessionProjectIdentityResolver(options.resolveProjectIdentity),
+  );
+  if (changed) {
+    await writeConversationIndexState(options.statePath, state);
+  }
+  return summary;
+}
+
+/** Incrementally indexes changed Pi sessions while embedding only dense-searchable evidence. */
+export async function indexChangedConversationSessions(
+  options: IncrementalSessionIndexerOptions,
+): Promise<ConversationIndexSummary> {
+  const state = await readConversationIndexState(options.statePath);
+  const sessionFiles = await listSessionFiles(options.sessionsDirectory);
+  const liveSessionPaths = new Set(sessionFiles);
+  const summary = createConversationIndexSummary();
 
   for (const stalePath of Object.keys(state.sessions).filter(
     (path) => !liveSessionPaths.has(path),
   )) {
     throwIfIndexingAborted(options.signal);
-    const stale = state.sessions[stalePath];
-    const staleIds = stale?.chunks.map((chunk) => chunk.id) ?? [];
-    options.store.deleteChunks(staleIds);
-    summary.deletedChunks += staleIds.length;
-    summary.removedSessions += 1;
-    delete state.sessions[stalePath];
+    removeIndexedConversationSession(state, stalePath, options.store, summary);
   }
   if (summary.removedSessions > 0) {
     await writeConversationIndexState(options.statePath, state);
   }
 
+  const resolveSessionProjectIdentity = createSessionProjectIdentityResolver(
+    options.resolveProjectIdentity,
+  );
   let sessionsSinceCheckpoint = 0;
   for (const sessionPath of sessionFiles) {
     throwIfIndexingAborted(options.signal);
@@ -213,73 +356,16 @@ export async function indexChangedConversationSessions(
       totalSessions: sessionFiles.length,
       sessionPath,
     });
-
-    const previous = state.sessions[sessionPath];
-    let changedSession: Awaited<ReturnType<typeof readChangedSessionChunks>>;
-    try {
-      changedSession = await readChangedSessionChunks(
-        sessionPath,
-        previous,
-        options.tokenizer,
-        options.chunkPolicy,
-      );
-    } catch (error) {
-      summary.failedSessions.push({
-        sessionPath,
-        error: error instanceof Error ? error.message : String(error),
-      });
+    const changed = await indexChangedConversationSessionFile(
+      options,
+      state,
+      sessionPath,
+      summary,
+      resolveSessionProjectIdentity,
+    );
+    if (!changed) {
       continue;
     }
-    if (!changedSession) {
-      continue;
-    }
-
-    const { chunks } = changedSession;
-    const sessionOrigin = chunks[0]?.cwd;
-    const resolvedProjectIdentity = sessionOrigin
-      ? await resolveSessionProjectIdentity(sessionOrigin)
-      : null;
-    const attributedChunks = chunks.map((chunk) => ({
-      ...chunk,
-      projectAttribution: resolvedProjectIdentity,
-    }));
-    const currentIds = new Set(attributedChunks.map((chunk) => chunk.id));
-    const removedIds =
-      previous?.chunks.filter((chunk) => !currentIds.has(chunk.id)).map((chunk) => chunk.id) ?? [];
-    options.store.deleteChunks(removedIds);
-    summary.deletedChunks += removedIds.length;
-
-    for (let start = 0; start < attributedChunks.length; start += 128) {
-      const chunkBatch = attributedChunks.slice(start, start + 128);
-      const denseChunkBatch = chunkBatch.filter((chunk) => chunk.isDenseSearchable);
-      const cacheResult = await options.embeddingCache.resolveEmbeddingVectors(
-        denseChunkBatch.map((chunk) => chunk.content),
-        options.signal,
-      );
-      let denseChunkIndex = 0;
-      const indexedChunks: IndexedSessionConversationChunk[] = chunkBatch.map((chunk) => {
-        if (!chunk.isDenseSearchable) {
-          return { ...chunk, isDenseSearchable: false };
-        }
-        const embedding = cacheResult.vectors[denseChunkIndex];
-        denseChunkIndex += 1;
-        if (!embedding) {
-          throw new Error(`Recall embedding missing for conversation chunk ${chunk.id}`);
-        }
-        return { ...chunk, isDenseSearchable: true, embedding };
-      });
-      options.store.upsertChunks(indexedChunks);
-      summary.cacheHits += cacheResult.cacheHits;
-      summary.newlyEmbeddedChunks += cacheResult.newlyEmbeddedChunks;
-      summary.embeddingRequestCount += cacheResult.embeddingRequestCount;
-    }
-
-    state.sessions[sessionPath] = {
-      size: changedSession.size,
-      mtimeMs: changedSession.mtimeMs,
-      chunks: chunks.map(({ id }) => ({ id })),
-    };
-    summary.indexedSessions += 1;
     sessionsSinceCheckpoint += 1;
     if (sessionsSinceCheckpoint >= 100) {
       await writeConversationIndexState(options.statePath, state);

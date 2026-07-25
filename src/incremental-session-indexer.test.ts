@@ -9,7 +9,10 @@ import {
   createEmbeddingVectorCacheIdentity,
   type EmbeddingVectorCache,
 } from './embedding-vector-cache.js';
-import { indexChangedConversationSessions } from './incremental-session-indexer.js';
+import {
+  indexChangedConversationSession,
+  indexChangedConversationSessions,
+} from './incremental-session-indexer.js';
 import type { LocalEmbeddingClient } from './local-embedding-client.js';
 import { createRecallIndexManifest } from './recall-index-manifest.js';
 import type { ConversationTextTokenizer } from './session-conversation-index.js';
@@ -217,6 +220,78 @@ void test('incremental index embeds only new content and removes deleted session
   assert.equal(fifth.removedSessions, 1);
   assert.equal(store.count(), 0);
   assert.equal(store.deleted.length, 4);
+});
+
+void test('targeted incremental index reconciles one active session without scanning siblings', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-targeted-indexer-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionsDirectory = join(directory, 'sessions');
+  await mkdir(sessionsDirectory);
+  const activeSessionPath = join(sessionsDirectory, 'active.jsonl');
+  const unrelatedSessionPath = join(sessionsDirectory, 'unrelated.jsonl');
+  const createSession = (sessionId: string, entryId: string, content: string): object[] => [
+    {
+      type: 'session',
+      version: 3,
+      id: sessionId,
+      timestamp: '2026-07-24T10:00:00Z',
+      cwd: '/project',
+    },
+    {
+      type: 'message',
+      id: entryId,
+      parentId: null,
+      timestamp: '2026-07-24T10:01:00Z',
+      message: { role: 'user', content },
+    },
+  ];
+  const activeEntries = createSession('active-session', 'active-entry', 'active marker');
+  await Promise.all([
+    writeFile(activeSessionPath, sessionLines(activeEntries)),
+    writeFile(
+      unrelatedSessionPath,
+      sessionLines(createSession('unrelated-session', 'unrelated-entry', 'unrelated marker')),
+    ),
+  ]);
+  const store = new MemoryConversationStore();
+  const options = {
+    sessionPath: activeSessionPath,
+    statePath: join(directory, 'state.json'),
+    store,
+    embeddingCache: createTestEmbeddingCache(directory, {
+      async embedTexts(texts) {
+        return texts.map((text) => [text.length, 1, 0]);
+      },
+    }),
+    tokenizer,
+  };
+
+  const first = await indexChangedConversationSession(options);
+  assert.equal(first.scannedSessions, 1);
+  assert.equal(first.indexedSessions, 1);
+  assert.deepEqual(
+    [...store.chunks.values()].map((chunk) => chunk.content),
+    ['active marker'],
+  );
+
+  activeEntries.push({
+    type: 'message',
+    id: 'active-response',
+    parentId: 'active-entry',
+    timestamp: '2026-07-24T10:02:00Z',
+    message: { role: 'assistant', content: 'fresh active response' },
+  });
+  await writeFile(activeSessionPath, sessionLines(activeEntries));
+  const second = await indexChangedConversationSession(options);
+  assert.equal(second.scannedSessions, 1);
+  assert.equal(second.indexedSessions, 1);
+  assert.ok([...store.chunks.values()].some((chunk) => chunk.content === 'fresh active response'));
+  assert.ok([...store.chunks.values()].every((chunk) => !chunk.content.includes('unrelated')));
+
+  await rm(activeSessionPath);
+  const third = await indexChangedConversationSession(options);
+  assert.equal(third.removedSessions, 1);
+  assert.equal(store.count(), 0);
 });
 
 void test('incremental index never sends lexical-only tool evidence to embeddings', async (t) => {

@@ -7,7 +7,7 @@ import type { ResolvedProjectIdentity } from './resolve-project-identity.js';
 import { assertRecallChunkPolicy } from './recall-chunk-policy.js';
 
 /** Version of the source and graph provenance stored on recall evidence documents. */
-export const SESSION_CONVERSATION_SCHEMA_VERSION = 7;
+export const SESSION_CONVERSATION_SCHEMA_VERSION = 8;
 
 /** A Pi session ID that cannot be passed where a session entry ID is required. */
 export interface PiSessionId {
@@ -1078,6 +1078,10 @@ function createSummaryTextDocument(
   ];
 }
 
+function isDerivedRecallToolEvidence(toolName: string): boolean {
+  return toolName === 'pi-session-recall';
+}
+
 function createToolCallDocuments(
   graph: ParsedSessionGraph,
   entry: ParsedSessionEntry,
@@ -1095,6 +1099,9 @@ function createToolCallDocuments(
       typeof block.name !== 'string' ||
       !block.name
     ) {
+      return [];
+    }
+    if (isDerivedRecallToolEvidence(block.name)) {
       return [];
     }
     const serializedArguments = JSON.stringify(block.arguments);
@@ -1160,6 +1167,9 @@ function createToolResultDocuments(
   }
   const toolCallId = message.toolCallId;
   const toolName = message.toolName;
+  if (isDerivedRecallToolEvidence(toolName)) {
+    return [];
+  }
   const callEntryId = graph.toolCallEntryIdsByCallId.get(toolCallId) ?? null;
   return message.content.flatMap((block, blockIndex) => {
     if (

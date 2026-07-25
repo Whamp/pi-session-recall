@@ -471,6 +471,67 @@ void test('session chunks index bounded verbatim tool evidence with exact call p
   assert.ok(chunks.every((chunk) => !chunk.content.includes('private tool plan')));
 });
 
+void test('session chunks exclude derived pi-session-recall tool calls and results', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-derived-tool-evidence-'));
+  const sessionPath = join(directory, 'session.jsonl');
+  await writeFile(
+    sessionPath,
+    [
+      {
+        type: 'session',
+        version: 3,
+        id: 'session-derived-recall',
+        timestamp: '2026-07-24T10:00:00Z',
+        cwd: '/project',
+      },
+      {
+        type: 'message',
+        id: 'assistant-recall',
+        parentId: null,
+        timestamp: '2026-07-24T10:01:00Z',
+        message: {
+          role: 'assistant',
+          content: [
+            { type: 'text', text: 'I will check the prior decision.' },
+            {
+              type: 'toolCall',
+              id: 'call-recall',
+              name: 'pi-session-recall',
+              arguments: { query: 'recursive evidence marker' },
+            },
+          ],
+        },
+      },
+      {
+        type: 'message',
+        id: 'result-recall',
+        parentId: 'assistant-recall',
+        timestamp: '2026-07-24T10:02:00Z',
+        message: {
+          role: 'toolResult',
+          toolCallId: 'call-recall',
+          toolName: 'pi-session-recall',
+          content: [{ type: 'text', text: 'recursive evidence marker from derived output' }],
+          isError: false,
+        },
+      },
+    ]
+      .map((entry) => JSON.stringify(entry))
+      .join('\n') + '\n',
+  );
+
+  const chunks = await readSessionConversationChunks(sessionPath, {
+    tokenizer: createWhitespaceConversationTokenizer(),
+    maxTokens: 512,
+    overlapTokens: 64,
+  });
+
+  assert.deepEqual(
+    chunks.map((chunk) => ({ documentKind: chunk.documentKind, content: chunk.content })),
+    [{ documentKind: 'conversation', content: 'I will check the prior decision.' }],
+  );
+});
+
 void test('session chunks index direct bash commands and outputs as lexical-only evidence', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'recall-bash-evidence-'));
   const sessionPath = join(directory, 'session.jsonl');
@@ -652,7 +713,7 @@ void test('session chunks expose branch, summary, sibling, and source geometry p
       },
     ],
   );
-  assert.ok(activeRuns.every((chunk) => chunk.schemaVersion === 7));
+  assert.ok(activeRuns.every((chunk) => chunk.schemaVersion === 8));
   assert.ok(activeRuns.every((chunk) => chunk.contributingEntryIds[0]?.value === 'active'));
   assert.ok(activeRuns.every((chunk) => chunk.textRunId.length === 40));
   assert.ok(activeRuns.every((chunk) => chunk.chunkCount === 1));

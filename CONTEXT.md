@@ -80,6 +80,18 @@ _Avoid_: Expanded transcript, joined messages
 The versioned identity of the model, tokenizer, chunk policy, provenance schema, and zvec schema used by one index generation.
 _Avoid_: Index state, configuration
 
+**Live session reconciliation**:
+A targeted update that reprocesses one active session file, reuses cached vectors, removes stale documents, and checkpoints its new state without scanning sibling sessions.
+_Avoid_: Append-only indexing, session watcher
+
+**Active-session freshness barrier**:
+The mandatory live session reconciliation completed from Pi's trusted current session path before a recall search opens zvec for reading.
+_Avoid_: Search-time full scan, eventual active-session indexing
+
+**Derived recall evidence**:
+The `pi-session-recall` tool call and its result. The index excludes both because they restate search inputs or previously indexed evidence and would create a feedback loop.
+_Avoid_: Tool evidence, primary evidence
+
 **Session origin**:
 The working directory recorded when a Pi session began. It applies to the whole session, not individual entries.
 _Avoid_: Project path, current directory

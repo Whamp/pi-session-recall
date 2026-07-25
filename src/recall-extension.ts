@@ -9,6 +9,7 @@ import {
   truncateHead,
 } from '@earendil-works/pi-coding-agent';
 
+import { createRecallLiveSessionIngestion } from './create-recall-live-session-ingestion.js';
 import { RecallSearchScope } from './enums.js';
 import { formatRecallSearchResults } from './format-recall-search-results.js';
 import { loadRecallConversationConfig } from './recall-conversation-config.js';
@@ -33,25 +34,32 @@ export interface PiRecallParameters {
   scope?: 'project' | 'global';
 }
 
+interface PiRecallInvocationContext {
+  cwd: ExtensionContext['cwd'];
+  sessionManager: Pick<ExtensionContext['sessionManager'], 'getSessionFile'>;
+}
+
 /** Applies trusted Pi tool context and project-default scope to one recall service search. */
 export async function searchPiRecall(
   service: RecallConversationService,
   parameters: PiRecallParameters,
-  context: Pick<ExtensionContext, 'cwd'>,
+  context: PiRecallInvocationContext,
   defaultResultLimit: number,
   signal?: AbortSignal,
 ): Promise<RecallConversationSearch> {
+  const activeSessionPath = context.sessionManager.getSessionFile();
   return service.search(parameters.query.trim(), parameters.limit ?? defaultResultLimit, {
     mode: parameters.mode ?? 'hybrid',
     scope: parameters.scope === 'global' ? RecallSearchScope.GLOBAL : RecallSearchScope.PROJECT,
     invocationDirectory: context.cwd,
+    ...(activeSessionPath ? { activeSessionPath } : {}),
     ...(signal ? { signal } : {}),
   });
 }
 
 /** Registers hybrid recall of past Pi conversations. Pi requires extension factories to be default exports. */
 export default async function recallExtension(
-  pi: Pick<ExtensionAPI, 'registerTool' | 'registerCommand'>,
+  pi: Pick<ExtensionAPI, 'on' | 'registerTool' | 'registerCommand'>,
 ): Promise<void> {
   const qualityGateDecision = await readRecallQualityGateDecision(RECALL_QUALITY_RESULTS_PATH);
   const configured = await loadRecallConversationConfig();
@@ -72,12 +80,30 @@ export default async function recallExtension(
     : configured;
   const defaultResultLimit = selectedPolicy?.finalCount ?? 5;
   const service = createRecallConversationService(config);
+  let ingestionWarningHandler: ((message: string) => void) | undefined;
+  const liveSessionIngestion = createRecallLiveSessionIngestion(service, (message) => {
+    ingestionWarningHandler?.(message);
+  });
+  if (qualityGateDecision.automatedGatePassed && selectedPolicy) {
+    pi.on('session_start', (_event, context) => {
+      ingestionWarningHandler = (message) => context.ui.notify(message, 'warning');
+      void liveSessionIngestion.catchUpSessions();
+    });
+    pi.on('agent_settled', (_event, context) => {
+      ingestionWarningHandler = (message) => context.ui.notify(message, 'warning');
+      void liveSessionIngestion.reconcileActiveSession(context.sessionManager.getSessionFile());
+    });
+    pi.on('session_shutdown', async (_event, context) => {
+      ingestionWarningHandler = (message) => context.ui.notify(message, 'warning');
+      await liveSessionIngestion.shutdownActiveSession(context.sessionManager.getSessionFile());
+    });
+  }
 
   pi.registerTool({
     name: 'pi-session-recall',
     label: 'Pi Session Recall',
     description:
-      'Search a prebuilt compatible index of past Pi conversations with dense, lexical, and case-preserving identifier retrieval. Recall defaults to project scope from Pi trusted execution context; choose global scope explicitly for cross-project evidence. Search defaults to deterministic hybrid ranking; choose deep-rerank only when ambiguous evidence warrants slower local Qwen scoring. Excludes hidden reasoning, keeps raw tool evidence lexical-only, labels active and abandoned branches, and expands only valid same-run atomic neighbors with exact provenance. After the committed quality gate passes, run /pi-session-recall-index explicitly to update the index. Output is truncated to 2000 lines or 50KB.',
+      'Search past Pi conversations with dense, lexical, and case-preserving identifier retrieval. Recall refreshes the trusted active session before every search and keeps other sessions current from Pi lifecycle events. It defaults to project scope; choose global explicitly for cross-project evidence. Search defaults to deterministic hybrid ranking; choose deep-rerank only when ambiguous evidence warrants slower local Qwen scoring. Excludes hidden reasoning and derived recall output, keeps other raw tool evidence lexical-only, labels active and abandoned branches, and expands only valid same-run atomic neighbors with exact provenance. Use /pi-session-recall-index for manual full catch-up or repair. Output is truncated to 2000 lines or 50KB.',
     promptSnippet:
       'Search past Pi conversations by meaning or exact text and recover remembered details',
     promptGuidelines: [

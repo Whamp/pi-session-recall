@@ -16,6 +16,8 @@ The index contains:
 - tool result text, including errors, paths, identifiers, and URLs;
 - direct bash execution commands and outputs.
 
+The index excludes `pi-session-recall` calls and their results. Recall output is derived evidence; indexing it would create a recursive feedback loop.
+
 Atomic conversation documents come from one visible text run in one session entry. A visible text run contains only adjacent, nonempty text blocks. Thinking, tools, results, images, empty blocks, roles, entries, and summaries all end a conversation run, so boundaries cannot create synthetic text adjacency.
 
 Turn-context documents are secondary evidence. Each starts with visible user text and follows Pi parent links through visible assistant text until the next user entry. A turn may cross tool calls and results, but its text never includes thinking, tool arguments, or raw tool output. Oversized turns split into bounded role-paired documents, so every emitted context retains both user and assistant text. Branched paths produce distinct turn contexts when their contributing entries differ. Each context records all contributing entry IDs; atomic chunks remain available for precise citation.
@@ -43,19 +45,22 @@ pi install /home/will/projects/pi-session-recall
 
 Reload a running Pi session with `/reload`.
 
-The committed version-3 quality report passes and selects 512/64 chunks, 8 candidates per channel, and 5 final results. Build or update the production index explicitly:
-
-```text
-/pi-session-recall-index
-```
-
-Replace a missing or incompatible generation while preserving the tokenizer and embedding caches:
+The committed quality report passes and selects 512/64 chunks, 8 candidates per channel, and 5 final results. Create the initial production index explicitly:
 
 ```text
 /pi-session-recall-index --rebuild
 ```
 
-Search never starts, resumes, or repairs indexing. It opens only an existing compatible zvec collection in read-only mode.
+After that initial generation exists, the extension keeps it current from Pi's session lifecycle:
+
+- `session_start` starts a bounded background catch-up over missed session files;
+- `agent_settled` reconciles the active session after retries and queued continuations finish;
+- `session_shutdown` awaits one final active-session reconciliation before switching, forking, reloading, or exiting;
+- every `pi-session-recall` tool call reconciles the trusted active session before searching.
+
+Resume appends and branch changes reprocess the affected session. Forks enter through their new session file and retain parent-session provenance. The incremental state and unchanged JSONL files form the durable retry queue after crashes, model outages, or lock contention. Multiple Pi processes share the PID-owned writer lock.
+
+Use `/pi-session-recall-index` for an explicit full catch-up and optimization. Use `--rebuild` to replace an incompatible generation while preserving tokenizer assets and cached vectors.
 
 ## Use
 
@@ -103,7 +108,7 @@ Search shapes the full fused candidate pool before applying the requested result
 
 Each duplicate group retains every suppressed candidate with its source geometry and fusion components. Neighbor context retains every contributing atomic chunk. A deep-rerank HTTP, JSON, coverage, index, or score failure rejects that deep search; default hybrid search never calls the reranker.
 
-After the quality gate passes, run `/pi-session-recall-index` to scan changed sessions and optimize zvec. Use `/pi-session-recall-index --rebuild` when a compatibility error requires a replacement generation. A search against a missing, locked, or incompatible generation fails without changing the index or its lock.
+After the quality gate passes, `/pi-session-recall-index` performs a manual full catch-up and optimizes zvec. Use `/pi-session-recall-index --rebuild` when a compatibility error requires a replacement generation. Automatic lifecycle ingestion never creates or replaces an incompatible generation. A search against a missing, locked, or incompatible generation fails without clearing another process's lock.
 
 ## Exact Octen tokenizer
 
@@ -227,7 +232,7 @@ Default data paths:
 ~/.pi/agent/recall/operation.lock/          explicit-index writer lock
 ```
 
-A process-local mutex and PID-owned writer lock serialize explicit indexing. Search does not acquire, clear, or repair the writer lock. It distinguishes a live owner from a stale dead-process lock and directs stale-lock recovery through the explicit index command after the quality gate passes. Changed sessions are checkpointed every 100 files, and embedding writes use bounded 128-chunk windows.
+A process-local mutex and PID-owned writer lock serialize manual and automatic indexing. Background lifecycle ingestion waits at most 250 milliseconds for another writer, then defers quietly until the next lifecycle event. The active-session freshness barrier waits under the tool's cancellation signal because search must not silently return stale evidence from its invoking session. Search never clears or repairs another process's lock. Full catch-up checkpoints every 100 changed files; targeted reconciliation checkpoints its one session immediately. Embedding writes use bounded 128-chunk windows.
 
 The embedding cache is a sibling of zvec rather than part of the collection. Each entry has a versioned identity header, FP32 payload, and SHA-256 checksum. Writers fsync a unique temporary file and atomically rename it only after validation. Readers reject identity, dimension, byte-length, checksum, and non-finite-value failures. Rebuilding only zvec and index state leaves the cache available, so unchanged chunks need zero chunk-embedding requests. Index completion reports cache hits, newly embedded chunks, and chunk-embedding request count separately; the model-identity canary request is not a chunk-embedding request.
 

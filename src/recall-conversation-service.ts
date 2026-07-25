@@ -14,6 +14,7 @@ import {
   RECALL_RRF_RANK_CONSTANT,
 } from './fuse-recall-search-candidates.js';
 import {
+  indexChangedConversationSession,
   indexChangedConversationSessions,
   type ConversationIndexProgress,
   type ConversationIndexSummary,
@@ -87,11 +88,12 @@ export interface RecallSearchCandidateLimits {
 /** User-selected ranking depth for hybrid-only or local Qwen recall search. */
 export type RecallSearchMode = 'hybrid' | 'deep-rerank';
 
-/** Cancellation and optional deep reranking for one read-only recall search. */
+/** Trusted invocation context, cancellation, and ranking depth for one recall search. */
 export interface RecallConversationSearchOptions {
   mode?: RecallSearchMode;
   scope?: RecallSearchScope;
   invocationDirectory?: string;
+  activeSessionPath?: string;
   signal?: AbortSignal;
 }
 
@@ -123,21 +125,31 @@ export interface RecallConversationSearch {
 /** Cancellation, progress, optimization, and generation replacement for explicit indexing. */
 export interface RecallConversationIndexOptions {
   signal?: AbortSignal;
+  lockWaitMilliseconds?: number;
+  requireExistingGeneration?: boolean;
   onProgress?: (progress: ConversationIndexProgress) => void;
   optimize?: boolean;
   rebuild?: boolean;
 }
 
-/** Read-only search and explicit index-maintenance operations exposed by the extension. */
+/** Counts from one completed full or targeted conversation index update. */
+export interface RecallConversationIndexResult {
+  indexSummary: ConversationIndexSummary;
+  totalChunks: number;
+}
+
+/** Search plus full and targeted index-maintenance operations exposed by the extension. */
 export interface RecallConversationService {
   search(
     query: string,
     limit: number,
     options?: RecallConversationSearchOptions,
   ): Promise<RecallConversationSearch>;
-  index(
-    options?: RecallConversationIndexOptions,
-  ): Promise<{ indexSummary: ConversationIndexSummary; totalChunks: number }>;
+  index(options?: RecallConversationIndexOptions): Promise<RecallConversationIndexResult>;
+  reconcileSession(
+    sessionPath: string,
+    options?: Pick<RecallConversationIndexOptions, 'signal' | 'lockWaitMilliseconds'>,
+  ): Promise<RecallConversationIndexResult>;
 }
 
 /** Injectable local model, tokenizer, and zvec boundaries used by tests and bounded evaluation. */
@@ -215,9 +227,27 @@ async function acquireRecallConversationLock(
           continue;
         }
       }
-      await sleep(250, undefined, signal ? { signal } : undefined);
+      try {
+        await sleep(250, undefined, signal ? { signal } : undefined);
+      } catch (error) {
+        if (signal?.aborted) {
+          throw new Error('Recall conversation operation cancelled', { cause: signal.reason });
+        }
+        throw error;
+      }
     }
   }
+}
+
+function createRecallLockAcquisitionSignal(
+  signal: AbortSignal | undefined,
+  lockWaitMilliseconds: number | undefined,
+): AbortSignal | undefined {
+  if (lockWaitMilliseconds === undefined) {
+    return signal;
+  }
+  const timeoutSignal = AbortSignal.timeout(lockWaitMilliseconds);
+  return signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
 }
 
 async function assertRecallIndexUnlockedForSearch(lockPath: string): Promise<void> {
@@ -377,12 +407,18 @@ export function createRecallConversationService(
   async function prepareIndexForWrite(
     signal?: AbortSignal,
     preflightedCanary?: readonly number[],
+    requireExistingGeneration = false,
   ): Promise<{
     tokenizer: ConversationTextTokenizer;
     manifest: RecallIndexManifest;
     embeddingModelPreflighted: boolean;
   }> {
     const actual = await readRecallIndexManifest(config.manifestPath);
+    if (!actual && requireExistingGeneration) {
+      throw new Error(
+        `Recall automatic session ingestion requires an existing index generation at ${config.manifestPath}; initialize it with /pi-session-recall-index --rebuild`,
+      );
+    }
     if (!actual && (existsSync(config.databasePath) || existsSync(config.statePath))) {
       throw new Error(
         `Recall index manifest missing at ${config.manifestPath} for existing index data; reindex with /pi-session-recall-index --rebuild`,
@@ -414,6 +450,7 @@ export function createRecallConversationService(
     embeddingModelPreflighted: boolean,
     signal?: AbortSignal,
     onProgress?: (progress: ConversationIndexProgress) => void,
+    sessionPath?: string,
   ): Promise<ConversationIndexSummary> {
     let modelPreflighted = embeddingModelPreflighted;
     async function embedTextsAfterModelPreflight(
@@ -436,8 +473,7 @@ export function createRecallConversationService(
       embeddingRequestBatchSize: config.embeddingBatchSize,
       embeddings: preflightedEmbeddings,
     });
-    return indexChangedConversationSessions({
-      sessionsDirectory: config.sessionsDirectory,
+    const indexerOptions = {
       statePath: config.statePath,
       store,
       embeddingCache,
@@ -448,8 +484,46 @@ export function createRecallConversationService(
       },
       resolveProjectIdentity: resolveSearchProjectIdentity,
       ...(signal ? { signal } : {}),
-      ...(onProgress ? { onProgress } : {}),
-    });
+    };
+    return sessionPath
+      ? indexChangedConversationSession({ ...indexerOptions, sessionPath })
+      : indexChangedConversationSessions({
+          ...indexerOptions,
+          sessionsDirectory: config.sessionsDirectory,
+          ...(onProgress ? { onProgress } : {}),
+        });
+  }
+
+  async function reconcileActiveConversationSession(
+    sessionPath: string,
+    signal?: AbortSignal,
+    lockWaitMilliseconds?: number,
+  ): Promise<RecallConversationIndexResult> {
+    const lockSignal = createRecallLockAcquisitionSignal(signal, lockWaitMilliseconds);
+    const releaseLock = await acquireRecallConversationLock(config.lockPath, lockSignal);
+    let store: ZvecConversationStore | undefined;
+    try {
+      const preparedIndex = await prepareIndexForWrite(signal, undefined, true);
+      store = openStore('write');
+      const summary = await updateConversationIndex(
+        store,
+        preparedIndex.tokenizer,
+        preparedIndex.manifest,
+        preparedIndex.embeddingModelPreflighted,
+        signal,
+        undefined,
+        sessionPath,
+      );
+      if (summary.failedSessions.length > 0) {
+        throw new Error(
+          `Recall active session reconciliation failed for ${sessionPath}: ${summary.failedSessions[0]?.error ?? 'unknown session parsing failure'}`,
+        );
+      }
+      return { indexSummary: summary, totalChunks: store.count() };
+    } finally {
+      store?.close();
+      await releaseLock();
+    }
   }
 
   return {
@@ -459,6 +533,7 @@ export function createRecallConversationService(
           mode = 'hybrid',
           scope = RecallSearchScope.PROJECT,
           invocationDirectory,
+          activeSessionPath,
           signal,
         } = options;
         const searchQuery = query.trim();
@@ -469,6 +544,10 @@ export function createRecallConversationService(
         await assertRecallIndexUnlockedForSearch(config.lockPath);
         const expectedManifest = createExpectedManifest(await readCurrentEmbeddingCanary(signal));
         assertRecallIndexManifestCompatible(actualManifest, expectedManifest, config.manifestPath);
+        if (activeSessionPath) {
+          await reconcileActiveConversationSession(activeSessionPath, signal);
+        }
+        await assertRecallIndexUnlockedForSearch(config.lockPath);
         if (scope === RecallSearchScope.PROJECT && !invocationDirectory) {
           throw new Error('Project-scoped recall requires Pi trusted invocation directory context');
         }
@@ -559,7 +638,11 @@ export function createRecallConversationService(
     },
     index(options = {}) {
       return runSerialized(async () => {
-        const releaseLock = await acquireRecallConversationLock(config.lockPath, options.signal);
+        const lockSignal = createRecallLockAcquisitionSignal(
+          options.signal,
+          options.lockWaitMilliseconds,
+        );
+        const releaseLock = await acquireRecallConversationLock(config.lockPath, lockSignal);
         let store: ZvecConversationStore | undefined;
         try {
           let rebuildCanary: number[] | undefined;
@@ -568,7 +651,11 @@ export function createRecallConversationService(
             rebuildCanary = await readCanonicalRebuildCanary(options.signal);
             await removeRecallIndexGeneration();
           }
-          const preparedIndex = await prepareIndexForWrite(options.signal, rebuildCanary);
+          const preparedIndex = await prepareIndexForWrite(
+            options.signal,
+            rebuildCanary,
+            options.requireExistingGeneration,
+          );
           store = openStore('write');
           const indexSummary = await updateConversationIndex(
             store,
@@ -592,6 +679,15 @@ export function createRecallConversationService(
           await releaseLock();
         }
       });
+    },
+    reconcileSession(sessionPath, options = {}) {
+      return runSerialized(() =>
+        reconcileActiveConversationSession(
+          sessionPath,
+          options.signal,
+          options.lockWaitMilliseconds,
+        ),
+      );
     },
   };
 }

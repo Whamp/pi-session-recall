@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 
-import type { LocalEmbeddingClient } from './local-embedding-client.js';
+import type { EmbeddingVectorCache } from './embedding-vector-cache.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
 import {
   readSessionConversationChunks,
@@ -52,7 +52,9 @@ export interface ConversationIndexSummary {
   scannedSessions: number;
   indexedSessions: number;
   removedSessions: number;
-  embeddedChunks: number;
+  cacheHits: number;
+  newlyEmbeddedChunks: number;
+  embeddingRequestCount: number;
   deletedChunks: number;
   failedSessions: Array<{ sessionPath: string; error: string }>;
 }
@@ -62,7 +64,7 @@ export interface IncrementalSessionIndexerOptions {
   sessionsDirectory: string;
   statePath: string;
   store: ConversationChunkStore;
-  embeddings: LocalEmbeddingClient;
+  embeddingCache: EmbeddingVectorCache;
   tokenizer: ConversationTextTokenizer;
   signal?: AbortSignal;
   onProgress?: (progress: ConversationIndexProgress) => void;
@@ -156,7 +158,9 @@ export async function indexChangedConversationSessions(
     scannedSessions: 0,
     indexedSessions: 0,
     removedSessions: 0,
-    embeddedChunks: 0,
+    cacheHits: 0,
+    newlyEmbeddedChunks: 0,
+    embeddingRequestCount: 0,
     deletedChunks: 0,
     failedSessions: [],
   };
@@ -214,19 +218,22 @@ export async function indexChangedConversationSessions(
     );
     for (let start = 0; start < changedChunks.length; start += 128) {
       const chunkBatch = changedChunks.slice(start, start + 128);
-      const vectors = await options.embeddings.embedTexts(
+      const cacheResult = await options.embeddingCache.resolveEmbeddingVectors(
         chunkBatch.map((chunk) => chunk.content),
         options.signal,
       );
       options.store.upsertChunks(
         chunkBatch.map((chunk, index) => {
-          const embedding = vectors[index];
+          const embedding = cacheResult.vectors[index];
           if (!embedding) {
             throw new Error(`Recall embedding missing for conversation chunk ${chunk.id}`);
           }
           return { ...chunk, embedding };
         }),
       );
+      summary.cacheHits += cacheResult.cacheHits;
+      summary.newlyEmbeddedChunks += cacheResult.newlyEmbeddedChunks;
+      summary.embeddingRequestCount += cacheResult.embeddingRequestCount;
     }
 
     state.sessions[sessionPath] = {
@@ -235,7 +242,6 @@ export async function indexChangedConversationSessions(
       chunks: chunks.map(({ id, checksum }) => ({ id, checksum })),
     };
     summary.indexedSessions += 1;
-    summary.embeddedChunks += changedChunks.length;
     sessionsSinceCheckpoint += 1;
     if (sessionsSinceCheckpoint >= 100) {
       await writeConversationIndexState(options.statePath, state);

@@ -1,6 +1,6 @@
 # Pi Session Recall
 
-`pi-session-recall` gives Pi a `pi-session-recall` tool for searching past conversations. It reads Pi session JSONL files, embeds user-visible conversation text with a local OpenAI-compatible model, and stores vectors in an in-process [zvec](https://github.com/alibaba/zvec) collection.
+`pi-session-recall` gives Pi a `pi-session-recall` tool for searching past conversations. It reads Pi session JSONL files, embeds user-visible conversation text with a local OpenAI-compatible model, stores durable FP32 vectors in a content-addressed cache, and builds an in-process [zvec](https://github.com/alibaba/zvec) search collection from them.
 
 ## What it indexes
 
@@ -84,6 +84,8 @@ Each index generation has a separately versioned `index-manifest.json`. It ident
 
 The extension validates the complete manifest before opening or updating zvec. Missing or mismatched manifests are incompatible. The error reports every mismatched field and points to `/pi-session-recall-index --rebuild`; recall never mixes document geometry silently.
 
+Embedding text is normalized to Unicode NFC under `unicode-nfc-v1`. Cache identity includes the normalized-text SHA-256; full served-model identity and dimensions; tokenizer revision, assets, library, and encode options; chunk-policy version; and normalization version. A model, text, tokenizer, policy, normalization, or dimension change therefore misses rather than reusing incompatible geometry.
+
 ## Default local model
 
 The checked-in defaults match `~/.pi/agent/LOCAL-AI.md`:
@@ -145,10 +147,13 @@ Default data paths:
 ~/.pi/agent/recall/index-state.json         incremental session fingerprints
 ~/.pi/agent/recall/index-manifest.json      generation compatibility identity
 ~/.pi/agent/recall/tokenizers/<revision>/   checksum-verified tokenizer assets
+~/.pi/agent/recall/embedding-cache/v1/      durable content-addressed FP32 vectors
 ~/.pi/agent/recall/operation.lock/          explicit-index writer lock
 ```
 
 A process-local mutex and PID-owned writer lock serialize explicit indexing. Search does not acquire, clear, or repair the writer lock; it refuses to run while the lock exists. Changed sessions are checkpointed every 100 files, and embedding writes use bounded 128-chunk windows.
+
+The embedding cache is a sibling of zvec rather than part of the collection. Each entry has a versioned identity header, FP32 payload, and SHA-256 checksum. Writers fsync a unique temporary file and atomically rename it only after validation. Readers reject identity, dimension, byte-length, checksum, and non-finite-value failures. Rebuilding only zvec and index state leaves the cache available, so unchanged chunks need zero chunk-embedding requests. Index completion reports cache hits, newly embedded chunks, and chunk-embedding request count separately; the model-identity canary request is not a chunk-embedding request.
 
 Conversation text and vectors remain local. The extension sends text only to the configured embedding endpoint.
 

@@ -91,7 +91,9 @@ export default async function recallExtension(
         const failures = result.indexSummary.failedSessions.length;
         const message = [
           `Recall index ready: ${result.totalChunks} chunks`,
-          `${result.indexSummary.embeddedChunks} embedded`,
+          `${result.indexSummary.cacheHits} cache hits`,
+          `${result.indexSummary.newlyEmbeddedChunks} newly embedded`,
+          `${result.indexSummary.embeddingRequestCount} embedding requests`,
           `${result.indexSummary.deletedChunks} removed`,
           failures > 0 ? `${failures} failed sessions` : undefined,
         ]

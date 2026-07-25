@@ -35,6 +35,7 @@ void test('recall config uses local octen embeddings and supports file plus envi
   assert.equal(config.databasePath, join(directory, 'file-data', 'zvec'));
   assert.equal(config.manifestPath, join(directory, 'file-data', 'index-manifest.json'));
   assert.equal(config.tokenizerCacheDirectory, join(directory, 'file-data', 'tokenizers'));
+  assert.equal(config.embeddingCacheDirectory, join(directory, 'file-data', 'embedding-cache'));
   assert.equal(config.sessionsDirectory, join(directory, '.pi', 'agent', 'sessions'));
 });
 

@@ -79,6 +79,7 @@ export async function loadRecallConversationConfig(
     statePath: join(dataDirectory, 'index-state.json'),
     manifestPath: join(dataDirectory, 'index-manifest.json'),
     tokenizerCacheDirectory: join(dataDirectory, 'tokenizers'),
+    embeddingCacheDirectory: join(dataDirectory, 'embedding-cache'),
     lockPath: join(dataDirectory, 'operation.lock'),
     embeddingBaseUrl:
       environment.PI_RECALL_EMBEDDING_BASE_URL ??

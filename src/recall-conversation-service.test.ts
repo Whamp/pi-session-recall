@@ -32,6 +32,7 @@ function createTestConfig(directory: string, sessionsDirectory: string) {
     statePath: join(directory, 'index-state.json'),
     manifestPath: join(directory, 'index-manifest.json'),
     tokenizerCacheDirectory: join(directory, 'tokenizers'),
+    embeddingCacheDirectory: join(directory, 'embedding-cache'),
     lockPath: join(directory, 'recall.lock'),
     embeddingBaseUrl: 'http://unused.test/v1',
     embeddingModel: 'test-request-model',
@@ -103,7 +104,9 @@ void test('recall service indexes explicitly and searches a compatible index wit
   });
 
   const indexed = await service.index();
-  assert.equal(indexed.indexSummary.embeddedChunks, 2);
+  assert.equal(indexed.indexSummary.cacheHits, 0);
+  assert.equal(indexed.indexSummary.newlyEmbeddedChunks, 2);
+  assert.equal(indexed.indexSummary.embeddingRequestCount, 1);
   assert.equal(indexed.totalChunks, 2);
 
   const first = await service.search('What did we decide about job queues?', 1);
@@ -138,6 +141,66 @@ void test('recall service indexes explicitly and searches a compatible index wit
     /read-only search did not remove the lock/,
   );
   assert.equal(await readFile(join(directory, 'recall.lock', 'owner.json'), 'utf8'), lockOwner);
+});
+
+void test('fresh zvec rebuild reuses unchanged cached chunk vectors without embedding requests', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-service-cache-rebuild-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionsDirectory = join(directory, 'sessions');
+  await mkdir(sessionsDirectory);
+  const sessionPath = join(sessionsDirectory, 'one.jsonl');
+  await writeFile(
+    sessionPath,
+    [
+      JSON.stringify({
+        type: 'session',
+        version: 3,
+        id: 'session-1',
+        timestamp: '2026-07-24T10:00:00Z',
+        cwd: '/project',
+      }),
+      JSON.stringify({
+        type: 'message',
+        id: 'entry-1',
+        parentId: null,
+        timestamp: '2026-07-24T10:01:00Z',
+        message: { role: 'user', content: 'Reuse this durable vector.' },
+      }),
+    ].join('\n') + '\n',
+  );
+
+  const embeddingInputs: string[][] = [];
+  const embeddings: LocalEmbeddingClient = {
+    async embedTexts(texts) {
+      embeddingInputs.push([...texts]);
+      return texts.map((text) =>
+        text === RECALL_EMBEDDING_CANARY_TEXT ? [0, 0, 1] : [text.length, 1, 0],
+      );
+    },
+  };
+  const config = createTestConfig(directory, sessionsDirectory);
+  const service = createRecallConversationService(config, {
+    embeddings,
+    async loadTokenizer() {
+      return tokenizer;
+    },
+  });
+
+  const first = await service.index();
+  assert.equal(first.indexSummary.cacheHits, 0);
+  assert.equal(first.indexSummary.newlyEmbeddedChunks, 1);
+  assert.equal(first.indexSummary.embeddingRequestCount, 1);
+  assert.equal(embeddingInputs.length, 2);
+
+  await rm(config.databasePath, { recursive: true });
+  await rm(config.statePath);
+
+  const rebuilt = await service.index();
+  assert.equal(rebuilt.totalChunks, 1);
+  assert.equal(rebuilt.indexSummary.cacheHits, 1);
+  assert.equal(rebuilt.indexSummary.newlyEmbeddedChunks, 0);
+  assert.equal(rebuilt.indexSummary.embeddingRequestCount, 0);
+  assert.equal(embeddingInputs.length, 2);
 });
 
 void test('explicit indexing retries a transient embedding-canary failure in the same process', async (t) => {

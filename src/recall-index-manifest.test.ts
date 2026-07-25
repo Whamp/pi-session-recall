@@ -40,7 +40,7 @@ void test('index manifest round-trips the complete reproducibility identity atom
     maxTokens: 1_024,
     overlapTokens: 128,
     boundaryAlgorithm: 'markdown-structure-v1',
-    normalization: 'pi-visible-text-v1',
+    normalization: 'unicode-nfc-v1',
   });
 });
 

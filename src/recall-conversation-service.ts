@@ -4,6 +4,10 @@ import { dirname } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 import {
+  createEmbeddingVectorCache,
+  createEmbeddingVectorCacheIdentity,
+} from './embedding-vector-cache.js';
+import {
   indexChangedConversationSessions,
   type ConversationIndexProgress,
   type ConversationIndexSummary,
@@ -35,6 +39,7 @@ export interface RecallConversationConfig {
   statePath: string;
   manifestPath: string;
   tokenizerCacheDirectory: string;
+  embeddingCacheDirectory: string;
   lockPath: string;
   embeddingBaseUrl: string;
   embeddingModel: string;
@@ -258,7 +263,9 @@ export function createRecallConversationService(
     return actual;
   }
 
-  async function prepareIndexForWrite(signal?: AbortSignal): Promise<ConversationTextTokenizer> {
+  async function prepareIndexForWrite(
+    signal?: AbortSignal,
+  ): Promise<{ tokenizer: ConversationTextTokenizer; manifest: RecallIndexManifest }> {
     const actual = await readRecallIndexManifest(config.manifestPath);
     if (!actual && (existsSync(config.databasePath) || existsSync(config.statePath))) {
       throw new Error(
@@ -272,20 +279,27 @@ export function createRecallConversationService(
     } else {
       await writeRecallIndexManifest(config.manifestPath, expected);
     }
-    return tokenizer;
+    return { tokenizer, manifest: expected };
   }
 
   async function updateConversationIndex(
     store: ZvecConversationStore,
     tokenizer: ConversationTextTokenizer,
+    manifest: RecallIndexManifest,
     signal?: AbortSignal,
     onProgress?: (progress: ConversationIndexProgress) => void,
   ): Promise<ConversationIndexSummary> {
+    const embeddingCache = createEmbeddingVectorCache({
+      cacheDirectory: config.embeddingCacheDirectory,
+      identity: createEmbeddingVectorCacheIdentity(manifest),
+      embeddingRequestBatchSize: config.embeddingBatchSize,
+      embeddings,
+    });
     return indexChangedConversationSessions({
       sessionsDirectory: config.sessionsDirectory,
       statePath: config.statePath,
       store,
-      embeddings,
+      embeddingCache,
       tokenizer,
       ...(signal ? { signal } : {}),
       ...(onProgress ? { onProgress } : {}),
@@ -319,10 +333,21 @@ export function createRecallConversationService(
         const releaseLock = await acquireRecallConversationLock(config.lockPath, signal);
         let store: ZvecConversationStore | undefined;
         try {
-          const tokenizer = await prepareIndexForWrite(signal);
+          const preparedIndex = await prepareIndexForWrite(signal);
           store = openStore('write');
-          const indexSummary = await updateConversationIndex(store, tokenizer, signal, onProgress);
-          if (optimize && (indexSummary.embeddedChunks > 0 || indexSummary.deletedChunks > 0)) {
+          const indexSummary = await updateConversationIndex(
+            store,
+            preparedIndex.tokenizer,
+            preparedIndex.manifest,
+            signal,
+            onProgress,
+          );
+          if (
+            optimize &&
+            (indexSummary.cacheHits > 0 ||
+              indexSummary.newlyEmbeddedChunks > 0 ||
+              indexSummary.deletedChunks > 0)
+          ) {
             await store.optimize();
           }
           return { indexSummary, totalChunks: store.count() };

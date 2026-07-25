@@ -6,6 +6,10 @@ import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 
 import {
+  EMBEDDING_TEXT_NORMALIZATION_VERSION,
+  EMBEDDING_VECTOR_CACHE_VERSION,
+} from './embedding-vector-cache.js';
+import {
   OCTEN_TOKENIZER_IDENTITY,
   type ConversationTokenizerAssetIdentity,
 } from './octen-conversation-tokenizer.js';
@@ -211,11 +215,11 @@ export function createRecallIndexManifest(options: {
       maxTokens: 1_024,
       overlapTokens: 128,
       boundaryAlgorithm: 'markdown-structure-v1',
-      normalization: 'pi-visible-text-v1',
+      normalization: EMBEDDING_TEXT_NORMALIZATION_VERSION,
     },
     conversationSchemaVersion: SESSION_CONVERSATION_SCHEMA_VERSION,
     provenanceSchemaVersion: SESSION_CONVERSATION_SCHEMA_VERSION,
-    embeddingCacheVersion: 1,
+    embeddingCacheVersion: EMBEDDING_VECTOR_CACHE_VERSION,
     zvec: {
       schemaVersion: ZVEC_CONVERSATION_SCHEMA_VERSION,
       ftsConfigurationVersion: 1,

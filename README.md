@@ -10,11 +10,16 @@ The index contains:
 - assistant text;
 - visible custom messages;
 - compaction summaries;
-- branch summaries.
+- branch summaries;
+- tool names and argument objects;
+- tool result text, including errors, paths, identifiers, and URLs;
+- direct bash execution commands and outputs.
 
-Each atomic document comes from one visible text run in one session entry. A visible text run contains only adjacent, nonempty text blocks. Thinking, tools, results, images, empty blocks, roles, entries, and summaries all end a run, so excluded content can never create synthetic text adjacency.
+Atomic conversation documents come from one visible text run in one session entry. A visible text run contains only adjacent, nonempty text blocks. Thinking, tools, results, images, empty blocks, roles, entries, and summaries all end a conversation run, so boundaries cannot create synthetic text adjacency.
 
-Chunks use the exact pinned Octen tokenizer. Each chunk contains at most 1,024 tokens and overlaps its adjacent siblings by at most 128 tokens. Splitting prefers Markdown sections, paragraphs, fenced-code boundaries, lines, and sentences before a hard token cut.
+Tool calls, results, and direct bash executions follow a separate lexical-only evidence path. Names, compact JSON argument objects, result text, commands, and shell output are stored without redaction. Every document stays within one tool source block or bash message field and records its evidence part, tool name, available call linkage, error state, and source path. Thinking and images are never tool evidence.
+
+All evidence uses the exact pinned Octen tokenizer for bounded geometry. Conversation chunks contain at most 1,024 tokens and overlap adjacent siblings by at most 128 tokens. Tool evidence also contains at most 1,024 tokens, uses no overlap, and preserves every source character. Splitting prefers Markdown sections, paragraphs, fenced-code boundaries, lines, and sentences before a hard token cut.
 
 Every stored document includes:
 
@@ -58,11 +63,13 @@ The extension tells Pi to use `pi-session-recall` when a task depends on a past 
 
 ## Hybrid retrieval
 
-Each atomic conversation chunk is stored once with three searchable representations:
+Each atomic conversation or summary document is stored once with three searchable representations:
 
 - an Octen embedding queried by cosine distance, where lower is better;
 - ordinary zvec FTS using the standard tokenizer and lowercase filter, where higher is better;
 - case-preserving zvec FTS using the standard tokenizer without filters and requiring every query token, where higher is better.
+
+Tool evidence is stored only in the two FTS representations. Zvec 0.6.0 requires every row to contain a vector, so lexical-only rows receive a fixed zero sentinel generated inside the store; tool text is never sent to the embedding endpoint, and dense queries filter those rows out before ranking.
 
 Search asks each channel for a bounded candidate set, deduplicates identical document IDs, and applies application-side reciprocal rank fusion. A single double-quoted substring uses zvec phrase syntax, so its tokens must be adjacent and ordered even when the query includes surrounding prose. Fusion policy version 1 uses rank constant 60. Equal fused scores sort by document ID. The default cap is 40 candidates per channel; no channel accepts more than 200. Each response records the exact fusion version, constant, and channel caps it used.
 
@@ -174,7 +181,7 @@ A process-local mutex and PID-owned writer lock serialize explicit indexing. Sea
 
 The embedding cache is a sibling of zvec rather than part of the collection. Each entry has a versioned identity header, FP32 payload, and SHA-256 checksum. Writers fsync a unique temporary file and atomically rename it only after validation. Readers reject identity, dimension, byte-length, checksum, and non-finite-value failures. Rebuilding only zvec and index state leaves the cache available, so unchanged chunks need zero chunk-embedding requests. Index completion reports cache hits, newly embedded chunks, and chunk-embedding request count separately; the model-identity canary request is not a chunk-embedding request.
 
-Conversation text and vectors remain local. The extension sends text only to the configured embedding endpoint.
+Conversation text and vectors remain local. The extension sends dense-searchable conversation and summary text only to the configured embedding endpoint. Tool evidence remains lexical-only and is never sent for embedding.
 
 ## Develop
 

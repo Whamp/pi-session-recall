@@ -2,8 +2,8 @@ import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { createInterface } from 'node:readline';
 
-/** Version of the source and graph provenance stored on conversation documents. */
-export const SESSION_CONVERSATION_SCHEMA_VERSION = 2;
+/** Version of the source and graph provenance stored on recall evidence documents. */
+export const SESSION_CONVERSATION_SCHEMA_VERSION = 3;
 
 /** A Pi session ID that cannot be passed where a session entry ID is required. */
 export interface PiSessionId {
@@ -32,12 +32,20 @@ export interface SessionConversationChunkOptions {
   overlapTokens?: number;
 }
 
-/** A token-bounded conversation document with complete source and session-graph provenance. */
+/** A token-bounded recall evidence document with complete source and session-graph provenance. */
 export interface SessionConversationChunk {
   schemaVersion: number;
-  documentKind: 'conversation' | 'summary';
+  documentKind: 'conversation' | 'summary' | 'tool';
   summaryKind: 'compaction' | 'branch' | null;
-  evidenceKind: 'conversation' | 'compaction_summary' | 'branch_summary';
+  evidenceKind:
+    | 'conversation'
+    | 'compaction_summary'
+    | 'branch_summary'
+    | 'tool_call'
+    | 'tool_result'
+    | 'bash_execution';
+  evidencePart: 'content' | 'name' | 'arguments' | 'result' | 'command' | 'output';
+  isDenseSearchable: boolean;
   id: string;
   checksum: string;
   sessionId: PiSessionId;
@@ -57,7 +65,7 @@ export interface SessionConversationChunk {
   compactedByEntryIds: PiSessionEntryId[];
   compactionFirstKeptEntryId: PiSessionEntryId | null;
   branchSummaryFromEntryId: PiSessionEntryId | null;
-  role: 'user' | 'assistant' | 'summary' | 'custom';
+  role: 'user' | 'assistant' | 'summary' | 'custom' | 'tool';
   timestamp: string;
   sourceLineStart: number;
   sourceLineEnd: number;
@@ -110,6 +118,8 @@ interface ParsedSessionGraph {
   activeContextEntryIds: Set<string>;
   branchPathLeafIdsByEntryId: Map<string, string[]>;
   compactedByEntryIdsByEntryId: Map<string, string[]>;
+  toolCallEntryIdsByCallId: Map<string, string>;
+  toolResultEntryIdsByCallId: Map<string, string>;
   sessionName: string;
 }
 
@@ -164,8 +174,16 @@ interface PendingConversationDocument {
   documentKind: SessionConversationChunk['documentKind'];
   summaryKind: SessionConversationChunk['summaryKind'];
   evidenceKind: SessionConversationChunk['evidenceKind'];
+  evidencePart: SessionConversationChunk['evidencePart'];
+  isDenseSearchable: boolean;
   compactionFirstKeptEntryId: string | null;
   branchSummaryFromEntryId: string | null;
+  toolCallId: string | null;
+  toolName: string | null;
+  toolCallEntryId: string | null;
+  toolResultEntryId: string | null;
+  toolError: boolean | null;
+  preserveVerbatim: boolean;
   textRun: VisibleConversationTextRun;
 }
 
@@ -494,6 +512,40 @@ function readLatestSessionName(entries: ParsedSessionEntry[]): string {
   return sessionName;
 }
 
+function findSessionToolEntryLinks(entries: ParsedSessionEntry[]): {
+  toolCallEntryIdsByCallId: Map<string, string>;
+  toolResultEntryIdsByCallId: Map<string, string>;
+} {
+  const toolCallEntryIdsByCallId = new Map<string, string>();
+  const toolResultEntryIdsByCallId = new Map<string, string>();
+  for (const entry of entries) {
+    if (entry.type !== 'message' || !isUnknownRecord(entry.record.message)) {
+      continue;
+    }
+    const message = entry.record.message;
+    if (message.role === 'assistant' && Array.isArray(message.content)) {
+      for (const block of message.content) {
+        if (
+          isUnknownRecord(block) &&
+          block.type === 'toolCall' &&
+          typeof block.id === 'string' &&
+          block.id
+        ) {
+          toolCallEntryIdsByCallId.set(block.id, entry.id);
+        }
+      }
+    }
+    if (
+      message.role === 'toolResult' &&
+      typeof message.toolCallId === 'string' &&
+      message.toolCallId
+    ) {
+      toolResultEntryIdsByCallId.set(message.toolCallId, entry.id);
+    }
+  }
+  return { toolCallEntryIdsByCallId, toolResultEntryIdsByCallId };
+}
+
 async function readValidatedSessionGraph(sessionPath: string): Promise<ParsedSessionGraph> {
   const records = await readSessionFileRecords(sessionPath);
   const header = readSingleSessionHeader(records.headers, records.firstRecordLine, sessionPath);
@@ -509,6 +561,7 @@ async function readValidatedSessionGraph(sessionPath: string): Promise<ParsedSes
       ? readSessionEntryPath(currentLeafId, records.entriesById).map((entry) => entry.id)
       : [],
   );
+  const toolEntryLinks = findSessionToolEntryLinks(records.entries);
 
   return {
     header,
@@ -525,6 +578,7 @@ async function readValidatedSessionGraph(sessionPath: string): Promise<ParsedSes
       currentLeafId,
     ),
     compactedByEntryIdsByEntryId: findCompactedByEntryIds(records.entries, records.entriesById),
+    ...toolEntryLinks,
     sessionName: readLatestSessionName(records.entries),
   };
 }
@@ -853,6 +907,86 @@ function splitConversationTextByTokens(
   return spans;
 }
 
+function findTokenLimitedVerbatimEnd(
+  text: string,
+  start: number,
+  boundaries: number[],
+  tokenizer: ConversationTextTokenizer,
+  maxTokens: number,
+): number {
+  const startIndex = findBoundaryIndex(boundaries, start);
+  let low = startIndex + 1;
+  let high = boundaries.length - 1;
+  let acceptedIndex = startIndex;
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    const candidate = boundaries[middle];
+    if (candidate === undefined) {
+      high = middle - 1;
+      continue;
+    }
+    if (countConversationTokens(text.slice(start, candidate), tokenizer) <= maxTokens) {
+      acceptedIndex = middle;
+      low = middle + 1;
+    } else {
+      high = middle - 1;
+    }
+  }
+  const accepted = boundaries[acceptedIndex] ?? start;
+  if (accepted === start) {
+    throw new Error(
+      `Recall tool evidence cannot fit one Unicode character within maxTokens=${maxTokens}`,
+    );
+  }
+  return accepted;
+}
+
+function splitVerbatimToolEvidenceByTokens(
+  text: string,
+  tokenizer: ConversationTextTokenizer,
+  maxTokens: number,
+): ConversationChunkSpan[] {
+  if (!text || !text.trim()) {
+    return [];
+  }
+  const boundaries = createUnicodeCharacterBoundaries(text);
+  const spans: ConversationChunkSpan[] = [];
+  let characterStart = 0;
+  let tokenStart = 0;
+  while (characterStart < text.length) {
+    const hardEnd = findTokenLimitedVerbatimEnd(
+      text,
+      characterStart,
+      boundaries,
+      tokenizer,
+      maxTokens,
+    );
+    const characterEnd =
+      hardEnd < text.length
+        ? findNaturalConversationBoundary(text, characterStart, hardEnd)
+        : hardEnd;
+    const content = text.slice(characterStart, characterEnd);
+    const tokenCount = countConversationTokens(content, tokenizer);
+    if (tokenCount > maxTokens) {
+      throw new Error(
+        `Recall tool evidence emitted ${tokenCount} tokens, exceeding maxTokens=${maxTokens}`,
+      );
+    }
+    spans.push({
+      characterStart,
+      characterEnd,
+      tokenStart,
+      tokenEnd: tokenStart + tokenCount,
+      tokenCount,
+      overlapTokenCount: 0,
+      content,
+    });
+    characterStart = characterEnd;
+    tokenStart += tokenCount;
+  }
+  return spans;
+}
+
 function createConversationTextDocuments(
   entry: ParsedSessionEntry,
   role: 'user' | 'assistant' | 'custom',
@@ -864,8 +998,16 @@ function createConversationTextDocuments(
     documentKind: 'conversation',
     summaryKind: null,
     evidenceKind: 'conversation',
+    evidencePart: 'content',
+    isDenseSearchable: true,
     compactionFirstKeptEntryId: null,
     branchSummaryFromEntryId: null,
+    toolCallId: null,
+    toolName: null,
+    toolCallEntryId: null,
+    toolResultEntryId: null,
+    toolError: null,
+    preserveVerbatim: false,
     textRun,
   }));
 }
@@ -885,6 +1027,8 @@ function createSummaryTextDocument(
       documentKind: 'summary',
       summaryKind,
       evidenceKind: summaryKind === 'compaction' ? 'compaction_summary' : 'branch_summary',
+      evidencePart: 'content',
+      isDenseSearchable: true,
       compactionFirstKeptEntryId:
         summaryKind === 'compaction' && typeof entry.record.firstKeptEntryId === 'string'
           ? entry.record.firstKeptEntryId
@@ -893,6 +1037,12 @@ function createSummaryTextDocument(
         summaryKind === 'branch' && typeof entry.record.fromId === 'string'
           ? entry.record.fromId
           : null,
+      toolCallId: null,
+      toolName: null,
+      toolCallEntryId: null,
+      toolResultEntryId: null,
+      toolError: null,
+      preserveVerbatim: false,
       textRun: {
         text,
         textRunIndex: 0,
@@ -903,6 +1053,171 @@ function createSummaryTextDocument(
   ];
 }
 
+function createToolCallDocuments(
+  graph: ParsedSessionGraph,
+  entry: ParsedSessionEntry,
+  content: unknown,
+): PendingConversationDocument[] {
+  if (!Array.isArray(content)) {
+    return [];
+  }
+  return content.flatMap((block, blockIndex) => {
+    if (
+      !isUnknownRecord(block) ||
+      block.type !== 'toolCall' ||
+      typeof block.id !== 'string' ||
+      !block.id ||
+      typeof block.name !== 'string' ||
+      !block.name
+    ) {
+      return [];
+    }
+    const serializedArguments = JSON.stringify(block.arguments);
+    const resultEntryId = graph.toolResultEntryIdsByCallId.get(block.id) ?? null;
+    const baseDocument = {
+      entry,
+      role: 'tool' as const,
+      documentKind: 'tool' as const,
+      summaryKind: null,
+      evidenceKind: 'tool_call' as const,
+      isDenseSearchable: false,
+      compactionFirstKeptEntryId: null,
+      branchSummaryFromEntryId: null,
+      toolCallId: block.id,
+      toolName: block.name,
+      toolCallEntryId: entry.id,
+      toolResultEntryId: resultEntryId,
+      toolError: null,
+      preserveVerbatim: true,
+    };
+    const documents: PendingConversationDocument[] = [
+      {
+        ...baseDocument,
+        evidencePart: 'name',
+        textRun: {
+          text: block.name,
+          textRunIndex: blockIndex * 2,
+          sourceBlockStart: blockIndex,
+          sourceBlockEnd: blockIndex,
+        },
+      },
+    ];
+    if (serializedArguments !== undefined) {
+      documents.push({
+        ...baseDocument,
+        evidencePart: 'arguments',
+        textRun: {
+          text: serializedArguments,
+          textRunIndex: blockIndex * 2 + 1,
+          sourceBlockStart: blockIndex,
+          sourceBlockEnd: blockIndex,
+        },
+      });
+    }
+    return documents;
+  });
+}
+
+function createToolResultDocuments(
+  graph: ParsedSessionGraph,
+  entry: ParsedSessionEntry,
+  message: Record<string, unknown>,
+): PendingConversationDocument[] {
+  if (
+    typeof message.toolCallId !== 'string' ||
+    !message.toolCallId ||
+    typeof message.toolName !== 'string' ||
+    !message.toolName ||
+    !Array.isArray(message.content)
+  ) {
+    return [];
+  }
+  const toolCallId = message.toolCallId;
+  const toolName = message.toolName;
+  const callEntryId = graph.toolCallEntryIdsByCallId.get(toolCallId) ?? null;
+  return message.content.flatMap((block, blockIndex) => {
+    if (
+      !isUnknownRecord(block) ||
+      block.type !== 'text' ||
+      typeof block.text !== 'string' ||
+      !block.text.trim()
+    ) {
+      return [];
+    }
+    return [
+      {
+        entry,
+        role: 'tool',
+        documentKind: 'tool',
+        summaryKind: null,
+        evidenceKind: 'tool_result',
+        evidencePart: 'result',
+        isDenseSearchable: false,
+        compactionFirstKeptEntryId: null,
+        branchSummaryFromEntryId: null,
+        toolCallId,
+        toolName,
+        toolCallEntryId: callEntryId,
+        toolResultEntryId: entry.id,
+        toolError: typeof message.isError === 'boolean' ? message.isError : null,
+        preserveVerbatim: true,
+        textRun: {
+          text: block.text,
+          textRunIndex: blockIndex,
+          sourceBlockStart: blockIndex,
+          sourceBlockEnd: blockIndex,
+        },
+      } satisfies PendingConversationDocument,
+    ];
+  });
+}
+
+function createBashExecutionDocuments(
+  entry: ParsedSessionEntry,
+  message: Record<string, unknown>,
+): PendingConversationDocument[] {
+  let isError: boolean | null = null;
+  if (message.cancelled === true) {
+    isError = true;
+  } else if (typeof message.exitCode === 'number') {
+    isError = message.exitCode !== 0;
+  }
+  const evidenceParts = [
+    { evidencePart: 'command' as const, text: message.command, textRunIndex: 0 },
+    { evidencePart: 'output' as const, text: message.output, textRunIndex: 1 },
+  ];
+  return evidenceParts.flatMap(({ evidencePart, text, textRunIndex }) => {
+    if (typeof text !== 'string' || !text.trim()) {
+      return [];
+    }
+    return [
+      {
+        entry,
+        role: 'tool',
+        documentKind: 'tool',
+        summaryKind: null,
+        evidenceKind: 'bash_execution',
+        evidencePart,
+        isDenseSearchable: false,
+        compactionFirstKeptEntryId: null,
+        branchSummaryFromEntryId: null,
+        toolCallId: null,
+        toolName: 'bash',
+        toolCallEntryId: null,
+        toolResultEntryId: null,
+        toolError: isError,
+        preserveVerbatim: true,
+        textRun: {
+          text,
+          textRunIndex,
+          sourceBlockStart: null,
+          sourceBlockEnd: null,
+        },
+      } satisfies PendingConversationDocument,
+    ];
+  });
+}
+
 function createPendingConversationDocuments(
   graph: ParsedSessionGraph,
 ): PendingConversationDocument[] {
@@ -910,7 +1225,18 @@ function createPendingConversationDocuments(
     if (entry.type === 'message' && isUnknownRecord(entry.record.message)) {
       const message = entry.record.message;
       if (message.role === 'user' || message.role === 'assistant') {
-        return createConversationTextDocuments(entry, message.role, message.content);
+        return [
+          ...createConversationTextDocuments(entry, message.role, message.content),
+          ...(message.role === 'assistant'
+            ? createToolCallDocuments(graph, entry, message.content)
+            : []),
+        ];
+      }
+      if (message.role === 'toolResult') {
+        return createToolResultDocuments(graph, entry, message);
+      }
+      if (message.role === 'bashExecution') {
+        return createBashExecutionDocuments(entry, message);
       }
       return [];
     }
@@ -934,14 +1260,16 @@ function createSessionConversationChunks(
   const { graph } = context;
   const entryId = createPiSessionEntryId(pending.entry.id);
   const textRunId = hashConversationValue(
-    `${SESSION_CONVERSATION_SCHEMA_VERSION}\0${graph.header.id}\0${pending.entry.id}\0${pending.textRun.textRunIndex}`,
+    `${SESSION_CONVERSATION_SCHEMA_VERSION}\0${graph.header.id}\0${pending.entry.id}\0${pending.evidenceKind}\0${pending.evidencePart}\0${pending.textRun.textRunIndex}`,
   ).slice(0, 40);
-  const chunkSpans = splitConversationTextByTokens(
-    pending.textRun.text,
-    context.tokenizer,
-    context.maxTokens,
-    context.overlapTokens,
-  );
+  const chunkSpans = pending.preserveVerbatim
+    ? splitVerbatimToolEvidenceByTokens(pending.textRun.text, context.tokenizer, context.maxTokens)
+    : splitConversationTextByTokens(
+        pending.textRun.text,
+        context.tokenizer,
+        context.maxTokens,
+        context.overlapTokens,
+      );
   const chunkIds = chunkSpans.map((span) =>
     hashConversationValue(
       `${SESSION_CONVERSATION_SCHEMA_VERSION}\0${textRunId}\0${span.characterStart}\0${span.characterEnd}`,
@@ -967,6 +1295,8 @@ function createSessionConversationChunks(
       documentKind: pending.documentKind,
       summaryKind: pending.summaryKind,
       evidenceKind: pending.evidenceKind,
+      evidencePart: pending.evidencePart,
+      isDenseSearchable: pending.isDenseSearchable,
       id,
       checksum: hashConversationValue(span.content),
       sessionId: context.sessionId,
@@ -1015,18 +1345,22 @@ function createSessionConversationChunks(
       siblingIds,
       previousSiblingId,
       nextSiblingId,
-      toolCallId: null,
-      toolName: null,
-      toolCallEntryId: null,
-      toolResultEntryId: null,
-      toolError: null,
+      toolCallId: pending.toolCallId,
+      toolName: pending.toolName,
+      toolCallEntryId: pending.toolCallEntryId
+        ? createPiSessionEntryId(pending.toolCallEntryId)
+        : null,
+      toolResultEntryId: pending.toolResultEntryId
+        ? createPiSessionEntryId(pending.toolResultEntryId)
+        : null,
+      toolError: pending.toolError,
       content: span.content,
     };
   });
 }
 
 /**
- * Reads structurally bounded, exact-token conversation chunks from one validated Pi session graph.
+ * Reads structurally bounded, exact-token conversation and lexical-only tool evidence from one validated Pi session graph.
  * Source lines are one-based; block indexes are inclusive; character spans are half-open UTF-16
  * offsets; token spans are logical exact-token offsets whose sibling intersections equal overlap.
  */

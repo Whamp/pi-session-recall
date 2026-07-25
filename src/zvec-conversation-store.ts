@@ -29,7 +29,7 @@ import type {
 } from './session-conversation-index.js';
 
 /** Version of the scalar/vector schema persisted in the zvec collection. */
-export const ZVEC_CONVERSATION_SCHEMA_VERSION = 3;
+export const ZVEC_CONVERSATION_SCHEMA_VERSION = 4;
 
 /** Version of ordinary and case-preserving full text search (FTS) fields in zvec. */
 export const ZVEC_FTS_CONFIGURATION_VERSION = 2;
@@ -43,14 +43,26 @@ export const ZVEC_HNSW_EF_CONSTRUCTION = 500;
 /** Pinned HNSW query candidate count used by dense conversation search. */
 export const ZVEC_HNSW_EF_SEARCH = 300;
 
-/** A conversation chunk paired with the local embedding persisted in zvec. */
+/** A dense-searchable recall document paired with its local embedding. */
 export interface EmbeddedSessionConversationChunk extends SessionConversationChunk {
+  isDenseSearchable: true;
   embedding: number[];
 }
 
-/** The narrow persistence contract required by incremental conversation indexing. */
+/** A lexical-only recall document that must never carry an embedding. */
+export interface LexicalSessionConversationChunk extends SessionConversationChunk {
+  isDenseSearchable: false;
+  embedding?: never;
+}
+
+/** One recall document ready for dense-and-lexical or lexical-only persistence. */
+export type IndexedSessionConversationChunk =
+  | EmbeddedSessionConversationChunk
+  | LexicalSessionConversationChunk;
+
+/** The narrow persistence contract required by incremental recall evidence indexing. */
 export interface ConversationChunkStore {
-  upsertChunks(chunks: EmbeddedSessionConversationChunk[]): void;
+  upsertChunks(chunks: IndexedSessionConversationChunk[]): void;
   deleteChunks(ids: string[]): void;
   fetchChecksums(ids: string[]): Map<string, string>;
 }
@@ -80,6 +92,8 @@ const RECALL_FIELD_SCHEMAS: ZVecFieldSchema[] = [
   { name: 'documentKind', dataType: ZVecDataType.STRING },
   { name: 'summaryKind', dataType: ZVecDataType.STRING },
   { name: 'evidenceKind', dataType: ZVecDataType.STRING },
+  { name: 'evidencePart', dataType: ZVecDataType.STRING },
+  { name: 'isDenseSearchable', dataType: ZVecDataType.BOOL },
   { name: 'checksum', dataType: ZVecDataType.STRING },
   { name: 'sessionId', dataType: ZVecDataType.STRING },
   { name: 'sessionPath', dataType: ZVecDataType.STRING },
@@ -156,6 +170,8 @@ function serializeConversationChunk(chunk: SessionConversationChunk): Record<str
     documentKind: chunk.documentKind,
     summaryKind: chunk.summaryKind ?? '',
     evidenceKind: chunk.evidenceKind,
+    evidencePart: chunk.evidencePart,
+    isDenseSearchable: chunk.isDenseSearchable,
     checksum: chunk.checksum,
     sessionId: chunk.sessionId.value,
     sessionPath: chunk.sessionPath,
@@ -244,7 +260,7 @@ function parseNullableEntryId(value: string): PiSessionEntryId | null {
 }
 
 function parseRecallDocumentKind(value: string): SessionConversationChunk['documentKind'] {
-  if (value === 'conversation' || value === 'summary') {
+  if (value === 'conversation' || value === 'summary' || value === 'tool') {
     return value;
   }
   throw new Error(`Recall zvec documentKind invalid: ${value}`);
@@ -261,14 +277,41 @@ function parseRecallSummaryKind(value: string): SessionConversationChunk['summar
 }
 
 function parseRecallEvidenceKind(value: string): SessionConversationChunk['evidenceKind'] {
-  if (value === 'conversation' || value === 'compaction_summary' || value === 'branch_summary') {
+  if (
+    value === 'conversation' ||
+    value === 'compaction_summary' ||
+    value === 'branch_summary' ||
+    value === 'tool_call' ||
+    value === 'tool_result' ||
+    value === 'bash_execution'
+  ) {
     return value;
   }
   throw new Error(`Recall zvec evidenceKind invalid: ${value}`);
 }
 
+function parseRecallEvidencePart(value: string): SessionConversationChunk['evidencePart'] {
+  if (
+    value === 'content' ||
+    value === 'name' ||
+    value === 'arguments' ||
+    value === 'result' ||
+    value === 'command' ||
+    value === 'output'
+  ) {
+    return value;
+  }
+  throw new Error(`Recall zvec evidencePart invalid: ${value}`);
+}
+
 function parseRecallConversationRole(value: string): SessionConversationChunk['role'] {
-  if (value === 'user' || value === 'assistant' || value === 'summary' || value === 'custom') {
+  if (
+    value === 'user' ||
+    value === 'assistant' ||
+    value === 'summary' ||
+    value === 'custom' ||
+    value === 'tool'
+  ) {
     return value;
   }
   throw new Error(`Recall zvec role invalid: ${value}`);
@@ -298,6 +341,8 @@ function deserializeConversationChunk(doc: ZVecDoc): SessionConversationChunk {
     documentKind: parseRecallDocumentKind(readStringField(fields, 'documentKind')),
     summaryKind: parseRecallSummaryKind(readStringField(fields, 'summaryKind')),
     evidenceKind: parseRecallEvidenceKind(readStringField(fields, 'evidenceKind')),
+    evidencePart: parseRecallEvidencePart(readStringField(fields, 'evidencePart')),
+    isDenseSearchable: readBooleanField(fields, 'isDenseSearchable'),
     id: doc.id,
     checksum: readStringField(fields, 'checksum'),
     sessionId: { value: readStringField(fields, 'sessionId') } satisfies PiSessionId,
@@ -384,7 +429,7 @@ function createRecallFullTextQuery(query: string): ZVecFtsQuery {
   return { matchString: query };
 }
 
-/** Opens the durable zvec collection that stores embedded Pi conversation chunks. */
+/** Opens the durable zvec collection for dense-and-lexical and lexical-only recall evidence. */
 export function openZvecConversationStore(config: {
   databasePath: string;
   dimensions: number;
@@ -459,11 +504,21 @@ export function openZvecConversationStore(config: {
         return;
       }
       collection.upsertSync(
-        chunks.map(({ embedding, ...chunk }) => ({
-          id: chunk.id,
-          vectors: { embedding },
-          fields: serializeConversationChunk(chunk),
-        })),
+        chunks.map((indexedChunk) => {
+          if (indexedChunk.isDenseSearchable) {
+            const { embedding, ...chunk } = indexedChunk;
+            return {
+              id: chunk.id,
+              vectors: { embedding },
+              fields: serializeConversationChunk(chunk),
+            };
+          }
+          return {
+            id: indexedChunk.id,
+            vectors: { embedding: new Array<number>(storedDimensions).fill(0) },
+            fields: serializeConversationChunk(indexedChunk),
+          };
+        }),
       );
     },
     deleteChunks(ids) {
@@ -480,6 +535,7 @@ export function openZvecConversationStore(config: {
           topk: limit,
           outputFields: RECALL_OUTPUT_FIELDS,
           includeVector: false,
+          filter: 'isDenseSearchable = true',
           params: { indexType: ZVecIndexType.HNSW, ef: ZVEC_HNSW_EF_SEARCH },
         })
         .map((doc) => ({

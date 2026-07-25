@@ -10,7 +10,10 @@ import {
   readSessionConversationChunks,
   type ConversationTextTokenizer,
 } from './session-conversation-index.js';
-import type { ConversationChunkStore } from './zvec-conversation-store.js';
+import type {
+  ConversationChunkStore,
+  IndexedSessionConversationChunk,
+} from './zvec-conversation-store.js';
 
 const conversationIndexStateSchema = Type.Object({
   version: Type.Literal(1),
@@ -40,7 +43,7 @@ interface ConversationIndexState {
   sessions: Record<string, IndexedSessionState>;
 }
 
-/** Progress from scanning session files before embedding changed conversation chunks. */
+/** Progress from scanning session files before indexing changed recall evidence. */
 export interface ConversationIndexProgress {
   scannedSessions: number;
   totalSessions: number;
@@ -147,7 +150,7 @@ function throwIfIndexingAborted(signal: AbortSignal | undefined): void {
   }
 }
 
-/** Incrementally embeds changed Pi sessions and removes vectors for deleted session files. */
+/** Incrementally indexes changed Pi sessions while embedding only dense-searchable evidence. */
 export async function indexChangedConversationSessions(
   options: IncrementalSessionIndexerOptions,
 ): Promise<ConversationIndexSummary> {
@@ -218,19 +221,24 @@ export async function indexChangedConversationSessions(
     );
     for (let start = 0; start < changedChunks.length; start += 128) {
       const chunkBatch = changedChunks.slice(start, start + 128);
+      const denseChunkBatch = chunkBatch.filter((chunk) => chunk.isDenseSearchable);
       const cacheResult = await options.embeddingCache.resolveEmbeddingVectors(
-        chunkBatch.map((chunk) => chunk.content),
+        denseChunkBatch.map((chunk) => chunk.content),
         options.signal,
       );
-      options.store.upsertChunks(
-        chunkBatch.map((chunk, index) => {
-          const embedding = cacheResult.vectors[index];
-          if (!embedding) {
-            throw new Error(`Recall embedding missing for conversation chunk ${chunk.id}`);
-          }
-          return { ...chunk, embedding };
-        }),
-      );
+      let denseChunkIndex = 0;
+      const indexedChunks: IndexedSessionConversationChunk[] = chunkBatch.map((chunk) => {
+        if (!chunk.isDenseSearchable) {
+          return { ...chunk, isDenseSearchable: false };
+        }
+        const embedding = cacheResult.vectors[denseChunkIndex];
+        denseChunkIndex += 1;
+        if (!embedding) {
+          throw new Error(`Recall embedding missing for conversation chunk ${chunk.id}`);
+        }
+        return { ...chunk, isDenseSearchable: true, embedding };
+      });
+      options.store.upsertChunks(indexedChunks);
       summary.cacheHits += cacheResult.cacheHits;
       summary.newlyEmbeddedChunks += cacheResult.newlyEmbeddedChunks;
       summary.embeddingRequestCount += cacheResult.embeddingRequestCount;

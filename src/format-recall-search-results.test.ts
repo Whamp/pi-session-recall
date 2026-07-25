@@ -5,10 +5,12 @@ import { formatRecallSearchResults } from './format-recall-search-results.js';
 import type { RecallSearchResult } from './fuse-recall-search-candidates.js';
 
 const result = {
-  schemaVersion: 2,
+  schemaVersion: 3,
   documentKind: 'conversation',
   summaryKind: null,
   evidenceKind: 'conversation',
+  evidencePart: 'content',
+  isDenseSearchable: true,
   id: 'chunk-1',
   checksum: 'sum-1',
   sessionId: { value: 'session-1' },
@@ -82,4 +84,38 @@ void test('recall results include concise excerpts and exact source provenance',
   assert.match(output, /…/);
   assert.ok(!output.includes('Incremental index'));
   assert.ok(!output.includes('checksum'));
+});
+
+void test('tool evidence results identify the exact call relationship and source', () => {
+  const toolResult = {
+    ...result,
+    documentKind: 'tool',
+    evidenceKind: 'tool_result',
+    evidencePart: 'result',
+    isDenseSearchable: false,
+    id: 'tool-result-chunk',
+    entryId: { value: 'result-entry' },
+    role: 'tool',
+    toolCallId: 'call-tools',
+    toolName: 'bash',
+    toolCallEntryId: { value: 'call-entry' },
+    toolResultEntryId: { value: 'result-entry' },
+    toolError: true,
+    content: 'EPERM readNodeErrorCode /tmp/locked-file',
+    dense: null,
+  } satisfies RecallSearchResult;
+
+  const output = formatRecallSearchResults({
+    totalChunks: 1,
+    results: [toolResult],
+    searchPolicy: {
+      rankFusionVersion: 1,
+      reciprocalRankConstant: 60,
+      candidateLimits: { dense: 40, lexical: 40, identifier: 40 },
+    },
+  });
+
+  assert.match(output, /tool · tool_result\/result · bash · call call-tools · error/);
+  assert.match(output, /Call source: call-entry · Result source: result-entry/);
+  assert.match(output, /Source: \/sessions\/one\.jsonl#result-entry/);
 });

@@ -32,6 +32,14 @@ _Avoid_: Message text, joined content
 A token-bounded part of one visible text run. It never crosses an entry, role, run, tool, thinking, image, result, or summary boundary.
 _Avoid_: Character chunk, transcript chunk
 
+**Tool evidence document**:
+A lexical-only, verbatim tool name, argument object, result text, or direct bash command/output part bounded within one source block or message field. Tool calls and results are linked by call ID. Tool evidence is never sent to the embedding model.
+_Avoid_: Tool transcript, conversation chunk
+
+**Evidence part**:
+The source component represented by one document: conversation or summary content, tool name, tool arguments, tool result, bash command, or bash output.
+_Avoid_: Chunk type
+
 **Dense candidate**:
 An atomic conversation chunk surfaced because its meaning is close to the search query.
 _Avoid_: Semantic result
@@ -45,7 +53,7 @@ An atomic conversation chunk surfaced by case-preserving retrieval of identifier
 _Avoid_: Exact result
 
 **Hybrid recall result**:
-One source document deduplicated across retrieval channels, with each component rank and score retained.
+One conversation, summary, or tool evidence document deduplicated across retrieval channels, with its document kind and each component rank and score retained.
 _Avoid_: Semantic match
 
 **Index manifest**:

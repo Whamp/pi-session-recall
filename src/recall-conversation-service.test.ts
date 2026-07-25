@@ -269,6 +269,121 @@ void test('recall service fuses bounded dense, lexical, and identifier candidate
   );
 });
 
+void test('recall service fuses lexical-only tool evidence with dense conversation results', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-service-tool-evidence-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionsDirectory = join(directory, 'sessions');
+  await mkdir(sessionsDirectory);
+  const sessionPath = join(sessionsDirectory, 'tools.jsonl');
+  const conversationContent = 'We diagnosed a file permission failure.';
+  const toolCommand = 'cat /tmp/locked-file';
+  const toolResult =
+    'EPERM readNodeErrorCode /tmp/locked-file https://example.test/failure?id=EPERM';
+  await writeFile(
+    sessionPath,
+    [
+      {
+        type: 'session',
+        version: 3,
+        id: 'tool-session',
+        timestamp: '2026-07-24T10:00:00Z',
+        cwd: '/tool-project',
+      },
+      {
+        type: 'message',
+        id: 'assistant-tools',
+        parentId: null,
+        timestamp: '2026-07-24T10:01:00Z',
+        message: {
+          role: 'assistant',
+          content: [
+            { type: 'text', text: conversationContent },
+            { type: 'thinking', thinking: 'never retrieve this private plan' },
+            {
+              type: 'toolCall',
+              id: 'call-tools',
+              name: 'bash',
+              arguments: { command: toolCommand },
+            },
+          ],
+        },
+      },
+      {
+        type: 'message',
+        id: 'result-tools',
+        parentId: 'assistant-tools',
+        timestamp: '2026-07-24T10:02:00Z',
+        message: {
+          role: 'toolResult',
+          toolCallId: 'call-tools',
+          toolName: 'bash',
+          content: [{ type: 'text', text: toolResult }],
+          isError: true,
+        },
+      },
+    ]
+      .map((entry) => JSON.stringify(entry))
+      .join('\n') + '\n',
+  );
+  const embeddedInputs: string[] = [];
+  const service = createRecallConversationService(createTestConfig(directory, sessionsDirectory), {
+    embeddings: {
+      async embedTexts(texts) {
+        embeddedInputs.push(...texts);
+        return texts.map((text) => (text === RECALL_EMBEDDING_CANARY_TEXT ? [0, 0, 1] : [1, 0, 0]));
+      },
+    },
+    async loadTokenizer() {
+      return tokenizer;
+    },
+  });
+
+  const indexed = await service.index();
+  const exactError = await service.search('EPERM readNodeErrorCode', 2);
+  const toolEvidence = exactError.results.find((result) => result.documentKind === 'tool');
+  const conversation = exactError.results.find((result) => result.documentKind === 'conversation');
+
+  assert.equal(indexed.totalChunks, 4);
+  assert.equal(indexed.indexSummary.newlyEmbeddedChunks, 1);
+  assert.ok(toolEvidence);
+  assert.equal(toolEvidence.entryId.value, 'result-tools');
+  assert.equal(toolEvidence.evidenceKind, 'tool_result');
+  assert.equal(toolEvidence.evidencePart, 'result');
+  assert.equal(toolEvidence.toolCallId, 'call-tools');
+  assert.equal(toolEvidence.toolName, 'bash');
+  assert.equal(toolEvidence.toolCallEntryId?.value, 'assistant-tools');
+  assert.equal(toolEvidence.toolResultEntryId?.value, 'result-tools');
+  assert.equal(toolEvidence.toolError, true);
+  assert.equal(toolEvidence.sessionPath, sessionPath);
+  assert.equal(toolEvidence.dense, null);
+  assert.equal(toolEvidence.lexical?.rank, 1);
+  assert.equal(toolEvidence.identifier?.rank, 1);
+  assert.ok(conversation?.dense);
+  assert.equal(conversation?.documentKind, 'conversation');
+  assert.deepEqual(embeddedInputs, [
+    RECALL_EMBEDDING_CANARY_TEXT,
+    conversationContent,
+    'EPERM readNodeErrorCode',
+  ]);
+
+  const exactCommand = await service.search(toolCommand, 2);
+  const callArguments = exactCommand.results.find((result) => result.evidencePart === 'arguments');
+  assert.equal(callArguments?.content, `{"command":"${toolCommand}"}`);
+  assert.equal(callArguments?.toolResultEntryId?.value, 'result-tools');
+  assert.ok(exactCommand.results.every((result) => !result.content.includes('private plan')));
+
+  const exactUrl = await service.search('https://example.test/failure?id=EPERM', 2);
+  assert.equal(
+    exactUrl.results.find((result) => result.evidencePart === 'result')?.content,
+    toolResult,
+  );
+  const exactToolName = await service.search('bash', 2);
+  assert.equal(
+    exactToolName.results.find((result) => result.evidencePart === 'name')?.content,
+    'bash',
+  );
+});
+
 void test('fresh zvec rebuild reuses unchanged cached chunk vectors without embedding requests', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'recall-service-cache-rebuild-'));
   t.after(() => rm(directory, { recursive: true, force: true }));

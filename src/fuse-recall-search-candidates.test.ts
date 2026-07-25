@@ -6,10 +6,12 @@ import type { SessionConversationChunk } from './session-conversation-index.js';
 
 function createTestConversationChunk(id: string): SessionConversationChunk {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     documentKind: 'conversation',
     summaryKind: null,
     evidenceKind: 'conversation',
+    evidencePart: 'content',
+    isDenseSearchable: true,
     id,
     checksum: `checksum-${id}`,
     sessionId: { value: 'session-1' },

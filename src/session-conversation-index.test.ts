@@ -170,9 +170,10 @@ void test('session chunking preserves tool boundaries and overlaps only within t
     maxTokens: 5,
     overlapTokens: 1,
   });
+  const conversationChunks = chunks.filter((chunk) => chunk.documentKind === 'conversation');
 
   assert.deepEqual(
-    chunks.map(({ textRunIndex, content }) => ({ textRunIndex, content })),
+    conversationChunks.map(({ textRunIndex, content }) => ({ textRunIndex, content })),
     [
       { textRunIndex: 0, content: 'one two three four five' },
       { textRunIndex: 0, content: 'five six seven' },
@@ -183,17 +184,178 @@ void test('session chunking preserves tool boundaries and overlaps only within t
   );
   assert.ok(chunks.every((chunk) => chunk.tokenCount <= 5));
   assert.deepEqual(
-    chunks.map((chunk) => chunk.overlapTokenCount),
+    conversationChunks.map((chunk) => chunk.overlapTokenCount),
     [0, 1, 0, 1, 0],
   );
-  for (const chunk of chunks) {
+  for (const chunk of conversationChunks) {
     assert.equal(chunk.siblingIds.length, chunk.chunkCount - 1);
     assert.ok(chunk.siblingIds.every((id) => id !== chunk.id));
     if (chunk.previousSiblingId) {
-      const previous = chunks.find((candidate) => candidate.id === chunk.previousSiblingId);
+      const previous = conversationChunks.find(
+        (candidate) => candidate.id === chunk.previousSiblingId,
+      );
       assert.equal(chunk.tokenStart, (previous?.tokenEnd ?? 0) - chunk.overlapTokenCount);
     }
   }
+});
+
+void test('session chunks index bounded verbatim tool evidence with exact call provenance', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-tool-evidence-'));
+  const sessionPath = join(directory, 'session.jsonl');
+  const toolOutput = 'EPERM readNodeErrorCode /tmp/locked-file\nsecond output line';
+  await writeFile(
+    sessionPath,
+    [
+      {
+        type: 'session',
+        version: 3,
+        id: 'session-tools',
+        timestamp: '2026-07-24T10:00:00Z',
+        cwd: '/project',
+      },
+      {
+        type: 'message',
+        id: 'assistant-tools',
+        parentId: null,
+        timestamp: '2026-07-24T10:01:00Z',
+        message: {
+          role: 'assistant',
+          content: [
+            { type: 'thinking', thinking: 'never index this private tool plan' },
+            {
+              type: 'toolCall',
+              id: 'call-tools',
+              name: 'bash',
+              arguments: {
+                command: 'cat /tmp/locked-file',
+                url: 'https://example.test/tool-output?id=EPERM',
+              },
+            },
+          ],
+        },
+      },
+      {
+        type: 'message',
+        id: 'result-tools',
+        parentId: 'assistant-tools',
+        timestamp: '2026-07-24T10:02:00Z',
+        message: {
+          role: 'toolResult',
+          toolCallId: 'call-tools',
+          toolName: 'bash',
+          content: [
+            { type: 'text', text: toolOutput },
+            { type: 'image', data: 'ignored', mimeType: 'image/png' },
+            { type: 'text', text: 'final result URL https://example.test/final' },
+          ],
+          isError: true,
+        },
+      },
+    ]
+      .map((entry) => JSON.stringify(entry))
+      .join('\n') + '\n',
+  );
+
+  const chunks = await readSessionConversationChunks(sessionPath, {
+    tokenizer: createWhitespaceConversationTokenizer(),
+    maxTokens: 4,
+    overlapTokens: 1,
+  });
+  const toolChunks = chunks.filter((chunk) => chunk.documentKind === 'tool');
+  const callChunks = toolChunks.filter((chunk) => chunk.evidenceKind === 'tool_call');
+  const resultChunks = toolChunks.filter((chunk) => chunk.evidenceKind === 'tool_result');
+
+  assert.deepEqual(
+    callChunks.map((chunk) => chunk.evidencePart),
+    ['name', 'arguments'],
+  );
+  assert.equal(callChunks[0]?.content, 'bash');
+  assert.equal(
+    callChunks[1]?.content,
+    '{"command":"cat /tmp/locked-file","url":"https://example.test/tool-output?id=EPERM"}',
+  );
+  assert.equal(
+    resultChunks.map((chunk) => chunk.content).join(''),
+    toolOutput + 'final result URL https://example.test/final',
+  );
+  assert.ok(toolChunks.every((chunk) => chunk.isDenseSearchable === false));
+  assert.ok(toolChunks.every((chunk) => chunk.tokenCount <= 4));
+  assert.ok(toolChunks.every((chunk) => chunk.overlapTokenCount === 0));
+  assert.ok(toolChunks.every((chunk) => chunk.toolCallId === 'call-tools'));
+  assert.ok(toolChunks.every((chunk) => chunk.toolName === 'bash'));
+  assert.ok(callChunks.every((chunk) => chunk.toolCallEntryId?.value === 'assistant-tools'));
+  assert.ok(callChunks.every((chunk) => chunk.toolResultEntryId?.value === 'result-tools'));
+  assert.ok(resultChunks.every((chunk) => chunk.toolCallEntryId?.value === 'assistant-tools'));
+  assert.ok(resultChunks.every((chunk) => chunk.toolResultEntryId?.value === 'result-tools'));
+  assert.ok(callChunks.every((chunk) => chunk.sourceBlockStart === 1));
+  assert.deepEqual([...new Set(resultChunks.map((chunk) => chunk.sourceBlockStart))], [0, 2]);
+  assert.ok(chunks.every((chunk) => !chunk.content.includes('private tool plan')));
+});
+
+void test('session chunks index direct bash commands and outputs as lexical-only evidence', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-bash-evidence-'));
+  const sessionPath = join(directory, 'session.jsonl');
+  await writeFile(
+    sessionPath,
+    [
+      {
+        type: 'session',
+        version: 3,
+        id: 'session-bash',
+        timestamp: '2026-07-24T10:00:00Z',
+        cwd: '/project',
+      },
+      {
+        type: 'message',
+        id: 'bash-entry',
+        parentId: null,
+        timestamp: '2026-07-24T10:01:00Z',
+        message: {
+          role: 'bashExecution',
+          command: 'rg "needle" src/read-node-error-code.ts',
+          output: 'src/read-node-error-code.ts: EPERM needle',
+          exitCode: 2,
+          cancelled: false,
+          truncated: false,
+          excludeFromContext: true,
+        },
+      },
+    ]
+      .map((entry) => JSON.stringify(entry))
+      .join('\n') + '\n',
+  );
+
+  const chunks = await readSessionConversationChunks(sessionPath, {
+    tokenizer: createWhitespaceConversationTokenizer(),
+    maxTokens: 3,
+    overlapTokens: 1,
+  });
+
+  assert.deepEqual(
+    chunks.map((chunk) => chunk.evidencePart),
+    ['command', 'output'],
+  );
+  assert.equal(
+    chunks
+      .filter((chunk) => chunk.evidencePart === 'command')
+      .map((chunk) => chunk.content)
+      .join(''),
+    'rg "needle" src/read-node-error-code.ts',
+  );
+  assert.equal(
+    chunks
+      .filter((chunk) => chunk.evidencePart === 'output')
+      .map((chunk) => chunk.content)
+      .join(''),
+    'src/read-node-error-code.ts: EPERM needle',
+  );
+  assert.ok(chunks.every((chunk) => chunk.documentKind === 'tool'));
+  assert.ok(chunks.every((chunk) => chunk.evidenceKind === 'bash_execution'));
+  assert.ok(chunks.every((chunk) => chunk.toolName === 'bash'));
+  assert.ok(chunks.every((chunk) => chunk.toolCallId === null));
+  assert.ok(chunks.every((chunk) => chunk.toolError === true));
+  assert.ok(chunks.every((chunk) => chunk.isDenseSearchable === false));
+  assert.ok(chunks.every((chunk) => chunk.overlapTokenCount === 0));
 });
 
 void test('session chunks expose branch, summary, sibling, and source geometry provenance', async () => {
@@ -311,7 +473,7 @@ void test('session chunks expose branch, summary, sibling, and source geometry p
       },
     ],
   );
-  assert.ok(activeRuns.every((chunk) => chunk.schemaVersion === 2));
+  assert.ok(activeRuns.every((chunk) => chunk.schemaVersion === 3));
   assert.ok(activeRuns.every((chunk) => chunk.contributingEntryIds[0]?.value === 'active'));
   assert.ok(activeRuns.every((chunk) => chunk.textRunId.length === 40));
   assert.ok(activeRuns.every((chunk) => chunk.chunkCount === 1));

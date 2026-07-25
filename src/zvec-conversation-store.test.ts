@@ -8,13 +8,16 @@ import type { SessionConversationChunk } from './session-conversation-index.js';
 import {
   openZvecConversationStore,
   type EmbeddedSessionConversationChunk,
+  type LexicalSessionConversationChunk,
 } from './zvec-conversation-store.js';
 
 const baseChunk = {
-  schemaVersion: 2,
+  schemaVersion: 3,
   documentKind: 'conversation',
   summaryKind: null,
   evidenceKind: 'conversation',
+  evidencePart: 'content',
+  isDenseSearchable: true,
   sessionId: { value: 'session-1' },
   sessionPath: '/sessions/session-1.jsonl',
   parentSessionPath: '/sessions/parent.jsonl',
@@ -159,6 +162,45 @@ void test('zvec conversation search returns ranked text and exact session proven
     () => store.searchIdentifierCandidates('EPERM', 201),
     /candidate limit invalid \(identifier\)/,
   );
+});
+
+void test('zvec round-trips lexical-only tool evidence and excludes it from dense search', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-zvec-tools-'));
+  const store = openZvecConversationStore({
+    databasePath: join(directory, 'collection'),
+    dimensions: 3,
+  });
+  t.after(async () => {
+    store.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  const toolChunk: LexicalSessionConversationChunk = {
+    ...baseChunk,
+    documentKind: 'tool',
+    evidenceKind: 'tool_result',
+    evidencePart: 'result',
+    isDenseSearchable: false,
+    id: 'tool-chunk',
+    checksum: 'tool-checksum',
+    entryId: { value: 'tool-result-entry' },
+    contributingEntryIds: [{ value: 'tool-result-entry' }],
+    role: 'tool',
+    toolCallId: 'call-tools',
+    toolName: 'bash',
+    toolCallEntryId: { value: 'tool-call-entry' },
+    toolResultEntryId: { value: 'tool-result-entry' },
+    toolError: true,
+    content: 'TOOL_ONLY_EPERM /tmp/locked-file',
+  };
+
+  store.upsertChunks([toolChunk]);
+
+  assert.deepEqual(store.searchDenseCandidates([1, 0, 0], 10), []);
+  const lexicalResult = store.searchIdentifierCandidates('TOOL_ONLY_EPERM', 10)[0];
+  assert.ok(lexicalResult);
+  const { fullTextScore, ...storedToolChunk } = lexicalResult;
+  assert.ok(fullTextScore > 0);
+  assert.deepEqual(storedToolChunk, toolChunk);
 });
 
 void test('zvec conversation store rejects an embedding dimension change that requires reindexing', async (t) => {

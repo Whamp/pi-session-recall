@@ -15,14 +15,14 @@ import { createRecallIndexManifest } from './recall-index-manifest.js';
 import type { ConversationTextTokenizer } from './session-conversation-index.js';
 import type {
   ConversationChunkStore,
-  EmbeddedSessionConversationChunk,
+  IndexedSessionConversationChunk,
 } from './zvec-conversation-store.js';
 
 class MemoryConversationStore implements ConversationChunkStore {
-  readonly chunks = new Map<string, EmbeddedSessionConversationChunk>();
+  readonly chunks = new Map<string, IndexedSessionConversationChunk>();
   readonly deleted: string[] = [];
 
-  upsertChunks(chunks: EmbeddedSessionConversationChunk[]): void {
+  upsertChunks(chunks: IndexedSessionConversationChunk[]): void {
     for (const chunk of chunks) {
       this.chunks.set(chunk.id, chunk);
     }
@@ -182,6 +182,80 @@ void test('incremental index embeds only new content and removes deleted session
   assert.equal(fourth.removedSessions, 1);
   assert.equal(store.count(), 0);
   assert.equal(store.deleted.length, 2);
+});
+
+void test('incremental index never sends lexical-only tool evidence to embeddings', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-indexer-tools-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionsDirectory = join(directory, 'sessions');
+  await mkdir(sessionsDirectory);
+  await writeFile(
+    join(sessionsDirectory, 'tools.jsonl'),
+    sessionLines([
+      {
+        type: 'session',
+        version: 3,
+        id: 'session-tools',
+        timestamp: '2026-07-24T10:00:00Z',
+        cwd: '/project',
+      },
+      {
+        type: 'message',
+        id: 'assistant-tools',
+        parentId: null,
+        timestamp: '2026-07-24T10:01:00Z',
+        message: {
+          role: 'assistant',
+          content: [
+            { type: 'text', text: 'I will inspect the file.' },
+            { type: 'thinking', thinking: 'private plan' },
+            {
+              type: 'toolCall',
+              id: 'call-tools',
+              name: 'bash',
+              arguments: { command: 'cat /tmp/locked-file' },
+            },
+          ],
+        },
+      },
+      {
+        type: 'message',
+        id: 'result-tools',
+        parentId: 'assistant-tools',
+        timestamp: '2026-07-24T10:02:00Z',
+        message: {
+          role: 'toolResult',
+          toolCallId: 'call-tools',
+          toolName: 'bash',
+          content: [{ type: 'text', text: 'EPERM /tmp/locked-file' }],
+          isError: true,
+        },
+      },
+    ]),
+  );
+  const store = new MemoryConversationStore();
+  const embeddedBatches: string[][] = [];
+  const embeddings: LocalEmbeddingClient = {
+    async embedTexts(texts) {
+      embeddedBatches.push([...texts]);
+      return texts.map((text) => [text.length, 1, 0]);
+    },
+  };
+
+  const summary = await indexChangedConversationSessions({
+    sessionsDirectory,
+    statePath: join(directory, 'state.json'),
+    store,
+    embeddingCache: createTestEmbeddingCache(directory, embeddings),
+    tokenizer,
+  });
+  const toolChunks = [...store.chunks.values()].filter((chunk) => chunk.documentKind === 'tool');
+
+  assert.deepEqual(embeddedBatches, [['I will inspect the file.']]);
+  assert.equal(summary.newlyEmbeddedChunks, 1);
+  assert.equal(toolChunks.length, 3);
+  assert.ok(toolChunks.every((chunk) => chunk.embedding === undefined));
+  assert.ok(toolChunks.every((chunk) => !chunk.content.includes('private plan')));
 });
 
 void test('incremental index fails fast when the local embedding model is unavailable', async (t) => {

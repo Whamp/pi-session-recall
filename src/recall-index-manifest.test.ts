@@ -42,7 +42,7 @@ void test('index manifest round-trips the complete reproducibility identity atom
     boundaryAlgorithm: 'markdown-structure-v1',
     normalization: 'unicode-nfc-v1',
   });
-  assert.equal(manifest.zvec.schemaVersion, 3);
+  assert.equal(manifest.zvec.schemaVersion, 4);
   assert.equal(manifest.zvec.ftsConfigurationVersion, 2);
 });
 

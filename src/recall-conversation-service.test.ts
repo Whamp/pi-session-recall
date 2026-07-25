@@ -1421,7 +1421,7 @@ void test('fresh zvec rebuild reuses unchanged cached chunk vectors without embe
   assert.equal(embeddingInputs.length, 2);
 });
 
-void test('explicit rebuild keeps canonical cache identity across tolerated canary jitter', async (t) => {
+void test('schema migration keeps canonical cache identity across tolerated canary jitter', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'recall-service-canary-jitter-rebuild-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const sessionsDirectory = join(directory, 'sessions');
@@ -1467,6 +1467,11 @@ void test('explicit rebuild keeps canonical cache identity across tolerated cana
 
   const first = await service.index();
   const firstManifest = await readRecallIndexManifest(config.manifestPath);
+  assert.ok(firstManifest);
+  await writeFile(
+    config.manifestPath,
+    JSON.stringify({ ...firstManifest, manifestVersion: firstManifest.manifestVersion - 1 }),
+  );
   useJitteredCanary = true;
   const rebuilt = await service.index({ rebuild: true });
   const rebuiltManifest = await readRecallIndexManifest(config.manifestPath);

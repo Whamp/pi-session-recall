@@ -109,6 +109,29 @@ export interface RecallIndexManifest {
   };
 }
 
+interface RecoveredRecallEmbeddingCanary {
+  dimensions: number;
+  canaryVector: number[];
+  canaryMinimumCosineSimilarity: number;
+}
+
+const recoverableRecallEmbeddingCanarySchema = Type.Object(
+  {
+    embedding: Type.Object(
+      {
+        dimensions: Type.Integer({ minimum: 1 }),
+        canaryFingerprint: Type.String({ pattern: '^[a-f0-9]{64}$' }),
+        canaryVector: Type.Array(Type.Number(), { minItems: 1 }),
+        canaryMinimumCosineSimilarity: Type.Literal(
+          RECALL_EMBEDDING_CANARY_MINIMUM_COSINE_SIMILARITY,
+        ),
+      },
+      { additionalProperties: true },
+    ),
+  },
+  { additionalProperties: true },
+);
+
 const manifestAssetSchema = Type.Object(
   {
     fileName: Type.String({ minLength: 1 }),
@@ -253,6 +276,43 @@ export function createRecallEmbeddingCanaryFingerprint(
     bytes.writeFloatLE(value, index * Float32Array.BYTES_PER_ELEMENT);
   }
   return createHash('sha256').update(bytes).digest('hex');
+}
+
+/** Recovers a validated model-check vector from an otherwise incompatible index manifest. */
+export async function recoverRecallEmbeddingCanaryFromManifest(
+  manifestPath: string,
+  expectedDimensions: number,
+): Promise<RecoveredRecallEmbeddingCanary | null> {
+  let source: string;
+  try {
+    source = await readFile(manifestPath, 'utf8');
+  } catch (error) {
+    if (readNodeErrorCode(error) === 'ENOENT') {
+      return null;
+    }
+    throw error;
+  }
+
+  try {
+    const recovered = Value.Parse(recoverableRecallEmbeddingCanarySchema, JSON.parse(source));
+    if (recovered.embedding.dimensions !== expectedDimensions) {
+      return null;
+    }
+    const actualFingerprint = createRecallEmbeddingCanaryFingerprint(
+      recovered.embedding.canaryVector,
+      expectedDimensions,
+    );
+    if (actualFingerprint !== recovered.embedding.canaryFingerprint) {
+      return null;
+    }
+    return {
+      dimensions: recovered.embedding.dimensions,
+      canaryVector: [...recovered.embedding.canaryVector],
+      canaryMinimumCosineSimilarity: recovered.embedding.canaryMinimumCosineSimilarity,
+    };
+  } catch {
+    return null;
+  }
 }
 
 /** Creates the expected manifest for the current model, tokenizer, policy, and store code. */

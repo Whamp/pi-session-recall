@@ -9,6 +9,7 @@ import {
   createRecallEmbeddingCanaryFingerprint,
   createRecallIndexManifest,
   readRecallIndexManifest,
+  recoverRecallEmbeddingCanaryFromManifest,
   writeRecallIndexManifest,
 } from './recall-index-manifest.js';
 import {
@@ -183,6 +184,49 @@ void test('index manifest incompatibility reports every mismatch with the rebuil
   assert.throws(
     () => assertRecallIndexManifestCompatible(null, expected, '/data/index-manifest.json'),
     /Recall index manifest missing.*\/pi-session-recall-index --rebuild/,
+  );
+});
+
+void test('index manifest recovers only an intact canary from an incompatible generation', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-manifest-canary-recovery-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const manifestPath = join(directory, 'index-manifest.json');
+  const manifest = createRecallIndexManifest({
+    embeddingIdentity,
+    canaryEmbedding: [0.25, -0.5, 1],
+  });
+
+  await writeFile(
+    manifestPath,
+    JSON.stringify({ ...manifest, manifestVersion: manifest.manifestVersion - 1 }),
+  );
+  const recovered = await recoverRecallEmbeddingCanaryFromManifest(
+    manifestPath,
+    embeddingIdentity.dimensions,
+  );
+  assert.deepEqual(recovered?.canaryVector, manifest.embedding.canaryVector);
+  assert.equal(
+    recovered?.canaryMinimumCosineSimilarity,
+    manifest.embedding.canaryMinimumCosineSimilarity,
+  );
+
+  await writeFile(
+    manifestPath,
+    JSON.stringify({
+      ...manifest,
+      manifestVersion: manifest.manifestVersion - 1,
+      embedding: { ...manifest.embedding, canaryVector: [1, 0, 0] },
+    }),
+  );
+  assert.equal(
+    await recoverRecallEmbeddingCanaryFromManifest(manifestPath, embeddingIdentity.dimensions),
+    null,
+  );
+
+  await writeFile(manifestPath, '{broken');
+  assert.equal(
+    await recoverRecallEmbeddingCanaryFromManifest(manifestPath, embeddingIdentity.dimensions),
+    null,
   );
 });
 

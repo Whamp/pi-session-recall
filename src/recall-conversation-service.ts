@@ -27,6 +27,7 @@ import {
   calculateRecallEmbeddingCanaryCosineSimilarity,
   createRecallIndexManifest,
   readRecallIndexManifest,
+  recoverRecallEmbeddingCanaryFromManifest,
   RECALL_EMBEDDING_CANARY_TEXT,
   writeRecallIndexManifest,
   type RecallEmbeddingModelIdentity,
@@ -369,28 +370,39 @@ export function createRecallConversationService(
   async function readCanonicalRebuildCanary(signal?: AbortSignal): Promise<number[]> {
     const currentManifest = createExpectedManifest(await readCurrentEmbeddingCanary(signal));
     const currentCanary = currentManifest.embedding.canaryVector;
-    let actualManifest: RecallIndexManifest | null;
+    let previousCanary:
+      | {
+          dimensions: number;
+          canaryVector: number[];
+          canaryMinimumCosineSimilarity: number;
+        }
+      | undefined;
     try {
-      actualManifest = await readRecallIndexManifest(config.manifestPath);
+      const actualManifest = await readRecallIndexManifest(config.manifestPath);
+      previousCanary = actualManifest?.embedding;
     } catch (error) {
       if (
-        error instanceof Error &&
-        error.message.startsWith(`Recall index manifest invalid at ${config.manifestPath}:`)
+        !(error instanceof Error) ||
+        !error.message.startsWith(`Recall index manifest invalid at ${config.manifestPath}:`)
       ) {
-        return currentCanary;
+        throw error;
       }
-      throw error;
+      previousCanary =
+        (await recoverRecallEmbeddingCanaryFromManifest(
+          config.manifestPath,
+          config.embeddingDimensions,
+        )) ?? undefined;
     }
-    if (!actualManifest || actualManifest.embedding.dimensions !== config.embeddingDimensions) {
+    if (!previousCanary || previousCanary.dimensions !== config.embeddingDimensions) {
       return currentCanary;
     }
     const cosineSimilarity = calculateRecallEmbeddingCanaryCosineSimilarity(
-      actualManifest.embedding.canaryVector,
+      previousCanary.canaryVector,
       currentCanary,
       config.embeddingDimensions,
     );
-    return cosineSimilarity >= actualManifest.embedding.canaryMinimumCosineSimilarity
-      ? [...actualManifest.embedding.canaryVector]
+    return cosineSimilarity >= previousCanary.canaryMinimumCosineSimilarity
+      ? [...previousCanary.canaryVector]
       : currentCanary;
   }
 

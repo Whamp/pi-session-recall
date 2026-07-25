@@ -97,7 +97,7 @@ function findDecisionCombination(
 
 function findDecisionConfiguration(
   result: RecallQualityEvaluationResult,
-  decision: RecallQualityGateCombination | undefined,
+  decision?: RecallQualityGateCombination,
 ): RecallQualityConfigurationMeasurement | undefined {
   if (!decision) {
     return undefined;
@@ -111,7 +111,7 @@ function findDecisionConfiguration(
 
 function formatCaseOutcomes(
   result: RecallQualityEvaluationResult,
-  decision: RecallQualityGateCombination | undefined,
+  decision?: RecallQualityGateCombination,
 ): string[] {
   const configuration = findDecisionConfiguration(result, decision);
   if (!configuration || !decision) {

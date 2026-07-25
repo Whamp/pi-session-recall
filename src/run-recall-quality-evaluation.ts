@@ -117,7 +117,7 @@ function assertSafeRecallQualityPaths(
 
 function createEvaluationEmbeddingClient(
   config: RecallConversationConfig,
-  dependency: LocalEmbeddingClient | undefined,
+  dependency?: LocalEmbeddingClient,
 ): LocalEmbeddingClient {
   return (
     dependency ??
@@ -132,7 +132,7 @@ function createEvaluationEmbeddingClient(
 
 function createEvaluationRerankerClient(
   config: RecallConversationConfig,
-  dependency: LocalRerankerClient | undefined,
+  dependency?: LocalRerankerClient,
 ): LocalRerankerClient {
   return (
     dependency ??
@@ -174,7 +174,7 @@ function createChunkPolicyConfig(
 function createServiceDependencies(
   embeddings: LocalEmbeddingClient,
   reranker: LocalRerankerClient,
-  loadTokenizer: (() => Promise<ConversationTextTokenizer>) | undefined,
+  loadTokenizer?: () => Promise<ConversationTextTokenizer>,
 ): RecallConversationDependencies {
   return {
     embeddings,

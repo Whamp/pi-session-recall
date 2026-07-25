@@ -109,6 +109,7 @@ void test('recall quality runner indexes and searches only the bounded declared 
     embeddingBatchSize: 8,
     rerankerBaseUrl: 'http://unused-reranker.test/v1',
     rerankerModel: 'test-reranker',
+    projectLineages: {},
     searchCandidateLimits: { dense: 2, lexical: 2, identifier: 2 },
   };
   const embeddings: LocalEmbeddingClient = {

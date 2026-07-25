@@ -34,7 +34,9 @@ import {
 import type { RecallChunkPolicy } from './recall-chunk-policy.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
 import {
+  createProjectLineageIdentityResolver,
   resolveProjectIdentity,
+  type RecallProjectLineages,
   type ResolvedProjectIdentity,
 } from './resolve-project-identity.js';
 import {
@@ -69,6 +71,7 @@ export interface RecallConversationConfig {
   embeddingBatchSize: number;
   rerankerBaseUrl: string;
   rerankerModel: string;
+  projectLineages: RecallProjectLineages;
   searchCandidateLimits: RecallSearchCandidateLimits;
   chunkPolicy?: RecallChunkPolicy;
 }
@@ -278,8 +281,10 @@ export function createRecallConversationService(
   const loadTokenizer =
     dependencies.loadTokenizer ??
     (() => loadOctenConversationTokenizer({ cacheDirectory: config.tokenizerCacheDirectory }));
-  const resolveSearchProjectIdentity =
-    dependencies.resolveProjectIdentity ?? resolveProjectIdentity;
+  const resolveSearchProjectIdentity = createProjectLineageIdentityResolver(
+    config.projectLineages,
+    dependencies.resolveProjectIdentity ?? resolveProjectIdentity,
+  );
   const openStore =
     dependencies.openStore ??
     ((mode) =>
@@ -325,6 +330,7 @@ export function createRecallConversationService(
     return createRecallIndexManifest({
       embeddingIdentity: createEmbeddingModelIdentity(config),
       canaryEmbedding,
+      projectLineages: config.projectLineages,
       ...(config.chunkPolicy ? { chunkPolicy: config.chunkPolicy } : {}),
     });
   }
@@ -519,10 +525,15 @@ export function createRecallConversationService(
             evidenceRelation:
               !invocationProject || invocationProject.projectIdentity !== result.projectIdentity
                 ? RecallEvidenceRelation.UNRESTRICTED_GLOBAL
-                : invocationProject.identitySource ===
-                    RecallProjectIdentitySource.NON_GIT_SESSION_ORIGIN
-                  ? RecallEvidenceRelation.SAME_SESSION_ORIGIN
-                  : RecallEvidenceRelation.SAME_REPOSITORY,
+                : result.projectIdentitySource ===
+                      RecallProjectIdentitySource.CONFIGURED_PROJECT_LINEAGE ||
+                    invocationProject.identitySource ===
+                      RecallProjectIdentitySource.CONFIGURED_PROJECT_LINEAGE
+                  ? RecallEvidenceRelation.CONFIGURED_PROJECT_LINEAGE
+                  : invocationProject.identitySource ===
+                      RecallProjectIdentitySource.NON_GIT_SESSION_ORIGIN
+                    ? RecallEvidenceRelation.SAME_SESSION_ORIGIN
+                    : RecallEvidenceRelation.SAME_REPOSITORY,
           }));
           return {
             results,

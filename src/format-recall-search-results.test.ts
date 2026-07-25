@@ -98,6 +98,36 @@ void test('project-scoped output explains invocation identity, session origin, a
   assert.match(output, /same repository/);
 });
 
+void test('configured-lineage output explains the historical session origin relation', () => {
+  const projectIdentity = 'git-origin:github.com/Whamp/successor';
+  const output = formatRecallSearchResults({
+    totalChunks: 1,
+    results: [
+      {
+        ...result,
+        cwd: '/historical/prototype/packages/app',
+        projectIdentity,
+        projectIdentitySource: RecallProjectIdentitySource.CONFIGURED_PROJECT_LINEAGE,
+        evidenceRelation: RecallEvidenceRelation.CONFIGURED_PROJECT_LINEAGE,
+      },
+    ],
+    searchPolicy: {
+      scope: RecallSearchScope.PROJECT,
+      invocationProjectIdentity: projectIdentity,
+      rankingMode: 'hybrid',
+      rankFusionVersion: 1,
+      reciprocalRankConstant: 60,
+      rerankPolicyVersion: null,
+      rerankerModel: null,
+      activeBranchPrior: 0.01,
+      candidateLimits: { dense: 8, lexical: 8, identifier: 8 },
+    },
+  });
+
+  assert.match(output, /session origin \/historical\/prototype\/packages\/app/);
+  assert.match(output, /configured project lineage/);
+});
+
 void test('empty project recall recommends an explicit global retry without widening scope', () => {
   const output = formatRecallSearchResults({
     totalChunks: 42,
@@ -145,7 +175,7 @@ void test('hybrid recall output does not claim Qwen reranking ran', () => {
 void test('turn-context results identify their kind and every contributing entry', () => {
   const turnContextResult = {
     ...result,
-    schemaVersion: 5,
+    schemaVersion: 6,
     documentKind: 'turn_context',
     evidenceKind: 'turn_context',
     id: 'turn-context-chunk',

@@ -14,7 +14,7 @@ export function createTestSessionConversationChunk(
 ): SessionConversationChunk {
   const content = options.content ?? `content ${options.id}`;
   return {
-    schemaVersion: 5,
+    schemaVersion: 6,
     documentKind: 'conversation',
     summaryKind: null,
     evidenceKind: 'conversation',

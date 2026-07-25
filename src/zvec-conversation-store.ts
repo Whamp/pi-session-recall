@@ -30,7 +30,7 @@ import type {
 } from './session-conversation-index.js';
 
 /** Version of the scalar/vector schema persisted in the zvec collection. */
-export const ZVEC_CONVERSATION_SCHEMA_VERSION = 5;
+export const ZVEC_CONVERSATION_SCHEMA_VERSION = 6;
 
 /** Version of ordinary and case-preserving full text search (FTS) fields in zvec. */
 export const ZVEC_FTS_CONFIGURATION_VERSION = 2;
@@ -290,6 +290,9 @@ function parseRecallProjectIdentitySource(
   }
   if (value === 'non_git_session_origin') {
     return RecallProjectIdentitySource.NON_GIT_SESSION_ORIGIN;
+  }
+  if (value === 'configured_project_lineage') {
+    return RecallProjectIdentitySource.CONFIGURED_PROJECT_LINEAGE;
   }
   throw new Error(`Recall zvec projectIdentitySource invalid: ${value}`);
 }

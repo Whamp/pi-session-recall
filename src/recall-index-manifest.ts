@@ -17,8 +17,11 @@ import {
 } from './octen-conversation-tokenizer.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
 import {
+  createRecallProjectLineageDigest,
   RECALL_PROJECT_IDENTITY_METADATA_SCHEMA_VERSION,
   RECALL_PROJECT_IDENTITY_POLICY_VERSION,
+  RECALL_PROJECT_LINEAGE_POLICY_VERSION,
+  type RecallProjectLineages,
 } from './resolve-project-identity.js';
 import { SESSION_CONVERSATION_SCHEMA_VERSION } from './session-conversation-index.js';
 import {
@@ -30,7 +33,7 @@ import {
 } from './zvec-conversation-store.js';
 
 /** Version of the index-manifest file format, independent from document and zvec schemas. */
-export const RECALL_INDEX_MANIFEST_VERSION = 3;
+export const RECALL_INDEX_MANIFEST_VERSION = 4;
 
 /** Lowest accepted cosine similarity across parallel slots serving the same embedding model. */
 export const RECALL_EMBEDDING_CANARY_MINIMUM_COSINE_SIMILARITY = 0.9995;
@@ -59,7 +62,7 @@ export interface RecallEmbeddingModelIdentity {
 
 /** Versioned identity required before one zvec index generation can be read or updated. */
 export interface RecallIndexManifest {
-  manifestVersion: 3;
+  manifestVersion: 4;
   embedding: {
     requestModel: string;
     servedModelId: string;
@@ -92,6 +95,8 @@ export interface RecallIndexManifest {
   projectIdentity: {
     policyVersion: number;
     metadataSchemaVersion: number;
+    lineagePolicyVersion: number;
+    lineageDigest: string;
   };
   zvec: {
     schemaVersion: number;
@@ -113,7 +118,7 @@ const manifestAssetSchema = Type.Object(
 
 const recallIndexManifestSchema = Type.Object(
   {
-    manifestVersion: Type.Literal(3),
+    manifestVersion: Type.Literal(4),
     embedding: Type.Object(
       {
         requestModel: Type.String({ minLength: 1 }),
@@ -170,6 +175,8 @@ const recallIndexManifestSchema = Type.Object(
       {
         policyVersion: Type.Literal(RECALL_PROJECT_IDENTITY_POLICY_VERSION),
         metadataSchemaVersion: Type.Literal(RECALL_PROJECT_IDENTITY_METADATA_SCHEMA_VERSION),
+        lineagePolicyVersion: Type.Literal(RECALL_PROJECT_LINEAGE_POLICY_VERSION),
+        lineageDigest: Type.String({ pattern: '^[a-f0-9]{64}$' }),
       },
       { additionalProperties: false },
     ),
@@ -252,6 +259,7 @@ export function createRecallIndexManifest(options: {
   embeddingIdentity: RecallEmbeddingModelIdentity;
   canaryEmbedding: readonly number[];
   chunkPolicy?: RecallChunkPolicy;
+  projectLineages?: RecallProjectLineages;
 }): RecallIndexManifest {
   const canaryVector = createCanonicalRecallEmbeddingCanary(
     options.canaryEmbedding,
@@ -285,6 +293,8 @@ export function createRecallIndexManifest(options: {
     projectIdentity: {
       policyVersion: RECALL_PROJECT_IDENTITY_POLICY_VERSION,
       metadataSchemaVersion: RECALL_PROJECT_IDENTITY_METADATA_SCHEMA_VERSION,
+      lineagePolicyVersion: RECALL_PROJECT_LINEAGE_POLICY_VERSION,
+      lineageDigest: createRecallProjectLineageDigest(options.projectLineages ?? {}),
     },
     zvec: {
       schemaVersion: ZVEC_CONVERSATION_SCHEMA_VERSION,

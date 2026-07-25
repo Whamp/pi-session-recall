@@ -7,7 +7,7 @@ import { isUnknownRecord } from './is-unknown-record.js';
 import { assertRecallChunkPolicy } from './recall-chunk-policy.js';
 
 /** Version of the source and graph provenance stored on recall evidence documents. */
-export const SESSION_CONVERSATION_SCHEMA_VERSION = 5;
+export const SESSION_CONVERSATION_SCHEMA_VERSION = 6;
 
 /** A Pi session ID that cannot be passed where a session entry ID is required. */
 export interface PiSessionId {

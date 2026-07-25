@@ -7,6 +7,7 @@ import { Value } from 'typebox/value';
 
 import type { RecallConversationConfig } from './recall-conversation-service.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
+import { normalizeRecallProjectLineages } from './resolve-project-identity.js';
 
 const DEFAULT_RECALL_CHANNEL_CANDIDATE_LIMIT = 40;
 const MAX_RECALL_CHANNEL_CANDIDATE_LIMIT = 200;
@@ -33,6 +34,12 @@ const recallConfigFileSchema = Type.Object(
     ),
     identifierCandidateLimit: Type.Optional(
       Type.Integer({ minimum: 1, maximum: MAX_RECALL_CHANNEL_CANDIDATE_LIMIT }),
+    ),
+    projectLineages: Type.Optional(
+      Type.Record(
+        Type.String({ minLength: 1 }),
+        Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
+      ),
     ),
   },
   { additionalProperties: false },
@@ -103,6 +110,7 @@ export async function loadRecallConversationConfig(
     environment.PI_RECALL_DATA_DIRECTORY ??
     file.dataDirectory ??
     join(homeDirectory, '.pi', 'agent', 'recall');
+  const projectLineages = normalizeRecallProjectLineages(file.projectLineages ?? {});
 
   return {
     sessionsDirectory:
@@ -148,6 +156,7 @@ export async function loadRecallConversationConfig(
       file.rerankerBaseUrl ??
       'http://192.168.0.67:8091/v1',
     rerankerModel: environment.PI_RECALL_RERANKER_MODEL ?? file.rerankerModel ?? 'qwen3-rerank',
+    projectLineages,
     searchCandidateLimits: {
       dense: resolveRecallCandidateLimit(
         'PI_RECALL_DENSE_CANDIDATE_LIMIT',

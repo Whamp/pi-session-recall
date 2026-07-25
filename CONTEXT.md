@@ -92,6 +92,14 @@ _Avoid_: Project path, affinity
 A Git project identity shared by equivalent clones and worktrees of one repository.
 _Avoid_: Checkout path, worktree identity
 
+**Project lineage**:
+A personal, explicit assignment from historical session-origin roots to one canonical repository identity.
+_Avoid_: Project graph, inferred migration
+
+**Project lineage root**:
+An absolute historical session origin whose exact path and descendants receive one configured project lineage assignment.
+_Avoid_: Path alias, fuzzy project root
+
 **Project identity source**:
 The explicit basis that established a project identity: a canonical Git origin, shared local Git directory, or exact non-Git session origin.
 _Avoid_: Project hint, inferred relation
@@ -101,5 +109,5 @@ The candidate-eligibility boundary for one search: project scope admits one exac
 _Avoid_: Project ranking, affinity filter
 
 **Evidence relation**:
-The explicit relationship between one recall result and the invoking project, derived from project identity rather than text similarity.
+The explicit relationship between one recall result and the invoking project: same repository, configured project lineage, same non-Git session origin, or unrestricted global evidence.
 _Avoid_: Relevance relation, project score

@@ -49,6 +49,7 @@ function createTestConfig(directory: string, sessionsDirectory: string) {
     embeddingBatchSize: 8,
     rerankerBaseUrl: 'http://unused-reranker.test/v1',
     rerankerModel: 'test-reranker-model',
+    projectLineages: {},
     searchCandidateLimits: { dense: 1, lexical: 1, identifier: 1 },
   };
 }
@@ -284,6 +285,135 @@ void test('explicit project scope filters dense, lexical, and identifier candida
   assert.equal(globalSearch.searchPolicy.scope, 'global');
 });
 
+void test('configured project lineage admits exact, descendant, deleted, and Git-conflicting historical origins before channel limits', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-service-project-lineage-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionsDirectory = join(directory, 'sessions');
+  const invocationDirectory = join(directory, 'successor');
+  const prototypeRoot = join(directory, 'prototype');
+  const prototypeDescendant = join(prototypeRoot, 'packages', 'app');
+  const deletedRoot = join(directory, 'deleted-prototype');
+  const unrelatedDirectory = `${prototypeRoot}-nearby`;
+  await Promise.all([
+    mkdir(sessionsDirectory),
+    mkdir(invocationDirectory),
+    mkdir(prototypeDescendant, { recursive: true }),
+    mkdir(unrelatedDirectory),
+  ]);
+  await execFileAsync('git', ['init'], { cwd: invocationDirectory });
+  await execFileAsync('git', ['remote', 'add', 'origin', 'git@github.com:Whamp/successor.git'], {
+    cwd: invocationDirectory,
+  });
+  await execFileAsync('git', ['init'], { cwd: prototypeRoot });
+  await execFileAsync(
+    'git',
+    ['remote', 'add', 'origin', 'git@github.com:Whamp/obsolete-prototype.git'],
+    { cwd: prototypeRoot },
+  );
+  await execFileAsync('git', ['init'], { cwd: unrelatedDirectory });
+  await execFileAsync('git', ['remote', 'add', 'origin', 'git@github.com:Whamp/unrelated.git'], {
+    cwd: unrelatedDirectory,
+  });
+  const fixtures = [
+    { file: 'root.jsonl', origin: prototypeRoot, entry: 'root-lineage' },
+    { file: 'descendant.jsonl', origin: prototypeDescendant, entry: 'descendant-lineage' },
+    { file: 'deleted.jsonl', origin: deletedRoot, entry: 'deleted-lineage' },
+    { file: 'successor.jsonl', origin: invocationDirectory, entry: 'successor-entry' },
+    { file: 'unrelated.jsonl', origin: unrelatedDirectory, entry: 'unrelated-entry' },
+  ];
+  for (const fixture of fixtures) {
+    const content =
+      fixture.entry === 'unrelated-entry'
+        ? 'lineage queue queue queue LineageIdentifier LineageIdentifier'
+        : fixture.entry === 'successor-entry'
+          ? 'successor current evidence UniqueCurrentIdentifier'
+          : `lineage queue LineageIdentifier ${fixture.entry}`;
+    await writeFile(
+      join(sessionsDirectory, fixture.file),
+      [
+        {
+          type: 'session',
+          version: 3,
+          id: `${fixture.entry}-session`,
+          timestamp: '2026-07-24T10:00:00Z',
+          cwd: fixture.origin,
+        },
+        {
+          type: 'message',
+          id: fixture.entry,
+          parentId: null,
+          timestamp: '2026-07-24T10:01:00Z',
+          message: { role: 'assistant', content },
+        },
+      ]
+        .map((entry) => JSON.stringify(entry))
+        .join('\n') + '\n',
+    );
+  }
+  const query = 'lineage queue LineageIdentifier';
+  const config = {
+    ...createTestConfig(directory, sessionsDirectory),
+    projectLineages: {
+      'git-origin:github.com/Whamp/successor': [prototypeRoot, deletedRoot],
+    },
+    searchCandidateLimits: { dense: 3, lexical: 3, identifier: 3 },
+  };
+  const service = createRecallConversationService(config, {
+    embeddings: {
+      async embedTexts(texts) {
+        return texts.map((text) => {
+          if (text === RECALL_EMBEDDING_CANARY_TEXT) {
+            return [0, 0, 1];
+          }
+          return text.includes('queue queue') || text === query ? [1, 0, 0] : [0.8, 0.2, 0];
+        });
+      },
+    },
+    async loadTokenizer() {
+      return tokenizer;
+    },
+  });
+
+  await service.index();
+  const projectSearch = await service.search(query, 3, { invocationDirectory });
+
+  assert.deepEqual(projectSearch.results.map((result) => result.entryId.value).toSorted(), [
+    'deleted-lineage',
+    'descendant-lineage',
+    'root-lineage',
+  ]);
+  assert.ok(
+    projectSearch.results.every(
+      (result) => result.dense !== null && result.lexical !== null && result.identifier !== null,
+    ),
+  );
+  assert.ok(
+    projectSearch.results.every(
+      (result) =>
+        result.projectIdentity === 'git-origin:github.com/Whamp/successor' &&
+        result.projectIdentitySource === RecallProjectIdentitySource.CONFIGURED_PROJECT_LINEAGE &&
+        result.evidenceRelation === RecallEvidenceRelation.CONFIGURED_PROJECT_LINEAGE,
+    ),
+  );
+
+  const searchFromHistoricalRoot = await service.search(
+    'successor current evidence UniqueCurrentIdentifier',
+    1,
+    { invocationDirectory: prototypeRoot },
+  );
+  assert.equal(searchFromHistoricalRoot.results[0]?.entryId.value, 'successor-entry');
+  assert.equal(
+    searchFromHistoricalRoot.results[0]?.evidenceRelation,
+    RecallEvidenceRelation.CONFIGURED_PROJECT_LINEAGE,
+  );
+
+  const globalSearch = await service.search(query, 1, {
+    scope: RecallSearchScope.GLOBAL,
+    invocationDirectory,
+  });
+  assert.equal(globalSearch.results[0]?.entryId.value, 'unrelated-entry');
+});
+
 void test('omitted scope admits only the exact non-Git session origin', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'recall-service-non-git-scope-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -491,10 +621,11 @@ void test('indexing resolves each distinct session origin once and keeps unresol
   );
 });
 
-void test('project metadata rebuild reuses cached vectors while replacing repository assignment', async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), 'recall-service-project-metadata-rebuild-'));
+void test('lineage metadata rebuild rejects stale policy and reuses cached vectors', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-service-lineage-metadata-rebuild-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const sessionsDirectory = join(directory, 'sessions');
+  const historicalRoot = '/relocated/repository';
   await mkdir(sessionsDirectory);
   await writeFile(
     join(sessionsDirectory, 'metadata.jsonl'),
@@ -504,24 +635,23 @@ void test('project metadata rebuild reuses cached vectors while replacing reposi
         version: 3,
         id: 'metadata-session',
         timestamp: '2026-07-24T10:00:00Z',
-        cwd: '/relocated/repository',
+        cwd: historicalRoot,
       },
       {
         type: 'message',
         id: 'metadata-entry',
         parentId: null,
         timestamp: '2026-07-24T10:01:00Z',
-        message: { role: 'assistant', content: 'Metadata changes must reuse this vector.' },
+        message: { role: 'assistant', content: 'Lineage metadata must reuse this vector.' },
       },
     ]
       .map((entry) => JSON.stringify(entry))
       .join('\n') + '\n',
   );
-  let repositoryName = 'before-relocation';
   const embeddedInputs: string[] = [];
-  const service = createRecallConversationService(createTestConfig(directory, sessionsDirectory), {
+  const dependencies = {
     embeddings: {
-      async embedTexts(texts) {
+      async embedTexts(texts: string[]) {
         embeddedInputs.push(...texts);
         return texts.map((text) => (text === RECALL_EMBEDDING_CANARY_TEXT ? [0, 0, 1] : [1, 0, 0]));
       },
@@ -529,18 +659,33 @@ void test('project metadata rebuild reuses cached vectors while replacing reposi
     async loadTokenizer() {
       return tokenizer;
     },
-    async resolveProjectIdentity() {
-      return {
-        projectIdentity: `git-origin:github.com/Whamp/${repositoryName}`,
-        identitySource: RecallProjectIdentitySource.GIT_ORIGIN,
-      };
+  };
+  const firstService = createRecallConversationService(
+    {
+      ...createTestConfig(directory, sessionsDirectory),
+      projectLineages: {
+        'git-origin:github.com/Whamp/before-relocation': [historicalRoot],
+      },
     },
-  });
+    dependencies,
+  );
+  const changedService = createRecallConversationService(
+    {
+      ...createTestConfig(directory, sessionsDirectory),
+      projectLineages: {
+        'git-origin:github.com/Whamp/after-relocation': [historicalRoot],
+      },
+    },
+    dependencies,
+  );
 
-  const first = await service.index();
-  repositoryName = 'after-relocation';
-  const rebuilt = await service.index({ rebuild: true });
-  const search = await service.search('Metadata changes', 1, {
+  const first = await firstService.index();
+  await assert.rejects(
+    () => changedService.index(),
+    /projectIdentity\.lineageDigest.*\/pi-session-recall-index --rebuild/s,
+  );
+  const rebuilt = await changedService.index({ rebuild: true });
+  const search = await changedService.search('Lineage metadata', 1, {
     scope: RecallSearchScope.GLOBAL,
   });
 
@@ -549,8 +694,9 @@ void test('project metadata rebuild reuses cached vectors while replacing reposi
   assert.equal(rebuilt.indexSummary.newlyEmbeddedChunks, 0);
   assert.equal(rebuilt.indexSummary.embeddingRequestCount, 0);
   assert.equal(search.results[0]?.projectIdentity, 'git-origin:github.com/Whamp/after-relocation');
+  assert.equal(search.results[0]?.projectIdentitySource, 'configured_project_lineage');
   assert.equal(
-    embeddedInputs.filter((text) => text === 'Metadata changes must reuse this vector.').length,
+    embeddedInputs.filter((text) => text === 'Lineage metadata must reuse this vector.').length,
     1,
   );
 });

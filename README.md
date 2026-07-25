@@ -128,6 +128,7 @@ Each index generation has a separately versioned `index-manifest.json`. It ident
 - tokenizer model, immutable revision, asset checksums, library version, and encode options;
 - chunk limits, overlap, boundary algorithm, normalization, and policy version;
 - conversation and provenance schema versions;
+- project identity, lineage policy versions, and a canonical digest of personal lineage declarations;
 - zvec schema, ordinary and case-preserving FTS configuration, FP32 vector storage, and pinned HNSW parameters.
 
 The extension validates the complete manifest before opening or updating zvec. Missing or mismatched manifests are incompatible. The error reports every mismatched field and points to the implemented `/pi-session-recall-index --rebuild` operation. Rebuild removes only zvec, incremental state, and the old manifest under the writer lock; it preserves tokenizer assets and cached vectors. The quality gate must pass before the production command can run.
@@ -183,11 +184,16 @@ Create `~/.pi/agent/recall.json`:
   "lexicalCandidateLimit": 40,
   "identifierCandidateLimit": 40,
   "sessionsDirectory": "/home/will/.pi/agent/sessions",
-  "dataDirectory": "/home/will/.pi/agent/recall"
+  "dataDirectory": "/home/will/.pi/agent/recall",
+  "projectLineages": {
+    "git-origin:github.com/owner/successor": ["/home/you/projects/historical-prototype"]
+  }
 }
 ```
 
-Environment variables override the file:
+`projectLineages` maps each canonical `git-origin:<host>/<owner>/<repository>` or `git-common-directory:<absolute-path>` identity to one or more absolute historical session-origin roots. A root includes its descendants even when the old directory no longer exists. Lineage overrides Git discovery under that root. Roots assigned to different repository identities must not overlap.
+
+Environment variables override the file settings listed below. `projectLineages` is personal file-only configuration and has no environment-variable or repository-local form.
 
 - `PI_RECALL_CONFIG`
 - `PI_RECALL_EMBEDDING_BASE_URL`
@@ -206,7 +212,7 @@ Environment variables override the file:
 - `PI_RECALL_SESSIONS_DIRECTORY`
 - `PI_RECALL_DATA_DIRECTORY`
 
-Changing an embedding or index identity recorded in the manifest makes the current generation incompatible. Reranker settings are search-time policy and do not require an index rebuild. Do not delete or rewrite index state through search.
+Changing an embedding, project-lineage, or index identity recorded in the manifest makes the current generation incompatible. Rebuild explicitly with `/pi-session-recall-index --rebuild`; unchanged text reuses cached vectors. Reranker settings are search-time policy and do not require an index rebuild. Do not delete or rewrite index state through search.
 
 ## Storage and concurrency
 

@@ -32,7 +32,7 @@ void test('index manifest round-trips the complete reproducibility identity atom
 
   assert.deepEqual(await readRecallIndexManifest(manifestPath), manifest);
   assert.deepEqual(await readdir(directory), ['index-manifest.json']);
-  assert.equal(manifest.manifestVersion, 3);
+  assert.equal(manifest.manifestVersion, 4);
   assert.equal(
     manifest.embedding.canaryFingerprint,
     createRecallEmbeddingCanaryFingerprint(canaryEmbedding, 3),
@@ -48,14 +48,44 @@ void test('index manifest round-trips the complete reproducibility identity atom
     boundaryAlgorithm: 'markdown-structure-v1',
     normalization: 'unicode-nfc-v1',
   });
-  assert.equal(manifest.conversationSchemaVersion, 5);
-  assert.equal(manifest.provenanceSchemaVersion, 5);
+  assert.equal(manifest.conversationSchemaVersion, 6);
+  assert.equal(manifest.provenanceSchemaVersion, 6);
   assert.deepEqual(manifest.projectIdentity, {
-    policyVersion: 2,
-    metadataSchemaVersion: 2,
+    policyVersion: 3,
+    metadataSchemaVersion: 3,
+    lineagePolicyVersion: 1,
+    lineageDigest: '44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a',
   });
-  assert.equal(manifest.zvec.schemaVersion, 5);
+  assert.equal(manifest.zvec.schemaVersion, 6);
   assert.equal(manifest.zvec.ftsConfigurationVersion, 2);
+});
+
+void test('index manifest canonically digests project lineage and rejects changed lineage policy', () => {
+  const target = 'git-origin:github.com/Whamp/successor';
+  const actual = createRecallIndexManifest({
+    embeddingIdentity,
+    canaryEmbedding: [0.25, -0.5, 1],
+    projectLineages: { [target]: ['/historical/zeta', '/historical/alpha'] },
+  });
+  const equivalent = createRecallIndexManifest({
+    embeddingIdentity,
+    canaryEmbedding: [0.25, -0.5, 1],
+    projectLineages: { [target]: ['/historical/alpha', '/historical/zeta'] },
+  });
+  const changed = createRecallIndexManifest({
+    embeddingIdentity,
+    canaryEmbedding: [0.25, -0.5, 1],
+    projectLineages: { [target]: ['/historical/alpha', '/historical/replacement'] },
+  });
+
+  assert.equal(actual.projectIdentity.lineagePolicyVersion, 1);
+  assert.match(actual.projectIdentity.lineageDigest, /^[a-f0-9]{64}$/u);
+  assert.equal(equivalent.projectIdentity.lineageDigest, actual.projectIdentity.lineageDigest);
+  assert.notEqual(changed.projectIdentity.lineageDigest, actual.projectIdentity.lineageDigest);
+  assert.throws(
+    () => assertRecallIndexManifestCompatible(actual, changed, '/data/index-manifest.json'),
+    /projectIdentity\.lineageDigest.*\/pi-session-recall-index --rebuild/s,
+  );
 });
 
 void test('index manifest records an explicitly bounded chunk policy', () => {
@@ -117,6 +147,8 @@ void test('index manifest incompatibility reports every mismatch with the rebuil
   actual.conversationSchemaVersion = 1;
   actual.projectIdentity.policyVersion = 1;
   actual.projectIdentity.metadataSchemaVersion = 1;
+  actual.projectIdentity.lineagePolicyVersion = 99;
+  actual.projectIdentity.lineageDigest = '0'.repeat(64);
   actual.zvec.ftsConfigurationVersion = 99;
 
   assert.throws(
@@ -130,6 +162,8 @@ void test('index manifest incompatibility reports every mismatch with the rebuil
       assert.match(error.message, /conversationSchemaVersion/);
       assert.match(error.message, /projectIdentity\.policyVersion/);
       assert.match(error.message, /projectIdentity\.metadataSchemaVersion/);
+      assert.match(error.message, /projectIdentity\.lineagePolicyVersion/);
+      assert.match(error.message, /projectIdentity\.lineageDigest/);
       assert.match(error.message, /zvec\.ftsConfigurationVersion/);
       assert.match(error.message, /\/pi-session-recall-index --rebuild/);
       return true;

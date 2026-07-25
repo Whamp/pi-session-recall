@@ -49,6 +49,92 @@ void test('recall config uses local octen embeddings and supports file plus envi
   assert.equal(config.sessionsDirectory, join(directory, '.pi', 'agent', 'sessions'));
 });
 
+void test('recall config accepts canonical repository identities mapped to absolute historical roots', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-config-lineage-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const configPath = join(directory, 'recall.json');
+  const prototypeRoot = join(directory, 'historical-prototype');
+  const localPrototypeRoot = join(directory, 'historical-local-prototype');
+  const localRepositoryIdentity = `git-common-directory:${join(directory, 'successor', '.git')}`;
+  await writeFile(
+    configPath,
+    JSON.stringify({
+      projectLineages: {
+        'git-origin:github.com/Whamp/successor': [prototypeRoot],
+        [localRepositoryIdentity]: [localPrototypeRoot],
+      },
+    }),
+  );
+
+  const config = await loadRecallConversationConfig({
+    homeDirectory: directory,
+    configPath,
+    environment: {},
+  });
+
+  assert.deepEqual(config.projectLineages, {
+    'git-origin:github.com/Whamp/successor': [prototypeRoot],
+    [localRepositoryIdentity]: [localPrototypeRoot],
+  });
+});
+
+void test('recall config rejects noncanonical targets and relative lineage roots', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-config-invalid-lineage-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const configPath = join(directory, 'recall.json');
+
+  await writeFile(
+    configPath,
+    JSON.stringify({
+      projectLineages: {
+        'https://github.com/Whamp/successor': ['/absolute/prototype'],
+      },
+    }),
+  );
+  await assert.rejects(
+    () => loadRecallConversationConfig({ homeDirectory: directory, configPath, environment: {} }),
+    /project lineage target must be a canonical repository identity.*https:\/\/github\.com\/Whamp\/successor/,
+  );
+
+  await writeFile(
+    configPath,
+    JSON.stringify({
+      projectLineages: {
+        'git-origin:github.com/Whamp/successor': ['relative/prototype'],
+      },
+    }),
+  );
+  await assert.rejects(
+    () => loadRecallConversationConfig({ homeDirectory: directory, configPath, environment: {} }),
+    /project lineage root must be absolute.*relative\/prototype/,
+  );
+});
+
+void test('recall config rejects lineage roots that overlap across repository identities', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-config-conflicting-lineage-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const configPath = join(directory, 'recall.json');
+  const prototypeRoot = join(directory, 'prototype');
+  const nestedRoot = join(prototypeRoot, 'nested');
+  await writeFile(
+    configPath,
+    JSON.stringify({
+      projectLineages: {
+        'git-origin:github.com/Whamp/first': [prototypeRoot],
+        'git-origin:github.com/Whamp/second': [nestedRoot],
+      },
+    }),
+  );
+
+  await assert.rejects(
+    () => loadRecallConversationConfig({ homeDirectory: directory, configPath, environment: {} }),
+    new RegExp(
+      `project lineage roots conflict.*${prototypeRoot.replaceAll('/', '\\/')}.*${nestedRoot.replaceAll('/', '\\/')}.*assign them to one repository identity`,
+      's',
+    ),
+  );
+});
+
 void test('recall config defaults to the deployed local Qwen reranker', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'recall-config-defaults-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -60,6 +146,7 @@ void test('recall config defaults to the deployed local Qwen reranker', async (t
 
   assert.equal(config.rerankerBaseUrl, 'http://192.168.0.67:8091/v1');
   assert.equal(config.rerankerModel, 'qwen3-rerank');
+  assert.deepEqual(config.projectLineages, {});
 });
 
 void test('recall config rejects invalid numeric environment settings', async () => {

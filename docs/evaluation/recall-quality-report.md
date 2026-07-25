@@ -1,6 +1,6 @@
 # Project-scoped recall quality evaluation before backfill
 
-Generated 2026-07-25T20:07:42.249Z from corpus `recall-quality-project-scoped-bounded-v3`.
+Generated 2026-07-25T20:14:40.373Z from corpus `recall-quality-project-scoped-bounded-v3`.
 
 ## Decision
 
@@ -44,7 +44,7 @@ The gate and count grid live in `evaluation/recall-quality-cases.json`; the run 
 | Maximum fused candidates/search            |       24 |          200 |
 | Production repository identity resolutions |        5 |            5 |
 
-Run duration: 16876.5 ms. Work data stayed under `evaluation/.recall-data/recall-quality-evaluation/` and used only 15 checksum-fixed JSONL files.
+Run duration: 15479.0 ms. Work data stayed under `evaluation/.recall-data/recall-quality-evaluation/` and used only 15 checksum-fixed JSONL files.
 
 ## Metric definitions
 
@@ -59,13 +59,13 @@ Run duration: 16876.5 ms. Work data stayed under `evaluation/.recall-data/recall
 
 |  Chunk | Stored documents | Scanned/indexed sessions | New embedded documents | Embedding batches | Index time |
 | -----: | ---------------: | -----------------------: | ---------------------: | ----------------: | ---------: |
-| 512/64 |              128 |                    15/15 |                    124 |                17 | 10995.7 ms |
+| 512/64 |              128 |                    15/15 |                    124 |                17 | 11213.0 ms |
 
 ## Quality and latency matrix
 
 |  Chunk | Candidates/channel | Final | Pool recall | Final recall | Pool duplicates | Final duplicates | Context | Sources | Provenance | Project p95 | Global p95 | Gate |
 | -----: | -----------------: | ----: | ----------: | -----------: | --------------: | ---------------: | ------: | ------: | ---------: | ----------: | ---------: | ---- |
-| 512/64 |                  8 |     5 |      100.0% |       100.0% |            2.2% |             0.0% |  100.0% |  100.0% |     100.0% |    715.8 ms |  1634.6 ms | PASS |
+| 512/64 |                  8 |     5 |      100.0% |       100.0% |            2.2% |             0.0% |  100.0% |  100.0% |     100.0% |     73.5 ms |  1447.5 ms | PASS |
 
 ## Pre-limit channel proof
 
@@ -103,23 +103,23 @@ Shown for 512/64, 8 candidates/channel, and 5 final results.
 
 | Case                                          | Scope   | Boundary | Pool | Final | Context | Sources | Origin | Relation | Contributors | Branch | Raw/grouped |     Query |
 | --------------------------------------------- | ------- | -------- | ---- | ----- | ------- | ------- | ------ | -------- | ------------ | ------ | ----------: | --------: |
-| semantic-crash-safe-outbox                    | global  | pass     | hit  | hit   | useful  | 1 kept  | pass   | pass     | pass         | pass   |       13/13 |  224.3 ms |
-| semantic-image-retry-budget                   | global  | pass     | hit  | hit   | useful  | 1 kept  | pass   | pass     | pass         | pass   |       16/15 |   92.2 ms |
-| exact-read-node-error-code                    | global  | pass     | hit  | hit   | useful  | 1 kept  | pass   | pass     | pass         | pass   |       10/10 |   88.8 ms |
-| tool-evidence-lease-token                     | global  | pass     | hit  | hit   | useful  | 1 kept  | pass   | pass     | pass         | pass   |        10/9 |   87.8 ms |
-| context-europe-rollout-conditions             | global  | pass     | hit  | hit   | useful  | 1 kept  | pass   | pass     | pass         | pass   |       14/13 | 1634.6 ms |
-| branch-abandoned-redis-group                  | global  | pass     | hit  | hit   | useful  | 1 kept  | pass   | pass     | pass         | pass   |       14/14 |   88.9 ms |
-| branch-active-offline-queue                   | global  | pass     | hit  | hit   | useful  | 1 kept  | pass   | pass     | pass         | pass   |       12/12 |   86.0 ms |
-| branch-summary-hosted-services                | global  | pass     | hit  | hit   | useful  | 1 kept  | pass   | pass     | pass         | pass   |       11/11 |   88.7 ms |
-| compaction-copper-finch                       | global  | pass     | hit  | hit   | useful  | 1 kept  | pass   | pass     | pass         | pass   |       12/12 |   86.7 ms |
-| duplicate-meridian-release                    | global  | pass     | hit  | hit   | useful  | 2 kept  | pass   | pass     | pass         | pass   |       14/13 |  668.0 ms |
-| project-main-retrieves-worktree-before-limits | project | pass     | hit  | hit   | useful  | 1 kept  | pass   | pass     | pass         | pass   |         8/8 |  153.3 ms |
-| project-worktree-retrieves-main               | project | pass     | hit  | hit   | useful  | 1 kept  | pass   | pass     | pass         | pass   |         8/8 |   86.7 ms |
-| project-equivalent-clone-origin               | project | pass     | hit  | hit   | useful  | 1 kept  | pass   | pass     | pass         | pass   |       11/11 |  715.8 ms |
-| project-configured-lineage                    | project | pass     | hit  | hit   | useful  | 1 kept  | pass   | pass     | pass         | pass   |         9/9 |   95.2 ms |
-| project-similar-name-remains-unrelated        | project | pass     | hit  | hit   | useful  | 1 kept  | pass   | pass     | pass         | pass   |         8/8 |   85.8 ms |
-| project-exact-non-git-origin                  | project | pass     | hit  | hit   | useful  | 1 kept  | pass   | pass     | pass         | pass   |         3/3 |   91.1 ms |
-| global-explicit-cross-project                 | global  | pass     | hit  | hit   | useful  | 1 kept  | pass   | pass     | pass         | pass   |       10/10 |  422.4 ms |
+| semantic-crash-safe-outbox                    | global  | pass     | hit  | hit   | useful  | 1 kept  | pass   | pass     | pass         | pass   |       13/13 |   73.4 ms |
+| semantic-image-retry-budget                   | global  | pass     | hit  | hit   | useful  | 1 kept  | pass   | pass     | pass         | pass   |       16/15 |   71.6 ms |
+| exact-read-node-error-code                    | global  | pass     | hit  | hit   | useful  | 1 kept  | pass   | pass     | pass         | pass   |       10/10 |   72.9 ms |
+| tool-evidence-lease-token                     | global  | pass     | hit  | hit   | useful  | 1 kept  | pass   | pass     | pass         | pass   |        10/9 |   70.1 ms |
+| context-europe-rollout-conditions             | global  | pass     | hit  | hit   | useful  | 1 kept  | pass   | pass     | pass         | pass   |       14/13 | 1447.5 ms |
+| branch-abandoned-redis-group                  | global  | pass     | hit  | hit   | useful  | 1 kept  | pass   | pass     | pass         | pass   |       14/14 |  258.5 ms |
+| branch-active-offline-queue                   | global  | pass     | hit  | hit   | useful  | 1 kept  | pass   | pass     | pass         | pass   |       12/12 |   73.4 ms |
+| branch-summary-hosted-services                | global  | pass     | hit  | hit   | useful  | 1 kept  | pass   | pass     | pass         | pass   |       11/11 |   73.5 ms |
+| compaction-copper-finch                       | global  | pass     | hit  | hit   | useful  | 1 kept  | pass   | pass     | pass         | pass   |       12/12 |   72.3 ms |
+| duplicate-meridian-release                    | global  | pass     | hit  | hit   | useful  | 2 kept  | pass   | pass     | pass         | pass   |       14/13 |   73.9 ms |
+| project-main-retrieves-worktree-before-limits | project | pass     | hit  | hit   | useful  | 1 kept  | pass   | pass     | pass         | pass   |         8/8 |   72.0 ms |
+| project-worktree-retrieves-main               | project | pass     | hit  | hit   | useful  | 1 kept  | pass   | pass     | pass         | pass   |         8/8 |   73.5 ms |
+| project-equivalent-clone-origin               | project | pass     | hit  | hit   | useful  | 1 kept  | pass   | pass     | pass         | pass   |       11/11 |   71.2 ms |
+| project-configured-lineage                    | project | pass     | hit  | hit   | useful  | 1 kept  | pass   | pass     | pass         | pass   |         9/9 |   72.1 ms |
+| project-similar-name-remains-unrelated        | project | pass     | hit  | hit   | useful  | 1 kept  | pass   | pass     | pass         | pass   |         8/8 |   72.4 ms |
+| project-exact-non-git-origin                  | project | pass     | hit  | hit   | useful  | 1 kept  | pass   | pass     | pass         | pass   |         3/3 |   72.9 ms |
+| global-explicit-cross-project                 | global  | pass     | hit  | hit   | useful  | 1 kept  | pass   | pass     | pass         | pass   |       10/10 |   71.0 ms |
 
 ## Reproduce
 
@@ -136,7 +136,7 @@ The command rewrites:
 
 Environment:
 
-- Git commit: `0850b630789df80df55a23c735e89ef1bb8dec69`
+- Git commit: `38f9d505d594d6ad16e9eeb18487b6c75eda693b`
 - Node: `v24.16.0`
 - Platform: `linux/x64`
 - CPU: AMD Ryzen 7 8845HS w/ Radeon 780M Graphics

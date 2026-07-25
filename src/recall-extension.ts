@@ -23,12 +23,12 @@ export default async function recallExtension(
     name: 'pi-session-recall',
     label: 'Pi Session Recall',
     description:
-      'Search a prebuilt compatible index of past Pi conversations with dense, lexical, and case-preserving identifier retrieval backed by local embeddings and zvec FTS. Excludes hidden reasoning, keeps raw tool evidence lexical-only, and returns atomic or turn-context excerpts with exact contributing-entry provenance. Run /pi-session-recall-index explicitly to update the index. Output is truncated to 2000 lines or 50KB.',
+      'Search a prebuilt compatible index of past Pi conversations with dense, lexical, and case-preserving identifier retrieval, then deduplicate and rerank original candidate text with local Qwen. Excludes hidden reasoning, keeps raw tool evidence lexical-only, labels active and abandoned branches, and expands only valid same-run atomic neighbors with exact provenance. Run /pi-session-recall-index explicitly to update the index. Output is truncated to 2000 lines or 50KB.',
     promptSnippet:
       'Search past Pi conversations by meaning or exact text and recover remembered details',
     promptGuidelines: [
       'Use pi-session-recall when a task depends on a conversation or detail from a past session and the current context does not contain reliable source evidence.',
-      'Treat pi-session-recall results as search leads; cite their session path and every listed contributing entry when relying on turn-context evidence.',
+      'Treat pi-session-recall results as search leads; cite the primary source, every listed contributing entry, and any duplicate or expanded-chunk provenance used as evidence.',
     ],
     parameters: Type.Object({
       query: Type.String({
@@ -67,13 +67,46 @@ export default async function recallExtension(
           searchPolicy: search.searchPolicy,
           sources: search.results.map((result) => ({
             documentKind: result.documentKind,
+            summaryKind: result.summaryKind,
+            evidenceKind: result.evidenceKind,
             sessionPath: result.sessionPath,
             entryId: result.entryId.value,
             contributingEntryIds: result.contributingEntryIds.map((id) => id.value),
+            isOnActiveBranch: result.isOnActiveBranch,
+            rankingScore: result.rankingScore,
+            rerankerScore: result.rerankerScore,
+            activeBranchPrior: result.activeBranchPrior,
             fusedScore: result.fusedScore,
             dense: result.dense,
             lexical: result.lexical,
             identifier: result.identifier,
+            duplicateOccurrences: result.duplicateOccurrences.map((occurrence) => ({
+              documentId: occurrence.id,
+              documentKind: occurrence.documentKind,
+              summaryKind: occurrence.summaryKind,
+              evidenceKind: occurrence.evidenceKind,
+              sessionPath: occurrence.sessionPath,
+              entryId: occurrence.entryId.value,
+              contributingEntryIds: occurrence.contributingEntryIds.map((id) => id.value),
+              isOnActiveBranch: occurrence.isOnActiveBranch,
+              characterStart: occurrence.characterStart,
+              characterEnd: occurrence.characterEnd,
+              fusedScore: occurrence.fusedScore,
+              dense: occurrence.dense,
+              lexical: occurrence.lexical,
+              identifier: occurrence.identifier,
+            })),
+            expandedChunks:
+              result.neighborContext?.chunks.map((chunk) => ({
+                documentId: chunk.id,
+                sessionPath: chunk.sessionPath,
+                entryId: chunk.entryId.value,
+                role: chunk.role,
+                textRunId: chunk.textRunId,
+                chunkIndex: chunk.chunkIndex,
+                characterStart: chunk.characterStart,
+                characterEnd: chunk.characterEnd,
+              })) ?? [],
           })),
         },
       };

@@ -1,6 +1,6 @@
 # Pi Session Recall
 
-`pi-session-recall` gives Pi a `pi-session-recall` tool for searching past conversations by meaning or exact text. It reads Pi session JSONL files, embeds user-visible conversation text with a local OpenAI-compatible model, stores durable FP32 vectors in a content-addressed cache, and builds dense plus full-text indexes in an in-process [zvec](https://github.com/alibaba/zvec) collection.
+`pi-session-recall` gives Pi a `pi-session-recall` tool for searching past conversations by meaning or exact text. It reads Pi session JSONL files, embeds user-visible conversation text with a local OpenAI-compatible model, stores durable FP32 vectors in a content-addressed cache, and builds dense plus full-text indexes in an in-process [zvec](https://github.com/alibaba/zvec) collection. Search fuses every bounded retrieval channel, suppresses duplicate evidence, and reranks the original candidate text with a local Qwen3 reranker.
 
 ## What it indexes
 
@@ -60,10 +60,11 @@ pi-session-recall({ query: "readNodeErrorCode", limit: 5 })
 
 The extension tells Pi to use `pi-session-recall` when a task depends on a past conversation or a detail absent from current context. Each result contains:
 
-- fused score plus available dense, lexical, and identifier ranks and scores;
-- document kind, session name, date, role, and project directory;
-- a concise text excerpt;
-- source provenance in `SESSION_FILE#ENTRY_ID` form, plus every contributing entry for turn context.
+- final ranking score, Qwen relevance score, active-branch prior, fused score, and available dense, lexical, and identifier ranks and scores;
+- document and summary kind, session name, date, role, branch label, and project directory;
+- original candidate text or stitched same-run neighbor context;
+- source provenance in `SESSION_FILE#ENTRY_ID` form, plus every contributing entry for turn context;
+- every suppressed duplicate occurrence and every chunk used for neighbor context.
 
 ## Hybrid retrieval
 
@@ -78,6 +79,20 @@ Tool evidence is stored only in the two FTS representations. Zvec 0.6.0 requires
 Search asks each channel for a bounded candidate set, deduplicates identical document IDs, and applies application-side reciprocal rank fusion. A single double-quoted substring uses zvec phrase syntax, so its tokens must be adjacent and ordered even when the query includes surrounding prose. Fusion policy version 1 uses rank constant 60. Equal fused scores sort by document ID. The default cap is 40 candidates per channel; no channel accepts more than 200. Each response records the exact fusion version, constant, and channel caps it used.
 
 Application-side fusion is deliberate. Zvec 0.6.0 supports native hybrid RRF through `multiQuerySync()`, but native results omit the component ranks and scores required for evaluation and source-backed diagnostics.
+
+## Qwen reranking and evidence shaping
+
+Search shapes the full fused candidate pool before applying the requested result limit:
+
+1. Merge identical document IDs while retaining each channel rank and score.
+2. Group overlapping reciprocal siblings from the same source run.
+3. Group exact-content copies across sessions. Raw evidence never groups with a compaction or branch summary.
+4. Send each representative's original text to the configured Qwen3 reranker. The client requires one unique, in-range, finite score for every submitted index and maps scores by index rather than response order.
+5. Add a fixed `0.01` prior when the representative or any preserved occurrence is on the active branch. Abandoned evidence remains eligible and carries an explicit label.
+6. Apply the final result limit.
+7. For winning atomic conversation chunks, fetch at most one immediate sibling on each side. Expansion requires reciprocal pointers and matching session, entry, role, evidence kind, visible text run, source geometry, and overlap text. Turn context, tool evidence, images, thinking, and summaries cannot become neighbors.
+
+Each duplicate group retains every suppressed candidate with its source geometry and fusion components. Neighbor context retains every contributing atomic chunk. Reranker HTTP, JSON, coverage, index, or score failures reject recall; search never returns a silent empty or fusion-only fallback.
 
 Run `/pi-session-recall-index` when you explicitly want to scan changed sessions and optimize zvec. A search against a missing, locked, or incompatible generation fails without changing the index or its lock.
 
@@ -110,9 +125,9 @@ The extension validates the complete manifest before opening or updating zvec. M
 
 Embedding text is normalized to Unicode NFC under `unicode-nfc-v1`. Cache identity includes the normalized-text SHA-256; full served-model identity and dimensions; tokenizer revision, assets, library, and encode options; chunk-policy version; and normalization version. A model, text, tokenizer, policy, normalization, or dimension change therefore misses rather than reusing incompatible geometry.
 
-## Default local model
+## Default local models
 
-The checked-in defaults match `~/.pi/agent/LOCAL-AI.md`:
+The checked-in embedding defaults match `~/.pi/agent/LOCAL-AI.md`:
 
 | Setting         | Default                        |
 | --------------- | ------------------------------ |
@@ -125,7 +140,17 @@ The checked-in defaults match `~/.pi/agent/LOCAL-AI.md`:
 | Dimensions      | `2560`                         |
 | Batch size      | `16`                           |
 
-The endpoint must implement `POST /v1/embeddings` with the OpenAI request and response shape. Each process embeds one fixed canary before opening a manifested index; a changed vector fingerprint makes the generation incompatible.
+The embedding endpoint must implement `POST /v1/embeddings` with the OpenAI request and response shape. Each process embeds one fixed canary before opening a manifested index; a changed vector fingerprint makes the generation incompatible.
+
+The reranker defaults are:
+
+| Setting       | Default                       |
+| ------------- | ----------------------------- |
+| Base URL      | `http://192.168.0.67:8091/v1` |
+| Request model | `qwen3-rerank`                |
+| Endpoint      | `POST /v1/rerank`             |
+
+The reranker request is `{ model, query, documents, top_n }`. The response must contain `{ model, object, usage, results }`, with one `{ index, relevance_score }` result for every submitted document.
 
 ## Configure
 
@@ -141,6 +166,8 @@ Create `~/.pi/agent/recall.json`:
   "embeddingPooling": "last",
   "embeddingDimensions": 2560,
   "embeddingBatchSize": 16,
+  "rerankerBaseUrl": "http://192.168.0.67:8091/v1",
+  "rerankerModel": "qwen3-rerank",
   "denseCandidateLimit": 40,
   "lexicalCandidateLimit": 40,
   "identifierCandidateLimit": 40,
@@ -160,13 +187,15 @@ Environment variables override the file:
 - `PI_RECALL_EMBEDDING_POOLING`
 - `PI_RECALL_EMBEDDING_DIMENSIONS`
 - `PI_RECALL_EMBEDDING_BATCH_SIZE`
+- `PI_RECALL_RERANKER_BASE_URL`
+- `PI_RECALL_RERANKER_MODEL`
 - `PI_RECALL_DENSE_CANDIDATE_LIMIT`
 - `PI_RECALL_LEXICAL_CANDIDATE_LIMIT`
 - `PI_RECALL_IDENTIFIER_CANDIDATE_LIMIT`
 - `PI_RECALL_SESSIONS_DIRECTORY`
 - `PI_RECALL_DATA_DIRECTORY`
 
-Changing any manifested identity makes the current generation incompatible. Do not delete or rewrite it through search.
+Changing an embedding or index identity recorded in the manifest makes the current generation incompatible. Reranker settings are search-time policy and do not require an index rebuild. Do not delete or rewrite index state through search.
 
 ## Storage and concurrency
 
@@ -185,7 +214,7 @@ A process-local mutex and PID-owned writer lock serialize explicit indexing. Sea
 
 The embedding cache is a sibling of zvec rather than part of the collection. Each entry has a versioned identity header, FP32 payload, and SHA-256 checksum. Writers fsync a unique temporary file and atomically rename it only after validation. Readers reject identity, dimension, byte-length, checksum, and non-finite-value failures. Rebuilding only zvec and index state leaves the cache available, so unchanged chunks need zero chunk-embedding requests. Index completion reports cache hits, newly embedded chunks, and chunk-embedding request count separately; the model-identity canary request is not a chunk-embedding request.
 
-Conversation text and vectors remain local. The extension sends dense-searchable atomic, turn-context, and summary text only to the configured embedding endpoint. Tool evidence remains lexical-only and is never sent for embedding.
+Conversation text and vectors remain local. The extension sends dense-searchable atomic, turn-context, and summary text only to the configured embedding endpoint. Tool evidence remains lexical-only and is never sent for embedding. After retrieval, the extension sends original text from every representative candidate kind—including tool evidence—to the configured local reranker.
 
 ## Develop
 

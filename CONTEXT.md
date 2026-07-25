@@ -60,6 +60,22 @@ _Avoid_: Exact result
 One conversation, summary, or tool evidence document deduplicated across retrieval channels, with its document kind and each component rank and score retained.
 _Avoid_: Semantic match
 
+**Evidence occurrence**:
+One exact source location for recalled evidence, including its session, graph position, and source geometry. Copied evidence can have several occurrences.
+_Avoid_: Duplicate result, source alias
+
+**Duplicate evidence group**:
+One representative recall candidate plus every overlapping-sibling or exact-copy occurrence suppressed from separate result slots. Raw evidence and synthetic summaries never share a group.
+_Avoid_: Duplicate result list
+
+**Reranked recall result**:
+One duplicate evidence group ordered by query relevance plus a small active-branch preference. Abandoned-branch evidence remains eligible and labeled.
+_Avoid_: Final match, semantic match
+
+**Neighbor context**:
+Readable context formed from a winning atomic conversation chunk and its valid contiguous siblings in the same visible text run. The contributing chunks remain individually identified.
+_Avoid_: Expanded transcript, joined messages
+
 **Index manifest**:
 The versioned identity of the model, tokenizer, chunk policy, provenance schema, and zvec schema used by one index generation.
 _Avoid_: Index state, configuration

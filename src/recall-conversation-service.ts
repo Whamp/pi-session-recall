@@ -11,7 +11,6 @@ import {
   fuseRecallSearchCandidates,
   RECALL_RANK_FUSION_VERSION,
   RECALL_RRF_RANK_CONSTANT,
-  type RecallSearchResult,
 } from './fuse-recall-search-candidates.js';
 import {
   indexChangedConversationSessions,
@@ -19,6 +18,7 @@ import {
   type ConversationIndexSummary,
 } from './incremental-session-indexer.js';
 import { createLocalEmbeddingClient, type LocalEmbeddingClient } from './local-embedding-client.js';
+import { createLocalRerankerClient, type LocalRerankerClient } from './local-reranker-client.js';
 import { loadOctenConversationTokenizer } from './octen-conversation-tokenizer.js';
 import {
   assertRecallIndexManifestCompatible,
@@ -31,13 +31,19 @@ import {
   type RecallIndexManifest,
 } from './recall-index-manifest.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
+import {
+  rerankRecallSearchResults,
+  RECALL_ACTIVE_BRANCH_PRIOR,
+  RECALL_RERANK_POLICY_VERSION,
+  type RerankedRecallSearchResult,
+} from './rerank-recall-search-results.js';
 import type { ConversationTextTokenizer } from './session-conversation-index.js';
 import {
   openZvecConversationStore,
   type ZvecConversationStore,
 } from './zvec-conversation-store.js';
 
-/** Runtime paths, bounded retrieval channels, and local embedding identity for recall. */
+/** Runtime paths, bounded retrieval channels, and local embedding plus reranker identity. */
 export interface RecallConversationConfig {
   sessionsDirectory: string;
   databasePath: string;
@@ -54,6 +60,8 @@ export interface RecallConversationConfig {
   embeddingPooling: string;
   embeddingDimensions: number;
   embeddingBatchSize: number;
+  rerankerBaseUrl: string;
+  rerankerModel: string;
   searchCandidateLimits: RecallSearchCandidateLimits;
 }
 
@@ -64,16 +72,19 @@ export interface RecallSearchCandidateLimits {
   identifier: number;
 }
 
-/** Exact ranking and candidate-bound policy applied to one recall search. */
+/** Exact fusion, Qwen reranking, branch-prior, and neighbor policy for one search. */
 export interface RecallSearchPolicy {
   rankFusionVersion: number;
   reciprocalRankConstant: number;
+  rerankPolicyVersion: number;
+  rerankerModel: string;
+  activeBranchPrior: number;
   candidateLimits: RecallSearchCandidateLimits;
 }
 
 /** One read-only hybrid query against a previously built compatible index. */
 export interface RecallConversationSearch {
-  results: RecallSearchResult[];
+  results: RerankedRecallSearchResult[];
   totalChunks: number;
   searchPolicy: RecallSearchPolicy;
 }
@@ -90,6 +101,7 @@ export interface RecallConversationService {
 
 interface RecallConversationDependencies {
   embeddings?: LocalEmbeddingClient;
+  reranker?: LocalRerankerClient;
   loadTokenizer?: () => Promise<ConversationTextTokenizer>;
   openStore?: (mode: 'read' | 'write') => ZvecConversationStore;
 }
@@ -215,6 +227,12 @@ export function createRecallConversationService(
       model: config.embeddingModel,
       dimensions: config.embeddingDimensions,
       batchSize: config.embeddingBatchSize,
+    });
+  const reranker =
+    dependencies.reranker ??
+    createLocalRerankerClient({
+      baseUrl: config.rerankerBaseUrl,
+      model: config.rerankerModel,
     });
   const loadTokenizer =
     dependencies.loadTokenizer ??
@@ -344,7 +362,7 @@ export function createRecallConversationService(
           if (!queryEmbedding) {
             throw new Error('Recall embedding response missing query vector');
           }
-          const results = fuseRecallSearchCandidates(
+          const fusedCandidates = fuseRecallSearchCandidates(
             {
               denseCandidates: store.searchDenseCandidates(
                 queryEmbedding,
@@ -359,14 +377,27 @@ export function createRecallConversationService(
                 config.searchCandidateLimits.identifier,
               ),
             },
-            limit,
+            config.searchCandidateLimits.dense +
+              config.searchCandidateLimits.lexical +
+              config.searchCandidateLimits.identifier,
           );
+          const results = await rerankRecallSearchResults({
+            query: searchQuery,
+            candidates: fusedCandidates,
+            resultLimit: limit,
+            reranker,
+            fetchConversationChunks: store.fetchConversationChunks,
+            ...(signal ? { signal } : {}),
+          });
           return {
             results,
             totalChunks: store.count(),
             searchPolicy: {
               rankFusionVersion: RECALL_RANK_FUSION_VERSION,
               reciprocalRankConstant: RECALL_RRF_RANK_CONSTANT,
+              rerankPolicyVersion: RECALL_RERANK_POLICY_VERSION,
+              rerankerModel: config.rerankerModel,
+              activeBranchPrior: RECALL_ACTIVE_BRANCH_PRIOR,
               candidateLimits: { ...config.searchCandidateLimits },
             },
           };

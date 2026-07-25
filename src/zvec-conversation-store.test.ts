@@ -121,6 +121,10 @@ void test('zvec conversation search returns ranked text and exact session proven
   assert.equal(typeof cosineDistance, 'number');
   assert.deepEqual(embedding, [1, 0, 0]);
   assert.deepEqual(store.fetchVectors(['chunk-a']), new Map([['chunk-a', [1, 0, 0]]]));
+  assert.deepEqual(
+    store.fetchConversationChunks(['chunk-a', 'missing-chunk']),
+    new Map([['chunk-a', expectedChunk]]),
+  );
   const lexicalResults = store.searchLexicalCandidates('readnodeerrorcode', 2);
   assert.equal(lexicalResults[0]?.id, 'chunk-a');
   assert.ok((lexicalResults[0]?.fullTextScore ?? 0) > 0);

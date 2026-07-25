@@ -23,6 +23,8 @@ const recallConfigFileSchema = Type.Object(
     embeddingPooling: Type.Optional(Type.String({ minLength: 1 })),
     embeddingDimensions: Type.Optional(Type.Integer({ minimum: 1 })),
     embeddingBatchSize: Type.Optional(Type.Integer({ minimum: 1 })),
+    rerankerBaseUrl: Type.Optional(Type.String({ minLength: 1 })),
+    rerankerModel: Type.Optional(Type.String({ minLength: 1 })),
     denseCandidateLimit: Type.Optional(
       Type.Integer({ minimum: 1, maximum: MAX_RECALL_CHANNEL_CANDIDATE_LIMIT }),
     ),
@@ -86,7 +88,7 @@ async function readRecallConfigFile(
   }
 }
 
-/** Loads validated conversation recall paths and local embedding settings. */
+/** Loads validated conversation recall paths plus local embedding and Qwen reranker settings. */
 export async function loadRecallConversationConfig(
   options: RecallConversationConfigLoadOptions = {},
 ): Promise<RecallConversationConfig> {
@@ -141,6 +143,11 @@ export async function loadRecallConversationConfig(
           'PI_RECALL_EMBEDDING_BATCH_SIZE',
         )
       : (file.embeddingBatchSize ?? 16),
+    rerankerBaseUrl:
+      environment.PI_RECALL_RERANKER_BASE_URL ??
+      file.rerankerBaseUrl ??
+      'http://192.168.0.67:8091/v1',
+    rerankerModel: environment.PI_RECALL_RERANKER_MODEL ?? file.rerankerModel ?? 'qwen3-rerank',
     searchCandidateLimits: {
       dense: resolveRecallCandidateLimit(
         environment.PI_RECALL_DENSE_CANDIDATE_LIMIT,

@@ -79,13 +79,13 @@ function reciprocalRankContribution(rank: number | null): number {
   return rank === null ? 0 : 1 / (RECALL_RRF_RANK_CONSTANT + rank);
 }
 
-/** Applies deterministic reciprocal rank fusion (RRF); scores must be finite and limit must be an integer from 1 to 200. */
+/** Applies deterministic reciprocal rank fusion (RRF); scores must be finite and limit must be an integer from 1 to 600. */
 export function fuseRecallSearchCandidates(
   channels: RecallSearchCandidateChannels,
   resultLimit: number,
 ): RecallSearchResult[] {
-  if (!Number.isInteger(resultLimit) || resultLimit < 1 || resultLimit > 200) {
-    throw new Error('Recall result limit invalid: expected an integer from 1 to 200');
+  if (!Number.isInteger(resultLimit) || resultLimit < 1 || resultLimit > 600) {
+    throw new Error('Recall result limit invalid: expected an integer from 1 to 600');
   }
 
   const resultsById = new Map<string, RecallSearchResult>();

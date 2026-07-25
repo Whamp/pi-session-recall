@@ -71,6 +71,7 @@ export interface ZvecConversationStore extends ConversationChunkStore {
   searchDenseCandidates(embedding: number[], limit: number): RecallDenseCandidate[];
   searchLexicalCandidates(query: string, limit: number): RecallFullTextCandidate[];
   searchIdentifierCandidates(query: string, limit: number): RecallFullTextCandidate[];
+  fetchConversationChunks(this: void, ids: string[]): Map<string, SessionConversationChunk>;
   fetchVectors(ids: string[]): Map<string, number[]>;
   groupDenseCandidates(
     embedding: number[],
@@ -554,6 +555,17 @@ export function openZvecConversationStore(config: {
     },
     searchIdentifierCandidates(query, limit) {
       return searchFullTextCandidates('identifierContent', query, limit, 'identifier', 'AND');
+    },
+    fetchConversationChunks(ids) {
+      if (ids.length === 0) {
+        return new Map();
+      }
+      const docs = collection.fetchSync({
+        ids,
+        outputFields: RECALL_OUTPUT_FIELDS,
+        includeVector: false,
+      });
+      return new Map(Object.values(docs).map((doc) => [doc.id, deserializeConversationChunk(doc)]));
     },
     fetchVectors(ids) {
       if (ids.length === 0) {

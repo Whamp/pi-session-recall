@@ -14,6 +14,7 @@ void test('recall config uses local octen embeddings and supports file plus envi
     configPath,
     JSON.stringify({
       embeddingBatchSize: 4,
+      rerankerModel: 'file-reranker-model',
       denseCandidateLimit: 7,
       dataDirectory: join(directory, 'file-data'),
     }),
@@ -25,6 +26,7 @@ void test('recall config uses local octen embeddings and supports file plus envi
     environment: {
       PI_RECALL_EMBEDDING_MODEL: 'environment-model',
       PI_RECALL_EMBEDDING_BATCH_SIZE: '12',
+      PI_RECALL_RERANKER_BASE_URL: 'http://reranker.test/v1',
       PI_RECALL_LEXICAL_CANDIDATE_LIMIT: '9',
     },
   });
@@ -33,6 +35,8 @@ void test('recall config uses local octen embeddings and supports file plus envi
   assert.equal(config.embeddingModel, 'environment-model');
   assert.equal(config.embeddingDimensions, 2560);
   assert.equal(config.embeddingBatchSize, 12);
+  assert.equal(config.rerankerBaseUrl, 'http://reranker.test/v1');
+  assert.equal(config.rerankerModel, 'file-reranker-model');
   assert.deepEqual(config.searchCandidateLimits, { dense: 7, lexical: 9, identifier: 40 });
   assert.equal(config.embeddingServedModelId, 'Octen/Octen-Embedding-4B');
   assert.equal(config.embeddingArtifact, 'Octen-Embedding-4B.Q8_0.gguf');
@@ -43,6 +47,19 @@ void test('recall config uses local octen embeddings and supports file plus envi
   assert.equal(config.tokenizerCacheDirectory, join(directory, 'file-data', 'tokenizers'));
   assert.equal(config.embeddingCacheDirectory, join(directory, 'file-data', 'embedding-cache'));
   assert.equal(config.sessionsDirectory, join(directory, '.pi', 'agent', 'sessions'));
+});
+
+void test('recall config defaults to the deployed local Qwen reranker', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-config-defaults-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const config = await loadRecallConversationConfig({
+    homeDirectory: directory,
+    configPath: join(directory, 'missing-recall.json'),
+    environment: {},
+  });
+
+  assert.equal(config.rerankerBaseUrl, 'http://192.168.0.67:8091/v1');
+  assert.equal(config.rerankerModel, 'qwen3-rerank');
 });
 
 void test('recall config rejects invalid numeric environment settings', async () => {

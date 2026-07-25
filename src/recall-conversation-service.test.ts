@@ -5,13 +5,14 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import type { LocalEmbeddingClient } from './local-embedding-client.js';
+import type { LocalRerankerClient } from './local-reranker-client.js';
 import {
   createRecallEmbeddingCanaryFingerprint,
   createRecallIndexManifest,
   RECALL_EMBEDDING_CANARY_TEXT,
   writeRecallIndexManifest,
 } from './recall-index-manifest.js';
-import { createRecallConversationService } from './recall-conversation-service.js';
+import { createRecallConversationService as createProductionRecallConversationService } from './recall-conversation-service.js';
 import type { ConversationTextTokenizer } from './session-conversation-index.js';
 
 const tokenizer: ConversationTextTokenizer = {
@@ -42,8 +43,31 @@ function createTestConfig(directory: string, sessionsDirectory: string) {
     embeddingPooling: 'last',
     embeddingDimensions: 3,
     embeddingBatchSize: 8,
+    rerankerBaseUrl: 'http://unused-reranker.test/v1',
+    rerankerModel: 'test-reranker-model',
     searchCandidateLimits: { dense: 1, lexical: 1, identifier: 1 },
   };
+}
+
+const PRESERVE_FUSION_ORDER_RERANKER: LocalRerankerClient = {
+  async rerankDocuments(query, documents) {
+    void query;
+    const scores: number[] = [];
+    for (let index = 0; index < documents.length; index += 1) {
+      scores.push(1 - index / (documents.length + 1));
+    }
+    return scores;
+  },
+};
+
+function createRecallConversationService(
+  config: Parameters<typeof createProductionRecallConversationService>[0],
+  dependencies: NonNullable<Parameters<typeof createProductionRecallConversationService>[1]>,
+) {
+  return createProductionRecallConversationService(config, {
+    reranker: PRESERVE_FUSION_ORDER_RERANKER,
+    ...dependencies,
+  });
 }
 
 void test('recall service indexes explicitly and searches a compatible index without updating it', async (t) => {
@@ -228,6 +252,9 @@ void test('recall service fuses bounded dense, lexical, and identifier candidate
   assert.deepEqual(denseResult.searchPolicy, {
     rankFusionVersion: 1,
     reciprocalRankConstant: 60,
+    rerankPolicyVersion: 1,
+    rerankerModel: 'test-reranker-model',
+    activeBranchPrior: 0.01,
     candidateLimits: { dense: 1, lexical: 1, identifier: 1 },
   });
   assert.equal(denseResult.results[0]?.entryId.value, 'dense-entry');
@@ -266,6 +293,136 @@ void test('recall service fuses bounded dense, lexical, and identifier candidate
   assert.equal(quotedPhrase.results[0]?.identifier?.rank, 1);
   assert.ok(
     !quotedPhrase.results.some((result) => result.entryId.value === 'separated-phrase-entry'),
+  );
+});
+
+void test('recall service reranks the full fused pool before applying the final result limit', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-service-reranked-pool-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionsDirectory = join(directory, 'sessions');
+  await mkdir(sessionsDirectory);
+  const fusionFavorite = 'Exact fusion favorite evidence.';
+  const rerankerFavorite = 'Semantically strongest Qwen evidence.';
+  await writeFile(
+    join(sessionsDirectory, 'reranked.jsonl'),
+    [
+      {
+        type: 'session',
+        version: 3,
+        id: 'reranked-session',
+        timestamp: '2026-07-25T10:00:00Z',
+        cwd: '/reranked-project',
+      },
+      {
+        type: 'message',
+        id: 'fusion-favorite',
+        parentId: null,
+        timestamp: '2026-07-25T10:01:00Z',
+        message: { role: 'assistant', content: fusionFavorite },
+      },
+      {
+        type: 'message',
+        id: 'reranker-favorite',
+        parentId: 'fusion-favorite',
+        timestamp: '2026-07-25T10:02:00Z',
+        message: { role: 'assistant', content: rerankerFavorite },
+      },
+    ]
+      .map((entry) => JSON.stringify(entry))
+      .join('\n') + '\n',
+  );
+  const query = 'fusion favorite';
+  const rerankerInputs: string[][] = [];
+  const reranker: LocalRerankerClient = {
+    async rerankDocuments(receivedQuery, documents) {
+      assert.equal(receivedQuery, query);
+      rerankerInputs.push([...documents]);
+      return [0.1, 0.9];
+    },
+  };
+  const config = {
+    ...createTestConfig(directory, sessionsDirectory),
+    searchCandidateLimits: { dense: 2, lexical: 2, identifier: 2 },
+  };
+  const service = createRecallConversationService(config, {
+    embeddings: {
+      async embedTexts(texts) {
+        return texts.map((text) => {
+          if (text === RECALL_EMBEDDING_CANARY_TEXT) {
+            return [0, 0, 1];
+          }
+          if (text === rerankerFavorite) {
+            return [0.9, 0.1, 0];
+          }
+          return [1, 0, 0];
+        });
+      },
+    },
+    reranker,
+    async loadTokenizer() {
+      return tokenizer;
+    },
+  });
+  await service.index();
+
+  const search = await service.search(query, 1);
+
+  assert.deepEqual(rerankerInputs, [[fusionFavorite, rerankerFavorite]]);
+  assert.equal(search.results.length, 1);
+  assert.equal(search.results[0]?.entryId.value, 'reranker-favorite');
+  assert.equal(search.results[0]?.rerankerScore, 0.9);
+  assert.equal(search.results[0]?.dense?.rank, 2);
+  assert.ok(Number.isFinite(search.results[0]?.dense?.cosineDistance));
+  assert.equal(search.results[0]?.lexical, null);
+  assert.equal(search.results[0]?.identifier, null);
+});
+
+void test('recall service fails clearly when Qwen reranking is unavailable', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-service-reranker-failure-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionsDirectory = join(directory, 'sessions');
+  await mkdir(sessionsDirectory);
+  await writeFile(
+    join(sessionsDirectory, 'failure.jsonl'),
+    [
+      JSON.stringify({
+        type: 'session',
+        version: 3,
+        id: 'reranker-failure-session',
+        timestamp: '2026-07-25T10:00:00Z',
+        cwd: '/failure-project',
+      }),
+      JSON.stringify({
+        type: 'message',
+        id: 'failure-entry',
+        parentId: null,
+        timestamp: '2026-07-25T10:01:00Z',
+        message: { role: 'assistant', content: 'Evidence that must not bypass reranking.' },
+      }),
+    ].join('\n') + '\n',
+  );
+  const service = createRecallConversationService(createTestConfig(directory, sessionsDirectory), {
+    embeddings: {
+      async embedTexts(texts) {
+        return texts.map((text) => (text === RECALL_EMBEDDING_CANARY_TEXT ? [0, 0, 1] : [1, 0, 0]));
+      },
+    },
+    reranker: {
+      async rerankDocuments() {
+        throw new Error(
+          'Recall reranker request failed at http://reranker.test/v1/rerank: unavailable',
+        );
+      },
+    },
+    async loadTokenizer() {
+      return tokenizer;
+    },
+  });
+  await service.index();
+
+  await assert.rejects(
+    () => service.search('must use Qwen', 1),
+    /Recall reranker request failed at http:\/\/reranker\.test\/v1\/rerank: unavailable/,
   );
 });
 

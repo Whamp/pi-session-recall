@@ -17,11 +17,11 @@
     "format:check": "oxfmt --check ."
   },
   "dependencies": {
-    "@earendil-works/pi-ai": "0.82.0",
     "@huggingface/tokenizers": "0.1.3",
     "@zvec/zvec": "0.6.0"
   },
   "devDependencies": {
+    "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",
     "@types/node": "^24.0.0",
     "oxfmt": "^0.27.0",
@@ -32,6 +32,7 @@
     "typescript": "^5.9.0"
   },
   "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",
     "typebox": "*"
   },

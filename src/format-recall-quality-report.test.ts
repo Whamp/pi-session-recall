@@ -3,8 +3,13 @@ import test from 'node:test';
 
 import { RecallEvidenceRelation, RecallSearchScope } from './enums.js';
 import { formatRecallQualityReport } from './format-recall-quality-report.js';
-import type { LoadedRecallQualityCorpus } from './recall-quality-corpus.js';
+import {
+  parseQualityCaseId,
+  parseQualityEntryId,
+  type LoadedRecallQualityCorpus,
+} from './recall-quality-corpus.js';
 import type { RecallQualityEvaluationResult } from './run-recall-quality-evaluation.js';
+import { parseRepositoryIdentity } from './resolve-project-identity.js';
 import type { RecallQualityGateCombination } from './select-recall-quality-policy.js';
 
 void test('recall quality report records verdict, measured counts, sources, and reproduction', () => {
@@ -76,20 +81,22 @@ void test('recall quality report records verdict, measured counts, sources, and 
       },
       cases: [
         {
-          id: 'semantic-outbox',
+          id: parseQualityCaseId('semantic-outbox'),
           category: 'semantic_paraphrase',
           query: 'How do queued jobs survive a crash?',
           scope: RecallSearchScope.PROJECT,
           invocationDirectory: '/evaluation/fulfillment',
-          expectedInvocationProjectIdentity: 'git-origin:github.com/whamp/fixture',
+          expectedInvocationProjectIdentity: parseRepositoryIdentity(
+            'git-origin:github.com/whamp/fixture',
+          ),
           expectedSources: [
             {
               sessionFile: 'semantic-context.jsonl',
-              entryId: 'queue-answer',
+              entryId: parseQualityEntryId('queue-answer'),
               requiredText: ['append-only SQLite outbox'],
               expectedSessionOrigin: '/evaluation/fulfillment',
               expectedEvidenceRelation: RecallEvidenceRelation.SAME_REPOSITORY,
-              requiredContributingEntryIds: ['queue-answer'],
+              requiredContributingEntryIds: [parseQualityEntryId('queue-answer')],
               expectedBranch: 'active',
             },
           ],
@@ -105,7 +112,7 @@ void test('recall quality report records verdict, measured counts, sources, and 
     evaluationIdentity: {
       defaultScope: RecallSearchScope.PROJECT,
       projectScopePolicyVersion: 1,
-      repositoryIdentityPolicyVersion: 3,
+      projectIdentityPolicyVersion: 3,
       projectIdentityMetadataSchemaVersion: 3,
       lineagePolicyVersion: 1,
       lineageDigest: 'a'.repeat(64),
@@ -196,6 +203,7 @@ void test('recall quality report records verdict, measured counts, sources, and 
       rerankerRequests: 0,
       chunkEmbeddingRequests: 5,
       maximumCandidatesPerSearch: 24,
+      repositoryIdentityResolutions: 0,
     },
   };
 

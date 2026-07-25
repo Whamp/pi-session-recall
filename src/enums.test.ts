@@ -2,14 +2,14 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
-  RECALL_PROJECT_SCOPE_POLICY_VERSION,
+  PROJECT_SCOPE_POLICY_VERSION,
   RecallEvidenceRelation,
   RecallProjectIdentitySource,
   RecallSearchScope,
 } from './enums.js';
 
 void test('project scope provenance values keep their persisted wire spellings', () => {
-  assert.equal(RECALL_PROJECT_SCOPE_POLICY_VERSION, 1);
+  assert.equal(PROJECT_SCOPE_POLICY_VERSION, 1);
   assert.deepEqual(Object.values(RecallProjectIdentitySource), [
     'git_origin',
     'git_common_directory',

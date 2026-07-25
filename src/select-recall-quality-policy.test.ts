@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import type { RecallQualityMeasurement } from './measure-recall-quality.js';
-import type { RecallQualityGate } from './recall-quality-corpus.js';
+import { parseQualityCaseId, type RecallQualityGate } from './recall-quality-corpus.js';
 import { selectRecallQualityPolicy } from './select-recall-quality-policy.js';
 
 const gate: RecallQualityGate = {
@@ -32,7 +32,8 @@ function createMeasurement(
       global: { median: 600, p95: 800 },
     },
     policyFailureCaseIds: [],
-    missedCandidatePoolCaseIds: candidatePoolRecall === 1 ? [] : ['semantic-miss'],
+    missedCandidatePoolCaseIds:
+      candidatePoolRecall === 1 ? [] : [parseQualityCaseId('semantic-miss')],
     caseMeasurements: [],
     finalCounts: finalCounts.map((measurement) => ({
       ...measurement,
@@ -42,8 +43,9 @@ function createMeasurement(
       contributingEntryVerification: 1,
       branchVerification: 1,
       finalDuplicateRate: 0,
-      missedCaseIds: measurement.finalRecall >= 0.9 ? [] : ['semantic-miss'],
-      contextFailureCaseIds: measurement.contextUsefulness >= 0.9 ? [] : ['context-miss'],
+      missedCaseIds: measurement.finalRecall >= 0.9 ? [] : [parseQualityCaseId('semantic-miss')],
+      contextFailureCaseIds:
+        measurement.contextUsefulness >= 0.9 ? [] : [parseQualityCaseId('context-miss')],
       sourceOccurrenceFailureCaseIds: [],
       sessionOriginFailureCaseIds: [],
       evidenceRelationFailureCaseIds: [],

@@ -18,9 +18,10 @@ import {
   writeRecallIndexManifest,
 } from './recall-index-manifest.js';
 import { createRecallConversationService as createProductionRecallConversationService } from './recall-conversation-service.js';
+import { parseRepositoryIdentity } from './resolve-project-identity.js';
 import type { ConversationTextTokenizer } from './session-conversation-index.js';
 
-const execFileAsync = promisify(execFile);
+const EXEC_FILE_ASYNC = promisify(execFile);
 
 const tokenizer: ConversationTextTokenizer = {
   encodeConversationText(text) {
@@ -186,12 +187,12 @@ void test('explicit project scope filters dense, lexical, and identifier candida
   const projectDirectory = join(directory, 'selected-project');
   const unrelatedDirectory = join(directory, 'unrelated-project');
   await Promise.all([mkdir(sessionsDirectory), mkdir(projectDirectory), mkdir(unrelatedDirectory)]);
-  await execFileAsync('git', ['init'], { cwd: projectDirectory });
-  await execFileAsync('git', ['remote', 'add', 'origin', 'git@github.com:Whamp/scoped.git'], {
+  await EXEC_FILE_ASYNC('git', ['init'], { cwd: projectDirectory });
+  await EXEC_FILE_ASYNC('git', ['remote', 'add', 'origin', 'git@github.com:Whamp/scoped.git'], {
     cwd: projectDirectory,
   });
-  await execFileAsync('git', ['init'], { cwd: unrelatedDirectory });
-  await execFileAsync('git', ['remote', 'add', 'origin', 'https://github.com/Whamp/other.git'], {
+  await EXEC_FILE_ASYNC('git', ['init'], { cwd: unrelatedDirectory });
+  await EXEC_FILE_ASYNC('git', ['remote', 'add', 'origin', 'https://github.com/Whamp/other.git'], {
     cwd: unrelatedDirectory,
   });
   const writeSession = async (
@@ -300,18 +301,18 @@ void test('configured project lineage admits exact, descendant, deleted, and Git
     mkdir(prototypeDescendant, { recursive: true }),
     mkdir(unrelatedDirectory),
   ]);
-  await execFileAsync('git', ['init'], { cwd: invocationDirectory });
-  await execFileAsync('git', ['remote', 'add', 'origin', 'git@github.com:Whamp/successor.git'], {
+  await EXEC_FILE_ASYNC('git', ['init'], { cwd: invocationDirectory });
+  await EXEC_FILE_ASYNC('git', ['remote', 'add', 'origin', 'git@github.com:Whamp/successor.git'], {
     cwd: invocationDirectory,
   });
-  await execFileAsync('git', ['init'], { cwd: prototypeRoot });
-  await execFileAsync(
+  await EXEC_FILE_ASYNC('git', ['init'], { cwd: prototypeRoot });
+  await EXEC_FILE_ASYNC(
     'git',
     ['remote', 'add', 'origin', 'git@github.com:Whamp/obsolete-prototype.git'],
     { cwd: prototypeRoot },
   );
-  await execFileAsync('git', ['init'], { cwd: unrelatedDirectory });
-  await execFileAsync('git', ['remote', 'add', 'origin', 'git@github.com:Whamp/unrelated.git'], {
+  await EXEC_FILE_ASYNC('git', ['init'], { cwd: unrelatedDirectory });
+  await EXEC_FILE_ASYNC('git', ['remote', 'add', 'origin', 'git@github.com:Whamp/unrelated.git'], {
     cwd: unrelatedDirectory,
   });
   const fixtures = [
@@ -390,8 +391,9 @@ void test('configured project lineage admits exact, descendant, deleted, and Git
   assert.ok(
     projectSearch.results.every(
       (result) =>
-        result.projectIdentity === 'git-origin:github.com/Whamp/successor' &&
-        result.projectIdentitySource === RecallProjectIdentitySource.CONFIGURED_PROJECT_LINEAGE &&
+        result.projectAttribution?.projectIdentity === 'git-origin:github.com/Whamp/successor' &&
+        result.projectAttribution.identitySource ===
+          RecallProjectIdentitySource.CONFIGURED_PROJECT_LINEAGE &&
         result.evidenceRelation === RecallEvidenceRelation.CONFIGURED_PROJECT_LINEAGE,
     ),
   );
@@ -418,8 +420,8 @@ void test('omitted scope admits only the exact non-Git session origin', async (t
   const directory = await mkdtemp(join(tmpdir(), 'recall-service-non-git-scope-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const sessionsDirectory = join(directory, 'sessions');
-  const invocationDirectory = join(directory, 'project');
-  const nearbyDirectory = join(directory, 'project-nearby');
+  const invocationDirectory = join(directory, "project'\\quoted");
+  const nearbyDirectory = join(directory, "project'\\quoted-nearby");
   const descendantDirectory = join(invocationDirectory, 'descendant');
   const emptyInvocationDirectory = join(directory, 'empty-project');
   await Promise.all([
@@ -509,7 +511,7 @@ void test('omitted scope admits only the exact non-Git session origin', async (t
     search.searchPolicy.invocationProjectIdentity,
     `non-git-session-origin:${invocationDirectory}`,
   );
-  assert.equal(search.results[0]?.projectIdentitySource, 'non_git_session_origin');
+  assert.equal(search.results[0]?.projectAttribution?.identitySource, 'non_git_session_origin');
   assert.equal(search.results[0]?.evidenceRelation, 'same_session_origin');
 
   const globalSearch = await service.search('exact local project memory', 4, {
@@ -596,7 +598,7 @@ void test('indexing resolves each distinct session origin once and keeps unresol
       resolvedOrigins.push(sessionOrigin);
       return sessionOrigin === '/historical/repository'
         ? {
-            projectIdentity: 'git-origin:github.com/Whamp/historical',
+            projectIdentity: parseRepositoryIdentity('git-origin:github.com/Whamp/historical'),
             identitySource: RecallProjectIdentitySource.GIT_ORIGIN,
           }
         : null;
@@ -608,15 +610,17 @@ void test('indexing resolves each distinct session origin once and keeps unresol
 
   assert.deepEqual(resolvedOrigins.toSorted(), ['/deleted/repository', '/historical/repository']);
   assert.equal(
-    search.results.find((result) => result.entryId.value === 'entry-one')?.projectIdentity,
+    search.results.find((result) => result.entryId.value === 'entry-one')?.projectAttribution
+      ?.projectIdentity,
     'git-origin:github.com/Whamp/historical',
   );
   assert.equal(
-    search.results.find((result) => result.entryId.value === 'entry-two')?.projectIdentitySource,
+    search.results.find((result) => result.entryId.value === 'entry-two')?.projectAttribution
+      ?.identitySource,
     RecallProjectIdentitySource.GIT_ORIGIN,
   );
   assert.equal(
-    search.results.find((result) => result.entryId.value === 'entry-missing')?.projectIdentity,
+    search.results.find((result) => result.entryId.value === 'entry-missing')?.projectAttribution,
     null,
   );
 });
@@ -693,8 +697,11 @@ void test('lineage metadata rebuild rejects stale policy and reuses cached vecto
   assert.equal(rebuilt.indexSummary.cacheHits, 1);
   assert.equal(rebuilt.indexSummary.newlyEmbeddedChunks, 0);
   assert.equal(rebuilt.indexSummary.embeddingRequestCount, 0);
-  assert.equal(search.results[0]?.projectIdentity, 'git-origin:github.com/Whamp/after-relocation');
-  assert.equal(search.results[0]?.projectIdentitySource, 'configured_project_lineage');
+  assert.equal(
+    search.results[0]?.projectAttribution?.projectIdentity,
+    'git-origin:github.com/Whamp/after-relocation',
+  );
+  assert.equal(search.results[0]?.projectAttribution?.identitySource, 'configured_project_lineage');
   assert.equal(
     embeddedInputs.filter((text) => text === 'Lineage metadata must reuse this vector.').length,
     1,

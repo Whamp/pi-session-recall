@@ -7,7 +7,7 @@ export enum RecallProjectIdentitySource {
 }
 
 /** Version of trusted-invocation exact project filtering before every retrieval-channel limit. */
-export const RECALL_PROJECT_SCOPE_POLICY_VERSION = 1;
+export const PROJECT_SCOPE_POLICY_VERSION = 1;
 
 /** Corpus boundary selected for one recall search. */
 export enum RecallSearchScope {

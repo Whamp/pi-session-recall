@@ -3,6 +3,7 @@ import { basename } from 'node:path';
 import { RecallSearchScope } from './enums.js';
 import type { RecallSearchResult } from './fuse-recall-search-candidates.js';
 import type {
+  RecallQualityCaseId,
   RecallQualityEvaluationCase,
   RecallQualityExpectedSource,
 } from './recall-quality-corpus.js';
@@ -42,7 +43,7 @@ export interface RecallQualityCaseFinalMeasurement {
 }
 
 /** One channel's proof that global pollution displaced project evidence before its limit. */
-export interface RecallQualityPreLimitChannelMeasurement {
+export interface RecallChannelLimitMeasurement {
   channel: 'dense' | 'lexical' | 'identifier';
   projectSourceAdmitted: boolean;
   globalSourceDisplaced: boolean;
@@ -52,14 +53,14 @@ export interface RecallQualityPreLimitChannelMeasurement {
 
 /** Source, scope, exclusion, duplicate, context, and latency evidence for one fixed query. */
 export interface RecallQualityCaseMeasurement {
-  caseId: string;
+  caseId: RecallQualityCaseId;
   category: RecallQualityEvaluationCase['category'];
   scope: RecallSearchScope;
   searchScopeVerified: boolean;
   invocationProjectIdentityVerified: boolean;
   excludedSessionFilesAbsent: boolean;
   preLimitChannelsVerified: boolean;
-  preLimitChannelMeasurements: RecallQualityPreLimitChannelMeasurement[];
+  preLimitChannelMeasurements: RecallChannelLimitMeasurement[];
   candidatePoolRecalled: boolean;
   rawCandidateCount: number;
   groupedCandidateCount: number;
@@ -79,13 +80,13 @@ export interface RecallQualityFinalCountMeasurement {
   contributingEntryVerification: number;
   branchVerification: number;
   finalDuplicateRate: number;
-  missedCaseIds: string[];
-  contextFailureCaseIds: string[];
-  sourceOccurrenceFailureCaseIds: string[];
-  sessionOriginFailureCaseIds: string[];
-  evidenceRelationFailureCaseIds: string[];
-  contributingEntryFailureCaseIds: string[];
-  branchFailureCaseIds: string[];
+  missedCaseIds: RecallQualityCaseId[];
+  contextFailureCaseIds: RecallQualityCaseId[];
+  sourceOccurrenceFailureCaseIds: RecallQualityCaseId[];
+  sessionOriginFailureCaseIds: RecallQualityCaseId[];
+  evidenceRelationFailureCaseIds: RecallQualityCaseId[];
+  contributingEntryFailureCaseIds: RecallQualityCaseId[];
+  branchFailureCaseIds: RecallQualityCaseId[];
   finalDuplicateSlots: number;
   finalResultSlots: number;
 }
@@ -100,8 +101,8 @@ export interface RecallQualityMeasurement {
     project: RecallQualityLatencySummary | null;
     global: RecallQualityLatencySummary | null;
   };
-  policyFailureCaseIds: string[];
-  missedCandidatePoolCaseIds: string[];
+  policyFailureCaseIds: RecallQualityCaseId[];
+  missedCandidatePoolCaseIds: RecallQualityCaseId[];
   caseMeasurements: RecallQualityCaseMeasurement[];
   finalCounts: RecallQualityFinalCountMeasurement[];
 }
@@ -277,6 +278,16 @@ function createRate(numerator: number, denominator: number): number {
   return denominator === 0 ? 0 : numerator / denominator;
 }
 
+function findFailureCaseIds(
+  outcomes: ReadonlyArray<{
+    caseId: RecallQualityCaseId;
+    outcome: RecallQualityCaseFinalMeasurement;
+  }>,
+  isFailure: (outcome: RecallQualityCaseFinalMeasurement) => boolean,
+): RecallQualityCaseId[] {
+  return outcomes.filter(({ outcome }) => isFailure(outcome)).map(({ caseId }) => caseId);
+}
+
 function readLatencyPercentile(values: readonly number[], percentile: number): number {
   const sorted = values.toSorted((left, right) => left - right);
   const index = Math.max(0, Math.ceil(sorted.length * percentile) - 1);
@@ -332,14 +343,14 @@ function assertRecallQualityInputs(
 
 function hasRecallCandidateChannel(
   candidate: RecallSearchResult,
-  channel: RecallQualityPreLimitChannelMeasurement['channel'],
+  channel: RecallChannelLimitMeasurement['channel'],
 ): boolean {
   return candidate[channel] !== null;
 }
 
 function measurePreLimitChannels(
   observation: RecallQualitySearchObservation,
-): RecallQualityPreLimitChannelMeasurement[] {
+): RecallChannelLimitMeasurement[] {
   const proof = observation.evaluationCase.preLimitChannelProof;
   if (!proof) {
     return [];
@@ -533,27 +544,31 @@ export function measureRecallQuality(
         }
         return { caseId: measurement.caseId, outcome };
       });
-      const missedCaseIds = outcomes
-        .filter(({ outcome }) => !outcome.finalRecalled)
-        .map(({ caseId }) => caseId);
-      const contextFailureCaseIds = outcomes
-        .filter(({ outcome }) => !outcome.contextUseful)
-        .map(({ caseId }) => caseId);
-      const sourceOccurrenceFailureCaseIds = outcomes
-        .filter(({ outcome }) => !outcome.sourceOccurrencesPreserved)
-        .map(({ caseId }) => caseId);
-      const sessionOriginFailureCaseIds = outcomes
-        .filter(({ outcome }) => !outcome.sessionOriginsVerified)
-        .map(({ caseId }) => caseId);
-      const evidenceRelationFailureCaseIds = outcomes
-        .filter(({ outcome }) => !outcome.evidenceRelationsVerified)
-        .map(({ caseId }) => caseId);
-      const contributingEntryFailureCaseIds = outcomes
-        .filter(({ outcome }) => !outcome.contributingEntriesVerified)
-        .map(({ caseId }) => caseId);
-      const branchFailureCaseIds = outcomes
-        .filter(({ outcome }) => !outcome.branchesVerified)
-        .map(({ caseId }) => caseId);
+      const missedCaseIds = findFailureCaseIds(outcomes, (outcome) => !outcome.finalRecalled);
+      const contextFailureCaseIds = findFailureCaseIds(
+        outcomes,
+        (outcome) => !outcome.contextUseful,
+      );
+      const sourceOccurrenceFailureCaseIds = findFailureCaseIds(
+        outcomes,
+        (outcome) => !outcome.sourceOccurrencesPreserved,
+      );
+      const sessionOriginFailureCaseIds = findFailureCaseIds(
+        outcomes,
+        (outcome) => !outcome.sessionOriginsVerified,
+      );
+      const evidenceRelationFailureCaseIds = findFailureCaseIds(
+        outcomes,
+        (outcome) => !outcome.evidenceRelationsVerified,
+      );
+      const contributingEntryFailureCaseIds = findFailureCaseIds(
+        outcomes,
+        (outcome) => !outcome.contributingEntriesVerified,
+      );
+      const branchFailureCaseIds = findFailureCaseIds(
+        outcomes,
+        (outcome) => !outcome.branchesVerified,
+      );
       const finalDuplicateSlots = outcomes.reduce(
         (total, { outcome }) => total + outcome.finalDuplicateSlots,
         0,

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 
@@ -23,6 +24,12 @@ import type {
   RecallDenseCandidate,
   RecallFullTextCandidate,
 } from './fuse-recall-search-candidates.js';
+import {
+  isCanonicalRepositoryIdentity,
+  parseProjectIdentity,
+  type ProjectIdentity,
+  type ResolvedProjectIdentity,
+} from './resolve-project-identity.js';
 import type {
   PiSessionEntryId,
   PiSessionId,
@@ -30,7 +37,7 @@ import type {
 } from './session-conversation-index.js';
 
 /** Version of the scalar/vector schema persisted in the zvec collection. */
-export const ZVEC_CONVERSATION_SCHEMA_VERSION = 6;
+export const ZVEC_CONVERSATION_SCHEMA_VERSION = 7;
 
 /** Version of ordinary and case-preserving full text search (FTS) fields in zvec. */
 export const ZVEC_FTS_CONFIGURATION_VERSION = 2;
@@ -72,17 +79,17 @@ export interface ZvecConversationStore extends ConversationChunkStore {
   searchDenseCandidates(
     embedding: number[],
     limit: number,
-    projectIdentity?: string,
+    projectIdentity?: ProjectIdentity,
   ): RecallDenseCandidate[];
   searchLexicalCandidates(
     query: string,
     limit: number,
-    projectIdentity?: string,
+    projectIdentity?: ProjectIdentity,
   ): RecallFullTextCandidate[];
   searchIdentifierCandidates(
     query: string,
     limit: number,
-    projectIdentity?: string,
+    projectIdentity?: ProjectIdentity,
   ): RecallFullTextCandidate[];
   fetchConversationChunks(this: void, ids: string[]): Map<string, SessionConversationChunk>;
   fetchVectors(ids: string[]): Map<string, number[]>;
@@ -114,6 +121,7 @@ const RECALL_FIELD_SCHEMAS: ZVecFieldSchema[] = [
   { name: 'cwd', dataType: ZVecDataType.STRING },
   { name: 'projectPath', dataType: ZVecDataType.STRING },
   { name: 'projectIdentity', dataType: ZVecDataType.STRING },
+  { name: 'projectIdentityDigest', dataType: ZVecDataType.STRING },
   { name: 'projectIdentitySource', dataType: ZVecDataType.STRING },
   { name: 'sessionName', dataType: ZVecDataType.STRING },
   { name: 'entryId', dataType: ZVecDataType.STRING },
@@ -193,8 +201,11 @@ function serializeConversationChunk(chunk: SessionConversationChunk): Record<str
     parentSessionPath: chunk.parentSessionPath ?? '',
     cwd: chunk.cwd,
     projectPath: chunk.projectPath,
-    projectIdentity: chunk.projectIdentity ?? '',
-    projectIdentitySource: chunk.projectIdentitySource ?? '',
+    projectIdentity: chunk.projectAttribution?.projectIdentity ?? '',
+    projectIdentityDigest: chunk.projectAttribution
+      ? createHash('sha256').update(chunk.projectAttribution.projectIdentity).digest('hex')
+      : '',
+    projectIdentitySource: chunk.projectAttribution?.identitySource ?? '',
     sessionName: chunk.sessionName,
     entryId: chunk.entryId.value,
     parentEntryId: serializeNullableEntryId(chunk.parentEntryId),
@@ -276,12 +287,7 @@ function parseNullableEntryId(value: string): PiSessionEntryId | null {
   return value ? { value } : null;
 }
 
-function parseRecallProjectIdentitySource(
-  value: string,
-): SessionConversationChunk['projectIdentitySource'] {
-  if (value === '') {
-    return null;
-  }
+function parseRecallProjectIdentitySource(value: string): RecallProjectIdentitySource {
   if (value === 'git_origin') {
     return RecallProjectIdentitySource.GIT_ORIGIN;
   }
@@ -379,6 +385,31 @@ function parseNullableToolError(value: number): boolean | null {
   throw new Error(`Recall zvec toolError invalid: ${value}`);
 }
 
+function parseProjectAttribution(
+  projectIdentity: string,
+  identitySource: string,
+): ResolvedProjectIdentity | null {
+  if (!projectIdentity && !identitySource) {
+    return null;
+  }
+  if (!projectIdentity || !identitySource) {
+    throw new Error(
+      'Recall zvec project attribution invalid: identity and source must both be present',
+    );
+  }
+  const parsedIdentity = parseProjectIdentity(projectIdentity);
+  const parsedSource = parseRecallProjectIdentitySource(identitySource);
+  if (parsedSource === RecallProjectIdentitySource.NON_GIT_SESSION_ORIGIN) {
+    return { projectIdentity: parsedIdentity, identitySource: parsedSource };
+  }
+  if (!isCanonicalRepositoryIdentity(parsedIdentity)) {
+    throw new Error(
+      `Recall zvec project attribution invalid: ${parsedSource} requires repository identity`,
+    );
+  }
+  return { projectIdentity: parsedIdentity, identitySource: parsedSource };
+}
+
 function deserializeConversationChunk(doc: ZVecDoc): SessionConversationChunk {
   const fields: Record<string, unknown> = doc.fields;
   return {
@@ -395,8 +426,8 @@ function deserializeConversationChunk(doc: ZVecDoc): SessionConversationChunk {
     parentSessionPath: parseNullableString(readStringField(fields, 'parentSessionPath')),
     cwd: readStringField(fields, 'cwd'),
     projectPath: readStringField(fields, 'projectPath'),
-    projectIdentity: parseNullableString(readStringField(fields, 'projectIdentity')),
-    projectIdentitySource: parseRecallProjectIdentitySource(
+    projectAttribution: parseProjectAttribution(
+      readStringField(fields, 'projectIdentity'),
       readStringField(fields, 'projectIdentitySource'),
     ),
     sessionName: readStringField(fields, 'sessionName'),
@@ -464,10 +495,11 @@ function assertRecallCandidateLimit(limit: number, channelName: string): void {
   }
 }
 
-function createRecallProjectIdentityFilter(projectIdentity?: string): string | undefined {
-  return projectIdentity
-    ? `projectIdentity = '${projectIdentity.replaceAll("'", "''")}'`
+function createRecallProjectIdentityFilter(projectIdentity?: ProjectIdentity): string | undefined {
+  const identityDigest = projectIdentity
+    ? createHash('sha256').update(projectIdentity).digest('hex')
     : undefined;
+  return identityDigest ? `projectIdentityDigest = '${identityDigest}'` : undefined;
 }
 
 function createRecallFullTextQuery(query: string): ZVecFtsQuery {
@@ -536,7 +568,7 @@ export function openZvecConversationStore(config: {
     limit: number,
     channelName: string,
     defaultOperator: 'AND' | 'OR',
-    projectIdentity?: string,
+    projectIdentity?: ProjectIdentity,
   ): RecallFullTextCandidate[] => {
     assertRecallCandidateLimit(limit, channelName);
     const projectFilter = createRecallProjectIdentityFilter(projectIdentity);

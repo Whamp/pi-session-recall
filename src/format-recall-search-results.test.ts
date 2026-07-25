@@ -5,6 +5,7 @@ import { RecallEvidenceRelation, RecallProjectIdentitySource, RecallSearchScope 
 import { formatRecallSearchResults } from './format-recall-search-results.js';
 import { createTestRankedRecallSearchResult } from './recall-test-utils.js';
 import type { RankedRecallSearchResult } from './rank-recall-search-results.js';
+import { parseProjectIdentity, parseRepositoryIdentity } from './resolve-project-identity.js';
 
 const result = createTestRankedRecallSearchResult({
   id: 'chunk-1',
@@ -67,15 +68,17 @@ void test('recall results include concise excerpts and exact source provenance',
 });
 
 void test('project-scoped output explains invocation identity, session origin, and repository relationship', () => {
-  const projectIdentity = 'git-origin:github.com/Whamp/pi-session-recall';
+  const projectIdentity = parseRepositoryIdentity('git-origin:github.com/Whamp/pi-session-recall');
   const output = formatRecallSearchResults({
     totalChunks: 42,
     results: [
       {
         ...result,
         cwd: '/workspace/pi-session-recall',
-        projectIdentity,
-        projectIdentitySource: RecallProjectIdentitySource.GIT_ORIGIN,
+        projectAttribution: {
+          projectIdentity,
+          identitySource: RecallProjectIdentitySource.GIT_ORIGIN,
+        },
         evidenceRelation: RecallEvidenceRelation.SAME_REPOSITORY,
       },
     ],
@@ -99,15 +102,17 @@ void test('project-scoped output explains invocation identity, session origin, a
 });
 
 void test('configured-lineage output explains the historical session origin relation', () => {
-  const projectIdentity = 'git-origin:github.com/Whamp/successor';
+  const projectIdentity = parseRepositoryIdentity('git-origin:github.com/Whamp/successor');
   const output = formatRecallSearchResults({
     totalChunks: 1,
     results: [
       {
         ...result,
         cwd: '/historical/prototype/packages/app',
-        projectIdentity,
-        projectIdentitySource: RecallProjectIdentitySource.CONFIGURED_PROJECT_LINEAGE,
+        projectAttribution: {
+          projectIdentity,
+          identitySource: RecallProjectIdentitySource.CONFIGURED_PROJECT_LINEAGE,
+        },
         evidenceRelation: RecallEvidenceRelation.CONFIGURED_PROJECT_LINEAGE,
       },
     ],
@@ -134,7 +139,9 @@ void test('empty project recall recommends an explicit global retry without wide
     results: [],
     searchPolicy: {
       scope: RecallSearchScope.PROJECT,
-      invocationProjectIdentity: 'non-git-session-origin:/workspace/local-project',
+      invocationProjectIdentity: parseProjectIdentity(
+        'non-git-session-origin:/workspace/local-project',
+      ),
       rankingMode: 'hybrid',
       rankFusionVersion: 1,
       reciprocalRankConstant: 60,

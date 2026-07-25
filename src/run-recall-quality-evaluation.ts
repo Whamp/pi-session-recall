@@ -1,8 +1,14 @@
+import { execFile } from 'node:child_process';
 import { mkdir, rm } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { performance } from 'node:perf_hooks';
+import { promisify } from 'node:util';
 
-import { RECALL_PROJECT_SCOPE_POLICY_VERSION, RecallSearchScope } from './enums.js';
+import {
+  PROJECT_SCOPE_POLICY_VERSION,
+  RecallProjectIdentitySource,
+  RecallSearchScope,
+} from './enums.js';
 import {
   RECALL_RANK_FUSION_VERSION,
   RECALL_RRF_RANK_CONSTANT,
@@ -31,14 +37,17 @@ import {
 } from './select-recall-quality-policy.js';
 import { RECALL_ACTIVE_BRANCH_PRIOR } from './rank-recall-search-results.js';
 import {
-  createRecallProjectLineageDigest,
-  RECALL_PROJECT_IDENTITY_METADATA_SCHEMA_VERSION,
-  RECALL_PROJECT_IDENTITY_POLICY_VERSION,
-  RECALL_PROJECT_LINEAGE_POLICY_VERSION,
+  createLineageDigest,
+  PROJECT_METADATA_SCHEMA_VERSION,
+  PROJECT_IDENTITY_POLICY_VERSION,
+  PROJECT_LINEAGE_POLICY_VERSION,
+  parseProjectIdentity,
+  resolveProjectIdentity,
   type ResolvedProjectIdentity,
 } from './resolve-project-identity.js';
 import type { ConversationTextTokenizer } from './session-conversation-index.js';
 
+const EXEC_FILE_ASYNC = promisify(execFile);
 const RECALL_QUALITY_FULL_POOL_LIMIT = 200;
 const RECALL_QUALITY_WORK_DIRECTORY_NAME = 'recall-quality-evaluation';
 
@@ -73,13 +82,14 @@ export interface RecallQualityExecutedWork {
   rerankerRequests: number;
   chunkEmbeddingRequests: number;
   maximumCandidatesPerSearch: number;
+  repositoryIdentityResolutions: number;
 }
 
 /** Project admission, lineage, ranking, and result counts bound to one evaluation result. */
 export interface RecallQualityEvaluationIdentity {
   defaultScope: RecallSearchScope.PROJECT;
   projectScopePolicyVersion: number;
-  repositoryIdentityPolicyVersion: number;
+  projectIdentityPolicyVersion: number;
   projectIdentityMetadataSchemaVersion: number;
   lineagePolicyVersion: number;
   lineageDigest: string;
@@ -195,19 +205,85 @@ function createChunkPolicyConfig(
   };
 }
 
-function createEvaluationProjectIdentityResolver(
+interface EvaluationProjectResolver {
+  resolveProjectIdentity: (workingDirectory: string) => Promise<ResolvedProjectIdentity | null>;
+  repositoryIdentityResolutions: number;
+}
+
+async function createEvaluationProjectResolver(
   corpus: LoadedRecallQualityCorpus,
-): (workingDirectory: string) => Promise<ResolvedProjectIdentity | null> {
-  const fixtures = new Map(
-    corpus.specification.projectIdentityFixtures.map((fixture) => [
-      fixture.workingDirectory,
-      {
-        projectIdentity: fixture.projectIdentity,
+  workDirectory: string,
+): Promise<EvaluationProjectResolver> {
+  const actualDirectories = new Map<string, string>();
+  const resolvedFixtures = new Map<string, ResolvedProjectIdentity>();
+  let repositoryIdentityResolutions = 0;
+  for (const [index, fixture] of corpus.specification.projectIdentityFixtures.entries()) {
+    if (fixture.identitySource === RecallProjectIdentitySource.NON_GIT_SESSION_ORIGIN) {
+      resolvedFixtures.set(fixture.workingDirectory, {
+        projectIdentity: parseProjectIdentity(fixture.projectIdentity),
         identitySource: fixture.identitySource,
-      },
-    ]),
-  );
-  return async (workingDirectory) => fixtures.get(workingDirectory) ?? null;
+      });
+      continue;
+    }
+    const actualDirectory = join(workDirectory, 'project-fixtures', String(index));
+    const worktreeSource = fixture.worktreeOf
+      ? actualDirectories.get(fixture.worktreeOf)
+      : undefined;
+    if (fixture.worktreeOf && !worktreeSource) {
+      throw new Error(
+        `Recall quality repository fixture invalid: worktree source ${fixture.worktreeOf} must precede ${fixture.workingDirectory}`,
+      );
+    }
+    if (worktreeSource) {
+      await mkdir(dirname(actualDirectory), { recursive: true });
+      await EXEC_FILE_ASYNC(
+        'git',
+        ['worktree', 'add', actualDirectory, '-b', `quality-fixture-${index}`],
+        { cwd: worktreeSource },
+      );
+    } else {
+      await mkdir(actualDirectory, { recursive: true });
+      await EXEC_FILE_ASYNC('git', ['init'], { cwd: actualDirectory });
+      if (fixture.origin) {
+        await EXEC_FILE_ASYNC('git', ['remote', 'add', 'origin', fixture.origin], {
+          cwd: actualDirectory,
+        });
+      }
+      await EXEC_FILE_ASYNC(
+        'git',
+        [
+          '-c',
+          'user.name=Recall Quality',
+          '-c',
+          'user.email=recall-quality@example.test',
+          'commit',
+          '--allow-empty',
+          '-m',
+          'fixture',
+        ],
+        { cwd: actualDirectory },
+      );
+    }
+    actualDirectories.set(fixture.workingDirectory, actualDirectory);
+    const resolvedIdentity = await resolveProjectIdentity(actualDirectory);
+    repositoryIdentityResolutions += 1;
+    if (
+      !resolvedIdentity ||
+      resolvedIdentity.projectIdentity !== fixture.projectIdentity ||
+      resolvedIdentity.identitySource !== fixture.identitySource
+    ) {
+      throw new Error(
+        `Recall quality repository identity mismatch for ${fixture.workingDirectory}: expected ${fixture.projectIdentity} from ${fixture.identitySource}, received ${resolvedIdentity?.projectIdentity ?? 'unresolved'} from ${resolvedIdentity?.identitySource ?? 'none'}`,
+      );
+    }
+    resolvedFixtures.set(fixture.workingDirectory, resolvedIdentity);
+  }
+  return {
+    async resolveProjectIdentity(workingDirectory) {
+      return resolvedFixtures.get(workingDirectory) ?? null;
+    },
+    repositoryIdentityResolutions,
+  };
 }
 
 function createServiceDependencies(
@@ -267,7 +343,7 @@ export async function runRecallQualityEvaluation(
     options.baseConfig,
     options.dependencies?.embeddings,
   );
-  const resolveProjectIdentity = createEvaluationProjectIdentityResolver(options.corpus);
+  const projectResolver = await createEvaluationProjectResolver(options.corpus, workDirectory);
   const indexRuns: RecallQualityIndexRun[] = [];
   const configurations: RecallQualityConfigurationMeasurement[] = [];
   let executedSearchRequests = 0;
@@ -296,7 +372,7 @@ export async function runRecallQualityEvaluation(
       createServiceDependencies(
         embeddings,
         rejectingReranker,
-        resolveProjectIdentity,
+        projectResolver.resolveProjectIdentity,
         options.dependencies?.loadTokenizer,
       ),
     );
@@ -334,7 +410,7 @@ export async function runRecallQualityEvaluation(
         createServiceDependencies(
           embeddings,
           rejectingReranker,
-          resolveProjectIdentity,
+          projectResolver.resolveProjectIdentity,
           options.dependencies?.loadTokenizer,
         ),
       );
@@ -431,11 +507,11 @@ export async function runRecallQualityEvaluation(
     version: 4,
     evaluationIdentity: {
       defaultScope: RecallSearchScope.PROJECT,
-      projectScopePolicyVersion: RECALL_PROJECT_SCOPE_POLICY_VERSION,
-      repositoryIdentityPolicyVersion: RECALL_PROJECT_IDENTITY_POLICY_VERSION,
-      projectIdentityMetadataSchemaVersion: RECALL_PROJECT_IDENTITY_METADATA_SCHEMA_VERSION,
-      lineagePolicyVersion: RECALL_PROJECT_LINEAGE_POLICY_VERSION,
-      lineageDigest: createRecallProjectLineageDigest(specification.projectLineages),
+      projectScopePolicyVersion: PROJECT_SCOPE_POLICY_VERSION,
+      projectIdentityPolicyVersion: PROJECT_IDENTITY_POLICY_VERSION,
+      projectIdentityMetadataSchemaVersion: PROJECT_METADATA_SCHEMA_VERSION,
+      lineagePolicyVersion: PROJECT_LINEAGE_POLICY_VERSION,
+      lineageDigest: createLineageDigest(specification.projectLineages),
       rankingMode: 'hybrid',
       rankFusionVersion: RECALL_RANK_FUSION_VERSION,
       reciprocalRankConstant: RECALL_RRF_RANK_CONSTANT,
@@ -460,6 +536,7 @@ export async function runRecallQualityEvaluation(
       rerankerRequests,
       chunkEmbeddingRequests,
       maximumCandidatesPerSearch: Math.max(...specification.candidateCounts) * 3,
+      repositoryIdentityResolutions: projectResolver.repositoryIdentityResolutions,
     },
   };
 }

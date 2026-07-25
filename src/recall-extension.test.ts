@@ -4,7 +4,7 @@ import test from 'node:test';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 
 import { RecallSearchScope } from './enums.js';
-import recallExtension, { searchRecallFromPiToolContext } from './recall-extension.js';
+import recallExtension, { searchPiRecall } from './recall-extension.js';
 import type {
   RecallConversationSearchOptions,
   RecallConversationService,
@@ -64,10 +64,13 @@ void test('Pi recall tool adapter propagates trusted cwd with project default an
   const calls: Array<{
     query: string;
     limit: number;
-    options: RecallConversationSearchOptions | undefined;
+    options: RecallConversationSearchOptions;
   }> = [];
   const service: RecallConversationService = {
     async search(query, limit, options) {
+      if (!options) {
+        throw new Error('Pi recall adapter test expected search options');
+      }
       calls.push({ query, limit, options });
       return {
         totalChunks: 0,
@@ -103,17 +106,10 @@ void test('Pi recall tool adapter propagates trusted cwd with project default an
   };
   const context = { cwd: '/trusted/invocation' };
 
-  await searchRecallFromPiToolContext(
-    service,
-    { query: 'project query', mode: 'hybrid' },
-    undefined,
-    context,
-    5,
-  );
-  await searchRecallFromPiToolContext(
+  await searchPiRecall(service, { query: 'project query', mode: 'hybrid' }, context, 5);
+  await searchPiRecall(
     service,
     { query: 'global query', mode: 'deep-rerank', scope: 'global', limit: 2 },
-    undefined,
     context,
     5,
   );

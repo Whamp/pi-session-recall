@@ -11,9 +11,36 @@ import type { RecallChunkPolicy } from './recall-chunk-policy.js';
 import {
   isCanonicalRepositoryIdentity,
   normalizeRecallProjectLineages,
+  parseProjectIdentity,
+  type ProjectIdentity,
   type RecallProjectLineages,
 } from './resolve-project-identity.js';
 import type { SessionConversationChunk } from './session-conversation-index.js';
+
+declare const RECALL_QUALITY_CASE_ID_BRAND: unique symbol;
+declare const RECALL_QUALITY_ENTRY_ID_BRAND: unique symbol;
+
+/** Stable ID for one independently specified bounded recall quality case. */
+export type RecallQualityCaseId = string & {
+  readonly [RECALL_QUALITY_CASE_ID_BRAND]: true;
+};
+
+/** Stable source entry ID declared by the independent recall quality corpus. */
+export type RecallQualityEntryId = string & {
+  readonly [RECALL_QUALITY_ENTRY_ID_BRAND]: true;
+};
+
+/** Brands one schema-validated recall quality case ID. */
+export function parseQualityCaseId(value: string): RecallQualityCaseId;
+export function parseQualityCaseId(value: string): string {
+  return value;
+}
+
+/** Brands one schema-validated recall quality source entry ID. */
+export function parseQualityEntryId(value: string): RecallQualityEntryId;
+export function parseQualityEntryId(value: string): string {
+  return value;
+}
 
 /** One immutable session file in the bounded recall quality corpus. */
 export interface RecallQualitySessionFile {
@@ -24,28 +51,30 @@ export interface RecallQualitySessionFile {
 /** One exact source location declared independently from retrieval results. */
 export interface RecallQualityExpectedSource {
   sessionFile: string;
-  entryId: string;
+  entryId: RecallQualityEntryId;
   requiredText: string[];
   expectedSessionOrigin: string;
   expectedEvidenceRelation: RecallEvidenceRelation;
-  requiredContributingEntryIds: string[];
+  requiredContributingEntryIds: RecallQualityEntryId[];
   expectedEvidenceKind?: SessionConversationChunk['evidenceKind'];
   expectedSummaryKind?: Exclude<SessionConversationChunk['summaryKind'], null>;
   expectedBranch?: 'active' | 'abandoned';
 }
 
-/** Controlled repository or exact-origin answer used only by the bounded evaluation. */
-export interface RecallQualityProjectIdentityFixture {
+/** Controlled repository or exact-origin input used only by the bounded evaluation. */
+export interface RecallProjectFixture {
   workingDirectory: string;
-  projectIdentity: string;
+  projectIdentity: ProjectIdentity;
   identitySource: Exclude<
     RecallProjectIdentitySource,
     RecallProjectIdentitySource.CONFIGURED_PROJECT_LINEAGE
   >;
+  origin?: string;
+  worktreeOf?: string;
 }
 
 /** Evidence that every retrieval channel exhausted its limit on unrelated candidates globally. */
-export interface RecallQualityPreLimitChannelProof {
+export interface RecallChannelLimitProof {
   pollutingSessionFiles: string[];
   requiredChannels: Array<'dense' | 'lexical' | 'identifier'>;
   minimumPollutingCandidatesPerChannel: number;
@@ -53,7 +82,7 @@ export interface RecallQualityPreLimitChannelProof {
 
 /** One fixed query and its independently declared source, scope, and context requirements. */
 export interface RecallQualityEvaluationCase {
-  id: string;
+  id: RecallQualityCaseId;
   category:
     | 'semantic_paraphrase'
     | 'exact_identifier'
@@ -66,10 +95,10 @@ export interface RecallQualityEvaluationCase {
   query: string;
   scope: RecallSearchScope;
   invocationDirectory?: string;
-  expectedInvocationProjectIdentity?: string;
+  expectedInvocationProjectIdentity?: ProjectIdentity;
   expectedSources: RecallQualityExpectedSource[];
   excludedSessionFiles: string[];
-  preLimitChannelProof?: RecallQualityPreLimitChannelProof;
+  preLimitChannelProof?: RecallChannelLimitProof;
   requiredContext: string[];
   minimumPreservedSourceOccurrences: number;
 }
@@ -108,7 +137,7 @@ export interface RecallQualityCorpusSpecification {
     sessionDirectory: 'corpus';
     sessionFiles: RecallQualitySessionFile[];
   };
-  projectIdentityFixtures: RecallQualityProjectIdentityFixture[];
+  projectIdentityFixtures: RecallProjectFixture[];
   projectLineages: RecallProjectLineages;
   bounds: RecallQualityWorkBounds;
   chunkPolicies: [RecallQualityChunkPolicy];
@@ -128,19 +157,19 @@ export interface LoadedRecallQualityCorpus {
   sessionFiles: Array<RecallQualitySessionFile & { path: string }>;
 }
 
-const sha256Schema = Type.String({ pattern: '^[a-f0-9]{64}$' });
-const nonemptyStringSchema = Type.String({ minLength: 1 });
-const probabilitySchema = Type.Number({ minimum: 0, maximum: 1 });
-const positiveIntegerSchema = Type.Integer({ minimum: 1 });
+const SHA256_SCHEMA = Type.String({ pattern: '^[a-f0-9]{64}$' });
+const NONEMPTY_STRING_SCHEMA = Type.String({ minLength: 1 });
+const PROBABILITY_SCHEMA = Type.Number({ minimum: 0, maximum: 1 });
+const POSITIVE_INTEGER_SCHEMA = Type.Integer({ minimum: 1 });
 
-const expectedSourceSchema = Type.Object(
+const EXPECTED_SOURCE_SCHEMA = Type.Object(
   {
     sessionFile: Type.String({ pattern: '^[a-z0-9][a-z0-9-]*\\.jsonl$' }),
-    entryId: nonemptyStringSchema,
-    requiredText: Type.Array(nonemptyStringSchema, { minItems: 1 }),
-    expectedSessionOrigin: nonemptyStringSchema,
+    entryId: NONEMPTY_STRING_SCHEMA,
+    requiredText: Type.Array(NONEMPTY_STRING_SCHEMA, { minItems: 1 }),
+    expectedSessionOrigin: NONEMPTY_STRING_SCHEMA,
     expectedEvidenceRelation: Type.Enum(RecallEvidenceRelation),
-    requiredContributingEntryIds: Type.Array(nonemptyStringSchema, { minItems: 1 }),
+    requiredContributingEntryIds: Type.Array(NONEMPTY_STRING_SCHEMA, { minItems: 1 }),
     expectedEvidenceKind: Type.Optional(
       Type.Union([
         Type.Literal('conversation'),
@@ -160,7 +189,7 @@ const expectedSourceSchema = Type.Object(
   { additionalProperties: false },
 );
 
-const evaluationCaseSchema = Type.Object(
+const EVALUATION_CASE_SCHEMA = Type.Object(
   {
     id: Type.String({ pattern: '^[a-z0-9][a-z0-9-]*$' }),
     category: Type.Union([
@@ -173,11 +202,11 @@ const evaluationCaseSchema = Type.Object(
       Type.Literal('duplicate_content'),
       Type.Literal('project_scope'),
     ]),
-    query: nonemptyStringSchema,
+    query: NONEMPTY_STRING_SCHEMA,
     scope: Type.Enum(RecallSearchScope),
-    invocationDirectory: Type.Optional(nonemptyStringSchema),
-    expectedInvocationProjectIdentity: Type.Optional(nonemptyStringSchema),
-    expectedSources: Type.Array(expectedSourceSchema, { minItems: 1 }),
+    invocationDirectory: Type.Optional(NONEMPTY_STRING_SCHEMA),
+    expectedInvocationProjectIdentity: Type.Optional(NONEMPTY_STRING_SCHEMA),
+    expectedSources: Type.Array(EXPECTED_SOURCE_SCHEMA, { minItems: 1 }),
     excludedSessionFiles: Type.Array(Type.String({ pattern: '^[a-z0-9][a-z0-9-]*\\.jsonl$' })),
     preLimitChannelProof: Type.Optional(
       Type.Object(
@@ -194,13 +223,13 @@ const evaluationCaseSchema = Type.Object(
             ]),
             { minItems: 1 },
           ),
-          minimumPollutingCandidatesPerChannel: positiveIntegerSchema,
+          minimumPollutingCandidatesPerChannel: POSITIVE_INTEGER_SCHEMA,
         },
         { additionalProperties: false },
       ),
     ),
-    requiredContext: Type.Array(nonemptyStringSchema, { minItems: 1 }),
-    minimumPreservedSourceOccurrences: positiveIntegerSchema,
+    requiredContext: Type.Array(NONEMPTY_STRING_SCHEMA, { minItems: 1 }),
+    minimumPreservedSourceOccurrences: POSITIVE_INTEGER_SCHEMA,
   },
   { additionalProperties: false },
 );
@@ -216,20 +245,22 @@ function createChunkPolicySchema(id: string, maxTokens: number, overlapTokens: n
   );
 }
 
-const projectIdentityFixtureSchema = Type.Object(
+const PROJECT_FIXTURE_SCHEMA = Type.Object(
   {
-    workingDirectory: nonemptyStringSchema,
-    projectIdentity: nonemptyStringSchema,
+    workingDirectory: NONEMPTY_STRING_SCHEMA,
+    projectIdentity: NONEMPTY_STRING_SCHEMA,
     identitySource: Type.Union([
       Type.Literal(RecallProjectIdentitySource.GIT_ORIGIN),
       Type.Literal(RecallProjectIdentitySource.GIT_COMMON_DIRECTORY),
       Type.Literal(RecallProjectIdentitySource.NON_GIT_SESSION_ORIGIN),
     ]),
+    origin: Type.Optional(NONEMPTY_STRING_SCHEMA),
+    worktreeOf: Type.Optional(NONEMPTY_STRING_SCHEMA),
   },
   { additionalProperties: false },
 );
 
-const recallQualityCorpusSchema = Type.Object(
+const RECALL_QUALITY_CORPUS_SCHEMA = Type.Object(
   {
     version: Type.Literal(3),
     corpus: Type.Object(
@@ -240,7 +271,7 @@ const recallQualityCorpusSchema = Type.Object(
           Type.Object(
             {
               fileName: Type.String({ pattern: '^[a-z0-9][a-z0-9-]*\\.jsonl$' }),
-              sha256: sha256Schema,
+              sha256: SHA256_SCHEMA,
             },
             { additionalProperties: false },
           ),
@@ -249,17 +280,17 @@ const recallQualityCorpusSchema = Type.Object(
       },
       { additionalProperties: false },
     ),
-    projectIdentityFixtures: Type.Array(projectIdentityFixtureSchema),
-    projectLineages: Type.Record(Type.String({ minLength: 1 }), Type.Array(nonemptyStringSchema)),
+    projectIdentityFixtures: Type.Array(PROJECT_FIXTURE_SCHEMA),
+    projectLineages: Type.Record(Type.String({ minLength: 1 }), Type.Array(NONEMPTY_STRING_SCHEMA)),
     bounds: Type.Object(
       {
-        maximumSessionFiles: positiveIntegerSchema,
-        maximumEvaluationCases: positiveIntegerSchema,
-        maximumChunkPolicies: positiveIntegerSchema,
-        maximumCandidateCounts: positiveIntegerSchema,
-        maximumFinalCounts: positiveIntegerSchema,
-        maximumSearchRequests: positiveIntegerSchema,
-        maximumChunkEmbeddingRequests: positiveIntegerSchema,
+        maximumSessionFiles: POSITIVE_INTEGER_SCHEMA,
+        maximumEvaluationCases: POSITIVE_INTEGER_SCHEMA,
+        maximumChunkPolicies: POSITIVE_INTEGER_SCHEMA,
+        maximumCandidateCounts: POSITIVE_INTEGER_SCHEMA,
+        maximumFinalCounts: POSITIVE_INTEGER_SCHEMA,
+        maximumSearchRequests: POSITIVE_INTEGER_SCHEMA,
+        maximumChunkEmbeddingRequests: POSITIVE_INTEGER_SCHEMA,
       },
       { additionalProperties: false },
     ),
@@ -269,16 +300,16 @@ const recallQualityCorpusSchema = Type.Object(
     warmupQueriesPerCombination: Type.Integer({ minimum: 0, maximum: 3 }),
     qualityGate: Type.Object(
       {
-        minimumCandidatePoolRecall: probabilitySchema,
-        minimumFinalRecall: probabilitySchema,
-        minimumContextUsefulness: probabilitySchema,
-        minimumSourceOccurrencePreservation: probabilitySchema,
-        maximumFinalDuplicateRate: probabilitySchema,
+        minimumCandidatePoolRecall: PROBABILITY_SCHEMA,
+        minimumFinalRecall: PROBABILITY_SCHEMA,
+        minimumContextUsefulness: PROBABILITY_SCHEMA,
+        minimumSourceOccurrencePreservation: PROBABILITY_SCHEMA,
+        maximumFinalDuplicateRate: PROBABILITY_SCHEMA,
         maximumQueryP95Milliseconds: Type.Number({ exclusiveMinimum: 0 }),
       },
       { additionalProperties: false },
     ),
-    cases: Type.Array(evaluationCaseSchema, { minItems: 1 }),
+    cases: Type.Array(EVALUATION_CASE_SCHEMA, { minItems: 1 }),
   },
   { additionalProperties: false },
 );
@@ -325,10 +356,24 @@ function assertRecallQualityProjectFixtures(specification: RecallQualityCorpusSp
           `Recall quality corpus invalid: exact non-Git fixture identity must be ${expectedIdentity}`,
         );
       }
-    } else if (!isCanonicalRepositoryIdentity(fixture.projectIdentity)) {
-      throw new Error(
-        `Recall quality corpus invalid: repository fixture identity must be canonical: ${fixture.projectIdentity}`,
-      );
+      if (fixture.origin || fixture.worktreeOf) {
+        throw new Error(
+          `Recall quality corpus invalid: exact non-Git fixture cannot declare Git setup: ${fixture.workingDirectory}`,
+        );
+      }
+    } else {
+      if (!isCanonicalRepositoryIdentity(fixture.projectIdentity)) {
+        throw new Error(
+          `Recall quality corpus invalid: repository fixture identity must be canonical: ${fixture.projectIdentity}`,
+        );
+      }
+      if (fixture.identitySource === RecallProjectIdentitySource.GIT_ORIGIN) {
+        if ((fixture.origin ? 1 : 0) + (fixture.worktreeOf ? 1 : 0) !== 1) {
+          throw new Error(
+            `Recall quality corpus invalid: Git-origin fixture requires exactly one origin or worktree source: ${fixture.workingDirectory}`,
+          );
+        }
+      }
     }
   }
   for (const evaluationCase of specification.cases) {
@@ -661,7 +706,34 @@ export async function loadRecallQualityCorpus(
   let specification: RecallQualityCorpusSpecification;
   try {
     const parsed: unknown = JSON.parse(specificationContent);
-    specification = Value.Parse(recallQualityCorpusSchema, parsed);
+    const parsedSpecification = Value.Parse(RECALL_QUALITY_CORPUS_SCHEMA, parsed);
+    specification = {
+      ...parsedSpecification,
+      projectIdentityFixtures: parsedSpecification.projectIdentityFixtures.map((fixture) => ({
+        ...fixture,
+        projectIdentity: parseProjectIdentity(fixture.projectIdentity),
+      })),
+      cases: parsedSpecification.cases.map((evaluationCase) => {
+        const { expectedInvocationProjectIdentity, ...caseWithoutProjectIdentity } = evaluationCase;
+        return {
+          ...caseWithoutProjectIdentity,
+          id: parseQualityCaseId(evaluationCase.id),
+          ...(expectedInvocationProjectIdentity
+            ? {
+                expectedInvocationProjectIdentity: parseProjectIdentity(
+                  expectedInvocationProjectIdentity,
+                ),
+              }
+            : {}),
+          expectedSources: evaluationCase.expectedSources.map((expectedSource) => ({
+            ...expectedSource,
+            entryId: parseQualityEntryId(expectedSource.entryId),
+            requiredContributingEntryIds:
+              expectedSource.requiredContributingEntryIds.map(parseQualityEntryId),
+          })),
+        };
+      }),
+    };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`Recall quality corpus invalid at ${resolvedSpecificationPath}: ${message}`, {

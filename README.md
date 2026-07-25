@@ -241,7 +241,7 @@ Run the fixed quality and latency gate before approving a full corpus backfill:
 npm run evaluate:recall
 ```
 
-The command reads only the 15 checksum-fixed sessions under `evaluation/corpus/`. It builds one temporary 512/64 index under the ignored `evaluation/.recall-data/recall-quality-evaluation/` directory and measures the approved policy of 8 candidates per channel and 5 final results. The 17 cases preserve the established global retrieval classes and add main/worktree, equivalent-clone, configured-lineage, unrelated-similar-project, exact non-Git, and explicit-global coverage. A global control proves dense, lexical, and identifier project restrictions apply before each channel limit. The default hybrid run makes zero reranker requests and writes:
+The command reads only the 15 checksum-fixed sessions under `evaluation/corpus/`. It builds one temporary 512/64 index under the ignored `evaluation/.recall-data/recall-quality-evaluation/` directory and measures the approved policy of 8 candidates per channel and 5 final results. Its Git fixtures are temporary repositories in that same guarded directory; the production project identity resolver must derive the declared main-checkout, worktree, clone, and unrelated-repository identities before indexing begins. The 17 cases preserve the established global retrieval classes and add main/worktree, equivalent-clone, configured-lineage, unrelated-similar-project, exact non-Git, and explicit-global coverage. A global control proves dense, lexical, and identifier project restrictions apply before each channel limit. The default hybrid run makes zero reranker requests and writes:
 
 - `docs/evaluation/recall-quality-report.md`
 - `docs/evaluation/recall-quality-results.json`

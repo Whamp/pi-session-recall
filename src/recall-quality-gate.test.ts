@@ -1,18 +1,19 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
+import { isUnknownRecord } from './is-unknown-record.js';
 import {
   readRecallQualityGateDecision,
   RECALL_QUALITY_RESULTS_PATH,
 } from './recall-quality-gate.js';
 
-const currentEvaluationIdentity = {
+const CURRENT_EVALUATION_IDENTITY = {
   defaultScope: 'project',
   projectScopePolicyVersion: 1,
-  repositoryIdentityPolicyVersion: 3,
+  projectIdentityPolicyVersion: 4,
   projectIdentityMetadataSchemaVersion: 3,
   lineagePolicyVersion: 1,
   lineageDigest: '44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a',
@@ -24,34 +25,27 @@ const currentEvaluationIdentity = {
   finalResultCount: 5,
 };
 
-function createPassingQualityEvidence(evaluationIdentity: typeof currentEvaluationIdentity) {
-  return {
-    version: 2,
-    environment: { gitDirty: false },
-    specification: { version: 3, projectLineages: {} },
-    result: {
-      version: 4,
-      evaluationIdentity,
-      selection: {
-        passed: true,
-        selected: {
-          chunkPolicy: { id: '512-64', maxTokens: 512, overlapTokens: 64 },
-          candidateCount: 8,
-          finalCount: 5,
-          gatePassed: true,
-        },
-        blockers: [],
-        combinations: [
-          {
-            chunkPolicy: { id: '512-64', maxTokens: 512, overlapTokens: 64 },
-            candidateCount: 8,
-            finalCount: 5,
-            gatePassed: true,
-          },
-        ],
-      },
-    },
-  };
+async function createPassingQualityEvidence(
+  evaluationIdentity: typeof CURRENT_EVALUATION_IDENTITY,
+): Promise<unknown> {
+  const evidence: unknown = JSON.parse(await readFile(RECALL_QUALITY_RESULTS_PATH, 'utf8'));
+  if (!isUnknownRecord(evidence)) {
+    throw new Error('Recall quality gate test fixture invalid: expected evidence object');
+  }
+  const specification = Reflect.get(evidence, 'specification');
+  const result = Reflect.get(evidence, 'result');
+  if (!isUnknownRecord(specification) || !isUnknownRecord(result)) {
+    throw new Error('Recall quality gate test fixture invalid: expected specification and result');
+  }
+  const boundedWork = Reflect.get(result, 'boundedWork');
+  if (!isUnknownRecord(boundedWork)) {
+    throw new Error('Recall quality gate test fixture invalid: expected bounded work');
+  }
+  Reflect.set(specification, 'projectLineages', {});
+  Reflect.set(specification, 'projectIdentityFixtures', []);
+  Reflect.set(result, 'evaluationIdentity', evaluationIdentity);
+  Reflect.set(boundedWork, 'repositoryIdentityResolutions', 0);
+  return evidence;
 }
 
 void test('committed project-scoped quality evidence approves its measured policy', async () => {
@@ -64,6 +58,28 @@ void test('committed project-scoped quality evidence approves its measured polic
     finalCount: 5,
   });
   assert.deepEqual(decision.blockers, []);
+});
+
+void test('quality evidence without measurements or bounded work cannot approve rollout', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-quality-truncated-gate-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const resultsPath = join(directory, 'results.json');
+  const evidence: unknown = JSON.parse(await readFile(RECALL_QUALITY_RESULTS_PATH, 'utf8'));
+  if (!isUnknownRecord(evidence)) {
+    throw new Error('Recall quality gate test fixture invalid: expected evidence object');
+  }
+  const result = Reflect.get(evidence, 'result');
+  if (!isUnknownRecord(result)) {
+    throw new Error('Recall quality gate test fixture invalid: expected result object');
+  }
+  Reflect.deleteProperty(result, 'configurations');
+  Reflect.deleteProperty(result, 'boundedWork');
+  await writeFile(resultsPath, JSON.stringify(evidence));
+
+  await assert.rejects(
+    () => readRecallQualityGateDecision(resultsPath),
+    /Recall quality gate evidence invalid/,
+  );
 });
 
 void test('legacy passing recall quality evidence approves no policy', async (t) => {
@@ -179,79 +195,37 @@ void test('quality evidence rejects a selected policy absent from measured combi
   const directory = await mkdtemp(join(tmpdir(), 'recall-quality-unmeasured-policy-gate-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const resultsPath = join(directory, 'results.json');
-  await writeFile(
-    resultsPath,
-    JSON.stringify({
-      version: 2,
-      environment: { gitDirty: false },
-      specification: { version: 3, projectLineages: {} },
-      result: {
-        version: 4,
-        evaluationIdentity: currentEvaluationIdentity,
-        selection: {
-          passed: true,
-          selected: {
-            chunkPolicy: { id: '512-64', maxTokens: 512, overlapTokens: 64 },
-            candidateCount: 8,
-            finalCount: 5,
-            gatePassed: true,
-          },
-          blockers: [],
-          combinations: [
-            {
-              chunkPolicy: { id: '512-64', maxTokens: 512, overlapTokens: 64 },
-              candidateCount: 16,
-              finalCount: 5,
-              gatePassed: true,
-            },
-          ],
-        },
-      },
-    }),
-  );
+  const evidence = await createPassingQualityEvidence(CURRENT_EVALUATION_IDENTITY);
+  if (!isUnknownRecord(evidence)) {
+    throw new Error('Recall quality gate test fixture invalid: expected evidence object');
+  }
+  const result = Reflect.get(evidence, 'result');
+  const selection = isUnknownRecord(result) ? Reflect.get(result, 'selection') : null;
+  const selected = isUnknownRecord(selection) ? Reflect.get(selection, 'selected') : null;
+  if (!isUnknownRecord(selection) || !isUnknownRecord(selected)) {
+    throw new Error('Recall quality gate test fixture invalid: expected selected policy');
+  }
+  Reflect.set(selection, 'combinations', [{ ...selected, candidateCount: 16 }]);
+  await writeFile(resultsPath, JSON.stringify(evidence));
 
   await assert.rejects(
     () => readRecallQualityGateDecision(resultsPath),
-    /selected policy was not a passing measured combination/,
+    /selection was not reproduced from complete measurements/,
   );
 });
 
-void test('quality evidence rejects a stale repository identity policy', async (t) => {
+void test('quality evidence rejects a stale project identity policy', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'recall-quality-project-policy-gate-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const resultsPath = join(directory, 'results.json');
   await writeFile(
     resultsPath,
-    JSON.stringify({
-      version: 2,
-      environment: { gitDirty: false },
-      specification: { version: 3, projectLineages: {} },
-      result: {
-        version: 4,
-        evaluationIdentity: {
-          ...currentEvaluationIdentity,
-          repositoryIdentityPolicyVersion: 2,
-        },
-        selection: {
-          passed: true,
-          selected: {
-            chunkPolicy: { id: '512-64', maxTokens: 512, overlapTokens: 64 },
-            candidateCount: 8,
-            finalCount: 5,
-            gatePassed: true,
-          },
-          blockers: [],
-          combinations: [
-            {
-              chunkPolicy: { id: '512-64', maxTokens: 512, overlapTokens: 64 },
-              candidateCount: 8,
-              finalCount: 5,
-              gatePassed: true,
-            },
-          ],
-        },
-      },
-    }),
+    JSON.stringify(
+      await createPassingQualityEvidence({
+        ...CURRENT_EVALUATION_IDENTITY,
+        projectIdentityPolicyVersion: 3,
+      }),
+    ),
   );
 
   const decision = await readRecallQualityGateDecision(resultsPath);
@@ -267,8 +241,8 @@ void test('quality evidence rejects a stale rank-fusion identity', async (t) => 
   await writeFile(
     resultsPath,
     JSON.stringify(
-      createPassingQualityEvidence({
-        ...currentEvaluationIdentity,
+      await createPassingQualityEvidence({
+        ...CURRENT_EVALUATION_IDENTITY,
         rankFusionVersion: 2,
       }),
     ),
@@ -287,8 +261,8 @@ void test('quality evidence rejects a stale lineage digest', async (t) => {
   await writeFile(
     resultsPath,
     JSON.stringify(
-      createPassingQualityEvidence({
-        ...currentEvaluationIdentity,
+      await createPassingQualityEvidence({
+        ...CURRENT_EVALUATION_IDENTITY,
         lineageDigest: 'a'.repeat(64),
       }),
     ),
@@ -306,33 +280,7 @@ void test('clean passing recall quality evidence returns its measured policy', a
   const resultsPath = join(directory, 'results.json');
   await writeFile(
     resultsPath,
-    JSON.stringify({
-      version: 2,
-      environment: { gitDirty: false },
-      specification: { version: 3, projectLineages: {} },
-      result: {
-        version: 4,
-        evaluationIdentity: currentEvaluationIdentity,
-        selection: {
-          passed: true,
-          selected: {
-            chunkPolicy: { id: '512-64', maxTokens: 512, overlapTokens: 64 },
-            candidateCount: 8,
-            finalCount: 5,
-            gatePassed: true,
-          },
-          blockers: [],
-          combinations: [
-            {
-              chunkPolicy: { id: '512-64', maxTokens: 512, overlapTokens: 64 },
-              candidateCount: 8,
-              finalCount: 5,
-              gatePassed: true,
-            },
-          ],
-        },
-      },
-    }),
+    JSON.stringify(await createPassingQualityEvidence(CURRENT_EVALUATION_IDENTITY)),
   );
 
   const decision = await readRecallQualityGateDecision(resultsPath);

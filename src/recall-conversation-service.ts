@@ -34,8 +34,9 @@ import {
 import type { RecallChunkPolicy } from './recall-chunk-policy.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
 import {
-  createProjectLineageIdentityResolver,
+  createLineageResolver,
   resolveProjectIdentity,
+  type ProjectIdentity,
   type RecallProjectLineages,
   type ResolvedProjectIdentity,
 } from './resolve-project-identity.js';
@@ -97,7 +98,7 @@ export interface RecallConversationSearchOptions {
 /** Exact fusion, optional Qwen reranking, branch-prior, and neighbor policy for one search. */
 export interface RecallSearchPolicy {
   scope: RecallSearchScope;
-  invocationProjectIdentity: string | null;
+  invocationProjectIdentity: ProjectIdentity | null;
   rankingMode: RecallSearchMode;
   rankFusionVersion: number;
   reciprocalRankConstant: number;
@@ -281,7 +282,7 @@ export function createRecallConversationService(
   const loadTokenizer =
     dependencies.loadTokenizer ??
     (() => loadOctenConversationTokenizer({ cacheDirectory: config.tokenizerCacheDirectory }));
-  const resolveSearchProjectIdentity = createProjectLineageIdentityResolver(
+  const resolveSearchProjectIdentity = createLineageResolver(
     config.projectLineages,
     dependencies.resolveProjectIdentity ?? resolveProjectIdentity,
   );
@@ -523,9 +524,10 @@ export function createRecallConversationService(
           const results: RecallConversationSearchResult[] = rankedResults.map((result) => ({
             ...result,
             evidenceRelation:
-              !invocationProject || invocationProject.projectIdentity !== result.projectIdentity
+              !invocationProject ||
+              invocationProject.projectIdentity !== result.projectAttribution?.projectIdentity
                 ? RecallEvidenceRelation.UNRESTRICTED_GLOBAL
-                : result.projectIdentitySource ===
+                : result.projectAttribution.identitySource ===
                       RecallProjectIdentitySource.CONFIGURED_PROJECT_LINEAGE ||
                     invocationProject.identitySource ===
                       RecallProjectIdentitySource.CONFIGURED_PROJECT_LINEAGE

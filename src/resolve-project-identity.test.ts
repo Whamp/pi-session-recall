@@ -9,7 +9,7 @@ import { promisify } from 'node:util';
 import { RecallProjectIdentitySource } from './enums.js';
 import { resolveProjectIdentity } from './resolve-project-identity.js';
 
-const execFileAsync = promisify(execFile);
+const EXEC_FILE_ASYNC = promisify(execFile);
 
 void test('Git project identity canonicalizes equivalent credentialed SSH and HTTPS origins', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'recall-git-origin-'));
@@ -17,14 +17,14 @@ void test('Git project identity canonicalizes equivalent credentialed SSH and HT
   const sshClone = join(directory, 'ssh-clone');
   const httpsClone = join(directory, 'https-clone');
   await Promise.all([mkdir(sshClone), mkdir(httpsClone)]);
-  await execFileAsync('git', ['init'], { cwd: sshClone });
-  await execFileAsync(
+  await EXEC_FILE_ASYNC('git', ['init'], { cwd: sshClone });
+  await EXEC_FILE_ASYNC(
     'git',
     ['remote', 'add', 'origin', 'git@GitHub.com:Whamp/pi-session-recall.git'],
     { cwd: sshClone },
   );
-  await execFileAsync('git', ['init'], { cwd: httpsClone });
-  await execFileAsync(
+  await EXEC_FILE_ASYNC('git', ['init'], { cwd: httpsClone });
+  await EXEC_FILE_ASYNC(
     'git',
     ['remote', 'add', 'origin', 'https://access-token@github.com/Whamp/pi-session-recall.git/'],
     { cwd: httpsClone },
@@ -41,14 +41,41 @@ void test('Git project identity canonicalizes equivalent credentialed SSH and HT
   assert.ok(!httpsIdentity?.projectIdentity.includes('access-token'));
 });
 
+void test('Git project identity keeps non-default origin ports distinct', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-git-origin-port-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const firstClone = join(directory, 'first-clone');
+  const secondClone = join(directory, 'second-clone');
+  await Promise.all([mkdir(firstClone), mkdir(secondClone)]);
+  await EXEC_FILE_ASYNC('git', ['init'], { cwd: firstClone });
+  await EXEC_FILE_ASYNC(
+    'git',
+    ['remote', 'add', 'origin', 'http://gitea.example.test:3000/acme/web.git'],
+    { cwd: firstClone },
+  );
+  await EXEC_FILE_ASYNC('git', ['init'], { cwd: secondClone });
+  await EXEC_FILE_ASYNC(
+    'git',
+    ['remote', 'add', 'origin', 'http://gitea.example.test:3001/acme/web.git'],
+    { cwd: secondClone },
+  );
+
+  const firstIdentity = await resolveProjectIdentity(firstClone);
+  const secondIdentity = await resolveProjectIdentity(secondClone);
+
+  assert.equal(firstIdentity?.projectIdentity, 'git-origin:gitea.example.test:3000/acme/web');
+  assert.equal(secondIdentity?.projectIdentity, 'git-origin:gitea.example.test:3001/acme/web');
+  assert.notDeepEqual(firstIdentity, secondIdentity);
+});
+
 void test('Git project identity uses one real common directory for a main checkout and worktree', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'recall-git-common-directory-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const mainCheckout = join(directory, 'main-checkout');
   const worktreeCheckout = join(directory, 'feature-worktree');
   await mkdir(mainCheckout);
-  await execFileAsync('git', ['init'], { cwd: mainCheckout });
-  await execFileAsync(
+  await EXEC_FILE_ASYNC('git', ['init'], { cwd: mainCheckout });
+  await EXEC_FILE_ASYNC(
     'git',
     [
       '-c',
@@ -62,10 +89,10 @@ void test('Git project identity uses one real common directory for a main checko
     ],
     { cwd: mainCheckout },
   );
-  await execFileAsync('git', ['remote', 'add', 'origin', 'not a usable hosted remote'], {
+  await EXEC_FILE_ASYNC('git', ['remote', 'add', 'origin', 'not a usable hosted remote'], {
     cwd: mainCheckout,
   });
-  await execFileAsync('git', ['worktree', 'add', worktreeCheckout, '-b', 'feature'], {
+  await EXEC_FILE_ASYNC('git', ['worktree', 'add', worktreeCheckout, '-b', 'feature'], {
     cwd: mainCheckout,
   });
 

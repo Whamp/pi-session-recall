@@ -7,7 +7,11 @@ import test from 'node:test';
 import { RecallEvidenceRelation, RecallSearchScope } from './enums.js';
 import type { RecallSearchResult } from './fuse-recall-search-candidates.js';
 import { measureRecallQuality } from './measure-recall-quality.js';
-import type { RecallQualityEvaluationCase } from './recall-quality-corpus.js';
+import {
+  parseQualityCaseId,
+  parseQualityEntryId,
+  type RecallQualityEvaluationCase,
+} from './recall-quality-corpus.js';
 import type { RankedRecallSearchResult } from './rank-recall-search-results.js';
 import {
   readSessionConversationChunks,
@@ -88,27 +92,27 @@ void test('recall quality measures candidate-pool and fused final source preserv
     neighborContext: null,
   };
   const evaluationCase: RecallQualityEvaluationCase = {
-    id: 'duplicate-meridian',
+    id: parseQualityCaseId('duplicate-meridian'),
     category: 'duplicate_content',
     query: 'What release checksum did Meridian use?',
     scope: RecallSearchScope.GLOBAL,
     expectedSources: [
       {
         sessionFile: 'copy-a.jsonl',
-        entryId: 'entry-a',
+        entryId: parseQualityEntryId('entry-a'),
         requiredText: ['sha256:4c91d7e2'],
         expectedSessionOrigin: '/evaluation',
         expectedEvidenceRelation: RecallEvidenceRelation.UNRESTRICTED_GLOBAL,
-        requiredContributingEntryIds: ['entry-a'],
+        requiredContributingEntryIds: [parseQualityEntryId('entry-a')],
         expectedBranch: 'active',
       },
       {
         sessionFile: 'copy-b.jsonl',
-        entryId: 'entry-b',
+        entryId: parseQualityEntryId('entry-b'),
         requiredText: ['sha256:4c91d7e2'],
         expectedSessionOrigin: '/evaluation',
         expectedEvidenceRelation: RecallEvidenceRelation.UNRESTRICTED_GLOBAL,
-        requiredContributingEntryIds: ['entry-b'],
+        requiredContributingEntryIds: [parseQualityEntryId('entry-b')],
         expectedBranch: 'active',
       },
     ],

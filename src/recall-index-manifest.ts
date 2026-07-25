@@ -17,10 +17,10 @@ import {
 } from './octen-conversation-tokenizer.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
 import {
-  createRecallProjectLineageDigest,
-  RECALL_PROJECT_IDENTITY_METADATA_SCHEMA_VERSION,
-  RECALL_PROJECT_IDENTITY_POLICY_VERSION,
-  RECALL_PROJECT_LINEAGE_POLICY_VERSION,
+  createLineageDigest,
+  PROJECT_METADATA_SCHEMA_VERSION,
+  PROJECT_IDENTITY_POLICY_VERSION,
+  PROJECT_LINEAGE_POLICY_VERSION,
   type RecallProjectLineages,
 } from './resolve-project-identity.js';
 import { SESSION_CONVERSATION_SCHEMA_VERSION } from './session-conversation-index.js';
@@ -173,9 +173,9 @@ const recallIndexManifestSchema = Type.Object(
     embeddingCacheVersion: Type.Integer({ minimum: 1 }),
     projectIdentity: Type.Object(
       {
-        policyVersion: Type.Literal(RECALL_PROJECT_IDENTITY_POLICY_VERSION),
-        metadataSchemaVersion: Type.Literal(RECALL_PROJECT_IDENTITY_METADATA_SCHEMA_VERSION),
-        lineagePolicyVersion: Type.Literal(RECALL_PROJECT_LINEAGE_POLICY_VERSION),
+        policyVersion: Type.Literal(PROJECT_IDENTITY_POLICY_VERSION),
+        metadataSchemaVersion: Type.Literal(PROJECT_METADATA_SCHEMA_VERSION),
+        lineagePolicyVersion: Type.Literal(PROJECT_LINEAGE_POLICY_VERSION),
         lineageDigest: Type.String({ pattern: '^[a-f0-9]{64}$' }),
       },
       { additionalProperties: false },
@@ -291,10 +291,10 @@ export function createRecallIndexManifest(options: {
     provenanceSchemaVersion: SESSION_CONVERSATION_SCHEMA_VERSION,
     embeddingCacheVersion: EMBEDDING_VECTOR_CACHE_VERSION,
     projectIdentity: {
-      policyVersion: RECALL_PROJECT_IDENTITY_POLICY_VERSION,
-      metadataSchemaVersion: RECALL_PROJECT_IDENTITY_METADATA_SCHEMA_VERSION,
-      lineagePolicyVersion: RECALL_PROJECT_LINEAGE_POLICY_VERSION,
-      lineageDigest: createRecallProjectLineageDigest(options.projectLineages ?? {}),
+      policyVersion: PROJECT_IDENTITY_POLICY_VERSION,
+      metadataSchemaVersion: PROJECT_METADATA_SCHEMA_VERSION,
+      lineagePolicyVersion: PROJECT_LINEAGE_POLICY_VERSION,
+      lineageDigest: createLineageDigest(options.projectLineages ?? {}),
     },
     zvec: {
       schemaVersion: ZVEC_CONVERSATION_SCHEMA_VERSION,

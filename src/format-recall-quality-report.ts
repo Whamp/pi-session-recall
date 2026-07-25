@@ -1,3 +1,4 @@
+import { RecallProjectIdentitySource } from './enums.js';
 import type { LoadedRecallQualityCorpus, RecallQualityGate } from './recall-quality-corpus.js';
 import type { RecallQualityEvaluationResult } from './run-recall-quality-evaluation.js';
 import type {
@@ -229,7 +230,7 @@ export function formatRecallQualityReport(
     '## Evaluation identity',
     '',
     `- Default scope: \`${result.evaluationIdentity.defaultScope}\` (policy v${result.evaluationIdentity.projectScopePolicyVersion})`,
-    `- Repository identity policy: v${result.evaluationIdentity.repositoryIdentityPolicyVersion}; metadata schema v${result.evaluationIdentity.projectIdentityMetadataSchemaVersion}`,
+    `- Project identity policy: v${result.evaluationIdentity.projectIdentityPolicyVersion}; metadata schema v${result.evaluationIdentity.projectIdentityMetadataSchemaVersion}`,
     `- Project lineage policy: v${result.evaluationIdentity.lineagePolicyVersion}; digest \`${result.evaluationIdentity.lineageDigest}\``,
     `- Hybrid ranking: fusion v${result.evaluationIdentity.rankFusionVersion}, RRF k=${result.evaluationIdentity.reciprocalRankConstant}, active prior +${result.evaluationIdentity.activeBranchPrior.toFixed(4)}`,
     `- Candidate limits: dense ${result.evaluationIdentity.candidateLimits.dense}, lexical ${result.evaluationIdentity.candidateLimits.lexical}, identifier ${result.evaluationIdentity.candidateLimits.identifier}; final results ${result.evaluationIdentity.finalResultCount}`,
@@ -251,6 +252,12 @@ export function formatRecallQualityReport(
     `| Reranker requests | ${result.boundedWork.rerankerRequests} | 0 |`,
     `| Chunk-embedding HTTP batches | ${result.boundedWork.chunkEmbeddingRequests} | ${specification.bounds.maximumChunkEmbeddingRequests} |`,
     `| Maximum fused candidates/search | ${result.boundedWork.maximumCandidatesPerSearch} | 200 |`,
+    `| Production repository identity resolutions | ${result.boundedWork.repositoryIdentityResolutions} | ${
+      specification.projectIdentityFixtures.filter(
+        ({ identitySource }) =>
+          identitySource !== RecallProjectIdentitySource.NON_GIT_SESSION_ORIGIN,
+      ).length
+    } |`,
     '',
     `Run duration: ${formatMilliseconds(result.durationMilliseconds)}. Work data stayed under \`evaluation/.recall-data/${RECALL_QUALITY_WORK_DIRECTORY_NAME_FOR_REPORT}/\` and used only ${result.boundedWork.sessionFiles} checksum-fixed JSONL files.`,
     '',

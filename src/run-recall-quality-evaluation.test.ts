@@ -54,8 +54,9 @@ void test('recall quality runner indexes and searches only the bounded declared 
     projectIdentityFixtures: [
       {
         workingDirectory: '/bounded',
-        projectIdentity: 'non-git-session-origin:/bounded',
-        identitySource: RecallProjectIdentitySource.NON_GIT_SESSION_ORIGIN,
+        projectIdentity: 'git-origin:example.test/acme/bounded',
+        identitySource: RecallProjectIdentitySource.GIT_ORIGIN,
+        origin: 'https://example.test/acme/bounded.git',
       },
     ],
     projectLineages: {},
@@ -87,14 +88,14 @@ void test('recall quality runner indexes and searches only the bounded declared 
         query: 'quartz-heron',
         scope: RecallSearchScope.PROJECT,
         invocationDirectory: '/bounded',
-        expectedInvocationProjectIdentity: 'non-git-session-origin:/bounded',
+        expectedInvocationProjectIdentity: 'git-origin:example.test/acme/bounded',
         expectedSources: [
           {
             sessionFile: sessionFileName,
             entryId: 'bounded-answer',
             requiredText: ['quartz-heron'],
             expectedSessionOrigin: '/bounded',
-            expectedEvidenceRelation: RecallEvidenceRelation.SAME_SESSION_ORIGIN,
+            expectedEvidenceRelation: RecallEvidenceRelation.SAME_REPOSITORY,
             requiredContributingEntryIds: ['bounded-answer'],
             expectedBranch: 'active',
           },
@@ -158,10 +159,11 @@ void test('recall quality runner indexes and searches only the bounded declared 
   assert.equal(result.boundedWork.indexRuns, 1);
   assert.equal(result.boundedWork.executedSearchRequests, 1);
   assert.equal(result.boundedWork.rerankerRequests, 0);
+  assert.equal(result.boundedWork.repositoryIdentityResolutions, 1);
   assert.deepEqual(result.evaluationIdentity, {
     defaultScope: RecallSearchScope.PROJECT,
     projectScopePolicyVersion: 1,
-    repositoryIdentityPolicyVersion: 3,
+    projectIdentityPolicyVersion: 4,
     projectIdentityMetadataSchemaVersion: 3,
     lineagePolicyVersion: 1,
     lineageDigest: '44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a',

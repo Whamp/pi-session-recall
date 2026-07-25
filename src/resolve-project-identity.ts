@@ -6,23 +6,33 @@ import { isAbsolute, normalize, relative, sep } from 'node:path';
 import { RecallProjectIdentitySource } from './enums.js';
 
 /** Version of lineage-first, exact-origin, and canonical Git project identity resolution. */
-export const RECALL_PROJECT_IDENTITY_POLICY_VERSION = 3;
+export const PROJECT_IDENTITY_POLICY_VERSION = 4;
 
 /** Version of project identity and identity-source scalars persisted on recall evidence. */
-export const RECALL_PROJECT_IDENTITY_METADATA_SCHEMA_VERSION = 3;
+export const PROJECT_METADATA_SCHEMA_VERSION = 3;
 
 /** Version of exact-root and deterministic-descendant project lineage assignment. */
-export const RECALL_PROJECT_LINEAGE_POLICY_VERSION = 1;
+export const PROJECT_LINEAGE_POLICY_VERSION = 1;
 
 const GIT_ORIGIN_IDENTITY_PREFIX = 'git-origin:';
 const GIT_COMMON_DIRECTORY_IDENTITY_PREFIX = 'git-common-directory:';
 const NON_GIT_SESSION_ORIGIN_IDENTITY_PREFIX = 'non-git-session-origin:';
 const HOSTED_GIT_PROTOCOLS = new Set(['git:', 'http:', 'https:', 'ssh:']);
+declare const PROJECT_IDENTITY_BRAND: unique symbol;
+declare const REPOSITORY_IDENTITY_BRAND: unique symbol;
+
+/** Stable scalar used to enforce one exact recall project boundary. */
+export type ProjectIdentity = string & { readonly [PROJECT_IDENTITY_BRAND]: true };
+
+/** Canonical Git-origin or shared-common-directory project identity. */
+export type RepositoryIdentity = ProjectIdentity & {
+  readonly [REPOSITORY_IDENTITY_BRAND]: true;
+};
 
 /** Returns whether a value is already a canonical Git repository identity. */
-export function isCanonicalRepositoryIdentity(value: string): boolean {
+export function isCanonicalRepositoryIdentity(value: string): value is RepositoryIdentity {
   if (value.startsWith(GIT_ORIGIN_IDENTITY_PREFIX)) {
-    const origin = /^git-origin:([a-z0-9.-]+)\/(.+)$/u.exec(value);
+    const origin = /^git-origin:([a-z0-9.-]+(?::[0-9]+)?)\/(.+)$/u.exec(value);
     if (!origin) {
       return false;
     }
@@ -45,7 +55,7 @@ export interface RecallProjectLineages {
 }
 
 interface ProjectLineageDeclaration {
-  repositoryIdentity: string;
+  repositoryIdentity: RepositoryIdentity;
   historicalRoot: string;
 }
 
@@ -109,26 +119,60 @@ export function normalizeRecallProjectLineages(
 }
 
 /** Hashes normalized personal lineage declarations without consulting the filesystem. */
-export function createRecallProjectLineageDigest(projectLineages: RecallProjectLineages): string {
+export function createLineageDigest(projectLineages: RecallProjectLineages): string {
   const normalizedLineages = normalizeRecallProjectLineages(projectLineages);
   return createHash('sha256').update(JSON.stringify(normalizedLineages)).digest('hex');
 }
 
 /** One exact project identity and the explicit source that established it. */
-export interface ResolvedProjectIdentity {
-  projectIdentity: string;
-  identitySource: RecallProjectIdentitySource;
+export type ResolvedProjectIdentity =
+  | {
+      projectIdentity: RepositoryIdentity;
+      identitySource:
+        | RecallProjectIdentitySource.GIT_ORIGIN
+        | RecallProjectIdentitySource.GIT_COMMON_DIRECTORY
+        | RecallProjectIdentitySource.CONFIGURED_PROJECT_LINEAGE;
+    }
+  | {
+      projectIdentity: ProjectIdentity;
+      identitySource: RecallProjectIdentitySource.NON_GIT_SESSION_ORIGIN;
+    };
+
+/** Validates and brands a canonical repository identity from an external scalar boundary. */
+export function parseRepositoryIdentity(value: string): RepositoryIdentity {
+  if (!isCanonicalRepositoryIdentity(value)) {
+    throw new Error(`Recall repository identity invalid: ${value}`);
+  }
+  return value;
+}
+
+/** Validates and brands a project identity read from an external scalar boundary. */
+export function parseProjectIdentity(value: string): ProjectIdentity;
+export function parseProjectIdentity(value: string): string {
+  if (isCanonicalRepositoryIdentity(value)) {
+    return value;
+  }
+  if (value.startsWith(NON_GIT_SESSION_ORIGIN_IDENTITY_PREFIX)) {
+    const sessionOrigin = value.slice(NON_GIT_SESSION_ORIGIN_IDENTITY_PREFIX.length);
+    if (isAbsolute(sessionOrigin) && normalize(sessionOrigin) === sessionOrigin) {
+      return value;
+    }
+  }
+  throw new Error(`Recall project identity invalid: ${value}`);
 }
 
 /** Resolves explicit project lineage before falling back to repository or exact-origin identity. */
-export function createProjectLineageIdentityResolver(
+export function createLineageResolver(
   projectLineages: RecallProjectLineages,
   fallbackResolver: (workingDirectory: string) => Promise<ResolvedProjectIdentity | null>,
 ): (workingDirectory: string) => Promise<ResolvedProjectIdentity | null> {
   const normalizedLineages = normalizeRecallProjectLineages(projectLineages);
   const declarations = Object.entries(normalizedLineages)
     .flatMap(([repositoryIdentity, historicalRoots]) =>
-      historicalRoots.map((historicalRoot) => ({ repositoryIdentity, historicalRoot })),
+      historicalRoots.map((historicalRoot) => ({
+        repositoryIdentity: parseRepositoryIdentity(repositoryIdentity),
+        historicalRoot,
+      })),
     )
     .sort(
       (left, right) =>
@@ -165,7 +209,7 @@ function normalizeGitRepositoryPath(rawPath: string): string | null {
   return segments.join('/');
 }
 
-function normalizeHostedGitOrigin(remote: string): string | null {
+function normalizeHostedGitOrigin(remote: string): RepositoryIdentity | null {
   const trimmedRemote = remote.trim();
   if (!trimmedRemote) {
     return null;
@@ -176,7 +220,9 @@ function normalizeHostedGitOrigin(remote: string): string | null {
   if (scpRemote) {
     const host = scpRemote[1]?.toLowerCase();
     const repositoryPath = normalizeGitRepositoryPath(scpRemote[2] ?? '');
-    return host && repositoryPath ? `${GIT_ORIGIN_IDENTITY_PREFIX}${host}/${repositoryPath}` : null;
+    const identity =
+      host && repositoryPath ? `${GIT_ORIGIN_IDENTITY_PREFIX}${host}/${repositoryPath}` : null;
+    return identity && isCanonicalRepositoryIdentity(identity) ? identity : null;
   }
   const parsedRemote = URL.parse(trimmedRemote);
   if (
@@ -189,9 +235,10 @@ function normalizeHostedGitOrigin(remote: string): string | null {
     return null;
   }
   const repositoryPath = normalizeGitRepositoryPath(parsedRemote.pathname);
-  return repositoryPath
-    ? `${GIT_ORIGIN_IDENTITY_PREFIX}${parsedRemote.hostname.toLowerCase()}/${repositoryPath}`
+  const identity = repositoryPath
+    ? `${GIT_ORIGIN_IDENTITY_PREFIX}${parsedRemote.host.toLowerCase()}/${repositoryPath}`
     : null;
+  return identity && isCanonicalRepositoryIdentity(identity) ? identity : null;
 }
 
 function readGitOutput(workingDirectory: string, argumentsList: string[]): Promise<string | null> {
@@ -235,7 +282,9 @@ async function resolveExistingNonGitSessionOrigin(
     return null;
   }
   return {
-    projectIdentity: `${NON_GIT_SESSION_ORIGIN_IDENTITY_PREFIX}${workingDirectory}`,
+    projectIdentity: parseProjectIdentity(
+      `${NON_GIT_SESSION_ORIGIN_IDENTITY_PREFIX}${workingDirectory}`,
+    ),
     identitySource: RecallProjectIdentitySource.NON_GIT_SESSION_ORIGIN,
   };
 }
@@ -261,9 +310,12 @@ export async function resolveProjectIdentity(
     return resolveExistingNonGitSessionOrigin(workingDirectory);
   }
   const realCommonDirectory = await readRealGitCommonDirectory(commonDirectory);
-  return realCommonDirectory
+  const commonDirectoryIdentity = realCommonDirectory
+    ? `${GIT_COMMON_DIRECTORY_IDENTITY_PREFIX}${realCommonDirectory}`
+    : null;
+  return commonDirectoryIdentity && isCanonicalRepositoryIdentity(commonDirectoryIdentity)
     ? {
-        projectIdentity: `${GIT_COMMON_DIRECTORY_IDENTITY_PREFIX}${realCommonDirectory}`,
+        projectIdentity: commonDirectoryIdentity,
         identitySource: RecallProjectIdentitySource.GIT_COMMON_DIRECTORY,
       }
     : null;

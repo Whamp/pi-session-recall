@@ -2,7 +2,7 @@
   "version": 2,
   "environment": {
     "command": "npm run evaluate:recall",
-    "gitCommit": "ab18031942c585c9f0d0c9683c016fddb9b7eec6",
+    "gitCommit": "dd24afe95de0892700221d383b9490be5549d82b",
     "gitDirty": false,
     "nodeVersion": "v24.16.0",
     "platform": "linux",
@@ -336,7 +336,6 @@
         "query": "SCOPE_LIMIT_PROBE SCOPE_LIMIT_IDENTIFIER channel budget",
         "scope": "project",
         "invocationDirectory": "/evaluation/repository/main",
-        "expectedInvocationProjectIdentity": "git-origin:github.com/whamp/quality-fixture",
         "expectedSources": [
           {
             "sessionFile": "project-worktree.jsonl",
@@ -355,7 +354,8 @@
           "minimumPollutingCandidatesPerChannel": 8
         },
         "requiredContext": ["cedar-worktree-41", "project evidence"],
-        "minimumPreservedSourceOccurrences": 1
+        "minimumPreservedSourceOccurrences": 1,
+        "expectedInvocationProjectIdentity": "git-origin:github.com/whamp/quality-fixture"
       },
       {
         "id": "project-worktree-retrieves-main",
@@ -363,7 +363,6 @@
         "query": "What reverse worktree bridge marker did the main checkout choose?",
         "scope": "project",
         "invocationDirectory": "/evaluation/repository/worktrees/feature",
-        "expectedInvocationProjectIdentity": "git-origin:github.com/whamp/quality-fixture",
         "expectedSources": [
           {
             "sessionFile": "project-main.jsonl",
@@ -377,7 +376,8 @@
         ],
         "excludedSessionFiles": ["unrelated-similar-project.jsonl"],
         "requiredContext": ["obsidian-main-52", "reverse worktree bridge"],
-        "minimumPreservedSourceOccurrences": 1
+        "minimumPreservedSourceOccurrences": 1,
+        "expectedInvocationProjectIdentity": "git-origin:github.com/whamp/quality-fixture"
       },
       {
         "id": "project-equivalent-clone-origin",
@@ -385,7 +385,6 @@
         "query": "Which marker proves the equivalent clone shares canonical origin identity?",
         "scope": "project",
         "invocationDirectory": "/evaluation/repository/clones/a",
-        "expectedInvocationProjectIdentity": "git-origin:github.com/whamp/quality-fixture",
         "expectedSources": [
           {
             "sessionFile": "equivalent-clone.jsonl",
@@ -399,7 +398,8 @@
         ],
         "excludedSessionFiles": ["unrelated-similar-project.jsonl"],
         "requiredContext": ["cobalt-clone-63", "canonical origin identity"],
-        "minimumPreservedSourceOccurrences": 1
+        "minimumPreservedSourceOccurrences": 1,
+        "expectedInvocationProjectIdentity": "git-origin:github.com/whamp/quality-fixture"
       },
       {
         "id": "project-configured-lineage",
@@ -407,7 +407,6 @@
         "query": "What historical prototype marker did configured project lineage preserve?",
         "scope": "project",
         "invocationDirectory": "/evaluation/repository/main",
-        "expectedInvocationProjectIdentity": "git-origin:github.com/whamp/quality-fixture",
         "expectedSources": [
           {
             "sessionFile": "historical-prototype.jsonl",
@@ -421,7 +420,8 @@
         ],
         "excludedSessionFiles": ["unrelated-similar-project.jsonl"],
         "requiredContext": ["linen-lineage-74", "successor repository"],
-        "minimumPreservedSourceOccurrences": 1
+        "minimumPreservedSourceOccurrences": 1,
+        "expectedInvocationProjectIdentity": "git-origin:github.com/whamp/quality-fixture"
       },
       {
         "id": "project-similar-name-remains-unrelated",
@@ -429,7 +429,6 @@
         "query": "Who owns similarity fence token aurora-same-19?",
         "scope": "project",
         "invocationDirectory": "/evaluation/repository/main",
-        "expectedInvocationProjectIdentity": "git-origin:github.com/whamp/quality-fixture",
         "expectedSources": [
           {
             "sessionFile": "project-main.jsonl",
@@ -443,7 +442,8 @@
         ],
         "excludedSessionFiles": ["unrelated-similar-project.jsonl"],
         "requiredContext": ["aurora-same-19", "nearby names do not establish project identity"],
-        "minimumPreservedSourceOccurrences": 1
+        "minimumPreservedSourceOccurrences": 1,
+        "expectedInvocationProjectIdentity": "git-origin:github.com/whamp/quality-fixture"
       },
       {
         "id": "project-exact-non-git-origin",
@@ -451,7 +451,6 @@
         "query": "What exact non-Git session origin marker excludes nearby directories?",
         "scope": "project",
         "invocationDirectory": "/evaluation/non-git/exact",
-        "expectedInvocationProjectIdentity": "non-git-session-origin:/evaluation/non-git/exact",
         "expectedSources": [
           {
             "sessionFile": "non-git-exact.jsonl",
@@ -465,7 +464,8 @@
         ],
         "excludedSessionFiles": ["non-git-nearby.jsonl"],
         "requiredContext": ["quartz-origin-85", "no nearby directory"],
-        "minimumPreservedSourceOccurrences": 1
+        "minimumPreservedSourceOccurrences": 1,
+        "expectedInvocationProjectIdentity": "non-git-session-origin:/evaluation/non-git/exact"
       },
       {
         "id": "global-explicit-cross-project",
@@ -473,7 +473,6 @@
         "query": "Which foreign project marker may explicit global recall reuse?",
         "scope": "global",
         "invocationDirectory": "/evaluation/repository/main",
-        "expectedInvocationProjectIdentity": "git-origin:github.com/whamp/quality-fixture",
         "expectedSources": [
           {
             "sessionFile": "unrelated-similar-project.jsonl",
@@ -487,34 +486,40 @@
         ],
         "excludedSessionFiles": [],
         "requiredContext": ["violet-global-96", "deliberately broadens scope"],
-        "minimumPreservedSourceOccurrences": 1
+        "minimumPreservedSourceOccurrences": 1,
+        "expectedInvocationProjectIdentity": "git-origin:github.com/whamp/quality-fixture"
       }
     ],
     "projectIdentityFixtures": [
       {
         "workingDirectory": "/evaluation/repository/main",
         "projectIdentity": "git-origin:github.com/whamp/quality-fixture",
-        "identitySource": "git_origin"
+        "identitySource": "git_origin",
+        "origin": "git@github.com:whamp/quality-fixture.git"
       },
       {
         "workingDirectory": "/evaluation/repository/worktrees/feature",
         "projectIdentity": "git-origin:github.com/whamp/quality-fixture",
-        "identitySource": "git_origin"
+        "identitySource": "git_origin",
+        "worktreeOf": "/evaluation/repository/main"
       },
       {
         "workingDirectory": "/evaluation/repository/clones/a",
         "projectIdentity": "git-origin:github.com/whamp/quality-fixture",
-        "identitySource": "git_origin"
+        "identitySource": "git_origin",
+        "origin": "https://github.com/whamp/quality-fixture.git"
       },
       {
         "workingDirectory": "/evaluation/repository/clones/b",
         "projectIdentity": "git-origin:github.com/whamp/quality-fixture",
-        "identitySource": "git_origin"
+        "identitySource": "git_origin",
+        "origin": "git@github.com:whamp/quality-fixture.git"
       },
       {
         "workingDirectory": "/evaluation/repository/quality-fixture-similar",
         "projectIdentity": "git-origin:github.com/whamp/quality-fixture-similar",
-        "identitySource": "git_origin"
+        "identitySource": "git_origin",
+        "origin": "https://github.com/whamp/quality-fixture-similar.git"
       },
       {
         "workingDirectory": "/evaluation/non-git/exact",
@@ -536,7 +541,7 @@
     "evaluationIdentity": {
       "defaultScope": "project",
       "projectScopePolicyVersion": 1,
-      "repositoryIdentityPolicyVersion": 3,
+      "projectIdentityPolicyVersion": 4,
       "projectIdentityMetadataSchemaVersion": 3,
       "lineagePolicyVersion": 1,
       "lineageDigest": "02023e9934990f61a81488144cb1b27d9002e0af750c38a1b83adc1de367bc4b",
@@ -551,11 +556,11 @@
       },
       "finalResultCount": 5
     },
-    "startedAt": "2026-07-25T18:14:02.508Z",
-    "completedAt": "2026-07-25T18:14:24.821Z",
-    "durationMilliseconds": 22313.690888999998,
+    "startedAt": "2026-07-25T18:50:13.151Z",
+    "completedAt": "2026-07-25T18:50:26.134Z",
+    "durationMilliseconds": 12983.208273,
     "specificationPath": "/home/will/projects/pi-session-recall/.worktrees/project-scoped-recall/evaluation/recall-quality-cases.json",
-    "specificationSha256": "1921bb0e7ebcc39346e7978b8ff9f95275c83a9f16b888cb92ba2102f0914849",
+    "specificationSha256": "b5209236a48feb2a8ffca5358ef62ac609ad82630d28d079466985470cbe39d9",
     "corpusId": "recall-quality-project-scoped-bounded-v3",
     "indexRuns": [
       {
@@ -565,7 +570,7 @@
           "overlapTokens": 64
         },
         "totalChunks": 128,
-        "indexLatencyMilliseconds": 13955.070216,
+        "indexLatencyMilliseconds": 9162.574153000001,
         "indexSummary": {
           "scannedSessions": 15,
           "indexedSessions": 15,
@@ -587,23 +592,23 @@
         },
         "candidateCount": 8,
         "totalChunks": 128,
-        "indexLatencyMilliseconds": 13955.070216,
+        "indexLatencyMilliseconds": 9162.574153000001,
         "measurement": {
           "caseCount": 17,
           "candidatePoolRecall": 1,
           "candidatePoolDuplicateRate": 0.02185792349726776,
           "queryLatencyMilliseconds": {
-            "median": 71.1770949999991,
-            "p95": 1948.7393119999979
+            "median": 71.48861100000067,
+            "p95": 694.7476039999983
           },
           "queryLatencyByScope": {
             "project": {
-              "median": 71.1770949999991,
-              "p95": 1341.035523999999
+              "median": 71.1898369999999,
+              "p95": 223.54737399999976
             },
             "global": {
-              "median": 70.46122699999978,
-              "p95": 1948.7393119999979
+              "median": 71.92455800000062,
+              "p95": 694.7476039999983
             }
           },
           "policyFailureCaseIds": [],
@@ -622,7 +627,7 @@
               "rawCandidateCount": 13,
               "groupedCandidateCount": 13,
               "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 70.46122699999978,
+              "queryLatencyMilliseconds": 66.46832600000016,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -652,7 +657,7 @@
               "rawCandidateCount": 16,
               "groupedCandidateCount": 15,
               "candidatePoolDuplicateSlots": 1,
-              "queryLatencyMilliseconds": 70.3784629999991,
+              "queryLatencyMilliseconds": 71.92455800000062,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -682,7 +687,7 @@
               "rawCandidateCount": 10,
               "groupedCandidateCount": 10,
               "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 68.89685500000087,
+              "queryLatencyMilliseconds": 70.26793799999905,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -712,7 +717,7 @@
               "rawCandidateCount": 10,
               "groupedCandidateCount": 9,
               "candidatePoolDuplicateSlots": 1,
-              "queryLatencyMilliseconds": 1948.7393119999979,
+              "queryLatencyMilliseconds": 694.7476039999983,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -742,7 +747,7 @@
               "rawCandidateCount": 14,
               "groupedCandidateCount": 13,
               "candidatePoolDuplicateSlots": 1,
-              "queryLatencyMilliseconds": 213.08947599999738,
+              "queryLatencyMilliseconds": 76.01712399999997,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -772,7 +777,7 @@
               "rawCandidateCount": 14,
               "groupedCandidateCount": 14,
               "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 67.47449599999891,
+              "queryLatencyMilliseconds": 68.61413399999947,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -802,7 +807,7 @@
               "rawCandidateCount": 12,
               "groupedCandidateCount": 12,
               "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 70.44479700000011,
+              "queryLatencyMilliseconds": 71.99964800000089,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -832,7 +837,7 @@
               "rawCandidateCount": 11,
               "groupedCandidateCount": 11,
               "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 68.03309099999751,
+              "queryLatencyMilliseconds": 67.50254300000051,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -862,7 +867,7 @@
               "rawCandidateCount": 12,
               "groupedCandidateCount": 12,
               "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 1808.6745220000012,
+              "queryLatencyMilliseconds": 66.4921609999983,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -892,7 +897,7 @@
               "rawCandidateCount": 14,
               "groupedCandidateCount": 13,
               "candidatePoolDuplicateSlots": 1,
-              "queryLatencyMilliseconds": 224.26175700000022,
+              "queryLatencyMilliseconds": 94.23231200000009,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -944,7 +949,7 @@
               "rawCandidateCount": 8,
               "groupedCandidateCount": 8,
               "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 70.53341100000034,
+              "queryLatencyMilliseconds": 71.1898369999999,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -974,7 +979,7 @@
               "rawCandidateCount": 8,
               "groupedCandidateCount": 8,
               "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 72.15500099999917,
+              "queryLatencyMilliseconds": 223.54737399999976,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -1004,7 +1009,7 @@
               "rawCandidateCount": 11,
               "groupedCandidateCount": 11,
               "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 70.51725100000112,
+              "queryLatencyMilliseconds": 67.49882700000126,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -1034,7 +1039,7 @@
               "rawCandidateCount": 9,
               "groupedCandidateCount": 9,
               "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 1341.035523999999,
+              "queryLatencyMilliseconds": 71.48861100000067,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -1064,7 +1069,7 @@
               "rawCandidateCount": 8,
               "groupedCandidateCount": 8,
               "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 166.5247980000022,
+              "queryLatencyMilliseconds": 70.64344400000118,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -1094,7 +1099,7 @@
               "rawCandidateCount": 3,
               "groupedCandidateCount": 3,
               "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 71.1770949999991,
+              "queryLatencyMilliseconds": 72.7222270000002,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -1124,7 +1129,7 @@
               "rawCandidateCount": 10,
               "groupedCandidateCount": 10,
               "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 73.70949499999915,
+              "queryLatencyMilliseconds": 513.3863359999996,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -1178,7 +1183,7 @@
         "candidateCount": 8,
         "finalCount": 5,
         "totalChunks": 128,
-        "indexLatencyMilliseconds": 13955.070216,
+        "indexLatencyMilliseconds": 9162.574153000001,
         "candidatePoolRecall": 1,
         "candidatePoolDuplicateRate": 0.02185792349726776,
         "finalRecall": 1,
@@ -1190,17 +1195,17 @@
         "branchVerification": 1,
         "finalDuplicateRate": 0,
         "queryLatencyMilliseconds": {
-          "median": 71.1770949999991,
-          "p95": 1948.7393119999979
+          "median": 71.48861100000067,
+          "p95": 694.7476039999983
         },
         "queryLatencyByScope": {
           "project": {
-            "median": 71.1770949999991,
-            "p95": 1341.035523999999
+            "median": 71.1898369999999,
+            "p95": 223.54737399999976
           },
           "global": {
-            "median": 70.46122699999978,
-            "p95": 1948.7393119999979
+            "median": 71.92455800000062,
+            "p95": 694.7476039999983
           }
         },
         "policyFailureCaseIds": [],
@@ -1218,7 +1223,7 @@
           "candidateCount": 8,
           "finalCount": 5,
           "totalChunks": 128,
-          "indexLatencyMilliseconds": 13955.070216,
+          "indexLatencyMilliseconds": 9162.574153000001,
           "candidatePoolRecall": 1,
           "candidatePoolDuplicateRate": 0.02185792349726776,
           "finalRecall": 1,
@@ -1230,17 +1235,17 @@
           "branchVerification": 1,
           "finalDuplicateRate": 0,
           "queryLatencyMilliseconds": {
-            "median": 71.1770949999991,
-            "p95": 1948.7393119999979
+            "median": 71.48861100000067,
+            "p95": 694.7476039999983
           },
           "queryLatencyByScope": {
             "project": {
-              "median": 71.1770949999991,
-              "p95": 1341.035523999999
+              "median": 71.1898369999999,
+              "p95": 223.54737399999976
             },
             "global": {
-              "median": 70.46122699999978,
-              "p95": 1948.7393119999979
+              "median": 71.92455800000062,
+              "p95": 694.7476039999983
             }
           },
           "policyFailureCaseIds": [],
@@ -1256,7 +1261,8 @@
       "executedSearchRequests": 20,
       "rerankerRequests": 0,
       "chunkEmbeddingRequests": 17,
-      "maximumCandidatesPerSearch": 24
+      "maximumCandidatesPerSearch": 24,
+      "repositoryIdentityResolutions": 5
     }
   }
 }

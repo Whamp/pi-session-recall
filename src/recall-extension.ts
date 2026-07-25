@@ -26,7 +26,7 @@ import {
 } from './recall-quality-gate.js';
 
 /** Model-visible parameters for recall search; invocation directory is intentionally absent. */
-export interface RecallPiToolSearchParameters {
+export interface PiRecallParameters {
   query: string;
   limit?: number;
   mode?: RecallSearchMode;
@@ -34,12 +34,12 @@ export interface RecallPiToolSearchParameters {
 }
 
 /** Applies trusted Pi tool context and project-default scope to one recall service search. */
-export async function searchRecallFromPiToolContext(
+export async function searchPiRecall(
   service: RecallConversationService,
-  parameters: RecallPiToolSearchParameters,
-  signal: AbortSignal | undefined,
+  parameters: PiRecallParameters,
   context: Pick<ExtensionContext, 'cwd'>,
   defaultResultLimit: number,
+  signal?: AbortSignal,
 ): Promise<RecallConversationSearch> {
   return service.search(parameters.query.trim(), parameters.limit ?? defaultResultLimit, {
     mode: parameters.mode ?? 'hybrid',
@@ -118,12 +118,12 @@ export default async function recallExtension(
       if (!query) {
         throw new Error('Recall query must not be blank');
       }
-      const search = await searchRecallFromPiToolContext(
+      const search = await searchPiRecall(
         service,
         { ...parameters, query },
-        signal,
         context,
         defaultResultLimit,
+        signal,
       );
       const formatted = formatRecallSearchResults(search);
       const truncation = truncateHead(formatted, {
@@ -144,8 +144,8 @@ export default async function recallExtension(
             evidenceKind: result.evidenceKind,
             evidenceRelation: result.evidenceRelation,
             sessionOrigin: result.cwd,
-            projectIdentity: result.projectIdentity,
-            projectIdentitySource: result.projectIdentitySource,
+            projectIdentity: result.projectAttribution?.projectIdentity ?? null,
+            projectIdentitySource: result.projectAttribution?.identitySource ?? null,
             sessionPath: result.sessionPath,
             entryId: result.entryId.value,
             contributingEntryIds: result.contributingEntryIds.map((id) => id.value),

@@ -241,8 +241,7 @@ export async function indexChangedConversationSessions(
       : null;
     const attributedChunks = chunks.map((chunk) => ({
       ...chunk,
-      projectIdentity: resolvedProjectIdentity?.projectIdentity ?? null,
-      projectIdentitySource: resolvedProjectIdentity?.identitySource ?? null,
+      projectAttribution: resolvedProjectIdentity,
     }));
     const currentIds = new Set(attributedChunks.map((chunk) => chunk.id));
     const removedIds =

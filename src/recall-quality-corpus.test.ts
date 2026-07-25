@@ -47,6 +47,7 @@ void test('project-scoped recall quality corpus accepts explicit scope and ident
       workingDirectory: '/evaluation/fulfillment',
       projectIdentity: 'git-origin:github.com/whamp/quality-fixture',
       identitySource: 'git_origin',
+      origin: 'https://github.com/whamp/quality-fixture.git',
     },
   ];
   specification['projectLineages'] = {

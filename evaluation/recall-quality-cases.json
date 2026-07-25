@@ -476,27 +476,32 @@
     {
       "workingDirectory": "/evaluation/repository/main",
       "projectIdentity": "git-origin:github.com/whamp/quality-fixture",
-      "identitySource": "git_origin"
+      "identitySource": "git_origin",
+      "origin": "git@github.com:whamp/quality-fixture.git"
     },
     {
       "workingDirectory": "/evaluation/repository/worktrees/feature",
       "projectIdentity": "git-origin:github.com/whamp/quality-fixture",
-      "identitySource": "git_origin"
+      "identitySource": "git_origin",
+      "worktreeOf": "/evaluation/repository/main"
     },
     {
       "workingDirectory": "/evaluation/repository/clones/a",
       "projectIdentity": "git-origin:github.com/whamp/quality-fixture",
-      "identitySource": "git_origin"
+      "identitySource": "git_origin",
+      "origin": "https://github.com/whamp/quality-fixture.git"
     },
     {
       "workingDirectory": "/evaluation/repository/clones/b",
       "projectIdentity": "git-origin:github.com/whamp/quality-fixture",
-      "identitySource": "git_origin"
+      "identitySource": "git_origin",
+      "origin": "git@github.com:whamp/quality-fixture.git"
     },
     {
       "workingDirectory": "/evaluation/repository/quality-fixture-similar",
       "projectIdentity": "git-origin:github.com/whamp/quality-fixture-similar",
-      "identitySource": "git_origin"
+      "identitySource": "git_origin",
+      "origin": "https://github.com/whamp/quality-fixture-similar.git"
     },
     {
       "workingDirectory": "/evaluation/non-git/exact",

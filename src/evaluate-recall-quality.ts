@@ -109,6 +109,11 @@ export async function evaluateRecallQuality(
     )}\n`,
   );
   await writeAtomicTextFile(reportPath, formatRecallQualityReport(result, corpus, environment));
+  execFileSync(
+    join(resolvedProjectDirectory, 'node_modules', '.bin', 'oxfmt'),
+    [reportPath, resultsPath],
+    { cwd: resolvedProjectDirectory, stdio: 'pipe' },
+  );
   return result;
 }
 

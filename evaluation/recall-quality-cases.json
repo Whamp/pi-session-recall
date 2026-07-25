@@ -1,0 +1,245 @@
+{
+  "version": 1,
+  "corpus": {
+    "id": "recall-quality-bounded-v1",
+    "sessionDirectory": "corpus",
+    "sessionFiles": [
+      {
+        "fileName": "semantic-context.jsonl",
+        "sha256": "da042db32fa0fe1c210fc5f060471678623ba0f823abbb58498f0be579a69ebc"
+      },
+      {
+        "fileName": "identifiers-tools.jsonl",
+        "sha256": "aea256ea49e471c9029cfc3358be625c37cc5209fe987a1b05e2ede2ec2553f6"
+      },
+      {
+        "fileName": "branches.jsonl",
+        "sha256": "c0f706ae4138e880702679246ceec00bd99cda4444abd2cbfd573818faf9abdd"
+      },
+      {
+        "fileName": "summaries.jsonl",
+        "sha256": "ce199336000b428686853fd0d605a13df12cd31e83f7b3bfe5ad5f8ba6c07c8b"
+      },
+      {
+        "fileName": "duplicate-a.jsonl",
+        "sha256": "c2972f408868ffad68a2a104c552fff781338b43cdb00e24371b1679c7f22458"
+      },
+      {
+        "fileName": "duplicate-b.jsonl",
+        "sha256": "8b54153ad7a1749beb8492155ecae64c25a270c4d752a8e7a239a040dd63dce0"
+      },
+      {
+        "fileName": "long-boundary.jsonl",
+        "sha256": "49072e98ccab44523d0ba747f3ff537b50c8e4a412ac782d062dd0707437698c"
+      },
+      {
+        "fileName": "distractors.jsonl",
+        "sha256": "6d63fefcb2e6fda2580985bbef4cf39bd073a3e15c9d2df7b67d2000847e4194"
+      }
+    ]
+  },
+  "bounds": {
+    "maximumSessionFiles": 8,
+    "maximumEvaluationCases": 10,
+    "maximumChunkPolicies": 3,
+    "maximumCandidateCounts": 4,
+    "maximumFinalCounts": 3,
+    "maximumSearchRequests": 132
+  },
+  "chunkPolicies": [
+    {
+      "id": "512-64",
+      "maxTokens": 512,
+      "overlapTokens": 64
+    },
+    {
+      "id": "768-96",
+      "maxTokens": 768,
+      "overlapTokens": 96
+    },
+    {
+      "id": "1024-128",
+      "maxTokens": 1024,
+      "overlapTokens": 128
+    }
+  ],
+  "candidateCounts": [4, 8, 16, 32],
+  "finalCounts": [3, 5, 8],
+  "warmupQueriesPerCombination": 1,
+  "qualityGate": {
+    "minimumPreRerankRecall": 1,
+    "minimumPostRerankRecall": 0.9,
+    "minimumContextUsefulness": 0.9,
+    "minimumSourceOccurrencePreservation": 1,
+    "maximumPostRerankDuplicateRate": 0,
+    "maximumQueryP95Milliseconds": 2000,
+    "maximumRerankerP95Milliseconds": 1500
+  },
+  "cases": [
+    {
+      "id": "semantic-crash-safe-outbox",
+      "category": "semantic_paraphrase",
+      "query": "How did we make sure queued deliveries survive a worker crash?",
+      "expectedSources": [
+        {
+          "sessionFile": "semantic-context.jsonl",
+          "entryId": "queue-answer",
+          "requiredText": ["append-only SQLite outbox", "remote acknowledgement"],
+          "expectedBranch": "active"
+        }
+      ],
+      "requiredContext": ["append-only SQLite outbox", "remote acknowledgement"],
+      "minimumPreservedSourceOccurrences": 1
+    },
+    {
+      "id": "semantic-image-retry-budget",
+      "category": "semantic_paraphrase",
+      "query": "What backoff and attempt limit did we choose for failed picture ingestion?",
+      "expectedSources": [
+        {
+          "sessionFile": "long-boundary.jsonl",
+          "entryId": "image-retry-answer",
+          "requiredText": ["decorrelated jitter capped at forty-two seconds", "amber-orbit-17"],
+          "expectedBranch": "active"
+        }
+      ],
+      "requiredContext": ["decorrelated jitter capped at forty-two seconds", "amber-orbit-17"],
+      "minimumPreservedSourceOccurrences": 1
+    },
+    {
+      "id": "exact-read-node-error-code",
+      "category": "exact_identifier",
+      "query": "readNodeErrorCode src/read-node-error-code.ts EPERM",
+      "expectedSources": [
+        {
+          "sessionFile": "identifiers-tools.jsonl",
+          "entryId": "identifier-answer",
+          "requiredText": ["readNodeErrorCode", "src/read-node-error-code.ts", "EPERM"],
+          "expectedBranch": "active"
+        }
+      ],
+      "requiredContext": ["readNodeErrorCode", "src/read-node-error-code.ts"],
+      "minimumPreservedSourceOccurrences": 1
+    },
+    {
+      "id": "tool-evidence-lease-token",
+      "category": "tool_evidence",
+      "query": "ELOCKED cobalt-7f31 lease-owner.ts",
+      "expectedSources": [
+        {
+          "sessionFile": "identifiers-tools.jsonl",
+          "entryId": "lease-tool-result",
+          "requiredText": ["ELOCKED", "cobalt-7f31", "src/lease-owner.ts"],
+          "expectedEvidenceKind": "tool_result",
+          "expectedBranch": "active"
+        }
+      ],
+      "requiredContext": ["ELOCKED", "cobalt-7f31"],
+      "minimumPreservedSourceOccurrences": 1
+    },
+    {
+      "id": "context-europe-rollout-conditions",
+      "category": "context_dependent_reply",
+      "query": "Under what conditions did we say yes to the rollout in Europe?",
+      "expectedSources": [
+        {
+          "sessionFile": "semantic-context.jsonl",
+          "entryId": "rollout-answer",
+          "requiredText": ["draining the Paris queue below twenty jobs", "Frankfurt replica"],
+          "expectedBranch": "active"
+        }
+      ],
+      "requiredContext": [
+        "European rollout during the maintenance window",
+        "draining the Paris queue below twenty jobs",
+        "Frankfurt replica"
+      ],
+      "minimumPreservedSourceOccurrences": 1
+    },
+    {
+      "id": "branch-abandoned-redis-group",
+      "category": "branch",
+      "query": "What consumer group name belonged to the discarded Redis approach?",
+      "expectedSources": [
+        {
+          "sessionFile": "branches.jsonl",
+          "entryId": "redis-abandoned",
+          "requiredText": ["Redis Streams", "glacier-lantern"],
+          "expectedBranch": "abandoned"
+        }
+      ],
+      "requiredContext": ["Redis Streams", "glacier-lantern"],
+      "minimumPreservedSourceOccurrences": 1
+    },
+    {
+      "id": "branch-active-offline-queue",
+      "category": "branch",
+      "query": "Which queue backend did we finally choose for offline laptops?",
+      "expectedSources": [
+        {
+          "sessionFile": "branches.jsonl",
+          "entryId": "sqlite-active",
+          "requiredText": ["local SQLite WAL queue", "monotonic sequence numbers"],
+          "expectedBranch": "active"
+        }
+      ],
+      "requiredContext": ["local SQLite WAL queue", "idempotent upload acknowledgements"],
+      "minimumPreservedSourceOccurrences": 1
+    },
+    {
+      "id": "branch-summary-hosted-services",
+      "category": "summary",
+      "query": "Why did the branch reject hosted queue services?",
+      "expectedSources": [
+        {
+          "sessionFile": "branches.jsonl",
+          "entryId": "hosted-branch-summary",
+          "requiredText": ["rejected hosted queue services", "without a network connection"],
+          "expectedEvidenceKind": "branch_summary",
+          "expectedSummaryKind": "branch",
+          "expectedBranch": "active"
+        }
+      ],
+      "requiredContext": ["rejected hosted queue services", "without a network connection"],
+      "minimumPreservedSourceOccurrences": 1
+    },
+    {
+      "id": "compaction-copper-finch",
+      "category": "summary",
+      "query": "What recovery steps does Copper Finch stand for?",
+      "expectedSources": [
+        {
+          "sessionFile": "summaries.jsonl",
+          "entryId": "recovery-compaction",
+          "requiredText": ["Copper Finch", "snapshot delta-29", "rotate the device certificate"],
+          "expectedEvidenceKind": "compaction_summary",
+          "expectedSummaryKind": "compaction",
+          "expectedBranch": "active"
+        }
+      ],
+      "requiredContext": ["Copper Finch", "snapshot delta-29", "rotate the device certificate"],
+      "minimumPreservedSourceOccurrences": 1
+    },
+    {
+      "id": "duplicate-meridian-release",
+      "category": "duplicate_content",
+      "query": "Which checksum and rollback tag were approved for Release Meridian?",
+      "expectedSources": [
+        {
+          "sessionFile": "duplicate-a.jsonl",
+          "entryId": "release-copy-a",
+          "requiredText": ["sha256:4c91d7e2", "meridian-safe-3"],
+          "expectedBranch": "active"
+        },
+        {
+          "sessionFile": "duplicate-b.jsonl",
+          "entryId": "release-copy-b",
+          "requiredText": ["sha256:4c91d7e2", "meridian-safe-3"],
+          "expectedBranch": "active"
+        }
+      ],
+      "requiredContext": ["sha256:4c91d7e2", "meridian-safe-3"],
+      "minimumPreservedSourceOccurrences": 2
+    }
+  ]
+}

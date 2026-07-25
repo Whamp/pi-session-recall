@@ -1,0 +1,5 @@
+{"type":"session","version":3,"id":"eval-semantic-context","timestamp":"2026-07-20T09:00:00Z","cwd":"/evaluation/fulfillment"}
+{"type":"message","id":"queue-question","parentId":null,"timestamp":"2026-07-20T09:01:00Z","message":{"role":"user","content":"How should the worker preserve pending deliveries if its process exits unexpectedly?"}}
+{"type":"message","id":"queue-answer","parentId":"queue-question","timestamp":"2026-07-20T09:02:00Z","message":{"role":"assistant","content":"Use an append-only SQLite outbox. Claim rows in a short transaction, and delete them only after the remote acknowledgement so a crash cannot erase pending deliveries."}}
+{"type":"message","id":"rollout-question","parentId":"queue-answer","timestamp":"2026-07-20T09:03:00Z","message":{"role":"user","content":"Can we proceed with the European rollout during the maintenance window?"}}
+{"type":"message","id":"rollout-answer","parentId":"rollout-question","timestamp":"2026-07-20T09:04:00Z","message":{"role":"assistant","content":"Yes, but only after draining the Paris queue below twenty jobs and confirming the Frankfurt replica has caught up."}}

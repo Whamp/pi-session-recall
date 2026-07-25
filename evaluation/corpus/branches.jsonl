@@ -1,0 +1,6 @@
+{"type":"session","version":3,"id":"eval-branches","timestamp":"2026-07-20T11:00:00Z","cwd":"/evaluation/sync"}
+{"type":"message","id":"branch-root","parentId":null,"timestamp":"2026-07-20T11:01:00Z","message":{"role":"user","content":"Choose the durable queue backend for laptops that may stay offline."}}
+{"type":"message","id":"redis-abandoned","parentId":"branch-root","timestamp":"2026-07-20T11:02:00Z","message":{"role":"assistant","content":"The discarded Redis Streams prototype used consumer group glacier-lantern, but it required a hosted service and failed the offline-first constraint."}}
+{"type":"branch_summary","id":"hosted-branch-summary","parentId":"branch-root","timestamp":"2026-07-20T11:03:00Z","fromId":"branch-root","summary":"We rejected hosted queue services because laptops must enqueue and inspect work without a network connection."}
+{"type":"message","id":"sqlite-active","parentId":"hosted-branch-summary","timestamp":"2026-07-20T11:04:00Z","message":{"role":"assistant","content":"The final choice was a local SQLite WAL queue with monotonic sequence numbers and idempotent upload acknowledgements."}}
+{"type":"leaf","targetId":"sqlite-active"}

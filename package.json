@@ -11,6 +11,7 @@
   "type": "module",
   "scripts": {
     "test": "node --import tsx --test src/**/*.test.ts",
+    "evaluate:recall": "node --import tsx src/evaluate-recall-quality.ts",
     "typecheck": "tsc --noEmit",
     "lint": "oxlint --type-aware src",
     "format:check": "oxfmt --check ."

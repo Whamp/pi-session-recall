@@ -1,0 +1,2 @@
+{"type":"session","version":3,"id":"eval-duplicate-b","timestamp":"2026-07-20T13:05:00Z","cwd":"/evaluation/releases"}
+{"type":"message","id":"release-copy-b","parentId":null,"timestamp":"2026-07-20T13:05:00Z","message":{"role":"assistant","content":"Release Meridian was approved with checksum sha256:4c91d7e2 and rollback tag meridian-safe-3."}}

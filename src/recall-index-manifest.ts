@@ -30,6 +30,18 @@ export const RECALL_INDEX_MANIFEST_VERSION = 1;
 export const RECALL_EMBEDDING_CANARY_TEXT =
   'pi-session-recall embedding identity canary v1: durable source provenance';
 
+/** Token ceiling and sibling overlap that define one recall index's chunk geometry. */
+export interface RecallChunkPolicy {
+  maxTokens: number;
+  overlapTokens: number;
+}
+
+/** Production chunk geometry used unless a bounded evaluation supplies another policy. */
+export const DEFAULT_RECALL_CHUNK_POLICY: Readonly<RecallChunkPolicy> = {
+  maxTokens: 1_024,
+  overlapTokens: 128,
+};
+
 /** Full configured identity of the served embedding model, beyond its request alias. */
 export interface RecallEmbeddingModelIdentity {
   requestModel: string;
@@ -195,14 +207,33 @@ export function createRecallEmbeddingCanaryFingerprint(
   return createHash('sha256').update(bytes).digest('hex');
 }
 
+function assertRecallChunkPolicy(chunkPolicy: RecallChunkPolicy): void {
+  if (
+    !Number.isInteger(chunkPolicy.maxTokens) ||
+    chunkPolicy.maxTokens < 1 ||
+    chunkPolicy.maxTokens > 1_024 ||
+    !Number.isInteger(chunkPolicy.overlapTokens) ||
+    chunkPolicy.overlapTokens < 0 ||
+    chunkPolicy.overlapTokens > 128 ||
+    chunkPolicy.overlapTokens >= chunkPolicy.maxTokens
+  ) {
+    throw new Error(
+      'Recall chunk policy invalid: maxTokens must be 1..1024 and overlapTokens must be 0..128 and smaller than maxTokens',
+    );
+  }
+}
+
 /** Creates the expected manifest for the current model, tokenizer, policy, and store code. */
 export function createRecallIndexManifest(options: {
   embeddingIdentity: RecallEmbeddingModelIdentity;
   canaryFingerprint: string;
+  chunkPolicy?: RecallChunkPolicy;
 }): RecallIndexManifest {
   if (!/^[a-f0-9]{64}$/u.test(options.canaryFingerprint)) {
     throw new Error('Recall embedding canary fingerprint invalid: expected lowercase SHA-256');
   }
+  const chunkPolicy = options.chunkPolicy ?? DEFAULT_RECALL_CHUNK_POLICY;
+  assertRecallChunkPolicy(chunkPolicy);
   return {
     manifestVersion: RECALL_INDEX_MANIFEST_VERSION,
     embedding: {
@@ -213,8 +244,8 @@ export function createRecallIndexManifest(options: {
     tokenizer: createTokenizerManifestIdentity(OCTEN_TOKENIZER_IDENTITY),
     chunkPolicy: {
       version: 2,
-      maxTokens: 1_024,
-      overlapTokens: 128,
+      maxTokens: chunkPolicy.maxTokens,
+      overlapTokens: chunkPolicy.overlapTokens,
       boundaryAlgorithm: 'markdown-structure-v1',
       normalization: EMBEDDING_TEXT_NORMALIZATION_VERSION,
     },

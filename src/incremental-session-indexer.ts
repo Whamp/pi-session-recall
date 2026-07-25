@@ -6,6 +6,7 @@ import { Value } from 'typebox/value';
 
 import type { EmbeddingVectorCache } from './embedding-vector-cache.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
+import type { RecallChunkPolicy } from './recall-index-manifest.js';
 import {
   readSessionConversationChunks,
   type ConversationTextTokenizer,
@@ -68,6 +69,7 @@ export interface IncrementalSessionIndexerOptions {
   store: ConversationChunkStore;
   embeddingCache: EmbeddingVectorCache;
   tokenizer: ConversationTextTokenizer;
+  chunkPolicy?: RecallChunkPolicy;
   signal?: AbortSignal;
   onProgress?: (progress: ConversationIndexProgress) => void;
 }
@@ -124,6 +126,7 @@ async function readChangedSessionChunks(
   sessionPath: string,
   previous: IndexedSessionState | undefined,
   tokenizer: ConversationTextTokenizer,
+  chunkPolicy: RecallChunkPolicy | undefined,
 ): Promise<
   | {
       size: number;
@@ -139,7 +142,10 @@ async function readChangedSessionChunks(
   return {
     size: fileStats.size,
     mtimeMs: fileStats.mtimeMs,
-    chunks: await readSessionConversationChunks(sessionPath, { tokenizer }),
+    chunks: await readSessionConversationChunks(sessionPath, {
+      tokenizer,
+      ...(chunkPolicy ? chunkPolicy : {}),
+    }),
   };
 }
 
@@ -195,7 +201,12 @@ export async function indexChangedConversationSessions(
     const previous = state.sessions[sessionPath];
     let changedSession: Awaited<ReturnType<typeof readChangedSessionChunks>>;
     try {
-      changedSession = await readChangedSessionChunks(sessionPath, previous, options.tokenizer);
+      changedSession = await readChangedSessionChunks(
+        sessionPath,
+        previous,
+        options.tokenizer,
+        options.chunkPolicy,
+      );
     } catch (error) {
       summary.failedSessions.push({
         sessionPath,

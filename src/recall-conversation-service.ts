@@ -27,6 +27,7 @@ import {
   readRecallIndexManifest,
   RECALL_EMBEDDING_CANARY_TEXT,
   writeRecallIndexManifest,
+  type RecallChunkPolicy,
   type RecallEmbeddingModelIdentity,
   type RecallIndexManifest,
 } from './recall-index-manifest.js';
@@ -63,6 +64,7 @@ export interface RecallConversationConfig {
   rerankerBaseUrl: string;
   rerankerModel: string;
   searchCandidateLimits: RecallSearchCandidateLimits;
+  chunkPolicy?: RecallChunkPolicy;
 }
 
 /** Per-channel candidate caps applied before recall rank fusion. */
@@ -99,7 +101,8 @@ export interface RecallConversationService {
   ): Promise<{ indexSummary: ConversationIndexSummary; totalChunks: number }>;
 }
 
-interface RecallConversationDependencies {
+/** Injectable local model, tokenizer, and zvec boundaries used by tests and bounded evaluation. */
+export interface RecallConversationDependencies {
   embeddings?: LocalEmbeddingClient;
   reranker?: LocalRerankerClient;
   loadTokenizer?: () => Promise<ConversationTextTokenizer>;
@@ -289,6 +292,7 @@ export function createRecallConversationService(
     return createRecallIndexManifest({
       embeddingIdentity: createEmbeddingModelIdentity(config),
       canaryFingerprint: await getEmbeddingCanaryFingerprint(signal),
+      ...(config.chunkPolicy ? { chunkPolicy: config.chunkPolicy } : {}),
     });
   }
 
@@ -340,6 +344,10 @@ export function createRecallConversationService(
       store,
       embeddingCache,
       tokenizer,
+      chunkPolicy: {
+        maxTokens: manifest.chunkPolicy.maxTokens,
+        overlapTokens: manifest.chunkPolicy.overlapTokens,
+      },
       ...(signal ? { signal } : {}),
       ...(onProgress ? { onProgress } : {}),
     });

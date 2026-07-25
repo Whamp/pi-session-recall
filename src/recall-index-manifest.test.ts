@@ -48,6 +48,29 @@ void test('index manifest round-trips the complete reproducibility identity atom
   assert.equal(manifest.zvec.ftsConfigurationVersion, 2);
 });
 
+void test('index manifest records an explicitly bounded chunk policy', () => {
+  const manifest = createRecallIndexManifest({
+    embeddingIdentity,
+    canaryFingerprint: createRecallEmbeddingCanaryFingerprint([0.25, -0.5, 1], 3),
+    chunkPolicy: { maxTokens: 512, overlapTokens: 64 },
+  });
+
+  assert.equal(manifest.chunkPolicy.maxTokens, 512);
+  assert.equal(manifest.chunkPolicy.overlapTokens, 64);
+});
+
+void test('index manifest rejects invalid chunk geometry before indexing', () => {
+  assert.throws(
+    () =>
+      createRecallIndexManifest({
+        embeddingIdentity,
+        canaryFingerprint: createRecallEmbeddingCanaryFingerprint([0.25, -0.5, 1], 3),
+        chunkPolicy: { maxTokens: 512, overlapTokens: 512 },
+      }),
+    /Recall chunk policy invalid/,
+  );
+});
+
 void test('index manifest incompatibility reports every mismatch with the rebuild command', () => {
   const expected = createRecallIndexManifest({
     embeddingIdentity,

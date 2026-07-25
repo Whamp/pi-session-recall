@@ -216,6 +216,21 @@ The embedding cache is a sibling of zvec rather than part of the collection. Eac
 
 Conversation text and vectors remain local. The extension sends dense-searchable atomic, turn-context, and summary text only to the configured embedding endpoint. Tool evidence remains lexical-only and is never sent for embedding. After retrieval, the extension sends original text from every representative candidate kind—including tool evidence—to the configured local reranker.
 
+## Evaluate before backfill
+
+Run the fixed quality and latency gate before approving a full corpus backfill:
+
+```bash
+npm run evaluate:recall
+```
+
+The command reads only the eight checksum-fixed sessions under `evaluation/corpus/`. It builds three temporary indexes for 512/64, 768/96, and 1,024/128 under the ignored `.recall-data/recall-quality-evaluation/` directory, measures the frozen candidate/final count grid, and writes:
+
+- `docs/evaluation/recall-quality-report.md`
+- `docs/evaluation/recall-quality-results.json`
+
+The command never scans the configured production session directory or starts the full backfill. It exits with status 2 when no measured configuration passes every frozen quality and latency threshold. A passing automated gate still requires human approval before backfill.
+
 ## Develop
 
 All tests use explicit fixture session directories and temporary recall data directories.

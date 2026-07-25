@@ -9,6 +9,7 @@ import type { LocalRerankerClient } from './local-reranker-client.js';
 import {
   createRecallEmbeddingCanaryFingerprint,
   createRecallIndexManifest,
+  readRecallIndexManifest,
   RECALL_EMBEDDING_CANARY_TEXT,
   writeRecallIndexManifest,
 } from './recall-index-manifest.js';
@@ -166,6 +167,55 @@ void test('recall service indexes explicitly and searches a compatible index wit
     /read-only search did not remove the lock/,
   );
   assert.equal(await readFile(join(directory, 'recall.lock', 'owner.json'), 'utf8'), lockOwner);
+});
+
+void test('recall service builds a temporary index with an explicit chunk policy', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-service-chunk-policy-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionsDirectory = join(directory, 'sessions');
+  await mkdir(sessionsDirectory);
+  await writeFile(
+    join(sessionsDirectory, 'bounded.jsonl'),
+    [
+      {
+        type: 'session',
+        version: 3,
+        id: 'bounded-session',
+        timestamp: '2026-07-24T10:00:00Z',
+        cwd: '/bounded-project',
+      },
+      {
+        type: 'message',
+        id: 'bounded-entry',
+        parentId: null,
+        timestamp: '2026-07-24T10:01:00Z',
+        message: { role: 'assistant', content: 'one two three four five' },
+      },
+    ]
+      .map((entry) => JSON.stringify(entry))
+      .join('\n') + '\n',
+  );
+  const config = {
+    ...createTestConfig(directory, sessionsDirectory),
+    chunkPolicy: { maxTokens: 3, overlapTokens: 1 },
+  };
+  const service = createRecallConversationService(config, {
+    embeddings: {
+      async embedTexts(texts) {
+        return texts.map((text) => [text.length, 1, 0]);
+      },
+    },
+    async loadTokenizer() {
+      return tokenizer;
+    },
+  });
+
+  const indexed = await service.index();
+  const manifest = await readRecallIndexManifest(config.manifestPath);
+
+  assert.equal(indexed.totalChunks, 2);
+  assert.equal(manifest?.chunkPolicy.maxTokens, 3);
+  assert.equal(manifest?.chunkPolicy.overlapTokens, 1);
 });
 
 void test('recall service fuses bounded dense, lexical, and identifier candidates with component scores', async (t) => {

@@ -64,7 +64,6 @@ export type IndexedSessionConversationChunk =
 export interface ConversationChunkStore {
   upsertChunks(chunks: IndexedSessionConversationChunk[]): void;
   deleteChunks(ids: string[]): void;
-  fetchChecksums(ids: string[]): Map<string, string>;
 }
 
 /** Durable conversation operations plus zvec evolution and bounded-query capabilities. */
@@ -260,7 +259,12 @@ function parseNullableEntryId(value: string): PiSessionEntryId | null {
 }
 
 function parseRecallDocumentKind(value: string): SessionConversationChunk['documentKind'] {
-  if (value === 'conversation' || value === 'summary' || value === 'tool') {
+  if (
+    value === 'conversation' ||
+    value === 'turn_context' ||
+    value === 'summary' ||
+    value === 'tool'
+  ) {
     return value;
   }
   throw new Error(`Recall zvec documentKind invalid: ${value}`);
@@ -279,6 +283,7 @@ function parseRecallSummaryKind(value: string): SessionConversationChunk['summar
 function parseRecallEvidenceKind(value: string): SessionConversationChunk['evidenceKind'] {
   if (
     value === 'conversation' ||
+    value === 'turn_context' ||
     value === 'compaction_summary' ||
     value === 'branch_summary' ||
     value === 'tool_call' ||
@@ -308,6 +313,7 @@ function parseRecallConversationRole(value: string): SessionConversationChunk['r
   if (
     value === 'user' ||
     value === 'assistant' ||
+    value === 'turn' ||
     value === 'summary' ||
     value === 'custom' ||
     value === 'tool'
@@ -548,18 +554,6 @@ export function openZvecConversationStore(config: {
     },
     searchIdentifierCandidates(query, limit) {
       return searchFullTextCandidates('identifierContent', query, limit, 'identifier', 'AND');
-    },
-    fetchChecksums(ids) {
-      if (ids.length === 0) {
-        return new Map();
-      }
-      const docs = collection.fetchSync({ ids, outputFields: ['checksum'], includeVector: false });
-      return new Map(
-        Object.values(docs).map((doc) => {
-          const fields: Record<string, unknown> = doc.fields;
-          return [doc.id, readStringField(fields, 'checksum')];
-        }),
-      );
     },
     fetchVectors(ids) {
       if (ids.length === 0) {

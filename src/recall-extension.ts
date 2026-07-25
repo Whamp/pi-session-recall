@@ -23,12 +23,12 @@ export default async function recallExtension(
     name: 'pi-session-recall',
     label: 'Pi Session Recall',
     description:
-      'Search a prebuilt compatible index of past Pi conversations with dense, lexical, and case-preserving identifier retrieval backed by local embeddings and zvec FTS. Excludes hidden reasoning and tool output, and returns excerpts with exact session-file and entry-id provenance. Run /pi-session-recall-index explicitly to update the index. Output is truncated to 2000 lines or 50KB.',
+      'Search a prebuilt compatible index of past Pi conversations with dense, lexical, and case-preserving identifier retrieval backed by local embeddings and zvec FTS. Excludes hidden reasoning, keeps raw tool evidence lexical-only, and returns atomic or turn-context excerpts with exact contributing-entry provenance. Run /pi-session-recall-index explicitly to update the index. Output is truncated to 2000 lines or 50KB.',
     promptSnippet:
       'Search past Pi conversations by meaning or exact text and recover remembered details',
     promptGuidelines: [
       'Use pi-session-recall when a task depends on a conversation or detail from a past session and the current context does not contain reliable source evidence.',
-      'Treat pi-session-recall results as search leads; cite their session path and entry ID when relying on a recovered detail.',
+      'Treat pi-session-recall results as search leads; cite their session path and every listed contributing entry when relying on turn-context evidence.',
     ],
     parameters: Type.Object({
       query: Type.String({
@@ -66,8 +66,10 @@ export default async function recallExtension(
           totalChunks: search.totalChunks,
           searchPolicy: search.searchPolicy,
           sources: search.results.map((result) => ({
+            documentKind: result.documentKind,
             sessionPath: result.sessionPath,
             entryId: result.entryId.value,
+            contributingEntryIds: result.contributingEntryIds.map((id) => id.value),
             fusedScore: result.fusedScore,
             dense: result.dense,
             lexical: result.lexical,

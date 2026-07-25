@@ -33,16 +33,6 @@ class MemoryConversationStore implements ConversationChunkStore {
       this.chunks.delete(id);
     }
   }
-  fetchChecksums(ids: string[]): Map<string, string> {
-    const checksums = new Map<string, string>();
-    for (const id of ids) {
-      const chunk = this.chunks.get(id);
-      if (chunk) {
-        checksums.set(id, chunk.checksum);
-      }
-    }
-    return checksums;
-  }
   count(): number {
     return this.chunks.size;
   }
@@ -166,12 +156,34 @@ void test('incremental index embeds only new content and removes deleted session
     tokenizer,
   });
   assert.equal(third.indexedSessions, 1);
-  assert.equal(third.cacheHits, 0);
-  assert.equal(third.newlyEmbeddedChunks, 1);
-  assert.deepEqual(embeddedBatches.at(-1), ['It is documented in docs/queue.md']);
-  assert.equal(store.count(), 2);
+  assert.equal(third.cacheHits, 1);
+  assert.equal(third.newlyEmbeddedChunks, 2);
+  assert.deepEqual(embeddedBatches.at(-1), [
+    'It is documented in docs/queue.md',
+    'User:\nRemember the durable queue\n\nAssistant:\nIt is documented in docs/queue.md',
+  ]);
+  assert.equal(store.count(), 3);
+  const refreshedUserChunk = [...store.chunks.values()].find(
+    (chunk) => chunk.documentKind === 'conversation' && chunk.entryId.value === 'user-1',
+  );
+  assert.equal(refreshedUserChunk?.currentLeafId?.value, 'assistant-1');
+  assert.deepEqual(
+    refreshedUserChunk?.branchPathLeafIds.map((id) => id.value),
+    ['assistant-1'],
+  );
+  assert.deepEqual(
+    refreshedUserChunk?.childEntryIds.map((id) => id.value),
+    ['assistant-1'],
+  );
 
-  await rm(sessionPath);
+  entries.push({
+    type: 'message',
+    id: 'user-2',
+    parentId: 'assistant-1',
+    timestamp: '2026-07-24T10:03:00Z',
+    message: { role: 'user', content: 'What happened next?' },
+  });
+  await writeFile(sessionPath, sessionLines(entries));
   const fourth = await indexChangedConversationSessions({
     sessionsDirectory,
     statePath,
@@ -179,9 +191,35 @@ void test('incremental index embeds only new content and removes deleted session
     embeddingCache,
     tokenizer,
   });
-  assert.equal(fourth.removedSessions, 1);
+  assert.equal(fourth.indexedSessions, 1);
+  assert.equal(fourth.cacheHits, 3);
+  assert.equal(fourth.newlyEmbeddedChunks, 1);
+  assert.equal(fourth.embeddingRequestCount, 1);
+  assert.deepEqual(embeddedBatches.at(-1), ['What happened next?']);
+  const refreshedTurnContext = [...store.chunks.values()].find(
+    (chunk) => chunk.documentKind === 'turn_context',
+  );
+  assert.equal(refreshedTurnContext?.currentLeafId?.value, 'user-2');
+  assert.deepEqual(
+    refreshedTurnContext?.branchPathLeafIds.map((id) => id.value),
+    ['user-2'],
+  );
+  assert.deepEqual(
+    refreshedTurnContext?.contributingEntryIds.map((id) => id.value),
+    ['user-1', 'assistant-1'],
+  );
+
+  await rm(sessionPath);
+  const fifth = await indexChangedConversationSessions({
+    sessionsDirectory,
+    statePath,
+    store,
+    embeddingCache,
+    tokenizer,
+  });
+  assert.equal(fifth.removedSessions, 1);
   assert.equal(store.count(), 0);
-  assert.equal(store.deleted.length, 2);
+  assert.equal(store.deleted.length, 4);
 });
 
 void test('incremental index never sends lexical-only tool evidence to embeddings', async (t) => {

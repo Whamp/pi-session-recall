@@ -25,7 +25,6 @@ const conversationIndexStateSchema = Type.Object({
       chunks: Type.Array(
         Type.Object({
           id: Type.String(),
-          checksum: Type.String(),
         }),
       ),
     }),
@@ -35,7 +34,7 @@ const conversationIndexStateSchema = Type.Object({
 interface IndexedSessionState {
   size: number;
   mtimeMs: number;
-  chunks: Array<{ id: string; checksum: string }>;
+  chunks: Array<{ id: string }>;
 }
 
 interface ConversationIndexState {
@@ -215,12 +214,8 @@ export async function indexChangedConversationSessions(
     options.store.deleteChunks(removedIds);
     summary.deletedChunks += removedIds.length;
 
-    const storedChecksums = options.store.fetchChecksums(chunks.map((chunk) => chunk.id));
-    const changedChunks = chunks.filter(
-      (chunk) => storedChecksums.get(chunk.id) !== chunk.checksum,
-    );
-    for (let start = 0; start < changedChunks.length; start += 128) {
-      const chunkBatch = changedChunks.slice(start, start + 128);
+    for (let start = 0; start < chunks.length; start += 128) {
+      const chunkBatch = chunks.slice(start, start + 128);
       const denseChunkBatch = chunkBatch.filter((chunk) => chunk.isDenseSearchable);
       const cacheResult = await options.embeddingCache.resolveEmbeddingVectors(
         denseChunkBatch.map((chunk) => chunk.content),
@@ -247,7 +242,7 @@ export async function indexChangedConversationSessions(
     state.sessions[sessionPath] = {
       size: changedSession.size,
       mtimeMs: changedSession.mtimeMs,
-      chunks: chunks.map(({ id, checksum }) => ({ id, checksum })),
+      chunks: chunks.map(({ id }) => ({ id })),
     };
     summary.indexedSessions += 1;
     sessionsSinceCheckpoint += 1;

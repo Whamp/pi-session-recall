@@ -6,7 +6,7 @@ import type { SessionConversationChunk } from './session-conversation-index.js';
 
 function createTestConversationChunk(id: string): SessionConversationChunk {
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     documentKind: 'conversation',
     summaryKind: null,
     evidenceKind: 'conversation',

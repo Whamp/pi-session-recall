@@ -12,7 +12,7 @@ import {
 } from './zvec-conversation-store.js';
 
 const baseChunk = {
-  schemaVersion: 3,
+  schemaVersion: 4,
   documentKind: 'conversation',
   summaryKind: null,
   evidenceKind: 'conversation',
@@ -162,6 +162,64 @@ void test('zvec conversation search returns ranked text and exact session proven
     () => store.searchIdentifierCandidates('EPERM', 201),
     /candidate limit invalid \(identifier\)/,
   );
+});
+
+void test('zvec hybrid search returns atomic and turn-context document kinds', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-zvec-turn-context-'));
+  const store = openZvecConversationStore({
+    databasePath: join(directory, 'collection'),
+    dimensions: 3,
+  });
+  t.after(async () => {
+    store.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  const atomicChunk: EmbeddedSessionConversationChunk = {
+    ...baseChunk,
+    id: 'atomic-reply',
+    checksum: 'atomic-checksum',
+    entryId: { value: 'assistant-reply' },
+    contributingEntryIds: [{ value: 'assistant-reply' }],
+    role: 'assistant',
+    content: 'Yes, do it.',
+    embedding: [1, 0, 0],
+  };
+  const turnContextChunk: EmbeddedSessionConversationChunk = {
+    ...baseChunk,
+    documentKind: 'turn_context',
+    evidenceKind: 'turn_context',
+    id: 'turn-context-reply',
+    checksum: 'turn-context-checksum',
+    entryId: { value: 'user-request' },
+    contributingEntryIds: [{ value: 'user-request' }, { value: 'assistant-reply' }],
+    role: 'turn',
+    sourceLineStart: 2,
+    sourceLineEnd: 5,
+    sourceBlockStart: null,
+    sourceBlockEnd: null,
+    content: 'User:\nShip release Atlas to edge nodes.\n\nAssistant:\nYes, do it.',
+    embedding: [1, 0, 0],
+  };
+
+  store.upsertChunks([atomicChunk, turnContextChunk]);
+
+  assert.deepEqual(
+    store
+      .searchDenseCandidates([1, 0, 0], 2)
+      .map((candidate) => candidate.documentKind)
+      .toSorted(),
+    ['conversation', 'turn_context'],
+  );
+  const lexicalTurn = store.searchLexicalCandidates('Atlas', 2)[0];
+  assert.equal(lexicalTurn?.id, 'turn-context-reply');
+  assert.equal(lexicalTurn?.documentKind, 'turn_context');
+  assert.equal(lexicalTurn?.evidenceKind, 'turn_context');
+  assert.equal(lexicalTurn?.role, 'turn');
+  assert.deepEqual(
+    lexicalTurn?.contributingEntryIds.map((id) => id.value),
+    ['user-request', 'assistant-reply'],
+  );
+  assert.ok((lexicalTurn?.fullTextScore ?? 0) > 0);
 });
 
 void test('zvec round-trips lexical-only tool evidence and excludes it from dense search', async (t) => {

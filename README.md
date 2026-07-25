@@ -8,6 +8,7 @@ The index contains:
 
 - user messages;
 - assistant text;
+- turn-context documents that pair user requests with assistant responses;
 - visible custom messages;
 - compaction summaries;
 - branch summaries;
@@ -17,13 +18,16 @@ The index contains:
 
 Atomic conversation documents come from one visible text run in one session entry. A visible text run contains only adjacent, nonempty text blocks. Thinking, tools, results, images, empty blocks, roles, entries, and summaries all end a conversation run, so boundaries cannot create synthetic text adjacency.
 
+Turn-context documents are secondary evidence. Each starts with visible user text and follows Pi parent links through visible assistant text until the next user entry. A turn may cross tool calls and results, but its text never includes thinking, tool arguments, or raw tool output. Oversized turns split into bounded role-paired documents, so every emitted context retains both user and assistant text. Branched paths produce distinct turn contexts when their contributing entries differ. Each context records all contributing entry IDs; atomic chunks remain available for precise citation.
+
 Tool calls, results, and direct bash executions follow a separate lexical-only evidence path. Names, compact JSON argument objects, result text, commands, and shell output are stored without redaction. Every document stays within one tool source block or bash message field and records its evidence part, tool name, available call linkage, error state, and source path. Thinking and images are never tool evidence.
 
-All evidence uses the exact pinned Octen tokenizer for bounded geometry. Conversation chunks contain at most 1,024 tokens and overlap adjacent siblings by at most 128 tokens. Tool evidence also contains at most 1,024 tokens, uses no overlap, and preserves every source character. Splitting prefers Markdown sections, paragraphs, fenced-code boundaries, lines, and sentences before a hard token cut.
+All evidence uses the exact pinned Octen tokenizer for bounded geometry. Atomic, turn-context, and summary chunks contain at most 1,024 tokens and overlap adjacent siblings by at most 128 tokens. Tool evidence also contains at most 1,024 tokens, uses no overlap, and preserves every source character. Splitting prefers Markdown sections, paragraphs, fenced-code boundaries, lines, and sentences before a hard token cut.
 
 Every stored document includes:
 
-- session, parent-session, project, entry, and parent-entry provenance;
+- schema version, stable document identity, and content checksum;
+- session, parent-session, project, entry, parent-entry, and contributing-entry provenance;
 - effective-leaf, active-branch, active-context, and many-path branch membership;
 - compaction and branch-summary links;
 - source line, block, character, and token spans;
@@ -57,13 +61,13 @@ pi-session-recall({ query: "readNodeErrorCode", limit: 5 })
 The extension tells Pi to use `pi-session-recall` when a task depends on a past conversation or a detail absent from current context. Each result contains:
 
 - fused score plus available dense, lexical, and identifier ranks and scores;
-- session name, date, role, and project directory;
+- document kind, session name, date, role, and project directory;
 - a concise text excerpt;
-- source provenance in `SESSION_FILE#ENTRY_ID` form.
+- source provenance in `SESSION_FILE#ENTRY_ID` form, plus every contributing entry for turn context.
 
 ## Hybrid retrieval
 
-Each atomic conversation or summary document is stored once with three searchable representations:
+Each atomic conversation, turn-context, or summary document is stored once with three searchable representations:
 
 - an Octen embedding queried by cosine distance, where lower is better;
 - ordinary zvec FTS using the standard tokenizer and lowercase filter, where higher is better;
@@ -181,7 +185,7 @@ A process-local mutex and PID-owned writer lock serialize explicit indexing. Sea
 
 The embedding cache is a sibling of zvec rather than part of the collection. Each entry has a versioned identity header, FP32 payload, and SHA-256 checksum. Writers fsync a unique temporary file and atomically rename it only after validation. Readers reject identity, dimension, byte-length, checksum, and non-finite-value failures. Rebuilding only zvec and index state leaves the cache available, so unchanged chunks need zero chunk-embedding requests. Index completion reports cache hits, newly embedded chunks, and chunk-embedding request count separately; the model-identity canary request is not a chunk-embedding request.
 
-Conversation text and vectors remain local. The extension sends dense-searchable conversation and summary text only to the configured embedding endpoint. Tool evidence remains lexical-only and is never sent for embedding.
+Conversation text and vectors remain local. The extension sends dense-searchable atomic, turn-context, and summary text only to the configured embedding endpoint. Tool evidence remains lexical-only and is never sent for embedding.
 
 ## Develop
 

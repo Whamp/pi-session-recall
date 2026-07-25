@@ -199,6 +199,188 @@ void test('session chunking preserves tool boundaries and overlaps only within t
   }
 });
 
+void test('turn-context documents follow parent paths across tool activity', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-turn-context-'));
+  const sessionPath = join(directory, 'session.jsonl');
+  await writeFile(
+    sessionPath,
+    [
+      {
+        type: 'session',
+        version: 3,
+        id: 'session-turn-context',
+        timestamp: '2026-07-24T10:00:00Z',
+        cwd: '/project',
+      },
+      {
+        type: 'message',
+        id: 'next-user',
+        parentId: 'assistant-final',
+        timestamp: '2026-07-24T10:05:00Z',
+        message: { role: 'user', content: 'What happened after deployment?' },
+      },
+      {
+        type: 'message',
+        id: 'tool-result',
+        parentId: 'assistant-call',
+        timestamp: '2026-07-24T10:03:00Z',
+        message: {
+          role: 'toolResult',
+          toolCallId: 'call-release',
+          toolName: 'read',
+          content: [{ type: 'text', text: 'RAW_TOOL_OUTPUT must stay out of turn context' }],
+          isError: false,
+        },
+      },
+      {
+        type: 'message',
+        id: 'assistant-final',
+        parentId: 'tool-result',
+        timestamp: '2026-07-24T10:04:00Z',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'Yes, do it.' }] },
+      },
+      {
+        type: 'message',
+        id: 'user-request',
+        parentId: null,
+        timestamp: '2026-07-24T10:01:00Z',
+        message: {
+          role: 'user',
+          content: `Ship release Atlas to edge nodes. ${'context '.repeat(24).trim()}`,
+        },
+      },
+      {
+        type: 'message',
+        id: 'assistant-call',
+        parentId: 'user-request',
+        timestamp: '2026-07-24T10:02:00Z',
+        message: {
+          role: 'assistant',
+          content: [
+            { type: 'thinking', thinking: 'private release reasoning' },
+            { type: 'text', text: 'I will inspect the manifest.' },
+            {
+              type: 'toolCall',
+              id: 'call-release',
+              name: 'read',
+              arguments: { path: 'release.json' },
+            },
+          ],
+        },
+      },
+      {
+        type: 'message',
+        id: 'assistant-abandoned',
+        parentId: 'user-request',
+        timestamp: '2026-07-24T10:02:30Z',
+        message: {
+          role: 'assistant',
+          content: `Abandoned ${'word '.repeat(24).trim()}`,
+        },
+      },
+      { type: 'leaf', targetId: 'next-user' },
+    ]
+      .map((entry) => JSON.stringify(entry))
+      .join('\n') + '\n',
+  );
+
+  const chunks = await readSessionConversationChunks(sessionPath, {
+    tokenizer: createWhitespaceConversationTokenizer(),
+    maxTokens: 16,
+    overlapTokens: 2,
+  });
+  const turnContexts = chunks.filter((chunk) => chunk.documentKind === 'turn_context');
+  const activeTurnChunks = turnContexts.filter((chunk) =>
+    chunk.contributingEntryIds.some((id) => id.value === 'assistant-final'),
+  );
+  const abandonedTurnChunks = turnContexts.filter((chunk) =>
+    chunk.contributingEntryIds.some((id) => id.value === 'assistant-abandoned'),
+  );
+
+  assert.equal(
+    chunks.find(
+      (chunk) => chunk.documentKind === 'conversation' && chunk.entryId.value === 'user-request',
+    )?.contributingEntryIds[0]?.value,
+    'user-request',
+  );
+  assert.ok(activeTurnChunks.length > 1);
+  assert.ok(abandonedTurnChunks.length > 1);
+  assert.deepEqual(
+    activeTurnChunks[0]?.contributingEntryIds.map((id) => id.value),
+    ['user-request', 'assistant-call', 'assistant-final'],
+  );
+  assert.equal(activeTurnChunks[0]?.entryId.value, 'user-request');
+  assert.equal(activeTurnChunks[0]?.evidenceKind, 'turn_context');
+  assert.equal(activeTurnChunks[0]?.role, 'turn');
+  assert.deepEqual(
+    activeTurnChunks[0]?.branchPathLeafIds.map((id) => id.value),
+    ['next-user'],
+  );
+  assert.equal(activeTurnChunks[0]?.isOnActiveBranch, true);
+  assert.equal(activeTurnChunks[0]?.sourceLineStart, 4);
+  assert.equal(activeTurnChunks[0]?.sourceLineEnd, 6);
+  assert.ok(activeTurnChunks.some((chunk) => chunk.content.includes('Ship release Atlas')));
+  assert.ok(activeTurnChunks.every((chunk) => chunk.content.includes('User:')));
+  assert.ok(activeTurnChunks.every((chunk) => chunk.content.includes('Assistant:')));
+  assert.ok(activeTurnChunks.every((chunk) => chunk.content.includes('Yes, do it.')));
+  assert.ok(
+    activeTurnChunks.every((chunk) => !chunk.content.includes('What happened after deployment?')),
+  );
+  assert.ok(turnContexts.every((chunk) => chunk.tokenCount <= 16));
+  assert.ok(turnContexts.every((chunk) => chunk.overlapTokenCount <= 2));
+  assert.ok(turnContexts.every((chunk) => chunk.isDenseSearchable));
+  assert.ok(turnContexts.every((chunk) => !chunk.content.includes('RAW_TOOL_OUTPUT')));
+  assert.ok(turnContexts.every((chunk) => !chunk.content.includes('private release reasoning')));
+  assert.deepEqual(
+    abandonedTurnChunks[0]?.branchPathLeafIds.map((id) => id.value),
+    ['assistant-abandoned'],
+  );
+  assert.equal(abandonedTurnChunks[0]?.isOnActiveBranch, false);
+});
+
+void test('turn-context documents reject a token budget that cannot contain both roles', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-turn-context-budget-'));
+  const sessionPath = join(directory, 'session.jsonl');
+  await writeFile(
+    sessionPath,
+    [
+      {
+        type: 'session',
+        version: 3,
+        id: 'session-turn-budget',
+        timestamp: '2026-07-24T10:00:00Z',
+        cwd: '/project',
+      },
+      {
+        type: 'message',
+        id: 'user',
+        parentId: null,
+        timestamp: '2026-07-24T10:01:00Z',
+        message: { role: 'user', content: 'Approve' },
+      },
+      {
+        type: 'message',
+        id: 'assistant',
+        parentId: 'user',
+        timestamp: '2026-07-24T10:02:00Z',
+        message: { role: 'assistant', content: 'Done' },
+      },
+    ]
+      .map((entry) => JSON.stringify(entry))
+      .join('\n') + '\n',
+  );
+
+  await assert.rejects(
+    () =>
+      readSessionConversationChunks(sessionPath, {
+        tokenizer: createWhitespaceConversationTokenizer(),
+        maxTokens: 3,
+        overlapTokens: 0,
+      }),
+    /Recall turn context cannot fit both user and assistant text within maxTokens=3/,
+  );
+});
+
 void test('session chunks index bounded verbatim tool evidence with exact call provenance', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'recall-tool-evidence-'));
   const sessionPath = join(directory, 'session.jsonl');
@@ -473,7 +655,7 @@ void test('session chunks expose branch, summary, sibling, and source geometry p
       },
     ],
   );
-  assert.ok(activeRuns.every((chunk) => chunk.schemaVersion === 3));
+  assert.ok(activeRuns.every((chunk) => chunk.schemaVersion === 4));
   assert.ok(activeRuns.every((chunk) => chunk.contributingEntryIds[0]?.value === 'active'));
   assert.ok(activeRuns.every((chunk) => chunk.textRunId.length === 40));
   assert.ok(activeRuns.every((chunk) => chunk.chunkCount === 1));

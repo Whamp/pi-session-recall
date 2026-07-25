@@ -269,6 +269,137 @@ void test('recall service fuses bounded dense, lexical, and identifier candidate
   );
 });
 
+void test('recall service retrieves context-dependent replies and reuses turn-context vectors', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-service-turn-context-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionsDirectory = join(directory, 'sessions');
+  await mkdir(sessionsDirectory);
+  const sessionPath = join(sessionsDirectory, 'turn-context.jsonl');
+  await writeFile(
+    sessionPath,
+    [
+      {
+        type: 'session',
+        version: 3,
+        id: 'turn-context-session',
+        timestamp: '2026-07-24T10:00:00Z',
+        cwd: '/release-project',
+      },
+      {
+        type: 'message',
+        id: 'user-request',
+        parentId: null,
+        timestamp: '2026-07-24T10:01:00Z',
+        message: { role: 'user', content: 'Ship release Atlas to edge nodes.' },
+      },
+      {
+        type: 'message',
+        id: 'assistant-call',
+        parentId: 'user-request',
+        timestamp: '2026-07-24T10:02:00Z',
+        message: {
+          role: 'assistant',
+          content: [
+            { type: 'thinking', thinking: 'private deployment plan' },
+            {
+              type: 'toolCall',
+              id: 'call-release',
+              name: 'read',
+              arguments: { path: 'release.json' },
+            },
+          ],
+        },
+      },
+      {
+        type: 'message',
+        id: 'tool-result',
+        parentId: 'assistant-call',
+        timestamp: '2026-07-24T10:03:00Z',
+        message: {
+          role: 'toolResult',
+          toolCallId: 'call-release',
+          toolName: 'read',
+          content: [{ type: 'text', text: 'RAW_RELEASE_TOOL_OUTPUT' }],
+          isError: false,
+        },
+      },
+      {
+        type: 'message',
+        id: 'assistant-reply',
+        parentId: 'tool-result',
+        timestamp: '2026-07-24T10:04:00Z',
+        message: { role: 'assistant', content: 'Yes, do it.' },
+      },
+      {
+        type: 'message',
+        id: 'next-user',
+        parentId: 'assistant-reply',
+        timestamp: '2026-07-24T10:05:00Z',
+        message: { role: 'user', content: 'Report when deployment finishes.' },
+      },
+    ]
+      .map((entry) => JSON.stringify(entry))
+      .join('\n') + '\n',
+  );
+  const embeddingInputs: string[][] = [];
+  const query = 'Atlas Yes';
+  const embeddings: LocalEmbeddingClient = {
+    async embedTexts(texts) {
+      embeddingInputs.push([...texts]);
+      return texts.map((text) => {
+        if (text === RECALL_EMBEDDING_CANARY_TEXT) {
+          return [0, 0, 1];
+        }
+        if (text === query || text.startsWith('User:\nShip release Atlas')) {
+          return [1, 0, 0];
+        }
+        return [0, 1, 0];
+      });
+    },
+  };
+  const config = createTestConfig(directory, sessionsDirectory);
+  const service = createRecallConversationService(config, {
+    embeddings,
+    async loadTokenizer() {
+      return tokenizer;
+    },
+  });
+
+  const indexed = await service.index();
+  const recalled = await service.search(query, 1);
+  const turnContext = recalled.results[0];
+
+  assert.equal(indexed.totalChunks, 7);
+  assert.equal(indexed.indexSummary.cacheHits, 0);
+  assert.equal(indexed.indexSummary.newlyEmbeddedChunks, 4);
+  assert.equal(indexed.indexSummary.embeddingRequestCount, 1);
+  assert.equal(turnContext?.documentKind, 'turn_context');
+  assert.equal(turnContext?.evidenceKind, 'turn_context');
+  assert.equal(turnContext?.role, 'turn');
+  assert.deepEqual(
+    turnContext?.contributingEntryIds.map((id) => id.value),
+    ['user-request', 'assistant-reply'],
+  );
+  assert.equal(turnContext?.dense?.rank, 1);
+  assert.equal(turnContext?.lexical?.rank, 1);
+  assert.equal(turnContext?.identifier?.rank, 1);
+  assert.ok(turnContext?.content.includes('Ship release Atlas'));
+  assert.ok(turnContext?.content.includes('Yes, do it.'));
+  assert.ok(!turnContext?.content.includes('RAW_RELEASE_TOOL_OUTPUT'));
+  assert.ok(!turnContext?.content.includes('private deployment plan'));
+
+  const requestsBeforeRebuild = embeddingInputs.length;
+  await rm(config.databasePath, { recursive: true });
+  await rm(config.statePath);
+  const rebuilt = await service.index();
+
+  assert.equal(rebuilt.totalChunks, 7);
+  assert.equal(rebuilt.indexSummary.cacheHits, 4);
+  assert.equal(rebuilt.indexSummary.newlyEmbeddedChunks, 0);
+  assert.equal(rebuilt.indexSummary.embeddingRequestCount, 0);
+  assert.equal(embeddingInputs.length, requestsBeforeRebuild);
+});
+
 void test('recall service fuses lexical-only tool evidence with dense conversation results', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'recall-service-tool-evidence-'));
   t.after(() => rm(directory, { recursive: true, force: true }));

@@ -26,6 +26,20 @@ function formatRecallToolEvidenceMetadata(result: RecallSearchResult): string | 
   return parts.join(' · ');
 }
 
+function formatRecallDocumentMetadata(result: RecallSearchResult): string {
+  const toolMetadata = formatRecallToolEvidenceMetadata(result);
+  if (toolMetadata) {
+    return toolMetadata;
+  }
+  if (result.documentKind === 'conversation') {
+    return 'atomic conversation';
+  }
+  if (result.documentKind === 'turn_context') {
+    return 'turn context';
+  }
+  return `${result.summaryKind ?? 'unknown'} summary`;
+}
+
 function formatRecallScoreComponents(result: RecallSearchResult): string {
   const components = [`fused RRF ${result.fusedScore.toFixed(4)}`];
   if (result.dense) {
@@ -61,13 +75,17 @@ export function formatRecallSearchResults(
 
   for (const [index, result] of search.results.entries()) {
     const title = result.sessionName || result.sessionId.value;
-    const toolMetadata = formatRecallToolEvidenceMetadata(result);
     lines.push(
       '',
       `${index + 1}. ${title} (${formatRecallScoreComponents(result)})`,
-      `${result.timestamp || 'unknown time'} · ${result.role}${toolMetadata ? ` · ${toolMetadata}` : ''} · ${result.cwd || 'unknown project'}`,
+      `${result.timestamp || 'unknown time'} · ${result.role} · ${formatRecallDocumentMetadata(result)} · ${result.cwd || 'unknown project'}`,
       truncateRecallExcerpt(result.content, maxExcerptCharacters),
     );
+    if (result.contributingEntryIds.length > 1) {
+      lines.push(
+        `Contributing entries: ${result.contributingEntryIds.map((id) => id.value).join(' → ')}`,
+      );
+    }
     if (result.toolCallEntryId || result.toolResultEntryId) {
       lines.push(
         `Call source: ${result.toolCallEntryId?.value ?? 'unknown'} · Result source: ${result.toolResultEntryId?.value ?? 'unknown'}`,

@@ -5,7 +5,7 @@ import { formatRecallSearchResults } from './format-recall-search-results.js';
 import type { RecallSearchResult } from './fuse-recall-search-candidates.js';
 
 const result = {
-  schemaVersion: 3,
+  schemaVersion: 4,
   documentKind: 'conversation',
   summaryKind: null,
   evidenceKind: 'conversation',
@@ -76,7 +76,7 @@ void test('recall results include concise excerpts and exact source provenance',
   );
 
   assert.match(output, /1\. Queue design/);
-  assert.match(output, /2026-07-24T10:00:00Z · assistant · \/project/);
+  assert.match(output, /2026-07-24T10:00:00Z · assistant · atomic conversation · \/project/);
   assert.match(output, /Source: \/sessions\/one\.jsonl#entry-1/);
   assert.match(output, /fused RRF 0\.0325/);
   assert.match(output, /dense #1 cosine distance 0\.0123/);
@@ -84,6 +84,36 @@ void test('recall results include concise excerpts and exact source provenance',
   assert.match(output, /…/);
   assert.ok(!output.includes('Incremental index'));
   assert.ok(!output.includes('checksum'));
+});
+
+void test('turn-context results identify their kind and every contributing entry', () => {
+  const turnContextResult = {
+    ...result,
+    schemaVersion: 4,
+    documentKind: 'turn_context',
+    evidenceKind: 'turn_context',
+    id: 'turn-context-chunk',
+    entryId: { value: 'user-request' },
+    contributingEntryIds: [{ value: 'user-request' }, { value: 'assistant-reply' }],
+    role: 'turn',
+    sourceLineStart: 2,
+    sourceLineEnd: 5,
+    content: 'User:\nShip release Atlas.\n\nAssistant:\nYes, do it.',
+  } satisfies RecallSearchResult;
+
+  const output = formatRecallSearchResults({
+    totalChunks: 1,
+    results: [turnContextResult],
+    searchPolicy: {
+      rankFusionVersion: 1,
+      reciprocalRankConstant: 60,
+      candidateLimits: { dense: 40, lexical: 40, identifier: 40 },
+    },
+  });
+
+  assert.match(output, /turn · turn context · \/project/);
+  assert.match(output, /Contributing entries: user-request → assistant-reply/);
+  assert.match(output, /Source: \/sessions\/one\.jsonl#user-request/);
 });
 
 void test('tool evidence results identify the exact call relationship and source', () => {

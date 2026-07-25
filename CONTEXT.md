@@ -32,6 +32,10 @@ _Avoid_: Message text, joined content
 A token-bounded part of one visible text run. It never crosses an entry, role, run, tool, thinking, image, result, or summary boundary.
 _Avoid_: Character chunk, transcript chunk
 
+**Turn-context document**:
+A token-bounded secondary document that joins visible user text with visible assistant text on one parent-linked path until the next user entry. It may cross intervening tool activity but excludes thinking and raw tool output. It cites every entry whose text contributes.
+_Avoid_: Flat turn, tool transcript
+
 **Tool evidence document**:
 A lexical-only, verbatim tool name, argument object, result text, or direct bash command/output part bounded within one source block or message field. Tool calls and results are linked by call ID. Tool evidence is never sent to the embedding model.
 _Avoid_: Tool transcript, conversation chunk

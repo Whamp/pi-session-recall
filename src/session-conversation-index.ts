@@ -3,7 +3,7 @@ import { createReadStream } from 'node:fs';
 import { createInterface } from 'node:readline';
 
 /** Version of the source and graph provenance stored on recall evidence documents. */
-export const SESSION_CONVERSATION_SCHEMA_VERSION = 3;
+export const SESSION_CONVERSATION_SCHEMA_VERSION = 4;
 
 /** A Pi session ID that cannot be passed where a session entry ID is required. */
 export interface PiSessionId {
@@ -35,10 +35,11 @@ export interface SessionConversationChunkOptions {
 /** A token-bounded recall evidence document with complete source and session-graph provenance. */
 export interface SessionConversationChunk {
   schemaVersion: number;
-  documentKind: 'conversation' | 'summary' | 'tool';
+  documentKind: 'conversation' | 'turn_context' | 'summary' | 'tool';
   summaryKind: 'compaction' | 'branch' | null;
   evidenceKind:
     | 'conversation'
+    | 'turn_context'
     | 'compaction_summary'
     | 'branch_summary'
     | 'tool_call'
@@ -65,7 +66,7 @@ export interface SessionConversationChunk {
   compactedByEntryIds: PiSessionEntryId[];
   compactionFirstKeptEntryId: PiSessionEntryId | null;
   branchSummaryFromEntryId: PiSessionEntryId | null;
-  role: 'user' | 'assistant' | 'summary' | 'custom' | 'tool';
+  role: 'user' | 'assistant' | 'turn' | 'summary' | 'custom' | 'tool';
   timestamp: string;
   sourceLineStart: number;
   sourceLineEnd: number;
@@ -168,10 +169,15 @@ interface ConversationChunkSpan {
   content: string;
 }
 
-interface PendingConversationDocument {
+interface TurnContextText {
+  userText: string;
+  assistantText: string;
+}
+
+interface PendingConversationDocumentBase {
   entry: ParsedSessionEntry;
+  contributingEntries: ParsedSessionEntry[];
   role: SessionConversationChunk['role'];
-  documentKind: SessionConversationChunk['documentKind'];
   summaryKind: SessionConversationChunk['summaryKind'];
   evidenceKind: SessionConversationChunk['evidenceKind'];
   evidencePart: SessionConversationChunk['evidencePart'];
@@ -185,6 +191,23 @@ interface PendingConversationDocument {
   toolError: boolean | null;
   preserveVerbatim: boolean;
   textRun: VisibleConversationTextRun;
+}
+
+interface PendingEntryScopedDocument extends PendingConversationDocumentBase {
+  documentKind: 'conversation' | 'summary' | 'tool';
+}
+
+interface PendingTurnContextDocument extends PendingConversationDocumentBase {
+  documentKind: 'turn_context';
+  turnContextText: TurnContextText;
+}
+
+type PendingConversationDocument = PendingEntryScopedDocument | PendingTurnContextDocument;
+
+interface PendingTurnContextPath {
+  entry: ParsedSessionEntry;
+  contributingEntries: ParsedSessionEntry[];
+  assistantTexts: string[];
 }
 
 interface SessionConversationChunkContext {
@@ -994,6 +1017,7 @@ function createConversationTextDocuments(
 ): PendingConversationDocument[] {
   return extractVisibleConversationTextRuns(content).map((textRun) => ({
     entry,
+    contributingEntries: [entry],
     role,
     documentKind: 'conversation',
     summaryKind: null,
@@ -1023,6 +1047,7 @@ function createSummaryTextDocument(
   return [
     {
       entry,
+      contributingEntries: [entry],
       role: 'summary',
       documentKind: 'summary',
       summaryKind,
@@ -1076,6 +1101,7 @@ function createToolCallDocuments(
     const resultEntryId = graph.toolResultEntryIdsByCallId.get(block.id) ?? null;
     const baseDocument = {
       entry,
+      contributingEntries: [entry],
       role: 'tool' as const,
       documentKind: 'tool' as const,
       summaryKind: null,
@@ -1147,6 +1173,7 @@ function createToolResultDocuments(
     return [
       {
         entry,
+        contributingEntries: [entry],
         role: 'tool',
         documentKind: 'tool',
         summaryKind: null,
@@ -1193,6 +1220,7 @@ function createBashExecutionDocuments(
     return [
       {
         entry,
+        contributingEntries: [entry],
         role: 'tool',
         documentKind: 'tool',
         summaryKind: null,
@@ -1218,10 +1246,283 @@ function createBashExecutionDocuments(
   });
 }
 
+function readSessionGraphEntry(graph: ParsedSessionGraph, entryId: string): ParsedSessionEntry {
+  const entry = graph.entriesById.get(entryId);
+  if (!entry) {
+    throw new Error(`Recall turn context entry missing from graph: ${entryId}`);
+  }
+  return entry;
+}
+
+function readSessionEntryMessage(entry: ParsedSessionEntry): Record<string, unknown> | null {
+  if (entry.type !== 'message' || !isUnknownRecord(entry.record.message)) {
+    return null;
+  }
+  return entry.record.message;
+}
+
+function readTurnContextRoleText(entry: ParsedSessionEntry, role: 'user' | 'assistant'): string {
+  const message = readSessionEntryMessage(entry);
+  if (message?.role !== role) {
+    return '';
+  }
+  return extractVisibleConversationTextRuns(message.content)
+    .map((textRun) => textRun.text)
+    .join('\n\n');
+}
+
+function createContributingEntryIdentity(entries: ParsedSessionEntry[]): string {
+  return entries.map((entry) => entry.id).join('\0');
+}
+
+function formatTurnContextText(turnContextText: TurnContextText): string {
+  return `User:\n${turnContextText.userText}\n\nAssistant:\n${turnContextText.assistantText}`;
+}
+
+function addTurnContextPathDocument(
+  documentsByContributingEntryIdentity: Map<string, PendingConversationDocument>,
+  userEntry: ParsedSessionEntry,
+  userText: string,
+  path: PendingTurnContextPath,
+): void {
+  if (path.assistantTexts.length === 0) {
+    return;
+  }
+  const contributingEntryIdentity = createContributingEntryIdentity(path.contributingEntries);
+  if (documentsByContributingEntryIdentity.has(contributingEntryIdentity)) {
+    return;
+  }
+  const turnContextText: TurnContextText = {
+    userText,
+    assistantText: path.assistantTexts.join('\n\n'),
+  };
+  documentsByContributingEntryIdentity.set(contributingEntryIdentity, {
+    entry: userEntry,
+    contributingEntries: path.contributingEntries,
+    turnContextText,
+    role: 'turn',
+    documentKind: 'turn_context',
+    summaryKind: null,
+    evidenceKind: 'turn_context',
+    evidencePart: 'content',
+    isDenseSearchable: true,
+    compactionFirstKeptEntryId: null,
+    branchSummaryFromEntryId: null,
+    toolCallId: null,
+    toolName: null,
+    toolCallEntryId: null,
+    toolResultEntryId: null,
+    toolError: null,
+    preserveVerbatim: false,
+    textRun: {
+      text: formatTurnContextText(turnContextText),
+      textRunIndex: 0,
+      sourceBlockStart: null,
+      sourceBlockEnd: null,
+    },
+  });
+}
+
+function splitTurnContextRoleText(
+  text: string,
+  tokenizer: ConversationTextTokenizer,
+  maxTokens: number,
+): string[] {
+  return splitConversationTextByTokens(text, tokenizer, maxTokens, 0).map((span) => span.content);
+}
+
+function readTurnContextPairSegment(
+  segments: string[],
+  pairIndex: number,
+  pairCount: number,
+): string {
+  const segmentIndex = Math.min(
+    segments.length - 1,
+    Math.floor((pairIndex * segments.length) / pairCount),
+  );
+  const segment = segments[segmentIndex];
+  if (!segment) {
+    throw new Error(`Recall turn context segment missing at pair ${pairIndex}`);
+  }
+  return segment;
+}
+
+function createTurnContextTextsForBudgets(
+  turnContextText: TurnContextText,
+  tokenizer: ConversationTextTokenizer,
+  userMaxTokens: number,
+  assistantMaxTokens: number,
+): string[] {
+  const userSegments = splitTurnContextRoleText(turnContextText.userText, tokenizer, userMaxTokens);
+  const assistantSegments = splitTurnContextRoleText(
+    turnContextText.assistantText,
+    tokenizer,
+    assistantMaxTokens,
+  );
+  if (userSegments.length === 0 || assistantSegments.length === 0) {
+    return [];
+  }
+  const pairCount = Math.max(userSegments.length, assistantSegments.length);
+  return Array.from({ length: pairCount }, (_, pairIndex) =>
+    formatTurnContextText({
+      userText: readTurnContextPairSegment(userSegments, pairIndex, pairCount),
+      assistantText: readTurnContextPairSegment(assistantSegments, pairIndex, pairCount),
+    }),
+  );
+}
+
+function throwTurnContextTokenBudgetError(maxTokens: number): never {
+  throw new Error(
+    `Recall turn context cannot fit both user and assistant text within maxTokens=${maxTokens}`,
+  );
+}
+
+function createTokenBoundedTurnContextTexts(
+  turnContextText: TurnContextText,
+  tokenizer: ConversationTextTokenizer,
+  maxTokens: number,
+): string[] {
+  const completeTurnContext = formatTurnContextText(turnContextText);
+  if (countConversationTokens(completeTurnContext, tokenizer) <= maxTokens) {
+    return [completeTurnContext];
+  }
+
+  const framingTokenCount = countConversationTokens(
+    formatTurnContextText({ userText: '', assistantText: '' }),
+    tokenizer,
+  );
+  const availableTextTokens = maxTokens - framingTokenCount;
+  if (availableTextTokens < 2) {
+    throwTurnContextTokenBudgetError(maxTokens);
+  }
+  const userTokenCount = countConversationTokens(turnContextText.userText, tokenizer);
+  const assistantTokenCount = countConversationTokens(turnContextText.assistantText, tokenizer);
+  let userMaxTokens: number;
+  let assistantMaxTokens: number;
+  if (userTokenCount <= availableTextTokens - 1) {
+    userMaxTokens = Math.max(1, userTokenCount);
+    assistantMaxTokens = availableTextTokens - userMaxTokens;
+  } else if (assistantTokenCount <= availableTextTokens - 1) {
+    assistantMaxTokens = Math.max(1, assistantTokenCount);
+    userMaxTokens = availableTextTokens - assistantMaxTokens;
+  } else {
+    userMaxTokens = Math.floor(availableTextTokens / 2);
+    assistantMaxTokens = availableTextTokens - userMaxTokens;
+  }
+
+  while (userMaxTokens >= 1 && assistantMaxTokens >= 1) {
+    const pairedTexts = createTurnContextTextsForBudgets(
+      turnContextText,
+      tokenizer,
+      userMaxTokens,
+      assistantMaxTokens,
+    );
+    if (pairedTexts.length === 0) {
+      throwTurnContextTokenBudgetError(maxTokens);
+    }
+    if (pairedTexts.every((text) => countConversationTokens(text, tokenizer) <= maxTokens)) {
+      return pairedTexts;
+    }
+    if (userMaxTokens >= assistantMaxTokens && userMaxTokens > 1) {
+      userMaxTokens -= 1;
+    } else if (assistantMaxTokens > 1) {
+      assistantMaxTokens -= 1;
+    } else if (userMaxTokens > 1) {
+      userMaxTokens -= 1;
+    } else {
+      break;
+    }
+  }
+  return throwTurnContextTokenBudgetError(maxTokens);
+}
+
+function createTokenBoundedTurnContextDocuments(
+  pending: PendingConversationDocument,
+  tokenizer: ConversationTextTokenizer,
+  maxTokens: number,
+): PendingConversationDocument[] {
+  if (pending.documentKind !== 'turn_context') {
+    return [pending];
+  }
+  return createTokenBoundedTurnContextTexts(pending.turnContextText, tokenizer, maxTokens).map(
+    (text, textRunIndex) => ({
+      ...pending,
+      textRun: {
+        ...pending.textRun,
+        text,
+        textRunIndex,
+      },
+    }),
+  );
+}
+
+function createTurnContextDocuments(graph: ParsedSessionGraph): PendingConversationDocument[] {
+  const documentsByContributingEntryIdentity = new Map<string, PendingConversationDocument>();
+  for (const userEntry of graph.entries) {
+    const userText = readTurnContextRoleText(userEntry, 'user');
+    if (!userText) {
+      continue;
+    }
+    const pendingPaths: PendingTurnContextPath[] = (
+      graph.childEntryIdsById.get(userEntry.id) ?? []
+    ).map((entryId) => ({
+      entry: readSessionGraphEntry(graph, entryId),
+      contributingEntries: [userEntry],
+      assistantTexts: [],
+    }));
+    for (let pathIndex = 0; pathIndex < pendingPaths.length; pathIndex += 1) {
+      const path = pendingPaths[pathIndex];
+      if (!path) {
+        continue;
+      }
+      const { entry } = path;
+      const message = readSessionEntryMessage(entry);
+      if (message?.role === 'user') {
+        addTurnContextPathDocument(documentsByContributingEntryIdentity, userEntry, userText, path);
+        continue;
+      }
+
+      const assistantText = readTurnContextRoleText(entry, 'assistant');
+      const nextPath: PendingTurnContextPath = assistantText
+        ? {
+            entry,
+            contributingEntries: [...path.contributingEntries, entry],
+            assistantTexts: [...path.assistantTexts, assistantText],
+          }
+        : { ...path, entry };
+      if (entry.id === graph.currentLeafId) {
+        addTurnContextPathDocument(
+          documentsByContributingEntryIdentity,
+          userEntry,
+          userText,
+          nextPath,
+        );
+      }
+      const childEntryIds = graph.childEntryIdsById.get(entry.id) ?? [];
+      if (childEntryIds.length === 0) {
+        addTurnContextPathDocument(
+          documentsByContributingEntryIdentity,
+          userEntry,
+          userText,
+          nextPath,
+        );
+      } else {
+        pendingPaths.push(
+          ...childEntryIds.map((entryId) => ({
+            ...nextPath,
+            entry: readSessionGraphEntry(graph, entryId),
+          })),
+        );
+      }
+    }
+  }
+  return Array.from(documentsByContributingEntryIdentity.values());
+}
+
 function createPendingConversationDocuments(
   graph: ParsedSessionGraph,
 ): PendingConversationDocument[] {
-  return graph.entries.flatMap((entry) => {
+  const entryScopedDocuments = graph.entries.flatMap((entry) => {
     if (entry.type === 'message' && isUnknownRecord(entry.record.message)) {
       const message = entry.record.message;
       if (message.role === 'user' || message.role === 'assistant') {
@@ -1251,6 +1552,35 @@ function createPendingConversationDocuments(
     }
     return [];
   });
+  return [...entryScopedDocuments, ...createTurnContextDocuments(graph)];
+}
+
+function findContributingBranchPathLeafIds(
+  graph: ParsedSessionGraph,
+  contributingEntries: ParsedSessionEntry[],
+): string[] {
+  const firstEntry = contributingEntries[0];
+  if (!firstEntry) {
+    throw new Error('Recall document must have at least one contributing entry');
+  }
+  return (graph.branchPathLeafIdsByEntryId.get(firstEntry.id) ?? []).filter((leafId) =>
+    contributingEntries
+      .slice(1)
+      .every((entry) => (graph.branchPathLeafIdsByEntryId.get(entry.id) ?? []).includes(leafId)),
+  );
+}
+
+function findContributingCompactionEntryIds(
+  graph: ParsedSessionGraph,
+  contributingEntries: ParsedSessionEntry[],
+): string[] {
+  const compactionEntryIds = new Set<string>();
+  for (const entry of contributingEntries) {
+    for (const compactionEntryId of graph.compactedByEntryIdsByEntryId.get(entry.id) ?? []) {
+      compactionEntryIds.add(compactionEntryId);
+    }
+  }
+  return Array.from(compactionEntryIds);
 }
 
 function createSessionConversationChunks(
@@ -1259,8 +1589,18 @@ function createSessionConversationChunks(
 ): SessionConversationChunk[] {
   const { graph } = context;
   const entryId = createPiSessionEntryId(pending.entry.id);
+  const contributingEntryIds = pending.contributingEntries.map((entry) =>
+    createPiSessionEntryId(entry.id),
+  );
+  const contributingEntryIdentity = createContributingEntryIdentity(pending.contributingEntries);
+  const branchPathLeafIds = findContributingBranchPathLeafIds(graph, pending.contributingEntries);
+  const compactedByEntryIds = findContributingCompactionEntryIds(
+    graph,
+    pending.contributingEntries,
+  );
+  const sourceLineIndexes = pending.contributingEntries.map((entry) => entry.lineIndex);
   const textRunId = hashConversationValue(
-    `${SESSION_CONVERSATION_SCHEMA_VERSION}\0${graph.header.id}\0${pending.entry.id}\0${pending.evidenceKind}\0${pending.evidencePart}\0${pending.textRun.textRunIndex}`,
+    `${SESSION_CONVERSATION_SCHEMA_VERSION}\0${graph.header.id}\0${pending.entry.id}\0${contributingEntryIdentity}\0${pending.evidenceKind}\0${pending.evidencePart}\0${pending.textRun.textRunIndex}`,
   ).slice(0, 40);
   const chunkSpans = pending.preserveVerbatim
     ? splitVerbatimToolEvidenceByTokens(pending.textRun.text, context.tokenizer, context.maxTokens)
@@ -1310,16 +1650,16 @@ function createSessionConversationChunks(
       childEntryIds: (graph.childEntryIdsById.get(pending.entry.id) ?? []).map(
         createPiSessionEntryId,
       ),
-      contributingEntryIds: [entryId],
+      contributingEntryIds,
       currentLeafId: context.currentLeafId,
-      branchPathLeafIds: (graph.branchPathLeafIdsByEntryId.get(pending.entry.id) ?? []).map(
-        createPiSessionEntryId,
+      branchPathLeafIds: branchPathLeafIds.map(createPiSessionEntryId),
+      isOnActiveBranch: pending.contributingEntries.every((entry) =>
+        graph.activeBranchEntryIds.has(entry.id),
       ),
-      isOnActiveBranch: graph.activeBranchEntryIds.has(pending.entry.id),
-      isVisibleInActiveContext: graph.activeContextEntryIds.has(pending.entry.id),
-      compactedByEntryIds: (graph.compactedByEntryIdsByEntryId.get(pending.entry.id) ?? []).map(
-        createPiSessionEntryId,
+      isVisibleInActiveContext: pending.contributingEntries.every((entry) =>
+        graph.activeContextEntryIds.has(entry.id),
       ),
+      compactedByEntryIds: compactedByEntryIds.map(createPiSessionEntryId),
       compactionFirstKeptEntryId: pending.compactionFirstKeptEntryId
         ? createPiSessionEntryId(pending.compactionFirstKeptEntryId)
         : null,
@@ -1328,8 +1668,8 @@ function createSessionConversationChunks(
         : null,
       role: pending.role,
       timestamp: pending.entry.timestamp,
-      sourceLineStart: pending.entry.lineIndex,
-      sourceLineEnd: pending.entry.lineIndex,
+      sourceLineStart: Math.min(...sourceLineIndexes),
+      sourceLineEnd: Math.max(...sourceLineIndexes),
       sourceBlockStart: pending.textRun.sourceBlockStart,
       sourceBlockEnd: pending.textRun.sourceBlockEnd,
       characterStart: span.characterStart,
@@ -1360,7 +1700,7 @@ function createSessionConversationChunks(
 }
 
 /**
- * Reads structurally bounded, exact-token conversation and lexical-only tool evidence from one validated Pi session graph.
+ * Reads exact-token atomic, turn-context, summary, and lexical-only tool evidence from one validated Pi session graph.
  * Source lines are one-based; block indexes are inclusive; character spans are half-open UTF-16
  * offsets; token spans are logical exact-token offsets whose sibling intersections equal overlap.
  */
@@ -1394,7 +1734,9 @@ export async function readSessionConversationChunks(
     sessionId: { value: graph.header.id },
     currentLeafId: graph.currentLeafId ? createPiSessionEntryId(graph.currentLeafId) : null,
   };
-  return createPendingConversationDocuments(graph).flatMap((pending) =>
-    createSessionConversationChunks(context, pending),
-  );
+  return createPendingConversationDocuments(graph)
+    .flatMap((pending) =>
+      createTokenBoundedTurnContextDocuments(pending, context.tokenizer, context.maxTokens),
+    )
+    .flatMap((pending) => createSessionConversationChunks(context, pending));
 }

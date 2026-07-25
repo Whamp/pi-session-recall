@@ -1,6 +1,6 @@
 # Pi Session Recall
 
-`pi-session-recall` gives Pi a `recall` tool for searching past conversations. It reads Pi session JSONL files, embeds user-visible conversation text with a local OpenAI-compatible model, and stores vectors in an in-process [zvec](https://github.com/alibaba/zvec) collection.
+`pi-session-recall` gives Pi a `pi-session-recall` tool for searching past conversations. It reads Pi session JSONL files, embeds user-visible conversation text with a local OpenAI-compatible model, and stores vectors in an in-process [zvec](https://github.com/alibaba/zvec) collection.
 
 ## What it indexes
 
@@ -24,7 +24,7 @@ pi install /home/will/projects/pi-session-recall
 Reload a running Pi session with `/reload`, then build the initial index:
 
 ```text
-/recall-index
+/pi-session-recall-index
 ```
 
 The first backfill is resumable. Progress is checkpointed every 100 changed sessions in `~/.pi/agent/recall/index-state.json`; chunks already written to zvec are not embedded again after a restart.
@@ -34,17 +34,17 @@ The first backfill is resumable. Progress is checkpointed every 100 changed sess
 Pi can call the tool directly:
 
 ```text
-recall({ query: "What did we decide about the job queue?", limit: 5 })
+pi-session-recall({ query: "What did we decide about the job queue?", limit: 5 })
 ```
 
-The extension tells Pi to use `recall` when a task depends on a past conversation or a detail absent from current context. Each result contains:
+The extension tells Pi to use `pi-session-recall` when a task depends on a past conversation or a detail absent from current context. Each result contains:
 
 - semantic score;
 - session name, date, role, and project directory;
 - a concise text excerpt;
 - source provenance in `SESSION_FILE#ENTRY_ID` form.
 
-The tool checks for changed sessions before every search. Run `/recall-index` when you want an explicit full scan and zvec optimization.
+The tool checks for changed sessions before every search. Run `/pi-session-recall-index` when you want an explicit full scan and zvec optimization.
 
 ## Default local model
 
@@ -90,7 +90,7 @@ Changing embedding dimensions requires a fresh collection:
 rm -rf ~/.pi/agent/recall
 ```
 
-Then run `/recall-index` again. The extension detects dimension drift and refuses to query the old collection.
+Then run `/pi-session-recall-index` again. The extension detects dimension drift and refuses to query the old collection.
 
 ## Storage and concurrency
 

@@ -20,14 +20,14 @@ export default async function recallExtension(
   const service = createRecallConversationService(config);
 
   pi.registerTool({
-    name: 'recall',
-    label: 'Recall Conversations',
+    name: 'pi-session-recall',
+    label: 'Pi Session Recall',
     description:
       'Search all past Pi conversations using local semantic embeddings and zvec. Incrementally indexes changed sessions before searching, excludes hidden reasoning and tool output, and returns excerpts with exact session-file and entry-id provenance. Output is truncated to 2000 lines or 50KB.',
     promptSnippet: 'Search past Pi conversations and recover remembered decisions or details',
     promptGuidelines: [
-      'Use recall when a task depends on a conversation or detail from a past session and the current context does not contain reliable source evidence.',
-      'Treat recall results as search leads; cite their session path and entry ID when relying on a recovered detail.',
+      'Use pi-session-recall when a task depends on a conversation or detail from a past session and the current context does not contain reliable source evidence.',
+      'Treat pi-session-recall results as search leads; cite their session path and entry ID when relying on a recovered detail.',
     ],
     parameters: Type.Object({
       query: Type.String({
@@ -91,17 +91,17 @@ export default async function recallExtension(
     },
   });
 
-  pi.registerCommand('recall-index', {
+  pi.registerCommand('pi-session-recall-index', {
     description: 'Incrementally index all Pi conversations into zvec and optimize the collection',
     async handler(argumentsText, context) {
       void argumentsText;
-      context.ui.setStatus('recall', 'indexing conversations…');
+      context.ui.setStatus('pi-session-recall', 'indexing conversations…');
       try {
         const result = await service.index(
           undefined,
           (progress) => {
             context.ui.setStatus(
-              'recall',
+              'pi-session-recall',
               `indexing ${progress.scannedSessions}/${progress.totalSessions}`,
             );
           },
@@ -118,7 +118,7 @@ export default async function recallExtension(
           .join(' · ');
         context.ui.notify(message, failures > 0 ? 'warning' : 'info');
       } finally {
-        context.ui.setStatus('recall', undefined);
+        context.ui.setStatus('pi-session-recall', undefined);
       }
     },
   });

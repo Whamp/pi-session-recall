@@ -5,7 +5,7 @@ import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 
 import recallExtension from './recall-extension.js';
 
-void test('recall extension registers the recall tool guidance and explicit index command', async () => {
+void test('Pi session recall registers collision-free tool guidance and index command', async () => {
   const toolNames: string[] = [];
   const toolGuidelines: string[] = [];
   const commandNames: string[] = [];
@@ -21,12 +21,14 @@ void test('recall extension registers the recall tool guidance and explicit inde
 
   await recallExtension(registrar);
 
-  assert.deepEqual(toolNames, ['recall']);
-  assert.deepEqual(commandNames, ['recall-index']);
+  assert.deepEqual(toolNames, ['pi-session-recall']);
+  assert.deepEqual(commandNames, ['pi-session-recall-index']);
+  assert.ok(!toolNames.includes('recall'));
+  assert.ok(!commandNames.includes('recall-index'));
   assert.ok(
     toolGuidelines.some(
       (guideline) =>
-        guideline.includes('Use recall') &&
+        guideline.includes('Use pi-session-recall') &&
         guideline.includes('conversation or detail from a past session'),
     ),
   );

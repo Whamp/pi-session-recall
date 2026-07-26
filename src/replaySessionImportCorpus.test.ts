@@ -134,6 +134,12 @@ void test('session import replay is deterministic, machine-readable, and source 
   assert.equal(first.acceptedPhysicalFiles, 3);
   assert.equal(first.rejectedPhysicalFiles, 1);
   assert.equal(first.logicalSessions, 4);
+  assert.deepEqual(
+    first.files
+      .filter((file) => file.outcome === SessionImportReplayOutcome.ACCEPTED)
+      .map((file) => file.sessionPath),
+    ['canonical-unicode-separators.jsonl', 'pi-session-reuse-history.jsonl', 'pi-v1-linear.jsonl'],
+  );
   assert.deepEqual(first.formats[SessionImportFormat.CANONICAL_JSONL], {
     physicalFiles: 1,
     logicalSessions: 1,
@@ -240,4 +246,68 @@ void test('session import replay refuses the production recall data directory', 
     () => replaySessionImportCorpus(join(process.env.HOME ?? '', '.pi/agent/recall')),
     /refuses the production recall index directory/u,
   );
+});
+
+void test('session import replay refuses the environment-configured recall data directory', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-replay-environment-guard-'));
+  const dataDirectory = join(directory, 'production-recall');
+  await mkdir(dataDirectory);
+  const previousConfigPath = process.env.PI_RECALL_CONFIG;
+  const previousDataDirectory = process.env.PI_RECALL_DATA_DIRECTORY;
+  process.env.PI_RECALL_CONFIG = join(directory, 'missing-recall.json');
+  process.env.PI_RECALL_DATA_DIRECTORY = dataDirectory;
+  try {
+    await assert.rejects(
+      () => replaySessionImportCorpus(dataDirectory),
+      /refuses the production recall index directory/u,
+    );
+  } finally {
+    if (previousConfigPath === undefined) {
+      delete process.env.PI_RECALL_CONFIG;
+    } else {
+      process.env.PI_RECALL_CONFIG = previousConfigPath;
+    }
+    if (previousDataDirectory === undefined) {
+      delete process.env.PI_RECALL_DATA_DIRECTORY;
+    } else {
+      process.env.PI_RECALL_DATA_DIRECTORY = previousDataDirectory;
+    }
+  }
+});
+
+void test('session import replay refuses the recall.json-configured data directory', async () => {
+  const homeDirectory = await mkdtemp(join(tmpdir(), 'recall-replay-file-guard-'));
+  const agentDirectory = join(homeDirectory, '.pi/agent');
+  const dataDirectory = join(homeDirectory, 'production-recall');
+  await mkdir(agentDirectory, { recursive: true });
+  await mkdir(dataDirectory);
+  await writeFile(join(agentDirectory, 'recall.json'), JSON.stringify({ dataDirectory }));
+  const previousHomeDirectory = process.env.HOME;
+  const previousConfigPath = process.env.PI_RECALL_CONFIG;
+  const previousDataDirectory = process.env.PI_RECALL_DATA_DIRECTORY;
+  process.env.HOME = homeDirectory;
+  delete process.env.PI_RECALL_CONFIG;
+  delete process.env.PI_RECALL_DATA_DIRECTORY;
+  try {
+    await assert.rejects(
+      () => replaySessionImportCorpus(dataDirectory),
+      /refuses the production recall index directory/u,
+    );
+  } finally {
+    if (previousHomeDirectory === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = previousHomeDirectory;
+    }
+    if (previousConfigPath === undefined) {
+      delete process.env.PI_RECALL_CONFIG;
+    } else {
+      process.env.PI_RECALL_CONFIG = previousConfigPath;
+    }
+    if (previousDataDirectory === undefined) {
+      delete process.env.PI_RECALL_DATA_DIRECTORY;
+    } else {
+      process.env.PI_RECALL_DATA_DIRECTORY = previousDataDirectory;
+    }
+  }
 });

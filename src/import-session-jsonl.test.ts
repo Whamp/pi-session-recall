@@ -10,7 +10,7 @@ import {
   type ConversationTextTokenizer,
 } from './session-conversation-index.js';
 
-const tokenizer: ConversationTextTokenizer = {
+const TOKENIZER: ConversationTextTokenizer = {
   encodeConversationText(text) {
     return { ids: Array.from(text.split(/\s+/u).filter(Boolean).keys()) };
   },
@@ -30,7 +30,7 @@ async function snapshotSessionSource(sessionPath: string) {
 void test('session JSONL importer preserves Unicode separators through the public document seam', async () => {
   const imported = await readSessionConversationImport(
     join(import.meta.dirname, 'fixtures/session-import/canonical-unicode-separators.jsonl'),
-    { tokenizer },
+    { tokenizer: TOKENIZER },
   );
 
   assert.equal(imported.format, SessionImportFormat.CANONICAL_JSONL);
@@ -97,7 +97,7 @@ void test('session JSONL framing handles CR and LF split across stream chunks wi
   await writeFile(sessionPath, `${serializedHeader}\r\n${serializedMessage}\n`);
   const before = await snapshotSessionSource(sessionPath);
 
-  const imported = await readSessionConversationImport(sessionPath, { tokenizer });
+  const imported = await readSessionConversationImport(sessionPath, { tokenizer: TOKENIZER });
 
   assert.equal(imported.format, SessionImportFormat.CANONICAL_JSONL);
   assert.deepEqual(
@@ -127,7 +127,7 @@ void test('session JSONL framing removes only the CR before LF and keeps a final
   await writeFile(sessionPath, `${header}\r\r\n${message}\r`);
   const before = await snapshotSessionSource(sessionPath);
 
-  const imported = await readSessionConversationImport(sessionPath, { tokenizer });
+  const imported = await readSessionConversationImport(sessionPath, { tokenizer: TOKENIZER });
 
   assert.deepEqual(
     imported.chunks.map((chunk) => chunk.content),
@@ -147,7 +147,7 @@ void test('failed framing reads preserve source bytes and metadata', async () =>
   const before = await snapshotSessionSource(sessionPath);
 
   await assert.rejects(
-    () => readSessionConversationImport(sessionPath, { tokenizer }),
+    () => readSessionConversationImport(sessionPath, { tokenizer: TOKENIZER }),
     /Recall session JSON invalid.*truncated\.jsonl:2/u,
   );
   assert.deepEqual(await snapshotSessionSource(sessionPath), before);
@@ -178,7 +178,7 @@ void test('format routing keeps canonical lookalikes canonical and one header ou
       .join('\n'),
   );
 
-  const imported = await readSessionConversationImport(sessionPath, { tokenizer });
+  const imported = await readSessionConversationImport(sessionPath, { tokenizer: TOKENIZER });
 
   assert.equal(imported.format, SessionImportFormat.CANONICAL_JSONL);
   assert.equal(imported.logicalSessions.length, 1);

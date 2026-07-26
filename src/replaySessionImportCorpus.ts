@@ -1,10 +1,10 @@
 import { createHash } from 'node:crypto';
 import { lstat, readFile, readdir, realpath, stat } from 'node:fs/promises';
-import { homedir } from 'node:os';
-import { isAbsolute, join, relative, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { SessionImportFormat, SessionImportReplayOutcome } from './enums.js';
+import { loadRecallConversationConfig } from './recall-conversation-config.js';
 import {
   readSessionConversationImport,
   type ConversationTextTokenizer,
@@ -49,7 +49,7 @@ export interface SessionImportReplayResult {
   replayDigest: string;
 }
 
-const replayTokenizer: ConversationTextTokenizer = {
+const REPLAY_TOKENIZER: ConversationTextTokenizer = {
   encodeConversationText(text) {
     const tokenCount = text.match(/\S+/gu)?.length ?? 0;
     return { ids: [...Array(tokenCount).keys()] };
@@ -118,7 +118,8 @@ function overlapsPath(left: string, right: string): boolean {
 
 async function resolveReplayCorpusRoot(corpusRoot: string): Promise<string> {
   const resolvedRoot = await realpath(resolve(corpusRoot));
-  const productionRecallDirectory = resolve(homedir(), '.pi/agent/recall');
+  const recallConfig = await loadRecallConversationConfig();
+  const productionRecallDirectory = resolve(dirname(recallConfig.databasePath));
   if (overlapsPath(resolvedRoot, productionRecallDirectory)) {
     throw new Error(
       `Recall session import replay refuses the production recall index directory: ${resolvedRoot}`,
@@ -135,23 +136,31 @@ function createImportDigest(
   format: SessionImportFormat,
   logicalSessions: SessionConversationImport['logicalSessions'],
   chunks: SessionConversationChunk[],
-  replaySessionPath: string,
+  corpusRoot: string,
+  sessionPath: string,
 ): string {
   return sha256(
     JSON.stringify({
       format,
       logicalSessions,
-      documents: chunks.map((chunk) => ({
-        id: chunk.id,
-        checksum: chunk.checksum,
-        sessionId: chunk.sessionId.value,
-        entryId: chunk.entryId.value,
-        parentEntryId: chunk.parentEntryId?.value ?? null,
-        contributingEntryIds: chunk.contributingEntryIds.map((entryId) => entryId.value),
-        sessionPath: replaySessionPath,
-        sourceLineStart: chunk.sourceLineStart,
-        sourceLineEnd: chunk.sourceLineEnd,
-      })),
+      documents: chunks.map((chunk) => {
+        if (chunk.sessionPath !== sessionPath) {
+          throw new Error(
+            `Recall session import replay chunk path does not identify its physical session file: ${chunk.sessionPath}`,
+          );
+        }
+        return {
+          id: chunk.id,
+          checksum: chunk.checksum,
+          sessionId: chunk.sessionId.value,
+          entryId: chunk.entryId.value,
+          parentEntryId: chunk.parentEntryId?.value ?? null,
+          contributingEntryIds: chunk.contributingEntryIds.map((entryId) => entryId.value),
+          sessionPath: relative(corpusRoot, chunk.sessionPath),
+          sourceLineStart: chunk.sourceLineStart,
+          sourceLineEnd: chunk.sourceLineEnd,
+        };
+      }),
     }),
   );
 }
@@ -185,7 +194,7 @@ export async function replaySessionImportCorpus(
     let imported: SessionConversationImport;
     try {
       imported = await readSessionConversationImport(sessionPath, {
-        tokenizer: replayTokenizer,
+        tokenizer: REPLAY_TOKENIZER,
       });
     } catch (error) {
       files.push({
@@ -212,7 +221,8 @@ export async function replaySessionImportCorpus(
         imported.format,
         imported.logicalSessions,
         imported.chunks,
-        relativeSessionPath,
+        resolvedRoot,
+        sessionPath,
       ),
       error: null,
     });
@@ -267,8 +277,8 @@ async function runSessionImportReplayCommand(): Promise<void> {
   process.stdout.write(`${JSON.stringify(result)}\n`);
 }
 
-const commandPath = process.argv[1] ? resolve(process.argv[1]) : '';
-if (commandPath === fileURLToPath(import.meta.url)) {
+const COMMAND_PATH = process.argv[1] ? resolve(process.argv[1]) : '';
+if (COMMAND_PATH === fileURLToPath(import.meta.url)) {
   runSessionImportReplayCommand().catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
     process.stderr.write(`${message}\n`);

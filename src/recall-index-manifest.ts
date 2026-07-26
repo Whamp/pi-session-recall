@@ -25,6 +25,7 @@ import {
   type RecallProjectLineages,
 } from './resolve-project-identity.js';
 import { SESSION_CONVERSATION_SCHEMA_VERSION } from './session-conversation-index.js';
+import { SESSION_IMPORT_POLICY_VERSION } from './session-jsonl-import.js';
 import {
   ZVEC_CONVERSATION_SCHEMA_VERSION,
   ZVEC_FTS_CONFIGURATION_VERSION,
@@ -34,7 +35,7 @@ import {
 } from './zvec-conversation-store.js';
 
 /** Version of the index-manifest file format, independent from document and zvec schemas. */
-export const RECALL_INDEX_MANIFEST_VERSION = 4;
+export const RECALL_INDEX_MANIFEST_VERSION = 5;
 
 /** Lowest accepted cosine similarity across parallel slots serving the same embedding model. */
 export const RECALL_EMBEDDING_CANARY_MINIMUM_COSINE_SIMILARITY = 0.9995;
@@ -63,7 +64,10 @@ export interface RecallEmbeddingModelIdentity {
 
 /** Versioned identity required before one zvec index generation can be read or updated. */
 export interface RecallIndexManifest {
-  manifestVersion: 4;
+  manifestVersion: 5;
+  importPolicy: {
+    version: number;
+  };
   embedding: {
     requestModel: string;
     servedModelId: string;
@@ -142,7 +146,13 @@ const manifestAssetSchema = Type.Object(
 
 const recallIndexManifestSchema = Type.Object(
   {
-    manifestVersion: Type.Literal(4),
+    manifestVersion: Type.Literal(5),
+    importPolicy: Type.Object(
+      {
+        version: Type.Literal(SESSION_IMPORT_POLICY_VERSION),
+      },
+      { additionalProperties: false },
+    ),
     embedding: Type.Object(
       {
         requestModel: Type.String({ minLength: 1 }),
@@ -330,6 +340,9 @@ export function createRecallIndexManifest(options: {
   assertRecallChunkPolicy(chunkPolicy);
   return {
     manifestVersion: RECALL_INDEX_MANIFEST_VERSION,
+    importPolicy: {
+      version: SESSION_IMPORT_POLICY_VERSION,
+    },
     embedding: {
       ...options.embeddingIdentity,
       canaryProbe: RECALL_EMBEDDING_CANARY_TEXT,

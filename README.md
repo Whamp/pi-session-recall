@@ -37,6 +37,37 @@ Every stored document includes:
 
 Pi does not assign branch IDs. Shared ancestors therefore record every endpoint path that contains them instead of a misleading singular branch ID.
 
+## Session import compatibility
+
+Conversation Recall never rewrites Pi session files. It frames physical JSONL records only at byte `0x0A`, removes one preceding `0x0D`, and preserves U+2028 and U+2029 inside JSON strings. Framing streams across input chunks. A final record without LF still enters JSON parsing, so truncation is reported with its physical path and one-based line.
+
+One import boundary selects one of three disjoint formats before graph validation:
+
+- **Canonical JSONL:** one complete leading session header followed by canonical graph records.
+- **Unversioned Pi v1:** one complete header without `version`, followed only by supported v1 messages, model changes, thinking-level changes, or compaction records with required v1 metadata and without `id` or `parentId`. Conversion assigns deterministic SHA-256 entry IDs, chains entries in physical order, sets header version 2, and converts `firstKeptEntryIndex` to `firstKeptEntryId`.
+- **Pi session-file reuse history:** at least two complete versioned headers, with no pre-header record and at least one record in every segment. Each header starts an independent logical session with its own session ID, cwd, parent-session metadata, graph, and project attribution. All logical sessions retain the shared physical path and original physical lines.
+
+Every canonical representation enters the same strict session graph parser. Detection never selects a converter because graph parsing failed. Unsupported, ambiguous, malformed, truncated, cyclic, duplicate-ID, invalid-leaf, and missing-parent inputs fail without searchable documents. The historical `/new` reuse shape and fix are recorded in [ADR 0003](docs/adr/0003-import-historical-sessions-virtually.md).
+
+Run the guarded compatibility replay against an explicit, non-production corpus root:
+
+```bash
+npm run --silent replay:session-import -- --corpus-root /path/to/session-corpus
+```
+
+The command reads only `.jsonl` files, refuses any root that overlaps `~/.pi/agent/recall`, and emits one JSON result with per-file outcomes, format counts, logical-session counts, deterministic import digests, and a corpus replay digest. It snapshots source hashes, size, mode, mtime, and inode before and after replay and fails if any source changes.
+
+The documented 121-file failure corpus produces:
+
+| Physical format                    | Accepted files | Logical sessions |
+| ---------------------------------- | -------------: | ---------------: |
+| Unversioned Pi v1                  |             77 |               77 |
+| Pi session-file reuse history      |             33 |               84 |
+| Canonical JSONL with U+2028/U+2029 |              9 |                9 |
+| **Accepted total**                 |        **119** |          **170** |
+
+Two additional canonical files remain rejected at physical line 212 because entry `8d2b86d9` names missing parent `74da12a2`. Replay does not salvage or rewrite them.
+
 ## Install
 
 ```bash
@@ -134,6 +165,7 @@ Each index generation has a separately versioned `index-manifest.json`. It ident
 - tokenizer model, immutable revision, asset checksums, library version, and encode options;
 - chunk limits, overlap, boundary algorithm, normalization, and policy version;
 - conversation and provenance schema versions;
+- session import policy version for framing, detection, and virtual conversion;
 - project identity, lineage policy versions, and a canonical digest of personal lineage declarations;
 - zvec schema, ordinary and case-preserving FTS configuration, FP32 vector storage, and pinned HNSW parameters.
 
@@ -218,7 +250,7 @@ Environment variables override the file settings listed below. `projectLineages`
 - `PI_RECALL_SESSIONS_DIRECTORY`
 - `PI_RECALL_DATA_DIRECTORY`
 
-Changing an embedding, project-lineage, or index identity recorded in the manifest makes the current generation incompatible. Rebuild explicitly with `/pi-session-recall-index --rebuild`; unchanged text reuses cached vectors. Reranker settings are search-time policy and do not require an index rebuild. Do not delete or rewrite index state through search.
+Changing an embedding, session-import, project-lineage, or index identity recorded in the manifest makes the current generation incompatible. Incremental state also records the import policy, so older state cannot update a new generation. Rebuild explicitly with `/pi-session-recall-index --rebuild`; unchanged text reuses cached vectors because import metadata is excluded from embedding-cache identity. Reranker settings are search-time policy and do not require an index rebuild. Do not delete or rewrite index state through search.
 
 ## Storage and concurrency
 

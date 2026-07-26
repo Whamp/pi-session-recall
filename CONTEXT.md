@@ -4,8 +4,24 @@ Conversation Recall turns Pi session history into source-backed evidence that ca
 
 ## Language
 
+**Physical session file**:
+One source JSONL file under Pi's session store. Historical file reuse can place several logical sessions in one physical session file.
+_Avoid_: Session graph, logical session
+
+**Logical session**:
+One complete session header and the records that follow it until the next complete header or physical end of file. Each logical session owns one independently validated session graph.
+_Avoid_: Physical session file, segment
+
+**Canonical session representation**:
+The in-memory header and physical-line-backed records sent to the strict session graph parser after exact format detection and any deterministic virtual conversion.
+_Avoid_: Repaired session, rewritten file
+
+**Session import policy**:
+The versioned rules for LF-byte framing, exact format detection, virtual conversion, and rejection before strict graph validation.
+_Avoid_: Parser fallback, repair policy
+
 **Session graph**:
-The entries in one Pi session file, linked by their `id` and `parentId` values.
+The entries in one logical Pi session, linked by their `id` and `parentId` values.
 _Avoid_: Conversation list, transcript
 
 **Effective leaf**:

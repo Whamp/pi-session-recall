@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -14,7 +14,9 @@ import {
   indexChangedConversationSessions,
 } from './incremental-session-indexer.js';
 import type { LocalEmbeddingClient } from './local-embedding-client.js';
+import { RecallProjectIdentitySource } from './enums.js';
 import { createRecallIndexManifest } from './recall-index-manifest.js';
+import { parseProjectIdentity, type ResolvedProjectIdentity } from './resolve-project-identity.js';
 import type { ConversationTextTokenizer } from './session-conversation-index.js';
 import type {
   ConversationChunkStore,
@@ -292,6 +294,185 @@ void test('targeted incremental index reconciles one active session without scan
   const third = await indexChangedConversationSession(options);
   assert.equal(third.removedSessions, 1);
   assert.equal(store.count(), 0);
+});
+
+void test('incremental index reconciles every logical session in one physical reuse container', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-indexer-reuse-history-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionPath = join(directory, 'reuse.jsonl');
+  const statePath = join(directory, 'state.json');
+  const firstSegment = [
+    {
+      type: 'session',
+      version: 3,
+      id: 'logical-one',
+      timestamp: '2026-01-10T10:00:00Z',
+      cwd: '/logical/one',
+    },
+    {
+      type: 'message',
+      id: 'repeated-entry',
+      parentId: null,
+      timestamp: '2026-01-10T10:00:01Z',
+      message: { role: 'user', content: 'first logical evidence' },
+    },
+  ];
+  const secondSegment = [
+    {
+      type: 'session',
+      version: 3,
+      id: 'logical-two',
+      timestamp: '2026-01-10T11:00:00Z',
+      cwd: '/logical/two',
+    },
+    {
+      type: 'message',
+      id: 'repeated-entry',
+      parentId: null,
+      timestamp: '2026-01-10T11:00:01Z',
+      message: { role: 'user', content: 'second logical evidence' },
+    },
+  ];
+  await writeFile(sessionPath, sessionLines([...firstSegment, ...secondSegment]));
+  const store = new MemoryConversationStore();
+  const resolvedOrigins: string[] = [];
+  const options = {
+    sessionPath,
+    statePath,
+    store,
+    embeddingCache: createTestEmbeddingCache(directory, {
+      async embedTexts(texts) {
+        return texts.map((text) => [text.length, 1, 0]);
+      },
+    }),
+    tokenizer,
+    async resolveProjectIdentity(sessionOrigin: string): Promise<ResolvedProjectIdentity> {
+      resolvedOrigins.push(sessionOrigin);
+      return {
+        projectIdentity: parseProjectIdentity(`non-git-session-origin:${sessionOrigin}`),
+        identitySource: RecallProjectIdentitySource.NON_GIT_SESSION_ORIGIN,
+      };
+    },
+  };
+
+  const first = await indexChangedConversationSession(options);
+  assert.equal(first.indexedSessions, 1);
+  assert.deepEqual(resolvedOrigins, ['/logical/one', '/logical/two']);
+  assert.deepEqual(
+    [...store.chunks.values()]
+      .map((chunk) => ({
+        sessionId: chunk.sessionId.value,
+        projectIdentity: chunk.projectAttribution?.projectIdentity,
+      }))
+      .sort((left, right) => left.sessionId.localeCompare(right.sessionId)),
+    [
+      {
+        sessionId: 'logical-one',
+        projectIdentity: 'non-git-session-origin:/logical/one',
+      },
+      {
+        sessionId: 'logical-two',
+        projectIdentity: 'non-git-session-origin:/logical/two',
+      },
+    ],
+  );
+  const stateContent = await readFile(statePath, 'utf8');
+  assert.match(stateContent, /^\{"version":2,"importPolicyVersion":1,"sessions":/u);
+  for (const chunkId of store.chunks.keys()) {
+    assert.ok(stateContent.includes(chunkId));
+  }
+
+  await writeFile(sessionPath, sessionLines(firstSegment));
+  const second = await indexChangedConversationSession(options);
+  assert.equal(second.indexedSessions, 1);
+  assert.equal(store.count(), 1);
+  assert.equal([...store.chunks.values()][0]?.sessionId.value, 'logical-one');
+  assert.ok(second.deletedChunks >= 1);
+});
+
+void test('incremental index rejects state from an older session import policy', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-indexer-old-import-policy-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const statePath = join(directory, 'state.json');
+  await writeFile(statePath, '{"version":1,"sessions":{}}\n');
+
+  await assert.rejects(
+    () =>
+      indexChangedConversationSession({
+        sessionPath: join(directory, 'absent.jsonl'),
+        statePath,
+        store: new MemoryConversationStore(),
+        embeddingCache: createTestEmbeddingCache(directory, {
+          async embedTexts(texts) {
+            return texts.map((text) => [text.length, 1, 0]);
+          },
+        }),
+        tokenizer,
+      }),
+    /Recall index state invalid/u,
+  );
+});
+
+void test('incremental index removes stale documents when a changed session graph is corrupt', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-indexer-corrupt-change-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionPath = join(directory, 'changed-to-corrupt.jsonl');
+  const statePath = join(directory, 'state.json');
+  const header = {
+    type: 'session',
+    version: 3,
+    id: 'changed-to-corrupt',
+    timestamp: '2026-01-10T10:00:00Z',
+    cwd: '/project',
+  };
+  await writeFile(
+    sessionPath,
+    sessionLines([
+      header,
+      {
+        type: 'message',
+        id: 'valid-entry',
+        parentId: null,
+        timestamp: '2026-01-10T10:00:01Z',
+        message: { role: 'user', content: 'initially valid evidence' },
+      },
+    ]),
+  );
+  const store = new MemoryConversationStore();
+  const options = {
+    sessionPath,
+    statePath,
+    store,
+    embeddingCache: createTestEmbeddingCache(directory, {
+      async embedTexts(texts) {
+        return texts.map((text) => [text.length, 1, 0]);
+      },
+    }),
+    tokenizer,
+  };
+  await indexChangedConversationSession(options);
+  assert.equal(store.count(), 1);
+
+  await writeFile(
+    sessionPath,
+    sessionLines([
+      header,
+      {
+        type: 'message',
+        id: 'orphan-entry',
+        parentId: 'missing-entry',
+        timestamp: '2026-01-10T10:00:01Z',
+        message: { role: 'user', content: 'corrupt evidence must not remain searchable' },
+      },
+    ]),
+  );
+  const failed = await indexChangedConversationSession(options);
+
+  assert.equal(failed.failedSessions.length, 1);
+  assert.match(failed.failedSessions[0]?.error ?? '', /missing parent missing-entry/u);
+  assert.equal(failed.deletedChunks, 1);
+  assert.equal(store.count(), 0);
+  assert.ok(!(await readFile(statePath, 'utf8')).includes('valid-entry'));
 });
 
 void test('incremental index never sends lexical-only tool evidence to embeddings', async (t) => {

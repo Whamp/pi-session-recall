@@ -1,0 +1,5 @@
+{"type":"session","id":"session-v1-fixture","timestamp":"2025-12-01T10:00:00.000Z","cwd":"/legacy/project","parentSession":"/legacy/parent.jsonl"}
+{"type":"message","timestamp":"2025-12-01T10:00:01.000Z","message":{"role":"user","content":"Where is the v1 migration note?","timestamp":1764583201000}}
+{"type":"message","timestamp":"2025-12-01T10:00:02.000Z","message":{"role":"assistant","content":[{"type":"text","text":"The v1 migration note is in docs/v1.md."},{"type":"toolCall","id":"v1-call","name":"read","arguments":{"path":"docs/v1.md"}}],"api":"test","provider":"test","model":"test","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0},"stopReason":"toolUse","timestamp":1764583202000}}
+{"type":"message","timestamp":"2025-12-01T10:00:03.000Z","message":{"role":"toolResult","toolCallId":"v1-call","toolName":"read","content":[{"type":"text","text":"v1 source evidence"}],"isError":false,"timestamp":1764583203000}}
+{"type":"compaction","timestamp":"2025-12-01T10:00:04.000Z","summary":"V1 summary evidence.","firstKeptEntryIndex":2,"tokensBefore":100}

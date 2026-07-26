@@ -1,12 +1,15 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
+import { SessionImportFormat } from './enums.js';
 import {
   readSessionConversationChunks,
+  readSessionConversationImport,
   type ConversationTextTokenizer,
+  type SessionConversationChunk,
 } from './session-conversation-index.js';
 
 function createWhitespaceConversationTokenizer(): ConversationTextTokenizer {
@@ -17,6 +20,23 @@ function createWhitespaceConversationTokenizer(): ConversationTextTokenizer {
       };
     },
   };
+}
+
+function summarizeSessionChunkParity(chunks: readonly SessionConversationChunk[]) {
+  return chunks.map((chunk) => ({
+    id: chunk.id,
+    checksum: chunk.checksum,
+    documentKind: chunk.documentKind,
+    evidenceKind: chunk.evidenceKind,
+    evidencePart: chunk.evidencePart,
+    content: chunk.content,
+    sessionId: chunk.sessionId.value,
+    entryId: chunk.entryId.value,
+    parentEntryId: chunk.parentEntryId?.value ?? null,
+    contributingEntryIds: chunk.contributingEntryIds.map((entryId) => entryId.value),
+    sourceLineStart: chunk.sourceLineStart,
+    sourceLineEnd: chunk.sourceLineEnd,
+  }));
 }
 
 void test('session JSONL becomes searchable conversation chunks with provenance', async () => {
@@ -963,6 +983,43 @@ void test('session JSONL framing preserves Unicode line separators inside record
   );
 });
 
+void test('session JSONL framing remains exact across a stream chunk boundary', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-stream-chunk-boundary-'));
+  const sessionPath = join(directory, 'chunk-boundary.jsonl');
+  const content = `${'x'.repeat(70_000)}before\u2028between\u2029after`;
+  await writeFile(
+    sessionPath,
+    [
+      {
+        type: 'session',
+        version: 3,
+        id: 'stream-boundary-session',
+        timestamp: '2026-07-24T10:00:00Z',
+        cwd: '/project',
+      },
+      {
+        type: 'message',
+        id: 'stream-boundary-entry',
+        parentId: null,
+        timestamp: '2026-07-24T10:01:00Z',
+        message: { role: 'user', content },
+      },
+    ]
+      .map((record) => JSON.stringify(record))
+      .join('\n'),
+  );
+
+  const chunks = await readSessionConversationChunks(sessionPath, {
+    tokenizer: createWhitespaceConversationTokenizer(),
+  });
+
+  assert.deepEqual(
+    chunks.map((chunk) => chunk.content),
+    [content],
+  );
+  assert.equal(chunks[0]?.sourceLineStart, 2);
+});
+
 void test('session JSONL framing rejects a genuinely truncated final record', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'recall-truncated-session-record-'));
   const sessionPath = join(directory, 'truncated.jsonl');
@@ -980,7 +1037,249 @@ void test('session JSONL framing rejects a genuinely truncated final record', as
       readSessionConversationChunks(sessionPath, {
         tokenizer: createWhitespaceConversationTokenizer(),
       }),
-    /Recall session JSON invalid.*Unterminated string/u,
+    /Recall session JSON invalid.*truncated\.jsonl:2.*Unterminated string/u,
+  );
+});
+
+void test('unversioned Pi v1 sessions convert deterministically through the strict graph boundary', async () => {
+  const sessionPath = join(import.meta.dirname, 'fixtures/session-import/pi-v1-linear.jsonl');
+  const bytesBefore = await readFile(sessionPath);
+  const metadataBefore = await stat(sessionPath);
+  const options = { tokenizer: createWhitespaceConversationTokenizer() };
+
+  const imported = await readSessionConversationImport(sessionPath, options);
+  const repeated = await readSessionConversationImport(sessionPath, options);
+  const canonicalEquivalent = await readSessionConversationImport(
+    join(import.meta.dirname, 'fixtures/session-import/pi-v1-canonical-equivalent.jsonl'),
+    options,
+  );
+
+  assert.equal(imported.format, SessionImportFormat.PI_V1_LINEAR);
+  assert.equal(imported.logicalSessions.length, 1);
+  assert.deepEqual(imported.logicalSessions[0], {
+    sessionId: 'session-v1-fixture',
+    sourceLineStart: 1,
+    sourceLineEnd: 5,
+    entryIds: [
+      '3365ad4e8d9190b1c7ab35a854eeacaa8984f8a7',
+      '6d35bf551059e2664b2bbefc7b43d63d006b6158',
+      '10d74c0b1c52779ebbbdec04453a1bbfc2747aac',
+      '6a3eac6379d2e6df8c364330052940c8f84ddc43',
+    ],
+    parentEntryIds: [
+      null,
+      '3365ad4e8d9190b1c7ab35a854eeacaa8984f8a7',
+      '6d35bf551059e2664b2bbefc7b43d63d006b6158',
+      '10d74c0b1c52779ebbbdec04453a1bbfc2747aac',
+    ],
+  });
+  assert.ok(imported.chunks.every((chunk) => chunk.sessionId.value === 'session-v1-fixture'));
+  assert.ok(imported.chunks.every((chunk) => chunk.sessionPath === sessionPath));
+  assert.ok(imported.chunks.every((chunk) => chunk.cwd === '/legacy/project'));
+  assert.ok(imported.chunks.every((chunk) => chunk.parentSessionPath === '/legacy/parent.jsonl'));
+  assert.ok(imported.chunks.some((chunk) => chunk.evidenceKind === 'tool_call'));
+  assert.ok(imported.chunks.some((chunk) => chunk.evidenceKind === 'tool_result'));
+  assert.ok(imported.chunks.some((chunk) => chunk.evidenceKind === 'compaction_summary'));
+  const compaction = imported.chunks.find((chunk) => chunk.evidenceKind === 'compaction_summary');
+  assert.equal(
+    compaction?.compactionFirstKeptEntryId?.value,
+    '6d35bf551059e2664b2bbefc7b43d63d006b6158',
+  );
+  assert.deepEqual(repeated, imported);
+  assert.deepEqual(
+    summarizeSessionChunkParity(imported.chunks),
+    summarizeSessionChunkParity(canonicalEquivalent.chunks),
+  );
+  assert.deepEqual(await readFile(sessionPath), bytesBefore);
+  const metadataAfter = await stat(sessionPath);
+  assert.deepEqual(
+    {
+      size: metadataAfter.size,
+      mode: metadataAfter.mode,
+      mtimeMs: metadataAfter.mtimeMs,
+      ino: metadataAfter.ino,
+    },
+    {
+      size: metadataBefore.size,
+      mode: metadataBefore.mode,
+      mtimeMs: metadataBefore.mtimeMs,
+      ino: metadataBefore.ino,
+    },
+  );
+});
+
+void test('Pi session-file reuse history becomes independent logical sessions with physical provenance', async () => {
+  const sessionPath = join(
+    import.meta.dirname,
+    'fixtures/session-import/pi-session-reuse-history.jsonl',
+  );
+
+  const imported = await readSessionConversationImport(sessionPath, {
+    tokenizer: createWhitespaceConversationTokenizer(),
+  });
+
+  assert.equal(imported.format, SessionImportFormat.PI_SESSION_REUSE_HISTORY);
+  assert.deepEqual(
+    imported.logicalSessions.map(({ sessionId, sourceLineStart, sourceLineEnd }) => ({
+      sessionId,
+      sourceLineStart,
+      sourceLineEnd,
+    })),
+    [
+      { sessionId: 'reuse-session-one', sourceLineStart: 1, sourceLineEnd: 2 },
+      { sessionId: 'reuse-session-two', sourceLineStart: 3, sourceLineEnd: 4 },
+    ],
+  );
+  assert.deepEqual(
+    imported.chunks.map(({ sessionId, cwd, sourceLineStart, content }) => ({
+      sessionId: sessionId.value,
+      cwd,
+      sourceLineStart,
+      content,
+    })),
+    [
+      {
+        sessionId: 'reuse-session-one',
+        cwd: '/project/one',
+        sourceLineStart: 2,
+        content: 'first logical session',
+      },
+      {
+        sessionId: 'reuse-session-two',
+        cwd: '/project/two',
+        sourceLineStart: 4,
+        content: 'second logical session',
+      },
+    ],
+  );
+  assert.equal(new Set(imported.chunks.map((chunk) => chunk.id)).size, 2);
+  assert.notEqual(imported.chunks[0]?.id, imported.chunks[1]?.id);
+  assert.equal(imported.chunks[1]?.parentSessionPath, '/parent/two.jsonl');
+});
+
+void test('format detection rejects v1 and reuse-history near misses without heuristic repair', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-import-near-miss-'));
+  const options = { tokenizer: createWhitespaceConversationTokenizer() };
+  const versionedWithoutEntryIds = join(directory, 'versioned-without-entry-ids.jsonl');
+  const v1MissingMessageMetadata = join(directory, 'v1-missing-message-metadata.jsonl');
+  const preHeaderRecord = join(directory, 'pre-header-record.jsonl');
+  const independentlyInvalidSegment = join(directory, 'invalid-segment.jsonl');
+  await writeFile(
+    versionedWithoutEntryIds,
+    [
+      {
+        type: 'session',
+        version: 3,
+        id: 'not-v1',
+        timestamp: '2026-01-10T10:00:00Z',
+        cwd: '/project',
+      },
+      {
+        type: 'message',
+        timestamp: '2026-01-10T10:00:01Z',
+        message: { role: 'user', content: 'missing modern graph identity' },
+      },
+    ]
+      .map((record) => JSON.stringify(record))
+      .join('\n'),
+  );
+  await writeFile(
+    v1MissingMessageMetadata,
+    [
+      {
+        type: 'session',
+        id: 'incomplete-v1',
+        timestamp: '2026-01-10T10:00:00Z',
+        cwd: '/project',
+      },
+      {
+        type: 'message',
+        timestamp: '2026-01-10T10:00:01Z',
+        message: { role: 'user', content: 'message timestamp is required' },
+      },
+    ]
+      .map((record) => JSON.stringify(record))
+      .join('\n'),
+  );
+  await writeFile(
+    preHeaderRecord,
+    [
+      {
+        type: 'message',
+        id: 'before',
+        parentId: null,
+        timestamp: '2026-01-10T10:00:00Z',
+        message: { role: 'user', content: 'before header' },
+      },
+      {
+        type: 'session',
+        version: 3,
+        id: 'one',
+        timestamp: '2026-01-10T10:00:01Z',
+        cwd: '/project',
+      },
+      {
+        type: 'session',
+        version: 3,
+        id: 'two',
+        timestamp: '2026-01-10T10:00:02Z',
+        cwd: '/project',
+      },
+    ]
+      .map((record) => JSON.stringify(record))
+      .join('\n'),
+  );
+  await writeFile(
+    independentlyInvalidSegment,
+    [
+      {
+        type: 'session',
+        version: 3,
+        id: 'valid-first',
+        timestamp: '2026-01-10T10:00:00Z',
+        cwd: '/first',
+      },
+      {
+        type: 'message',
+        id: 'first-entry',
+        parentId: null,
+        timestamp: '2026-01-10T10:00:01Z',
+        message: { role: 'user', content: 'valid first segment' },
+      },
+      {
+        type: 'session',
+        version: 3,
+        id: 'invalid-second',
+        timestamp: '2026-01-10T11:00:00Z',
+        cwd: '/second',
+      },
+      {
+        type: 'message',
+        id: 'orphan',
+        parentId: 'first-entry',
+        timestamp: '2026-01-10T11:00:01Z',
+        message: { role: 'user', content: 'must not cross the header boundary' },
+      },
+    ]
+      .map((record) => JSON.stringify(record))
+      .join('\n'),
+  );
+
+  await assert.rejects(
+    () => readSessionConversationImport(versionedWithoutEntryIds, options),
+    /entry.id must be a nonempty string/u,
+  );
+  await assert.rejects(
+    () => readSessionConversationImport(v1MissingMessageMetadata, options),
+    /entry.id must be a nonempty string/u,
+  );
+  await assert.rejects(
+    () => readSessionConversationImport(preHeaderRecord, options),
+    /unsupported or ambiguous/u,
+  );
+  await assert.rejects(
+    () => readSessionConversationImport(independentlyInvalidSegment, options),
+    /logical session invalid-second.*entry orphan has missing parent first-entry/u,
   );
 });
 
@@ -1018,7 +1317,7 @@ void test('session graph rejects multiple headers and broken parent links', asyn
 
   await assert.rejects(
     () => readSessionConversationChunks(duplicateHeaderPath, options),
-    /expected exactly one session header, found 2/,
+    /unsupported or ambiguous/u,
   );
   await assert.rejects(
     () => readSessionConversationChunks(brokenParentPath, options),

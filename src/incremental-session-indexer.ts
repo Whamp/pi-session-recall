@@ -12,13 +12,15 @@ import {
   readSessionConversationChunks,
   type ConversationTextTokenizer,
 } from './session-conversation-index.js';
+import { SESSION_IMPORT_POLICY_VERSION } from './session-jsonl-import.js';
 import type {
   ConversationChunkStore,
   IndexedSessionConversationChunk,
 } from './zvec-conversation-store.js';
 
 const conversationIndexStateSchema = Type.Object({
-  version: Type.Literal(1),
+  version: Type.Literal(2),
+  importPolicyVersion: Type.Literal(SESSION_IMPORT_POLICY_VERSION),
   sessions: Type.Record(
     Type.String(),
     Type.Object({
@@ -40,7 +42,8 @@ interface IndexedSessionState {
 }
 
 interface ConversationIndexState {
-  version: 1;
+  version: 2;
+  importPolicyVersion: typeof SESSION_IMPORT_POLICY_VERSION;
   sessions: Record<string, IndexedSessionState>;
 }
 
@@ -119,7 +122,11 @@ async function readConversationIndexState(statePath: string): Promise<Conversati
     return Value.Parse(conversationIndexStateSchema, parsed);
   } catch (error) {
     if (readNodeErrorCode(error) === 'ENOENT') {
-      return { version: 1, sessions: {} };
+      return {
+        version: 2,
+        importPolicyVersion: SESSION_IMPORT_POLICY_VERSION,
+        sessions: {},
+      };
     }
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`Recall index state invalid at ${statePath}: ${message}`, { cause: error });
@@ -221,20 +228,33 @@ async function indexChangedConversationSessionFile(
       sessionPath,
       error: error instanceof Error ? error.message : String(error),
     });
-    return false;
+    if (!previous) {
+      return false;
+    }
+    const staleIds = previous.chunks.map((chunk) => chunk.id);
+    options.store.deleteChunks(staleIds);
+    summary.deletedChunks += staleIds.length;
+    delete state.sessions[sessionPath];
+    return true;
   }
   if (!changedSession) {
     return false;
   }
 
   const { chunks } = changedSession;
-  const sessionOrigin = chunks[0]?.cwd;
-  const resolvedProjectIdentity = sessionOrigin
-    ? await resolveSessionProjectIdentity(sessionOrigin)
-    : null;
+  const sessionOrigins = Array.from(new Set(chunks.map((chunk) => chunk.cwd).filter(Boolean)));
+  const projectIdentityEntries = await Promise.all(
+    sessionOrigins.map(
+      async (sessionOrigin): Promise<[string, ResolvedProjectIdentity | null]> => [
+        sessionOrigin,
+        await resolveSessionProjectIdentity(sessionOrigin),
+      ],
+    ),
+  );
+  const projectIdentityBySessionOrigin = new Map(projectIdentityEntries);
   const attributedChunks = chunks.map((chunk) => ({
     ...chunk,
-    projectAttribution: resolvedProjectIdentity,
+    projectAttribution: projectIdentityBySessionOrigin.get(chunk.cwd) ?? null,
   }));
   const currentIds = new Set(attributedChunks.map((chunk) => chunk.id));
   const removedIds =

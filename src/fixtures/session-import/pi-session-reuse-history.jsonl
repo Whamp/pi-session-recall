@@ -1,0 +1,4 @@
+{"type":"session","version":3,"id":"reuse-session-one","timestamp":"2026-01-10T10:00:00.000Z","cwd":"/project/one"}
+{"type":"message","id":"repeated-entry","parentId":null,"timestamp":"2026-01-10T10:00:01.000Z","message":{"role":"user","content":"first logical session"}}
+{"type":"session","version":3,"id":"reuse-session-two","timestamp":"2026-01-10T11:00:00.000Z","cwd":"/project/two","parentSession":"/parent/two.jsonl"}
+{"type":"message","id":"repeated-entry","parentId":null,"timestamp":"2026-01-10T11:00:01.000Z","message":{"role":"user","content":"second logical session"}}

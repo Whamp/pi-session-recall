@@ -6,6 +6,19 @@ export enum RecallProjectIdentitySource {
   CONFIGURED_PROJECT_LINEAGE = 'configured_project_lineage',
 }
 
+/** Exact physical Pi session format selected before strict graph validation. */
+export enum SessionImportFormat {
+  CANONICAL_JSONL = 'canonical_jsonl',
+  PI_V1_LINEAR = 'pi_v1_linear',
+  PI_SESSION_REUSE_HISTORY = 'pi_session_reuse_history',
+}
+
+/** Accepted or rejected outcome for one physical file in a read-only import replay. */
+export enum SessionImportReplayOutcome {
+  ACCEPTED = 'accepted',
+  REJECTED = 'rejected',
+}
+
 /** Version of trusted-invocation exact project filtering before every retrieval-channel limit. */
 export const PROJECT_SCOPE_POLICY_VERSION = 1;
 

@@ -1,9 +1,10 @@
 import { createHash } from 'node:crypto';
-import { createReadStream } from 'node:fs';
 
+import { SessionImportFormat } from './enums.js';
 import { isUnknownRecord } from './is-unknown-record.js';
 import type { ResolvedProjectIdentity } from './resolve-project-identity.js';
 import { assertRecallChunkPolicy } from './recall-chunk-policy.js';
+import { importSessionJsonl, type CanonicalSessionRepresentation } from './session-jsonl-import.js';
 
 /** Version of the source and graph provenance stored on recall evidence documents. */
 export const SESSION_CONVERSATION_SCHEMA_VERSION = 8;
@@ -33,6 +34,22 @@ export interface SessionConversationChunkOptions {
   tokenizer: ConversationTextTokenizer;
   maxTokens?: number;
   overlapTokens?: number;
+}
+
+/** Stable graph identities and physical boundaries for one validated logical session. */
+export interface SessionConversationLogicalSession {
+  sessionId: string;
+  sourceLineStart: number;
+  sourceLineEnd: number;
+  entryIds: string[];
+  parentEntryIds: Array<string | null>;
+}
+
+/** Searchable documents plus the exact physical import classification that produced them. */
+export interface SessionConversationImport {
+  format: SessionImportFormat;
+  logicalSessions: SessionConversationLogicalSession[];
+  chunks: SessionConversationChunk[];
 }
 
 /** A token-bounded recall evidence document with complete source and session-graph provenance. */
@@ -217,6 +234,7 @@ interface PendingTurnContextPath {
 interface SessionConversationChunkContext {
   graph: ParsedSessionGraph;
   sessionPath: string;
+  logicalSessionIdentity: string;
   tokenizer: ConversationTextTokenizer;
   maxTokens: number;
   overlapTokens: number;
@@ -355,19 +373,10 @@ function findBranchPathLeafIds(
 }
 
 function parseSessionFileRecord(
-  line: string,
+  parsed: unknown,
   sessionPath: string,
   lineIndex: number,
 ): ParsedSessionFileRecord {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(line);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`Recall session JSON invalid at ${sessionPath}:${lineIndex}: ${message}`, {
-      cause: error,
-    });
-  }
   if (!isUnknownRecord(parsed) || typeof parsed.type !== 'string') {
     throw new Error(
       `Recall session graph invalid at ${sessionPath}:${lineIndex}: each line must be an object with a type`,
@@ -411,55 +420,23 @@ function parseSessionFileRecord(
   };
 }
 
-function decodeSessionJsonlRecord(recordParts: Buffer[], recordByteLength: number): string {
-  const record = Buffer.concat(recordParts, recordByteLength);
-  const contentEnd = record.at(-1) === 0x0d ? record.length - 1 : record.length;
-  return record.subarray(0, contentEnd).toString('utf8');
-}
-
-async function* readSessionJsonlRecords(sessionPath: string): AsyncGenerator<string> {
-  const recordParts: Buffer[] = [];
-  let recordByteLength = 0;
-  for await (const streamChunk of createReadStream(sessionPath)) {
-    const chunk = Buffer.isBuffer(streamChunk) ? streamChunk : Buffer.from(String(streamChunk));
-    let recordStart = 0;
-    let lineFeedIndex = chunk.indexOf(0x0a, recordStart);
-    while (lineFeedIndex !== -1) {
-      const recordPart = chunk.subarray(recordStart, lineFeedIndex);
-      recordParts.push(recordPart);
-      recordByteLength += recordPart.length;
-      yield decodeSessionJsonlRecord(recordParts, recordByteLength);
-      recordParts.length = 0;
-      recordByteLength = 0;
-      recordStart = lineFeedIndex + 1;
-      lineFeedIndex = chunk.indexOf(0x0a, recordStart);
-    }
-    const trailingPart = chunk.subarray(recordStart);
-    if (trailingPart.length > 0) {
-      recordParts.push(trailingPart);
-      recordByteLength += trailingPart.length;
-    }
-  }
-  if (recordByteLength > 0) {
-    yield decodeSessionJsonlRecord(recordParts, recordByteLength);
-  }
-}
-
-async function readSessionFileRecords(sessionPath: string): Promise<ParsedSessionFileRecords> {
+function parseCanonicalSessionRecords(
+  session: CanonicalSessionRepresentation,
+  graphSource: string,
+): ParsedSessionFileRecords {
   const records: ParsedSessionFileRecords = {
     headers: [],
     entries: [],
     entriesById: new Map(),
     firstRecordLine: 0,
   };
-  let lineIndex = 0;
-  for await (const line of readSessionJsonlRecords(sessionPath)) {
-    lineIndex += 1;
-    if (!line.trim()) {
-      continue;
-    }
-    const record = parseSessionFileRecord(line, sessionPath, lineIndex);
-    records.firstRecordLine ||= lineIndex;
+  for (const physicalRecord of session.records) {
+    const record = parseSessionFileRecord(
+      physicalRecord.value,
+      graphSource,
+      physicalRecord.sourceLine,
+    );
+    records.firstRecordLine ||= physicalRecord.sourceLine;
     if (record.kind === 'header') {
       records.headers.push(record.header);
     } else if (record.kind === 'leaf') {
@@ -467,7 +444,7 @@ async function readSessionFileRecords(sessionPath: string): Promise<ParsedSessio
     } else {
       if (records.entriesById.has(record.entry.id)) {
         throw new Error(
-          `Recall session graph invalid at ${sessionPath}:${lineIndex}: duplicate entry id ${record.entry.id}`,
+          `Recall session graph invalid at ${graphSource}:${physicalRecord.sourceLine}: duplicate entry id ${record.entry.id}`,
         );
       }
       records.entries.push(record.entry);
@@ -477,7 +454,7 @@ async function readSessionFileRecords(sessionPath: string): Promise<ParsedSessio
   return records;
 }
 
-function readSingleSessionHeader(
+function validateCanonicalSessionHeader(
   headers: ParsedSessionHeader[],
   firstRecordLine: number,
   sessionPath: string,
@@ -598,16 +575,24 @@ function findSessionToolEntryLinks(entries: ParsedSessionEntry[]): {
   return { toolCallEntryIdsByCallId, toolResultEntryIdsByCallId };
 }
 
-async function readValidatedSessionGraph(sessionPath: string): Promise<ParsedSessionGraph> {
-  const records = await readSessionFileRecords(sessionPath);
-  const header = readSingleSessionHeader(records.headers, records.firstRecordLine, sessionPath);
+function readValidatedSessionGraph(session: CanonicalSessionRepresentation): ParsedSessionGraph {
+  const graphSource =
+    session.format === SessionImportFormat.PI_SESSION_REUSE_HISTORY
+      ? `${session.physicalPath} (logical session ${session.logicalSessionId})`
+      : session.physicalPath;
+  const records = parseCanonicalSessionRecords(session, graphSource);
+  const header = validateCanonicalSessionHeader(
+    records.headers,
+    records.firstRecordLine,
+    graphSource,
+  );
   const childEntryIdsById = buildSessionChildEntryIds(
     records.entries,
     records.entriesById,
-    sessionPath,
+    graphSource,
   );
-  assertSessionParentPathsAcyclic(records.entries, records.entriesById, sessionPath);
-  const currentLeafId = resolveCurrentSessionLeafId(records, sessionPath);
+  assertSessionParentPathsAcyclic(records.entries, records.entriesById, graphSource);
+  const currentLeafId = resolveCurrentSessionLeafId(records, graphSource);
   const activeBranchEntryIds = new Set(
     currentLeafId
       ? readSessionEntryPath(currentLeafId, records.entriesById).map((entry) => entry.id)
@@ -1643,7 +1628,7 @@ function createSessionConversationChunks(
   );
   const sourceLineIndexes = pending.contributingEntries.map((entry) => entry.lineIndex);
   const textRunId = hashConversationValue(
-    `${SESSION_CONVERSATION_SCHEMA_VERSION}\0${graph.header.id}\0${pending.entry.id}\0${contributingEntryIdentity}\0${pending.evidenceKind}\0${pending.evidencePart}\0${pending.textRun.textRunIndex}`,
+    `${SESSION_CONVERSATION_SCHEMA_VERSION}\0${context.logicalSessionIdentity}\0${pending.entry.id}\0${contributingEntryIdentity}\0${pending.evidenceKind}\0${pending.evidencePart}\0${pending.textRun.textRunIndex}`,
   ).slice(0, 40);
   const chunkSpans = pending.preserveVerbatim
     ? splitVerbatimToolEvidenceByTokens(pending.textRun.text, context.tokenizer, context.maxTokens)
@@ -1743,32 +1728,70 @@ function createSessionConversationChunks(
   });
 }
 
+function createLogicalSessionSummary(
+  session: CanonicalSessionRepresentation,
+  graph: ParsedSessionGraph,
+): SessionConversationLogicalSession {
+  return {
+    sessionId: graph.header.id,
+    sourceLineStart: session.sourceLineStart,
+    sourceLineEnd: session.sourceLineEnd,
+    entryIds: graph.entries.map((entry) => entry.id),
+    parentEntryIds: graph.entries.map((entry) => entry.parentId),
+  };
+}
+
 /**
- * Reads exact-token atomic, turn-context, summary, and lexical-only tool evidence from one validated Pi session graph.
- * Source lines are one-based; block indexes are inclusive; character spans are half-open UTF-16
- * offsets; token spans are logical exact-token offsets whose sibling intersections equal overlap.
+ * Imports one physical Pi JSONL file into independently validated logical sessions and searchable documents.
+ * Source lines are one-based; conversion is deterministic and virtual; the source file is never changed.
+ */
+export async function readSessionConversationImport(
+  sessionPath: string,
+  options: SessionConversationChunkOptions,
+): Promise<SessionConversationImport> {
+  const maxTokens = options.maxTokens ?? 1_024;
+  const overlapTokens = options.overlapTokens ?? 128;
+  assertRecallChunkPolicy({ maxTokens, overlapTokens });
+
+  const imported = await importSessionJsonl(sessionPath);
+  const logicalSessions: SessionConversationLogicalSession[] = [];
+  const chunks: SessionConversationChunk[] = [];
+  for (const session of imported.sessions) {
+    const graph = readValidatedSessionGraph(session);
+    logicalSessions.push(createLogicalSessionSummary(session, graph));
+    const logicalSessionIdentity =
+      imported.format === SessionImportFormat.PI_SESSION_REUSE_HISTORY
+        ? `${graph.header.id}@${graph.header.lineIndex}`
+        : graph.header.id;
+    const context: SessionConversationChunkContext = {
+      graph,
+      sessionPath,
+      logicalSessionIdentity,
+      tokenizer: options.tokenizer,
+      maxTokens,
+      overlapTokens,
+      sessionId: { value: graph.header.id },
+      currentLeafId: graph.currentLeafId ? createPiSessionEntryId(graph.currentLeafId) : null,
+    };
+    chunks.push(
+      ...createPendingConversationDocuments(graph)
+        .flatMap((pending) =>
+          createTokenBoundedTurnContextDocuments(pending, context.tokenizer, context.maxTokens),
+        )
+        .flatMap((pending) => createSessionConversationChunks(context, pending)),
+    );
+  }
+  return { format: imported.format, logicalSessions, chunks };
+}
+
+/**
+ * Reads exact-token atomic, turn-context, summary, and lexical-only tool evidence from Pi session JSONL.
+ * Block indexes are inclusive; character spans are half-open UTF-16 offsets; token spans are logical
+ * exact-token offsets whose sibling intersections equal overlap.
  */
 export async function readSessionConversationChunks(
   sessionPath: string,
   options: SessionConversationChunkOptions,
 ): Promise<SessionConversationChunk[]> {
-  const maxTokens = options.maxTokens ?? 1_024;
-  const overlapTokens = options.overlapTokens ?? 128;
-  assertRecallChunkPolicy({ maxTokens, overlapTokens });
-
-  const graph = await readValidatedSessionGraph(sessionPath);
-  const context: SessionConversationChunkContext = {
-    graph,
-    sessionPath,
-    tokenizer: options.tokenizer,
-    maxTokens,
-    overlapTokens,
-    sessionId: { value: graph.header.id },
-    currentLeafId: graph.currentLeafId ? createPiSessionEntryId(graph.currentLeafId) : null,
-  };
-  return createPendingConversationDocuments(graph)
-    .flatMap((pending) =>
-      createTokenBoundedTurnContextDocuments(pending, context.tokenizer, context.maxTokens),
-    )
-    .flatMap((pending) => createSessionConversationChunks(context, pending));
+  return (await readSessionConversationImport(sessionPath, options)).chunks;
 }

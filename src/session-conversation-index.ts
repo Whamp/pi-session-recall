@@ -562,10 +562,9 @@ function assertSessionCompactionAndBranchLinks(
     }
     if (entry.type === 'branch_summary') {
       const fromId = entry.record.fromId;
-      const expectedFromId = entry.parentId ?? 'root';
-      if (fromId !== expectedFromId) {
+      if (fromId !== 'root' && (typeof fromId !== 'string' || !entriesById.has(fromId))) {
         throw new Error(
-          `Recall session graph invalid at ${sessionPath}:${entry.lineIndex}: branch summary ${entry.id} fromId ${String(fromId)} must equal parentId ${expectedFromId}`,
+          `Recall session graph invalid at ${sessionPath}:${entry.lineIndex}: branch summary ${entry.id} fromId ${String(fromId)} does not name an entry or root`,
         );
       }
     }

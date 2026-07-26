@@ -1435,6 +1435,53 @@ void test('format detection rejects unsupported canonical session versions', asy
   }
 });
 
+void test('strict session graph validation accepts a branch summary from an abandoned entry', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-valid-branch-summary-link-'));
+  const sessionPath = join(directory, 'valid-branch-summary.jsonl');
+  await writeFile(
+    sessionPath,
+    [
+      {
+        type: 'session',
+        version: 3,
+        id: 'valid-branch-summary',
+        timestamp: '2026-01-10T10:00:00Z',
+        cwd: '/project',
+      },
+      {
+        type: 'message',
+        id: 'root',
+        parentId: null,
+        timestamp: '2026-01-10T10:00:01Z',
+        message: { role: 'user', content: 'root' },
+      },
+      {
+        type: 'message',
+        id: 'abandoned',
+        parentId: 'root',
+        timestamp: '2026-01-10T10:00:02Z',
+        message: { role: 'assistant', content: 'abandoned path' },
+      },
+      {
+        type: 'branch_summary',
+        id: 'branch-summary',
+        parentId: 'root',
+        timestamp: '2026-01-10T10:00:03Z',
+        fromId: 'abandoned',
+        summary: 'Summary of the abandoned path.',
+      },
+    ]
+      .map((record) => JSON.stringify(record))
+      .join('\n'),
+  );
+
+  const imported = await readSessionConversationImport(sessionPath, {
+    tokenizer: createWhitespaceConversationTokenizer(),
+  });
+  const summary = imported.chunks.find((chunk) => chunk.entryId.value === 'branch-summary');
+  assert.equal(summary?.branchSummaryFromEntryId?.value, 'abandoned');
+});
+
 void test('strict session graph validation rejects invalid compaction, branch, and tool links', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'recall-invalid-graph-links-'));
   const options = { tokenizer: createWhitespaceConversationTokenizer() };
@@ -1484,7 +1531,7 @@ void test('strict session graph validation rejects invalid compaction, branch, a
           summary: 'invalid branch summary',
         },
       ],
-      error: /branch summary branch-summary fromId missing must equal parentId root/u,
+      error: /branch summary branch-summary fromId missing does not name an entry or root/u,
     },
     {
       name: 'duplicate-tool-call',

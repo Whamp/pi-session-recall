@@ -65,7 +65,11 @@ function createHistoricalReplayOutcomeDigest(result: SessionImportReplayResult):
       importDigest,
       error: normalizeReplayError(error),
     }))
-    .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+    .sort((left, right) => {
+      const leftJson = JSON.stringify(left);
+      const rightJson = JSON.stringify(right);
+      return leftJson < rightJson ? -1 : leftJson > rightJson ? 1 : 0;
+    });
   return sha256ReplayEvidence(
     JSON.stringify({
       physicalFiles: result.physicalFiles,

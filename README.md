@@ -55,7 +55,7 @@ Run the guarded compatibility replay against an explicit, non-production corpus 
 npm run --silent replay:session-import -- --corpus-root /path/to/session-corpus
 ```
 
-The command reads only `.jsonl` files, refuses any root that overlaps `~/.pi/agent/recall`, and emits one JSON result with per-file outcomes, format counts, logical-session counts, deterministic import digests, and a corpus replay digest. It snapshots source hashes, size, mode, mtime, and inode before and after replay and fails if any source changes.
+The command reads only `.jsonl` files, refuses any root that overlaps `~/.pi/agent/recall`, and emits one JSON result with per-file outcomes, format counts, logical-session counts, deterministic import digests, and a corpus replay digest. Import digests use corpus-relative source paths so the same source set has the same evidence identity after a read-only relocation; runtime searchable documents still retain their physical source paths. It snapshots source hashes, size, mode, mtime, and inode before and after replay and fails if any source changes.
 
 The privacy-safe frozen expectation lives at `src/fixtures/session-import/historical-corpus-replay-expectation.json`. To enforce its source-set and per-file outcome digests against an available private corpus, run:
 

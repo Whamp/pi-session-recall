@@ -33,7 +33,7 @@ const historicalCorpusReplayExpectation = {
     documentsPerFile: 0,
   },
   sourceSetDigest: '87ab99beec4a66bd236fb214f8ca4ceca4b6e00d054ea877e5baa56f50a640bd',
-  outcomeDigest: 'a63931337880808394f2412a1b7109148d7e646fd54cd8a3e354c8b4291e38cd',
+  outcomeDigest: 'a2cd0ac2a66edf799ad333050f05900005cfc1e784b487af373d70d25cd6f635',
 };
 
 function sha256ReplayEvidence(value: string | Buffer): string {
@@ -121,8 +121,15 @@ void test('session import replay is deterministic, machine-readable, and source 
 
   const first = await replaySessionImportCorpus(corpusRoot);
   const second = await replaySessionImportCorpus(corpusRoot);
+  const relocatedCorpusRoot = join(directory, 'relocated-corpus');
+  await cp(corpusRoot, relocatedCorpusRoot, { recursive: true, preserveTimestamps: true });
+  const relocated = await replaySessionImportCorpus(relocatedCorpusRoot);
 
   assert.deepEqual(second, first);
+  assert.deepEqual(
+    relocated.files.map(({ sessionPath, importDigest }) => ({ sessionPath, importDigest })),
+    first.files.map(({ sessionPath, importDigest }) => ({ sessionPath, importDigest })),
+  );
   assert.equal(first.physicalFiles, 4);
   assert.equal(first.acceptedPhysicalFiles, 3);
   assert.equal(first.rejectedPhysicalFiles, 1);

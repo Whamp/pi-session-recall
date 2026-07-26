@@ -9,6 +9,7 @@ import {
   readSessionConversationImport,
   type ConversationTextTokenizer,
   type SessionConversationChunk,
+  type SessionConversationImport,
 } from './session-conversation-index.js';
 
 interface SessionImportSourceSnapshot {
@@ -132,8 +133,9 @@ async function resolveReplayCorpusRoot(corpusRoot: string): Promise<string> {
 
 function createImportDigest(
   format: SessionImportFormat,
-  logicalSessions: Awaited<ReturnType<typeof readSessionConversationImport>>['logicalSessions'],
+  logicalSessions: SessionConversationImport['logicalSessions'],
   chunks: SessionConversationChunk[],
+  replaySessionPath: string,
 ): string {
   return sha256(
     JSON.stringify({
@@ -146,7 +148,7 @@ function createImportDigest(
         entryId: chunk.entryId.value,
         parentEntryId: chunk.parentEntryId?.value ?? null,
         contributingEntryIds: chunk.contributingEntryIds.map((entryId) => entryId.value),
-        sessionPath: chunk.sessionPath,
+        sessionPath: replaySessionPath,
         sourceLineStart: chunk.sourceLineStart,
         sourceLineEnd: chunk.sourceLineEnd,
       })),
@@ -180,7 +182,7 @@ export async function replaySessionImportCorpus(
   const files: SessionImportReplayFileResult[] = [];
   for (const sessionPath of sessionPaths) {
     const relativeSessionPath = relative(resolvedRoot, sessionPath);
-    let imported: Awaited<ReturnType<typeof readSessionConversationImport>>;
+    let imported: SessionConversationImport;
     try {
       imported = await readSessionConversationImport(sessionPath, {
         tokenizer: replayTokenizer,
@@ -206,7 +208,12 @@ export async function replaySessionImportCorpus(
       outcome: SessionImportReplayOutcome.ACCEPTED,
       logicalSessions: imported.logicalSessions.length,
       documents: imported.chunks.length,
-      importDigest: createImportDigest(imported.format, imported.logicalSessions, imported.chunks),
+      importDigest: createImportDigest(
+        imported.format,
+        imported.logicalSessions,
+        imported.chunks,
+        relativeSessionPath,
+      ),
       error: null,
     });
   }

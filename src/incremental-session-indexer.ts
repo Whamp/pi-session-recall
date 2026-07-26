@@ -12,7 +12,7 @@ import {
   readSessionConversationChunks,
   type ConversationTextTokenizer,
 } from './session-conversation-index.js';
-import { SESSION_IMPORT_POLICY_VERSION } from './session-jsonl-import.js';
+import { SESSION_IMPORT_POLICY_VERSION } from './import-session-jsonl.js';
 import type {
   ConversationChunkStore,
   IndexedSessionConversationChunk,

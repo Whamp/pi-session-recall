@@ -25,7 +25,7 @@ import {
   type RecallProjectLineages,
 } from './resolve-project-identity.js';
 import { SESSION_CONVERSATION_SCHEMA_VERSION } from './session-conversation-index.js';
-import { SESSION_IMPORT_POLICY_VERSION } from './session-jsonl-import.js';
+import { SESSION_IMPORT_POLICY_VERSION } from './import-session-jsonl.js';
 import {
   ZVEC_CONVERSATION_SCHEMA_VERSION,
   ZVEC_FTS_CONFIGURATION_VERSION,

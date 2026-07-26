@@ -9,9 +9,9 @@ import { SessionImportFormat, SessionImportReplayOutcome } from './enums.js';
 import {
   replaySessionImportCorpus,
   type SessionImportReplayResult,
-} from './session-import-replay.js';
+} from './replay-session-import-corpus.js';
 
-const historicalCorpusReplayExpectation = {
+const HISTORICAL_CORPUS_REPLAY_EXPECTATION = {
   schemaVersion: 1,
   physicalFiles: 121,
   acceptedPhysicalFiles: 119,
@@ -175,18 +175,18 @@ void test('historical corpus replay expectation is frozen in the repository', as
     'fixtures/session-import/historical-corpus-replay-expectation.json',
   );
   const fixture: unknown = JSON.parse(await readFile(fixturePath, 'utf8'));
-  assert.deepEqual(fixture, historicalCorpusReplayExpectation);
+  assert.deepEqual(fixture, HISTORICAL_CORPUS_REPLAY_EXPECTATION);
 });
 
-const historicalCorpusRoot = process.env.PI_SESSION_IMPORT_CORPUS_ROOT;
+const HISTORICAL_CORPUS_ROOT = process.env.PI_SESSION_IMPORT_CORPUS_ROOT;
 void test(
   'historical corpus replay matches the privacy-safe frozen expectation',
-  { skip: historicalCorpusRoot ? false : 'PI_SESSION_IMPORT_CORPUS_ROOT is not set' },
+  { skip: HISTORICAL_CORPUS_ROOT ? false : 'PI_SESSION_IMPORT_CORPUS_ROOT is not set' },
   async () => {
-    if (!historicalCorpusRoot) {
+    if (!HISTORICAL_CORPUS_ROOT) {
       return;
     }
-    const replay = await replaySessionImportCorpus(historicalCorpusRoot);
+    const replay = await replaySessionImportCorpus(HISTORICAL_CORPUS_ROOT);
     const sourceHashes = await Promise.all(
       replay.files.map(async (file) =>
         sha256ReplayEvidence(await readFile(join(replay.corpusRoot, file.sessionPath))),
@@ -207,30 +207,30 @@ void test(
         formats: replay.formats,
       },
       {
-        physicalFiles: historicalCorpusReplayExpectation.physicalFiles,
-        acceptedPhysicalFiles: historicalCorpusReplayExpectation.acceptedPhysicalFiles,
-        rejectedPhysicalFiles: historicalCorpusReplayExpectation.rejectedPhysicalFiles,
-        logicalSessions: historicalCorpusReplayExpectation.logicalSessions,
-        documents: historicalCorpusReplayExpectation.documents,
-        formats: historicalCorpusReplayExpectation.formats,
+        physicalFiles: HISTORICAL_CORPUS_REPLAY_EXPECTATION.physicalFiles,
+        acceptedPhysicalFiles: HISTORICAL_CORPUS_REPLAY_EXPECTATION.acceptedPhysicalFiles,
+        rejectedPhysicalFiles: HISTORICAL_CORPUS_REPLAY_EXPECTATION.rejectedPhysicalFiles,
+        logicalSessions: HISTORICAL_CORPUS_REPLAY_EXPECTATION.logicalSessions,
+        documents: HISTORICAL_CORPUS_REPLAY_EXPECTATION.documents,
+        formats: HISTORICAL_CORPUS_REPLAY_EXPECTATION.formats,
       },
     );
     assert.ok(
       rejected.every(
         (file) =>
-          file.documents === historicalCorpusReplayExpectation.rejection.documentsPerFile &&
+          file.documents === HISTORICAL_CORPUS_REPLAY_EXPECTATION.rejection.documentsPerFile &&
           file.error?.includes(
-            `:${historicalCorpusReplayExpectation.rejection.sourceLine}: entry ${historicalCorpusReplayExpectation.rejection.entryId} has missing parent ${historicalCorpusReplayExpectation.rejection.missingParentId}`,
+            `:${HISTORICAL_CORPUS_REPLAY_EXPECTATION.rejection.sourceLine}: entry ${HISTORICAL_CORPUS_REPLAY_EXPECTATION.rejection.entryId} has missing parent ${HISTORICAL_CORPUS_REPLAY_EXPECTATION.rejection.missingParentId}`,
           ),
       ),
     );
     assert.equal(
       sha256ReplayEvidence(JSON.stringify(sourceHashes)),
-      historicalCorpusReplayExpectation.sourceSetDigest,
+      HISTORICAL_CORPUS_REPLAY_EXPECTATION.sourceSetDigest,
     );
     assert.equal(
       createHistoricalReplayOutcomeDigest(replay),
-      historicalCorpusReplayExpectation.outcomeDigest,
+      HISTORICAL_CORPUS_REPLAY_EXPECTATION.outcomeDigest,
     );
   },
 );

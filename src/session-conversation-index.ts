@@ -4,7 +4,7 @@ import { SessionImportFormat } from './enums.js';
 import { isUnknownRecord } from './is-unknown-record.js';
 import type { ResolvedProjectIdentity } from './resolve-project-identity.js';
 import { assertRecallChunkPolicy } from './recall-chunk-policy.js';
-import { importSessionJsonl, type CanonicalSessionRepresentation } from './session-jsonl-import.js';
+import { importSessionJsonl, type CanonicalSessionRepresentation } from './import-session-jsonl.js';
 
 /** Version of the source and graph provenance stored on recall evidence documents. */
 export const SESSION_CONVERSATION_SCHEMA_VERSION = 8;

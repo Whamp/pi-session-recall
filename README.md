@@ -61,7 +61,7 @@ The privacy-safe frozen expectation lives at `src/fixtures/session-import/histor
 
 ```bash
 PI_SESSION_IMPORT_CORPUS_ROOT=/path/to/session-corpus \
-  node --import tsx --test src/replay-session-import-corpus.test.ts
+  node --import tsx --test src/replaySessionImportCorpus.test.ts
 ```
 
 The documented 121-file failure corpus produces:

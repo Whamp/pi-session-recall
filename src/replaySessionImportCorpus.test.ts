@@ -9,7 +9,7 @@ import { SessionImportFormat, SessionImportReplayOutcome } from './enums.js';
 import {
   replaySessionImportCorpus,
   type SessionImportReplayResult,
-} from './replay-session-import-corpus.js';
+} from './replaySessionImportCorpus.js';
 
 const HISTORICAL_CORPUS_REPLAY_EXPECTATION = {
   schemaVersion: 1,

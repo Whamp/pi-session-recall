@@ -377,7 +377,7 @@ void test('incremental index reconciles every logical session in one physical re
     ],
   );
   const stateContent = await readFile(statePath, 'utf8');
-  assert.match(stateContent, /^\{"version":2,"importPolicyVersion":2,"sessions":/u);
+  assert.match(stateContent, /^\{"version":2,"importPolicyVersion":3,"sessions":/u);
   for (const chunkId of store.chunks.keys()) {
     assert.ok(stateContent.includes(chunkId));
   }

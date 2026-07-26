@@ -571,6 +571,10 @@ function assertSessionCompactionAndBranchLinks(
   }
 }
 
+function isBlankToolPlaceholder(toolCallId: unknown, toolName: unknown): boolean {
+  return toolCallId === '' && toolName === '';
+}
+
 function findSessionToolEntryLinks(
   entries: ParsedSessionEntry[],
   sessionPath: string,
@@ -590,6 +594,9 @@ function findSessionToolEntryLinks(
     if (message.role === 'assistant' && Array.isArray(message.content)) {
       for (const block of message.content) {
         if (!isUnknownRecord(block) || block.type !== 'toolCall') {
+          continue;
+        }
+        if (isBlankToolPlaceholder(block.id, block.name)) {
           continue;
         }
         const toolCallId = parseRequiredString(
@@ -614,6 +621,9 @@ function findSessionToolEntryLinks(
       }
     }
     if (message.role === 'toolResult') {
+      if (isBlankToolPlaceholder(message.toolCallId, message.toolName)) {
+        continue;
+      }
       const toolCallId = parseRequiredString(
         message.toolCallId,
         'toolResult.toolCallId',

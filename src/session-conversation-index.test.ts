@@ -1482,6 +1482,88 @@ void test('strict session graph validation accepts a branch summary from an aban
   assert.equal(summary?.branchSummaryFromEntryId?.value, 'abandoned');
 });
 
+void test('session import ignores exact blank tool placeholders without losing conversation evidence', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-blank-tool-placeholder-'));
+  const sessionPath = join(directory, 'blank-tool-placeholder.jsonl');
+  const records = [
+    {
+      type: 'session',
+      version: 3,
+      id: 'blank-tool-placeholder',
+      timestamp: '2026-01-10T10:00:00Z',
+      cwd: '/project',
+    },
+    {
+      type: 'message',
+      id: 'user',
+      parentId: null,
+      timestamp: '2026-01-10T10:00:01Z',
+      message: { role: 'user', content: 'searchable request before blank tool placeholder' },
+    },
+    {
+      type: 'message',
+      id: 'blank-call',
+      parentId: 'user',
+      timestamp: '2026-01-10T10:00:02Z',
+      message: {
+        role: 'assistant',
+        provider: 'zai',
+        model: 'glm-4.6v',
+        content: [{ type: 'toolCall', id: '', name: '', arguments: {} }],
+      },
+    },
+    {
+      type: 'message',
+      id: 'blank-result',
+      parentId: 'blank-call',
+      timestamp: '2026-01-10T10:00:03Z',
+      message: {
+        role: 'toolResult',
+        toolCallId: '',
+        toolName: '',
+        content: [{ type: 'text', text: 'blank tool placeholder result must not be searchable' }],
+        isError: true,
+      },
+    },
+    {
+      type: 'message',
+      id: 'assistant',
+      parentId: 'blank-result',
+      timestamp: '2026-01-10T10:00:04Z',
+      message: { role: 'assistant', content: 'searchable answer after blank tool placeholder' },
+    },
+  ];
+  await writeFile(sessionPath, records.map((record) => JSON.stringify(record)).join('\n'));
+
+  const imported = await readSessionConversationImport(sessionPath, {
+    tokenizer: createWhitespaceConversationTokenizer(),
+  });
+
+  assert.deepEqual(imported.logicalSessions[0]?.entryIds, [
+    'user',
+    'blank-call',
+    'blank-result',
+    'assistant',
+  ]);
+  assert.ok(
+    imported.chunks.some((chunk) =>
+      chunk.content.includes('searchable request before blank tool placeholder'),
+    ),
+  );
+  assert.ok(
+    imported.chunks.some((chunk) =>
+      chunk.content.includes('searchable answer after blank tool placeholder'),
+    ),
+  );
+  assert.ok(
+    imported.chunks.every(
+      (chunk) =>
+        chunk.documentKind !== 'tool' &&
+        !chunk.content.includes('blank tool placeholder result must not be searchable'),
+    ),
+  );
+});
+
 void test('strict session graph validation rejects invalid compaction, branch, and tool links', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'recall-invalid-graph-links-'));
   const options = { tokenizer: createWhitespaceConversationTokenizer() };
@@ -1569,6 +1651,26 @@ void test('strict session graph validation rejects invalid compaction, branch, a
         },
       ],
       error: /toolCall\.id must be a nonempty string/u,
+    },
+    {
+      name: 'partial-empty-tool-result',
+      records: [
+        header,
+        {
+          type: 'message',
+          id: 'result',
+          parentId: null,
+          timestamp: '2026-01-10T10:00:01Z',
+          message: {
+            role: 'toolResult',
+            toolCallId: '',
+            toolName: 'read',
+            content: [],
+            isError: false,
+          },
+        },
+      ],
+      error: /toolResult\.toolCallId must be a nonempty string/u,
     },
     {
       name: 'unmatched-tool-result',

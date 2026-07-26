@@ -5,7 +5,7 @@ import { SessionImportFormat } from './enums.js';
 import { isUnknownRecord } from './is-unknown-record.js';
 
 /** Versioned identity of exact session framing, detection, and virtual conversion policy. */
-export const SESSION_IMPORT_POLICY_VERSION = 2;
+export const SESSION_IMPORT_POLICY_VERSION = 3;
 
 /** One parsed physical JSONL record with its trustworthy one-based source line. */
 export interface PhysicalSessionJsonlRecord {

@@ -541,12 +541,48 @@ function readLatestSessionName(entries: ParsedSessionEntry[]): string {
   return sessionName;
 }
 
-function findSessionToolEntryLinks(entries: ParsedSessionEntry[]): {
+function assertSessionCompactionAndBranchLinks(
+  entries: ParsedSessionEntry[],
+  entriesById: Map<string, ParsedSessionEntry>,
+  sessionPath: string,
+): void {
+  for (const entry of entries) {
+    if (entry.type === 'compaction' && !Array.isArray(entry.record.retainedTail)) {
+      const firstKeptEntryId = entry.record.firstKeptEntryId;
+      const ancestorIds = new Set(
+        entry.parentId
+          ? readSessionEntryPath(entry.parentId, entriesById).map((ancestor) => ancestor.id)
+          : [],
+      );
+      if (typeof firstKeptEntryId !== 'string' || !ancestorIds.has(firstKeptEntryId)) {
+        throw new Error(
+          `Recall session graph invalid at ${sessionPath}:${entry.lineIndex}: compaction ${entry.id} firstKeptEntryId ${String(firstKeptEntryId)} is not an ancestor`,
+        );
+      }
+    }
+    if (entry.type === 'branch_summary') {
+      const fromId = entry.record.fromId;
+      const expectedFromId = entry.parentId ?? 'root';
+      if (fromId !== expectedFromId) {
+        throw new Error(
+          `Recall session graph invalid at ${sessionPath}:${entry.lineIndex}: branch summary ${entry.id} fromId ${String(fromId)} must equal parentId ${expectedFromId}`,
+        );
+      }
+    }
+  }
+}
+
+function findSessionToolEntryLinks(
+  entries: ParsedSessionEntry[],
+  sessionPath: string,
+): {
   toolCallEntryIdsByCallId: Map<string, string>;
   toolResultEntryIdsByCallId: Map<string, string>;
 } {
   const toolCallEntryIdsByCallId = new Map<string, string>();
+  const toolCallNamesByCallId = new Map<string, string>();
   const toolResultEntryIdsByCallId = new Map<string, string>();
+  const toolResultNamesByCallId = new Map<string, string>();
   for (const entry of entries) {
     if (entry.type !== 'message' || !isUnknownRecord(entry.record.message)) {
       continue;
@@ -554,22 +590,65 @@ function findSessionToolEntryLinks(entries: ParsedSessionEntry[]): {
     const message = entry.record.message;
     if (message.role === 'assistant' && Array.isArray(message.content)) {
       for (const block of message.content) {
-        if (
-          isUnknownRecord(block) &&
-          block.type === 'toolCall' &&
-          typeof block.id === 'string' &&
-          block.id
-        ) {
-          toolCallEntryIdsByCallId.set(block.id, entry.id);
+        if (!isUnknownRecord(block) || block.type !== 'toolCall') {
+          continue;
         }
+        const toolCallId = parseRequiredString(
+          block.id,
+          'toolCall.id',
+          sessionPath,
+          entry.lineIndex,
+        );
+        const toolName = parseRequiredString(
+          block.name,
+          'toolCall.name',
+          sessionPath,
+          entry.lineIndex,
+        );
+        if (toolCallEntryIdsByCallId.has(toolCallId)) {
+          throw new Error(
+            `Recall session graph invalid at ${sessionPath}:${entry.lineIndex}: duplicate tool call id ${toolCallId}`,
+          );
+        }
+        toolCallEntryIdsByCallId.set(toolCallId, entry.id);
+        toolCallNamesByCallId.set(toolCallId, toolName);
       }
     }
-    if (
-      message.role === 'toolResult' &&
-      typeof message.toolCallId === 'string' &&
-      message.toolCallId
-    ) {
-      toolResultEntryIdsByCallId.set(message.toolCallId, entry.id);
+    if (message.role === 'toolResult') {
+      const toolCallId = parseRequiredString(
+        message.toolCallId,
+        'toolResult.toolCallId',
+        sessionPath,
+        entry.lineIndex,
+      );
+      const toolName = parseRequiredString(
+        message.toolName,
+        'toolResult.toolName',
+        sessionPath,
+        entry.lineIndex,
+      );
+      if (toolResultEntryIdsByCallId.has(toolCallId)) {
+        throw new Error(
+          `Recall session graph invalid at ${sessionPath}:${entry.lineIndex}: duplicate tool result id ${toolCallId}`,
+        );
+      }
+      toolResultEntryIdsByCallId.set(toolCallId, entry.id);
+      toolResultNamesByCallId.set(toolCallId, toolName);
+    }
+  }
+  for (const [toolCallId, resultEntryId] of toolResultEntryIdsByCallId) {
+    const callEntryId = toolCallEntryIdsByCallId.get(toolCallId);
+    if (!callEntryId) {
+      throw new Error(
+        `Recall session graph invalid at ${sessionPath}: tool result ${toolCallId} has no matching tool call`,
+      );
+    }
+    const callToolName = toolCallNamesByCallId.get(toolCallId);
+    const resultToolName = toolResultNamesByCallId.get(toolCallId);
+    if (callToolName !== resultToolName) {
+      throw new Error(
+        `Recall session graph invalid at ${sessionPath}: tool result ${toolCallId} names ${String(resultToolName)}, but call names ${String(callToolName)} (entries ${callEntryId} and ${resultEntryId})`,
+      );
     }
   }
   return { toolCallEntryIdsByCallId, toolResultEntryIdsByCallId };
@@ -592,13 +671,14 @@ function readValidatedSessionGraph(session: CanonicalSessionRepresentation): Par
     graphSource,
   );
   assertSessionParentPathsAcyclic(records.entries, records.entriesById, graphSource);
+  assertSessionCompactionAndBranchLinks(records.entries, records.entriesById, graphSource);
   const currentLeafId = resolveCurrentSessionLeafId(records, graphSource);
   const activeBranchEntryIds = new Set(
     currentLeafId
       ? readSessionEntryPath(currentLeafId, records.entriesById).map((entry) => entry.id)
       : [],
   );
-  const toolEntryLinks = findSessionToolEntryLinks(records.entries);
+  const toolEntryLinks = findSessionToolEntryLinks(records.entries, graphSource);
 
   return {
     header,

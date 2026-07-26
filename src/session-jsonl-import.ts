@@ -29,9 +29,13 @@ export interface SessionJsonlImport {
   sessions: CanonicalSessionRepresentation[];
 }
 
-function decodeSessionJsonlRecord(recordParts: Buffer[], recordByteLength: number): string {
+function decodeSessionJsonlRecord(
+  recordParts: Buffer[],
+  recordByteLength: number,
+  endedByLineFeed: boolean,
+): string {
   const record = Buffer.concat(recordParts, recordByteLength);
-  const contentEnd = record.at(-1) === 0x0d ? record.length - 1 : record.length;
+  const contentEnd = endedByLineFeed && record.at(-1) === 0x0d ? record.length - 1 : record.length;
   return record.subarray(0, contentEnd).toString('utf8');
 }
 
@@ -52,7 +56,7 @@ async function* frameSessionJsonlRecords(
       sourceLine += 1;
       yield {
         sourceLine,
-        text: decodeSessionJsonlRecord(recordParts, recordByteLength),
+        text: decodeSessionJsonlRecord(recordParts, recordByteLength, true),
       };
       recordParts.length = 0;
       recordByteLength = 0;
@@ -69,7 +73,7 @@ async function* frameSessionJsonlRecords(
     sourceLine += 1;
     yield {
       sourceLine,
-      text: decodeSessionJsonlRecord(recordParts, recordByteLength),
+      text: decodeSessionJsonlRecord(recordParts, recordByteLength, false),
     };
   }
 }
@@ -235,11 +239,10 @@ function convertPiV1LinearSession(
     let convertedValue: Record<string, unknown> = record.value;
     if (record.value.type === 'compaction') {
       const firstKeptEntryIndex = record.value.firstKeptEntryIndex;
-      const firstKeptEntry =
-        typeof firstKeptEntryIndex === 'number' ? records[firstKeptEntryIndex] : undefined;
-      const firstKeptEntryId = firstKeptEntry
-        ? entryIds[records.indexOf(firstKeptEntry) - 1]
-        : undefined;
+      const firstKeptEntryId =
+        typeof firstKeptEntryIndex === 'number' && Number.isInteger(firstKeptEntryIndex)
+          ? entryIds[firstKeptEntryIndex - 1]
+          : undefined;
       if (!firstKeptEntryId) {
         throw new Error(
           `Recall v1 session invalid at ${sessionPath}:${record.sourceLine}: compaction firstKeptEntryIndex does not name an entry`,
@@ -279,13 +282,12 @@ function convertPiV1LinearSession(
   };
 }
 
+function isSupportedCanonicalSessionVersion(version: unknown): boolean {
+  return version === 2 || version === 3;
+}
+
 function isCanonicalReuseHeader(record: Record<string, unknown>): boolean {
-  return (
-    isCompleteSessionHeader(record) &&
-    Number.isInteger(record.version) &&
-    typeof record.version === 'number' &&
-    record.version >= 2
-  );
+  return isCompleteSessionHeader(record) && isSupportedCanonicalSessionVersion(record.version);
 }
 
 function splitPiSessionReuseHistory(
@@ -339,6 +341,11 @@ function createCanonicalSingleSession(
   if (!header || !lastRecord || !isCompleteSessionHeader(header.value)) {
     throw new Error(
       `Recall session import unsupported or ambiguous at ${sessionPath}: expected one complete leading session header`,
+    );
+  }
+  if (!isSupportedCanonicalSessionVersion(header.value.version)) {
+    throw new Error(
+      `Recall session import unsupported or ambiguous at ${sessionPath}:${header.sourceLine}: canonical session version must be 2 or 3`,
     );
   }
   return {

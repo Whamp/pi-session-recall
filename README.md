@@ -43,11 +43,11 @@ Conversation Recall never rewrites Pi session files. It frames physical JSONL re
 
 One import boundary selects one of three disjoint formats before graph validation:
 
-- **Canonical JSONL:** one complete leading session header followed by canonical graph records.
+- **Canonical JSONL:** one complete leading session header at supported version 2 or 3, followed by canonical graph records.
 - **Unversioned Pi v1:** one complete header without `version`, followed only by supported v1 messages, model changes, thinking-level changes, or compaction records with required v1 metadata and without `id` or `parentId`. Conversion assigns deterministic SHA-256 entry IDs, chains entries in physical order, sets header version 2, and converts `firstKeptEntryIndex` to `firstKeptEntryId`.
 - **Pi session-file reuse history:** at least two complete versioned headers, with no pre-header record and at least one record in every segment. Each header starts an independent logical session with its own session ID, cwd, parent-session metadata, graph, and project attribution. All logical sessions retain the shared physical path and original physical lines.
 
-Every canonical representation enters the same strict session graph parser. Detection never selects a converter because graph parsing failed. Unsupported, ambiguous, malformed, truncated, cyclic, duplicate-ID, invalid-leaf, and missing-parent inputs fail without searchable documents. The historical `/new` reuse shape and fix are recorded in [ADR 0003](docs/adr/0003-import-historical-sessions-virtually.md).
+Every canonical representation enters the same strict session graph parser. Detection never selects a converter because graph parsing failed. The parser also requires compaction checkpoints to name an ancestor, branch summaries to identify their parent, and tool results to match one unique tool call with the same tool name. Unsupported, ambiguous, malformed, truncated, cyclic, duplicate-ID, invalid-leaf, invalid-reference, and missing-parent inputs fail without searchable documents. If any logical session in a reuse-history file is invalid, the physical import is all-or-nothing: no sibling logical session emits documents. The historical `/new` reuse shape and fix are recorded in [ADR 0003](docs/adr/0003-import-historical-sessions-virtually.md).
 
 Run the guarded compatibility replay against an explicit, non-production corpus root:
 
@@ -56,6 +56,13 @@ npm run --silent replay:session-import -- --corpus-root /path/to/session-corpus
 ```
 
 The command reads only `.jsonl` files, refuses any root that overlaps `~/.pi/agent/recall`, and emits one JSON result with per-file outcomes, format counts, logical-session counts, deterministic import digests, and a corpus replay digest. It snapshots source hashes, size, mode, mtime, and inode before and after replay and fails if any source changes.
+
+The privacy-safe frozen expectation lives at `src/fixtures/session-import/historical-corpus-replay-expectation.json`. To enforce its source-set and per-file outcome digests against an available private corpus, run:
+
+```bash
+PI_SESSION_IMPORT_CORPUS_ROOT=/path/to/session-corpus \
+  node --import tsx --test src/session-import-replay.test.ts
+```
 
 The documented 121-file failure corpus produces:
 

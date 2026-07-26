@@ -70,7 +70,12 @@ void test('session JSONL becomes searchable conversation chunks with provenance'
           content: [
             { type: 'thinking', thinking: 'secret reasoning' },
             { type: 'text', text: oversized },
-            { type: 'toolCall', id: 'call-1', name: 'read', arguments: {} },
+            {
+              type: 'toolCall',
+              id: 'call-1',
+              name: 'pi-session-recall',
+              arguments: {},
+            },
           ],
         },
       },
@@ -81,6 +86,8 @@ void test('session JSONL becomes searchable conversation chunks with provenance'
         timestamp: '2026-07-24T10:03:00Z',
         message: {
           role: 'toolResult',
+          toolCallId: 'call-1',
+          toolName: 'pi-session-recall',
           content: [{ type: 'text', text: 'giant private tool output' }],
         },
       },
@@ -90,6 +97,7 @@ void test('session JSONL becomes searchable conversation chunks with provenance'
         parentId: 'tool-1',
         timestamp: '2026-07-24T10:04:00Z',
         summary: 'The migration plan lives in docs/migration.md',
+        firstKeptEntryId: 'user-1',
         tokensBefore: 1000,
       },
       {
@@ -1157,6 +1165,115 @@ void test('Pi session-file reuse history becomes independent logical sessions wi
   assert.equal(imported.chunks[1]?.parentSessionPath, '/parent/two.jsonl');
 });
 
+void test('v1 compaction conversion validates edge indexes and maps compaction references directly', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-v1-compaction-indexes-'));
+  const options = { tokenizer: createWhitespaceConversationTokenizer() };
+  const header = {
+    type: 'session',
+    id: 'v1-compaction-indexes',
+    timestamp: '2025-12-01T10:00:00.000Z',
+    cwd: '/legacy/project',
+  };
+  const firstMessage = {
+    type: 'message',
+    timestamp: '2025-12-01T10:00:01.000Z',
+    message: {
+      role: 'user',
+      content: 'kept v1 message',
+      timestamp: 1_764_583_201_000,
+    },
+  };
+  const firstCompaction = {
+    type: 'compaction',
+    timestamp: '2025-12-01T10:00:02.000Z',
+    summary: 'first v1 summary',
+    firstKeptEntryIndex: 1,
+    tokensBefore: 10,
+  };
+  const secondCompaction = {
+    type: 'compaction',
+    timestamp: '2025-12-01T10:00:03.000Z',
+    summary: 'second v1 summary',
+    firstKeptEntryIndex: 2,
+    tokensBefore: 20,
+  };
+  const validPath = join(directory, 'valid.jsonl');
+  await writeFile(
+    validPath,
+    [header, firstMessage, firstCompaction, secondCompaction]
+      .map((record) => JSON.stringify(record))
+      .join('\n'),
+  );
+
+  const imported = await readSessionConversationImport(validPath, options);
+  const entryIds = imported.logicalSessions[0]?.entryIds ?? [];
+  const summaries = imported.chunks.filter((chunk) => chunk.documentKind === 'summary');
+  assert.equal(imported.format, SessionImportFormat.PI_V1_LINEAR);
+  assert.equal(summaries[0]?.compactionFirstKeptEntryId?.value, entryIds[0]);
+  assert.equal(summaries[1]?.compactionFirstKeptEntryId?.value, entryIds[1]);
+
+  for (const firstKeptEntryIndex of [0, 99]) {
+    const invalidPath = join(directory, `invalid-${firstKeptEntryIndex}.jsonl`);
+    await writeFile(
+      invalidPath,
+      [header, firstMessage, { ...firstCompaction, firstKeptEntryIndex }]
+        .map((record) => JSON.stringify(record))
+        .join('\n'),
+    );
+    await assert.rejects(
+      () => readSessionConversationImport(invalidPath, options),
+      /compaction firstKeptEntryIndex does not name an entry/u,
+    );
+  }
+});
+
+void test('reuse histories keep document identities distinct when session and entry IDs repeat', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-repeated-logical-identities-'));
+  const sessionPath = join(directory, 'repeated-identities.jsonl');
+  const records = [
+    {
+      type: 'session',
+      version: 3,
+      id: 'repeated-session',
+      timestamp: '2026-01-10T10:00:00Z',
+      cwd: '/first',
+    },
+    {
+      type: 'message',
+      id: 'repeated-entry',
+      parentId: null,
+      timestamp: '2026-01-10T10:00:01Z',
+      message: { role: 'user', content: 'first repeated identity' },
+    },
+    {
+      type: 'session',
+      version: 3,
+      id: 'repeated-session',
+      timestamp: '2026-01-10T11:00:00Z',
+      cwd: '/second',
+    },
+    {
+      type: 'message',
+      id: 'repeated-entry',
+      parentId: null,
+      timestamp: '2026-01-10T11:00:01Z',
+      message: { role: 'user', content: 'second repeated identity' },
+    },
+  ];
+  await writeFile(sessionPath, records.map((record) => JSON.stringify(record)).join('\n'));
+
+  const imported = await readSessionConversationImport(sessionPath, {
+    tokenizer: createWhitespaceConversationTokenizer(),
+  });
+
+  assert.equal(imported.format, SessionImportFormat.PI_SESSION_REUSE_HISTORY);
+  assert.deepEqual(
+    imported.logicalSessions.map((session) => session.sessionId),
+    ['repeated-session', 'repeated-session'],
+  );
+  assert.equal(new Set(imported.chunks.map((chunk) => chunk.id)).size, 2);
+});
+
 void test('format detection rejects v1 and reuse-history near misses without heuristic repair', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'recall-import-near-miss-'));
   const options = { tokenizer: createWhitespaceConversationTokenizer() };
@@ -1271,7 +1388,7 @@ void test('format detection rejects v1 and reuse-history near misses without heu
   );
   await assert.rejects(
     () => readSessionConversationImport(v1MissingMessageMetadata, options),
-    /entry.id must be a nonempty string/u,
+    /unsupported or ambiguous.*canonical session version/u,
   );
   await assert.rejects(
     () => readSessionConversationImport(preHeaderRecord, options),
@@ -1281,6 +1398,238 @@ void test('format detection rejects v1 and reuse-history near misses without heu
     () => readSessionConversationImport(independentlyInvalidSegment, options),
     /logical session invalid-second.*entry orphan has missing parent first-entry/u,
   );
+});
+
+void test('format detection rejects unsupported canonical session versions', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-unsupported-session-version-'));
+  const options = { tokenizer: createWhitespaceConversationTokenizer() };
+
+  for (const version of [1, 4, 'future-ish']) {
+    const sessionPath = join(directory, `version-${String(version)}.jsonl`);
+    await writeFile(
+      sessionPath,
+      [
+        {
+          type: 'session',
+          version,
+          id: `unsupported-${String(version)}`,
+          timestamp: '2026-01-10T10:00:00Z',
+          cwd: '/project',
+        },
+        {
+          type: 'message',
+          id: 'entry',
+          parentId: null,
+          timestamp: '2026-01-10T10:00:01Z',
+          message: { role: 'user', content: 'must not become searchable' },
+        },
+      ]
+        .map((record) => JSON.stringify(record))
+        .join('\n'),
+    );
+
+    await assert.rejects(
+      () => readSessionConversationImport(sessionPath, options),
+      /unsupported or ambiguous.*canonical session version/u,
+    );
+  }
+});
+
+void test('strict session graph validation rejects invalid compaction, branch, and tool links', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-invalid-graph-links-'));
+  const options = { tokenizer: createWhitespaceConversationTokenizer() };
+  const header = {
+    type: 'session',
+    version: 3,
+    id: 'invalid-links',
+    timestamp: '2026-01-10T10:00:00Z',
+    cwd: '/project',
+  };
+  const root = {
+    type: 'message',
+    id: 'root',
+    parentId: null,
+    timestamp: '2026-01-10T10:00:01Z',
+    message: { role: 'user', content: 'root' },
+  };
+  const invalidCases = [
+    {
+      name: 'compaction-missing-reference',
+      records: [
+        header,
+        root,
+        {
+          type: 'compaction',
+          id: 'compaction',
+          parentId: 'root',
+          timestamp: '2026-01-10T10:00:02Z',
+          summary: 'invalid compaction',
+          firstKeptEntryId: 'missing',
+          tokensBefore: 10,
+        },
+      ],
+      error: /compaction compaction firstKeptEntryId missing is not an ancestor/u,
+    },
+    {
+      name: 'branch-summary-missing-reference',
+      records: [
+        header,
+        root,
+        {
+          type: 'branch_summary',
+          id: 'branch-summary',
+          parentId: 'root',
+          timestamp: '2026-01-10T10:00:02Z',
+          fromId: 'missing',
+          summary: 'invalid branch summary',
+        },
+      ],
+      error: /branch summary branch-summary fromId missing must equal parentId root/u,
+    },
+    {
+      name: 'duplicate-tool-call',
+      records: [
+        header,
+        {
+          type: 'message',
+          id: 'assistant',
+          parentId: null,
+          timestamp: '2026-01-10T10:00:01Z',
+          message: {
+            role: 'assistant',
+            content: [
+              { type: 'toolCall', id: 'duplicate-call', name: 'read', arguments: {} },
+              { type: 'toolCall', id: 'duplicate-call', name: 'bash', arguments: {} },
+            ],
+          },
+        },
+      ],
+      error: /duplicate tool call id duplicate-call/u,
+    },
+    {
+      name: 'unresolved-tool-call-id',
+      records: [
+        header,
+        {
+          type: 'message',
+          id: 'assistant',
+          parentId: null,
+          timestamp: '2026-01-10T10:00:01Z',
+          message: {
+            role: 'assistant',
+            content: [{ type: 'toolCall', id: '', name: 'read', arguments: {} }],
+          },
+        },
+      ],
+      error: /toolCall\.id must be a nonempty string/u,
+    },
+    {
+      name: 'unmatched-tool-result',
+      records: [
+        header,
+        {
+          type: 'message',
+          id: 'result',
+          parentId: null,
+          timestamp: '2026-01-10T10:00:01Z',
+          message: {
+            role: 'toolResult',
+            toolCallId: 'missing-call',
+            toolName: 'read',
+            content: [{ type: 'text', text: 'must not become searchable' }],
+            isError: false,
+          },
+        },
+      ],
+      error: /tool result missing-call has no matching tool call/u,
+    },
+    {
+      name: 'duplicate-tool-result',
+      records: [
+        header,
+        {
+          type: 'message',
+          id: 'assistant',
+          parentId: null,
+          timestamp: '2026-01-10T10:00:01Z',
+          message: {
+            role: 'assistant',
+            content: [{ type: 'toolCall', id: 'call', name: 'read', arguments: {} }],
+          },
+        },
+        {
+          type: 'message',
+          id: 'result-one',
+          parentId: 'assistant',
+          timestamp: '2026-01-10T10:00:02Z',
+          message: {
+            role: 'toolResult',
+            toolCallId: 'call',
+            toolName: 'read',
+            content: [],
+            isError: false,
+          },
+        },
+        {
+          type: 'message',
+          id: 'result-two',
+          parentId: 'result-one',
+          timestamp: '2026-01-10T10:00:03Z',
+          message: {
+            role: 'toolResult',
+            toolCallId: 'call',
+            toolName: 'read',
+            content: [],
+            isError: false,
+          },
+        },
+      ],
+      error: /duplicate tool result id call/u,
+    },
+    {
+      name: 'mismatched-tool-name',
+      records: [
+        header,
+        {
+          type: 'message',
+          id: 'assistant',
+          parentId: null,
+          timestamp: '2026-01-10T10:00:01Z',
+          message: {
+            role: 'assistant',
+            content: [{ type: 'toolCall', id: 'call', name: 'read', arguments: {} }],
+          },
+        },
+        {
+          type: 'message',
+          id: 'result',
+          parentId: 'assistant',
+          timestamp: '2026-01-10T10:00:02Z',
+          message: {
+            role: 'toolResult',
+            toolCallId: 'call',
+            toolName: 'bash',
+            content: [],
+            isError: false,
+          },
+        },
+      ],
+      error: /tool result call names bash, but call names read/u,
+    },
+  ];
+
+  for (const fixture of invalidCases) {
+    const sessionPath = join(directory, `${fixture.name}.jsonl`);
+    await writeFile(
+      sessionPath,
+      fixture.records.map((record) => JSON.stringify(record)).join('\n'),
+    );
+    await assert.rejects(
+      () => readSessionConversationImport(sessionPath, options),
+      fixture.error,
+      fixture.name,
+    );
+  }
 });
 
 void test('session graph rejects multiple headers and broken parent links', async () => {

@@ -51,7 +51,7 @@ export interface SessionImportReplayResult {
 const replayTokenizer: ConversationTextTokenizer = {
   encodeConversationText(text) {
     const tokenCount = text.match(/\S+/gu)?.length ?? 0;
-    return { ids: Array.from({ length: tokenCount }, (_, index) => index) };
+    return { ids: [...Array(tokenCount).keys()] };
   },
 };
 
@@ -180,25 +180,10 @@ export async function replaySessionImportCorpus(
   const files: SessionImportReplayFileResult[] = [];
   for (const sessionPath of sessionPaths) {
     const relativeSessionPath = relative(resolvedRoot, sessionPath);
+    let imported: Awaited<ReturnType<typeof readSessionConversationImport>>;
     try {
-      const imported = await readSessionConversationImport(sessionPath, {
+      imported = await readSessionConversationImport(sessionPath, {
         tokenizer: replayTokenizer,
-      });
-      const formatCount = formats[imported.format];
-      formatCount.physicalFiles += 1;
-      formatCount.logicalSessions += imported.logicalSessions.length;
-      files.push({
-        sessionPath: relativeSessionPath,
-        format: imported.format,
-        outcome: SessionImportReplayOutcome.ACCEPTED,
-        logicalSessions: imported.logicalSessions.length,
-        documents: imported.chunks.length,
-        importDigest: createImportDigest(
-          imported.format,
-          imported.logicalSessions,
-          imported.chunks,
-        ),
-        error: null,
       });
     } catch (error) {
       files.push({
@@ -210,7 +195,20 @@ export async function replaySessionImportCorpus(
         importDigest: null,
         error: error instanceof Error ? error.message : String(error),
       });
+      continue;
     }
+    const formatCount = formats[imported.format];
+    formatCount.physicalFiles += 1;
+    formatCount.logicalSessions += imported.logicalSessions.length;
+    files.push({
+      sessionPath: relativeSessionPath,
+      format: imported.format,
+      outcome: SessionImportReplayOutcome.ACCEPTED,
+      logicalSessions: imported.logicalSessions.length,
+      documents: imported.chunks.length,
+      importDigest: createImportDigest(imported.format, imported.logicalSessions, imported.chunks),
+      error: null,
+    });
   }
 
   const afterSnapshots = new Map<string, SessionImportSourceSnapshot>();

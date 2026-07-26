@@ -10,9 +10,9 @@ The import boundary parses each physical record once, selects one exact format, 
 
 The boundary supports three disjoint formats:
 
-1. Canonical JSONL has one complete leading session header. The strict graph parser validates its header count, entry IDs, parent links, cycles, effective leaf, branch and compaction relationships, and tool links.
+1. Canonical JSONL has one complete leading session header at supported version 2 or 3. The strict graph parser validates its header count, entry IDs, parent links, cycles, effective leaf, branch and compaction relationships, and tool links.
 2. Unversioned Pi v1 has one complete leading session header with no `version` field. Every later record is a supported v1 message, model change, thinking-level change, or compaction with the metadata Pi v1 wrote and with neither `id` nor `parentId`. Conversion assigns each entry a deterministic SHA-256 ID from the conversion-policy version, session ID, physical line, and unchanged source record. It chains entries in physical order, sets header version 2, and converts `firstKeptEntryIndex` to the corresponding deterministic `firstKeptEntryId` exactly as Pi's v1-to-v2 migration did.
-3. Pi session-file reuse history has at least two complete versioned session headers. The first nonblank record is a header, and each header begins a nonempty segment. Each segment becomes one independently validated logical session and retains its own ID, cwd, timestamp, parent-session metadata, physical path, and physical source lines.
+3. Pi session-file reuse history has at least two complete version 2 or 3 session headers. The first nonblank record is a header, and each header begins a nonempty segment. Each segment becomes one independently validated logical session and retains its own ID, cwd, timestamp, parent-session metadata, physical path, and physical source lines. Import is all-or-nothing per physical file: if one logical session fails graph validation, no sibling segment emits searchable documents.
 
 Pi's historical `/new` bug reused the active physical file. Upstream commit [`234f367d0ddbfb6e958e986bf962e02c21d06f4c`](https://github.com/earendil-works/pi/commit/234f367d0ddbfb6e958e986bf962e02c21d06f4c) changed `newSession()` to assign a fresh filename; [PR #649](https://github.com/earendil-works/pi/pull/649) records the reproduction and fix.
 

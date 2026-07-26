@@ -928,6 +928,62 @@ void test('retained-tail compaction acts as a self-contained active-context chec
   assert.equal(after?.isVisibleInActiveContext, true);
 });
 
+void test('session JSONL framing preserves Unicode line separators inside records', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-unicode-line-separators-'));
+  const sessionPath = join(directory, 'unicode-line-separators.jsonl');
+  const content = 'before\u2028between\u2029after';
+  const records = [
+    {
+      type: 'session',
+      version: 3,
+      id: 'unicode-line-session',
+      timestamp: '2026-07-24T10:00:00Z',
+      cwd: '/project',
+    },
+    {
+      type: 'message',
+      id: 'unicode-line-message',
+      parentId: null,
+      timestamp: '2026-07-24T10:01:00Z',
+      message: { role: 'user', content },
+    },
+  ];
+  await writeFile(
+    sessionPath,
+    `${records.map((record) => JSON.stringify(record)).join('\r\n')}\r\n`,
+  );
+
+  const chunks = await readSessionConversationChunks(sessionPath, {
+    tokenizer: createWhitespaceConversationTokenizer(),
+  });
+
+  assert.deepEqual(
+    chunks.filter((chunk) => chunk.documentKind === 'conversation').map((chunk) => chunk.content),
+    [content],
+  );
+});
+
+void test('session JSONL framing rejects a genuinely truncated final record', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-truncated-session-record-'));
+  const sessionPath = join(directory, 'truncated.jsonl');
+  const header = JSON.stringify({
+    type: 'session',
+    version: 3,
+    id: 'truncated-session',
+    timestamp: '2026-07-24T10:00:00Z',
+    cwd: '/project',
+  });
+  await writeFile(sessionPath, `${header}\n{"type":"message","id":"unfinished`);
+
+  await assert.rejects(
+    () =>
+      readSessionConversationChunks(sessionPath, {
+        tokenizer: createWhitespaceConversationTokenizer(),
+      }),
+    /Recall session JSON invalid.*Unterminated string/u,
+  );
+});
+
 void test('session graph rejects multiple headers and broken parent links', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'recall-invalid-graph-'));
   const duplicateHeaderPath = join(directory, 'duplicate-header.jsonl');

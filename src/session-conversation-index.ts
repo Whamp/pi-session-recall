@@ -1,6 +1,5 @@
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { createInterface } from 'node:readline';
 
 import { isUnknownRecord } from './is-unknown-record.js';
 import type { ResolvedProjectIdentity } from './resolve-project-identity.js';
@@ -412,6 +411,40 @@ function parseSessionFileRecord(
   };
 }
 
+function decodeSessionJsonlRecord(recordParts: Buffer[], recordByteLength: number): string {
+  const record = Buffer.concat(recordParts, recordByteLength);
+  const contentEnd = record.at(-1) === 0x0d ? record.length - 1 : record.length;
+  return record.subarray(0, contentEnd).toString('utf8');
+}
+
+async function* readSessionJsonlRecords(sessionPath: string): AsyncGenerator<string> {
+  const recordParts: Buffer[] = [];
+  let recordByteLength = 0;
+  for await (const streamChunk of createReadStream(sessionPath)) {
+    const chunk = Buffer.isBuffer(streamChunk) ? streamChunk : Buffer.from(String(streamChunk));
+    let recordStart = 0;
+    let lineFeedIndex = chunk.indexOf(0x0a, recordStart);
+    while (lineFeedIndex !== -1) {
+      const recordPart = chunk.subarray(recordStart, lineFeedIndex);
+      recordParts.push(recordPart);
+      recordByteLength += recordPart.length;
+      yield decodeSessionJsonlRecord(recordParts, recordByteLength);
+      recordParts.length = 0;
+      recordByteLength = 0;
+      recordStart = lineFeedIndex + 1;
+      lineFeedIndex = chunk.indexOf(0x0a, recordStart);
+    }
+    const trailingPart = chunk.subarray(recordStart);
+    if (trailingPart.length > 0) {
+      recordParts.push(trailingPart);
+      recordByteLength += trailingPart.length;
+    }
+  }
+  if (recordByteLength > 0) {
+    yield decodeSessionJsonlRecord(recordParts, recordByteLength);
+  }
+}
+
 async function readSessionFileRecords(sessionPath: string): Promise<ParsedSessionFileRecords> {
   const records: ParsedSessionFileRecords = {
     headers: [],
@@ -419,12 +452,8 @@ async function readSessionFileRecords(sessionPath: string): Promise<ParsedSessio
     entriesById: new Map(),
     firstRecordLine: 0,
   };
-  const lines = createInterface({
-    input: createReadStream(sessionPath, { encoding: 'utf8' }),
-    crlfDelay: Infinity,
-  });
   let lineIndex = 0;
-  for await (const line of lines) {
+  for await (const line of readSessionJsonlRecords(sessionPath)) {
     lineIndex += 1;
     if (!line.trim()) {
       continue;

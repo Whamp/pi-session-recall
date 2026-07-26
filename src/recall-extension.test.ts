@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
+import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 
 import { RecallSearchScope } from './enums.js';
-import recallExtension, { searchPiRecall } from './recall-extension.js';
+import recallExtension, {
+  searchPiRecall,
+  shouldRunRecallStartupCatchUp,
+} from './recall-extension.js';
 import type {
   RecallConversationSearchOptions,
   RecallConversationService,
@@ -62,6 +65,20 @@ void test('Pi session recall registers collision-free tool guidance and index co
         guideline.includes('Use pi-session-recall') &&
         guideline.includes('conversation or detail from a past session'),
     ),
+  );
+});
+
+void test('Pi recall startup catch-up runs only for the interactive TUI', () => {
+  const modes: ExtensionContext['mode'][] = ['tui', 'rpc', 'json', 'print'];
+
+  assert.deepEqual(
+    modes.map((mode) => [mode, shouldRunRecallStartupCatchUp(mode)]),
+    [
+      ['tui', true],
+      ['rpc', false],
+      ['json', false],
+      ['print', false],
+    ],
   );
 });
 

@@ -53,7 +53,7 @@ The committed quality report passes and selects 512/64 chunks, 8 candidates per 
 
 After that initial generation exists, the extension keeps it current from Pi's session lifecycle:
 
-- `session_start` starts a bounded background catch-up over missed session files;
+- interactive TUI `session_start` starts a bounded background catch-up over missed session files; non-interactive print, JSON, and RPC runtimes skip the corpus scan;
 - `agent_settled` reconciles the active session after retries and queued continuations finish;
 - `session_shutdown` awaits one final active-session reconciliation before switching, forking, reloading, or exiting;
 - every `pi-session-recall` tool call reconciles the trusted active session before searching.
@@ -90,7 +90,7 @@ Each atomic conversation, turn-context, or summary document is stored once with 
 
 Tool evidence is stored only in the two FTS representations. Zvec 0.6.0 requires every row to contain a vector, so lexical-only rows receive a fixed zero sentinel generated inside the store; tool text is never sent to the embedding endpoint, and dense queries filter those rows out before ranking.
 
-Search asks each channel for a bounded candidate set, deduplicates identical document IDs, and applies application-side reciprocal rank fusion. A single double-quoted substring uses zvec phrase syntax, so its tokens must be adjacent and ordered even when the query includes surrounding prose. Fusion policy version 1 uses rank constant 60. Equal fused scores sort by document ID. Before the gate selects a policy, the search-only fallback is 40 candidates per channel and 5 final results; no channel accepts more than 200 candidates. A clean passing evaluation replaces both fallback counts and the chunk policy with its measured selection. A failed gate approves no policy and blocks production indexing. Each response records the exact fusion version, constant, and channel caps it used.
+Search asks each channel for a bounded candidate set, deduplicates identical document IDs, and applies application-side reciprocal rank fusion. A single double-quoted substring uses zvec phrase syntax, so its tokens must be adjacent and ordered even when the query includes surrounding prose. Fusion policy version 2 uses rank constant 60 and excludes dense-only default-hybrid candidates whose cosine distance exceeds `0.5`; any lexical or identifier match remains eligible, and explicit deep reranking still receives the full fused pool. Equal fused scores sort by document ID. Before the gate selects a policy, the search-only fallback is 40 candidates per channel and 5 final results; no channel accepts more than 200 candidates. A clean passing evaluation replaces both fallback counts and the chunk policy with its measured selection. A failed gate approves no policy and blocks production indexing. Each response records the exact fusion version, constant, and channel caps it used.
 
 Application-side fusion is deliberate. Zvec 0.6.0 supports native hybrid RRF through `multiQuerySync()`, but native results omit the component ranks and scores required for evaluation and source-backed diagnostics.
 
@@ -99,12 +99,13 @@ Application-side fusion is deliberate. Zvec 0.6.0 supports native hybrid RRF thr
 Search shapes the full fused candidate pool before applying the requested result limit:
 
 1. Merge identical document IDs while retaining each channel rank and score.
-2. Group overlapping reciprocal siblings from the same source run.
-3. Group exact-content copies across sessions. Raw evidence never groups with a compaction or branch summary.
-4. By default, rank groups deterministically by fused score plus a fixed `0.01` active-branch prior. Abandoned evidence remains eligible and carries an explicit label.
-5. In explicit `deep-rerank` mode, send each representative's original text to Qwen3 and rank by its relevance score plus the same active-branch prior. The client requires one unique, in-range, finite score for every submitted index and maps scores by index rather than response order.
-6. Apply the final result limit.
-7. For winning atomic conversation chunks, fetch at most one immediate sibling on each side. Expansion requires reciprocal pointers and matching session, entry, role, evidence kind, visible text run, source geometry, and overlap text. Turn context, tool evidence, images, thinking, and summaries cannot become neighbors.
+2. In default hybrid mode, exclude weak dense-only candidates above cosine distance `0.5`; preserve every lexical or identifier match.
+3. Group overlapping reciprocal siblings from the same source run.
+4. Group exact-content copies across sessions. Raw evidence never groups with a compaction or branch summary.
+5. By default, rank groups deterministically by fused score plus a fixed `0.01` active-branch prior. Abandoned evidence remains eligible and carries an explicit label.
+6. In explicit `deep-rerank` mode, send each representative's original text to Qwen3 and rank by its relevance score plus the same active-branch prior. The client requires one unique, in-range, finite score for every submitted index and maps scores by index rather than response order.
+7. Apply the final result limit.
+8. For winning atomic conversation chunks, fetch at most one immediate sibling on each side. Expansion requires reciprocal pointers and matching session, entry, role, evidence kind, visible text run, source geometry, and overlap text. Turn context, tool evidence, images, thinking, and summaries cannot become neighbors.
 
 Each duplicate group retains every suppressed candidate with its source geometry and fusion components. Neighbor context retains every contributing atomic chunk. A deep-rerank HTTP, JSON, coverage, index, or score failure rejects that deep search; default hybrid search never calls the reranker.
 

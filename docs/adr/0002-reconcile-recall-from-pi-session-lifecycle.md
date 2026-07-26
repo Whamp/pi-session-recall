@@ -6,7 +6,7 @@ status: accepted
 
 Conversation Recall treats zvec as a live derived projection of Pi's JSONL session store. The initial generation remains explicit and quality-gated, but ordinary freshness no longer depends on a person running the index command.
 
-The extension starts a bounded full catch-up on `session_start`, reconciles the active session on `agent_settled`, and awaits a final active-session reconciliation on `session_shutdown`. A recall tool call also applies an active-session freshness barrier before searching. That barrier uses the trusted path from `ctx.sessionManager`; the model cannot choose a session file.
+The extension starts a bounded full catch-up on interactive TUI `session_start`, reconciles the active session on `agent_settled`, and awaits a final active-session reconciliation on `session_shutdown`. Print, JSON, and RPC runtimes skip startup corpus catch-up so short-lived helper processes cannot monopolize the global writer lock. Their active sessions still reconcile after settling and before recall search. A recall tool call also applies an active-session freshness barrier before searching. That barrier uses the trusted path from `ctx.sessionManager`; the model cannot choose a session file.
 
 Targeted reconciliation reprocesses one complete session instead of appending only its latest line. Resume, branch, compaction, and fork activity can change provenance attached to earlier documents. Stable document IDs, checksums, and the embedding cache keep that full-session reconciliation incremental in storage and model work.
 

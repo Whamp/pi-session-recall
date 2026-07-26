@@ -9,6 +9,9 @@ export const RECALL_RERANK_POLICY_VERSION = 1;
 /** Small additive prior used to favor active-branch evidence without filtering other branches. */
 export const RECALL_ACTIVE_BRANCH_PRIOR = 0.01;
 
+/** Maximum cosine distance admitted for a dense-only default hybrid result. */
+export const RECALL_MAX_DENSE_ONLY_COSINE_DISTANCE = 0.5;
+
 /** Readable context reconstructed from exact same-run atomic chunk provenance. */
 export interface RecallNeighborContext {
   content: string;
@@ -325,6 +328,15 @@ function assertRecallRankingResultLimit(resultLimit: number, errorMessage: strin
   }
 }
 
+function isEligibleHybridRecallCandidate(candidate: RecallSearchResult): boolean {
+  return (
+    candidate.lexical !== null ||
+    candidate.identifier !== null ||
+    candidate.dense === null ||
+    candidate.dense.cosineDistance <= RECALL_MAX_DENSE_ONLY_COSINE_DISTANCE
+  );
+}
+
 function createRecallCandidateGroups(
   candidates: readonly RecallSearchResult[],
 ): RecallCandidateGroup[] {
@@ -362,7 +374,8 @@ export function rankFusedRecallSearchResults(
     resultLimit,
     'Recall fused result limit invalid: expected an integer from 1 to 200',
   );
-  const rankedResults = createRecallCandidateGroups(candidates)
+  const eligibleCandidates = candidates.filter(isEligibleHybridRecallCandidate);
+  const rankedResults = createRecallCandidateGroups(eligibleCandidates)
     .map((group) => createRankedRecallSearchResult(group, null))
     .toSorted(
       (left, right) =>

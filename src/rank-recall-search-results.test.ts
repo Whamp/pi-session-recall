@@ -4,7 +4,10 @@ import test from 'node:test';
 import type { RecallSearchResult } from './fuse-recall-search-candidates.js';
 import type { LocalRerankerClient } from './local-reranker-client.js';
 import { createTestRecallSearchResult } from './recall-test-utils.js';
-import { rerankRecallSearchResults } from './rank-recall-search-results.js';
+import {
+  rankFusedRecallSearchResults,
+  rerankRecallSearchResults,
+} from './rank-recall-search-results.js';
 
 function createRecallCandidate(
   id: string,
@@ -20,6 +23,34 @@ function createRecallCandidate(
     ...overrides,
   });
 }
+
+void test('hybrid ranking rejects weak dense-only matches without hiding exact or strong dense evidence', () => {
+  const fusedScore = 1 / 61;
+  const candidates = [
+    createRecallCandidate('weak-dense-marker', 'LIVE_RECALL_PROBE_20260725_AF755B6', {
+      isOnActiveBranch: true,
+      dense: { rank: 1, cosineDistance: 0.6473 },
+      fusedScore,
+    }),
+    createRecallCandidate('exact-evidence', 'Repository identity follows normalized origin.', {
+      isOnActiveBranch: true,
+      dense: null,
+      lexical: { rank: 1, fullTextScore: 14.25 },
+      fusedScore,
+    }),
+    createRecallCandidate('strong-dense-evidence', 'Worktrees share one repository identity.', {
+      dense: { rank: 2, cosineDistance: 0.49 },
+      fusedScore: 1 / 62,
+    }),
+  ];
+
+  const results = rankFusedRecallSearchResults(candidates, 5, () => new Map());
+
+  assert.deepEqual(
+    results.map((result) => result.id),
+    ['exact-evidence', 'strong-dense-evidence'],
+  );
+});
 
 void test('recall reranking sends every candidate kind as original text and preserves component scores', async () => {
   const candidates = [

@@ -57,6 +57,11 @@ export async function searchPiRecall(
   });
 }
 
+/** Returns whether a Pi runtime should perform full recall catch-up during session startup. */
+export function shouldRunRecallStartupCatchUp(mode: ExtensionContext['mode']): boolean {
+  return mode === 'tui';
+}
+
 /** Registers hybrid recall of past Pi conversations. Pi requires extension factories to be default exports. */
 export default async function recallExtension(
   pi: Pick<ExtensionAPI, 'on' | 'registerTool' | 'registerCommand'>,
@@ -88,7 +93,9 @@ export default async function recallExtension(
     pi.on('session_start', (event, context) => {
       void event;
       ingestionWarningHandler = (message) => context.ui.notify(message, 'warning');
-      void liveSessionIngestion.catchUpSessions();
+      if (shouldRunRecallStartupCatchUp(context.mode)) {
+        void liveSessionIngestion.catchUpSessions();
+      }
     });
     pi.on('agent_settled', (event, context) => {
       void event;

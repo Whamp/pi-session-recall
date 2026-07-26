@@ -2,7 +2,7 @@ import { compareRecallDocumentIds } from './compare-recall-document-ids.js';
 import type { SessionConversationChunk } from './session-conversation-index.js';
 
 /** Version of the deterministic application-side hybrid rank-fusion policy. */
-export const RECALL_RANK_FUSION_VERSION = 1;
+export const RECALL_RANK_FUSION_VERSION = 2;
 
 /** Fixed reciprocal rank fusion (RRF) constant applied to each retrieval channel. */
 export const RECALL_RRF_RANK_CONSTANT = 60;

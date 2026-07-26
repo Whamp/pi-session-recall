@@ -62,6 +62,11 @@ export function shouldRunRecallStartupCatchUp(mode: ExtensionContext['mode']): b
   return mode === 'tui';
 }
 
+/** Returns whether a persistent Pi runtime should ingest sessions from lifecycle events. */
+export function shouldRunRecallLifecycleIngestion(mode: ExtensionContext['mode']): boolean {
+  return mode === 'tui' || mode === 'rpc';
+}
+
 /** Registers hybrid recall of past Pi conversations. Pi requires extension factories to be default exports. */
 export default async function recallExtension(
   pi: Pick<ExtensionAPI, 'on' | 'registerTool' | 'registerCommand'>,
@@ -99,13 +104,17 @@ export default async function recallExtension(
     });
     pi.on('agent_settled', (event, context) => {
       void event;
-      ingestionWarningHandler = (message) => context.ui.notify(message, 'warning');
-      void liveSessionIngestion.reconcileActiveSession(context.sessionManager.getSessionFile());
+      if (shouldRunRecallLifecycleIngestion(context.mode)) {
+        ingestionWarningHandler = (message) => context.ui.notify(message, 'warning');
+        void liveSessionIngestion.reconcileActiveSession(context.sessionManager.getSessionFile());
+      }
     });
     pi.on('session_shutdown', async (event, context) => {
       void event;
-      ingestionWarningHandler = (message) => context.ui.notify(message, 'warning');
-      await liveSessionIngestion.shutdownActiveSession(context.sessionManager.getSessionFile());
+      if (shouldRunRecallLifecycleIngestion(context.mode)) {
+        ingestionWarningHandler = (message) => context.ui.notify(message, 'warning');
+        await liveSessionIngestion.shutdownActiveSession(context.sessionManager.getSessionFile());
+      }
     });
   }
 

@@ -169,7 +169,7 @@ void test('recall quality runner indexes and searches only the bounded declared 
     lineagePolicyVersion: 1,
     lineageDigest: '44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a',
     rankingMode: 'hybrid',
-    rankFusionVersion: 1,
+    rankFusionVersion: 2,
     reciprocalRankConstant: 60,
     activeBranchPrior: 0.01,
     candidateLimits: { dense: 8, lexical: 8, identifier: 8 },

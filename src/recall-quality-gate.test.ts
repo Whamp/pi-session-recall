@@ -18,7 +18,7 @@ const CURRENT_EVALUATION_IDENTITY = {
   lineagePolicyVersion: 1,
   lineageDigest: '44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a',
   rankingMode: 'hybrid',
-  rankFusionVersion: 1,
+  rankFusionVersion: 2,
   reciprocalRankConstant: 60,
   activeBranchPrior: 0.01,
   candidateLimits: { dense: 8, lexical: 8, identifier: 8 },
@@ -243,7 +243,7 @@ void test('quality evidence rejects a stale rank-fusion identity', async (t) => 
     JSON.stringify(
       await createPassingQualityEvidence({
         ...CURRENT_EVALUATION_IDENTITY,
-        rankFusionVersion: 2,
+        rankFusionVersion: 1,
       }),
     ),
   );

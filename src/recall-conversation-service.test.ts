@@ -903,7 +903,7 @@ void test('recall service fuses bounded dense, lexical, and identifier candidate
     scope: RecallSearchScope.GLOBAL,
     invocationProjectIdentity: null,
     rankingMode: 'hybrid',
-    rankFusionVersion: 1,
+    rankFusionVersion: 2,
     reciprocalRankConstant: 60,
     rerankPolicyVersion: null,
     rerankerModel: null,

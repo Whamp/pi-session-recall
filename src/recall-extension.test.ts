@@ -6,6 +6,7 @@ import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-a
 import { RecallSearchScope } from './enums.js';
 import recallExtension, {
   searchPiRecall,
+  shouldRunRecallLifecycleIngestion,
   shouldRunRecallStartupCatchUp,
 } from './recall-extension.js';
 import type {
@@ -72,12 +73,16 @@ void test('Pi recall startup catch-up runs only for the interactive TUI', () => 
   const modes: ExtensionContext['mode'][] = ['tui', 'rpc', 'json', 'print'];
 
   assert.deepEqual(
-    modes.map((mode) => [mode, shouldRunRecallStartupCatchUp(mode)]),
+    modes.map((mode) => [
+      mode,
+      shouldRunRecallStartupCatchUp(mode),
+      shouldRunRecallLifecycleIngestion(mode),
+    ]),
     [
-      ['tui', true],
-      ['rpc', false],
-      ['json', false],
-      ['print', false],
+      ['tui', true, true],
+      ['rpc', false, true],
+      ['json', false, false],
+      ['print', false, false],
     ],
   );
 });

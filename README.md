@@ -54,8 +54,8 @@ The committed quality report passes and selects 512/64 chunks, 8 candidates per 
 After that initial generation exists, the extension keeps it current from Pi's session lifecycle:
 
 - interactive TUI `session_start` starts a bounded background catch-up over missed session files; non-interactive print, JSON, and RPC runtimes skip the corpus scan;
-- `agent_settled` reconciles the active session after retries and queued continuations finish;
-- `session_shutdown` awaits one final active-session reconciliation before switching, forking, reloading, or exiting;
+- persistent TUI and RPC runtimes reconcile the active session on `agent_settled` after retries and queued continuations finish;
+- persistent TUI and RPC runtimes await one final active-session reconciliation on `session_shutdown` before switching, forking, reloading, or exiting;
 - every `pi-session-recall` tool call reconciles the trusted active session before searching.
 
 Resume appends and branch changes reprocess the affected session. Forks enter through their new session file and retain parent-session provenance. The incremental state and unchanged JSONL files form the durable retry queue after crashes, model outages, or lock contention. Multiple Pi processes share the PID-owned writer lock.

@@ -8,10 +8,14 @@ import {
   createEmbeddingVectorCache,
   createEmbeddingVectorCacheIdentity,
 } from './embedding-vector-cache.js';
+import type {
+  RecallConversationConfig,
+  RecallSearchCandidateLimits,
+} from './recall-conversation-config.js';
 import {
+  RecallBackgroundIndexProcessState,
   RecallDiagnosticErrorCategory,
   RecallDiagnosticStatus,
-  type RecallDiagnosticsMode,
   RecallEvidenceRelation,
   RecallLifecycleTrigger,
   RecallManualMaintenanceTrigger,
@@ -28,9 +32,21 @@ import {
   indexChangedConversationSession,
   indexChangedConversationSessions,
   readRecallConversationIndexStateSummary,
+  type ConversationIndexCheckpoint,
   type ConversationIndexProgress,
   type ConversationIndexSummary,
 } from './incremental-session-indexer.js';
+import {
+  markRecallBackgroundIndexGenerationDiscarded,
+  readRecallBackgroundIndexGenerationStatus,
+  removeRecallBackgroundIndexWorkerRequest,
+  resumeRecallBackgroundIndexGeneration,
+  startRecallBackgroundIndexGeneration,
+  stopRecallBackgroundIndexGeneration,
+  type RecallBackgroundIndexCoordinatorConfig,
+  type RecallBackgroundIndexGenerationStatus,
+  type RecallBackgroundIndexServiceFactory,
+} from './recall-background-index-build.js';
 import type { LocalEmbeddingClient } from './local-embedding-client.js';
 import { loadOctenConversationTokenizer } from './octen-conversation-tokenizer.js';
 import {
@@ -77,7 +93,6 @@ import {
   type RecallIndexManifest,
   type RecallTokenizerManifestIdentity,
 } from './recall-index-manifest.js';
-import type { RecallChunkPolicy } from './recall-chunk-policy.js';
 import {
   createRecallIndexMetrics,
   createRecallOperationDiagnostics,
@@ -93,7 +108,6 @@ import {
   createLineageResolver,
   resolveProjectIdentity,
   type ProjectIdentity,
-  type RecallProjectLineages,
   type ResolvedProjectIdentity,
 } from './resolve-project-identity.js';
 import {
@@ -109,45 +123,10 @@ import {
   type ZvecConversationStore,
 } from './zvec-conversation-store.js';
 
-/** Runtime paths, bounded retrieval channels, and local embedding plus reranker identity. */
-export interface RecallConversationConfig {
-  sessionsDirectory: string;
-  databasePath: string;
-  statePath: string;
-  manifestPath: string;
-  tokenizerCacheDirectory: string;
-  embeddingCacheDirectory: string;
-  lockPath: string;
-  /** Managed index generation directories; defaults beside the legacy manifest. */
-  generationsDirectory?: string;
-  /** Atomic active-generation selection file; defaults beside the legacy manifest. */
-  activeGenerationPath?: string;
-  /** Resumable staging-generation selection file; defaults beside the legacy manifest. */
-  stagingGenerationPath?: string;
-  diagnosticsMode: RecallDiagnosticsMode;
-  diagnosticLogPath: string;
-  retainedDiagnosticLogPath: string;
-  embeddingBaseUrl: string;
-  embeddingModel: string;
-  embeddingServedModelId: string;
-  embeddingArtifact: string;
-  embeddingQuantization: string;
-  embeddingPooling: string;
-  embeddingDimensions: number;
-  embeddingBatchSize: number;
-  rerankerBaseUrl: string;
-  rerankerModel: string;
-  projectLineages: RecallProjectLineages;
-  searchCandidateLimits: RecallSearchCandidateLimits;
-  chunkPolicy?: RecallChunkPolicy;
-}
-
-/** Per-channel candidate caps applied before recall rank fusion. */
-export interface RecallSearchCandidateLimits {
-  dense: number;
-  lexical: number;
-  identifier: number;
-}
+export type {
+  RecallConversationConfig,
+  RecallSearchCandidateLimits,
+} from './recall-conversation-config.js';
 
 /** User-selected ranking depth for hybrid-only or local Qwen recall search. */
 export type RecallSearchMode = 'hybrid' | 'deep-rerank';
@@ -199,6 +178,7 @@ interface RecallConversationIndexBaseOptions {
   lockWaitMilliseconds?: number;
   requireExistingGeneration?: boolean;
   onProgress?: (progress: ConversationIndexProgress) => void;
+  onCheckpoint?: (checkpoint: ConversationIndexCheckpoint) => void;
   optimize?: boolean;
 }
 
@@ -262,6 +242,10 @@ export interface RecallConversationService {
     options?: RecallConversationSearchOptions,
   ): Promise<RecallConversationSearch>;
   index(options?: RecallConversationIndexOptions): Promise<RecallConversationIndexResult>;
+  startBackgroundIndexGeneration(): Promise<RecallBackgroundIndexGenerationStatus>;
+  resumeBackgroundIndexGeneration(): Promise<RecallBackgroundIndexGenerationStatus>;
+  readBackgroundIndexGenerationStatus(): Promise<RecallBackgroundIndexGenerationStatus | null>;
+  stopBackgroundIndexGeneration(): Promise<RecallBackgroundIndexGenerationStatus>;
   readIndexGenerationStatus(): Promise<RecallIndexGenerationStatus>;
   discardStagingIndexGeneration(): Promise<boolean>;
   reconcileSession(
@@ -295,6 +279,8 @@ export interface RecallConversationDependencies {
   diagnostics?: RecallOperationDiagnostics;
   diagnosticsClock?: RecallDiagnosticsClock;
   notifyWarning?: (message: string) => void;
+  /** Reconstructs custom inference and indexing dependencies inside the detached worker. */
+  backgroundIndexServiceFactory?: RecallBackgroundIndexServiceFactory;
 }
 
 interface LiveSessionReconciliationDiagnosticRunOptions {
@@ -764,6 +750,39 @@ export function createRecallConversationService(
     stagingGenerationPath:
       config.stagingGenerationPath ?? join(generationDataDirectory, 'staging-generation.json'),
   };
+  const backgroundIndexCoordinatorConfig: RecallBackgroundIndexCoordinatorConfig = {
+    serviceConfig: config,
+    generationCoordinatorConfig,
+    statusPath:
+      config.backgroundIndexStatusPath ??
+      join(generationDataDirectory, 'background-index-status.json'),
+    requestPath:
+      config.backgroundIndexRequestPath ??
+      join(generationDataDirectory, 'background-index-request.json'),
+    embeddingProfileId,
+    serviceFactory: dependencies.backgroundIndexServiceFactory ?? {
+      moduleUrl: import.meta.url,
+      exportName: 'createRecallConversationService',
+    },
+  };
+  const backgroundWorkerNeedsCustomFactory =
+    !dependencies.backgroundIndexServiceFactory &&
+    Boolean(
+      dependencies.embeddingProfile ||
+      dependencies.embeddingProvider ||
+      dependencies.embeddings ||
+      dependencies.tokenizerIdentity ||
+      dependencies.loadTokenizer ||
+      dependencies.openStore ||
+      dependencies.resolveProjectIdentity,
+    );
+  function assertBackgroundIndexWorkerCanReconstructService(): void {
+    if (backgroundWorkerNeedsCustomFactory) {
+      throw new Error(
+        'Recall background index worker cannot reconstruct injected indexing dependencies; configure backgroundIndexServiceFactory',
+      );
+    }
+  }
   const openStore =
     dependencies.openStore ??
     ((mode, databasePath = config.databasePath) =>
@@ -976,6 +995,7 @@ export function createRecallConversationService(
     embeddingModelPreflighted: boolean,
     signal?: AbortSignal,
     onProgress?: (progress: ConversationIndexProgress) => void,
+    onCheckpoint?: (checkpoint: ConversationIndexCheckpoint) => void,
     sessionPath?: string,
     diagnosticMetrics?: RecallIndexDiagnosticMetrics,
     onPhysicalSessionCheck?: (completion: RecallPhysicalSessionDiagnostic) => void,
@@ -1015,6 +1035,7 @@ export function createRecallConversationService(
       ...(signal ? { signal } : {}),
       ...(diagnosticMetrics ? { diagnosticMetrics, diagnosticsClock } : {}),
       ...(onPhysicalSessionCheck ? { onPhysicalSessionCheck } : {}),
+      ...(onCheckpoint ? { onCheckpoint } : {}),
     };
     return sessionPath
       ? indexChangedConversationSession({ ...indexerOptions, sessionPath })
@@ -1068,6 +1089,7 @@ export function createRecallConversationService(
         preparedIndex.manifest,
         preparedIndex.embeddingModelPreflighted,
         signal,
+        undefined,
         undefined,
         sessionPath,
         diagnosticMetrics,
@@ -1451,6 +1473,7 @@ export function createRecallConversationService(
               preparedIndex.embeddingModelPreflighted,
               options.signal,
               options.onProgress,
+              options.onCheckpoint,
               undefined,
               diagnosticMetrics,
               onPhysicalSessionCheck,
@@ -1469,6 +1492,7 @@ export function createRecallConversationService(
               true,
               options.signal,
               undefined,
+              options.onCheckpoint,
               undefined,
               diagnosticMetrics,
               onPhysicalSessionCheck,
@@ -1602,6 +1626,7 @@ export function createRecallConversationService(
               preparedIndex.embeddingModelPreflighted,
               options.signal,
               options.onProgress,
+              options.onCheckpoint,
               undefined,
               diagnosticMetrics,
               onPhysicalSessionCheck,
@@ -1630,17 +1655,53 @@ export function createRecallConversationService(
           })
         : runConversationIndexMaintenance();
     },
+    startBackgroundIndexGeneration() {
+      assertBackgroundIndexWorkerCanReconstructService();
+      return startRecallBackgroundIndexGeneration(backgroundIndexCoordinatorConfig);
+    },
+    resumeBackgroundIndexGeneration() {
+      assertBackgroundIndexWorkerCanReconstructService();
+      return resumeRecallBackgroundIndexGeneration(backgroundIndexCoordinatorConfig);
+    },
+    readBackgroundIndexGenerationStatus() {
+      return readRecallBackgroundIndexGenerationStatus(backgroundIndexCoordinatorConfig);
+    },
+    stopBackgroundIndexGeneration() {
+      return stopRecallBackgroundIndexGeneration(backgroundIndexCoordinatorConfig);
+    },
     readIndexGenerationStatus() {
       return readRecallIndexGenerationStatus(generationCoordinatorConfig);
     },
     async discardStagingIndexGeneration() {
+      const backgroundStatus = await readRecallBackgroundIndexGenerationStatus(
+        backgroundIndexCoordinatorConfig,
+      );
+      if (
+        backgroundStatus &&
+        [
+          RecallBackgroundIndexProcessState.STARTING,
+          RecallBackgroundIndexProcessState.RUNNING,
+          RecallBackgroundIndexProcessState.STOPPING,
+        ].includes(backgroundStatus.processState)
+      ) {
+        throw new Error(
+          `Recall staging generation is owned by ${backgroundStatus.processState} worker ${backgroundStatus.processId}; stop it before discard`,
+        );
+      }
       const stagingBuildLockPath = join(
         generationCoordinatorConfig.generationsDirectory,
         'staging-operation.lock',
       );
       const releaseLock = await acquireRecallConversationLock(stagingBuildLockPath);
       try {
-        return await discardStagingRecallIndexGeneration(generationCoordinatorConfig);
+        const discarded = await discardStagingRecallIndexGeneration(generationCoordinatorConfig);
+        if (discarded) {
+          await markRecallBackgroundIndexGenerationDiscarded(backgroundIndexCoordinatorConfig);
+          await removeRecallBackgroundIndexWorkerRequest(
+            backgroundIndexCoordinatorConfig.requestPath,
+          );
+        }
+        return discarded;
       } finally {
         await releaseLock();
       }

@@ -1,9 +1,42 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { RecallManualMaintenanceTrigger } from './enums.js';
+import { RecallBackgroundIndexProcessState, RecallManualMaintenanceTrigger } from './enums.js';
 import { runRecallIndexCommand } from './recall-index-command.js';
 import type { RecallConversationIndexOptions } from './recall-conversation-service.js';
+
+const backgroundStartingStatus = {
+  version: 1 as const,
+  buildId: 'build-1',
+  generationId: null,
+  embeddingProfileId: 'embedding-profile-test',
+  processId: 4321,
+  processState: RecallBackgroundIndexProcessState.STARTING,
+  startedAt: '2026-08-01T10:00:00.000Z',
+  updatedAt: '2026-08-01T10:00:00.000Z',
+  completedAt: null,
+  progress: null,
+  latestCheckpoint: null,
+  latestActionableError: null,
+};
+
+const unusedBackgroundIndexControls = {
+  async startBackgroundIndexGeneration() {
+    throw new Error('background start not expected');
+  },
+  async resumeBackgroundIndexGeneration() {
+    throw new Error('background resume not expected');
+  },
+  async readBackgroundIndexGenerationStatus() {
+    return null;
+  },
+  async stopBackgroundIndexGeneration() {
+    throw new Error('background stop not expected');
+  },
+  async discardStagingIndexGeneration() {
+    return false;
+  },
+};
 
 void test('recall index command blocks before indexing when quality evidence failed', async () => {
   let indexCalls = 0;
@@ -19,6 +52,7 @@ void test('recall index command blocks before indexing when quality evidence fai
           blockers: ['512-64: query p95 exceeds 2000 ms'],
         },
         service: {
+          ...unusedBackgroundIndexControls,
           async index() {
             indexCalls += 1;
             throw new Error('index must remain blocked');
@@ -53,6 +87,7 @@ void test('recall index command attributes explicit incremental maintenance', as
       blockers: [],
     },
     service: {
+      ...unusedBackgroundIndexControls,
       async index(options) {
         receivedOptions = options;
         return {
@@ -82,8 +117,8 @@ void test('recall index command attributes explicit incremental maintenance', as
   );
 });
 
-void test('recall index command forwards explicit rebuild after a clean measured gate pass', async () => {
-  let receivedOptions: RecallConversationIndexOptions | undefined;
+void test('recall index command starts an explicit rebuild in a detached worker', async () => {
+  let backgroundStartCalls = 0;
   const statusUpdates: Array<string | undefined> = [];
   const notifications: string[] = [];
 
@@ -99,26 +134,13 @@ void test('recall index command forwards explicit rebuild after a clean measured
       blockers: [],
     },
     service: {
-      async index(options) {
-        receivedOptions = options;
-        options?.onProgress?.({
-          scannedSessions: 2,
-          totalSessions: 8,
-          sessionPath: '/sessions/two.jsonl',
-        });
-        return {
-          totalChunks: 42,
-          indexSummary: {
-            scannedSessions: 8,
-            indexedSessions: 8,
-            removedSessions: 0,
-            cacheHits: 10,
-            newlyEmbeddedChunks: 2,
-            embeddingRequestCount: 1,
-            deletedChunks: 3,
-            failedSessions: [],
-          },
-        };
+      ...unusedBackgroundIndexControls,
+      async index() {
+        throw new Error('detached rebuild must not index in the invoking process');
+      },
+      async startBackgroundIndexGeneration() {
+        backgroundStartCalls += 1;
+        return backgroundStartingStatus;
       },
     },
     ui: {
@@ -131,14 +153,92 @@ void test('recall index command forwards explicit rebuild after a clean measured
     },
   });
 
-  assert.equal(receivedOptions?.rebuild, true);
-  assert.equal(receivedOptions?.optimize, true);
-  assert.equal(
-    receivedOptions?.manualMaintenanceTrigger,
-    RecallManualMaintenanceTrigger.MANUAL_REBUILD,
-  );
-  assert.deepEqual(statusUpdates, ['rebuilding conversations…', 'rebuilding 2/8', undefined]);
+  assert.equal(backgroundStartCalls, 1);
+  assert.deepEqual(statusUpdates, ['starting background rebuild…', undefined]);
   assert.deepEqual(notifications, [
-    'Recall index ready: 42 chunks · 10 cache hits · 2 newly embedded · 1 embedding requests · 3 removed',
+    'Recall background index starting · generation pending · process 4321',
   ]);
+});
+
+void test('recall index status remains available when the quality gate is blocked', async () => {
+  const notifications: Array<{ message: string; level: string }> = [];
+
+  await runRecallIndexCommand({
+    argumentsText: '--status',
+    qualityGateDecision: {
+      automatedGatePassed: false,
+      selectedPolicy: null,
+      blockers: ['quality evidence unavailable'],
+    },
+    service: {
+      ...unusedBackgroundIndexControls,
+      async index() {
+        throw new Error('status must not index');
+      },
+      async readBackgroundIndexGenerationStatus() {
+        return {
+          ...backgroundStartingStatus,
+          generationId: 'generation-test',
+          processState: RecallBackgroundIndexProcessState.FAILED,
+          completedAt: '2026-08-01T10:01:00.000Z',
+          latestActionableError: 'embedding endpoint timed out',
+        };
+      },
+    },
+    ui: {
+      setStatus() {},
+      notify(message, level) {
+        notifications.push({ message, level });
+      },
+    },
+  });
+
+  assert.deepEqual(notifications, [
+    {
+      message:
+        'Recall background index failed · generation generation-test · process 4321 · embedding endpoint timed out',
+      level: 'warning',
+    },
+  ]);
+});
+
+void test('recall index command routes stop, resume, and discard explicitly', async () => {
+  const calls: string[] = [];
+  const service = {
+    ...unusedBackgroundIndexControls,
+    async index() {
+      throw new Error('control commands must not index');
+    },
+    async stopBackgroundIndexGeneration() {
+      calls.push('stop');
+      return {
+        ...backgroundStartingStatus,
+        processState: RecallBackgroundIndexProcessState.STOPPING,
+      };
+    },
+    async resumeBackgroundIndexGeneration() {
+      calls.push('resume');
+      return { ...backgroundStartingStatus, generationId: 'generation-test' };
+    },
+    async discardStagingIndexGeneration() {
+      calls.push('discard');
+      return true;
+    },
+  };
+  const qualityGateDecision = {
+    automatedGatePassed: true,
+    selectedPolicy: {
+      chunkPolicy: { id: '512-64', maxTokens: 512, overlapTokens: 64 },
+      candidateCount: 4,
+      finalCount: 3,
+    },
+    blockers: [],
+  };
+  const ui = { setStatus() {}, notify() {} };
+
+  await runRecallIndexCommand({ argumentsText: '--stop', qualityGateDecision, service, ui });
+  await runRecallIndexCommand({ argumentsText: '--resume', qualityGateDecision, service, ui });
+  await runRecallIndexCommand({ argumentsText: '--discard', qualityGateDecision, service, ui });
+
+  assert.deepEqual(calls, ['stop', 'resume', 'discard']);
 });

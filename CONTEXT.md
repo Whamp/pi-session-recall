@@ -116,6 +116,14 @@ _Avoid_: Current database, production index
 One resumable index generation built and validated without changing the active index generation.
 _Avoid_: Temporary index, partial active index
 
+**Background index build**:
+One detached child process that owns a staging index generation and its writer lock until activation, failure, or an explicit stop.
+_Avoid_: Daemon, background job framework
+
+**Background index status record**:
+The one bounded local record containing a background index build's generation, process state, progress, latest durable checkpoint, and latest actionable error.
+_Avoid_: Event log, job history
+
 **Index manifest**:
 The versioned identity of the model, tokenizer, chunk policy, provenance schema, and zvec schema used by one index generation.
 _Avoid_: Index state, configuration

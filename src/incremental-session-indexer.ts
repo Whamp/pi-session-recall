@@ -85,6 +85,13 @@ export interface ConversationIndexProgress {
   sessionPath: string;
 }
 
+/** Latest physical session durably represented by one index-generation checkpoint. */
+export interface ConversationIndexCheckpoint {
+  checkpointedSessions: number;
+  totalSessions: number;
+  sessionPath: string;
+}
+
 /** Counts and failures produced by one incremental conversation indexing pass. */
 export interface ConversationIndexSummary {
   scannedSessions: number;
@@ -108,6 +115,7 @@ export interface IncrementalSessionIndexerOptions {
   resolveProjectIdentity?: (sessionOrigin: string) => Promise<ResolvedProjectIdentity | null>;
   signal?: AbortSignal;
   onProgress?: (progress: ConversationIndexProgress) => void;
+  onCheckpoint?: (checkpoint: ConversationIndexCheckpoint) => void;
   diagnosticMetrics?: RecallIndexDiagnosticMetrics;
   diagnosticsClock?: RecallDiagnosticsClock;
   onPhysicalSessionCheck?: (completion: RecallPhysicalSessionDiagnostic) => void;
@@ -752,6 +760,11 @@ export async function indexChangedConversationSessions(
         options.diagnosticsClock,
       );
     }
+    options.onCheckpoint?.({
+      checkpointedSessions: summary.scannedSessions,
+      totalSessions: sessionFiles.length,
+      sessionPath,
+    });
   }
 
   await writeConversationIndexStateWithDiagnostics(

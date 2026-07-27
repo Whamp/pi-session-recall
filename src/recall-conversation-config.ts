@@ -5,10 +5,13 @@ import { join } from 'node:path';
 import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 
-import type { RecallConversationConfig } from './recall-conversation-service.js';
+import type { RecallChunkPolicy } from './recall-chunk-policy.js';
 import { RecallDiagnosticsMode } from './enums.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
-import { normalizeRecallProjectLineages } from './resolve-project-identity.js';
+import {
+  normalizeRecallProjectLineages,
+  type RecallProjectLineages,
+} from './resolve-project-identity.js';
 
 const DEFAULT_RECALL_CHANNEL_CANDIDATE_LIMIT = 40;
 const MAX_RECALL_CHANNEL_CANDIDATE_LIMIT = 200;
@@ -46,6 +49,50 @@ const recallConfigFileSchema = Type.Object(
   },
   { additionalProperties: false },
 );
+
+/** Per-channel candidate caps applied before recall rank fusion. */
+export interface RecallSearchCandidateLimits {
+  dense: number;
+  lexical: number;
+  identifier: number;
+}
+
+/** Runtime paths, bounded retrieval channels, and local embedding plus reranker identity. */
+export interface RecallConversationConfig {
+  sessionsDirectory: string;
+  databasePath: string;
+  statePath: string;
+  manifestPath: string;
+  tokenizerCacheDirectory: string;
+  embeddingCacheDirectory: string;
+  lockPath: string;
+  /** Managed index generation directories; defaults beside the legacy manifest. */
+  generationsDirectory?: string;
+  /** Atomic active-generation selection file; defaults beside the legacy manifest. */
+  activeGenerationPath?: string;
+  /** Resumable staging-generation selection file; defaults beside the legacy manifest. */
+  stagingGenerationPath?: string;
+  /** One bounded detached-build status record; defaults beside the legacy manifest. */
+  backgroundIndexStatusPath?: string;
+  /** Ephemeral detached-worker request; defaults beside the legacy manifest. */
+  backgroundIndexRequestPath?: string;
+  diagnosticsMode: RecallDiagnosticsMode;
+  diagnosticLogPath: string;
+  retainedDiagnosticLogPath: string;
+  embeddingBaseUrl: string;
+  embeddingModel: string;
+  embeddingServedModelId: string;
+  embeddingArtifact: string;
+  embeddingQuantization: string;
+  embeddingPooling: string;
+  embeddingDimensions: number;
+  embeddingBatchSize: number;
+  rerankerBaseUrl: string;
+  rerankerModel: string;
+  projectLineages: RecallProjectLineages;
+  searchCandidateLimits: RecallSearchCandidateLimits;
+  chunkPolicy?: RecallChunkPolicy;
+}
 
 /** Inputs used to locate and override recall configuration, primarily for tests and embedding migrations. */
 export interface RecallConversationConfigLoadOptions {
@@ -128,6 +175,8 @@ export async function loadRecallConversationConfig(
     generationsDirectory: join(dataDirectory, 'index-generations'),
     activeGenerationPath: join(dataDirectory, 'active-generation.json'),
     stagingGenerationPath: join(dataDirectory, 'staging-generation.json'),
+    backgroundIndexStatusPath: join(dataDirectory, 'background-index-status.json'),
+    backgroundIndexRequestPath: join(dataDirectory, 'background-index-request.json'),
     diagnosticsMode: file.diagnostics ?? RecallDiagnosticsMode.SLOW,
     diagnosticLogPath: join(dataDirectory, 'diagnostics.jsonl'),
     retainedDiagnosticLogPath: join(dataDirectory, 'diagnostics.previous.jsonl'),

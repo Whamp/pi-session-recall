@@ -201,7 +201,7 @@ export default async function recallExtension(
 
   pi.registerCommand('pi-session-recall-index', {
     description:
-      'Index production sessions only after the committed quality gate passes; use --rebuild to replace an incompatible generation',
+      'Index production sessions after the quality gate; use --rebuild for detached replacement work and --status, --stop, --resume, or --discard to control it',
     async handler(argumentsText, context) {
       recallWarningHandler = (message) => context.ui.notify(message, 'warning');
       await runRecallIndexCommand({

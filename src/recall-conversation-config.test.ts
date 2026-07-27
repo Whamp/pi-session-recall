@@ -53,6 +53,14 @@ void test('recall config uses local octen embeddings and supports file plus envi
     config.stagingGenerationPath,
     join(directory, 'file-data', 'staging-generation.json'),
   );
+  assert.equal(
+    config.backgroundIndexStatusPath,
+    join(directory, 'file-data', 'background-index-status.json'),
+  );
+  assert.equal(
+    config.backgroundIndexRequestPath,
+    join(directory, 'file-data', 'background-index-request.json'),
+  );
   assert.equal(config.diagnosticsMode, RecallDiagnosticsMode.SLOW);
   assert.equal(config.diagnosticLogPath, join(directory, 'file-data', 'diagnostics.jsonl'));
   assert.equal(

@@ -124,6 +124,18 @@ void test('Pi recall tool adapter propagates trusted cwd with project default an
         },
       };
     },
+    async startBackgroundIndexGeneration() {
+      throw new Error('Pi recall adapter test does not start background indexing');
+    },
+    async resumeBackgroundIndexGeneration() {
+      throw new Error('Pi recall adapter test does not resume background indexing');
+    },
+    async readBackgroundIndexGenerationStatus() {
+      return null;
+    },
+    async stopBackgroundIndexGeneration() {
+      throw new Error('Pi recall adapter test does not stop background indexing');
+    },
     async readIndexGenerationStatus() {
       return { active: null, staging: null };
     },

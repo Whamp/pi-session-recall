@@ -1,3 +1,15 @@
+/** Lifecycle state of one detached staging index build process. */
+export enum RecallBackgroundIndexProcessState {
+  STARTING = 'starting',
+  RUNNING = 'running',
+  STOPPING = 'stopping',
+  STOPPED = 'stopped',
+  SUCCEEDED = 'succeeded',
+  FAILED = 'failed',
+  CRASHED = 'crashed',
+  DISCARDED = 'discarded',
+}
+
 /** Kind of bounded local recall operation diagnostic. */
 export enum RecallDiagnosticOperationKind {
   LIVE_SESSION_RECONCILIATION = 'live_session_reconciliation',

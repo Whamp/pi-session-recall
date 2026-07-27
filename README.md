@@ -97,7 +97,19 @@ After that initial generation exists, interactive Pi operations read it without 
 
 This keeps session parsing, tokenization, embedding-cache checks, and zvec writes out of latency-sensitive Pi lifecycle and search operations. Active conversation content remains in Pi's model context; it becomes searchable recall evidence after explicit maintenance. The incremental state skips unchanged JSONL files, cached vectors prevent unchanged text from reaching the embedding model, and the PID-owned writer lock serializes multiple index processes.
 
-Use `/pi-session-recall-index` for an explicit full catch-up and optimization. Use `--rebuild` to build a first or replacement generation while preserving tokenizer assets and cached vectors. Rebuild writes to staging while searches keep using the active generation. It catches up files changed during the build, optimizes and validates staging, then switches active selection atomically. An interrupted or failed build remains resumable until `RecallConversationService.discardStagingIndexGeneration()` explicitly removes it.
+Use `/pi-session-recall-index` for an explicit in-process catch-up and optimization. Full first and replacement builds run in a detached child process:
+
+```text
+/pi-session-recall-index --rebuild
+/pi-session-recall-index --status
+/pi-session-recall-index --stop
+/pi-session-recall-index --resume
+/pi-session-recall-index --discard
+```
+
+`--rebuild` returns after launch. The worker owns only its staging generation and writer lock, so searches keep using the active generation. One bounded `background-index-status.json` record reports the generation, PID, process state, current scan progress, latest durable session checkpoint, and latest actionable error. `--stop` preserves staging state and profile-bound cached vectors. `--resume` skips checkpointed sessions and repeats any uncheckpointed upserts safely. A dead worker is reported as `crashed`, not `running`, and its staging generation remains resumable. `--discard` is the only command that removes abandoned staging work; it rejects a live worker and never removes the active generation.
+
+The worker catches up files changed during the build, optimizes and validates staging, then switches active selection atomically. A caller that injects a custom embedding profile, provider, tokenizer, store, or project resolver must provide `backgroundIndexServiceFactory` so the child can reconstruct the same semantics. Background launch fails rather than using built-in defaults when injected indexing dependencies lack that factory.
 
 A future compaction-aware incremental path may index only content that has left the active model context; the current implementation deliberately does not approximate that behavior with whole-session work.
 
@@ -148,7 +160,7 @@ Search shapes the full fused candidate pool before applying the requested result
 
 Each duplicate group retains every suppressed candidate with its source geometry and fusion components. Neighbor context retains every contributing atomic chunk. A deep-rerank HTTP, JSON, coverage, index, or score failure rejects that deep search; default hybrid search never calls the reranker.
 
-After the quality gate passes, `/pi-session-recall-index` performs a manual full catch-up and optimizes zvec. Use `/pi-session-recall-index --rebuild` when a compatibility error requires a replacement generation. Rebuild uses a staging writer lock that does not block active-generation search. Automatic lifecycle ingestion never creates or replaces an incompatible generation. A search against a missing, locked, or incompatible active generation fails without clearing another process's lock.
+After the quality gate passes, `/pi-session-recall-index` performs a manual full catch-up and optimizes zvec. Use `/pi-session-recall-index --rebuild` when a compatibility error requires a detached replacement generation, then inspect it with `--status`. The worker's staging lock does not block active-generation search. Automatic lifecycle ingestion never creates or replaces an incompatible generation. A search against a missing, locked, or incompatible active generation fails without clearing another process's lock.
 
 ## Exact Octen tokenizer
 
@@ -177,7 +189,7 @@ Each index generation has a separately versioned `index-manifest.json`. It ident
 - project identity, lineage policy versions, and a canonical digest of personal lineage declarations;
 - zvec schema, ordinary and case-preserving FTS configuration, FP32 vector storage, and pinned HNSW parameters.
 
-The extension validates the complete manifest before opening or updating zvec. Missing or mismatched manifests are incompatible. The error reports every mismatched field and points to `/pi-session-recall-index --rebuild`. Each managed generation lives under `index-generations/<generation-id>/` with its own `zvec/`, `index-state.json`, `index-manifest.json`, and writer lock. Atomic `active-generation.json` and `staging-generation.json` files select the searchable and resumable generations.
+The extension validates the complete manifest before opening or updating zvec. Missing or mismatched manifests are incompatible. The error reports every mismatched field and points to `/pi-session-recall-index --rebuild`. Each managed generation lives under `index-generations/<generation-id>/` with its own `zvec/`, `index-state.json`, `index-manifest.json`, and writer lock. Atomic `active-generation.json` and `staging-generation.json` files select the searchable and resumable generations. `background-index-request.json` is ephemeral worker input; `background-index-status.json` is the single bounded control record retained after completion.
 
 Before activation, rebuild optimizes staging and validates its manifest, fresh canary, zvec dimensions, session state, document counts, stored documents, and dense vectors. A failure does not change active selection. Rebuild preserves tokenizer assets and the profile-bound embedding cache. The quality gate must pass before the production command can run. Pre-generation installations remain readable through their legacy paths until an explicit rebuild selects a managed generation.
 

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
+import { RecallDiagnosticsMode } from './enums.js';
 import { loadRecallConversationConfig } from './recall-conversation-config.js';
 
 void test('recall config uses local octen embeddings and supports file plus environment overrides', async (t) => {
@@ -46,6 +47,12 @@ void test('recall config uses local octen embeddings and supports file plus envi
   assert.equal(config.manifestPath, join(directory, 'file-data', 'index-manifest.json'));
   assert.equal(config.tokenizerCacheDirectory, join(directory, 'file-data', 'tokenizers'));
   assert.equal(config.embeddingCacheDirectory, join(directory, 'file-data', 'embedding-cache'));
+  assert.equal(config.diagnosticsMode, RecallDiagnosticsMode.SLOW);
+  assert.equal(config.diagnosticLogPath, join(directory, 'file-data', 'diagnostics.jsonl'));
+  assert.equal(
+    config.retainedDiagnosticLogPath,
+    join(directory, 'file-data', 'diagnostics.previous.jsonl'),
+  );
   assert.equal(config.sessionsDirectory, join(directory, '.pi', 'agent', 'sessions'));
 });
 
@@ -147,6 +154,44 @@ void test('recall config defaults to the deployed local Qwen reranker', async (t
   assert.equal(config.rerankerBaseUrl, 'http://192.168.0.67:8091/v1');
   assert.equal(config.rerankerModel, 'qwen3-rerank');
   assert.deepEqual(Array.from(config.projectLineages.entries()), []);
+});
+
+void test('recall config accepts exactly the three file-only diagnostics modes', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-config-diagnostics-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const configPath = join(directory, 'recall.json');
+
+  for (const diagnosticsMode of [
+    RecallDiagnosticsMode.SLOW,
+    RecallDiagnosticsMode.ALL,
+    RecallDiagnosticsMode.OFF,
+  ]) {
+    await writeFile(configPath, JSON.stringify({ diagnostics: diagnosticsMode }));
+    const config = await loadRecallConversationConfig({
+      homeDirectory: directory,
+      configPath,
+      environment: { PI_RECALL_DIAGNOSTICS: 'off' },
+    });
+    assert.equal(config.diagnosticsMode, diagnosticsMode);
+  }
+});
+
+void test('recall config rejects invalid diagnostics modes and additional properties', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-config-invalid-diagnostics-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const configPath = join(directory, 'recall.json');
+
+  await writeFile(configPath, JSON.stringify({ diagnostics: 'verbose' }));
+  await assert.rejects(
+    () => loadRecallConversationConfig({ homeDirectory: directory, configPath, environment: {} }),
+    /Recall configuration invalid/u,
+  );
+
+  await writeFile(configPath, JSON.stringify({ diagnostics: 'slow', diagnosticThreshold: 50 }));
+  await assert.rejects(
+    () => loadRecallConversationConfig({ homeDirectory: directory, configPath, environment: {} }),
+    /Recall configuration invalid/u,
+  );
 });
 
 void test('recall config rejects invalid numeric environment settings', async () => {

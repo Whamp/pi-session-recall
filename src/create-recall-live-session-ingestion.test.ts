@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { createRecallLiveSessionIngestion } from './create-recall-live-session-ingestion.js';
+import { RecallLifecycleTrigger } from './enums.js';
 import type {
   RecallConversationIndexResult,
   RecallConversationService,
@@ -33,7 +34,9 @@ void test('live session ingestion serializes startup catch-up, settled refresh, 
       return createEmptyIndexResult(3);
     },
     async reconcileSession(sessionPath, options) {
-      calls.push(`session:${sessionPath}:${options?.lockWaitMilliseconds ?? 'unbounded'}`);
+      calls.push(
+        `session:${sessionPath}:${options?.lockWaitMilliseconds ?? 'unbounded'}:${options?.lifecycleTrigger ?? 'missing'}`,
+      );
       return createEmptyIndexResult(1);
     },
   };
@@ -47,8 +50,8 @@ void test('live session ingestion serializes startup catch-up, settled refresh, 
 
   assert.deepEqual(calls, [
     'catch-up:250:true',
-    'session:/sessions/active.jsonl:250',
-    'session:/sessions/active.jsonl:250',
+    `session:/sessions/active.jsonl:250:${RecallLifecycleTrigger.AGENT_SETTLED}`,
+    `session:/sessions/active.jsonl:250:${RecallLifecycleTrigger.SESSION_SHUTDOWN}`,
   ]);
   assert.deepEqual(warnings, []);
 });

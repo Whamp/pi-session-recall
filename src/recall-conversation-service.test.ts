@@ -1,13 +1,24 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { promisify } from 'node:util';
 
-import { RecallEvidenceRelation, RecallProjectIdentitySource, RecallSearchScope } from './enums.js';
+import { createRecallLiveSessionIngestion } from './create-recall-live-session-ingestion.js';
+import {
+  RecallDiagnosticErrorCategory,
+  RecallDiagnosticOperationKind,
+  RecallDiagnosticStatus,
+  RecallDiagnosticsMode,
+  RecallEvidenceRelation,
+  RecallLifecycleTrigger,
+  RecallProjectIdentitySource,
+  RecallSearchScope,
+} from './enums.js';
 import { formatRecallSearchResults } from './format-recall-search-results.js';
+import { isUnknownRecord } from './is-unknown-record.js';
 import type { LocalEmbeddingClient } from './local-embedding-client.js';
 import type { LocalRerankerClient } from './local-reranker-client.js';
 import {
@@ -21,6 +32,7 @@ import {
   createRecallConversationService as createProductionRecallConversationService,
   type RecallConversationConfig,
 } from './recall-conversation-service.js';
+import { createRecallOperationDiagnostics } from './recall-operation-diagnostics.js';
 import {
   normalizeRecallProjectLineages,
   parseRepositoryIdentity,
@@ -52,6 +64,9 @@ function createTestConfig(directory: string, sessionsDirectory: string) {
     tokenizerCacheDirectory: join(directory, 'tokenizers'),
     embeddingCacheDirectory: join(directory, 'embedding-cache'),
     lockPath: join(directory, 'recall.lock'),
+    diagnosticsMode: RecallDiagnosticsMode.OFF,
+    diagnosticLogPath: join(directory, 'diagnostics.jsonl'),
+    retainedDiagnosticLogPath: join(directory, 'diagnostics.previous.jsonl'),
     embeddingBaseUrl: 'http://unused.test/v1',
     embeddingModel: 'test-request-model',
     embeddingServedModelId: 'test-served-model',
@@ -87,6 +102,501 @@ function createRecallConversationService(
     ...dependencies,
   });
 }
+
+function readTestDiagnosticNumber(
+  record: Record<string, unknown> | undefined,
+  propertyName: string,
+): number {
+  const value = record?.[propertyName];
+  if (typeof value !== 'number') {
+    assert.fail(`Expected diagnostic ${propertyName} to be a number`);
+  }
+  return value;
+}
+
+void test('live session reconciliation records private-safe costs and keeps changed evidence searchable', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-service-live-diagnostics-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionsDirectory = join(directory, 'sessions');
+  await mkdir(sessionsDirectory);
+  const sessionPath = join(sessionsDirectory, 'active.jsonl');
+  const privateSentinel = 'PRIVATE_LIVE_RECONCILIATION_SENTINEL_24';
+  const privateToolArgumentSentinel = 'PRIVATE_TOOL_ARGUMENT_SENTINEL_24';
+  const privateToolResultSentinel = 'PRIVATE_TOOL_RESULT_SENTINEL_24';
+  const privateVectorSentinel = 0.123456789;
+  const entries: object[] = [
+    {
+      type: 'session',
+      version: 3,
+      id: 'diagnostic-session',
+      timestamp: '2026-07-27T10:00:00Z',
+      cwd: '/project',
+    },
+    {
+      type: 'message',
+      id: 'diagnostic-user',
+      parentId: null,
+      timestamp: '2026-07-27T10:01:00Z',
+      message: { role: 'user', content: 'initial searchable evidence' },
+    },
+  ];
+  await writeFile(sessionPath, entries.map((entry) => JSON.stringify(entry)).join('\n') + '\n');
+  let monotonicMilliseconds = 0;
+  const diagnosticsClock = {
+    monotonicMilliseconds: () => monotonicMilliseconds++,
+    wallClockIsoTimestamp: () => '2026-07-27T10:00:00.000Z',
+  };
+  const config = {
+    ...createTestConfig(directory, sessionsDirectory),
+    diagnosticsMode: RecallDiagnosticsMode.ALL,
+  };
+  const diagnostics = createRecallOperationDiagnostics({
+    mode: config.diagnosticsMode,
+    activeLogPath: config.diagnosticLogPath,
+    retainedLogPath: config.retainedDiagnosticLogPath,
+    clock: diagnosticsClock,
+    notifyWarning() {
+      assert.fail('successful diagnostics must not warn');
+    },
+  });
+  const embeddedInputs: string[] = [];
+  const service = createRecallConversationService(config, {
+    diagnostics,
+    diagnosticsClock,
+    embeddings: {
+      async embedTexts(texts) {
+        embeddedInputs.push(...texts);
+        return texts.map((text) =>
+          text === RECALL_EMBEDDING_CANARY_TEXT
+            ? [0, 0, 1]
+            : [privateVectorSentinel, 0.234567891, 0.345678912],
+        );
+      },
+    },
+    async loadTokenizer() {
+      return tokenizer;
+    },
+  });
+  await service.index();
+
+  entries.push(
+    {
+      type: 'message',
+      id: 'diagnostic-assistant',
+      parentId: 'diagnostic-user',
+      timestamp: '2026-07-27T10:02:00Z',
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: `new searchable ${privateSentinel}` },
+          {
+            type: 'toolCall',
+            id: 'diagnostic-tool-call',
+            name: 'read',
+            arguments: { path: privateToolArgumentSentinel },
+          },
+        ],
+      },
+    },
+    {
+      type: 'message',
+      id: 'diagnostic-tool-result',
+      parentId: 'diagnostic-assistant',
+      timestamp: '2026-07-27T10:03:00Z',
+      message: {
+        role: 'toolResult',
+        toolCallId: 'diagnostic-tool-call',
+        toolName: 'read',
+        content: [{ type: 'text', text: privateToolResultSentinel }],
+        isError: false,
+      },
+    },
+  );
+  await writeFile(sessionPath, entries.map((entry) => JSON.stringify(entry)).join('\n') + '\n');
+  const sourceBeforeReconciliation = await readFile(sessionPath);
+  const sourceByteSize = (await stat(sessionPath)).size;
+  const warnings: string[] = [];
+  const ingestion = createRecallLiveSessionIngestion(service, (message) => warnings.push(message));
+
+  await ingestion.reconcileActiveSession(sessionPath);
+  await diagnostics.flush();
+
+  const diagnosticJsonl = await readFile(config.diagnosticLogPath, 'utf8');
+  const records = diagnosticJsonl
+    .trimEnd()
+    .split('\n')
+    .map((line): unknown => JSON.parse(line));
+  assert.ok(records.every(isUnknownRecord));
+  assert.equal(records.length, 2);
+  assert.equal(records[0]?.status, RecallDiagnosticStatus.STARTED);
+  const completion = records[1];
+  assert.equal(
+    completion?.operationKind,
+    RecallDiagnosticOperationKind.LIVE_SESSION_RECONCILIATION,
+  );
+  assert.equal(completion?.lifecycleTrigger, RecallLifecycleTrigger.AGENT_SETTLED);
+  assert.equal(completion?.status, RecallDiagnosticStatus.SUCCEEDED);
+  assert.equal(completion?.sourceByteSize, sourceByteSize);
+  assert.equal(completion?.changed, true);
+  assert.equal(completion?.skipped, false);
+  assert.equal(completion?.scannedSessionCount, 1);
+  assert.equal(completion?.indexedSessionCount, 1);
+  assert.ok(readTestDiagnosticNumber(completion, 'upsertedDocumentCount') > 0);
+  assert.ok(readTestDiagnosticNumber(completion, 'cacheHitCount') > 0);
+  assert.ok(readTestDiagnosticNumber(completion, 'newEmbeddingCount') > 0);
+  assert.ok(readTestDiagnosticNumber(completion, 'embeddingRequestCount') > 0);
+  assert.ok(readTestDiagnosticNumber(completion, 'elapsedMilliseconds') > 0);
+  assert.ok(readTestDiagnosticNumber(completion, 'writerLockWaitMilliseconds') > 0);
+  assert.ok(readTestDiagnosticNumber(completion, 'manifestStorePreparationMilliseconds') > 0);
+  assert.ok(readTestDiagnosticNumber(completion, 'physicalSessionPreparationMilliseconds') > 0);
+  assert.ok(readTestDiagnosticNumber(completion, 'projectIdentityResolutionMilliseconds') > 0);
+  assert.ok(readTestDiagnosticNumber(completion, 'embeddingCacheResolutionMilliseconds') >= 0);
+  assert.ok(readTestDiagnosticNumber(completion, 'embeddingServerRequestMilliseconds') > 0);
+  assert.ok(readTestDiagnosticNumber(completion, 'databaseWriteMilliseconds') > 0);
+  assert.ok(readTestDiagnosticNumber(completion, 'indexStateCheckpointMilliseconds') > 0);
+  assert.ok(readTestDiagnosticNumber(completion, 'unattributedMilliseconds') >= 0);
+  for (const privateValue of [
+    privateSentinel,
+    privateToolArgumentSentinel,
+    privateToolResultSentinel,
+    String(privateVectorSentinel),
+  ]) {
+    assert.doesNotMatch(diagnosticJsonl, new RegExp(privateValue, 'u'));
+  }
+  assert.deepEqual(await readFile(sessionPath), sourceBeforeReconciliation);
+  assert.deepEqual(warnings, []);
+
+  const embeddingCountBeforeShutdown = embeddedInputs.length;
+  await ingestion.shutdownActiveSession(sessionPath);
+  await diagnostics.flush();
+  const recordsAfterShutdown = (await readFile(config.diagnosticLogPath, 'utf8'))
+    .trimEnd()
+    .split('\n')
+    .map((line): unknown => JSON.parse(line));
+  assert.ok(recordsAfterShutdown.every(isUnknownRecord));
+  assert.equal(recordsAfterShutdown.length, 4);
+  const shutdownCompletion = recordsAfterShutdown[3];
+  assert.equal(shutdownCompletion?.lifecycleTrigger, RecallLifecycleTrigger.SESSION_SHUTDOWN);
+  assert.equal(shutdownCompletion?.status, RecallDiagnosticStatus.SUCCEEDED);
+  assert.equal(shutdownCompletion?.sourceByteSize, sourceByteSize);
+  assert.equal(shutdownCompletion?.changed, false);
+  assert.equal(shutdownCompletion?.skipped, true);
+  assert.equal(shutdownCompletion?.upsertedDocumentCount, 0);
+  assert.equal(shutdownCompletion?.cacheHitCount, 0);
+  assert.equal(shutdownCompletion?.newEmbeddingCount, 0);
+  assert.equal(shutdownCompletion?.embeddingRequestCount, 0);
+  assert.equal(embeddedInputs.length, embeddingCountBeforeShutdown);
+  assert.deepEqual(await readFile(sessionPath), sourceBeforeReconciliation);
+
+  const search = await service.search(privateSentinel, 1, { scope: RecallSearchScope.GLOBAL });
+  assert.equal(search.results[0]?.entryId.value, 'diagnostic-assistant');
+});
+
+void test('slow diagnostics omit a fast unchanged live session reconciliation', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-service-slow-diagnostics-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionsDirectory = join(directory, 'sessions');
+  await mkdir(sessionsDirectory);
+  const sessionPath = join(sessionsDirectory, 'active.jsonl');
+  await writeFile(
+    sessionPath,
+    [
+      {
+        type: 'session',
+        version: 3,
+        id: 'slow-diagnostic-session',
+        timestamp: '2026-07-27T10:00:00Z',
+        cwd: '/project',
+      },
+      {
+        type: 'message',
+        id: 'slow-diagnostic-entry',
+        parentId: null,
+        timestamp: '2026-07-27T10:01:00Z',
+        message: { role: 'user', content: 'evidence survives a skipped reconciliation' },
+      },
+    ]
+      .map((entry) => JSON.stringify(entry))
+      .join('\n') + '\n',
+  );
+  const diagnosticsClock = {
+    monotonicMilliseconds: () => 0,
+    wallClockIsoTimestamp: () => '2026-07-27T10:00:00.000Z',
+  };
+  const config = {
+    ...createTestConfig(directory, sessionsDirectory),
+    diagnosticsMode: RecallDiagnosticsMode.SLOW,
+  };
+  const diagnostics = createRecallOperationDiagnostics({
+    mode: config.diagnosticsMode,
+    activeLogPath: config.diagnosticLogPath,
+    retainedLogPath: config.retainedDiagnosticLogPath,
+    clock: diagnosticsClock,
+    notifyWarning() {
+      assert.fail('omitted diagnostics must not warn');
+    },
+  });
+  let contentEmbeddingCount = 0;
+  const service = createRecallConversationService(config, {
+    diagnostics,
+    diagnosticsClock,
+    embeddings: {
+      async embedTexts(texts) {
+        contentEmbeddingCount += texts.filter(
+          (text) => text !== RECALL_EMBEDDING_CANARY_TEXT,
+        ).length;
+        return texts.map((text) => (text === RECALL_EMBEDDING_CANARY_TEXT ? [0, 0, 1] : [1, 0, 0]));
+      },
+    },
+    async loadTokenizer() {
+      return tokenizer;
+    },
+  });
+  await service.index();
+  const embeddingCountBeforeReconciliation = contentEmbeddingCount;
+  const ingestion = createRecallLiveSessionIngestion(service, () =>
+    assert.fail('unchanged reconciliation must not warn'),
+  );
+
+  await ingestion.shutdownActiveSession(sessionPath);
+  await diagnostics.flush();
+
+  await assert.rejects(() => readFile(config.diagnosticLogPath), { code: 'ENOENT' });
+  assert.equal(contentEmbeddingCount, embeddingCountBeforeReconciliation);
+  const search = await service.search('survives skipped', 1, {
+    scope: RecallSearchScope.GLOBAL,
+  });
+  assert.equal(search.results[0]?.entryId.value, 'slow-diagnostic-entry');
+});
+
+void test('failed live diagnostics preserve the reconciliation error, lock cleanup, and source bytes', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-service-failed-diagnostics-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionsDirectory = join(directory, 'sessions');
+  await mkdir(sessionsDirectory);
+  const sessionPath = join(sessionsDirectory, 'active.jsonl');
+  const sessionHeader = {
+    type: 'session',
+    version: 3,
+    id: 'failed-diagnostic-session',
+    timestamp: '2026-07-27T10:00:00Z',
+    cwd: '/project',
+  };
+  await writeFile(
+    sessionPath,
+    [
+      sessionHeader,
+      {
+        type: 'message',
+        id: 'previous-valid-entry',
+        parentId: null,
+        timestamp: '2026-07-27T10:01:00Z',
+        message: { role: 'user', content: 'stale evidence removed after corruption' },
+      },
+    ]
+      .map((entry) => JSON.stringify(entry))
+      .join('\n') + '\n',
+  );
+  let monotonicMilliseconds = 0;
+  const diagnosticsClock = {
+    monotonicMilliseconds: () => monotonicMilliseconds++,
+    wallClockIsoTimestamp: () => '2026-07-27T10:00:00.000Z',
+  };
+  const config = {
+    ...createTestConfig(directory, sessionsDirectory),
+    diagnosticsMode: RecallDiagnosticsMode.ALL,
+  };
+  const diagnostics = createRecallOperationDiagnostics({
+    mode: config.diagnosticsMode,
+    activeLogPath: config.diagnosticLogPath,
+    retainedLogPath: config.retainedDiagnosticLogPath,
+    clock: diagnosticsClock,
+    notifyWarning() {
+      assert.fail('successful diagnostic persistence must not warn');
+    },
+  });
+  let failContentEmbeddings = false;
+  const service = createRecallConversationService(config, {
+    diagnostics,
+    diagnosticsClock,
+    embeddings: {
+      async embedTexts(texts) {
+        if (failContentEmbeddings && texts.some((text) => text !== RECALL_EMBEDDING_CANARY_TEXT)) {
+          throw new Error('embedding server unavailable');
+        }
+        return texts.map((text) => (text === RECALL_EMBEDDING_CANARY_TEXT ? [0, 0, 1] : [1, 0, 0]));
+      },
+    },
+    async loadTokenizer() {
+      return tokenizer;
+    },
+  });
+  await service.index();
+  const privateFailureSentinel = 'PRIVATE_FAILED_RECONCILIATION_SENTINEL_24';
+  await writeFile(
+    sessionPath,
+    [
+      sessionHeader,
+      {
+        type: 'message',
+        id: 'private-missing-parent-id',
+        parentId: 'missing-parent',
+        timestamp: '2026-07-27T10:02:00Z',
+        message: { role: 'user', content: privateFailureSentinel },
+      },
+    ]
+      .map((entry) => JSON.stringify(entry))
+      .join('\n') + '\n',
+  );
+  const sourceBeforeReconciliation = await readFile(sessionPath);
+
+  await assert.rejects(
+    () =>
+      service.reconcileSession(sessionPath, {
+        lifecycleTrigger: RecallLifecycleTrigger.AGENT_SETTLED,
+      }),
+    /Recall active session reconciliation failed.*missing parent missing-parent/su,
+  );
+  await diagnostics.flush();
+
+  const diagnosticJsonl = await readFile(config.diagnosticLogPath, 'utf8');
+  const records = diagnosticJsonl
+    .trimEnd()
+    .split('\n')
+    .map((line): unknown => JSON.parse(line));
+  assert.ok(records.every(isUnknownRecord));
+  assert.equal(records.length, 2);
+  assert.equal(records[1]?.status, RecallDiagnosticStatus.FAILED);
+  assert.equal(records[1]?.errorCategory, RecallDiagnosticErrorCategory.OPERATION_FAILED);
+  assert.equal(records[1]?.sourceByteSize, sourceBeforeReconciliation.byteLength);
+  assert.equal(records[1]?.changed, true);
+  assert.equal(records[1]?.skipped, false);
+  assert.doesNotMatch(diagnosticJsonl, /private-missing-parent-id|missing-parent/u);
+  assert.doesNotMatch(diagnosticJsonl, new RegExp(privateFailureSentinel, 'u'));
+  await assert.rejects(() => stat(config.lockPath), { code: 'ENOENT' });
+  assert.deepEqual(await readFile(sessionPath), sourceBeforeReconciliation);
+  const search = await service.search('stale evidence', 1, { scope: RecallSearchScope.GLOBAL });
+  assert.deepEqual(search.results, []);
+
+  await writeFile(
+    sessionPath,
+    [
+      sessionHeader,
+      {
+        type: 'message',
+        id: 'embedding-failure-entry',
+        parentId: null,
+        timestamp: '2026-07-27T10:03:00Z',
+        message: { role: 'user', content: 'model outage evidence' },
+      },
+    ]
+      .map((entry) => JSON.stringify(entry))
+      .join('\n') + '\n',
+  );
+  failContentEmbeddings = true;
+  const sourceBeforeEmbeddingFailure = await readFile(sessionPath);
+  await assert.rejects(
+    () =>
+      service.reconcileSession(sessionPath, {
+        lifecycleTrigger: RecallLifecycleTrigger.SESSION_SHUTDOWN,
+      }),
+    /embedding server unavailable/u,
+  );
+  await diagnostics.flush();
+
+  const recordsAfterEmbeddingFailure = (await readFile(config.diagnosticLogPath, 'utf8'))
+    .trimEnd()
+    .split('\n')
+    .map((line): unknown => JSON.parse(line));
+  assert.ok(recordsAfterEmbeddingFailure.every(isUnknownRecord));
+  assert.equal(recordsAfterEmbeddingFailure.length, 4);
+  const embeddingFailure = recordsAfterEmbeddingFailure[3];
+  assert.equal(embeddingFailure?.status, RecallDiagnosticStatus.FAILED);
+  assert.equal(embeddingFailure?.embeddingRequestCount, 1);
+  assert.ok(readTestDiagnosticNumber(embeddingFailure, 'embeddingServerRequestMilliseconds') > 0);
+  assert.ok(readTestDiagnosticNumber(embeddingFailure, 'embeddingCacheResolutionMilliseconds') > 0);
+  await assert.rejects(() => stat(config.lockPath), { code: 'ENOENT' });
+  assert.deepEqual(await readFile(sessionPath), sourceBeforeEmbeddingFailure);
+});
+
+void test('diagnostic write failure cannot change successful live reconciliation', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-service-write-failed-diagnostics-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionsDirectory = join(directory, 'sessions');
+  await mkdir(sessionsDirectory);
+  const sessionPath = join(sessionsDirectory, 'active.jsonl');
+  const entries: object[] = [
+    {
+      type: 'session',
+      version: 3,
+      id: 'write-failed-diagnostic-session',
+      timestamp: '2026-07-27T10:00:00Z',
+      cwd: '/project',
+    },
+    {
+      type: 'message',
+      id: 'write-failed-initial-entry',
+      parentId: null,
+      timestamp: '2026-07-27T10:01:00Z',
+      message: { role: 'user', content: 'initial evidence' },
+    },
+  ];
+  await writeFile(sessionPath, entries.map((entry) => JSON.stringify(entry)).join('\n') + '\n');
+  const config = {
+    ...createTestConfig(directory, sessionsDirectory),
+    diagnosticsMode: RecallDiagnosticsMode.ALL,
+  };
+  const filesystemBlocker = join(directory, 'not-a-directory');
+  await writeFile(filesystemBlocker, 'unchanged');
+  const warnings: string[] = [];
+  const diagnostics = createRecallOperationDiagnostics({
+    mode: config.diagnosticsMode,
+    activeLogPath: join(filesystemBlocker, 'diagnostics.jsonl'),
+    retainedLogPath: join(filesystemBlocker, 'diagnostics.previous.jsonl'),
+    notifyWarning(message) {
+      warnings.push(message);
+    },
+  });
+  const service = createRecallConversationService(config, {
+    diagnostics,
+    embeddings: {
+      async embedTexts(texts) {
+        return texts.map((text) => (text === RECALL_EMBEDDING_CANARY_TEXT ? [0, 0, 1] : [1, 0, 0]));
+      },
+    },
+    async loadTokenizer() {
+      return tokenizer;
+    },
+  });
+  await service.index();
+  entries.push({
+    type: 'message',
+    id: 'write-failed-new-entry',
+    parentId: 'write-failed-initial-entry',
+    timestamp: '2026-07-27T10:02:00Z',
+    message: { role: 'assistant', content: 'searchable despite diagnostic failure' },
+  });
+  await writeFile(sessionPath, entries.map((entry) => JSON.stringify(entry)).join('\n') + '\n');
+  const sourceBeforeReconciliation = await readFile(sessionPath);
+
+  const result = await service.reconcileSession(sessionPath, {
+    lifecycleTrigger: RecallLifecycleTrigger.SESSION_SHUTDOWN,
+  });
+  await diagnostics.flush();
+
+  assert.equal(result.indexSummary.indexedSessions, 1);
+  assert.ok(result.totalChunks > 1);
+  assert.deepEqual(warnings, [
+    'Recall diagnostics disabled after local log persistence failed; recall behavior is unchanged.',
+  ]);
+  assert.equal(await readFile(filesystemBlocker, 'utf8'), 'unchanged');
+  await assert.rejects(() => stat(config.lockPath), { code: 'ENOENT' });
+  assert.deepEqual(await readFile(sessionPath), sourceBeforeReconciliation);
+  const search = await service.search('despite diagnostic failure', 1, {
+    scope: RecallSearchScope.GLOBAL,
+  });
+  assert.equal(search.results[0]?.entryId.value, 'write-failed-new-entry');
+});
 
 void test('recall search keeps ordinary reads stable and refreshes resumed or forked active sessions', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'recall-service-'));
@@ -224,7 +734,11 @@ void test('recall search keeps ordinary reads stable and refreshes resumed or fo
   await mkdir(lockPath);
   await writeFile(join(lockPath, 'owner.json'), `${JSON.stringify({ pid: process.pid })}\n`);
   await assert.rejects(
-    () => service.reconcileSession(sessionPath, { lockWaitMilliseconds: 10 }),
+    () =>
+      service.reconcileSession(sessionPath, {
+        lifecycleTrigger: RecallLifecycleTrigger.AGENT_SETTLED,
+        lockWaitMilliseconds: 10,
+      }),
     /Recall conversation operation cancelled/,
   );
   await rm(lockPath, { recursive: true });
@@ -1549,7 +2063,10 @@ void test('recall search refuses a missing manifest before opening or mutating i
     /Recall index manifest missing.*\/pi-session-recall-index --rebuild/,
   );
   await assert.rejects(
-    () => service.reconcileSession(join(sessionsDirectory, 'active.jsonl')),
+    () =>
+      service.reconcileSession(join(sessionsDirectory, 'active.jsonl'), {
+        lifecycleTrigger: RecallLifecycleTrigger.AGENT_SETTLED,
+      }),
     /Recall automatic session ingestion requires an existing index generation.*\/pi-session-recall-index --rebuild/,
   );
   assert.equal(embeddingRequests, 0);

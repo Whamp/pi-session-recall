@@ -10,6 +10,7 @@ import {
   normalizeConversationTextForEmbedding,
 } from './embedding-vector-cache.js';
 import type { LocalEmbeddingClient } from './local-embedding-client.js';
+import type { RecallDiagnosticsClock } from './recall-operation-diagnostics.js';
 import { createRecallIndexManifest } from './recall-index-manifest.js';
 
 function createTestCacheIdentity(options: { dimensions?: number; pooling?: string } = {}) {
@@ -157,6 +158,81 @@ void test('embedding cache rejects wrong dimensions and non-finite FP32 values b
   assert.equal(recovered.cacheHits, 0);
   assert.equal(recovered.newlyEmbeddedChunks, 3);
   assert.equal(validEmbeddingRequests, 1);
+});
+
+void test('embedding cache reports exclusive local cache and embedding-server milliseconds', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'embedding-vector-cache-timing-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const timestamps = [0, 10, 30, 40];
+  let timestampIndex = 0;
+  const diagnosticsClock: RecallDiagnosticsClock = {
+    monotonicMilliseconds() {
+      const timestamp = timestamps[timestampIndex];
+      timestampIndex += 1;
+      if (timestamp === undefined) {
+        throw new Error('Embedding cache timing test exhausted fake clock values');
+      }
+      return timestamp;
+    },
+    wallClockIsoTimestamp: () => '2026-07-27T10:00:00.000Z',
+  };
+  const cache = createEmbeddingVectorCache({
+    cacheDirectory: directory,
+    identity: createTestCacheIdentity(),
+    embeddingRequestBatchSize: 8,
+    diagnosticsClock,
+    embeddings: {
+      async embedTexts() {
+        return [[1, 2, 3]];
+      },
+    },
+  });
+
+  const result = await cache.resolveEmbeddingVectors(['timed miss']);
+
+  assert.equal(result.embeddingCacheResolutionMilliseconds, 20);
+  assert.equal(result.embeddingServerRequestMilliseconds, 20);
+  assert.equal(timestampIndex, 4);
+});
+
+void test('embedding cache reports server time when an embedding request fails', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'embedding-vector-cache-failed-timing-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const timestamps = [0, 10, 30];
+  let timestampIndex = 0;
+  const serverRequestMilliseconds: number[] = [];
+  const cache = createEmbeddingVectorCache({
+    cacheDirectory: directory,
+    identity: createTestCacheIdentity(),
+    embeddingRequestBatchSize: 8,
+    diagnosticsClock: {
+      monotonicMilliseconds() {
+        const timestamp = timestamps[timestampIndex];
+        timestampIndex += 1;
+        if (timestamp === undefined) {
+          throw new Error('Failed embedding timing test exhausted fake clock values');
+        }
+        return timestamp;
+      },
+      wallClockIsoTimestamp: () => '2026-07-27T10:00:00.000Z',
+    },
+    embeddings: {
+      async embedTexts() {
+        throw new Error('embedding server unavailable');
+      },
+    },
+  });
+
+  await assert.rejects(
+    () =>
+      cache.resolveEmbeddingVectors(['failed timed miss'], undefined, {
+        recordEmbeddingServerRequest(milliseconds) {
+          serverRequestMilliseconds.push(milliseconds);
+        },
+      }),
+    /embedding server unavailable/u,
+  );
+  assert.deepEqual(serverRequestMilliseconds, [20]);
 });
 
 void test('embedding text normalization is idempotent and rejects mislabeled cache identity', () => {

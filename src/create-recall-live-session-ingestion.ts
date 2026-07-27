@@ -1,3 +1,4 @@
+import { RecallLifecycleTrigger } from './enums.js';
 import type { RecallConversationService } from './recall-conversation-service.js';
 
 const BACKGROUND_RECALL_LOCK_WAIT_MILLISECONDS = 250;
@@ -33,15 +34,23 @@ export function createRecallLiveSessionIngestion(
     return pendingIngestion;
   }
 
-  function reconcileActiveSession(sessionPath?: string): Promise<void> {
+  function scheduleActiveSessionReconciliation(
+    lifecycleTrigger: RecallLifecycleTrigger,
+    sessionPath?: string,
+  ): Promise<void> {
     if (!sessionPath) {
       return pendingIngestion;
     }
     return scheduleIngestion(() =>
       service.reconcileSession(sessionPath, {
+        lifecycleTrigger,
         lockWaitMilliseconds: BACKGROUND_RECALL_LOCK_WAIT_MILLISECONDS,
       }),
     );
+  }
+
+  function reconcileActiveSession(sessionPath?: string): Promise<void> {
+    return scheduleActiveSessionReconciliation(RecallLifecycleTrigger.AGENT_SETTLED, sessionPath);
   }
 
   return {
@@ -70,7 +79,10 @@ export function createRecallLiveSessionIngestion(
     reconcileActiveSession,
     shutdownActiveSession(sessionPath) {
       catchUpAbortController?.abort();
-      return reconcileActiveSession(sessionPath);
+      return scheduleActiveSessionReconciliation(
+        RecallLifecycleTrigger.SESSION_SHUTDOWN,
+        sessionPath,
+      );
     },
   };
 }

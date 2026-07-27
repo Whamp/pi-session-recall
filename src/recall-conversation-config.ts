@@ -6,6 +6,7 @@ import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 
 import type { RecallConversationConfig } from './recall-conversation-service.js';
+import { RecallDiagnosticsMode } from './enums.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
 import { normalizeRecallProjectLineages } from './resolve-project-identity.js';
 
@@ -16,6 +17,7 @@ const recallConfigFileSchema = Type.Object(
   {
     sessionsDirectory: Type.Optional(Type.String({ minLength: 1 })),
     dataDirectory: Type.Optional(Type.String({ minLength: 1 })),
+    diagnostics: Type.Optional(Type.Enum(RecallDiagnosticsMode)),
     embeddingBaseUrl: Type.Optional(Type.String({ minLength: 1 })),
     embeddingModel: Type.Optional(Type.String({ minLength: 1 })),
     embeddingServedModelId: Type.Optional(Type.String({ minLength: 1 })),
@@ -123,6 +125,9 @@ export async function loadRecallConversationConfig(
     tokenizerCacheDirectory: join(dataDirectory, 'tokenizers'),
     embeddingCacheDirectory: join(dataDirectory, 'embedding-cache'),
     lockPath: join(dataDirectory, 'operation.lock'),
+    diagnosticsMode: file.diagnostics ?? RecallDiagnosticsMode.SLOW,
+    diagnosticLogPath: join(dataDirectory, 'diagnostics.jsonl'),
+    retainedDiagnosticLogPath: join(dataDirectory, 'diagnostics.previous.jsonl'),
     embeddingBaseUrl:
       environment.PI_RECALL_EMBEDDING_BASE_URL ??
       file.embeddingBaseUrl ??

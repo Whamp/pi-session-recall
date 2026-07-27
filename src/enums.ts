@@ -1,3 +1,35 @@
+/** Kind of bounded local recall operation diagnostic. */
+export enum RecallDiagnosticOperationKind {
+  LIVE_SESSION_RECONCILIATION = 'live_session_reconciliation',
+}
+
+/** Lifecycle state recorded for one recall diagnostic operation. */
+export enum RecallDiagnosticStatus {
+  STARTED = 'started',
+  SUCCEEDED = 'succeeded',
+  FAILED = 'failed',
+  CANCELLED = 'cancelled',
+}
+
+/** Stable privacy-safe category for a failed recall diagnostic operation. */
+export enum RecallDiagnosticErrorCategory {
+  OPERATION_FAILED = 'operation_failed',
+  OPERATION_CANCELLED = 'operation_cancelled',
+}
+
+/** Local persistence policy for bounded recall diagnostic records. */
+export enum RecallDiagnosticsMode {
+  SLOW = 'slow',
+  ALL = 'all',
+  OFF = 'off',
+}
+
+/** Pi lifecycle event that requested one live session reconciliation. */
+export enum RecallLifecycleTrigger {
+  AGENT_SETTLED = 'agent_settled',
+  SESSION_SHUTDOWN = 'session_shutdown',
+}
+
 /** Explicit source used to assign one stable project identity to recall evidence. */
 export enum RecallProjectIdentitySource {
   GIT_ORIGIN = 'git_origin',

@@ -7,6 +7,10 @@ import { Value } from 'typebox/value';
 import type { EmbeddingVectorCache } from './embedding-vector-cache.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
 import type { RecallChunkPolicy } from './recall-chunk-policy.js';
+import type {
+  RecallDiagnosticsClock,
+  RecallLiveSessionDiagnosticMetrics,
+} from './recall-operation-diagnostics.js';
 import type { ResolvedProjectIdentity } from './resolve-project-identity.js';
 import {
   readSessionConversationChunks,
@@ -77,6 +81,8 @@ export interface IncrementalSessionIndexerOptions {
   resolveProjectIdentity?: (sessionOrigin: string) => Promise<ResolvedProjectIdentity | null>;
   signal?: AbortSignal;
   onProgress?: (progress: ConversationIndexProgress) => void;
+  diagnosticMetrics?: RecallLiveSessionDiagnosticMetrics;
+  diagnosticsClock?: RecallDiagnosticsClock;
 }
 
 /** Dependencies for reconciling one active Pi session without scanning sibling files. */
@@ -89,6 +95,8 @@ export interface IncrementalConversationSessionIndexerOptions {
   chunkPolicy?: RecallChunkPolicy;
   resolveProjectIdentity?: (sessionOrigin: string) => Promise<ResolvedProjectIdentity | null>;
   signal?: AbortSignal;
+  diagnosticMetrics?: RecallLiveSessionDiagnosticMetrics;
+  diagnosticsClock?: RecallDiagnosticsClock;
 }
 
 async function listSessionFiles(directory: string): Promise<string[]> {
@@ -147,27 +155,48 @@ async function readChangedSessionChunks(
   sessionPath: string,
   previous: IndexedSessionState | undefined,
   tokenizer: ConversationTextTokenizer,
-  chunkPolicy?: RecallChunkPolicy,
+  chunkPolicy: RecallChunkPolicy | undefined,
+  diagnosticMetrics?: RecallLiveSessionDiagnosticMetrics,
+  diagnosticsClock?: RecallDiagnosticsClock,
 ): Promise<
+  | { changed: false; size: number }
   | {
+      changed: true;
       size: number;
       mtimeMs: number;
       chunks: Awaited<ReturnType<typeof readSessionConversationChunks>>;
     }
-  | undefined
 > {
-  const fileStats = await stat(sessionPath);
-  if (previous && previous.size === fileStats.size && previous.mtimeMs === fileStats.mtimeMs) {
-    return undefined;
+  const startedAtMilliseconds = diagnosticsClock?.monotonicMilliseconds();
+  try {
+    const fileStats = await stat(sessionPath);
+    const changed =
+      !previous || previous.size !== fileStats.size || previous.mtimeMs !== fileStats.mtimeMs;
+    if (diagnosticMetrics) {
+      diagnosticMetrics.sourceByteSize = fileStats.size;
+      diagnosticMetrics.changed = changed;
+      diagnosticMetrics.skipped = !changed;
+    }
+    if (!changed) {
+      return { changed: false, size: fileStats.size };
+    }
+    return {
+      changed: true,
+      size: fileStats.size,
+      mtimeMs: fileStats.mtimeMs,
+      chunks: await readSessionConversationChunks(sessionPath, {
+        tokenizer,
+        ...(chunkPolicy ? chunkPolicy : {}),
+      }),
+    };
+  } finally {
+    if (diagnosticMetrics && diagnosticsClock && startedAtMilliseconds !== undefined) {
+      diagnosticMetrics.physicalSessionPreparationMilliseconds += Math.max(
+        diagnosticsClock.monotonicMilliseconds() - startedAtMilliseconds,
+        0,
+      );
+    }
   }
-  return {
-    size: fileStats.size,
-    mtimeMs: fileStats.mtimeMs,
-    chunks: await readSessionConversationChunks(sessionPath, {
-      tokenizer,
-      ...(chunkPolicy ? chunkPolicy : {}),
-    }),
-  };
 }
 
 function throwIfIndexingAborted(signal: AbortSignal | undefined): void {
@@ -189,19 +218,61 @@ function createConversationIndexSummary(): ConversationIndexSummary {
   };
 }
 
+function runTimedDatabaseWrite<T>(
+  operation: () => T,
+  diagnosticMetrics?: RecallLiveSessionDiagnosticMetrics,
+  diagnosticsClock?: RecallDiagnosticsClock,
+): T {
+  const startedAtMilliseconds = diagnosticsClock?.monotonicMilliseconds();
+  try {
+    return operation();
+  } finally {
+    if (diagnosticMetrics && diagnosticsClock && startedAtMilliseconds !== undefined) {
+      diagnosticMetrics.databaseWriteMilliseconds += Math.max(
+        diagnosticsClock.monotonicMilliseconds() - startedAtMilliseconds,
+        0,
+      );
+    }
+  }
+}
+
+async function writeConversationIndexStateWithDiagnostics(
+  statePath: string,
+  state: ConversationIndexState,
+  diagnosticMetrics?: RecallLiveSessionDiagnosticMetrics,
+  diagnosticsClock?: RecallDiagnosticsClock,
+): Promise<void> {
+  const startedAtMilliseconds = diagnosticsClock?.monotonicMilliseconds();
+  try {
+    await writeConversationIndexState(statePath, state);
+  } finally {
+    if (diagnosticMetrics && diagnosticsClock && startedAtMilliseconds !== undefined) {
+      diagnosticMetrics.indexStateCheckpointMilliseconds += Math.max(
+        diagnosticsClock.monotonicMilliseconds() - startedAtMilliseconds,
+        0,
+      );
+    }
+  }
+}
+
 function removeIndexedConversationSession(
   state: ConversationIndexState,
   sessionPath: string,
   store: ConversationChunkStore,
   summary: ConversationIndexSummary,
+  diagnosticMetrics?: RecallLiveSessionDiagnosticMetrics,
+  diagnosticsClock?: RecallDiagnosticsClock,
 ): boolean {
   const previous = state.sessions[sessionPath];
   if (!previous) {
     return false;
   }
   const staleIds = previous.chunks.map((chunk) => chunk.id);
-  store.deleteChunks(staleIds);
+  runTimedDatabaseWrite(() => store.deleteChunks(staleIds), diagnosticMetrics, diagnosticsClock);
   summary.deletedChunks += staleIds.length;
+  if (diagnosticMetrics) {
+    diagnosticMetrics.deletedDocumentCount += staleIds.length;
+  }
   summary.removedSessions += 1;
   delete state.sessions[sessionPath];
   return true;
@@ -222,6 +293,8 @@ async function indexChangedConversationSessionFile(
       previous,
       options.tokenizer,
       options.chunkPolicy,
+      options.diagnosticMetrics,
+      options.diagnosticsClock,
     );
   } catch (error) {
     summary.failedSessions.push({
@@ -232,25 +305,47 @@ async function indexChangedConversationSessionFile(
       return false;
     }
     const staleIds = previous.chunks.map((chunk) => chunk.id);
-    options.store.deleteChunks(staleIds);
+    runTimedDatabaseWrite(
+      () => options.store.deleteChunks(staleIds),
+      options.diagnosticMetrics,
+      options.diagnosticsClock,
+    );
     summary.deletedChunks += staleIds.length;
+    if (options.diagnosticMetrics) {
+      options.diagnosticMetrics.deletedDocumentCount += staleIds.length;
+    }
     delete state.sessions[sessionPath];
     return true;
   }
-  if (!changedSession) {
+  if (!changedSession.changed) {
     return false;
   }
 
   const { chunks } = changedSession;
   const sessionOrigins = Array.from(new Set(chunks.map((chunk) => chunk.cwd).filter(Boolean)));
-  const projectIdentityEntries = await Promise.all(
-    sessionOrigins.map(
-      async (sessionOrigin): Promise<[string, ResolvedProjectIdentity | null]> => [
-        sessionOrigin,
-        await resolveSessionProjectIdentity(sessionOrigin),
-      ],
-    ),
-  );
+  const projectIdentityStartedAtMilliseconds = options.diagnosticsClock?.monotonicMilliseconds();
+  let projectIdentityEntries: Array<[string, ResolvedProjectIdentity | null]>;
+  try {
+    projectIdentityEntries = await Promise.all(
+      sessionOrigins.map(
+        async (sessionOrigin): Promise<[string, ResolvedProjectIdentity | null]> => [
+          sessionOrigin,
+          await resolveSessionProjectIdentity(sessionOrigin),
+        ],
+      ),
+    );
+  } finally {
+    if (
+      options.diagnosticMetrics &&
+      options.diagnosticsClock &&
+      projectIdentityStartedAtMilliseconds !== undefined
+    ) {
+      options.diagnosticMetrics.projectIdentityResolutionMilliseconds += Math.max(
+        options.diagnosticsClock.monotonicMilliseconds() - projectIdentityStartedAtMilliseconds,
+        0,
+      );
+    }
+  }
   const projectIdentityBySessionOrigin = new Map(projectIdentityEntries);
   const attributedChunks = chunks.map((chunk) => ({
     ...chunk,
@@ -259,16 +354,63 @@ async function indexChangedConversationSessionFile(
   const currentIds = new Set(attributedChunks.map((chunk) => chunk.id));
   const removedIds =
     previous?.chunks.filter((chunk) => !currentIds.has(chunk.id)).map((chunk) => chunk.id) ?? [];
-  options.store.deleteChunks(removedIds);
+  runTimedDatabaseWrite(
+    () => options.store.deleteChunks(removedIds),
+    options.diagnosticMetrics,
+    options.diagnosticsClock,
+  );
   summary.deletedChunks += removedIds.length;
+  if (options.diagnosticMetrics) {
+    options.diagnosticMetrics.deletedDocumentCount += removedIds.length;
+  }
 
   for (let start = 0; start < attributedChunks.length; start += 128) {
     const chunkBatch = attributedChunks.slice(start, start + 128);
     const denseChunkBatch = chunkBatch.filter((chunk) => chunk.isDenseSearchable);
-    const cacheResult = await options.embeddingCache.resolveEmbeddingVectors(
-      denseChunkBatch.map((chunk) => chunk.content),
-      options.signal,
-    );
+    const cacheResolutionStartedAtMilliseconds = options.diagnosticsClock?.monotonicMilliseconds();
+    const diagnosticMetrics = options.diagnosticMetrics;
+    const serverRequestMillisecondsBefore =
+      diagnosticMetrics?.embeddingServerRequestMilliseconds ?? 0;
+    let cacheResult: Awaited<ReturnType<EmbeddingVectorCache['resolveEmbeddingVectors']>>;
+    try {
+      cacheResult = await options.embeddingCache.resolveEmbeddingVectors(
+        denseChunkBatch.map((chunk) => chunk.content),
+        options.signal,
+        diagnosticMetrics
+          ? {
+              recordEmbeddingServerRequest(milliseconds) {
+                diagnosticMetrics.embeddingServerRequestMilliseconds += milliseconds;
+                diagnosticMetrics.embeddingRequestCount += 1;
+              },
+            }
+          : undefined,
+      );
+    } catch (error) {
+      if (
+        options.diagnosticMetrics &&
+        options.diagnosticsClock &&
+        cacheResolutionStartedAtMilliseconds !== undefined
+      ) {
+        const totalResolutionMilliseconds = Math.max(
+          options.diagnosticsClock.monotonicMilliseconds() - cacheResolutionStartedAtMilliseconds,
+          0,
+        );
+        const serverRequestMilliseconds =
+          options.diagnosticMetrics.embeddingServerRequestMilliseconds -
+          serverRequestMillisecondsBefore;
+        options.diagnosticMetrics.embeddingCacheResolutionMilliseconds += Math.max(
+          totalResolutionMilliseconds - serverRequestMilliseconds,
+          0,
+        );
+      }
+      throw error;
+    }
+    if (options.diagnosticMetrics) {
+      options.diagnosticMetrics.embeddingCacheResolutionMilliseconds +=
+        cacheResult.embeddingCacheResolutionMilliseconds;
+      options.diagnosticMetrics.cacheHitCount += cacheResult.cacheHits;
+      options.diagnosticMetrics.newEmbeddingCount += cacheResult.newlyEmbeddedChunks;
+    }
     let denseChunkIndex = 0;
     const indexedChunks: IndexedSessionConversationChunk[] = chunkBatch.map((chunk) => {
       if (!chunk.isDenseSearchable) {
@@ -281,7 +423,14 @@ async function indexChangedConversationSessionFile(
       }
       return { ...chunk, isDenseSearchable: true, embedding };
     });
-    options.store.upsertChunks(indexedChunks);
+    runTimedDatabaseWrite(
+      () => options.store.upsertChunks(indexedChunks),
+      options.diagnosticMetrics,
+      options.diagnosticsClock,
+    );
+    if (options.diagnosticMetrics) {
+      options.diagnosticMetrics.upsertedDocumentCount += indexedChunks.length;
+    }
     summary.cacheHits += cacheResult.cacheHits;
     summary.newlyEmbeddedChunks += cacheResult.newlyEmbeddedChunks;
     summary.embeddingRequestCount += cacheResult.embeddingRequestCount;
@@ -327,8 +476,28 @@ export async function indexChangedConversationSession(
     if (readNodeErrorCode(error) !== 'ENOENT') {
       throw error;
     }
-    if (removeIndexedConversationSession(state, options.sessionPath, options.store, summary)) {
-      await writeConversationIndexState(options.statePath, state);
+    const previous = state.sessions[options.sessionPath];
+    if (options.diagnosticMetrics) {
+      options.diagnosticMetrics.sourceByteSize = 0;
+      options.diagnosticMetrics.changed = previous !== undefined;
+      options.diagnosticMetrics.skipped = previous === undefined;
+    }
+    if (
+      removeIndexedConversationSession(
+        state,
+        options.sessionPath,
+        options.store,
+        summary,
+        options.diagnosticMetrics,
+        options.diagnosticsClock,
+      )
+    ) {
+      await writeConversationIndexStateWithDiagnostics(
+        options.statePath,
+        state,
+        options.diagnosticMetrics,
+        options.diagnosticsClock,
+      );
     }
     return summary;
   }
@@ -340,7 +509,12 @@ export async function indexChangedConversationSession(
     createSessionProjectIdentityResolver(options.resolveProjectIdentity),
   );
   if (changed) {
-    await writeConversationIndexState(options.statePath, state);
+    await writeConversationIndexStateWithDiagnostics(
+      options.statePath,
+      state,
+      options.diagnosticMetrics,
+      options.diagnosticsClock,
+    );
   }
   return summary;
 }

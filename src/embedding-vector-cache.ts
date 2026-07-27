@@ -7,6 +7,7 @@ import { Value } from 'typebox/value';
 
 import type { LocalEmbeddingClient } from './local-embedding-client.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
+import type { RecallDiagnosticsClock } from './recall-operation-diagnostics.js';
 
 /** Version of the durable embedding-vector cache file format. */
 export const EMBEDDING_VECTOR_CACHE_VERSION = 1;
@@ -118,6 +119,13 @@ export interface EmbeddingVectorCacheResult {
   cacheHits: number;
   newlyEmbeddedChunks: number;
   embeddingRequestCount: number;
+  embeddingCacheResolutionMilliseconds: number;
+  embeddingServerRequestMilliseconds: number;
+}
+
+/** Optional scalar observer for embedding requests that may fail before a cache result exists. */
+export interface EmbeddingVectorCacheDiagnostics {
+  recordEmbeddingServerRequest(milliseconds: number): void;
 }
 
 /** Durable content-addressed FP32 cache used by the conversation indexing service. */
@@ -125,6 +133,7 @@ export interface EmbeddingVectorCache {
   resolveEmbeddingVectors(
     texts: readonly string[],
     signal?: AbortSignal,
+    diagnostics?: EmbeddingVectorCacheDiagnostics,
   ): Promise<EmbeddingVectorCacheResult>;
 }
 
@@ -134,6 +143,7 @@ export interface EmbeddingVectorCacheOptions {
   identity: EmbeddingVectorCacheIdentity;
   embeddingRequestBatchSize: number;
   embeddings: LocalEmbeddingClient;
+  diagnosticsClock?: RecallDiagnosticsClock;
 }
 
 interface PendingCacheEntry {
@@ -371,9 +381,34 @@ export function createEmbeddingVectorCache(
     );
   }
   const identityFingerprint = sha256(serializeCacheIdentity(identity));
+  const monotonicMilliseconds = () =>
+    options.diagnosticsClock?.monotonicMilliseconds() ?? performance.now();
 
   return {
-    async resolveEmbeddingVectors(texts, signal) {
+    async resolveEmbeddingVectors(texts, signal, diagnostics) {
+      const resolutionStartedAtMilliseconds = monotonicMilliseconds();
+      let embeddingServerRequestMilliseconds = 0;
+      async function requestEmbeddings(batch: PendingCacheEntry[]): Promise<number[][]> {
+        const requestStartedAtMilliseconds = monotonicMilliseconds();
+        try {
+          return await options.embeddings.embedTexts(
+            batch.map((entry) => entry.normalizedText),
+            signal,
+          );
+        } finally {
+          const requestMilliseconds = Math.max(
+            monotonicMilliseconds() - requestStartedAtMilliseconds,
+            0,
+          );
+          embeddingServerRequestMilliseconds += requestMilliseconds;
+          try {
+            diagnostics?.recordEmbeddingServerRequest(requestMilliseconds);
+          } catch (diagnosticError) {
+            void diagnosticError;
+          }
+        }
+      }
+
       const vectors = new Array<number[] | undefined>(texts.length);
       const entriesByCachePath = new Map<string, PendingCacheEntry>();
       for (const [index, text] of texts.entries()) {
@@ -420,10 +455,7 @@ export function createEmbeddingVectorCache(
       let embeddingRequestCount = 0;
       for (let start = 0; start < misses.length; start += options.embeddingRequestBatchSize) {
         const batch = misses.slice(start, start + options.embeddingRequestBatchSize);
-        const embedded = await options.embeddings.embedTexts(
-          batch.map((entry) => entry.normalizedText),
-          signal,
-        );
+        const embedded = await requestEmbeddings(batch);
         embeddingRequestCount += 1;
         if (embedded.length !== batch.length) {
           throw new Error(
@@ -447,16 +479,26 @@ export function createEmbeddingVectorCache(
         }
       }
 
+      const resolvedVectors = vectors.map((vector, index) => {
+        if (!vector) {
+          throw new Error(`Recall embedding cache failed to resolve vector ${index}`);
+        }
+        return vector;
+      });
+      const totalResolutionMilliseconds = Math.max(
+        monotonicMilliseconds() - resolutionStartedAtMilliseconds,
+        0,
+      );
       return {
-        vectors: vectors.map((vector, index) => {
-          if (!vector) {
-            throw new Error(`Recall embedding cache failed to resolve vector ${index}`);
-          }
-          return vector;
-        }),
+        vectors: resolvedVectors,
         cacheHits,
         newlyEmbeddedChunks: texts.length - cacheHits,
         embeddingRequestCount,
+        embeddingCacheResolutionMilliseconds: Math.max(
+          totalResolutionMilliseconds - embeddingServerRequestMilliseconds,
+          0,
+        ),
+        embeddingServerRequestMilliseconds,
       };
     },
   };

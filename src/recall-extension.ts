@@ -90,15 +90,19 @@ export default async function recallExtension(
       }
     : configured;
   const defaultResultLimit = selectedPolicy?.finalCount ?? 5;
-  const service = createRecallConversationService(config);
-  let ingestionWarningHandler: ((message: string) => void) | undefined;
+  let recallWarningHandler: ((message: string) => void) | undefined;
+  const service = createRecallConversationService(config, {
+    notifyWarning(message) {
+      recallWarningHandler?.(message);
+    },
+  });
   const liveSessionIngestion = createRecallLiveSessionIngestion(service, (message) => {
-    ingestionWarningHandler?.(message);
+    recallWarningHandler?.(message);
   });
   if (qualityGateDecision.automatedGatePassed && selectedPolicy) {
     pi.on('session_start', (event, context) => {
       void event;
-      ingestionWarningHandler = (message) => context.ui.notify(message, 'warning');
+      recallWarningHandler = (message) => context.ui.notify(message, 'warning');
       if (shouldRunRecallStartupCatchUp(context.mode)) {
         void liveSessionIngestion.catchUpSessions();
       }
@@ -106,14 +110,14 @@ export default async function recallExtension(
     pi.on('agent_settled', (event, context) => {
       void event;
       if (shouldRunRecallLifecycleIngestion(context.mode)) {
-        ingestionWarningHandler = (message) => context.ui.notify(message, 'warning');
+        recallWarningHandler = (message) => context.ui.notify(message, 'warning');
         void liveSessionIngestion.reconcileActiveSession(context.sessionManager.getSessionFile());
       }
     });
     pi.on('session_shutdown', async (event, context) => {
       void event;
       if (shouldRunRecallLifecycleIngestion(context.mode)) {
-        ingestionWarningHandler = (message) => context.ui.notify(message, 'warning');
+        recallWarningHandler = (message) => context.ui.notify(message, 'warning');
         await liveSessionIngestion.shutdownActiveSession(context.sessionManager.getSessionFile());
       }
     });

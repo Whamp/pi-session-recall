@@ -7,7 +7,15 @@ import {
   createEmbeddingVectorCache,
   createEmbeddingVectorCacheIdentity,
 } from './embedding-vector-cache.js';
-import { RecallEvidenceRelation, RecallProjectIdentitySource, RecallSearchScope } from './enums.js';
+import {
+  RecallDiagnosticErrorCategory,
+  RecallDiagnosticStatus,
+  type RecallDiagnosticsMode,
+  RecallEvidenceRelation,
+  type RecallLifecycleTrigger,
+  RecallProjectIdentitySource,
+  RecallSearchScope,
+} from './enums.js';
 import {
   fuseRecallSearchCandidates,
   RECALL_RANK_FUSION_VERSION,
@@ -34,6 +42,13 @@ import {
   type RecallIndexManifest,
 } from './recall-index-manifest.js';
 import type { RecallChunkPolicy } from './recall-chunk-policy.js';
+import {
+  createRecallLiveSessionDiagnosticMetrics,
+  createRecallOperationDiagnostics,
+  type RecallDiagnosticsClock,
+  type RecallLiveSessionDiagnosticMetrics,
+  type RecallOperationDiagnostics,
+} from './recall-operation-diagnostics.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
 import {
   createLineageResolver,
@@ -64,6 +79,9 @@ export interface RecallConversationConfig {
   tokenizerCacheDirectory: string;
   embeddingCacheDirectory: string;
   lockPath: string;
+  diagnosticsMode: RecallDiagnosticsMode;
+  diagnosticLogPath: string;
+  retainedDiagnosticLogPath: string;
   embeddingBaseUrl: string;
   embeddingModel: string;
   embeddingServedModelId: string;
@@ -133,6 +151,13 @@ export interface RecallConversationIndexOptions {
   rebuild?: boolean;
 }
 
+/** Cancellation, lock wait, and Pi lifecycle attribution for one targeted reconciliation. */
+export interface RecallConversationReconcileOptions {
+  lifecycleTrigger: RecallLifecycleTrigger;
+  signal?: AbortSignal;
+  lockWaitMilliseconds?: number;
+}
+
 /** Counts from one completed full or targeted conversation index update. */
 export interface RecallConversationIndexResult {
   indexSummary: ConversationIndexSummary;
@@ -149,7 +174,7 @@ export interface RecallConversationService {
   index(options?: RecallConversationIndexOptions): Promise<RecallConversationIndexResult>;
   reconcileSession(
     sessionPath: string,
-    options?: Pick<RecallConversationIndexOptions, 'signal' | 'lockWaitMilliseconds'>,
+    options: RecallConversationReconcileOptions,
   ): Promise<RecallConversationIndexResult>;
 }
 
@@ -160,6 +185,67 @@ export interface RecallConversationDependencies {
   loadTokenizer?: () => Promise<ConversationTextTokenizer>;
   openStore?: (mode: 'read' | 'write') => ZvecConversationStore;
   resolveProjectIdentity?: (workingDirectory: string) => Promise<ResolvedProjectIdentity | null>;
+  diagnostics?: RecallOperationDiagnostics;
+  diagnosticsClock?: RecallDiagnosticsClock;
+  notifyWarning?: (message: string) => void;
+}
+
+interface LiveSessionReconciliationDiagnosticRunOptions {
+  diagnostics: RecallOperationDiagnostics;
+  lifecycleTrigger: RecallLifecycleTrigger;
+  sessionPath: string;
+  reconcile: (
+    diagnosticMetrics: RecallLiveSessionDiagnosticMetrics,
+  ) => Promise<RecallConversationIndexResult>;
+}
+
+async function runLiveSessionReconciliationWithDiagnostics(
+  options: LiveSessionReconciliationDiagnosticRunOptions,
+): Promise<RecallConversationIndexResult> {
+  const diagnosticOperation = options.diagnostics.startLiveSessionReconciliation({
+    lifecycleTrigger: options.lifecycleTrigger,
+    sessionPath: options.sessionPath,
+  });
+  const diagnosticMetrics = createRecallLiveSessionDiagnosticMetrics();
+  try {
+    const result = await options.reconcile(diagnosticMetrics);
+    diagnosticOperation.complete({
+      status: RecallDiagnosticStatus.SUCCEEDED,
+      metrics: diagnosticMetrics,
+      scannedSessionCount: result.indexSummary.scannedSessions,
+      indexedSessionCount: result.indexSummary.indexedSessions,
+      removedSessionCount: result.indexSummary.removedSessions,
+      failedSessionCount: result.indexSummary.failedSessions.length,
+      cacheHitCount: result.indexSummary.cacheHits,
+      newEmbeddingCount: result.indexSummary.newlyEmbeddedChunks,
+      embeddingRequestCount: result.indexSummary.embeddingRequestCount,
+      deletedDocumentCount: result.indexSummary.deletedChunks,
+      totalDocumentCount: result.totalChunks,
+    });
+    return result;
+  } catch (error) {
+    const cancelled =
+      error instanceof Error &&
+      (error.message === 'Recall conversation operation cancelled' ||
+        error.message === 'Recall conversation indexing cancelled');
+    diagnosticOperation.complete({
+      status: cancelled ? RecallDiagnosticStatus.CANCELLED : RecallDiagnosticStatus.FAILED,
+      errorCategory: cancelled
+        ? RecallDiagnosticErrorCategory.OPERATION_CANCELLED
+        : RecallDiagnosticErrorCategory.OPERATION_FAILED,
+      metrics: diagnosticMetrics,
+      scannedSessionCount: diagnosticMetrics.sourceByteSize === null ? 0 : 1,
+      indexedSessionCount: 0,
+      removedSessionCount: 0,
+      failedSessionCount: cancelled ? 0 : 1,
+      cacheHitCount: diagnosticMetrics.cacheHitCount,
+      newEmbeddingCount: diagnosticMetrics.newEmbeddingCount,
+      embeddingRequestCount: diagnosticMetrics.embeddingRequestCount,
+      deletedDocumentCount: diagnosticMetrics.deletedDocumentCount,
+      totalDocumentCount: null,
+    });
+    throw error;
+  }
 }
 
 function readLockOwnerProcessId(value: string): number | undefined {
@@ -326,6 +412,19 @@ export function createRecallConversationService(
         createIfMissing: mode === 'write',
         readOnly: mode === 'read',
       }));
+  const diagnosticsClock = dependencies.diagnosticsClock ?? {
+    monotonicMilliseconds: () => performance.now(),
+    wallClockIsoTimestamp: () => new Date().toISOString(),
+  };
+  const diagnostics =
+    dependencies.diagnostics ??
+    createRecallOperationDiagnostics({
+      mode: config.diagnosticsMode,
+      activeLogPath: config.diagnosticLogPath,
+      retainedLogPath: config.retainedDiagnosticLogPath,
+      clock: diagnosticsClock,
+      notifyWarning: dependencies.notifyWarning ?? (() => undefined),
+    });
   let activeOperation: Promise<void> | undefined;
   let conversationTokenizer: ConversationTextTokenizer | undefined;
 
@@ -463,6 +562,7 @@ export function createRecallConversationService(
     signal?: AbortSignal,
     onProgress?: (progress: ConversationIndexProgress) => void,
     sessionPath?: string,
+    diagnosticMetrics?: RecallLiveSessionDiagnosticMetrics,
   ): Promise<ConversationIndexSummary> {
     let modelPreflighted = embeddingModelPreflighted;
     async function embedTextsAfterModelPreflight(
@@ -484,6 +584,7 @@ export function createRecallConversationService(
       identity: createEmbeddingVectorCacheIdentity(manifest),
       embeddingRequestBatchSize: config.embeddingBatchSize,
       embeddings: preflightedEmbeddings,
+      diagnosticsClock,
     });
     const indexerOptions = {
       statePath: config.statePath,
@@ -496,6 +597,7 @@ export function createRecallConversationService(
       },
       resolveProjectIdentity: resolveSearchProjectIdentity,
       ...(signal ? { signal } : {}),
+      ...(diagnosticMetrics ? { diagnosticMetrics, diagnosticsClock } : {}),
     };
     return sessionPath
       ? indexChangedConversationSession({ ...indexerOptions, sessionPath })
@@ -510,13 +612,36 @@ export function createRecallConversationService(
     sessionPath: string,
     signal?: AbortSignal,
     lockWaitMilliseconds?: number,
+    diagnosticMetrics?: RecallLiveSessionDiagnosticMetrics,
   ): Promise<RecallConversationIndexResult> {
     const lockSignal = createRecallLockAcquisitionSignal(signal, lockWaitMilliseconds);
-    const releaseLock = await acquireRecallConversationLock(config.lockPath, lockSignal);
+    const lockStartedAtMilliseconds = diagnosticsClock.monotonicMilliseconds();
+    let releaseLock: (() => Promise<void>) | undefined;
+    try {
+      releaseLock = await acquireRecallConversationLock(config.lockPath, lockSignal);
+    } finally {
+      if (diagnosticMetrics) {
+        diagnosticMetrics.writerLockWaitMilliseconds += Math.max(
+          diagnosticsClock.monotonicMilliseconds() - lockStartedAtMilliseconds,
+          0,
+        );
+      }
+    }
     let store: ZvecConversationStore | undefined;
     try {
-      const preparedIndex = await prepareIndexForWrite(signal, undefined, true);
-      store = openStore('write');
+      const preparationStartedAtMilliseconds = diagnosticsClock.monotonicMilliseconds();
+      let preparedIndex: Awaited<ReturnType<typeof prepareIndexForWrite>>;
+      try {
+        preparedIndex = await prepareIndexForWrite(signal, undefined, true);
+        store = openStore('write');
+      } finally {
+        if (diagnosticMetrics) {
+          diagnosticMetrics.manifestStorePreparationMilliseconds += Math.max(
+            diagnosticsClock.monotonicMilliseconds() - preparationStartedAtMilliseconds,
+            0,
+          );
+        }
+      }
       const summary = await updateConversationIndex(
         store,
         preparedIndex.tokenizer,
@@ -525,6 +650,7 @@ export function createRecallConversationService(
         signal,
         undefined,
         sessionPath,
+        diagnosticMetrics,
       );
       if (summary.failedSessions.length > 0) {
         throw new Error(
@@ -692,14 +818,21 @@ export function createRecallConversationService(
         }
       });
     },
-    reconcileSession(sessionPath, options = {}) {
-      return runSerialized(() =>
-        reconcileActiveConversationSession(
-          sessionPath,
-          options.signal,
-          options.lockWaitMilliseconds,
-        ),
-      );
+    reconcileSession(sessionPath, options) {
+      return runLiveSessionReconciliationWithDiagnostics({
+        diagnostics,
+        lifecycleTrigger: options.lifecycleTrigger,
+        sessionPath,
+        reconcile: (diagnosticMetrics) =>
+          runSerialized(() =>
+            reconcileActiveConversationSession(
+              sessionPath,
+              options.signal,
+              options.lockWaitMilliseconds,
+              diagnosticMetrics,
+            ),
+          ),
+      });
     },
   };
 }

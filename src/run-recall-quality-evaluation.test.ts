@@ -5,7 +5,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { RecallEvidenceRelation, RecallProjectIdentitySource, RecallSearchScope } from './enums.js';
+import {
+  RecallDiagnosticsMode,
+  RecallEvidenceRelation,
+  RecallProjectIdentitySource,
+  RecallSearchScope,
+} from './enums.js';
 import type { LocalEmbeddingClient } from './local-embedding-client.js';
 import { loadRecallQualityCorpus } from './recall-quality-corpus.js';
 import type { RecallConversationConfig } from './recall-conversation-service.js';
@@ -118,6 +123,9 @@ void test('recall quality runner indexes and searches only the bounded declared 
     tokenizerCacheDirectory: join(directory, 'unused-tokenizers'),
     embeddingCacheDirectory: join(directory, 'unused-embedding-cache'),
     lockPath: join(directory, 'unused.lock'),
+    diagnosticsMode: RecallDiagnosticsMode.OFF,
+    diagnosticLogPath: join(directory, 'unused-diagnostics.jsonl'),
+    retainedDiagnosticLogPath: join(directory, 'unused-diagnostics.previous.jsonl'),
     embeddingBaseUrl: 'http://unused.test/v1',
     embeddingModel: 'test-embedding',
     embeddingServedModelId: 'test-embedding-served',

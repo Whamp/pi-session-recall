@@ -100,6 +100,46 @@ _Avoid_: Index state, configuration
 A targeted update that reprocesses one active session file, reuses cached vectors, removes stale documents, and checkpoints its new state without scanning sibling sessions.
 _Avoid_: Append-only indexing, session watcher
 
+**Recall diagnostic operation**:
+One bounded, local account of recall work and its costs, identified independently from the session or query that caused it.
+_Avoid_: Trace, span, telemetry
+
+**Diagnostics mode**:
+The persistence policy for recall diagnostic operations: `slow`, `all`, or `off`.
+_Avoid_: Verbosity level, tracing mode
+
+**Lifecycle trigger**:
+The Pi lifecycle event that requested a live session reconciliation: `agent_settled` or `session_shutdown`.
+_Avoid_: Session watcher event, polling reason
+
+**Physical session check**:
+One determination of whether a physical session file changed and therefore needs reconciliation work.
+_Avoid_: Session scan, logical session check
+
+**Diagnostic start record**:
+Evidence that a recall diagnostic operation began, retained when diagnostics mode is `all`.
+_Avoid_: Progress record, trace start
+
+**Diagnostic completion record**:
+The bounded outcome, counts, and costs of one completed or failed recall diagnostic operation.
+_Avoid_: Performance dump, trace end
+
+**Phase timing**:
+The exclusive elapsed time attributed to one named part of a recall diagnostic operation.
+_Avoid_: Nested timing, overlapping timing
+
+**Unattributed time**:
+The nonnegative part of a recall diagnostic operation's elapsed time not assigned to a phase timing.
+_Avoid_: Other phase, overhead bucket
+
+**Active diagnostic log**:
+The current bounded local sequence of recall diagnostic records.
+_Avoid_: Telemetry stream, trace file
+
+**Retained predecessor**:
+The one previous active diagnostic log kept after rotation.
+_Avoid_: Log archive, diagnostic history
+
 **Active-session freshness barrier**:
 The mandatory live session reconciliation completed from Pi's trusted current session path before a recall search opens zvec for reading.
 _Avoid_: Search-time full scan, eventual active-session indexing

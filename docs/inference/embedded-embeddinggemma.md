@@ -132,6 +132,15 @@ The tests use an injected node-llama-cpp boundary, a temporary HTTP server, and 
 
 These are deterministic adapter and service measurements. They do not stand in for real-model or real-device acceptance.
 
+After distribution approval and an explicit pinned-artifact download, run the unchanged quality corpus separately for CPU and one supported accelerator:
+
+```bash
+npm run evaluate:embeddinggemma -- --device cpu
+npm run evaluate:embeddinggemma -- --device cuda # or metal/vulkan
+```
+
+The command never downloads a model, never reads production sessions, and never rewrites the Octen report. It records the complete model, prompt, tokenizer, canary, backend, adapter, selected device, candidate-policy, cache, quality, timing, throughput, and storage evidence in `docs/evaluation/embeddinggemma-quality-<device>.json`. See the [embedded profile acceptance ledger](../evaluation/embedded-profile-acceptance.md).
+
 ## External evidence still pending
 
 This environment has no legal approval to accept the Gemma terms and no operator-approved 333,590,944-byte model download. No real CPU or accelerator model run was performed. The following evidence remains pending:

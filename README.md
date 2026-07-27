@@ -257,6 +257,8 @@ npm run --silent model:qmd-query-planner -- remove --approve
 
 Injecting a planner profile and identified embedded or HTTP adapter enables `RecallConversationService.verifyQueryPlanningCapability()`. It does not add a query-planned search mode; issue #29 owns retrieval and ranking integration. Artifact-only workflows never start inference or indexing. First-index setup persists the verified embedded embedding selection. The mixed inference command API independently configures, verifies, repairs, and removes optional capabilities; profile changes update only their own cache/search-policy identity, while embedding profile replacement starts staging. See [Mixed inference configuration and repair](docs/inference/mixed-inference-configuration.md), [Pinned EmbeddingGemma model artifact](docs/inference/embeddinggemma-model-artifact.md), [Embedded EmbeddingGemma execution](docs/inference/embedded-embeddinggemma.md), the [recommended Qwen reranker](docs/inference/qwen-reranker.md), and the [recommended QMD query planner](docs/inference/qmd-query-planner.md) for behavior and evidence limits.
 
+[Embedded profile acceptance evidence](docs/evaluation/embedded-profile-acceptance.md) records the no-download conformance result, the unchanged Octen report identity, background interruption coverage, the live EmbeddingGemma quality command, and every external release blocker. The linked [distribution review packet](docs/inference/embedded-profile-distribution-review.md) requires maintainer approval; it does not claim legal clearance.
+
 ## Default local models
 
 The checked-in embedding defaults match `~/.pi/agent/LOCAL-AI.md`:

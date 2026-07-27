@@ -55,6 +55,29 @@ interface ConversationIndexState {
   sessions: Record<string, IndexedSessionState>;
 }
 
+/** Validated session and document identity counts persisted by one index generation. */
+export interface RecallConversationIndexStateSummary {
+  sessionCount: number;
+  documentIds: string[];
+}
+
+/** Reads validated session state for pre-activation generation conformance checks. */
+export async function readRecallConversationIndexStateSummary(
+  statePath: string,
+): Promise<RecallConversationIndexStateSummary> {
+  const state = await readConversationIndexState(statePath);
+  const documentIds = Object.values(state.sessions).flatMap((session) =>
+    session.chunks.map((chunk) => chunk.id),
+  );
+  if (new Set(documentIds).size !== documentIds.length) {
+    throw new Error(`Recall index state contains duplicate document IDs at ${statePath}`);
+  }
+  return {
+    sessionCount: Object.keys(state.sessions).length,
+    documentIds,
+  };
+}
+
 /** Progress from scanning session files before indexing changed recall evidence. */
 export interface ConversationIndexProgress {
   scannedSessions: number;
@@ -687,7 +710,6 @@ export async function indexChangedConversationSessions(
   const resolveSessionProjectIdentity = createSessionProjectIdentityResolver(
     options.resolveProjectIdentity,
   );
-  let sessionsSinceCheckpoint = 0;
   for (const sessionPath of sessionFiles) {
     throwIfIndexingAborted(options.signal);
     summary.scannedSessions += 1;
@@ -696,6 +718,7 @@ export async function indexChangedConversationSessions(
       totalSessions: sessionFiles.length,
       sessionPath,
     });
+    throwIfIndexingAborted(options.signal);
     const outcome = await runPhysicalSessionCheck({
       indexerOptions: options,
       sessionPath,
@@ -722,26 +745,20 @@ export async function indexChangedConversationSessions(
       },
     });
     if (outcome.stateChanged) {
-      sessionsSinceCheckpoint += 1;
-      if (sessionsSinceCheckpoint >= 100) {
-        await writeConversationIndexStateWithDiagnostics(
-          options.statePath,
-          state,
-          options.diagnosticMetrics,
-          options.diagnosticsClock,
-        );
-        sessionsSinceCheckpoint = 0;
-      }
+      await writeConversationIndexStateWithDiagnostics(
+        options.statePath,
+        state,
+        options.diagnosticMetrics,
+        options.diagnosticsClock,
+      );
     }
   }
 
-  if (sessionsSinceCheckpoint > 0) {
-    await writeConversationIndexStateWithDiagnostics(
-      options.statePath,
-      state,
-      options.diagnosticMetrics,
-      options.diagnosticsClock,
-    );
-  }
+  await writeConversationIndexStateWithDiagnostics(
+    options.statePath,
+    state,
+    options.diagnosticMetrics,
+    options.diagnosticsClock,
+  );
   return summary;
 }

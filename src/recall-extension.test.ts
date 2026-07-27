@@ -124,6 +124,12 @@ void test('Pi recall tool adapter propagates trusted cwd with project default an
         },
       };
     },
+    async readIndexGenerationStatus() {
+      return { active: null, staging: null };
+    },
+    async discardStagingIndexGeneration() {
+      return false;
+    },
     async reconcileSession() {
       return {
         totalChunks: 0,

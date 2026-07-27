@@ -97,7 +97,9 @@ After that initial generation exists, interactive Pi operations read it without 
 
 This keeps session parsing, tokenization, embedding-cache checks, and zvec writes out of latency-sensitive Pi lifecycle and search operations. Active conversation content remains in Pi's model context; it becomes searchable recall evidence after explicit maintenance. The incremental state skips unchanged JSONL files, cached vectors prevent unchanged text from reaching the embedding model, and the PID-owned writer lock serializes multiple index processes.
 
-Use `/pi-session-recall-index` for an explicit full catch-up and optimization. Use `--rebuild` to replace an incompatible generation while preserving tokenizer assets and cached vectors. A future compaction-aware incremental path may index only content that has left the active model context; the current implementation deliberately does not approximate that behavior with whole-session work.
+Use `/pi-session-recall-index` for an explicit full catch-up and optimization. Use `--rebuild` to build a first or replacement generation while preserving tokenizer assets and cached vectors. Rebuild writes to staging while searches keep using the active generation. It catches up files changed during the build, optimizes and validates staging, then switches active selection atomically. An interrupted or failed build remains resumable until `RecallConversationService.discardStagingIndexGeneration()` explicitly removes it.
+
+A future compaction-aware incremental path may index only content that has left the active model context; the current implementation deliberately does not approximate that behavior with whole-session work.
 
 ## Use
 
@@ -146,7 +148,7 @@ Search shapes the full fused candidate pool before applying the requested result
 
 Each duplicate group retains every suppressed candidate with its source geometry and fusion components. Neighbor context retains every contributing atomic chunk. A deep-rerank HTTP, JSON, coverage, index, or score failure rejects that deep search; default hybrid search never calls the reranker.
 
-After the quality gate passes, `/pi-session-recall-index` performs a manual full catch-up and optimizes zvec. Use `/pi-session-recall-index --rebuild` when a compatibility error requires a replacement generation. Automatic lifecycle ingestion never creates or replaces an incompatible generation. A search against a missing, locked, or incompatible generation fails without clearing another process's lock.
+After the quality gate passes, `/pi-session-recall-index` performs a manual full catch-up and optimizes zvec. Use `/pi-session-recall-index --rebuild` when a compatibility error requires a replacement generation. Rebuild uses a staging writer lock that does not block active-generation search. Automatic lifecycle ingestion never creates or replaces an incompatible generation. A search against a missing, locked, or incompatible active generation fails without clearing another process's lock.
 
 ## Exact Octen tokenizer
 
@@ -175,7 +177,9 @@ Each index generation has a separately versioned `index-manifest.json`. It ident
 - project identity, lineage policy versions, and a canonical digest of personal lineage declarations;
 - zvec schema, ordinary and case-preserving FTS configuration, FP32 vector storage, and pinned HNSW parameters.
 
-The extension validates the complete manifest before opening or updating zvec. Missing or mismatched manifests are incompatible. The error reports every mismatched field and points to the implemented `/pi-session-recall-index --rebuild` operation. Rebuild removes only zvec, incremental state, and the old manifest under the writer lock; it preserves tokenizer assets and cached vectors. The quality gate must pass before the production command can run.
+The extension validates the complete manifest before opening or updating zvec. Missing or mismatched manifests are incompatible. The error reports every mismatched field and points to `/pi-session-recall-index --rebuild`. Each managed generation lives under `index-generations/<generation-id>/` with its own `zvec/`, `index-state.json`, `index-manifest.json`, and writer lock. Atomic `active-generation.json` and `staging-generation.json` files select the searchable and resumable generations.
+
+Before activation, rebuild optimizes staging and validates its manifest, fresh canary, zvec dimensions, session state, document counts, stored documents, and dense vectors. A failure does not change active selection. Rebuild preserves tokenizer assets and the profile-bound embedding cache. The quality gate must pass before the production command can run. Pre-generation installations remain readable through their legacy paths until an explicit rebuild selects a managed generation.
 
 Embedding text is normalized to Unicode NFC under `unicode-nfc-v1`. Cache identity includes the normalized-text SHA-256; full served-model identity and dimensions; tokenizer revision, assets, library, and encode options; chunk-policy version; and normalization version. A model, text, tokenizer, policy, normalization, or dimension change therefore misses rather than reusing incompatible geometry.
 
@@ -241,7 +245,7 @@ The checked-in embedding defaults match `~/.pi/agent/LOCAL-AI.md`:
 | Dimensions      | `2560`                         |
 | Batch size      | `16`                           |
 
-The embedding endpoint must implement `POST /v1/embeddings` with the OpenAI request and response shape. Read-only search embeds the fixed canary before every query, so an in-process model swap is rejected before zvec opens. On ordinary indexing, an all-hit cache-only rebuild makes no Octen call; the first cache miss validates a fresh canary before any new chunk text reaches the model, preventing new-model vectors from entering an old generation. Explicit `--rebuild` refreshes and preflights the canary before deleting the old generation.
+The embedding endpoint must implement `POST /v1/embeddings` with the OpenAI request and response shape. Read-only search embeds the fixed canary before every query, so an in-process model swap is rejected before zvec opens. On ordinary incremental indexing, an all-hit cache-only update makes no Octen call; the first cache miss validates a fresh canary before any new chunk text reaches the model, preventing new-model vectors from entering an active generation. Explicit `--rebuild` preflights the canary before staging writes and verifies it again before atomic activation; it never deletes the old active generation.
 
 The manifest stores one canonical FP32 canary vector and uses its exact hash as embedding-cache identity. Compatibility compares a fresh canary by cosine similarity with a minimum of `0.9995`. This tolerates the measured geometry variation across llama.cpp parallel slots while rejecting larger drift. A tolerated rebuild retains the persisted canonical hash and can reuse vectors; a canary below the floor creates a new identity and misses the old cache.
 

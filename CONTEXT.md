@@ -104,6 +104,18 @@ _Avoid_: Final match, semantic match
 Readable context formed from a winning atomic conversation chunk and its valid contiguous siblings in the same visible text run. The contributing chunks remain individually identified.
 _Avoid_: Expanded transcript, joined messages
 
+**Index generation**:
+One self-consistent vector store, incremental session state, and index manifest built with one embedding profile.
+_Avoid_: Index directory, database
+
+**Active index generation**:
+The complete, validated index generation selected atomically for recall search and incremental maintenance.
+_Avoid_: Current database, production index
+
+**Staging index generation**:
+One resumable index generation built and validated without changing the active index generation.
+_Avoid_: Temporary index, partial active index
+
 **Index manifest**:
 The versioned identity of the model, tokenizer, chunk policy, provenance schema, and zvec schema used by one index generation.
 _Avoid_: Index state, configuration

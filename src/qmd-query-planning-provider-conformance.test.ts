@@ -2,14 +2,16 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import test from 'node:test';
 
+import { RecallInferenceBackend } from './enums.js';
+
 import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 
-import { createQmdHttpQueryPlanningProvider } from './qmd-http-query-planning-provider.js';
+import { createQmdHttpQueryPlanningProvider } from './createQmdHttpQueryPlanningProvider.js';
 import { measureRecallQueryPlanningProviderConformance } from './recall-inference-conformance.js';
 import { createRecommendedQmdQueryPlanningModelProfile } from './recall-model-profiles.js';
 
-const queryPlanningRequestSchema = Type.Object({
+const QUERY_PLANNING_REQUEST_SCHEMA = Type.Object({
   model: Type.String(),
   messages: Type.Array(
     Type.Object({
@@ -28,7 +30,7 @@ const queryPlanningRequestSchema = Type.Object({
 });
 
 void test('QMD HTTP query planner passes shared bounded-plan conformance with recall intent', async (t) => {
-  const requests: Array<ReturnType<typeof Value.Parse<typeof queryPlanningRequestSchema>>> = [];
+  const requests: Array<ReturnType<typeof Value.Parse<typeof QUERY_PLANNING_REQUEST_SCHEMA>>> = [];
   const profile = createRecommendedQmdQueryPlanningModelProfile();
   const generatedOutput = [
     'hyde: Source provenance records connect recalled evidence to its Pi session location.',
@@ -44,7 +46,7 @@ void test('QMD HTTP query planner passes shared bounded-plan conformance with re
       body += chunk;
     });
     request.on('end', () => {
-      requests.push(Value.Parse(queryPlanningRequestSchema, JSON.parse(body)));
+      requests.push(Value.Parse(QUERY_PLANNING_REQUEST_SCHEMA, JSON.parse(body)));
       response.setHeader('content-type', 'application/json');
       response.end(
         JSON.stringify({
@@ -237,7 +239,7 @@ void test('query planning conformance rejects missing protected terms from a cus
         provider: {
           executionIdentity: {
             adapterId,
-            backend: 'custom',
+            backend: RecallInferenceBackend.CUSTOM,
             cacheIdentity: `${profile.profileId}:${adapterId}:${profile.promptPolicy}:${profile.grammarVersion}`,
             modelProfileId: profile.profileId,
             promptPolicy: profile.promptPolicy,

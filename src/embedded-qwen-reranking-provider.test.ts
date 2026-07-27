@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { setTimeout as sleep } from 'node:timers/promises';
 import test from 'node:test';
 
+import { EmbeddedInferenceDevicePolicy } from './enums.js';
+
 import { createEmbeddedQwenRerankingProvider } from './embedded-qwen-reranking-provider.js';
 import { measureRecallRerankingProviderConformance } from './recall-inference-conformance.js';
 import { createRecommendedQwenRerankingModelProfile } from './recall-model-profiles.js';
@@ -16,7 +18,7 @@ void test('embedded Qwen reranker restores llama.cpp score semantics and passes 
   const rankInputs: Array<{ query: string; documents: string[] }> = [];
   const provider = createEmbeddedQwenRerankingProvider(profile, {
     modelCacheDirectory: '/models',
-    device: 'cpu',
+    device: EmbeddedInferenceDevicePolicy.CPU,
     threads: 3,
     async verifyModelArtifact() {
       events.push('verify artifact');
@@ -215,7 +217,7 @@ void test('embedded Qwen reranker enforces timeout and caller cancellation', asy
   const createProvider = (requestTimeoutMilliseconds: number, operationStarted?: () => void) =>
     createEmbeddedQwenRerankingProvider(profile, {
       modelCacheDirectory: '/models',
-      device: 'cpu',
+      device: EmbeddedInferenceDevicePolicy.CPU,
       requestTimeoutMilliseconds,
       async verifyModelArtifact() {
         return '/models/qwen-reranker.gguf';
@@ -274,7 +276,7 @@ void test('embedded Qwen reranker rejects uncorrected or differently transformed
   const profile = createRecommendedQwenRerankingModelProfile();
   const provider = createEmbeddedQwenRerankingProvider(profile, {
     modelCacheDirectory: '/models',
-    device: 'cpu',
+    device: EmbeddedInferenceDevicePolicy.CPU,
     async verifyModelArtifact() {
       return '/models/qwen-reranker.gguf';
     },

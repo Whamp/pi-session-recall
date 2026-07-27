@@ -4,11 +4,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:pat
 import { performance } from 'node:perf_hooks';
 import { promisify } from 'node:util';
 
-import {
-  PROJECT_SCOPE_POLICY_VERSION,
-  RecallProjectIdentitySource,
-  RecallSearchScope,
-} from './enums.js';
+import { RecallProjectIdentitySource, RecallSearchScope } from './enums.js';
 import {
   RECALL_RANK_FUSION_VERSION,
   RECALL_RRF_RANK_CONSTANT,
@@ -42,6 +38,7 @@ import {
   PROJECT_IDENTITY_METADATA_SCHEMA_VERSION,
   PROJECT_IDENTITY_POLICY_VERSION,
   PROJECT_LINEAGE_POLICY_VERSION,
+  PROJECT_SCOPE_POLICY_VERSION,
   parseProjectIdentity,
   resolveProjectIdentity,
   type ResolvedProjectIdentity,
@@ -290,10 +287,10 @@ async function createEvaluationProjectResolver(
 }
 
 function createServiceDependencies(
-  evaluationDependencies: RecallQualityEvaluationDependencies | undefined,
-  embeddings: LocalEmbeddingClient | undefined,
   reranker: LocalRerankerClient,
   resolveProjectIdentity: (workingDirectory: string) => Promise<ResolvedProjectIdentity | null>,
+  evaluationDependencies?: RecallQualityEvaluationDependencies,
+  embeddings?: LocalEmbeddingClient,
 ): RecallConversationDependencies {
   return {
     ...(evaluationDependencies?.embeddingProfile
@@ -383,10 +380,10 @@ export async function runRecallQualityEvaluation(
     const indexService = createRecallConversationService(
       indexConfig,
       createServiceDependencies(
-        options.dependencies,
-        embeddings,
         rejectingReranker,
         projectResolver.resolveProjectIdentity,
+        options.dependencies,
+        embeddings,
       ),
     );
     const indexStarted = performance.now();
@@ -421,10 +418,10 @@ export async function runRecallQualityEvaluation(
       const searchService = createRecallConversationService(
         searchConfig,
         createServiceDependencies(
-          options.dependencies,
-          embeddings,
           rejectingReranker,
           projectResolver.resolveProjectIdentity,
+          options.dependencies,
+          embeddings,
         ),
       );
       const warmupCases = specification.cases.filter(

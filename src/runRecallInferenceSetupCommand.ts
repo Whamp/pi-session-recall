@@ -1,10 +1,10 @@
+import { RecallInferenceCapability } from './enums.js';
 import {
   configureRecallInferenceCapability,
   inspectRecallInferenceConfiguration,
   readRecallInferenceConfiguration,
   removeRecallInferenceCapability,
   repairRecallInferenceCapability,
-  type RecallInferenceCapability,
   type RecallInferenceConfigurationCandidate,
 } from './recall-inference-configuration.js';
 
@@ -36,9 +36,15 @@ type RecallInferenceSetupAction =
     }
   | { action: 'remove'; capability: RecallInferenceCapability };
 
-function parseRecallInferenceCapability(value: string | undefined): RecallInferenceCapability {
-  if (value === 'embedding' || value === 'reranking' || value === 'query-planning') {
-    return value;
+function parseRecallInferenceCapability(value?: string): RecallInferenceCapability {
+  if (value === RecallInferenceCapability.EMBEDDING) {
+    return RecallInferenceCapability.EMBEDDING;
+  }
+  if (value === RecallInferenceCapability.RERANKING) {
+    return RecallInferenceCapability.RERANKING;
+  }
+  if (value === RecallInferenceCapability.QUERY_PLANNING) {
+    return RecallInferenceCapability.QUERY_PLANNING;
   }
   throw new Error(
     `Recall inference setup capability invalid: ${value ?? 'missing'}; ${RECALL_INFERENCE_SETUP_USAGE}`,
@@ -144,9 +150,9 @@ export async function runRecallInferenceSetupCommand(
         action: 'configure',
         capability: parsedAction.capability,
         selection:
-          parsedAction.capability === 'embedding'
+          parsedAction.capability === RecallInferenceCapability.EMBEDDING
             ? configuration.embedding
-            : parsedAction.capability === 'reranking'
+            : parsedAction.capability === RecallInferenceCapability.RERANKING
               ? configuration.reranking
               : configuration.queryPlanning,
       }),
@@ -156,9 +162,9 @@ export async function runRecallInferenceSetupCommand(
   if (parsedAction.action === 'repair') {
     const configuration = await readRecallInferenceConfiguration(options.statePath);
     const selection =
-      parsedAction.capability === 'embedding'
+      parsedAction.capability === RecallInferenceCapability.EMBEDDING
         ? configuration.embedding
-        : parsedAction.capability === 'reranking'
+        : parsedAction.capability === RecallInferenceCapability.RERANKING
           ? configuration.reranking
           : configuration.queryPlanning;
     if (!selection) {

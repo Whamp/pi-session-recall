@@ -10,10 +10,10 @@ import { Value } from 'typebox/value';
 
 import type { RecallModelArtifactSource } from './recall-model-profiles.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
-import { validateRecallGgufModelArtifact } from './validate-recall-gguf-model-artifact.js';
+import { validateRecallGgufModelArtifact } from './validateRecallGgufModelArtifact.js';
 
 const RECALL_MODEL_ARTIFACT_RECEIPT_SCHEMA_VERSION = 1;
-const recallModelArtifactReceiptSchema = Type.Object(
+const RECALL_MODEL_ARTIFACT_RECEIPT_SCHEMA = Type.Object(
   {
     schemaVersion: Type.Literal(RECALL_MODEL_ARTIFACT_RECEIPT_SCHEMA_VERSION),
     profileId: Type.String(),
@@ -242,7 +242,7 @@ export function createRecallModelArtifactCache(
 
     try {
       const receipt = Value.Parse(
-        recallModelArtifactReceiptSchema,
+        RECALL_MODEL_ARTIFACT_RECEIPT_SCHEMA,
         JSON.parse(await readFile(receiptPath, 'utf8')),
       );
       if (!isExpectedArtifactReceipt(receipt, expectedReceipt)) {

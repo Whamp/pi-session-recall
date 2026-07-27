@@ -6,6 +6,7 @@ import {
   createRecallRerankingExecutionIdentity,
   type RecallIdentifiedRerankingProvider,
 } from './recall-inference-capabilities.js';
+import { RecallInferenceBackend } from './enums.js';
 import type { QwenRerankingModelProfile } from './recall-model-profiles.js';
 
 /** HTTP execution settings that do not contribute to the Qwen model profile identity. */
@@ -24,7 +25,7 @@ export function createQwenHttpRerankingProvider(
     executionIdentity: createRecallRerankingExecutionIdentity(
       profile.profileId,
       'llama-cpp-http-reranking-v1',
-      'llama-cpp-http',
+      RecallInferenceBackend.LLAMA_CPP_HTTP,
     ),
     async rerankDocuments(query, documents, signal) {
       const scores = await client.rerankDocuments(query, documents, signal);

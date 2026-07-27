@@ -10,8 +10,8 @@ import {
   createEmbeddedEmbeddingGemmaProvider,
   createEmbeddingGemmaTokenizerManifestIdentity,
   type EmbeddedEmbeddingGemmaExecutionIdentity,
-  type EmbeddedInferenceDevicePolicy,
 } from './embedded-embeddinggemma-provider.js';
+import { EmbeddedInferenceDevicePolicy } from './enums.js';
 import {
   createEmbeddingVectorCacheIdentity,
   type EmbeddingVectorCacheIdentity,
@@ -49,11 +49,11 @@ Outputs:
 
 function isEmbeddedInferenceDevicePolicy(value: string): value is EmbeddedInferenceDevicePolicy {
   return (
-    value === 'auto' ||
-    value === 'cpu' ||
-    value === 'metal' ||
-    value === 'cuda' ||
-    value === 'vulkan'
+    value === String(EmbeddedInferenceDevicePolicy.AUTO) ||
+    value === String(EmbeddedInferenceDevicePolicy.CPU) ||
+    value === String(EmbeddedInferenceDevicePolicy.METAL) ||
+    value === String(EmbeddedInferenceDevicePolicy.CUDA) ||
+    value === String(EmbeddedInferenceDevicePolicy.VULKAN)
   );
 }
 
@@ -321,8 +321,8 @@ async function runEmbeddingGemmaQualityCli(args: readonly string[]): Promise<voi
   }
 }
 
-const executablePath = process.argv[1];
-if (executablePath && import.meta.url === pathToFileURL(resolve(executablePath)).href) {
+const EXECUTABLE_PATH = process.argv[1];
+if (EXECUTABLE_PATH && import.meta.url === pathToFileURL(resolve(EXECUTABLE_PATH)).href) {
   void runEmbeddingGemmaQualityCli(process.argv.slice(2)).catch((error: unknown) => {
     const message = error instanceof Error ? (error.stack ?? error.message) : String(error);
     process.stderr.write(`${message}\n`);

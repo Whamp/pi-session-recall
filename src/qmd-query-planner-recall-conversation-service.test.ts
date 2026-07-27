@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
+import { RecallInferenceBackend } from './enums.js';
+
 import { RecallDiagnosticsMode, RecallSearchScope } from './enums.js';
 import { createRecallQueryPlanningExecutionIdentity } from './recall-inference-capabilities.js';
 import { createRecallConversationService } from './recall-conversation-service.js';
@@ -15,7 +17,7 @@ import {
 import { normalizeRecallProjectLineages } from './resolve-project-identity.js';
 import type { ConversationTextTokenizer } from './session-conversation-index.js';
 
-const tokenizer: ConversationTextTokenizer = {
+const TOKENIZER: ConversationTextTokenizer = {
   encodeConversationText(text) {
     return { ids: Array.from(text.split(/\s+/u).filter(Boolean).keys()) };
   },
@@ -86,7 +88,7 @@ void test('conversation service verifies replacement planners without rebuilding
     executionIdentity: createRecallQueryPlanningExecutionIdentity(
       recommendedProfile,
       firstAdapterId,
-      'custom',
+      RecallInferenceBackend.CUSTOM,
       7_000,
     ),
     async planRecallQuery() {
@@ -101,7 +103,7 @@ void test('conversation service verifies replacement planners without rebuilding
     embeddingProvider,
     queryPlanningProfile: recommendedProfile,
     queryPlanner: firstPlanner,
-    loadTokenizer: async () => tokenizer,
+    loadTokenizer: async () => TOKENIZER,
   });
   await firstService.index();
 
@@ -128,7 +130,7 @@ void test('conversation service verifies replacement planners without rebuilding
     executionIdentity: createRecallQueryPlanningExecutionIdentity(
       recommendedProfile,
       adapterOnlyId,
-      'custom',
+      RecallInferenceBackend.CUSTOM,
       7_500,
     ),
     async planRecallQuery() {
@@ -142,7 +144,7 @@ void test('conversation service verifies replacement planners without rebuilding
     embeddingProvider,
     queryPlanningProfile: recommendedProfile,
     queryPlanner: adapterOnlyPlanner,
-    loadTokenizer: async () => tokenizer,
+    loadTokenizer: async () => TOKENIZER,
   });
   const adapterOnlyVerification = await adapterOnlyService.verifyQueryPlanningCapability();
   const adapterOnlySearch = await adapterOnlyService.search('source provenance', 1, {
@@ -169,7 +171,7 @@ void test('conversation service verifies replacement planners without rebuilding
     executionIdentity: createRecallQueryPlanningExecutionIdentity(
       replacementProfile,
       replacementAdapterId,
-      'custom',
+      RecallInferenceBackend.CUSTOM,
       8_000,
     ),
     async planRecallQuery() {
@@ -184,7 +186,7 @@ void test('conversation service verifies replacement planners without rebuilding
     embeddingProvider,
     queryPlanningProfile: replacementProfile,
     queryPlanner: replacementPlanner,
-    loadTokenizer: async () => tokenizer,
+    loadTokenizer: async () => TOKENIZER,
   });
 
   const replacementVerification = await replacementService.verifyQueryPlanningCapability();

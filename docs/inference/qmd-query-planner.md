@@ -85,7 +85,7 @@ node --import tsx --test \
   src/qmd-query-planning-provider-conformance.test.ts \
   src/embedded-qmd-query-planning-provider.test.ts \
   src/qmd-query-planner-recall-conversation-service.test.ts \
-  src/manage-recall-qmd-query-planner-model.test.ts
+  src/runRecallQmdQueryPlannerModelCommand.test.ts
 ```
 
 The same `measureRecallQueryPlanningProviderConformance` harness exercises the built-in HTTP and embedded adapters. Fixed providers prove ordered output, typed bounds, optional HyDE, recall-intent prompt transport, protected terms, profile/adapter/policy/cache identity, timeout, cancellation, wrong-model rejection, grammar failure, and automatic same-profile CPU fallback. The service test builds one temporary real zvec generation, replaces planner profile and adapter, verifies both, and searches the unchanged generation in hybrid mode.

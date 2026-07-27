@@ -4,14 +4,19 @@ import {
   createEmbeddedEmbeddingGemmaProvider,
   createEmbeddingGemmaTokenizerManifestIdentity,
 } from './embedded-embeddinggemma-provider.js';
-import { createLlamaCppHttpEmbeddingProvider } from './llama-cpp-http-embedding-provider.js';
+import { createLlamaCppHttpEmbeddingProvider } from './createLlamaCppHttpEmbeddingProvider.js';
 import type { RecallConversationConfig } from './recall-conversation-config.js';
 import {
   createRecallConversationService,
   type RecallConversationService,
 } from './recall-conversation-service.js';
-import type {
+import {
+  EmbeddedInferenceDevicePolicy,
   RecallInferenceArtifactState,
+  RecallInferenceBackend,
+  RecallInferenceCapability,
+} from './enums.js';
+import type {
   RecallInferenceConfigurationCandidate,
   RecallInferenceDeviceStatus,
 } from './recall-inference-configuration.js';
@@ -20,14 +25,20 @@ import { createRecommendedEmbeddingGemmaModelProfile } from './recall-model-prof
 import { createRecommendedEmbeddingGemmaConversationRuntime } from './recommended-embeddinggemma-conversation-service.js';
 
 function mapRecallModelArtifactState(state: string): RecallInferenceArtifactState {
-  if (
-    state === 'valid' ||
-    state === 'missing' ||
-    state === 'partial' ||
-    state === 'corrupt' ||
-    state === 'incompatible'
-  ) {
-    return state;
+  if (state === String(RecallInferenceArtifactState.VALID)) {
+    return RecallInferenceArtifactState.VALID;
+  }
+  if (state === String(RecallInferenceArtifactState.MISSING)) {
+    return RecallInferenceArtifactState.MISSING;
+  }
+  if (state === String(RecallInferenceArtifactState.PARTIAL)) {
+    return RecallInferenceArtifactState.PARTIAL;
+  }
+  if (state === String(RecallInferenceArtifactState.CORRUPT)) {
+    return RecallInferenceArtifactState.CORRUPT;
+  }
+  if (state === String(RecallInferenceArtifactState.INCOMPATIBLE)) {
+    return RecallInferenceArtifactState.INCOMPATIBLE;
   }
   throw new Error(`Recall EmbeddingGemma artifact state unsupported: ${state}`);
 }
@@ -62,10 +73,10 @@ export function createRecommendedEmbeddingGemmaInferenceCandidate(
   }
 
   return {
-    capability: 'embedding',
+    capability: RecallInferenceCapability.EMBEDDING,
     candidateId: 'recommended-embeddinggemma-embedded',
     profileId: profile.profileId,
-    backend: 'embedded',
+    backend: RecallInferenceBackend.EMBEDDED,
     adapterId: 'node-llama-cpp-embedded-v2',
     endpoint: null,
     device,
@@ -97,7 +108,7 @@ export function createRecommendedEmbeddingGemmaInferenceCandidate(
         return {
           profileId: profile.profileId,
           adapterId: runtime.executionIdentity.adapter,
-          backend: 'embedded' as const,
+          backend: RecallInferenceBackend.EMBEDDED,
           cacheIdentity: verification.embeddingProfileId,
           measurement: { capabilityVerificationCount: 1 },
         };
@@ -122,7 +133,7 @@ function createRecommendedEmbeddingGemmaHttpServiceRuntime(config: RecallConvers
   const modelCacheDirectory = join(dirname(config.manifestPath), 'models');
   const tokenizerProvider = createEmbeddedEmbeddingGemmaProvider(profile, {
     modelCacheDirectory,
-    device: 'cpu',
+    device: EmbeddedInferenceDevicePolicy.CPU,
   });
   const service = createRecallConversationService(config, {
     embeddingProfile: profile,
@@ -165,10 +176,10 @@ export function createRecommendedEmbeddingGemmaHttpInferenceCandidate(
   }
 
   return {
-    capability: 'embedding',
+    capability: RecallInferenceCapability.EMBEDDING,
     candidateId: 'recommended-embeddinggemma-http',
     profileId: profile.profileId,
-    backend: 'llama-cpp-http',
+    backend: RecallInferenceBackend.LLAMA_CPP_HTTP,
     adapterId: 'llama-cpp-http-embedding-v1',
     endpoint: config.embeddingBaseUrl,
     device: null,
@@ -198,7 +209,7 @@ export function createRecommendedEmbeddingGemmaHttpInferenceCandidate(
         return {
           profileId: profile.profileId,
           adapterId: 'llama-cpp-http-embedding-v1',
-          backend: 'llama-cpp-http' as const,
+          backend: RecallInferenceBackend.LLAMA_CPP_HTTP,
           cacheIdentity: verification.embeddingProfileId,
           measurement: { capabilityVerificationCount: 1 },
         };

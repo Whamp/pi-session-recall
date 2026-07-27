@@ -11,7 +11,7 @@ import { readNodeErrorCode } from './read-node-error-code.js';
 const RECALL_INDEX_GENERATION_SELECTION_VERSION = 1;
 const RECALL_INDEX_GENERATION_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,127}$/u;
 
-const activeRecallIndexGenerationSchema = Type.Object(
+const ACTIVE_RECALL_INDEX_GENERATION_SCHEMA = Type.Object(
   {
     version: Type.Literal(RECALL_INDEX_GENERATION_SELECTION_VERSION),
     generationId: Type.String({ pattern: '^[a-z0-9][a-z0-9-]{0,127}$' }),
@@ -21,7 +21,7 @@ const activeRecallIndexGenerationSchema = Type.Object(
   { additionalProperties: false },
 );
 
-const stagingRecallIndexGenerationSchema = Type.Object(
+const STAGING_RECALL_INDEX_GENERATION_SCHEMA = Type.Object(
   {
     version: Type.Literal(RECALL_INDEX_GENERATION_SELECTION_VERSION),
     generationId: Type.String({ pattern: '^[a-z0-9][a-z0-9-]{0,127}$' }),
@@ -142,7 +142,7 @@ async function readActiveRecallIndexGenerationSelection(
   config: RecallIndexGenerationCoordinatorConfig,
 ): Promise<ActiveRecallIndexGenerationSelection | null> {
   return readRecallIndexGenerationSelection(config.activeGenerationPath, 'active', (selection) =>
-    Value.Parse(activeRecallIndexGenerationSchema, selection),
+    Value.Parse(ACTIVE_RECALL_INDEX_GENERATION_SCHEMA, selection),
   );
 }
 
@@ -150,7 +150,7 @@ async function readStagingRecallIndexGenerationSelection(
   config: RecallIndexGenerationCoordinatorConfig,
 ): Promise<StagingRecallIndexGenerationSelection | null> {
   return readRecallIndexGenerationSelection(config.stagingGenerationPath, 'staging', (selection) =>
-    Value.Parse(stagingRecallIndexGenerationSchema, selection),
+    Value.Parse(STAGING_RECALL_INDEX_GENERATION_SCHEMA, selection),
   );
 }
 

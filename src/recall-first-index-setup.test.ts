@@ -240,7 +240,12 @@ void test('conversation service measures a bounded sample and full rebuild reuse
       monotonicMilliseconds += 5;
       return {
         encodeConversationText(text) {
-          return { ids: Array.from(text).map((_, index) => index) };
+          return {
+            ids: Array.from(text).map((character, index) => {
+              void character;
+              return index;
+            }),
+          };
         },
       };
     },

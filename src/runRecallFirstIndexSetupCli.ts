@@ -1,22 +1,27 @@
+import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { applyRecallQualityPolicyToConversationConfig } from './apply-recall-quality-policy.js';
+import { applyRecallQualityPolicyToConversationConfig } from './applyRecallQualityPolicyToConversationConfig.js';
 import { loadRecallConversationConfig } from './recall-conversation-config.js';
 import { runRecallFirstIndexSetupCommand } from './recall-first-index-setup-command.js';
 import {
   readRecallInferenceConfiguration,
   type RecallInferenceConfigurationCandidate,
 } from './recall-inference-configuration.js';
-import { runRecallInferenceSetupCommand } from './recall-inference-setup-command.js';
+import { runRecallInferenceSetupCommand } from './runRecallInferenceSetupCommand.js';
 import {
   createRecommendedEmbeddingGemmaHttpInferenceCandidate,
   createRecommendedEmbeddingGemmaInferenceCandidate,
 } from './recommended-embeddinggemma-inference-candidate.js';
 import { createRecommendedEmbeddingGemmaConversationRuntime } from './recommended-embeddinggemma-conversation-service.js';
-import { createRecommendedOptionalInferenceCandidates } from './recommended-optional-inference-candidates.js';
+import {
+  createRecommendedOptionalInferenceCandidates,
+  readRecommendedOptionalInferenceConformance,
+} from './createRecommendedOptionalInferenceCandidates.js';
 import {
   createConfiguredRecallInferenceRuntime,
   resolveRecallInferenceConfigurationPath,
+  type RecallInferenceAdapterRegistry,
 } from './configured-recall-inference-runtime.js';
 import {
   readRecallQualityGateDecision,
@@ -27,37 +32,41 @@ import {
 export async function runRecallFirstIndexSetupCli(
   argumentsList: readonly string[],
   inferenceCandidates?: readonly RecallInferenceConfigurationCandidate[],
+  adapterRegistries: readonly RecallInferenceAdapterRegistry[] = [],
 ): Promise<void> {
   const qualityGateDecision = await readRecallQualityGateDecision(RECALL_QUALITY_RESULTS_PATH);
   const configured = await loadRecallConversationConfig();
   const config = applyRecallQualityPolicyToConversationConfig(configured, qualityGateDecision);
   if (argumentsList[0] === 'inference') {
+    const optionalConformance = await readRecommendedOptionalInferenceConformance(
+      join(dirname(config.manifestPath), 'inference-conformance.json'),
+    );
     await runRecallInferenceSetupCommand(argumentsList.slice(1), {
       statePath: resolveRecallInferenceConfigurationPath(config),
       candidates: inferenceCandidates ?? [
         createRecommendedEmbeddingGemmaInferenceCandidate(config),
         createRecommendedEmbeddingGemmaHttpInferenceCandidate(config),
-        ...createRecommendedOptionalInferenceCandidates(config),
+        ...createRecommendedOptionalInferenceCandidates(config, optionalConformance),
+        ...adapterRegistries.flatMap((registry) => registry.candidates),
       ],
     });
     return;
   }
   await runRecallFirstIndexSetupCommand(argumentsList, {
     config,
-    qualityGateDecision,
     async createConfiguredServiceRuntime() {
       const inferenceConfiguration = await readRecallInferenceConfiguration(
         resolveRecallInferenceConfigurationPath(config),
       );
       return inferenceConfiguration.embedding
-        ? createConfiguredRecallInferenceRuntime(config)
+        ? createConfiguredRecallInferenceRuntime(config, { adapterRegistries })
         : createRecommendedEmbeddingGemmaConversationRuntime(config);
     },
   });
 }
 
-const invokedPath = process.argv[1];
-if (invokedPath && import.meta.url === pathToFileURL(invokedPath).href) {
+const INVOKED_PATH = process.argv[1];
+if (INVOKED_PATH && import.meta.url === pathToFileURL(INVOKED_PATH).href) {
   runRecallFirstIndexSetupCli(process.argv.slice(2)).catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
     process.stderr.write(`${message}\n`);

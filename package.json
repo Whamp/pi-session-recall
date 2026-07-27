@@ -12,13 +12,13 @@
   "scripts": {
     "test": "node --import tsx --test src/**/*.test.ts",
     "evaluate:recall": "node --import tsx src/evaluate-recall-quality.ts",
-    "evaluate:embeddinggemma": "node --import tsx src/evaluate-embeddinggemma-quality.ts",
+    "evaluate:embeddinggemma": "node --import tsx src/evaluateEmbeddingGemmaRecallQuality.ts",
     "evidence:embedded:deterministic": "node --import tsx --test src/recall-inference-conformance.test.ts src/embedded-embeddinggemma-provider.test.ts src/embeddinggemma-recall-conversation-service.test.ts src/embedded-qwen-reranking-provider.test.ts src/qwen-reranker-recall-conversation-service.test.ts src/qmd-query-planning-provider-conformance.test.ts src/embedded-qmd-query-planning-provider.test.ts src/qmd-query-planner-recall-conversation-service.test.ts src/run-recall-quality-evaluation.test.ts src/recall-quality-corpus.test.ts src/recall-background-index-conversation-service.test.ts",
     "replay:session-import": "node --import tsx src/replaySessionImportCorpus.ts",
-    "model:embeddinggemma": "node --import tsx src/manage-recall-embeddinggemma-model.ts",
-    "model:qwen-reranker": "node --import tsx src/manage-recall-qwen-reranker-model.ts",
-    "model:qmd-query-planner": "node --import tsx src/manage-recall-qmd-query-planner-model.ts",
-    "setup:recall": "node --import tsx src/setup-recall-first-index.ts",
+    "model:embeddinggemma": "node --import tsx src/runRecallEmbeddingGemmaModelCommand.ts",
+    "model:qwen-reranker": "node --import tsx src/runRecallQwenRerankerModelCommand.ts",
+    "model:qmd-query-planner": "node --import tsx src/runRecallQmdQueryPlannerModelCommand.ts",
+    "setup:recall": "node --import tsx src/runRecallFirstIndexSetupCli.ts",
     "typecheck": "tsc --noEmit",
     "lint": "oxlint --type-aware src",
     "format:check": "oxfmt --check ."

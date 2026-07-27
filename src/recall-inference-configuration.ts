@@ -5,40 +5,30 @@ import { dirname } from 'node:path';
 import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 
+import {
+  RecallInferenceArtifactState,
+  RecallInferenceBackend,
+  RecallInferenceCapability,
+} from './enums.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
 
 const RECALL_INFERENCE_CONFIGURATION_VERSION = 1;
 
-const recallInferenceCapabilitySchema = Type.Union([
-  Type.Literal('embedding'),
-  Type.Literal('reranking'),
-  Type.Literal('query-planning'),
-]);
-const recallInferenceBackendSchema = Type.Union([
-  Type.Literal('embedded'),
-  Type.Literal('llama-cpp-http'),
-  Type.Literal('custom'),
-]);
-const recallInferenceArtifactStateSchema = Type.Union([
-  Type.Literal('valid'),
-  Type.Literal('missing'),
-  Type.Literal('corrupt'),
-  Type.Literal('partial'),
-  Type.Literal('incompatible'),
-  Type.Literal('not-required'),
-]);
-const recallInferenceArtifactSchema = Type.Object(
+const RECALL_INFERENCE_CAPABILITY_SCHEMA = Type.Enum(RecallInferenceCapability);
+const RECALL_INFERENCE_BACKEND_SCHEMA = Type.Enum(RecallInferenceBackend);
+const RECALL_INFERENCE_ARTIFACT_STATE_SCHEMA = Type.Enum(RecallInferenceArtifactState);
+const RECALL_INFERENCE_ARTIFACT_SCHEMA = Type.Object(
   {
     path: Type.String({ minLength: 1 }),
     repository: Type.String({ minLength: 1 }),
     revision: Type.String({ minLength: 1 }),
     sha256: Type.String({ pattern: '^[a-f0-9]{64}$' }),
     byteSize: Type.Integer({ minimum: 1 }),
-    state: recallInferenceArtifactStateSchema,
+    state: RECALL_INFERENCE_ARTIFACT_STATE_SCHEMA,
   },
   { additionalProperties: false },
 );
-const recallInferenceDeviceSchema = Type.Object(
+const RECALL_INFERENCE_DEVICE_SCHEMA = Type.Object(
   {
     policy: Type.String({ minLength: 1 }),
     computeBackend: Type.String({ minLength: 1 }),
@@ -46,7 +36,7 @@ const recallInferenceDeviceSchema = Type.Object(
   },
   { additionalProperties: false },
 );
-const recallInferenceConformanceSchema = Type.Object(
+const RECALL_INFERENCE_CONFORMANCE_SCHEMA = Type.Object(
   {
     verifiedAt: Type.String({ format: 'date-time' }),
     cacheIdentity: Type.String({ minLength: 1 }),
@@ -54,44 +44,29 @@ const recallInferenceConformanceSchema = Type.Object(
   },
   { additionalProperties: false },
 );
-const recallConfiguredInferenceCapabilitySchema = Type.Object(
+const RECALL_CONFIGURED_INFERENCE_CAPABILITY_SCHEMA = Type.Object(
   {
-    capability: recallInferenceCapabilitySchema,
+    capability: RECALL_INFERENCE_CAPABILITY_SCHEMA,
     candidateId: Type.String({ minLength: 1 }),
     profileId: Type.String({ minLength: 1 }),
-    backend: recallInferenceBackendSchema,
+    backend: RECALL_INFERENCE_BACKEND_SCHEMA,
     adapterId: Type.String({ minLength: 1 }),
     endpoint: Type.Union([Type.Null(), Type.String({ minLength: 1 })]),
-    device: Type.Union([Type.Null(), recallInferenceDeviceSchema]),
-    artifact: Type.Union([Type.Null(), recallInferenceArtifactSchema]),
-    conformance: recallInferenceConformanceSchema,
+    device: Type.Union([Type.Null(), RECALL_INFERENCE_DEVICE_SCHEMA]),
+    artifact: Type.Union([Type.Null(), RECALL_INFERENCE_ARTIFACT_SCHEMA]),
+    conformance: RECALL_INFERENCE_CONFORMANCE_SCHEMA,
   },
   { additionalProperties: false },
 );
-const recallInferenceConfigurationSchema = Type.Object(
+const RECALL_INFERENCE_CONFIGURATION_SCHEMA = Type.Object(
   {
     version: Type.Literal(RECALL_INFERENCE_CONFIGURATION_VERSION),
-    embedding: Type.Union([Type.Null(), recallConfiguredInferenceCapabilitySchema]),
-    reranking: Type.Union([Type.Null(), recallConfiguredInferenceCapabilitySchema]),
-    queryPlanning: Type.Union([Type.Null(), recallConfiguredInferenceCapabilitySchema]),
+    embedding: Type.Union([Type.Null(), RECALL_CONFIGURED_INFERENCE_CAPABILITY_SCHEMA]),
+    reranking: Type.Union([Type.Null(), RECALL_CONFIGURED_INFERENCE_CAPABILITY_SCHEMA]),
+    queryPlanning: Type.Union([Type.Null(), RECALL_CONFIGURED_INFERENCE_CAPABILITY_SCHEMA]),
   },
   { additionalProperties: false },
 );
-
-/** Inference capability configured and verified independently by guided setup. */
-export type RecallInferenceCapability = 'embedding' | 'reranking' | 'query-planning';
-
-/** Supported execution location without changing model-profile semantics. */
-export type RecallInferenceBackend = 'embedded' | 'llama-cpp-http' | 'custom';
-
-/** Current local artifact health; HTTP and artifact-free custom adapters use not-required. */
-export type RecallInferenceArtifactState =
-  | 'valid'
-  | 'missing'
-  | 'corrupt'
-  | 'partial'
-  | 'incompatible'
-  | 'not-required';
 
 /** Immutable artifact identity recorded beside one selected embedded capability. */
 export interface RecallInferenceArtifactIdentity {
@@ -153,7 +128,7 @@ export interface RecallInferenceConfigurationCandidate {
 
 /** Persisted mixed inference selections; optional capabilities remain null until selected. */
 export type RecallInferenceConfiguration = ReturnType<
-  typeof Value.Parse<typeof recallInferenceConfigurationSchema>
+  typeof Value.Parse<typeof RECALL_INFERENCE_CONFIGURATION_SCHEMA>
 >;
 
 /** Clock and explicit artifact consent used while changing one capability. */
@@ -198,10 +173,10 @@ function readConfiguredCapability(
   configuration: RecallInferenceConfiguration,
   capability: RecallInferenceCapability,
 ): RecallInferenceConfiguration['embedding'] {
-  if (capability === 'embedding') {
+  if (capability === RecallInferenceCapability.EMBEDDING) {
     return configuration.embedding;
   }
-  if (capability === 'reranking') {
+  if (capability === RecallInferenceCapability.RERANKING) {
     return configuration.reranking;
   }
   return configuration.queryPlanning;
@@ -212,10 +187,10 @@ function replaceConfiguredCapability(
   capability: RecallInferenceCapability,
   selection: RecallInferenceConfiguration['embedding'],
 ): RecallInferenceConfiguration {
-  if (capability === 'embedding') {
+  if (capability === RecallInferenceCapability.EMBEDDING) {
     return { ...configuration, embedding: selection };
   }
-  if (capability === 'reranking') {
+  if (capability === RecallInferenceCapability.RERANKING) {
     return { ...configuration, reranking: selection };
   }
   return { ...configuration, queryPlanning: selection };
@@ -239,7 +214,9 @@ function assertCandidateHealthAcceptable(
   candidate: RecallInferenceConfigurationCandidate,
   health: RecallInferenceCandidateHealth,
 ): void {
-  const expectedArtifactState = candidate.artifact ? 'valid' : 'not-required';
+  const expectedArtifactState = candidate.artifact
+    ? RecallInferenceArtifactState.VALID
+    : RecallInferenceArtifactState.NOT_REQUIRED;
   if (health.artifactState !== expectedArtifactState || health.requiredRepair) {
     throw new Error(
       `Recall ${candidate.capability} configuration requires repair for ${candidate.candidateId}: ${health.requiredRepair ?? `expected artifact state ${expectedArtifactState}, received ${health.artifactState}`}`,
@@ -273,7 +250,7 @@ export async function readRecallInferenceConfiguration(
 ): Promise<RecallInferenceConfiguration> {
   try {
     const parsed: unknown = JSON.parse(await readFile(statePath, 'utf8'));
-    return Value.Parse(recallInferenceConfigurationSchema, parsed);
+    return Value.Parse(RECALL_INFERENCE_CONFIGURATION_SCHEMA, parsed);
   } catch (error) {
     if (readNodeErrorCode(error) === 'ENOENT') {
       return createEmptyRecallInferenceConfiguration();
@@ -290,7 +267,7 @@ export async function writeRecallInferenceConfiguration(
   statePath: string,
   configuration: RecallInferenceConfiguration,
 ): Promise<void> {
-  const validated = Value.Parse(recallInferenceConfigurationSchema, configuration);
+  const validated = Value.Parse(RECALL_INFERENCE_CONFIGURATION_SCHEMA, configuration);
   await mkdir(dirname(statePath), { recursive: true });
   const temporaryPath = `${statePath}.${process.pid}.${randomUUID()}.tmp`;
   await writeFile(temporaryPath, `${JSON.stringify(validated)}\n`, 'utf8');
@@ -304,7 +281,9 @@ export async function configureRecallInferenceCapability(
   options: ConfigureRecallInferenceCapabilityOptions = {},
 ): Promise<RecallInferenceConfiguration> {
   let health = await candidate.inspectHealth();
-  const expectedArtifactState = candidate.artifact ? 'valid' : 'not-required';
+  const expectedArtifactState = candidate.artifact
+    ? RecallInferenceArtifactState.VALID
+    : RecallInferenceArtifactState.NOT_REQUIRED;
   if (health.artifactState !== expectedArtifactState || health.requiredRepair) {
     const prepareArtifact = candidate.prepareArtifact;
     if (!prepareArtifact || !options.approvedArtifactChange) {
@@ -321,7 +300,7 @@ export async function configureRecallInferenceCapability(
   const current = await readRecallInferenceConfiguration(statePath);
   const previousSelection = readConfiguredCapability(current, candidate.capability);
   if (
-    candidate.capability === 'embedding' &&
+    candidate.capability === RecallInferenceCapability.EMBEDDING &&
     previousSelection &&
     previousSelection.profileId !== candidate.profileId
   ) {
@@ -352,7 +331,7 @@ export async function configureRecallInferenceCapability(
     }
   }
   const selectedAt = options.nowIsoTimestamp?.() ?? new Date().toISOString();
-  const selection = Value.Parse(recallConfiguredInferenceCapabilitySchema, {
+  const selection = Value.Parse(RECALL_CONFIGURED_INFERENCE_CAPABILITY_SCHEMA, {
     capability: candidate.capability,
     candidateId: candidate.candidateId,
     profileId: candidate.profileId,
@@ -402,7 +381,9 @@ export async function repairRecallInferenceCapability(
     );
   }
   let health = await candidate.inspectHealth();
-  const expectedArtifactState = candidate.artifact ? 'valid' : 'not-required';
+  const expectedArtifactState = candidate.artifact
+    ? RecallInferenceArtifactState.VALID
+    : RecallInferenceArtifactState.NOT_REQUIRED;
   if (health.artifactState !== expectedArtifactState || health.requiredRepair) {
     const repairArtifact = candidate.repairArtifact;
     if (!repairArtifact || !options.approvedArtifactRepair) {
@@ -416,7 +397,7 @@ export async function repairRecallInferenceCapability(
   assertCandidateHealthAcceptable(candidate, health);
   const conformance = await candidate.verifyCapabilityConformance();
   assertCandidateConformanceMatchesSelection(candidate, conformance);
-  const repairedSelection = Value.Parse(recallConfiguredInferenceCapabilitySchema, {
+  const repairedSelection = Value.Parse(RECALL_CONFIGURED_INFERENCE_CAPABILITY_SCHEMA, {
     ...selection,
     device: candidate.device
       ? {
@@ -442,7 +423,7 @@ export async function removeRecallInferenceCapability(
   statePath: string,
   capability: RecallInferenceCapability,
 ): Promise<RecallInferenceConfiguration> {
-  if (capability === 'embedding') {
+  if (capability === RecallInferenceCapability.EMBEDDING) {
     throw new Error(
       'Recall inference configuration cannot remove the required embedding capability',
     );
@@ -460,10 +441,14 @@ export async function inspectRecallInferenceConfiguration(
   options: InspectRecallInferenceConfigurationOptions,
 ): Promise<RecallInferenceConfigurationStatus> {
   const configuration = await readRecallInferenceConfiguration(statePath);
-  const capabilities: RecallInferenceCapability[] = ['embedding', 'reranking', 'query-planning'];
+  const capabilities: RecallInferenceCapability[] = [
+    RecallInferenceCapability.EMBEDDING,
+    RecallInferenceCapability.RERANKING,
+    RecallInferenceCapability.QUERY_PLANNING,
+  ];
   const statuses: RecallInferenceCapabilityStatus[] = [];
   for (const capability of capabilities) {
-    const required = capability === 'embedding';
+    const required = capability === RecallInferenceCapability.EMBEDDING;
     const selection = readConfiguredCapability(configuration, capability);
     if (!selection) {
       statuses.push({
@@ -518,7 +503,9 @@ export async function inspectRecallInferenceConfiguration(
         requiredRepair = `rerun ${candidate.capability} conformance for ${candidate.candidateId}: ${message}`;
       }
     }
-    const expectedArtifactState = candidate.artifact ? 'valid' : 'not-required';
+    const expectedArtifactState = candidate.artifact
+      ? RecallInferenceArtifactState.VALID
+      : RecallInferenceArtifactState.NOT_REQUIRED;
     if (health.artifactState !== expectedArtifactState && !requiredRepair) {
       requiredRepair = `restore ${candidate.candidateId} artifact: expected ${expectedArtifactState}, received ${health.artifactState}`;
     }

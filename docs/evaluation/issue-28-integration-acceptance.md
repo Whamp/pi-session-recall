@@ -43,14 +43,14 @@ The consolidated external-evidence boundary is [`embedded-profile-acceptance.md`
 
 ## #35 — Download and verify pinned EmbeddingGemma
 
-| Acceptance criterion                                                                                            | Evidence                                                                               | Status                        |
-| --------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- | ----------------------------- |
-| Profile pins revision, bytes, SHA-256, GGUF, dimensions, prompts, pooling, normalization, tokenizer, and canary | `embeddinggemma-model-profile.test.ts`; `recall-model-profiles.ts`                     | Pass — deterministic identity |
-| Download requires explicit approval                                                                             | `recall-model-artifact-cache.test.ts:17`; model command tests                          | Pass — deterministic          |
-| Immutable download activates only after size/checksum/GGUF validation                                           | `recall-model-artifact-cache.test.ts:47,138`; `validate-recall-gguf-model-artifact.ts` | Pass — deterministic fixtures |
-| Partial/corrupt downloads never replace valid cached artifacts                                                  | `recall-model-artifact-cache.test.ts:47,184`                                           | Pass — deterministic          |
-| Status/doctor distinguishes missing, partial, corrupt, valid, incompatible and gives repair                     | `recall-model-artifact-cache.test.ts:81`; model command tests                          | Pass — deterministic          |
-| Tests use local fixtures/mocked transport and never download the real model                                     | `recall-model-artifact-test-fixture.ts`; artifact tests                                | Pass — deterministic          |
+| Acceptance criterion                                                                                            | Evidence                                                                           | Status                        |
+| --------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- | ----------------------------- |
+| Profile pins revision, bytes, SHA-256, GGUF, dimensions, prompts, pooling, normalization, tokenizer, and canary | `embeddinggemma-model-profile.test.ts`; `recall-model-profiles.ts`                 | Pass — deterministic identity |
+| Download requires explicit approval                                                                             | `recall-model-artifact-cache.test.ts:17`; model command tests                      | Pass — deterministic          |
+| Immutable download activates only after size/checksum/GGUF validation                                           | `recall-model-artifact-cache.test.ts:47,138`; `validateRecallGgufModelArtifact.ts` | Pass — deterministic fixtures |
+| Partial/corrupt downloads never replace valid cached artifacts                                                  | `recall-model-artifact-cache.test.ts:47,184`                                       | Pass — deterministic          |
+| Status/doctor distinguishes missing, partial, corrupt, valid, incompatible and gives repair                     | `recall-model-artifact-cache.test.ts:81`; model command tests                      | Pass — deterministic          |
+| Tests use local fixtures/mocked transport and never download the real model                                     | `recall-model-artifact.test-utils.ts`; artifact tests                              | Pass — deterministic          |
 
 ## #36 — Build and search with embedded EmbeddingGemma
 

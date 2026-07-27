@@ -9,7 +9,7 @@ import {
   truncateHead,
 } from '@earendil-works/pi-coding-agent';
 
-import { applyRecallQualityPolicyToConversationConfig } from './apply-recall-quality-policy.js';
+import { applyRecallQualityPolicyToConversationConfig } from './applyRecallQualityPolicyToConversationConfig.js';
 import {
   createConfiguredRecallInferenceRuntime,
   resolveRecallInferenceConfigurationPath,
@@ -31,6 +31,10 @@ import { runRecallIndexCommand } from './recall-index-command.js';
 import { readRecallInferenceConfiguration } from './recall-inference-configuration.js';
 import { createRecommendedEmbeddingGemmaModelProfile } from './recall-model-profiles.js';
 import { createRecommendedEmbeddingGemmaConversationRuntime } from './recommended-embeddinggemma-conversation-service.js';
+import {
+  assertRecallInstallationConfigured,
+  resolveRecallInstallationMode,
+} from './resolveRecallInstallationMode.js';
 import {
   MAX_RECALL_FINAL_RESULT_COUNT,
   readRecallQualityGateDecision,
@@ -80,6 +84,7 @@ export default async function recallExtension(
   const inferenceConfiguration = await readRecallInferenceConfiguration(
     resolveRecallInferenceConfigurationPath(config),
   );
+  const installationMode = await resolveRecallInstallationMode(config);
   const selectedEmbeddingProfile = firstIndexSetupState.embedding?.profileId;
   const recommendedEmbeddingProfile = createRecommendedEmbeddingGemmaModelProfile();
   if (
@@ -152,6 +157,7 @@ export default async function recallExtension(
       void onUpdate;
       void toolCallId;
       recallWarningHandler = (message) => context.ui.notify(message, 'warning');
+      assertRecallInstallationConfigured(installationMode);
       const query = parameters.query.trim();
       if (!query) {
         throw new Error('Recall query must not be blank');
@@ -233,6 +239,7 @@ export default async function recallExtension(
       'Index production sessions after the quality gate; use --rebuild for detached replacement work and --status, --stop, --resume, or --discard to control it',
     async handler(argumentsText, context) {
       recallWarningHandler = (message) => context.ui.notify(message, 'warning');
+      assertRecallInstallationConfigured(installationMode);
       await runRecallIndexCommand({
         argumentsText,
         qualityGateDecision,

@@ -1,3 +1,4 @@
+import type { RecallInferenceBackend } from './enums.js';
 import type { RecallQueryPlanningModelProfile } from './recall-model-profiles.js';
 
 /** Embeds recall queries and index documents through explicitly distinct model operations. */
@@ -43,7 +44,7 @@ export interface RecallQueryPlanningProvider {
 /** Inspectable adapter, policy, timeout, and cache identity for query planning execution. */
 export interface RecallQueryPlanningExecutionIdentity {
   adapterId: string;
-  backend: 'embedded' | 'llama-cpp-http' | 'custom';
+  backend: RecallInferenceBackend;
   cacheIdentity: string;
   modelProfileId: string;
   promptPolicy: string;
@@ -77,7 +78,7 @@ export function createRecallQueryPlanningExecutionIdentity(
 /** Search and cache identity for one reranking adapter executing one model profile. */
 export interface RecallRerankingExecutionIdentity {
   adapterId: string;
-  backend: 'embedded' | 'llama-cpp-http' | 'custom';
+  backend: RecallInferenceBackend;
   cacheIdentity: string;
   modelProfileId: string;
 }

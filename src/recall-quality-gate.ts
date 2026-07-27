@@ -4,11 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 
-import {
-  PROJECT_SCOPE_POLICY_VERSION,
-  RecallProjectIdentitySource,
-  RecallSearchScope,
-} from './enums.js';
+import { RecallProjectIdentitySource, RecallSearchScope } from './enums.js';
 import {
   RECALL_RANK_FUSION_VERSION,
   RECALL_RRF_RANK_CONSTANT,
@@ -21,6 +17,7 @@ import {
   PROJECT_IDENTITY_METADATA_SCHEMA_VERSION,
   PROJECT_IDENTITY_POLICY_VERSION,
   PROJECT_LINEAGE_POLICY_VERSION,
+  PROJECT_SCOPE_POLICY_VERSION,
 } from './resolve-project-identity.js';
 import { selectRecallQualityPolicy } from './select-recall-quality-policy.js';
 

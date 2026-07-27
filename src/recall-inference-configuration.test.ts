@@ -5,8 +5,14 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import { createConfiguredRecallInferenceRuntime } from './configured-recall-inference-runtime.js';
+import {
+  RecallInferenceArtifactState,
+  RecallInferenceBackend,
+  RecallInferenceCapability,
+} from './enums.js';
 import { loadRecallConversationConfig } from './recall-conversation-config.js';
-import { runRecallInferenceSetupCommand } from './recall-inference-setup-command.js';
+import { createRecallConversationService } from './recall-conversation-service.js';
+import { runRecallInferenceSetupCommand } from './runRecallInferenceSetupCommand.js';
 import {
   configureRecallInferenceCapability,
   inspectRecallInferenceConfiguration,
@@ -17,10 +23,10 @@ import {
 } from './recall-inference-configuration.js';
 
 function createConformingCandidate(
-  capability: 'embedding' | 'reranking' | 'query-planning',
+  capability: RecallInferenceCapability,
   candidateId: string,
   profileId: string,
-  backend: 'embedded' | 'llama-cpp-http' | 'custom',
+  backend: RecallInferenceBackend,
   adapterId: string,
 ): RecallInferenceConfigurationCandidate {
   return {
@@ -29,9 +35,10 @@ function createConformingCandidate(
     profileId,
     backend,
     adapterId,
-    endpoint: backend === 'llama-cpp-http' ? `http://${capability}.test/v1` : null,
+    endpoint:
+      backend === RecallInferenceBackend.LLAMA_CPP_HTTP ? `http://${capability}.test/v1` : null,
     device:
-      backend === 'embedded'
+      backend === RecallInferenceBackend.EMBEDDED
         ? {
             policy: 'auto',
             computeBackend: 'cpu',
@@ -39,7 +46,7 @@ function createConformingCandidate(
           }
         : null,
     artifact:
-      backend === 'embedded'
+      backend === RecallInferenceBackend.EMBEDDED
         ? {
             path: `/models/${candidateId}.gguf`,
             repository: 'fixtures/models',
@@ -50,7 +57,10 @@ function createConformingCandidate(
         : null,
     async inspectHealth() {
       return {
-        artifactState: backend === 'embedded' ? 'valid' : 'not-required',
+        artifactState:
+          backend === RecallInferenceBackend.EMBEDDED
+            ? RecallInferenceArtifactState.VALID
+            : RecallInferenceArtifactState.NOT_REQUIRED,
         requiredRepair: null,
       };
     },
@@ -60,7 +70,9 @@ function createConformingCandidate(
         adapterId,
         backend,
         cacheIdentity:
-          capability === 'embedding' ? profileId : `${profileId}:${adapterId}:fixture-policy-v1`,
+          capability === RecallInferenceCapability.EMBEDDING
+            ? profileId
+            : `${profileId}:${adapterId}:fixture-policy-v1`,
         measurement: { fixtureOperations: 1 },
       };
     },
@@ -72,24 +84,24 @@ void test('mixed inference configuration requires only embeddings and verifies e
   t.after(() => rm(root, { recursive: true, force: true }));
   const statePath = join(root, 'inference-configuration.json');
   const embedding = createConformingCandidate(
-    'embedding',
+    RecallInferenceCapability.EMBEDDING,
     'embedding-embedded',
     'embedding-profile-v1',
-    'embedded',
+    RecallInferenceBackend.EMBEDDED,
     'embedding-adapter-v1',
   );
   const reranking = createConformingCandidate(
-    'reranking',
+    RecallInferenceCapability.RERANKING,
     'reranking-http',
     'reranking-profile-v1',
-    'llama-cpp-http',
+    RecallInferenceBackend.LLAMA_CPP_HTTP,
     'reranking-http-v1',
   );
   const queryPlanning = createConformingCandidate(
-    'query-planning',
+    RecallInferenceCapability.QUERY_PLANNING,
     'planning-custom',
     'planning-profile-v1',
-    'custom',
+    RecallInferenceBackend.CUSTOM,
     'planning-custom-v1',
   );
 
@@ -105,9 +117,9 @@ void test('mixed inference configuration requires only embeddings and verifies e
       configured,
     })),
     [
-      { capability: 'embedding', required: true, configured: false },
-      { capability: 'reranking', required: false, configured: false },
-      { capability: 'query-planning', required: false, configured: false },
+      { capability: RecallInferenceCapability.EMBEDDING, required: true, configured: false },
+      { capability: RecallInferenceCapability.RERANKING, required: false, configured: false },
+      { capability: RecallInferenceCapability.QUERY_PLANNING, required: false, configured: false },
     ],
   );
 
@@ -122,9 +134,9 @@ void test('mixed inference configuration requires only embeddings and verifies e
   });
 
   const configuration = await readRecallInferenceConfiguration(statePath);
-  assert.equal(configuration.embedding?.backend, 'embedded');
-  assert.equal(configuration.reranking?.backend, 'llama-cpp-http');
-  assert.equal(configuration.queryPlanning?.backend, 'custom');
+  assert.equal(configuration.embedding?.backend, RecallInferenceBackend.EMBEDDED);
+  assert.equal(configuration.reranking?.backend, RecallInferenceBackend.LLAMA_CPP_HTTP);
+  assert.equal(configuration.queryPlanning?.backend, RecallInferenceBackend.CUSTOM);
   assert.equal(configuration.embedding?.conformance.cacheIdentity, 'embedding-profile-v1');
   assert.equal(
     configuration.reranking?.conformance.cacheIdentity,
@@ -134,7 +146,7 @@ void test('mixed inference configuration requires only embeddings and verifies e
     configuration.queryPlanning?.conformance.cacheIdentity,
     'planning-profile-v1:planning-custom-v1:fixture-policy-v1',
   );
-  assert.equal(configuration.embedding?.artifact?.state, 'valid');
+  assert.equal(configuration.embedding?.artifact?.state, RecallInferenceArtifactState.VALID);
   assert.deepEqual(configuration.embedding?.device?.names, ['Fixture CPU']);
 });
 
@@ -144,25 +156,25 @@ void test('embedding backend changes reuse vectors while profile changes launch 
   const statePath = join(root, 'inference-configuration.json');
   let backgroundStartCount = 0;
   const embedded = createConformingCandidate(
-    'embedding',
+    RecallInferenceCapability.EMBEDDING,
     'embedding-embedded',
     'embedding-profile-v1',
-    'embedded',
+    RecallInferenceBackend.EMBEDDED,
     'embedding-embedded-v1',
   );
   const http = createConformingCandidate(
-    'embedding',
+    RecallInferenceCapability.EMBEDDING,
     'embedding-http',
     'embedding-profile-v1',
-    'llama-cpp-http',
+    RecallInferenceBackend.LLAMA_CPP_HTTP,
     'embedding-http-v1',
   );
   const replacement = {
     ...createConformingCandidate(
-      'embedding',
+      RecallInferenceCapability.EMBEDDING,
       'embedding-replacement',
       'embedding-profile-v2',
-      'custom',
+      RecallInferenceBackend.CUSTOM,
       'embedding-custom-v2',
     ),
     generationService: {
@@ -204,10 +216,10 @@ void test('embedding backend changes reuse vectors while profile changes launch 
 
   const failedReplacement = {
     ...createConformingCandidate(
-      'embedding',
+      RecallInferenceCapability.EMBEDDING,
       'embedding-failed-replacement',
       'embedding-profile-v3',
-      'custom',
+      RecallInferenceBackend.CUSTOM,
       'embedding-custom-v3',
     ),
     generationService: {
@@ -235,7 +247,7 @@ void test('embedding backend changes reuse vectors while profile changes launch 
   );
 
   await assert.rejects(
-    () => removeRecallInferenceCapability(statePath, 'embedding'),
+    () => removeRecallInferenceCapability(statePath, RecallInferenceCapability.EMBEDDING),
     /required embedding capability/u,
   );
 });
@@ -245,41 +257,43 @@ void test('repair and doctor preserve valid sibling capabilities and never accep
   t.after(() => rm(root, { recursive: true, force: true }));
   const statePath = join(root, 'inference-configuration.json');
   const embedding = createConformingCandidate(
-    'embedding',
+    RecallInferenceCapability.EMBEDDING,
     'embedding-custom',
     'embedding-profile-v1',
-    'custom',
+    RecallInferenceBackend.CUSTOM,
     'embedding-custom-v1',
   );
-  let rerankingArtifactState: 'valid' | 'corrupt' = 'valid';
+  let rerankingArtifactState: RecallInferenceArtifactState = RecallInferenceArtifactState.VALID;
   let rerankingRepairCount = 0;
   const reranking = {
     ...createConformingCandidate(
-      'reranking',
+      RecallInferenceCapability.RERANKING,
       'reranking-embedded',
       'reranking-profile-v1',
-      'embedded',
+      RecallInferenceBackend.EMBEDDED,
       'reranking-embedded-v1',
     ),
     async inspectHealth() {
       return {
         artifactState: rerankingArtifactState,
         requiredRepair:
-          rerankingArtifactState === 'valid' ? null : 'replace the checksum-mismatched artifact',
+          rerankingArtifactState === RecallInferenceArtifactState.VALID
+            ? null
+            : 'replace the checksum-mismatched artifact',
       } as const;
     },
     async repairArtifact(approved: boolean) {
       assert.equal(approved, true);
       rerankingRepairCount += 1;
-      rerankingArtifactState = 'valid';
+      rerankingArtifactState = RecallInferenceArtifactState.VALID;
     },
   } satisfies RecallInferenceConfigurationCandidate;
   let plannerConformanceFails = false;
   const plannerBase = createConformingCandidate(
-    'query-planning',
+    RecallInferenceCapability.QUERY_PLANNING,
     'planner-http',
     'planner-profile-v1',
-    'llama-cpp-http',
+    RecallInferenceBackend.LLAMA_CPP_HTTP,
     'planner-http-v1',
   );
   const planner = {
@@ -296,7 +310,7 @@ void test('repair and doctor preserve valid sibling capabilities and never accep
   await configureRecallInferenceCapability(statePath, reranking);
   await configureRecallInferenceCapability(statePath, planner);
   const beforeRepair = await readRecallInferenceConfiguration(statePath);
-  rerankingArtifactState = 'corrupt';
+  rerankingArtifactState = RecallInferenceArtifactState.CORRUPT;
 
   const status = await inspectRecallInferenceConfiguration(
     statePath,
@@ -305,15 +319,17 @@ void test('repair and doctor preserve valid sibling capabilities and never accep
   );
   assert.equal(status.ready, false);
   assert.match(
-    status.capabilities.find(({ capability }) => capability === 'reranking')?.requiredRepair ?? '',
+    status.capabilities.find(({ capability }) => capability === RecallInferenceCapability.RERANKING)
+      ?.requiredRepair ?? '',
     /checksum-mismatched/u,
   );
 
   await assert.rejects(
-    () => repairRecallInferenceCapability(statePath, 'reranking', reranking),
+    () =>
+      repairRecallInferenceCapability(statePath, RecallInferenceCapability.RERANKING, reranking),
     /explicit artifact repair approval/u,
   );
-  await repairRecallInferenceCapability(statePath, 'reranking', reranking, {
+  await repairRecallInferenceCapability(statePath, RecallInferenceCapability.RERANKING, reranking, {
     approvedArtifactRepair: true,
     nowIsoTimestamp: () => '2026-08-02T12:00:00.000Z',
   });
@@ -321,7 +337,7 @@ void test('repair and doctor preserve valid sibling capabilities and never accep
   assert.equal(rerankingRepairCount, 1);
   assert.deepEqual(repaired.embedding, beforeRepair.embedding);
   assert.deepEqual(repaired.queryPlanning, beforeRepair.queryPlanning);
-  assert.equal(repaired.reranking?.artifact?.state, 'valid');
+  assert.equal(repaired.reranking?.artifact?.state, RecallInferenceArtifactState.VALID);
   assert.equal(repaired.reranking?.conformance.verifiedAt, '2026-08-02T12:00:00.000Z');
 
   plannerConformanceFails = true;
@@ -332,8 +348,9 @@ void test('repair and doctor preserve valid sibling capabilities and never accep
   );
   assert.equal(doctor.ready, false);
   assert.match(
-    doctor.capabilities.find(({ capability }) => capability === 'query-planning')?.requiredRepair ??
-      '',
+    doctor.capabilities.find(
+      ({ capability }) => capability === RecallInferenceCapability.QUERY_PLANNING,
+    )?.requiredRepair ?? '',
     /planner fixture grammar mismatch/u,
   );
 
@@ -343,7 +360,10 @@ void test('repair and doctor preserve valid sibling capabilities and never accep
   );
   assert.deepEqual(await readRecallInferenceConfiguration(statePath), repaired);
 
-  const withoutPlanner = await removeRecallInferenceCapability(statePath, 'query-planning');
+  const withoutPlanner = await removeRecallInferenceCapability(
+    statePath,
+    RecallInferenceCapability.QUERY_PLANNING,
+  );
   assert.equal(withoutPlanner.queryPlanning, null);
   assert.deepEqual(withoutPlanner.embedding, repaired.embedding);
   assert.deepEqual(withoutPlanner.reranking, repaired.reranking);
@@ -354,17 +374,17 @@ void test('inference setup command emits inspectable JSON for later mixed config
   t.after(() => rm(root, { recursive: true, force: true }));
   const statePath = join(root, 'inference-configuration.json');
   const embedding = createConformingCandidate(
-    'embedding',
+    RecallInferenceCapability.EMBEDDING,
     'embedding-http',
     'embedding-profile-v1',
-    'llama-cpp-http',
+    RecallInferenceBackend.LLAMA_CPP_HTTP,
     'embedding-http-v1',
   );
   const reranking = createConformingCandidate(
-    'reranking',
+    RecallInferenceCapability.RERANKING,
     'reranking-custom',
     'reranking-profile-v1',
-    'custom',
+    RecallInferenceBackend.CUSTOM,
     'reranking-custom-v1',
   );
   const outputs: unknown[] = [];
@@ -392,16 +412,16 @@ void test('inference setup command emits inspectable JSON for later mixed config
   assert.equal((await readRecallInferenceConfiguration(statePath)).reranking, null);
 });
 
-void test('configured runtime fails closed instead of substituting an unavailable custom adapter', async (t) => {
+void test('configured runtime reconstructs registered custom adapters and rejects unavailable ones', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'recall-inference-runtime-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const config = await loadRecallConversationConfig({ homeDirectory: root, environment: {} });
   const statePath = join(root, 'inference-configuration.json');
   const customEmbedding = createConformingCandidate(
-    'embedding',
+    RecallInferenceCapability.EMBEDDING,
     'project-custom-embedding',
     'project-embedding-profile-v1',
-    'custom',
+    RecallInferenceBackend.CUSTOM,
     'project-custom-adapter-v1',
   );
   await configureRecallInferenceCapability(statePath, customEmbedding);
@@ -413,4 +433,38 @@ void test('configured runtime fails closed instead of substituting an unavailabl
       }),
     /configured embedding adapter unavailable.*no adapter was substituted/u,
   );
+
+  let customEmbeddingOperationCount = 0;
+  const runtime = await createConfiguredRecallInferenceRuntime(config, {
+    inferenceConfigurationPath: statePath,
+    adapterRegistries: [
+      {
+        candidates: [customEmbedding],
+        async createConfiguredRuntime(runtimeConfig, configuration) {
+          assert.equal(configuration.embedding?.candidateId, 'project-custom-embedding');
+          return {
+            service: createRecallConversationService(runtimeConfig, {
+              embeddingProvider: {
+                async embedQuery() {
+                  customEmbeddingOperationCount += 1;
+                  return Array<number>(runtimeConfig.embeddingDimensions).fill(0.02);
+                },
+                async embedDocuments(documents) {
+                  customEmbeddingOperationCount += documents.length;
+                  return documents.map(() =>
+                    Array<number>(runtimeConfig.embeddingDimensions).fill(0.02),
+                  );
+                },
+              },
+            }),
+            async dispose() {},
+          };
+        },
+      },
+    ],
+  });
+  await runtime.service.verifyEmbeddingCapability();
+  await runtime.dispose();
+
+  assert.equal(customEmbeddingOperationCount, 1);
 });

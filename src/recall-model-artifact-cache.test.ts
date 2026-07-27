@@ -11,7 +11,7 @@ import {
 import {
   createRecallModelArtifactFixtureGguf as createFixtureGguf,
   createRecallModelArtifactFixtureProfile as createFixtureProfile,
-} from './recall-model-artifact-test-fixture.js';
+} from './recall-model-artifact.test-utils.js';
 import { createRecommendedEmbeddingGemmaModelProfile } from './recall-model-profiles.js';
 
 void test('model artifact cache reports missing and refuses download without explicit approval', async (t) => {
@@ -167,7 +167,8 @@ void test('download rejects checksum mismatch and checksum-valid non-GGUF bytes'
         cacheDirectory: join(root, invalidCase.name),
         profile: invalidCase.profile,
         transport: {
-          async downloadArtifact(_sourceUrl, destinationPath) {
+          async downloadArtifact(sourceUrl, destinationPath) {
+            void sourceUrl;
             await writeFile(destinationPath, invalidCase.artifact);
           },
         },
@@ -192,7 +193,8 @@ void test('rejected model download remains partial and never becomes available',
     cacheDirectory: join(root, 'cache'),
     profile: createFixtureProfile(fixtureArtifact),
     transport: {
-      async downloadArtifact(_sourceUrl, destinationPath) {
+      async downloadArtifact(sourceUrl, destinationPath) {
+        void sourceUrl;
         await writeFile(destinationPath, Buffer.from('GGUF-corrupt-download'));
       },
     },

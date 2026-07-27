@@ -1,10 +1,18 @@
 import {
+  acquireSharedEmbeddedLlamaRuntime,
+  mapNodeLlamaCppComputeBackend,
+  writeEmbeddedLlamaLog,
+  type NodeLlamaCppGpuBackend,
+} from './acquireSharedEmbeddedLlamaRuntime.js';
+import {
   EMBEDDED_INFERENCE_MAX_PARALLELISM,
   EMBEDDED_NODE_LLAMA_CPP_VERSION,
-  type EmbeddedInferenceComputeBackend,
-  type EmbeddedInferenceDevicePolicy,
-  type NodeLlamaCppGpuBackend,
 } from './embedded-embeddinggemma-provider.js';
+import {
+  EmbeddedInferenceComputeBackend,
+  EmbeddedInferenceDevicePolicy,
+  RecallInferenceBackend,
+} from './enums.js';
 import {
   createRecallRerankingExecutionIdentity,
   type RecallIdentifiedRerankingProvider,
@@ -48,6 +56,7 @@ interface QwenLlamaRuntime {
 /** Minimal dynamically loaded node-llama-cpp surface required by embedded Qwen reranking. */
 export interface QwenRerankingNodeLlamaCppModule {
   version: string;
+  runtimePoolIdentity?: object;
   LlamaLogLevel: { error: unknown };
   getLlamaGpuTypes?(include: 'supported'): Promise<readonly NodeLlamaCppGpuBackend[]>;
   getLlama(options: Record<string, unknown>): Promise<QwenLlamaRuntime>;
@@ -70,14 +79,22 @@ export interface EmbeddedQwenRerankingProviderOptions {
 /** Search and cache evidence for one selected embedded Qwen reranking adapter. */
 export interface EmbeddedQwenRerankingExecutionIdentity extends RecallRerankingExecutionIdentity {
   adapterId: typeof NODE_LLAMA_CPP_RERANKING_ADAPTER_ID;
-  backend: 'embedded';
+  backend: RecallInferenceBackend.EMBEDDED;
   computeBackend: EmbeddedInferenceComputeBackend | 'pending';
   deviceNames: readonly string[];
   devicePolicy: EmbeddedInferenceDevicePolicy;
-  fallbackFromComputeBackend: Exclude<EmbeddedInferenceComputeBackend, 'cpu'> | null;
+  fallbackFromComputeBackend:
+    | EmbeddedInferenceComputeBackend.METAL
+    | EmbeddedInferenceComputeBackend.CUDA
+    | EmbeddedInferenceComputeBackend.VULKAN
+    | null;
   nodeLlamaCppVersion: typeof EMBEDDED_NODE_LLAMA_CPP_VERSION;
   parallelism: number;
-  probedComputeBackends: readonly Exclude<EmbeddedInferenceComputeBackend, 'cpu'>[];
+  probedComputeBackends: readonly (
+    | EmbeddedInferenceComputeBackend.METAL
+    | EmbeddedInferenceComputeBackend.CUDA
+    | EmbeddedInferenceComputeBackend.VULKAN
+  )[];
 }
 
 /** Embedded reranking provider with corrected llama.cpp scores and explicit native disposal. */
@@ -88,6 +105,7 @@ export interface EmbeddedQwenRerankingProvider extends RecallIdentifiedReranking
 
 interface LoadedQwenRerankingResources {
   runtime: QwenLlamaRuntime;
+  releaseRuntime(): Promise<void>;
   model: QwenLlamaModel;
   contexts: readonly QwenLlamaRankingContext[];
   contextOperations: Promise<void>[];
@@ -99,6 +117,7 @@ async function loadInstalledNodeLlamaCpp(): Promise<QwenRerankingNodeLlamaCppMod
     const loaded = await import('node-llama-cpp');
     return {
       version: EMBEDDED_NODE_LLAMA_CPP_VERSION,
+      runtimePoolIdentity: loaded,
       LlamaLogLevel: loaded.LlamaLogLevel,
       getLlamaGpuTypes: loaded.getLlamaGpuTypes,
       getLlama: loaded.getLlama,
@@ -110,6 +129,18 @@ async function loadInstalledNodeLlamaCpp(): Promise<QwenRerankingNodeLlamaCppMod
       { cause: error },
     );
   }
+}
+
+function isQwenLlamaRuntime(value: unknown): value is QwenLlamaRuntime {
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+  const gpu: unknown = Reflect.get(value, 'gpu');
+  return (
+    (gpu === false || gpu === 'metal' || gpu === 'cuda' || gpu === 'vulkan') &&
+    typeof Reflect.get(value, 'loadModel') === 'function' &&
+    typeof Reflect.get(value, 'dispose') === 'function'
+  );
 }
 
 function readQwenRerankingErrorMessage(error: unknown): string {
@@ -225,7 +256,7 @@ export function createEmbeddedQwenRerankingProvider(
       `Recall embedded Qwen reranker idle timeout invalid: expected a nonnegative integer in milliseconds, received ${idleTimeoutMilliseconds}`,
     );
   }
-  const devicePolicy = options.device ?? 'auto';
+  const devicePolicy = options.device ?? EmbeddedInferenceDevicePolicy.AUTO;
   const verifyModelArtifact =
     options.verifyModelArtifact ??
     (async () => {
@@ -254,12 +285,12 @@ export function createEmbeddedQwenRerankingProvider(
   const baseExecutionIdentity = createRecallRerankingExecutionIdentity(
     profile.profileId,
     NODE_LLAMA_CPP_RERANKING_ADAPTER_ID,
-    'embedded',
+    RecallInferenceBackend.EMBEDDED,
   );
   let executionIdentity: Readonly<EmbeddedQwenRerankingExecutionIdentity> = Object.freeze({
     ...baseExecutionIdentity,
     adapterId: NODE_LLAMA_CPP_RERANKING_ADAPTER_ID,
-    backend: 'embedded',
+    backend: RecallInferenceBackend.EMBEDDED,
     computeBackend: 'pending',
     deviceNames: [],
     devicePolicy,
@@ -277,7 +308,7 @@ export function createEmbeddedQwenRerankingProvider(
       await context.dispose();
     }
     await loaded.model.dispose();
-    await loaded.runtime.dispose();
+    await loaded.releaseRuntime();
   }
 
   function clearQwenRerankingIdleDisposal(): void {
@@ -322,21 +353,36 @@ export function createEmbeddedQwenRerankingProvider(
     computeBackend: EmbeddedInferenceComputeBackend,
   ): Promise<LoadedQwenRerankingResources> {
     let runtime: QwenLlamaRuntime | undefined;
+    let releaseRuntime: (() => Promise<void>) | undefined;
     let model: QwenLlamaModel | undefined;
     const contexts: QwenLlamaRankingContext[] = [];
     try {
-      const requestedGpu = computeBackend === 'cpu' ? false : computeBackend;
-      runtime = await nodeLlamaCpp.getLlama({
-        build: 'never',
-        debug: false,
-        gpu: requestedGpu,
-        logger(_level: unknown, message: string) {
-          process.stderr.write(`[Recall native inference] ${message.replace(/\n+$/u, '')}\n`);
-        },
-        logLevel: nodeLlamaCpp.LlamaLogLevel.error,
-        progressLogs: false,
-        skipDownload: true,
-      });
+      const requestedGpu =
+        computeBackend === EmbeddedInferenceComputeBackend.CPU ? false : computeBackend;
+      const loadRuntime = () =>
+        nodeLlamaCpp.getLlama({
+          build: 'never',
+          debug: false,
+          gpu: requestedGpu,
+          logger: writeEmbeddedLlamaLog,
+          logLevel: nodeLlamaCpp.LlamaLogLevel.error,
+          progressLogs: false,
+          skipDownload: true,
+        });
+      if (nodeLlamaCpp.runtimePoolIdentity) {
+        const lease = await acquireSharedEmbeddedLlamaRuntime(
+          nodeLlamaCpp.runtimePoolIdentity,
+          `${nodeLlamaCpp.version}:${computeBackend}`,
+          loadRuntime,
+          isQwenLlamaRuntime,
+          (sharedRuntime) => sharedRuntime.dispose(),
+        );
+        runtime = lease.runtime;
+        releaseRuntime = () => lease.release();
+      } else {
+        runtime = await loadRuntime();
+        releaseRuntime = () => runtime?.dispose() ?? Promise.resolve();
+      }
       if (runtime.gpu !== requestedGpu) {
         throw new Error(
           `Recall embedded Qwen reranker compute backend mismatch: requested ${computeBackend}, received ${runtime.gpu === false ? 'cpu' : runtime.gpu}`,
@@ -345,7 +391,7 @@ export function createEmbeddedQwenRerankingProvider(
       model = await runtime.loadModel({
         modelPath,
         gpuLayers:
-          computeBackend === 'cpu'
+          computeBackend === EmbeddedInferenceComputeBackend.CPU
             ? 0
             : {
                 fitContext: { contextSize, embeddingContext: true },
@@ -362,6 +408,7 @@ export function createEmbeddedQwenRerankingProvider(
       }
       return {
         runtime,
+        releaseRuntime,
         model,
         contexts,
         contextOperations: contexts.map(() => Promise.resolve()),
@@ -372,7 +419,7 @@ export function createEmbeddedQwenRerankingProvider(
         await context.dispose();
       }
       await model?.dispose();
-      await runtime?.dispose();
+      await releaseRuntime?.();
       throw error;
     }
   }
@@ -395,15 +442,29 @@ export function createEmbeddedQwenRerankingProvider(
         );
       }
       const probedComputeBackends =
-        devicePolicy === 'auto' && nodeLlamaCpp.getLlamaGpuTypes
-          ? (await nodeLlamaCpp.getLlamaGpuTypes('supported')).filter(
-              (backend): backend is Exclude<NodeLlamaCppGpuBackend, false> => backend !== false,
-            )
+        devicePolicy === EmbeddedInferenceDevicePolicy.AUTO && nodeLlamaCpp.getLlamaGpuTypes
+          ? (await nodeLlamaCpp.getLlamaGpuTypes('supported'))
+              .filter(
+                (backend): backend is Exclude<NodeLlamaCppGpuBackend, false> => backend !== false,
+              )
+              .map(mapNodeLlamaCppComputeBackend)
           : [];
       const requestedComputeBackend: EmbeddedInferenceComputeBackend =
-        devicePolicy === 'auto' ? (probedComputeBackends[0] ?? 'cpu') : devicePolicy;
+        devicePolicy === EmbeddedInferenceDevicePolicy.AUTO
+          ? (probedComputeBackends[0] ?? EmbeddedInferenceComputeBackend.CPU)
+          : devicePolicy === EmbeddedInferenceDevicePolicy.CPU
+            ? EmbeddedInferenceComputeBackend.CPU
+            : devicePolicy === EmbeddedInferenceDevicePolicy.METAL
+              ? EmbeddedInferenceComputeBackend.METAL
+              : devicePolicy === EmbeddedInferenceDevicePolicy.CUDA
+                ? EmbeddedInferenceComputeBackend.CUDA
+                : EmbeddedInferenceComputeBackend.VULKAN;
       let selectedComputeBackend = requestedComputeBackend;
-      let fallbackFromComputeBackend: Exclude<EmbeddedInferenceComputeBackend, 'cpu'> | null = null;
+      let fallbackFromComputeBackend:
+        | EmbeddedInferenceComputeBackend.METAL
+        | EmbeddedInferenceComputeBackend.CUDA
+        | EmbeddedInferenceComputeBackend.VULKAN
+        | null = null;
       try {
         resources = await loadQwenRerankingResourcesForBackend(
           nodeLlamaCpp,
@@ -411,27 +472,34 @@ export function createEmbeddedQwenRerankingProvider(
           requestedComputeBackend,
         );
       } catch (error) {
-        if (devicePolicy !== 'auto' || requestedComputeBackend === 'cpu') {
+        if (
+          devicePolicy !== EmbeddedInferenceDevicePolicy.AUTO ||
+          requestedComputeBackend === EmbeddedInferenceComputeBackend.CPU
+        ) {
           throw error;
         }
         fallbackFromComputeBackend = requestedComputeBackend;
-        selectedComputeBackend = 'cpu';
+        selectedComputeBackend = EmbeddedInferenceComputeBackend.CPU;
         if (!cpuFallbackWarningEmitted) {
           cpuFallbackWarningEmitted = true;
           writeWarning(
             `Recall embedded Qwen reranker accelerator initialization failed for ${requestedComputeBackend}; retrying the same profile ${profile.profileId} on CPU: ${readQwenRerankingErrorMessage(error)}`,
           );
         }
-        resources = await loadQwenRerankingResourcesForBackend(nodeLlamaCpp, modelPath, 'cpu');
+        resources = await loadQwenRerankingResourcesForBackend(
+          nodeLlamaCpp,
+          modelPath,
+          EmbeddedInferenceComputeBackend.CPU,
+        );
       }
       const deviceNames =
-        selectedComputeBackend === 'cpu'
+        selectedComputeBackend === EmbeddedInferenceComputeBackend.CPU
           ? ['CPU']
           : ((await resources.runtime.getGpuDeviceNames?.()) ?? [selectedComputeBackend]);
       executionIdentity = Object.freeze({
         ...baseExecutionIdentity,
         adapterId: NODE_LLAMA_CPP_RERANKING_ADAPTER_ID,
-        backend: 'embedded',
+        backend: RecallInferenceBackend.EMBEDDED,
         computeBackend: selectedComputeBackend,
         deviceNames: Object.freeze([...deviceNames]),
         devicePolicy,

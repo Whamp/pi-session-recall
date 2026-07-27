@@ -1,6 +1,6 @@
 import { pathToFileURL } from 'node:url';
 
-import { runRecallModelArtifactCommand } from './manage-recall-model-artifact.js';
+import { runRecallModelArtifactCommand } from './runRecallModelArtifactCommand.js';
 import type { RecallModelArtifactTransport } from './recall-model-artifact-cache.js';
 import {
   createRecommendedQwenRerankingModelProfile,
@@ -35,8 +35,8 @@ export async function runRecallQwenRerankerModelCommand(
   });
 }
 
-const invokedPath = process.argv[1];
-if (invokedPath && import.meta.url === pathToFileURL(invokedPath).href) {
+const INVOKED_PATH = process.argv[1];
+if (INVOKED_PATH && import.meta.url === pathToFileURL(INVOKED_PATH).href) {
   runRecallQwenRerankerModelCommand(process.argv.slice(2)).catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
     process.stderr.write(`${message}\n`);

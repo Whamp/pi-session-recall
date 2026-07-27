@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { EmbeddedInferenceDevicePolicy } from './enums.js';
+
 import { createEmbeddedEmbeddingGemmaProvider } from './embedded-embeddinggemma-provider.js';
 import { measureRecallEmbeddingProviderConformance } from './recall-inference-conformance.js';
 import { createRecommendedEmbeddingGemmaModelProfile } from './recall-model-profiles.js';
@@ -128,7 +130,7 @@ void test('embedded EmbeddingGemma provider passes deterministic explicit CPU an
   const provider = createEmbeddedEmbeddingGemmaProvider(profile, {
     modelCacheDirectory: '/models',
     contextSize: 2_048,
-    device: 'cpu',
+    device: EmbeddedInferenceDevicePolicy.CPU,
     threads: 3,
     async verifyModelArtifact() {
       artifactVerificationCount += 1;
@@ -270,7 +272,7 @@ void test('embedded EmbeddingGemma provider shares one model load across concurr
   let maximumActiveContextCount = 0;
   const provider = createEmbeddedEmbeddingGemmaProvider(profile, {
     modelCacheDirectory: '/models',
-    device: 'cpu',
+    device: EmbeddedInferenceDevicePolicy.CPU,
     parallelism: 2,
     async verifyModelArtifact() {
       return '/models/model.gguf';
@@ -342,7 +344,7 @@ void test('embedded EmbeddingGemma provider fails a broken explicit accelerator 
   const warnings: string[] = [];
   const provider = createEmbeddedEmbeddingGemmaProvider(profile, {
     modelCacheDirectory: '/models',
-    device: 'cuda',
+    device: EmbeddedInferenceDevicePolicy.CUDA,
     onWarning(warning) {
       warnings.push(warning);
     },
@@ -380,7 +382,7 @@ void test('embedded EmbeddingGemma provider disposes idle resources and reloads 
   let runtimeDisposalCount = 0;
   const provider = createEmbeddedEmbeddingGemmaProvider(profile, {
     modelCacheDirectory: '/models',
-    device: 'cpu',
+    device: EmbeddedInferenceDevicePolicy.CPU,
     idleTimeoutMilliseconds: 5,
     async verifyModelArtifact() {
       return '/models/model.gguf';
@@ -428,7 +430,8 @@ void test('embedded EmbeddingGemma provider disposes idle resources and reloads 
   await provider.embedQuery('first load');
   await Promise.race([
     firstIdleDisposal.promise,
-    new Promise<never>((_, reject) => {
+    new Promise<never>((resolve, reject) => {
+      void resolve;
       setTimeout(() => reject(new Error('idle resources were not disposed')), 500);
     }),
   ]);
@@ -446,7 +449,7 @@ void test('embedded EmbeddingGemma provider keeps a loaded tokenizer valid until
   let modelDisposed = false;
   const provider = createEmbeddedEmbeddingGemmaProvider(profile, {
     modelCacheDirectory: '/models',
-    device: 'cpu',
+    device: EmbeddedInferenceDevicePolicy.CPU,
     idleTimeoutMilliseconds: 5,
     async verifyModelArtifact() {
       return '/models/model.gguf';

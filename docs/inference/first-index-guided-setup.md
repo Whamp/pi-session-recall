@@ -30,7 +30,7 @@ Every successful command writes one JSON value to stdout. An agent-led setup ski
 
 `estimate` reads file metadata only. It reports the number of physical session files and their total bytes without loading a tokenizer, model, zvec, or session contents.
 
-`estimate --measure` is optional. It requires a verified embedding selection and passing quality evidence. The setup CLI applies the same selected chunk and candidate policy as the Pi extension, so the measured staging manifest remains compatible after activation. The sample accepts one through ten physical session files and spans the corpus file-size distribution. It reports:
+`estimate --measure` is optional. It requires a verified embedding selection. The setup CLI applies the selected chunk and candidate policy used by the Pi extension, so the measured staging manifest remains compatible after activation. The sample accepts one through ten physical session files and spans the corpus file-size distribution. It reports:
 
 - model and tokenizer cold-start milliseconds;
 - sampled sessions, source bytes, and dense documents;
@@ -43,7 +43,7 @@ The estimate scales measured sample time by the ratio of total corpus bytes to s
 
 The measured sample creates a resumable staging generation and writes its canonical manifest before warming the embedding cache. The full build resumes that staging generation. Canary jitter therefore cannot change the cache identity between sample and build, and unchanged sampled documents become cache hits.
 
-`start` requires passing quality evidence, a stored estimate, and the separate `--approve-build` flag. It launches a detached worker and returns its status immediately. A metadata-only estimate starts a new staging generation. A measured estimate resumes the staging generation that owns the sample manifest. The worker catches up the corpus, validates and optimizes staging, and activates it atomically.
+`start` requires a stored estimate and the separate `--approve-build` flag. It launches a detached worker and returns its status immediately. A metadata-only estimate starts a new staging generation. A measured estimate resumes the staging generation that owns the sample manifest. The worker catches up the corpus, validates and optimizes staging, and activates it atomically.
 
 Use `defer` to stop after configuration or estimation:
 
@@ -53,7 +53,7 @@ npm run --silent setup:recall -- defer
 
 Deferral preserves the selected embedding configuration, estimate, staging manifest, and cached vectors. Recall remains unavailable until the first generation activates.
 
-Estimate/build state lives at `~/.pi/agent/recall/first-index-setup.json`. Successful embedding selection also writes the authoritative capability record to `~/.pi/agent/recall/inference-configuration.json`; later [mixed inference setup](mixed-inference-configuration.md) may retain the profile while changing its backend or add and repair optional capabilities. Measured estimates, readiness checks, and first-generation launch reconstruct that authoritative selection, so changing EmbeddingGemma from embedded to HTTP cannot silently route setup work back through embedded inference. A pre-#43 first-index state without an inference-configuration record retains its documented embedded compatibility fallback. Existing background controls remain available through `/pi-session-recall-index --status`, `--stop`, `--resume`, and `--discard`.
+Estimate/build state lives at `~/.pi/agent/recall/first-index-setup.json`. Successful embedding selection also writes the authoritative capability record to `~/.pi/agent/recall/inference-configuration.json`; later [mixed inference setup](mixed-inference-configuration.md) may retain the profile while changing its backend or add and repair optional capabilities. Measured estimates, readiness checks, and first-generation launch reconstruct that authoritative selection. A verified HTTP embedding can complete the first-index flow without an embedded-only setup-state record, so changing EmbeddingGemma from embedded to HTTP cannot silently route inference back through the embedded provider. A pre-#43 first-index state without an inference-configuration record retains its documented embedded compatibility fallback. Existing background controls remain available through `/pi-session-recall-index --status`, `--stop`, `--resume`, and `--discard`.
 
 ## Deterministic verification
 
@@ -64,7 +64,8 @@ The committed tests use temporary session corpora, deterministic embedding provi
 - sampling stays within its requested bound;
 - the sample manifest and cache are reused by the full rebuild;
 - configuration is absent before explicit selection and retained after deferral;
-- build approval is separate from download approval and estimation; and
+- build approval is separate from download approval and estimation;
+- quality-evaluation state does not block measurement or an explicitly approved build;
 - a sample-created staging generation resumes through the background service boundary; and
 - post-selection measurement and build control use the authoritative mixed inference runtime rather than the initial embedded selection.
 

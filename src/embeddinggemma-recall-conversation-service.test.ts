@@ -13,7 +13,7 @@ import {
   createEmbeddingGemmaTokenizerManifestIdentity,
 } from './embedded-embeddinggemma-provider.js';
 import { RecallDiagnosticsMode, RecallSearchScope } from './enums.js';
-import { createLlamaCppHttpEmbeddingProvider } from './llama-cpp-http-embedding-provider.js';
+import { createLlamaCppHttpEmbeddingProvider } from './createLlamaCppHttpEmbeddingProvider.js';
 import { readRecallIndexManifest } from './recall-index-manifest.js';
 import {
   createRecallConversationService,
@@ -22,7 +22,7 @@ import {
 import { createRecommendedEmbeddingGemmaModelProfile } from './recall-model-profiles.js';
 import { normalizeRecallProjectLineages } from './resolve-project-identity.js';
 
-const embeddingHttpRequestSchema = Type.Object({
+const EMBEDDING_HTTP_REQUEST_SCHEMA = Type.Object({
   model: Type.String(),
   input: Type.Array(Type.String()),
 });
@@ -138,7 +138,10 @@ void test('recall service builds and searches one embedded-profile generation ac
               return {
                 embeddingVectorSize: 768,
                 tokenize(text) {
-                  return Array.from(text).map((_, index) => index + 1);
+                  return Array.from(text).map((character, index) => {
+                    void character;
+                    return index + 1;
+                  });
                 },
                 async createEmbeddingContext() {
                   return {
@@ -204,7 +207,7 @@ void test('recall service builds and searches one embedded-profile generation ac
       body += chunk;
     });
     request.on('end', () => {
-      const payload = Value.Parse(embeddingHttpRequestSchema, JSON.parse(body));
+      const payload = Value.Parse(EMBEDDING_HTTP_REQUEST_SCHEMA, JSON.parse(body));
       httpRequests.push(payload);
       response.setHeader('content-type', 'application/json');
       response.end(
@@ -302,7 +305,10 @@ void test('recall service indexes with the same profile after automatic accelera
               return {
                 embeddingVectorSize: 768,
                 tokenize(text) {
-                  return Array.from(text).map((_, index) => index + 1);
+                  return Array.from(text).map((character, index) => {
+                    void character;
+                    return index + 1;
+                  });
                 },
                 async createEmbeddingContext() {
                   return {

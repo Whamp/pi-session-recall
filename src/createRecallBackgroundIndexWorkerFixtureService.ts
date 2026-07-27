@@ -11,7 +11,7 @@ import {
 import { RECALL_EMBEDDING_CANARY_TEXT } from './recall-index-manifest.js';
 import { openZvecConversationStore } from './zvec-conversation-store.js';
 
-function isUnknownFunction(value: unknown): value is (...arguments_: unknown[]) => unknown {
+function isUnknownFunction(value: unknown): value is (...argumentsList: unknown[]) => unknown {
   return typeof value === 'function';
 }
 
@@ -89,8 +89,8 @@ export function createRecallBackgroundIndexWorkerFixtureService(
       return new Proxy(store, {
         get(target, property): unknown {
           if (property === 'upsertChunks') {
-            return (...arguments_: Parameters<typeof target.upsertChunks>) => {
-              const result = target.upsertChunks(...arguments_);
+            return (...argumentsList: Parameters<typeof target.upsertChunks>) => {
+              const result = target.upsertChunks(...argumentsList);
               interruptAtFixturePhase('store-write');
               return result;
             };
@@ -102,15 +102,15 @@ export function createRecallBackgroundIndexWorkerFixtureService(
             };
           }
           if (property === 'fetchVectors') {
-            return (...arguments_: Parameters<typeof target.fetchVectors>) => {
-              const result = target.fetchVectors(...arguments_);
+            return (...argumentsList: Parameters<typeof target.fetchVectors>) => {
+              const result = target.fetchVectors(...argumentsList);
               interruptAtFixturePhase('pre-activation');
               return result;
             };
           }
           const value: unknown = Reflect.get(target, property, target);
           return isUnknownFunction(value)
-            ? (...arguments_: unknown[]) => value.apply(target, arguments_)
+            ? (...argumentsList: unknown[]) => value.apply(target, argumentsList)
             : value;
         },
       });

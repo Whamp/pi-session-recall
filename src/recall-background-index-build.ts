@@ -31,7 +31,7 @@ const ACTIVE_BACKGROUND_INDEX_PROCESS_STATES = new Set<RecallBackgroundIndexProc
   RecallBackgroundIndexProcessState.STOPPING,
 ]);
 
-const backgroundIndexStatusSchema = Type.Object(
+const BACKGROUND_INDEX_STATUS_SCHEMA = Type.Object(
   {
     version: Type.Literal(RECALL_BACKGROUND_INDEX_STATUS_VERSION),
     buildId: Type.String({ minLength: 1 }),
@@ -72,7 +72,7 @@ const backgroundIndexStatusSchema = Type.Object(
   { additionalProperties: false },
 );
 
-const backgroundIndexServiceConfigSchema = Type.Object(
+const BACKGROUND_INDEX_SERVICE_CONFIG_SCHEMA = Type.Object(
   {
     sessionsDirectory: Type.String({ minLength: 1 }),
     databasePath: Type.String({ minLength: 1 }),
@@ -122,12 +122,12 @@ const backgroundIndexServiceConfigSchema = Type.Object(
   { additionalProperties: false },
 );
 
-const backgroundIndexWorkerRequestSchema = Type.Object(
+const BACKGROUND_INDEX_WORKER_REQUEST_SCHEMA = Type.Object(
   {
     version: Type.Literal(1),
     buildId: Type.String({ minLength: 1 }),
     statusPath: Type.String({ minLength: 1 }),
-    serviceConfig: backgroundIndexServiceConfigSchema,
+    serviceConfig: BACKGROUND_INDEX_SERVICE_CONFIG_SCHEMA,
     serviceFactory: Type.Object(
       {
         moduleUrl: Type.String({ minLength: 1 }),
@@ -206,7 +206,7 @@ export async function readRecallBackgroundIndexWorkerRequest(
 ): Promise<RecallBackgroundIndexWorkerRequest> {
   try {
     const parsed: unknown = JSON.parse(await readFile(requestPath, 'utf8'));
-    const request = Value.Parse(backgroundIndexWorkerRequestSchema, parsed);
+    const request = Value.Parse(BACKGROUND_INDEX_WORKER_REQUEST_SCHEMA, parsed);
     return {
       ...request,
       serviceConfig: {
@@ -231,7 +231,7 @@ export async function readRecallBackgroundIndexStatusRecord(
 ): Promise<RecallBackgroundIndexGenerationStatus | null> {
   try {
     const parsed: unknown = JSON.parse(await readFile(statusPath, 'utf8'));
-    return Value.Parse(backgroundIndexStatusSchema, parsed);
+    return Value.Parse(BACKGROUND_INDEX_STATUS_SCHEMA, parsed);
   } catch (error) {
     if (readNodeErrorCode(error) === 'ENOENT') {
       return null;
@@ -247,7 +247,7 @@ async function writeRecallBackgroundIndexStatusRecord(
   statusPath: string,
   status: RecallBackgroundIndexGenerationStatus,
 ): Promise<void> {
-  const validated = Value.Parse(backgroundIndexStatusSchema, status);
+  const validated = Value.Parse(BACKGROUND_INDEX_STATUS_SCHEMA, status);
   await writeAtomicJson(statusPath, validated);
 }
 

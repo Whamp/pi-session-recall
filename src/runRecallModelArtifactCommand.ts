@@ -89,6 +89,8 @@ export async function runRecallModelArtifactCommand(
         return cache.repairArtifact({ approved });
       case 'remove':
         return cache.removeArtifact({ approved });
+      default:
+        throw new Error(`Recall model artifact action unsupported: ${String(action)}`);
     }
   })();
   const writeOutput =

@@ -2,7 +2,7 @@
 
 Conversation Recall persists independently verified embedding, reranking, and query-planning selections in `~/.pi/agent/recall/inference-configuration.json`. Embeddings are required. Reranking and query planning remain `null` until explicitly selected and can be removed without affecting the embedding generation.
 
-The earlier `first-index-setup.json` remains the estimate/build workflow state. A successful `select-embeddinggemma --approve-download` now also writes the authoritative embedded embedding selection to `inference-configuration.json`. Existing installations that have only the earlier state continue through the pre-#43 runtime fallback.
+The earlier `first-index-setup.json` remains the estimate/build workflow state. A successful `select-embeddinggemma --approve-download` also writes the authoritative embedded embedding selection to `inference-configuration.json`. Guided measurement and build use any verified embedding selection, including HTTP. On upgrade, an existing legacy index manifest creates `legacy-octen-installation.json`; only that durable marker preserves implicit Octen behavior. A fresh installation without inference state, setup state, or a legacy manifest refuses search and indexing until setup verifies an embedding.
 
 ## Operator status and doctor
 
@@ -36,13 +36,13 @@ inference repair CAPABILITY [--approve-artifact]
 inference remove CAPABILITY
 ```
 
-The command receives an explicit candidate catalog. The default CLI catalog contains embedded and llama.cpp HTTP EmbeddingGemma plus the recommended embedded/HTTP reranker and planner candidates. Project-specific custom adapters register through the same `RecallInferenceConfigurationCandidate` contract; there is no arbitrary URL/field mapper.
+The command receives an explicit candidate catalog. The default CLI catalog contains embedded and llama.cpp HTTP EmbeddingGemma plus the recommended embedded/HTTP reranker and planner candidates. Project-specific custom adapters register a candidate catalog and a `RecallInferenceAdapterRegistry` runtime factory; there is no arbitrary URL/field mapper.
 
 A candidate is accepted only after `verifyCapabilityConformance()` succeeds and returns the exact candidate profile, backend, adapter, and cache identity. Built-in candidate implementations call the public `RecallConversationService` verification operations. Custom candidates must call the relevant shared harness:
 
 - `measureRecallEmbeddingProviderConformance()` with independent query/document vectors;
 - `measureRecallRerankingProviderConformance()` with independent ordered scores; or
-- `measureRecallQueryPlanningProviderConformance()` with an independent fixed typed plan.
+- `measureRecallQueryPlanningProviderConformance()` with live grammar, bounds, protected-term, intent, timeout, and cache-identity checks. An independent fixed plan may add strict cross-adapter parity.
 
 Failed preparation, artifact validation, identity matching, conformance, or staging launch leaves the previous atomic configuration unchanged.
 
@@ -58,9 +58,11 @@ Repair requires the exact selected candidate. Artifact mutation requires separat
 
 ## Runtime reconstruction
 
-`createConfiguredRecallInferenceRuntime()` reconstructs exact recommended embedded or llama.cpp HTTP selections. It does not substitute a model, backend, adapter, endpoint, or device policy. The HTTP EmbeddingGemma backend retains the same profile identity and uses the checksum-pinned local GGUF tokenizer. Unknown candidate IDs and custom adapters without project runtime wiring fail explicitly.
+`createConfiguredRecallInferenceRuntime()` reconstructs exact recommended embedded or llama.cpp HTTP selections. It does not substitute a model, backend, adapter, endpoint, or device policy. The HTTP EmbeddingGemma backend retains the same profile identity and uses the checksum-pinned local GGUF tokenizer.
 
-Detached embedding replacement uses a candidate-specific named background service factory. The child therefore receives the selected embedding semantics even when the new configuration is committed only after launch succeeds.
+A custom integration registers its setup candidates and one `RecallInferenceAdapterRegistry`. Persisted candidate, profile, backend, adapter, and endpoint identities select that registry after restart. An unavailable registry fails explicitly. The registry creates the complete mixed runtime, so it also owns any custom detached-worker factory required for background indexing.
+
+Detached built-in embedding replacement uses a candidate-specific named background service factory. The child therefore receives the selected embedding semantics even when the new configuration is committed only after launch succeeds.
 
 ## Deterministic evidence
 
@@ -88,9 +90,29 @@ node --import tsx --test \
   src/recall-background-index-conversation-service.test.ts
 ```
 
+## Production optional-capability evidence
+
+The built-in planner runs live grammar, bounds, protected-term, intent, timeout, and cache-identity checks during `configure` and `doctor`. The reranker also requires independently accepted ordered scores so it cannot certify its own score semantics.
+
+Place accepted evidence at `~/.pi/agent/recall/inference-conformance.json`:
+
+```json
+{
+  "reranking": {
+    "query": "source provenance",
+    "documents": ["Relevant document", "Irrelevant document"],
+    "expectedScores": [0.9, 0.1],
+    "maximumAbsoluteDifference": 0.000001
+  },
+  "queryPlanning": null
+}
+```
+
+The CLI loads this file for `configure`, `repair`, and `doctor`. A missing reranking fixture fails closed. The optional `queryPlanning.expectedPlan` field adds exact output parity to the planner's live structural checks.
+
 ## External evidence still pending
 
-No model download, legal approval, or real device run was available for #43. The default optional built-in candidates therefore fail closed when fixed conformance evidence is absent; their implementations do not derive expected output from the provider under test. Release acceptance still requires:
+No approved model download, legal approval, or real device run was available for #43. Release acceptance still requires:
 
 1. Gemma distribution and notice approval.
 2. Independently accepted EmbeddingGemma query/document vectors for embedded and HTTP comparison.
@@ -99,4 +121,4 @@ No model download, legal approval, or real device run was available for #43. The
 5. Real CPU and accelerated cold/warm latency, fallback/device identity, throughput, index size, and cache-size measurements listed in the capability documents.
 6. Project-specific runtime factory evidence for any custom adapter selected for production.
 
-Supplying those unchanged fixtures to `createRecommendedOptionalInferenceCandidates()` activates the same deterministic setup path. The missing evidence must be produced against the pinned artifacts; the acceptance tolerances and model identities must not be weakened to make a run pass.
+Write the accepted fixtures unchanged to `inference-conformance.json`, or pass them directly to `createRecommendedOptionalInferenceCandidates()`. Produce missing evidence against the pinned artifacts; do not weaken tolerances or model identities to make a run pass.

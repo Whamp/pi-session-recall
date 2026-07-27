@@ -1,12 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import {
-  PROJECT_SCOPE_POLICY_VERSION,
-  RecallEvidenceRelation,
-  RecallProjectIdentitySource,
-  RecallSearchScope,
-} from './enums.js';
+import { RecallEvidenceRelation, RecallProjectIdentitySource, RecallSearchScope } from './enums.js';
+import { PROJECT_SCOPE_POLICY_VERSION } from './resolve-project-identity.js';
 
 void test('project scope provenance values keep their persisted wire spellings', () => {
   assert.equal(PROJECT_SCOPE_POLICY_VERSION, 1);

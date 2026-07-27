@@ -19,6 +19,7 @@ import {
   RecallEvidenceRelation,
   RecallLifecycleTrigger,
   RecallManualMaintenanceTrigger,
+  RecallInferenceBackend,
   RecallProjectIdentitySource,
   RecallSearchScope,
 } from './enums.js';
@@ -77,8 +78,8 @@ import {
   type RecallQueryPlanningProviderConformanceMeasurement,
   type RecallRerankingProviderConformanceMeasurement,
 } from './recall-inference-conformance.js';
-import { createLlamaCppHttpEmbeddingProvider } from './llama-cpp-http-embedding-provider.js';
-import { createQwenHttpRerankingProvider } from './qwen-http-reranking-provider.js';
+import { createLlamaCppHttpEmbeddingProvider } from './createLlamaCppHttpEmbeddingProvider.js';
+import { createQwenHttpRerankingProvider } from './createQwenHttpRerankingProvider.js';
 import {
   activateStagingRecallIndexGeneration,
   discardStagingRecallIndexGeneration,
@@ -690,17 +691,24 @@ function readRecallRerankingExecutionIdentity(
   if (
     !isUnknownRecord(identity) ||
     typeof identity.adapterId !== 'string' ||
-    (identity.backend !== 'embedded' &&
-      identity.backend !== 'llama-cpp-http' &&
-      identity.backend !== 'custom') ||
     typeof identity.cacheIdentity !== 'string' ||
     typeof identity.modelProfileId !== 'string'
   ) {
     return undefined;
   }
+  let backend: RecallInferenceBackend;
+  if (identity.backend === RecallInferenceBackend.EMBEDDED) {
+    backend = RecallInferenceBackend.EMBEDDED;
+  } else if (identity.backend === RecallInferenceBackend.LLAMA_CPP_HTTP) {
+    backend = RecallInferenceBackend.LLAMA_CPP_HTTP;
+  } else if (identity.backend === RecallInferenceBackend.CUSTOM) {
+    backend = RecallInferenceBackend.CUSTOM;
+  } else {
+    return undefined;
+  }
   return {
     adapterId: identity.adapterId,
-    backend: identity.backend,
+    backend,
     cacheIdentity: identity.cacheIdentity,
     modelProfileId: identity.modelProfileId,
   };
@@ -794,7 +802,7 @@ export function createRecallConversationService(
       createRecallRerankingExecutionIdentity(
         rerankingProfile.profileId,
         'custom-injected-reranking-v1',
-        'custom',
+        RecallInferenceBackend.CUSTOM,
       ))
     : null;
   if (
@@ -995,7 +1003,7 @@ export function createRecallConversationService(
   }
 
   async function readCanonicalRebuildCanary(
-    activeManifestPath: string | undefined,
+    activeManifestPath?: string,
     signal?: AbortSignal,
     diagnosticMetrics?: RecallIndexDiagnosticMetrics,
   ): Promise<number[]> {
@@ -1567,7 +1575,12 @@ export function createRecallConversationService(
                     const deepRerankStartedAtMilliseconds =
                       diagnosticsClock.monotonicMilliseconds();
                     try {
-                      return await reranker!.rerankDocuments(
+                      if (!reranker) {
+                        throw new Error(
+                          'Recall reranking became unavailable during deep-rerank search',
+                        );
+                      }
+                      return await reranker.rerankDocuments(
                         rerankerQuery,
                         documents,
                         rerankerSignal,
@@ -1622,13 +1635,14 @@ export function createRecallConversationService(
                     reciprocalRankConstant: RECALL_RRF_RANK_CONSTANT,
                     rerankPolicyVersion:
                       mode === 'deep-rerank' ? RECALL_RERANK_POLICY_VERSION : null,
-                    rerankerModel: mode === 'deep-rerank' ? rerankingProfile!.model : null,
+                    rerankerModel:
+                      mode === 'deep-rerank' && rerankingProfile ? rerankingProfile.model : null,
                     rerankerIdentity:
-                      mode === 'deep-rerank'
+                      mode === 'deep-rerank' && rerankingProfile && rerankerExecutionIdentity
                         ? {
-                            profileId: rerankingProfile!.profileId,
-                            adapterId: rerankerExecutionIdentity!.adapterId,
-                            cacheIdentity: rerankerExecutionIdentity!.cacheIdentity,
+                            profileId: rerankingProfile.profileId,
+                            adapterId: rerankerExecutionIdentity.adapterId,
+                            cacheIdentity: rerankerExecutionIdentity.cacheIdentity,
                           }
                         : null,
                     activeBranchPrior: RECALL_ACTIVE_BRANCH_PRIOR,

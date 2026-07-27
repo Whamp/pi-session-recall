@@ -76,7 +76,8 @@ export function selectRecallConversationCorpusSample(
   if (maximumSessionCount === 1) {
     return [readRequiredSampleFile(Math.floor((bySize.length - 1) / 2))];
   }
-  return Array.from({ length: maximumSessionCount }, (_, index) => {
+  return Array.from({ length: maximumSessionCount }, (value, index) => {
+    void value;
     const sampleIndex = Math.round((index * (bySize.length - 1)) / (maximumSessionCount - 1));
     return readRequiredSampleFile(sampleIndex);
   });

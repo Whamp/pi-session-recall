@@ -4,8 +4,19 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { RecallBackgroundIndexProcessState } from './enums.js';
-import { readRecallInferenceConfiguration } from './recall-inference-configuration.js';
+import {
+  EmbeddedInferenceComputeBackend,
+  EmbeddedInferenceDevicePolicy,
+  RecallBackgroundIndexProcessState,
+  RecallInferenceArtifactState,
+  RecallInferenceBackend,
+  RecallInferenceCapability,
+} from './enums.js';
+import {
+  configureRecallInferenceCapability,
+  readRecallInferenceConfiguration,
+  type RecallInferenceConfigurationCandidate,
+} from './recall-inference-configuration.js';
 import { createRecommendedEmbeddingGemmaModelProfile } from './recall-model-profiles.js';
 import {
   runRecallFirstIndexSetupCommand,
@@ -200,9 +211,9 @@ void test('first-index setup requires consent and uses the authoritative configu
         service,
         executionIdentity: {
           adapter: 'node-llama-cpp-embedded-v2' as const,
-          computeBackend: 'cpu' as const,
+          computeBackend: EmbeddedInferenceComputeBackend.CPU,
           deviceNames: ['CPU'],
-          devicePolicy: 'auto' as const,
+          devicePolicy: EmbeddedInferenceDevicePolicy.AUTO,
         },
         async dispose() {
           disposeCount += 1;
@@ -280,20 +291,9 @@ void test('first-index setup requires consent and uses the authoritative configu
       blockers: ['measured policy is stale'],
     },
   };
-  await assert.rejects(
-    () => runRecallFirstIndexSetupCommand(['estimate', '--measure'], blockedOptions),
-    /quality gate has not passed.*measured policy is stale/u,
-  );
-  await assert.rejects(
-    () => runRecallFirstIndexSetupCommand(['start', '--approve-build'], blockedOptions),
-    /quality gate has not passed.*measured policy is stale/u,
-  );
-  assert.equal(measuredSampleBound, undefined);
-  assert.equal(backgroundStartCount, 0);
-
   await runRecallFirstIndexSetupCommand(
     ['estimate', '--measure', '--sample-sessions', '2'],
-    options,
+    blockedOptions,
   );
   assert.equal(measuredSampleBound, 2);
   assert.equal(selectedServiceCreationCount, 1);
@@ -341,7 +341,7 @@ void test('first-index setup requires consent and uses the authoritative configu
   );
   assert.equal(backgroundStartCount, 0);
 
-  await runRecallFirstIndexSetupCommand(['start', '--approve-build'], options);
+  await runRecallFirstIndexSetupCommand(['start', '--approve-build'], blockedOptions);
   assert.equal(backgroundStartCount, 0);
   assert.equal(backgroundResumeCount, 1);
   assert.equal(selectedServiceCreationCount, 1);
@@ -352,4 +352,111 @@ void test('first-index setup requires consent and uses the authoritative configu
     recallReady: false,
     backgroundBuild: { ...backgroundStatus, generationId: 'sample-generation' },
   });
+});
+
+void test('first-index measurement accepts an independently configured HTTP embedding', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-first-index-http-command-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const config = createSetupCommandTestConfig(root);
+  const inferenceConfigurationPath = join(root, 'data', 'inference-configuration.json');
+  const profile = createRecommendedEmbeddingGemmaModelProfile();
+  const httpCandidate: RecallInferenceConfigurationCandidate = {
+    capability: RecallInferenceCapability.EMBEDDING,
+    candidateId: 'recommended-embeddinggemma-http',
+    profileId: profile.profileId,
+    backend: RecallInferenceBackend.LLAMA_CPP_HTTP,
+    adapterId: 'llama-cpp-http-embedding-v1',
+    endpoint: 'http://embedding.test/v1',
+    device: null,
+    artifact: null,
+    async inspectHealth() {
+      return { artifactState: RecallInferenceArtifactState.NOT_REQUIRED, requiredRepair: null };
+    },
+    async verifyCapabilityConformance() {
+      return {
+        profileId: profile.profileId,
+        adapterId: 'llama-cpp-http-embedding-v1',
+        backend: RecallInferenceBackend.LLAMA_CPP_HTTP,
+        cacheIdentity: profile.profileId,
+        measurement: { fixtureOperations: 1 },
+      };
+    },
+  };
+  await configureRecallInferenceCapability(inferenceConfigurationPath, httpCandidate);
+
+  let measuredSampleCount = 0;
+  const service: RecallFirstIndexSetupCommandService = {
+    async verifyEmbeddingCapability() {
+      throw new Error('HTTP setup fixture verification already completed');
+    },
+    async inspectConversationCorpus() {
+      return { sessionCount: 1, sourceByteSize: 100 };
+    },
+    async measureFirstIndexSample() {
+      measuredSampleCount += 1;
+      return {
+        corpus: { sessionCount: 1, sourceByteSize: 100 },
+        sampledSessionCount: 1,
+        sampledSourceByteSize: 100,
+        sampledDenseDocumentCount: 2,
+        coldStartMilliseconds: 10,
+        measuredSampleMilliseconds: 20,
+        sourceBytesPerSecond: 5_000,
+        denseDocumentsPerSecond: 100,
+        cacheHitCount: 0,
+        newlyEmbeddedDocumentCount: 2,
+        embeddingRequestCount: 1,
+        estimatedDurationMilliseconds: { minimum: 20, maximum: 30 },
+      };
+    },
+    async readIndexGenerationStatus() {
+      return { active: null, staging: null };
+    },
+    async startBackgroundIndexGeneration() {
+      throw new Error('HTTP setup fixture does not start a build');
+    },
+    async resumeBackgroundIndexGeneration() {
+      throw new Error('HTTP setup fixture does not resume a build');
+    },
+  };
+  const artifactPath = join(root, 'models', profile.source.artifact);
+  await runRecallFirstIndexSetupCommand(['estimate', '--measure'], {
+    config,
+    inferenceConfigurationPath,
+    artifactCache: {
+      async inspectArtifact() {
+        return {
+          profile,
+          status: {
+            state: 'missing',
+            artifactPath,
+            partialPaths: [],
+            repair: 'not required for this HTTP setup fixture',
+          },
+        };
+      },
+      async verifyArtifact() {
+        throw new Error('HTTP setup fixture does not verify a local artifact');
+      },
+      async diagnoseArtifact() {
+        throw new Error('HTTP setup fixture does not diagnose a local artifact');
+      },
+      async downloadArtifact() {
+        throw new Error('HTTP setup fixture does not download a local artifact');
+      },
+      async repairArtifact() {
+        throw new Error('HTTP setup fixture does not repair a local artifact');
+      },
+      async removeArtifact() {
+        throw new Error('HTTP setup fixture does not remove a local artifact');
+      },
+    },
+    metadataService: service,
+    createConfiguredServiceRuntime() {
+      return { service, async dispose() {} };
+    },
+    writeOutput() {},
+  });
+
+  assert.equal(measuredSampleCount, 1);
 });

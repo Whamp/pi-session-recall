@@ -95,7 +95,7 @@ npm run --silent setup:recall -- start --approve-build
 
 The metadata estimate performs no model work. The optional measured sample warms the same profile-bound cache that the detached full build reuses. Build approval is separate from download approval and returns after worker launch. See [Guided setup for the first index](docs/inference/first-index-guided-setup.md).
 
-Existing Octen installations can continue to create a generation through `/pi-session-recall-index --rebuild`. Later setup runs inspect and repair the independently verified capability selections without resetting valid siblings:
+On upgrade, an existing legacy index manifest writes a durable Octen migration marker. Only marked installations retain the implicit Octen path; fresh installations refuse search and indexing until setup verifies an embedding. Marked Octen installations can continue through `/pi-session-recall-index --rebuild`. Later setup runs inspect and repair independently verified capabilities without resetting valid siblings:
 
 ```bash
 npm run --silent setup:recall -- inference status

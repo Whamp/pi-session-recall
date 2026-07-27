@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { EmbeddedInferenceDevicePolicy } from './enums.js';
+
 import { createEmbeddedQmdQueryPlanningProvider } from './embedded-qmd-query-planning-provider.js';
 import { measureRecallQueryPlanningProviderConformance } from './recall-inference-conformance.js';
 import { createRecommendedQmdQueryPlanningModelProfile } from './recall-model-profiles.js';
@@ -12,7 +14,7 @@ void test('embedded QMD query planner passes shared conformance with profile gra
   let grammarText = '';
   const provider = createEmbeddedQmdQueryPlanningProvider(profile, {
     modelCacheDirectory: '/models',
-    device: 'cpu',
+    device: EmbeddedInferenceDevicePolicy.CPU,
     requestTimeoutMilliseconds: 4_321,
     async verifyModelArtifact() {
       return '/models/qmd-query-expansion-1.7B-q4_k_m.gguf';
@@ -199,7 +201,7 @@ void test('embedded QMD query planner enforces timeout and caller cancellation',
   function createPendingProvider(requestTimeoutMilliseconds: number) {
     return createEmbeddedQmdQueryPlanningProvider(profile, {
       modelCacheDirectory: '/models',
-      device: 'cpu',
+      device: EmbeddedInferenceDevicePolicy.CPU,
       requestTimeoutMilliseconds,
       async verifyModelArtifact() {
         return '/models/qmd-query-expansion-1.7B-q4_k_m.gguf';

@@ -5,6 +5,7 @@ import {
   createRecallQueryPlanningExecutionIdentity,
   type RecallIdentifiedQueryPlanningProvider,
 } from './recall-inference-capabilities.js';
+import { RecallInferenceBackend } from './enums.js';
 import type { RecallQueryPlanningModelProfile } from './recall-model-profiles.js';
 import {
   formatQmdQueryPlanningPrompt,
@@ -68,7 +69,7 @@ export function createQmdHttpQueryPlanningProvider(
     executionIdentity: createRecallQueryPlanningExecutionIdentity(
       profile,
       'llama-cpp-http-query-planning-v1',
-      'llama-cpp-http',
+      RecallInferenceBackend.LLAMA_CPP_HTTP,
       requestTimeoutMilliseconds,
     ),
     async planRecallQuery(request, signal) {

@@ -21,9 +21,9 @@ import {
 } from './recall-conversation-service.js';
 import { normalizeRecallProjectLineages } from './resolve-project-identity.js';
 
-const execFileAsync = promisify(execFile);
+const EXEC_FILE_ASYNC = promisify(execFile);
 
-const tokenizer = {
+const TOKENIZER = {
   encodeConversationText(text: string) {
     return { ids: Array.from(text.split(/\s+/u).filter(Boolean).keys()) };
   },
@@ -156,7 +156,7 @@ void test('background rebuild reports progress while active recall remains searc
       },
     },
     async loadTokenizer() {
-      return tokenizer;
+      return TOKENIZER;
     },
   };
   const activeService = createRecallConversationService(config, deterministicDependencies);
@@ -168,7 +168,8 @@ void test('background rebuild reports progress while active recall remains searc
   const backgroundService = createRecallConversationService(config, {
     ...deterministicDependencies,
     backgroundIndexServiceFactory: {
-      moduleUrl: new URL('./recall-background-index-worker-fixture.ts', import.meta.url).href,
+      moduleUrl: new URL('./createRecallBackgroundIndexWorkerFixtureService.ts', import.meta.url)
+        .href,
       exportName: 'createRecallBackgroundIndexWorkerFixtureService',
     },
   });
@@ -215,9 +216,9 @@ void test('detached staging build survives the client process that started it', 
   );
 
   const launcherPath = fileURLToPath(
-    new URL('./recall-background-index-launcher-fixture.ts', import.meta.url),
+    new URL('./recall-background-index-launcher.test-utils.ts', import.meta.url),
   );
-  const launched = await execFileAsync(
+  const launched = await EXEC_FILE_ASYNC(
     process.execPath,
     ['--import', 'tsx', launcherPath, directory, sessionsDirectory],
     { cwd: process.cwd() },
@@ -236,10 +237,11 @@ void test('detached staging build survives the client process that started it', 
       },
     },
     async loadTokenizer() {
-      return tokenizer;
+      return TOKENIZER;
     },
     backgroundIndexServiceFactory: {
-      moduleUrl: new URL('./recall-background-index-worker-fixture.ts', import.meta.url).href,
+      moduleUrl: new URL('./createRecallBackgroundIndexWorkerFixtureService.ts', import.meta.url)
+        .href,
       exportName: 'createRecallBackgroundIndexWorkerFixtureService',
     },
   });
@@ -291,10 +293,11 @@ void test('stopped background rebuild resumes from its durable session checkpoin
       },
     },
     async loadTokenizer() {
-      return tokenizer;
+      return TOKENIZER;
     },
     backgroundIndexServiceFactory: {
-      moduleUrl: new URL('./recall-background-index-worker-fixture.ts', import.meta.url).href,
+      moduleUrl: new URL('./createRecallBackgroundIndexWorkerFixtureService.ts', import.meta.url)
+        .href,
       exportName: 'createRecallBackgroundIndexWorkerFixtureService',
     },
   });
@@ -364,10 +367,11 @@ void test('background worker bootstrap failure persists one bounded actionable e
       },
     },
     async loadTokenizer() {
-      return tokenizer;
+      return TOKENIZER;
     },
     backgroundIndexServiceFactory: {
-      moduleUrl: new URL('./recall-background-index-worker-fixture.ts', import.meta.url).href,
+      moduleUrl: new URL('./createRecallBackgroundIndexWorkerFixtureService.ts', import.meta.url)
+        .href,
       exportName: 'missingRecallBackgroundIndexServiceFactory',
     },
   });
@@ -419,10 +423,13 @@ void test('crashed workers at every staging phase remain resumable and idempoten
           },
         },
         async loadTokenizer() {
-          return tokenizer;
+          return TOKENIZER;
         },
         backgroundIndexServiceFactory: {
-          moduleUrl: new URL('./recall-background-index-worker-fixture.ts', import.meta.url).href,
+          moduleUrl: new URL(
+            './createRecallBackgroundIndexWorkerFixtureService.ts',
+            import.meta.url,
+          ).href,
           exportName: 'createRecallBackgroundIndexWorkerFixtureService',
         },
       });

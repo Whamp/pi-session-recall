@@ -5,12 +5,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
+import { EmbeddedInferenceDevicePolicy } from './enums.js';
+
 import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 
 import { createEmbeddedQwenRerankingProvider } from './embedded-qwen-reranking-provider.js';
 import { RecallDiagnosticsMode, RecallSearchScope } from './enums.js';
-import { createQwenHttpRerankingProvider } from './qwen-http-reranking-provider.js';
+import { createQwenHttpRerankingProvider } from './createQwenHttpRerankingProvider.js';
 import { createRecallConversationService } from './recall-conversation-service.js';
 import { RECALL_EMBEDDING_CANARY_TEXT } from './recall-index-manifest.js';
 import {
@@ -20,12 +22,12 @@ import {
 import { normalizeRecallProjectLineages } from './resolve-project-identity.js';
 import type { ConversationTextTokenizer } from './session-conversation-index.js';
 
-const qwenServiceRerankingRequestSchema = Type.Object({
+const QWEN_SERVICE_RERANKING_REQUEST_SCHEMA = Type.Object({
   query: Type.String(),
   documents: Type.Array(Type.String()),
 });
 
-const tokenizer: ConversationTextTokenizer = {
+const TOKENIZER: ConversationTextTokenizer = {
   encodeConversationText(text) {
     return { ids: Array.from(text.split(/\s+/u).filter(Boolean).keys()) };
   },
@@ -122,7 +124,7 @@ void test('deep-rerank works end to end with built-in HTTP and embedded Qwen ada
     });
     request.on('end', () => {
       const rawPayload: unknown = JSON.parse(body);
-      const payload = Value.Parse(qwenServiceRerankingRequestSchema, rawPayload);
+      const payload = Value.Parse(QWEN_SERVICE_RERANKING_REQUEST_SCHEMA, rawPayload);
       httpRequests.push(payload);
       response.setHeader('content-type', 'application/json');
       response.end(
@@ -151,7 +153,7 @@ void test('deep-rerank works end to end with built-in HTTP and embedded Qwen ada
     embeddingProvider,
     rerankingProfile: profile,
     reranker: httpProvider,
-    loadTokenizer: async () => tokenizer,
+    loadTokenizer: async () => TOKENIZER,
   });
   const httpVerification = await httpService.verifyRerankingCapability({
     query: 'recommended evidence',
@@ -184,7 +186,7 @@ void test('deep-rerank works end to end with built-in HTTP and embedded Qwen ada
 
   const embeddedProvider = createEmbeddedQwenRerankingProvider(profile, {
     modelCacheDirectory: '/models',
-    device: 'cpu',
+    device: EmbeddedInferenceDevicePolicy.CPU,
     async verifyModelArtifact() {
       return '/models/qwen-reranker.gguf';
     },
@@ -199,7 +201,8 @@ void test('deep-rerank works end to end with built-in HTTP and embedded Qwen ada
               return {
                 async createRankingContext() {
                   return {
-                    async rankAll(_query, documents) {
+                    async rankAll(query, documents) {
+                      void query;
                       return documents.map((document) =>
                         applyKnownNodeLlamaCppExtraSigmoid(
                           document === rerankerFavorite ? 0.9 : 0.1,
@@ -223,7 +226,7 @@ void test('deep-rerank works end to end with built-in HTTP and embedded Qwen ada
     embeddingProvider,
     rerankingProfile: profile,
     reranker: embeddedProvider,
-    loadTokenizer: async () => tokenizer,
+    loadTokenizer: async () => TOKENIZER,
   });
 
   const embeddedSearch = await embeddedService.search('fusion favorite', 1, {
@@ -247,7 +250,7 @@ void test('deep-rerank works end to end with built-in HTTP and embedded Qwen ada
     embeddingProvider,
     rerankingProfile: replacementProfile,
     reranker: replacementHttpProvider,
-    loadTokenizer: async () => tokenizer,
+    loadTokenizer: async () => TOKENIZER,
   });
   const replacementSearch = await replacementService.search('fusion favorite', 1, {
     mode: 'deep-rerank',
@@ -266,7 +269,7 @@ void test('deep-rerank works end to end with built-in HTTP and embedded Qwen ada
     embeddingProvider,
     rerankingProfile: null,
     reranker: null,
-    loadTokenizer: async () => tokenizer,
+    loadTokenizer: async () => TOKENIZER,
   });
   const embeddingOnlySearch = await embeddingOnlyService.search('fusion favorite', 1, {
     mode: 'hybrid',

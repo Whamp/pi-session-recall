@@ -5,7 +5,7 @@ import { RecallBackgroundIndexProcessState, RecallManualMaintenanceTrigger } fro
 import { runRecallIndexCommand } from './recall-index-command.js';
 import type { RecallConversationIndexOptions } from './recall-conversation-service.js';
 
-const backgroundStartingStatus = {
+const BACKGROUND_STARTING_STATUS = {
   version: 1 as const,
   buildId: 'build-1',
   generationId: null,
@@ -20,7 +20,7 @@ const backgroundStartingStatus = {
   latestActionableError: null,
 };
 
-const unusedBackgroundIndexControls = {
+const UNUSED_BACKGROUND_INDEX_CONTROLS = {
   async startBackgroundIndexGeneration() {
     throw new Error('background start not expected');
   },
@@ -52,7 +52,7 @@ void test('recall index command blocks before indexing when quality evidence fai
           blockers: ['512-64: query p95 exceeds 2000 ms'],
         },
         service: {
-          ...unusedBackgroundIndexControls,
+          ...UNUSED_BACKGROUND_INDEX_CONTROLS,
           async index() {
             indexCalls += 1;
             throw new Error('index must remain blocked');
@@ -87,7 +87,7 @@ void test('recall index command attributes explicit incremental maintenance', as
       blockers: [],
     },
     service: {
-      ...unusedBackgroundIndexControls,
+      ...UNUSED_BACKGROUND_INDEX_CONTROLS,
       async index(options) {
         receivedOptions = options;
         return {
@@ -134,13 +134,13 @@ void test('recall index command starts an explicit rebuild in a detached worker'
       blockers: [],
     },
     service: {
-      ...unusedBackgroundIndexControls,
+      ...UNUSED_BACKGROUND_INDEX_CONTROLS,
       async index() {
         throw new Error('detached rebuild must not index in the invoking process');
       },
       async startBackgroundIndexGeneration() {
         backgroundStartCalls += 1;
-        return backgroundStartingStatus;
+        return BACKGROUND_STARTING_STATUS;
       },
     },
     ui: {
@@ -171,13 +171,13 @@ void test('recall index status remains available when the quality gate is blocke
       blockers: ['quality evidence unavailable'],
     },
     service: {
-      ...unusedBackgroundIndexControls,
+      ...UNUSED_BACKGROUND_INDEX_CONTROLS,
       async index() {
         throw new Error('status must not index');
       },
       async readBackgroundIndexGenerationStatus() {
         return {
-          ...backgroundStartingStatus,
+          ...BACKGROUND_STARTING_STATUS,
           generationId: 'generation-test',
           processState: RecallBackgroundIndexProcessState.FAILED,
           completedAt: '2026-08-01T10:01:00.000Z',
@@ -205,20 +205,20 @@ void test('recall index status remains available when the quality gate is blocke
 void test('recall index command routes stop, resume, and discard explicitly', async () => {
   const calls: string[] = [];
   const service = {
-    ...unusedBackgroundIndexControls,
+    ...UNUSED_BACKGROUND_INDEX_CONTROLS,
     async index() {
       throw new Error('control commands must not index');
     },
     async stopBackgroundIndexGeneration() {
       calls.push('stop');
       return {
-        ...backgroundStartingStatus,
+        ...BACKGROUND_STARTING_STATUS,
         processState: RecallBackgroundIndexProcessState.STOPPING,
       };
     },
     async resumeBackgroundIndexGeneration() {
       calls.push('resume');
-      return { ...backgroundStartingStatus, generationId: 'generation-test' };
+      return { ...BACKGROUND_STARTING_STATUS, generationId: 'generation-test' };
     },
     async discardStagingIndexGeneration() {
       calls.push('discard');

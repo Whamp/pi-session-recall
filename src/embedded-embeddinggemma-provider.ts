@@ -1,3 +1,10 @@
+import {
+  acquireSharedEmbeddedLlamaRuntime,
+  mapNodeLlamaCppComputeBackend,
+  writeEmbeddedLlamaLog,
+  type NodeLlamaCppGpuBackend,
+} from './acquireSharedEmbeddedLlamaRuntime.js';
+import { EmbeddedInferenceComputeBackend, EmbeddedInferenceDevicePolicy } from './enums.js';
 import type { RecallEmbeddingProvider } from './recall-inference-capabilities.js';
 import type { RecallTokenizerManifestIdentity } from './recall-index-manifest.js';
 import { createRecallModelArtifactCache } from './recall-model-artifact-cache.js';
@@ -12,15 +19,6 @@ export const EMBEDDED_INFERENCE_MAX_PARALLELISM = 4;
 
 /** Conservative upper bound for EmbeddingGemma layers considered for GPU offload. */
 export const EMBEDDING_GEMMA_MAX_GPU_LAYERS = 32;
-
-/** Operator-selected embedded inference device policy shared by local model capabilities. */
-export type EmbeddedInferenceDevicePolicy = 'auto' | 'cpu' | 'metal' | 'cuda' | 'vulkan';
-
-/** Actual compute backend selected for one embedded inference model. */
-export type EmbeddedInferenceComputeBackend = 'cpu' | 'metal' | 'cuda' | 'vulkan';
-
-/** node-llama-cpp GPU selector, where false requests CPU execution. */
-export type NodeLlamaCppGpuBackend = Exclude<EmbeddedInferenceComputeBackend, 'cpu'> | false;
 
 interface EmbeddingGemmaLlamaEmbeddingContext {
   getEmbeddingFor(input: string): Promise<{ vector: readonly number[] }>;
@@ -55,6 +53,7 @@ interface EmbeddingGemmaLlamaRuntime {
 /** Minimal dynamically loaded node-llama-cpp surface required by embedded EmbeddingGemma. */
 export interface EmbeddingGemmaNodeLlamaCppModule {
   version: string;
+  runtimePoolIdentity?: object;
   LlamaLogLevel: { error: unknown };
   getLlamaGpuTypes?(include: 'supported'): Promise<readonly NodeLlamaCppGpuBackend[]>;
   getLlama(options: Record<string, unknown>): Promise<EmbeddingGemmaLlamaRuntime>;
@@ -80,10 +79,18 @@ export interface EmbeddedEmbeddingGemmaExecutionIdentity {
   computeBackend: EmbeddedInferenceComputeBackend | 'pending';
   deviceNames: readonly string[];
   devicePolicy: EmbeddedInferenceDevicePolicy;
-  fallbackFromComputeBackend: Exclude<EmbeddedInferenceComputeBackend, 'cpu'> | null;
+  fallbackFromComputeBackend:
+    | EmbeddedInferenceComputeBackend.METAL
+    | EmbeddedInferenceComputeBackend.CUDA
+    | EmbeddedInferenceComputeBackend.VULKAN
+    | null;
   nodeLlamaCppVersion: '3.18.1';
   parallelism: number;
-  probedComputeBackends: readonly Exclude<EmbeddedInferenceComputeBackend, 'cpu'>[];
+  probedComputeBackends: readonly (
+    | EmbeddedInferenceComputeBackend.METAL
+    | EmbeddedInferenceComputeBackend.CUDA
+    | EmbeddedInferenceComputeBackend.VULKAN
+  )[];
   profileId: RecommendedEmbeddingGemmaModelProfile['profileId'];
 }
 
@@ -96,6 +103,7 @@ export interface EmbeddedEmbeddingGemmaProvider extends RecallEmbeddingProvider 
 
 interface LoadedEmbeddingGemmaResources {
   runtime: EmbeddingGemmaLlamaRuntime;
+  releaseRuntime(): Promise<void>;
   model: EmbeddingGemmaLlamaModel;
   contexts: readonly EmbeddingGemmaLlamaEmbeddingContext[];
   contextOperations: Promise<void>[];
@@ -107,6 +115,7 @@ async function loadInstalledNodeLlamaCpp(): Promise<EmbeddingGemmaNodeLlamaCppMo
     const loaded = await import('node-llama-cpp');
     return {
       version: EMBEDDED_NODE_LLAMA_CPP_VERSION,
+      runtimePoolIdentity: loaded,
       LlamaLogLevel: loaded.LlamaLogLevel,
       getLlamaGpuTypes: loaded.getLlamaGpuTypes,
       getLlama: loaded.getLlama,
@@ -151,6 +160,18 @@ function normalizeEmbeddingGemmaVector(
   }
   const norm = Math.sqrt(squaredNorm);
   return vector.map((value) => value / norm);
+}
+
+function isEmbeddingGemmaLlamaRuntime(value: unknown): value is EmbeddingGemmaLlamaRuntime {
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+  const gpu: unknown = Reflect.get(value, 'gpu');
+  return (
+    (gpu === false || gpu === 'metal' || gpu === 'cuda' || gpu === 'vulkan') &&
+    typeof Reflect.get(value, 'loadModel') === 'function' &&
+    typeof Reflect.get(value, 'dispose') === 'function'
+  );
 }
 
 function readEmbeddingErrorMessage(error: unknown): string {
@@ -210,7 +231,7 @@ export function createEmbeddedEmbeddingGemmaProvider(
       `Recall embedded EmbeddingGemma idle timeout invalid: expected a nonnegative integer in milliseconds, received ${idleTimeoutMilliseconds}`,
     );
   }
-  const devicePolicy = options.device ?? 'auto';
+  const devicePolicy = options.device ?? EmbeddedInferenceDevicePolicy.AUTO;
 
   const verifyModelArtifact =
     options.verifyModelArtifact ??
@@ -257,7 +278,7 @@ export function createEmbeddedEmbeddingGemmaProvider(
       await context.dispose();
     }
     await loaded.model.dispose();
-    await loaded.runtime.dispose();
+    await loaded.releaseRuntime();
   }
 
   function clearIdleResourceDisposal(): void {
@@ -307,21 +328,36 @@ export function createEmbeddedEmbeddingGemmaProvider(
     computeBackend: EmbeddedInferenceComputeBackend,
   ): Promise<LoadedEmbeddingGemmaResources> {
     let runtime: EmbeddingGemmaLlamaRuntime | undefined;
+    let releaseRuntime: (() => Promise<void>) | undefined;
     let model: EmbeddingGemmaLlamaModel | undefined;
     const contexts: EmbeddingGemmaLlamaEmbeddingContext[] = [];
     try {
-      const requestedGpu = computeBackend === 'cpu' ? false : computeBackend;
-      runtime = await nodeLlamaCpp.getLlama({
-        build: 'never',
-        debug: false,
-        gpu: requestedGpu,
-        logger(_level: unknown, message: string) {
-          process.stderr.write(`[Recall native inference] ${message.replace(/\n+$/u, '')}\n`);
-        },
-        logLevel: nodeLlamaCpp.LlamaLogLevel.error,
-        progressLogs: false,
-        skipDownload: true,
-      });
+      const requestedGpu =
+        computeBackend === EmbeddedInferenceComputeBackend.CPU ? false : computeBackend;
+      const loadRuntime = () =>
+        nodeLlamaCpp.getLlama({
+          build: 'never',
+          debug: false,
+          gpu: requestedGpu,
+          logger: writeEmbeddedLlamaLog,
+          logLevel: nodeLlamaCpp.LlamaLogLevel.error,
+          progressLogs: false,
+          skipDownload: true,
+        });
+      if (nodeLlamaCpp.runtimePoolIdentity) {
+        const lease = await acquireSharedEmbeddedLlamaRuntime(
+          nodeLlamaCpp.runtimePoolIdentity,
+          `${nodeLlamaCpp.version}:${computeBackend}`,
+          loadRuntime,
+          isEmbeddingGemmaLlamaRuntime,
+          (sharedRuntime) => sharedRuntime.dispose(),
+        );
+        runtime = lease.runtime;
+        releaseRuntime = () => lease.release();
+      } else {
+        runtime = await loadRuntime();
+        releaseRuntime = () => runtime?.dispose() ?? Promise.resolve();
+      }
       if (runtime.gpu !== requestedGpu) {
         throw new Error(
           `Recall embedded EmbeddingGemma compute backend mismatch: requested ${computeBackend}, received ${runtime.gpu === false ? 'cpu' : runtime.gpu}`,
@@ -330,7 +366,7 @@ export function createEmbeddedEmbeddingGemmaProvider(
       model = await runtime.loadModel({
         modelPath,
         gpuLayers:
-          computeBackend === 'cpu'
+          computeBackend === EmbeddedInferenceComputeBackend.CPU
             ? 0
             : {
                 fitContext: { contextSize, embeddingContext: true },
@@ -352,6 +388,7 @@ export function createEmbeddedEmbeddingGemmaProvider(
       }
       return {
         runtime,
+        releaseRuntime,
         model,
         contexts,
         contextOperations: contexts.map(() => Promise.resolve()),
@@ -362,7 +399,7 @@ export function createEmbeddedEmbeddingGemmaProvider(
         await context.dispose();
       }
       await model?.dispose();
-      await runtime?.dispose();
+      await releaseRuntime?.();
       throw error;
     }
   }
@@ -388,33 +425,54 @@ export function createEmbeddedEmbeddingGemmaProvider(
         );
       }
       const probedComputeBackends =
-        devicePolicy === 'auto' && nodeLlamaCpp.getLlamaGpuTypes
-          ? (await nodeLlamaCpp.getLlamaGpuTypes('supported')).filter(
-              (backend): backend is Exclude<NodeLlamaCppGpuBackend, false> => backend !== false,
-            )
+        devicePolicy === EmbeddedInferenceDevicePolicy.AUTO && nodeLlamaCpp.getLlamaGpuTypes
+          ? (await nodeLlamaCpp.getLlamaGpuTypes('supported'))
+              .filter(
+                (backend): backend is Exclude<NodeLlamaCppGpuBackend, false> => backend !== false,
+              )
+              .map(mapNodeLlamaCppComputeBackend)
           : [];
       const requestedComputeBackend: EmbeddedInferenceComputeBackend =
-        devicePolicy === 'auto' ? (probedComputeBackends[0] ?? 'cpu') : devicePolicy;
+        devicePolicy === EmbeddedInferenceDevicePolicy.AUTO
+          ? (probedComputeBackends[0] ?? EmbeddedInferenceComputeBackend.CPU)
+          : devicePolicy === EmbeddedInferenceDevicePolicy.CPU
+            ? EmbeddedInferenceComputeBackend.CPU
+            : devicePolicy === EmbeddedInferenceDevicePolicy.METAL
+              ? EmbeddedInferenceComputeBackend.METAL
+              : devicePolicy === EmbeddedInferenceDevicePolicy.CUDA
+                ? EmbeddedInferenceComputeBackend.CUDA
+                : EmbeddedInferenceComputeBackend.VULKAN;
       let selectedComputeBackend = requestedComputeBackend;
-      let fallbackFromComputeBackend: Exclude<EmbeddedInferenceComputeBackend, 'cpu'> | null = null;
+      let fallbackFromComputeBackend:
+        | EmbeddedInferenceComputeBackend.METAL
+        | EmbeddedInferenceComputeBackend.CUDA
+        | EmbeddedInferenceComputeBackend.VULKAN
+        | null = null;
       try {
         resources = await loadResourcesForBackend(nodeLlamaCpp, modelPath, requestedComputeBackend);
       } catch (error) {
-        if (devicePolicy !== 'auto' || requestedComputeBackend === 'cpu') {
+        if (
+          devicePolicy !== EmbeddedInferenceDevicePolicy.AUTO ||
+          requestedComputeBackend === EmbeddedInferenceComputeBackend.CPU
+        ) {
           throw error;
         }
         fallbackFromComputeBackend = requestedComputeBackend;
-        selectedComputeBackend = 'cpu';
+        selectedComputeBackend = EmbeddedInferenceComputeBackend.CPU;
         if (!cpuFallbackWarningEmitted) {
           cpuFallbackWarningEmitted = true;
           writeWarning(
             `Recall embedded EmbeddingGemma accelerator initialization failed for ${requestedComputeBackend}; retrying the same profile ${profile.profileId} on CPU: ${readEmbeddingErrorMessage(error)}`,
           );
         }
-        resources = await loadResourcesForBackend(nodeLlamaCpp, modelPath, 'cpu');
+        resources = await loadResourcesForBackend(
+          nodeLlamaCpp,
+          modelPath,
+          EmbeddedInferenceComputeBackend.CPU,
+        );
       }
       const deviceNames =
-        selectedComputeBackend === 'cpu'
+        selectedComputeBackend === EmbeddedInferenceComputeBackend.CPU
           ? ['CPU']
           : ((await resources.runtime.getGpuDeviceNames?.()) ?? [selectedComputeBackend]);
       executionIdentity = Object.freeze({

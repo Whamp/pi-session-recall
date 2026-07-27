@@ -7,21 +7,21 @@ import test from 'node:test';
 import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 
-import { runRecallEmbeddingGemmaModelCommand } from './manage-recall-embeddinggemma-model.js';
+import { runRecallEmbeddingGemmaModelCommand } from './runRecallEmbeddingGemmaModelCommand.js';
 import type { RecallModelArtifactTransport } from './recall-model-artifact-cache.js';
 import {
   createRecallModelArtifactFixtureGguf as createCommandFixtureGguf,
   createRecallModelArtifactFixtureProfile as createCommandFixtureProfile,
-} from './recall-model-artifact-test-fixture.js';
+} from './recall-model-artifact.test-utils.js';
 
-const commandStatusSchema = Type.Object({ state: Type.String() });
-const commandDiagnosisSchema = Type.Object({ healthy: Type.Boolean() });
-const commandInspectionSchema = Type.Object({
+const COMMAND_STATUS_SCHEMA = Type.Object({ state: Type.String() });
+const COMMAND_DIAGNOSIS_SCHEMA = Type.Object({ healthy: Type.Boolean() });
+const COMMAND_INSPECTION_SCHEMA = Type.Object({
   profile: Type.Object({
     source: Type.Object({ revision: Type.String() }),
     license: Type.Object({ distributionStatus: Type.String() }),
   }),
-  status: commandStatusSchema,
+  status: COMMAND_STATUS_SCHEMA,
 });
 
 void test('EmbeddingGemma model command inspects metadata and gates mutations with approve', async (t) => {
@@ -32,7 +32,8 @@ void test('EmbeddingGemma model command inspects metadata and gates mutations wi
   await writeFile(sourcePath, artifact);
   let downloadCount = 0;
   const transport: RecallModelArtifactTransport = {
-    async downloadArtifact(_sourceUrl, destinationPath) {
+    async downloadArtifact(sourceUrl, destinationPath) {
+      void sourceUrl;
       downloadCount += 1;
       await copyFile(sourcePath, destinationPath);
     },
@@ -50,7 +51,7 @@ void test('EmbeddingGemma model command inspects metadata and gates mutations wi
   };
 
   await runRecallEmbeddingGemmaModelCommand(['inspect'], options);
-  const inspection = Value.Parse(commandInspectionSchema, JSON.parse(output.pop() ?? ''));
+  const inspection = Value.Parse(COMMAND_INSPECTION_SCHEMA, JSON.parse(output.pop() ?? ''));
   assert.equal(inspection.profile.source.revision, profile.source.revision);
   assert.equal(inspection.profile.license.distributionStatus, 'review-required');
   assert.equal(inspection.status.state, 'missing');
@@ -63,17 +64,17 @@ void test('EmbeddingGemma model command inspects metadata and gates mutations wi
 
   await runRecallEmbeddingGemmaModelCommand(['download', '--approve'], options);
   assert.equal(downloadCount, 1);
-  assert.equal(Value.Parse(commandStatusSchema, JSON.parse(output.pop() ?? '')).state, 'valid');
+  assert.equal(Value.Parse(COMMAND_STATUS_SCHEMA, JSON.parse(output.pop() ?? '')).state, 'valid');
 
   await runRecallEmbeddingGemmaModelCommand(['doctor'], options);
-  assert.equal(Value.Parse(commandDiagnosisSchema, JSON.parse(output.pop() ?? '')).healthy, true);
+  assert.equal(Value.Parse(COMMAND_DIAGNOSIS_SCHEMA, JSON.parse(output.pop() ?? '')).healthy, true);
 
   await assert.rejects(
     () => runRecallEmbeddingGemmaModelCommand(['remove'], options),
     /Recall model removal approval required/u,
   );
   await runRecallEmbeddingGemmaModelCommand(['remove', '--approve'], options);
-  assert.equal(Value.Parse(commandStatusSchema, JSON.parse(output.pop() ?? '')).state, 'missing');
+  assert.equal(Value.Parse(COMMAND_STATUS_SCHEMA, JSON.parse(output.pop() ?? '')).state, 'missing');
 });
 
 void test('EmbeddingGemma model command rejects ambiguous actions and arguments', async () => {

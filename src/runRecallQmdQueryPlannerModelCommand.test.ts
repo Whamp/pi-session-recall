@@ -8,18 +8,18 @@ import test from 'node:test';
 import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 
-import { runRecallQmdQueryPlannerModelCommand } from './manage-recall-qmd-query-planner-model.js';
+import { runRecallQmdQueryPlannerModelCommand } from './runRecallQmdQueryPlannerModelCommand.js';
 import type { RecallModelArtifactTransport } from './recall-model-artifact-cache.js';
-import { createRecallModelArtifactFixtureGguf } from './recall-model-artifact-test-fixture.js';
+import { createRecallModelArtifactFixtureGguf } from './recall-model-artifact.test-utils.js';
 import { createRecommendedQmdQueryPlanningModelProfile } from './recall-model-profiles.js';
 
-const commandStatusSchema = Type.Object({ state: Type.String() });
-const commandInspectionSchema = Type.Object({
+const COMMAND_STATUS_SCHEMA = Type.Object({ state: Type.String() });
+const COMMAND_INSPECTION_SCHEMA = Type.Object({
   profile: Type.Object({
     profileId: Type.String(),
     source: Type.Object({ revision: Type.String(), byteSize: Type.Number() }),
   }),
-  status: commandStatusSchema,
+  status: COMMAND_STATUS_SCHEMA,
 });
 
 void test('QMD query planner model command inspects exact metadata and gates mutations', async (t) => {
@@ -30,7 +30,8 @@ void test('QMD query planner model command inspects exact metadata and gates mut
   await writeFile(sourcePath, artifact);
   let downloadCount = 0;
   const transport: RecallModelArtifactTransport = {
-    async downloadArtifact(_sourceUrl, destinationPath) {
+    async downloadArtifact(sourceUrl, destinationPath) {
+      void sourceUrl;
       downloadCount += 1;
       await copyFile(sourcePath, destinationPath);
     },
@@ -56,7 +57,7 @@ void test('QMD query planner model command inspects exact metadata and gates mut
   };
 
   await runRecallQmdQueryPlannerModelCommand(['inspect'], options);
-  const inspection = Value.Parse(commandInspectionSchema, JSON.parse(output.pop() ?? ''));
+  const inspection = Value.Parse(COMMAND_INSPECTION_SCHEMA, JSON.parse(output.pop() ?? ''));
   assert.equal(inspection.profile.profileId, 'qmd-query-expansion-1.7b-q4-k-m-v1');
   assert.equal(inspection.profile.source.revision, recommended.source.revision);
   assert.equal(inspection.profile.source.byteSize, artifact.length);
@@ -71,16 +72,16 @@ void test('QMD query planner model command inspects exact metadata and gates mut
 
   await runRecallQmdQueryPlannerModelCommand(['download', '--approve'], options);
   assert.equal(downloadCount, 1);
-  assert.equal(Value.Parse(commandStatusSchema, JSON.parse(output.pop() ?? '')).state, 'valid');
+  assert.equal(Value.Parse(COMMAND_STATUS_SCHEMA, JSON.parse(output.pop() ?? '')).state, 'valid');
 
   await runRecallQmdQueryPlannerModelCommand(['repair', '--approve'], options);
   assert.equal(downloadCount, 1);
-  assert.equal(Value.Parse(commandStatusSchema, JSON.parse(output.pop() ?? '')).state, 'valid');
+  assert.equal(Value.Parse(COMMAND_STATUS_SCHEMA, JSON.parse(output.pop() ?? '')).state, 'valid');
 
   await assert.rejects(
     () => runRecallQmdQueryPlannerModelCommand(['remove'], options),
     /Recall model removal approval required/u,
   );
   await runRecallQmdQueryPlannerModelCommand(['remove', '--approve'], options);
-  assert.equal(Value.Parse(commandStatusSchema, JSON.parse(output.pop() ?? '')).state, 'missing');
+  assert.equal(Value.Parse(COMMAND_STATUS_SCHEMA, JSON.parse(output.pop() ?? '')).state, 'missing');
 });

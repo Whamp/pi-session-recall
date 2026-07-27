@@ -36,8 +36,8 @@ async function waitForWorkerStartRecord(
   throw new Error(`Recall background index worker ${process.pid} did not receive its start record`);
 }
 
-async function runRecallBackgroundIndexWorker(requestPath: string): Promise<void> {
-  const request = await readRecallBackgroundIndexWorkerRequest(requestPath);
+async function runRecallBackgroundIndexWorker(REQUEST_PATH: string): Promise<void> {
+  const request = await readRecallBackgroundIndexWorkerRequest(REQUEST_PATH);
   const cancellation = new AbortController();
   const stopWorker = () => {
     cancellation.abort(new Error('Recall background index worker stop requested'));
@@ -149,13 +149,13 @@ async function runRecallBackgroundIndexWorker(requestPath: string): Promise<void
   } finally {
     process.removeListener('SIGTERM', stopWorker);
     process.removeListener('SIGINT', stopWorker);
-    await removeRecallBackgroundIndexWorkerRequest(requestPath).catch(() => undefined);
+    await removeRecallBackgroundIndexWorkerRequest(REQUEST_PATH).catch(() => undefined);
   }
 }
 
-const requestPath = process.argv[2];
-if (!requestPath) {
+const REQUEST_PATH = process.argv[2];
+if (!REQUEST_PATH) {
   process.exitCode = 1;
 } else {
-  await runRecallBackgroundIndexWorker(requestPath);
+  await runRecallBackgroundIndexWorker(REQUEST_PATH);
 }

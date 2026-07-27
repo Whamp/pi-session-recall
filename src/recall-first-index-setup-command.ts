@@ -5,6 +5,11 @@ import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 
 import type { EmbeddedEmbeddingGemmaExecutionIdentity } from './embedded-embeddinggemma-provider.js';
+import {
+  RecallInferenceArtifactState,
+  RecallInferenceBackend,
+  RecallInferenceCapability,
+} from './enums.js';
 import { createRecallConversationService } from './recall-conversation-service.js';
 import type {
   RecallConversationConfig,
@@ -17,20 +22,20 @@ import {
 import {
   readRecallInferenceConfiguration,
   writeRecallInferenceConfiguration,
+  type RecallInferenceConfiguration,
 } from './recall-inference-configuration.js';
 import {
   createRecommendedEmbeddingGemmaModelProfile,
   type RecommendedEmbeddingGemmaModelProfile,
 } from './recall-model-profiles.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
-import type { RecallQualityGateDecision } from './recall-quality-gate.js';
 import { createRecommendedEmbeddingGemmaConversationRuntime } from './recommended-embeddinggemma-conversation-service.js';
 
 const RECALL_FIRST_INDEX_SETUP_STATE_VERSION = 1;
 const RECALL_FIRST_INDEX_SETUP_USAGE =
   'usage: setup:recall [status|select-embeddinggemma --approve-download|estimate [--measure --sample-sessions N]|start --approve-build|defer]';
 
-const corpusInspectionSchema = Type.Object(
+const CORPUS_INSPECTION_SCHEMA = Type.Object(
   {
     sessionCount: Type.Integer({ minimum: 0 }),
     sourceByteSize: Type.Integer({ minimum: 0 }),
@@ -38,9 +43,9 @@ const corpusInspectionSchema = Type.Object(
   { additionalProperties: false },
 );
 
-const firstIndexSampleMeasurementSchema = Type.Object(
+const FIRST_INDEX_SAMPLE_MEASUREMENT_SCHEMA = Type.Object(
   {
-    corpus: corpusInspectionSchema,
+    corpus: CORPUS_INSPECTION_SCHEMA,
     sampledSessionCount: Type.Integer({ minimum: 0 }),
     sampledSourceByteSize: Type.Integer({ minimum: 0 }),
     sampledDenseDocumentCount: Type.Integer({ minimum: 0 }),
@@ -62,7 +67,7 @@ const firstIndexSampleMeasurementSchema = Type.Object(
   { additionalProperties: false },
 );
 
-const recallFirstIndexSetupStateSchema = Type.Object(
+const RECALL_FIRST_INDEX_SETUP_STATE_SCHEMA = Type.Object(
   {
     version: Type.Literal(RECALL_FIRST_INDEX_SETUP_STATE_VERSION),
     embedding: Type.Union([
@@ -84,7 +89,7 @@ const recallFirstIndexSetupStateSchema = Type.Object(
         {
           kind: Type.Literal('metadata'),
           measuredAt: Type.String({ format: 'date-time' }),
-          corpus: corpusInspectionSchema,
+          corpus: CORPUS_INSPECTION_SCHEMA,
         },
         { additionalProperties: false },
       ),
@@ -92,7 +97,7 @@ const recallFirstIndexSetupStateSchema = Type.Object(
         {
           kind: Type.Literal('measured'),
           measuredAt: Type.String({ format: 'date-time' }),
-          measurement: firstIndexSampleMeasurementSchema,
+          measurement: FIRST_INDEX_SAMPLE_MEASUREMENT_SCHEMA,
         },
         { additionalProperties: false },
       ),
@@ -103,7 +108,7 @@ const recallFirstIndexSetupStateSchema = Type.Object(
 
 /** Persisted verified embedding selection and latest first-index estimate. */
 export type RecallFirstIndexSetupState = ReturnType<
-  typeof Value.Parse<typeof recallFirstIndexSetupStateSchema>
+  typeof Value.Parse<typeof RECALL_FIRST_INDEX_SETUP_STATE_SCHEMA>
 >;
 
 /** Service operations used by deterministic guided setup and no other runtime surface. */
@@ -139,7 +144,6 @@ export interface RecallFirstIndexSetupCommandOptions {
   modelCacheDirectory?: string;
   profile?: RecommendedEmbeddingGemmaModelProfile;
   artifactCache?: RecallModelArtifactCache;
-  qualityGateDecision?: RecallQualityGateDecision;
   metadataService?: Pick<RecallConversationService, 'inspectConversationCorpus'>;
   createSelectedServiceRuntime?: () =>
     | RecallFirstIndexSetupSelectedRuntime
@@ -244,7 +248,7 @@ export async function readRecallFirstIndexSetupState(
 ): Promise<RecallFirstIndexSetupState> {
   try {
     const parsed: unknown = JSON.parse(await readFile(statePath, 'utf8'));
-    return Value.Parse(recallFirstIndexSetupStateSchema, parsed);
+    return Value.Parse(RECALL_FIRST_INDEX_SETUP_STATE_SCHEMA, parsed);
   } catch (error) {
     if (readNodeErrorCode(error) === 'ENOENT') {
       return createUnconfiguredFirstIndexSetupState();
@@ -260,48 +264,36 @@ async function writeRecallFirstIndexSetupState(
   statePath: string,
   state: RecallFirstIndexSetupState,
 ): Promise<void> {
-  const validated = Value.Parse(recallFirstIndexSetupStateSchema, state);
+  const validated = Value.Parse(RECALL_FIRST_INDEX_SETUP_STATE_SCHEMA, state);
   await mkdir(dirname(statePath), { recursive: true });
   const temporaryPath = `${statePath}.${process.pid}.tmp`;
   await writeFile(temporaryPath, `${JSON.stringify(validated)}\n`, 'utf8');
   await rename(temporaryPath, statePath);
 }
 
-function assertFirstIndexSetupQualityGatePassed(
-  decision: RecallQualityGateDecision | undefined,
-): void {
-  if (decision?.automatedGatePassed && decision.selectedPolicy) {
-    return;
-  }
-  const blockers =
-    decision && decision.blockers.length > 0
-      ? decision.blockers.join('; ')
-      : 'no measured chunk, candidate, and final-result policy passed';
-  throw new Error(
-    `Recall first-index setup build blocked because the quality gate has not passed: ${blockers}. Run npm run evaluate:recall before measured sampling or build approval.`,
-  );
-}
-
-function formatFirstIndexSetupConfiguration(state: RecallFirstIndexSetupState): {
-  state: 'configured' | 'unconfigured';
-  embedding: RecallFirstIndexSetupState['embedding'];
-} {
+function formatFirstIndexSetupConfiguration(
+  state: RecallFirstIndexSetupState,
+  configuredEmbedding: RecallInferenceConfiguration['embedding'],
+) {
+  const embedding = state.embedding ?? configuredEmbedding;
   return {
-    state: state.embedding ? 'configured' : 'unconfigured',
-    embedding: state.embedding,
+    state: embedding ? ('configured' as const) : ('unconfigured' as const),
+    embedding,
   };
 }
 
 async function runWithConfiguredEmbeddingRuntime<T>(
-  state: RecallFirstIndexSetupState,
+  configuredEmbedding:
+    | RecallInferenceConfiguration['embedding']
+    | RecallFirstIndexSetupState['embedding'],
   createRuntime: () =>
     | RecallFirstIndexSetupConfiguredRuntime
     | Promise<RecallFirstIndexSetupConfiguredRuntime>,
   operation: (runtime: RecallFirstIndexSetupConfiguredRuntime) => Promise<T>,
 ): Promise<T> {
-  if (!state.embedding) {
+  if (!configuredEmbedding) {
     throw new Error(
-      'Recall first-index setup embedding is unconfigured: select and verify EmbeddingGemma first',
+      'Recall first-index setup embedding is unconfigured: select and verify an embedding capability first',
     );
   }
   const runtime = await createRuntime();
@@ -336,11 +328,10 @@ export async function runRecallFirstIndexSetupCommand(
   const writeOutput =
     options.writeOutput ?? ((value: string) => process.stdout.write(`${value}\n`));
   const state = await readRecallFirstIndexSetupState(statePath);
-  if (state.embedding && state.embedding.profileId !== profile.profileId) {
-    throw new Error(
-      `Recall first-index setup embedding profile unsupported: ${state.embedding.profileId}; this setup flow only accepts ${profile.profileId} and never substitutes model semantics`,
-    );
-  }
+  const inferenceConfigurationPath =
+    options.inferenceConfigurationPath ?? join(dataDirectory, 'inference-configuration.json');
+  const inferenceConfiguration = await readRecallInferenceConfiguration(inferenceConfigurationPath);
+  const configuredEmbedding = inferenceConfiguration.embedding ?? state.embedding;
   const inspection = await artifactCache.inspectArtifact();
   const recommendation = {
     profileId: profile.profileId,
@@ -350,13 +341,13 @@ export async function runRecallFirstIndexSetupCommand(
     exactSizeBytes: profile.source.byteSize,
     cachePath: inspection.status.artifactPath,
     devicePolicy: 'auto' as const,
-    selected: state.embedding?.profileId === profile.profileId,
+    selected: configuredEmbedding?.profileId === profile.profileId,
   };
 
   if (parsedAction.action === 'status') {
-    const recallReady = state.embedding
+    const recallReady = configuredEmbedding
       ? await runWithConfiguredEmbeddingRuntime(
-          state,
+          configuredEmbedding,
           createConfiguredServiceRuntime,
           async (runtime) => (await runtime.service.readIndexGenerationStatus()).active !== null,
         )
@@ -364,7 +355,7 @@ export async function runRecallFirstIndexSetupCommand(
     writeOutput(
       JSON.stringify({
         action: 'status',
-        configuration: formatFirstIndexSetupConfiguration(state),
+        configuration: formatFirstIndexSetupConfiguration(state, inferenceConfiguration.embedding),
         recommendation,
         artifactStatus: inspection.status.state,
         corpusEstimate: state.lastEstimate,
@@ -404,18 +395,13 @@ export async function runRecallFirstIndexSetupCommand(
         verifiedAt,
       },
     };
-    const inferenceConfigurationPath =
-      options.inferenceConfigurationPath ?? join(dataDirectory, 'inference-configuration.json');
-    const inferenceConfiguration = await readRecallInferenceConfiguration(
-      inferenceConfigurationPath,
-    );
     await writeRecallInferenceConfiguration(inferenceConfigurationPath, {
       ...inferenceConfiguration,
       embedding: {
-        capability: 'embedding',
+        capability: RecallInferenceCapability.EMBEDDING,
         candidateId: 'recommended-embeddinggemma-embedded',
         profileId: profile.profileId,
-        backend: 'embedded',
+        backend: RecallInferenceBackend.EMBEDDED,
         adapterId: selection.executionIdentity.adapter,
         endpoint: null,
         device: {
@@ -429,7 +415,7 @@ export async function runRecallFirstIndexSetupCommand(
           revision: profile.source.revision,
           sha256: profile.source.sha256,
           byteSize: profile.source.byteSize,
-          state: 'valid',
+          state: RecallInferenceArtifactState.VALID,
         },
         conformance: {
           verifiedAt,
@@ -442,7 +428,10 @@ export async function runRecallFirstIndexSetupCommand(
     writeOutput(
       JSON.stringify({
         action: 'select-embeddinggemma',
-        configuration: formatFirstIndexSetupConfiguration(selectedState),
+        configuration: formatFirstIndexSetupConfiguration(
+          selectedState,
+          inferenceConfiguration.embedding,
+        ),
         recommendation: { ...recommendation, selected: true },
         verification: selection.verification,
         executionIdentity: selection.executionIdentity,
@@ -453,13 +442,10 @@ export async function runRecallFirstIndexSetupCommand(
   }
 
   if (parsedAction.action === 'estimate') {
-    if (parsedAction.measure) {
-      assertFirstIndexSetupQualityGatePassed(options.qualityGateDecision);
-    }
     const measuredAt = nowIsoTimestamp();
     const estimate = parsedAction.measure
       ? await runWithConfiguredEmbeddingRuntime(
-          state,
+          configuredEmbedding,
           createConfiguredServiceRuntime,
           async (runtime) => ({
             kind: 'measured' as const,
@@ -489,7 +475,7 @@ export async function runRecallFirstIndexSetupCommand(
     writeOutput(
       JSON.stringify({
         action: 'defer',
-        configuration: formatFirstIndexSetupConfiguration(state),
+        configuration: formatFirstIndexSetupConfiguration(state, inferenceConfiguration.embedding),
         recallReady: false,
         message:
           'Recall configuration retained; recall is not ready until the first index generation activates.',
@@ -503,14 +489,13 @@ export async function runRecallFirstIndexSetupCommand(
       'Recall first-index setup start requires explicit --approve-build after reviewing the estimate',
     );
   }
-  assertFirstIndexSetupQualityGatePassed(options.qualityGateDecision);
   if (!state.lastEstimate) {
     throw new Error(
       'Recall first-index setup start requires a completed metadata or measured estimate before build approval',
     );
   }
   const backgroundBuild = await runWithConfiguredEmbeddingRuntime(
-    state,
+    configuredEmbedding,
     createConfiguredServiceRuntime,
     async (runtime) => {
       const generations = await runtime.service.readIndexGenerationStatus();

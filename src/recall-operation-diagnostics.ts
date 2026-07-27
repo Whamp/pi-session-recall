@@ -8,6 +8,7 @@ import {
   RecallDiagnosticStatus,
   RecallDiagnosticsMode,
   type RecallLifecycleTrigger,
+  type RecallSearchScope,
 } from './enums.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
 
@@ -62,15 +63,35 @@ export interface RecallLiveSessionDiagnosticCompletion {
   errorCategory?: RecallDiagnosticErrorCategory;
 }
 
+/** Exclusive phase totals and bounded state for one public recall search. */
+export interface RecallSearchDiagnosticMetrics {
+  freshnessBarrierRan: boolean;
+  embeddingModelVerificationMilliseconds: number;
+  activeSessionFreshnessMilliseconds: number;
+  queryEmbeddingMilliseconds: number;
+  retrievalRankingMilliseconds: number;
+  deepRerankMilliseconds: number;
+}
+
+/** Bounded scalar completion data for one public recall search. */
+export interface RecallSearchDiagnosticCompletion {
+  status: RecallDiagnosticStatus;
+  metrics: RecallSearchDiagnosticMetrics;
+  totalDocumentCount: number | null;
+  errorCategory?: RecallDiagnosticErrorCategory;
+}
+
 /** One bounded privacy-safe JSONL record for a recall diagnostic operation. */
 export interface RecallOperationDiagnosticRecord {
   version: number;
   timestamp: string;
   operationId: string;
   operationKind: RecallDiagnosticOperationKind;
-  lifecycleTrigger: RecallLifecycleTrigger;
+  lifecycleTrigger: RecallLifecycleTrigger | null;
   processId: number;
-  sessionPath: string;
+  sessionPath: string | null;
+  searchMode: 'hybrid' | 'deep-rerank' | null;
+  recallScope: RecallSearchScope | null;
   status: RecallDiagnosticStatus;
   errorCategory: RecallDiagnosticErrorCategory | null;
   sourceByteSize: number | null;
@@ -85,6 +106,12 @@ export interface RecallOperationDiagnosticRecord {
   embeddingServerRequestMilliseconds: number | null;
   databaseWriteMilliseconds: number | null;
   indexStateCheckpointMilliseconds: number | null;
+  embeddingModelVerificationMilliseconds: number | null;
+  activeSessionFreshnessMilliseconds: number | null;
+  queryEmbeddingMilliseconds: number | null;
+  retrievalRankingMilliseconds: number | null;
+  deepRerankMilliseconds: number | null;
+  freshnessBarrierRan: boolean | null;
   unattributedMilliseconds: number | null;
   scannedSessionCount: number | null;
   indexedSessionCount: number | null;
@@ -103,12 +130,21 @@ export interface RecallLiveSessionDiagnosticOperation {
   complete(completion: RecallLiveSessionDiagnosticCompletion): void;
 }
 
+/** Handle that completes one already-started search diagnostic without awaiting persistence. */
+export interface RecallSearchDiagnosticOperation {
+  complete(completion: RecallSearchDiagnosticCompletion): void;
+}
+
 /** Non-critical recall diagnostic recorder with an explicit test-only drain boundary. */
 export interface RecallOperationDiagnostics {
   startLiveSessionReconciliation(input: {
     lifecycleTrigger: RecallLifecycleTrigger;
     sessionPath: string;
   }): RecallLiveSessionDiagnosticOperation;
+  startRecallSearch(input: {
+    searchMode: 'hybrid' | 'deep-rerank';
+    recallScope: RecallSearchScope;
+  }): RecallSearchDiagnosticOperation;
   flush(): Promise<void>;
 }
 
@@ -126,6 +162,18 @@ const SYSTEM_RECALL_DIAGNOSTICS_CLOCK: RecallDiagnosticsClock = {
   monotonicMilliseconds: () => performance.now(),
   wallClockIsoTimestamp: () => new Date().toISOString(),
 };
+
+/** Creates zeroed search measurements whose phase totals remain non-overlapping. */
+export function createRecallSearchDiagnosticMetrics(): RecallSearchDiagnosticMetrics {
+  return {
+    freshnessBarrierRan: false,
+    embeddingModelVerificationMilliseconds: 0,
+    activeSessionFreshnessMilliseconds: 0,
+    queryEmbeddingMilliseconds: 0,
+    retrievalRankingMilliseconds: 0,
+    deepRerankMilliseconds: 0,
+  };
+}
 
 /** Creates zeroed live session measurements whose phase totals remain non-overlapping. */
 export function createRecallLiveSessionDiagnosticMetrics(): RecallLiveSessionDiagnosticMetrics {
@@ -152,17 +200,22 @@ export function createRecallLiveSessionDiagnosticMetrics(): RecallLiveSessionDia
 function createRecallDiagnosticStartRecord(input: {
   clock: RecallDiagnosticsClock;
   operationId: string;
-  lifecycleTrigger: RecallLifecycleTrigger;
-  sessionPath: string;
+  operationKind: RecallDiagnosticOperationKind;
+  lifecycleTrigger: RecallLifecycleTrigger | null;
+  sessionPath: string | null;
+  searchMode: 'hybrid' | 'deep-rerank' | null;
+  recallScope: RecallSearchScope | null;
 }): RecallOperationDiagnosticRecord {
   return {
     version: RECALL_DIAGNOSTIC_RECORD_VERSION,
     timestamp: input.clock.wallClockIsoTimestamp(),
     operationId: input.operationId,
-    operationKind: RecallDiagnosticOperationKind.LIVE_SESSION_RECONCILIATION,
+    operationKind: input.operationKind,
     lifecycleTrigger: input.lifecycleTrigger,
     processId: process.pid,
-    sessionPath: input.sessionPath.slice(0, MAX_RECORDED_SESSION_PATH_CHARACTERS),
+    sessionPath: input.sessionPath?.slice(0, MAX_RECORDED_SESSION_PATH_CHARACTERS) ?? null,
+    searchMode: input.searchMode,
+    recallScope: input.recallScope,
     status: RecallDiagnosticStatus.STARTED,
     errorCategory: null,
     sourceByteSize: null,
@@ -177,6 +230,12 @@ function createRecallDiagnosticStartRecord(input: {
     embeddingServerRequestMilliseconds: null,
     databaseWriteMilliseconds: null,
     indexStateCheckpointMilliseconds: null,
+    embeddingModelVerificationMilliseconds: null,
+    activeSessionFreshnessMilliseconds: null,
+    queryEmbeddingMilliseconds: null,
+    retrievalRankingMilliseconds: null,
+    deepRerankMilliseconds: null,
+    freshnessBarrierRan: null,
     unattributedMilliseconds: null,
     scannedSessionCount: null,
     indexedSessionCount: null,
@@ -239,6 +298,40 @@ function createRecallDiagnosticCompletionRecord(input: {
     cacheHitCount: input.completion.cacheHitCount,
     newEmbeddingCount: input.completion.newEmbeddingCount,
     embeddingRequestCount: input.completion.embeddingRequestCount,
+  };
+}
+
+function createRecallSearchDiagnosticCompletionRecord(input: {
+  startRecord: RecallOperationDiagnosticRecord;
+  startedAtMilliseconds: number;
+  clock: RecallDiagnosticsClock;
+  completion: RecallSearchDiagnosticCompletion;
+}): RecallOperationDiagnosticRecord {
+  const elapsedMilliseconds = Math.max(
+    input.clock.monotonicMilliseconds() - input.startedAtMilliseconds,
+    0,
+  );
+  const metrics = input.completion.metrics;
+  const attributedMilliseconds =
+    metrics.embeddingModelVerificationMilliseconds +
+    metrics.activeSessionFreshnessMilliseconds +
+    metrics.queryEmbeddingMilliseconds +
+    metrics.retrievalRankingMilliseconds +
+    metrics.deepRerankMilliseconds;
+  return {
+    ...input.startRecord,
+    timestamp: input.clock.wallClockIsoTimestamp(),
+    status: input.completion.status,
+    errorCategory: input.completion.errorCategory ?? null,
+    elapsedMilliseconds,
+    embeddingModelVerificationMilliseconds: metrics.embeddingModelVerificationMilliseconds,
+    activeSessionFreshnessMilliseconds: metrics.activeSessionFreshnessMilliseconds,
+    queryEmbeddingMilliseconds: metrics.queryEmbeddingMilliseconds,
+    retrievalRankingMilliseconds: metrics.retrievalRankingMilliseconds,
+    deepRerankMilliseconds: metrics.deepRerankMilliseconds,
+    freshnessBarrierRan: metrics.freshnessBarrierRan,
+    unattributedMilliseconds: Math.max(elapsedMilliseconds - attributedMilliseconds, 0),
+    totalDocumentCount: input.completion.totalDocumentCount,
   };
 }
 
@@ -329,8 +422,11 @@ export function createRecallOperationDiagnostics(
       const startRecord = createRecallDiagnosticStartRecord({
         clock,
         operationId: randomUUID(),
+        operationKind: RecallDiagnosticOperationKind.LIVE_SESSION_RECONCILIATION,
         lifecycleTrigger: input.lifecycleTrigger,
         sessionPath: input.sessionPath,
+        searchMode: null,
+        recallScope: null,
       });
       queueDiagnosticRecord(startRecord);
       let completed = false;
@@ -342,6 +438,36 @@ export function createRecallOperationDiagnostics(
           completed = true;
           queueDiagnosticRecord(
             createRecallDiagnosticCompletionRecord({
+              startRecord,
+              startedAtMilliseconds,
+              clock,
+              completion,
+            }),
+          );
+        },
+      };
+    },
+    startRecallSearch(input) {
+      const startedAtMilliseconds = clock.monotonicMilliseconds();
+      const startRecord = createRecallDiagnosticStartRecord({
+        clock,
+        operationId: randomUUID(),
+        operationKind: RecallDiagnosticOperationKind.SEARCH,
+        lifecycleTrigger: null,
+        sessionPath: null,
+        searchMode: input.searchMode,
+        recallScope: input.recallScope,
+      });
+      queueDiagnosticRecord(startRecord);
+      let completed = false;
+      return {
+        complete(completion) {
+          if (completed) {
+            return;
+          }
+          completed = true;
+          queueDiagnosticRecord(
+            createRecallSearchDiagnosticCompletionRecord({
               startRecord,
               startedAtMilliseconds,
               clock,

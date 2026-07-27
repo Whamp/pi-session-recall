@@ -1,6 +1,7 @@
 /** Kind of bounded local recall operation diagnostic. */
 export enum RecallDiagnosticOperationKind {
   LIVE_SESSION_RECONCILIATION = 'live_session_reconciliation',
+  SEARCH = 'search',
 }
 
 /** Lifecycle state recorded for one recall diagnostic operation. */
@@ -28,6 +29,7 @@ export enum RecallDiagnosticsMode {
 export enum RecallLifecycleTrigger {
   AGENT_SETTLED = 'agent_settled',
   SESSION_SHUTDOWN = 'session_shutdown',
+  ACTIVE_SESSION_FRESHNESS = 'active_session_freshness',
 }
 
 /** Explicit source used to assign one stable project identity to recall evidence. */

@@ -60,6 +60,8 @@ void test('Pi session recall registers collision-free tool guidance and index co
   assert.match(toolParameterSchemas[0] ?? '', /global/);
   assert.ok(!(toolParameterSchemas[0] ?? '').includes('projectPath'));
   assert.ok(!(toolParameterSchemas[0] ?? '').includes('invocationDirectory'));
+  assert.ok(!(toolParameterSchemas[0] ?? '').includes('activeSessionPath'));
+  assert.ok(!(toolParameterSchemas[0] ?? '').includes('lifecycleTrigger'));
   assert.ok(
     toolGuidelines.some(
       (guideline) =>

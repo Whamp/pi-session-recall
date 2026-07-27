@@ -10,11 +10,13 @@ import {
   RecallDiagnosticStatus,
   RecallDiagnosticsMode,
   RecallLifecycleTrigger,
+  RecallSearchScope,
 } from './enums.js';
 import { isUnknownRecord } from './is-unknown-record.js';
 import {
   createRecallLiveSessionDiagnosticMetrics,
   createRecallOperationDiagnostics,
+  createRecallSearchDiagnosticMetrics,
   type RecallDiagnosticsClock,
   type RecallLiveSessionDiagnosticOperation,
 } from './recall-operation-diagnostics.js';
@@ -294,6 +296,15 @@ void test('off diagnostics mode performs no diagnostic filesystem operations', a
     sessionPath: '/sessions/off.jsonl',
   });
   completeTestDiagnosticOperation(operation, RecallDiagnosticStatus.SUCCEEDED);
+  const searchOperation = diagnostics.startRecallSearch({
+    searchMode: 'hybrid',
+    recallScope: RecallSearchScope.GLOBAL,
+  });
+  searchOperation.complete({
+    status: RecallDiagnosticStatus.SUCCEEDED,
+    metrics: createRecallSearchDiagnosticMetrics(),
+    totalDocumentCount: 1,
+  });
   await diagnostics.flush();
 
   assert.equal(await readFile(filesystemBlocker, 'utf8'), 'unchanged');

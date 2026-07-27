@@ -292,6 +292,362 @@ void test('live session reconciliation records private-safe costs and keeps chan
   assert.equal(search.results[0]?.entryId.value, 'diagnostic-assistant');
 });
 
+void test('all diagnostics record recall search and its trusted active-session freshness barrier', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-service-search-diagnostics-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionsDirectory = join(directory, 'sessions');
+  await mkdir(sessionsDirectory);
+  const sessionPath = join(sessionsDirectory, 'active.jsonl');
+  await writeFile(
+    sessionPath,
+    [
+      {
+        type: 'session',
+        version: 3,
+        id: 'search-diagnostic-session',
+        timestamp: '2026-07-27T11:00:00Z',
+        cwd: '/search-project',
+      },
+      {
+        type: 'message',
+        id: 'search-diagnostic-entry',
+        parentId: null,
+        timestamp: '2026-07-27T11:01:00Z',
+        message: { role: 'assistant', content: 'bounded search diagnostic evidence' },
+      },
+    ]
+      .map((entry) => JSON.stringify(entry))
+      .join('\n') + '\n',
+  );
+  let monotonicMilliseconds = 0;
+  const diagnosticsClock = {
+    monotonicMilliseconds: () => monotonicMilliseconds++,
+    wallClockIsoTimestamp: () => '2026-07-27T11:00:00.000Z',
+  };
+  const config = {
+    ...createTestConfig(directory, sessionsDirectory),
+    diagnosticsMode: RecallDiagnosticsMode.ALL,
+  };
+  const diagnostics = createRecallOperationDiagnostics({
+    mode: config.diagnosticsMode,
+    activeLogPath: config.diagnosticLogPath,
+    retainedLogPath: config.retainedDiagnosticLogPath,
+    clock: diagnosticsClock,
+    notifyWarning() {
+      assert.fail('successful search diagnostics must not warn');
+    },
+  });
+  const service = createRecallConversationService(config, {
+    diagnostics,
+    diagnosticsClock,
+    embeddings: {
+      async embedTexts(texts) {
+        return texts.map((text) => (text === RECALL_EMBEDDING_CANARY_TEXT ? [0, 0, 1] : [1, 0, 0]));
+      },
+    },
+    async loadTokenizer() {
+      return tokenizer;
+    },
+  });
+  await service.index();
+  const sourceBeforeSearch = await readFile(sessionPath);
+
+  const search = await service.search('bounded search diagnostic', 1, {
+    mode: 'hybrid',
+    scope: RecallSearchScope.GLOBAL,
+    activeSessionPath: sessionPath,
+  });
+  await diagnostics.flush();
+
+  assert.equal(search.results[0]?.entryId.value, 'search-diagnostic-entry');
+  assert.deepEqual(await readFile(sessionPath), sourceBeforeSearch);
+  const records = (await readFile(config.diagnosticLogPath, 'utf8'))
+    .trimEnd()
+    .split('\n')
+    .map((line): unknown => JSON.parse(line));
+  assert.ok(records.every(isUnknownRecord));
+  assert.equal(records.length, 4);
+  const searchStart = records[0];
+  const freshnessStart = records[1];
+  const freshnessCompletion = records[2];
+  const searchCompletion = records[3];
+  assert.equal(searchStart?.operationKind, RecallDiagnosticOperationKind.SEARCH);
+  assert.equal(searchStart?.status, RecallDiagnosticStatus.STARTED);
+  assert.equal(searchStart?.searchMode, 'hybrid');
+  assert.equal(searchStart?.recallScope, RecallSearchScope.GLOBAL);
+  assert.equal(searchStart?.processId, process.pid);
+  assert.equal(
+    freshnessStart?.operationKind,
+    RecallDiagnosticOperationKind.LIVE_SESSION_RECONCILIATION,
+  );
+  assert.equal(freshnessStart?.lifecycleTrigger, RecallLifecycleTrigger.ACTIVE_SESSION_FRESHNESS);
+  assert.equal(
+    freshnessCompletion?.lifecycleTrigger,
+    RecallLifecycleTrigger.ACTIVE_SESSION_FRESHNESS,
+  );
+  assert.equal(searchCompletion?.operationId, searchStart?.operationId);
+  assert.equal(searchCompletion?.operationKind, RecallDiagnosticOperationKind.SEARCH);
+  assert.equal(searchCompletion?.status, RecallDiagnosticStatus.SUCCEEDED);
+  assert.equal(searchCompletion?.searchMode, 'hybrid');
+  assert.equal(searchCompletion?.recallScope, RecallSearchScope.GLOBAL);
+  assert.equal(searchCompletion?.freshnessBarrierRan, true);
+  assert.ok(readTestDiagnosticNumber(searchCompletion, 'elapsedMilliseconds') > 0);
+  assert.ok(
+    readTestDiagnosticNumber(searchCompletion, 'embeddingModelVerificationMilliseconds') > 0,
+  );
+  assert.ok(readTestDiagnosticNumber(searchCompletion, 'activeSessionFreshnessMilliseconds') > 0);
+  assert.ok(readTestDiagnosticNumber(searchCompletion, 'queryEmbeddingMilliseconds') > 0);
+  assert.ok(readTestDiagnosticNumber(searchCompletion, 'retrievalRankingMilliseconds') > 0);
+  assert.equal(searchCompletion?.deepRerankMilliseconds, 0);
+  assert.ok(readTestDiagnosticNumber(searchCompletion, 'unattributedMilliseconds') >= 0);
+});
+
+void test('deep search diagnostics isolate reranker time and exclude private search evidence', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-service-private-search-diagnostics-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionsDirectory = join(directory, 'sessions');
+  await mkdir(sessionsDirectory);
+  const sessionPath = join(sessionsDirectory, 'private.jsonl');
+  const querySentinel = 'PRIVATE_QUERY_SENTINEL_25';
+  const sourceSentinel = 'PRIVATE_SOURCE_SENTINEL_25';
+  const neighborSentinel = 'PRIVATE_RECALLED_NEIGHBOR_SENTINEL_25';
+  const toolArgumentSentinel = 'PRIVATE_TOOL_ARGUMENT_SENTINEL_25';
+  const toolResultSentinel = 'PRIVATE_TOOL_RESULT_SENTINEL_25';
+  const queryVectorSentinel = 0.2525252525;
+  const rerankerScoreSentinel = 0.9191919191;
+  await writeFile(
+    sessionPath,
+    [
+      {
+        type: 'session',
+        version: 3,
+        id: 'private-search-session',
+        timestamp: '2026-07-27T12:00:00Z',
+        cwd: '/private-search-project',
+      },
+      {
+        type: 'message',
+        id: 'private-search-entry',
+        parentId: null,
+        timestamp: '2026-07-27T12:01:00Z',
+        message: {
+          role: 'assistant',
+          content: [
+            {
+              type: 'text',
+              text: `${querySentinel} ${sourceSentinel} alpha beta gamma ${neighborSentinel}`,
+            },
+            {
+              type: 'toolCall',
+              id: 'private-search-tool-call',
+              name: 'read',
+              arguments: { path: toolArgumentSentinel },
+            },
+          ],
+        },
+      },
+      {
+        type: 'message',
+        id: 'private-search-tool-result',
+        parentId: 'private-search-entry',
+        timestamp: '2026-07-27T12:02:00Z',
+        message: {
+          role: 'toolResult',
+          toolCallId: 'private-search-tool-call',
+          toolName: 'read',
+          content: [{ type: 'text', text: toolResultSentinel }],
+          isError: false,
+        },
+      },
+    ]
+      .map((entry) => JSON.stringify(entry))
+      .join('\n') + '\n',
+  );
+  let monotonicMilliseconds = 0;
+  let recordSearchCosts = false;
+  const diagnosticsClock = {
+    monotonicMilliseconds: () => monotonicMilliseconds,
+    wallClockIsoTimestamp: () => '2026-07-27T12:00:00.000Z',
+  };
+  const config = {
+    ...createTestConfig(directory, sessionsDirectory),
+    diagnosticsMode: RecallDiagnosticsMode.ALL,
+    chunkPolicy: { maxTokens: 4, overlapTokens: 1 },
+    searchCandidateLimits: { dense: 8, lexical: 8, identifier: 8 },
+  };
+  const diagnostics = createRecallOperationDiagnostics({
+    mode: config.diagnosticsMode,
+    activeLogPath: config.diagnosticLogPath,
+    retainedLogPath: config.retainedDiagnosticLogPath,
+    clock: diagnosticsClock,
+    notifyWarning() {
+      assert.fail('successful private search diagnostics must not warn');
+    },
+  });
+  const rerankerDocuments: string[][] = [];
+  const service = createRecallConversationService(config, {
+    diagnostics,
+    diagnosticsClock,
+    embeddings: {
+      async embedTexts(texts) {
+        return texts.map((text) => {
+          if (recordSearchCosts && text === RECALL_EMBEDDING_CANARY_TEXT) {
+            monotonicMilliseconds += 7;
+          } else if (recordSearchCosts && text === querySentinel) {
+            monotonicMilliseconds += 11;
+          }
+          return text === RECALL_EMBEDDING_CANARY_TEXT ? [0, 0, 1] : [queryVectorSentinel, 0.5, 0];
+        });
+      },
+    },
+    reranker: {
+      async rerankDocuments(receivedQuery, documents) {
+        assert.equal(receivedQuery, querySentinel);
+        rerankerDocuments.push([...documents]);
+        monotonicMilliseconds += 13;
+        return documents.map((document, index) =>
+          index === 0 && document.includes(sourceSentinel) ? rerankerScoreSentinel : 0.1,
+        );
+      },
+    },
+    async loadTokenizer() {
+      return tokenizer;
+    },
+  });
+  await service.index();
+  monotonicMilliseconds = 0;
+  recordSearchCosts = true;
+
+  const search = await service.search(querySentinel, 3, {
+    mode: 'deep-rerank',
+    scope: RecallSearchScope.GLOBAL,
+  });
+  await diagnostics.flush();
+
+  assert.ok(rerankerDocuments.flat().some((document) => document.includes(sourceSentinel)));
+  const serializedSearch = JSON.stringify(search);
+  assert.match(serializedSearch, new RegExp(sourceSentinel, 'u'));
+  assert.match(serializedSearch, new RegExp(neighborSentinel, 'u'));
+  const diagnosticJsonl = await readFile(config.diagnosticLogPath, 'utf8');
+  const records = diagnosticJsonl
+    .trimEnd()
+    .split('\n')
+    .map((line): unknown => JSON.parse(line));
+  assert.ok(records.every(isUnknownRecord));
+  assert.equal(records.length, 2);
+  const completion = records[1];
+  assert.equal(completion?.operationKind, RecallDiagnosticOperationKind.SEARCH);
+  assert.equal(completion?.searchMode, 'deep-rerank');
+  assert.equal(completion?.recallScope, RecallSearchScope.GLOBAL);
+  assert.equal(completion?.freshnessBarrierRan, false);
+  assert.equal(completion?.embeddingModelVerificationMilliseconds, 7);
+  assert.equal(completion?.activeSessionFreshnessMilliseconds, 0);
+  assert.equal(completion?.queryEmbeddingMilliseconds, 11);
+  assert.equal(completion?.retrievalRankingMilliseconds, 0);
+  assert.equal(completion?.deepRerankMilliseconds, 13);
+  assert.equal(completion?.elapsedMilliseconds, 31);
+  assert.equal(completion?.unattributedMilliseconds, 0);
+  for (const privateValue of [
+    querySentinel,
+    sourceSentinel,
+    neighborSentinel,
+    toolArgumentSentinel,
+    toolResultSentinel,
+    String(queryVectorSentinel),
+    String(rerankerScoreSentinel),
+  ]) {
+    assert.doesNotMatch(diagnosticJsonl, new RegExp(privateValue, 'u'));
+  }
+});
+
+void test('slow search diagnostics omit 999 milliseconds and retain the 1000 millisecond boundary', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-service-slow-search-diagnostics-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionsDirectory = join(directory, 'sessions');
+  await mkdir(sessionsDirectory);
+  await writeFile(
+    join(sessionsDirectory, 'slow-search.jsonl'),
+    [
+      {
+        type: 'session',
+        version: 3,
+        id: 'slow-search-session',
+        timestamp: '2026-07-27T13:00:00Z',
+        cwd: '/slow-search-project',
+      },
+      {
+        type: 'message',
+        id: 'slow-search-entry',
+        parentId: null,
+        timestamp: '2026-07-27T13:01:00Z',
+        message: { role: 'assistant', content: 'slow search threshold evidence' },
+      },
+    ]
+      .map((entry) => JSON.stringify(entry))
+      .join('\n') + '\n',
+  );
+  let monotonicMilliseconds = 0;
+  let recordSearchCosts = false;
+  const diagnosticsClock = {
+    monotonicMilliseconds: () => monotonicMilliseconds,
+    wallClockIsoTimestamp: () => '2026-07-27T13:00:00.000Z',
+  };
+  const config = {
+    ...createTestConfig(directory, sessionsDirectory),
+    diagnosticsMode: RecallDiagnosticsMode.SLOW,
+  };
+  const diagnostics = createRecallOperationDiagnostics({
+    mode: config.diagnosticsMode,
+    activeLogPath: config.diagnosticLogPath,
+    retainedLogPath: config.retainedDiagnosticLogPath,
+    clock: diagnosticsClock,
+    notifyWarning() {
+      assert.fail('successful slow search diagnostics must not warn');
+    },
+  });
+  const service = createRecallConversationService(config, {
+    diagnostics,
+    diagnosticsClock,
+    embeddings: {
+      async embedTexts(texts) {
+        for (const text of texts) {
+          if (recordSearchCosts && text === 'fast-search') {
+            monotonicMilliseconds += 999;
+          }
+          if (recordSearchCosts && text === 'threshold-search') {
+            monotonicMilliseconds += 1_000;
+          }
+        }
+        return texts.map((text) => (text === RECALL_EMBEDDING_CANARY_TEXT ? [0, 0, 1] : [1, 0, 0]));
+      },
+    },
+    async loadTokenizer() {
+      return tokenizer;
+    },
+  });
+  await service.index();
+  monotonicMilliseconds = 0;
+  recordSearchCosts = true;
+
+  await service.search('fast-search', 1, { scope: RecallSearchScope.GLOBAL });
+  await diagnostics.flush();
+  await assert.rejects(() => readFile(config.diagnosticLogPath), { code: 'ENOENT' });
+
+  monotonicMilliseconds = 0;
+  await service.search('threshold-search', 1, { scope: RecallSearchScope.GLOBAL });
+  await diagnostics.flush();
+
+  const records = (await readFile(config.diagnosticLogPath, 'utf8'))
+    .trimEnd()
+    .split('\n')
+    .map((line): unknown => JSON.parse(line));
+  assert.ok(records.every(isUnknownRecord));
+  assert.equal(records.length, 1);
+  assert.equal(records[0]?.operationKind, RecallDiagnosticOperationKind.SEARCH);
+  assert.equal(records[0]?.status, RecallDiagnosticStatus.SUCCEEDED);
+  assert.equal(records[0]?.elapsedMilliseconds, 1_000);
+});
+
 void test('slow diagnostics omit a fast unchanged live session reconciliation', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'recall-service-slow-diagnostics-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -509,14 +865,142 @@ void test('failed live diagnostics preserve the reconciliation error, lock clean
     .split('\n')
     .map((line): unknown => JSON.parse(line));
   assert.ok(recordsAfterEmbeddingFailure.every(isUnknownRecord));
-  assert.equal(recordsAfterEmbeddingFailure.length, 4);
-  const embeddingFailure = recordsAfterEmbeddingFailure[3];
+  const liveReconciliationRecords = recordsAfterEmbeddingFailure.filter(
+    (record) => record.operationKind === RecallDiagnosticOperationKind.LIVE_SESSION_RECONCILIATION,
+  );
+  assert.equal(liveReconciliationRecords.length, 4);
+  const embeddingFailure = liveReconciliationRecords[3];
   assert.equal(embeddingFailure?.status, RecallDiagnosticStatus.FAILED);
   assert.equal(embeddingFailure?.embeddingRequestCount, 1);
   assert.ok(readTestDiagnosticNumber(embeddingFailure, 'embeddingServerRequestMilliseconds') > 0);
   assert.ok(readTestDiagnosticNumber(embeddingFailure, 'embeddingCacheResolutionMilliseconds') > 0);
   await assert.rejects(() => stat(config.lockPath), { code: 'ENOENT' });
   assert.deepEqual(await readFile(sessionPath), sourceBeforeEmbeddingFailure);
+});
+
+void test('failed and cancelled searches are retained without replacing manifest, reranker, or cancellation errors', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-service-failed-search-diagnostics-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionsDirectory = join(directory, 'sessions');
+  await mkdir(sessionsDirectory);
+  await writeFile(
+    join(sessionsDirectory, 'failed-search.jsonl'),
+    [
+      {
+        type: 'session',
+        version: 3,
+        id: 'failed-search-session',
+        timestamp: '2026-07-27T14:00:00Z',
+        cwd: '/failed-search-project',
+      },
+      {
+        type: 'message',
+        id: 'failed-search-entry',
+        parentId: null,
+        timestamp: '2026-07-27T14:01:00Z',
+        message: { role: 'assistant', content: 'failed search diagnostic evidence' },
+      },
+    ]
+      .map((entry) => JSON.stringify(entry))
+      .join('\n') + '\n',
+  );
+  let monotonicMilliseconds = 0;
+  const diagnosticsClock = {
+    monotonicMilliseconds: () => monotonicMilliseconds,
+    wallClockIsoTimestamp: () => '2026-07-27T14:00:00.000Z',
+  };
+  const config = {
+    ...createTestConfig(directory, sessionsDirectory),
+    diagnosticsMode: RecallDiagnosticsMode.SLOW,
+  };
+  const diagnostics = createRecallOperationDiagnostics({
+    mode: config.diagnosticsMode,
+    activeLogPath: config.diagnosticLogPath,
+    retainedLogPath: config.retainedDiagnosticLogPath,
+    clock: diagnosticsClock,
+    notifyWarning() {
+      assert.fail('successful failed-search diagnostic writes must not warn');
+    },
+  });
+  const rerankerError = new Error('private reranker model response sentinel 25');
+  const cancellationError = new Error('private cancellation sentinel 25');
+  const service = createRecallConversationService(config, {
+    diagnostics,
+    diagnosticsClock,
+    embeddings: {
+      async embedTexts(texts, signal) {
+        if (signal?.aborted) {
+          throw cancellationError;
+        }
+        return texts.map((text) => (text === RECALL_EMBEDDING_CANARY_TEXT ? [0, 0, 1] : [1, 0, 0]));
+      },
+    },
+    reranker: {
+      async rerankDocuments() {
+        monotonicMilliseconds += 17;
+        throw rerankerError;
+      },
+    },
+    async loadTokenizer() {
+      return tokenizer;
+    },
+  });
+  await service.index();
+  monotonicMilliseconds = 0;
+
+  await assert.rejects(
+    () =>
+      service.search('reranker failure', 1, {
+        mode: 'deep-rerank',
+        scope: RecallSearchScope.GLOBAL,
+      }),
+    (error) => error === rerankerError,
+  );
+  const abortController = new AbortController();
+  abortController.abort(cancellationError);
+  await assert.rejects(
+    () =>
+      service.search('cancelled search', 1, {
+        scope: RecallSearchScope.GLOBAL,
+        signal: abortController.signal,
+      }),
+    (error) => error === cancellationError,
+  );
+  await writeFile(config.manifestPath, '{"private_manifest_sentinel_25":');
+  let manifestError: unknown;
+  try {
+    await service.search('manifest failure', 1, { scope: RecallSearchScope.GLOBAL });
+    assert.fail('invalid manifest search must fail');
+  } catch (error) {
+    manifestError = error;
+  }
+  assert.ok(manifestError instanceof Error);
+  assert.match(manifestError.message, /Recall index manifest unreadable/u);
+  await diagnostics.flush();
+
+  const diagnosticJsonl = await readFile(config.diagnosticLogPath, 'utf8');
+  const records = diagnosticJsonl
+    .trimEnd()
+    .split('\n')
+    .map((line): unknown => JSON.parse(line));
+  assert.ok(records.every(isUnknownRecord));
+  assert.equal(records.length, 3);
+  assert.deepEqual(
+    records.map((record) => record.status),
+    [
+      RecallDiagnosticStatus.FAILED,
+      RecallDiagnosticStatus.CANCELLED,
+      RecallDiagnosticStatus.FAILED,
+    ],
+  );
+  assert.equal(records[0]?.searchMode, 'deep-rerank');
+  assert.equal(records[0]?.deepRerankMilliseconds, 17);
+  assert.equal(records[1]?.errorCategory, RecallDiagnosticErrorCategory.OPERATION_CANCELLED);
+  assert.equal(records[2]?.embeddingModelVerificationMilliseconds, 0);
+  assert.doesNotMatch(diagnosticJsonl, /private reranker model response sentinel 25/u);
+  assert.doesNotMatch(diagnosticJsonl, /private cancellation sentinel 25/u);
+  assert.doesNotMatch(diagnosticJsonl, /private_manifest_sentinel_25/u);
+  await assert.rejects(() => stat(config.lockPath), { code: 'ENOENT' });
 });
 
 void test('diagnostic write failure cannot change successful live reconciliation', async (t) => {
@@ -569,6 +1053,17 @@ void test('diagnostic write failure cannot change successful live reconciliation
     },
   });
   await service.index();
+  const searchDuringDiagnosticFailure = await service.search('initial evidence', 1, {
+    scope: RecallSearchScope.GLOBAL,
+  });
+  await diagnostics.flush();
+  assert.equal(
+    searchDuringDiagnosticFailure.results[0]?.entryId.value,
+    'write-failed-initial-entry',
+  );
+  assert.deepEqual(warnings, [
+    'Recall diagnostics disabled after local log persistence failed; recall behavior is unchanged.',
+  ]);
   entries.push({
     type: 'message',
     id: 'write-failed-new-entry',

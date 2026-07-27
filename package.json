@@ -13,6 +13,7 @@
     "test": "node --import tsx --test src/**/*.test.ts",
     "evaluate:recall": "node --import tsx src/evaluate-recall-quality.ts",
     "replay:session-import": "node --import tsx src/replaySessionImportCorpus.ts",
+    "model:embeddinggemma": "node --import tsx src/manage-recall-embeddinggemma-model.ts",
     "typecheck": "tsc --noEmit",
     "lint": "oxlint --type-aware src",
     "format:check": "oxfmt --check ."

@@ -7,7 +7,7 @@ Conversation Recall separates model semantics from execution:
 - `RecallEmbeddingProvider` exposes separate `embedQuery` and `embedDocuments` operations.
 - `RecallRerankingProvider` returns one relevance score per candidate in candidate order.
 
-The current Octen profile preserves the deployed behavior: both operations send their input text unchanged. The operations remain separate so a later profile can own asymmetric query and document prompts without changing indexing or search policy code. The Octen HTTP adapter uses `POST /v1/embeddings`. The Qwen HTTP adapter uses `POST /v1/rerank`. These are capability-specific wire contracts, not a generic OpenAI-compatibility promise.
+The current Octen profile preserves the deployed behavior: both operations send their input text unchanged. The operations remain separate so the [pinned EmbeddingGemma profile](embeddinggemma-model-artifact.md) can own asymmetric query and document prompts without changing indexing or search policy code. The Octen HTTP adapter uses `POST /v1/embeddings`. The Qwen HTTP adapter uses `POST /v1/rerank`. These are capability-specific wire contracts, not a generic OpenAI-compatibility promise.
 
 The Octen manifest projection remains byte-for-byte compatible with manifest version 5. Changing only a backend URL does not change the profile or require a vector rebuild. Changing a recorded embedding identity field still makes the generation incompatible.
 

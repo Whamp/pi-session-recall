@@ -187,6 +187,23 @@ Backend URLs, request timeouts, devices, and adapter implementations are not mod
 
 See [Inference profiles and provider conformance](docs/inference/provider-conformance.md) for the capability-specific HTTP contracts, deterministic conformance command, measurements, and live-evidence boundary.
 
+The recommended EmbeddingGemma artifact is available only through an explicit operator workflow. Inspecting or checking it never downloads a model:
+
+```bash
+npm run --silent model:embeddinggemma -- inspect
+npm run --silent model:embeddinggemma -- doctor
+```
+
+Download, repair, and removal require `--approve`:
+
+```bash
+npm run --silent model:embeddinggemma -- download --approve
+npm run --silent model:embeddinggemma -- repair --approve
+npm run --silent model:embeddinggemma -- remove --approve
+```
+
+This artifact workflow does not yet configure embedded inference or index session text. See [Pinned EmbeddingGemma model artifact](docs/inference/embeddinggemma-model-artifact.md) for the exact revision, size, checksum, prompts, tokenizer and canary policies, cache states, and pending legal and live-model evidence.
+
 ## Default local models
 
 The checked-in embedding defaults match `~/.pi/agent/LOCAL-AI.md`:
@@ -276,6 +293,7 @@ Default data paths:
 ~/.pi/agent/recall/index-manifest.json      generation compatibility identity
 ~/.pi/agent/recall/tokenizers/<revision>/   checksum-verified tokenizer assets
 ~/.pi/agent/recall/embedding-cache/v1/      durable content-addressed FP32 vectors
+~/.pi/agent/recall/models/                  explicitly approved pinned model artifacts
 ~/.pi/agent/recall/operation.lock/          explicit-index writer lock
 ```
 

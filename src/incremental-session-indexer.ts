@@ -160,7 +160,7 @@ async function readChangedSessionChunks(
   sessionPath: string,
   previous: IndexedSessionState | undefined,
   tokenizer: ConversationTextTokenizer,
-  chunkPolicy: RecallChunkPolicy | undefined,
+  chunkPolicy?: RecallChunkPolicy,
   diagnosticMetrics?: RecallIndexDiagnosticMetrics,
   diagnosticsClock?: RecallDiagnosticsClock,
 ): Promise<

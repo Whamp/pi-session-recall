@@ -217,6 +217,7 @@ interface LiveSessionReconciliationDiagnosticRunOptions {
   diagnostics: RecallOperationDiagnostics;
   lifecycleTrigger: RecallLifecycleTrigger;
   sessionPath: string;
+  signal?: AbortSignal;
   reconcile: (
     diagnosticMetrics: RecallIndexDiagnosticMetrics,
   ) => Promise<RecallConversationIndexResult>;
@@ -291,7 +292,7 @@ async function runLiveSessionReconciliationWithDiagnostics(
     });
     return result;
   } catch (error) {
-    const cancelled = isRecallOperationCancelled(error);
+    const cancelled = isRecallOperationCancelled(error, options.signal);
     diagnosticOperation.complete({
       status: cancelled ? RecallDiagnosticStatus.CANCELLED : RecallDiagnosticStatus.FAILED,
       errorCategory: cancelled
@@ -909,6 +910,7 @@ export function createRecallConversationService(
                   diagnostics,
                   lifecycleTrigger: RecallLifecycleTrigger.ACTIVE_SESSION_FRESHNESS,
                   sessionPath: activeSessionPath,
+                  ...(signal ? { signal } : {}),
                   reconcile: (liveSessionDiagnosticMetrics) =>
                     reconcileActiveConversationSession(
                       activeSessionPath,
@@ -1184,6 +1186,7 @@ export function createRecallConversationService(
         diagnostics,
         lifecycleTrigger: options.lifecycleTrigger,
         sessionPath,
+        ...(options.signal ? { signal: options.signal } : {}),
         reconcile: (diagnosticMetrics) =>
           runSerialized(() =>
             reconcileActiveConversationSession(

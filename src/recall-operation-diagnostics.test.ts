@@ -208,6 +208,51 @@ void test('slow diagnostics mode retains the threshold boundary and failures onl
   );
 });
 
+void test('slow diagnostics omit fast cancelled live reconciliations and searches', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-slow-cancelled-top-level-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  let monotonicMilliseconds = 0;
+  const activeLogPath = join(directory, 'diagnostics.jsonl');
+  const diagnostics = createRecallOperationDiagnostics({
+    mode: RecallDiagnosticsMode.SLOW,
+    activeLogPath,
+    retainedLogPath: join(directory, 'diagnostics.previous.jsonl'),
+    clock: {
+      monotonicMilliseconds: () => monotonicMilliseconds,
+      wallClockIsoTimestamp: () => '2026-07-27T10:00:00.000Z',
+    },
+    notifyWarning() {
+      assert.fail('filtered fast cancellations must not warn');
+    },
+  });
+
+  const liveOperation = diagnostics.startLiveSessionReconciliation({
+    lifecycleTrigger: RecallLifecycleTrigger.AGENT_SETTLED,
+    sessionPath: '/sessions/cancelled-live.jsonl',
+  });
+  monotonicMilliseconds = 1;
+  completeTestDiagnosticOperation(
+    liveOperation,
+    RecallDiagnosticStatus.CANCELLED,
+    RecallDiagnosticErrorCategory.OPERATION_CANCELLED,
+  );
+
+  const searchOperation = diagnostics.startRecallSearch({
+    searchMode: 'hybrid',
+    recallScope: RecallSearchScope.GLOBAL,
+  });
+  monotonicMilliseconds = 2;
+  searchOperation.complete({
+    status: RecallDiagnosticStatus.CANCELLED,
+    errorCategory: RecallDiagnosticErrorCategory.OPERATION_CANCELLED,
+    metrics: createRecallSearchDiagnosticMetrics(),
+    totalDocumentCount: null,
+  });
+  await diagnostics.flush();
+
+  await assert.rejects(() => readFile(activeLogPath), { code: 'ENOENT' });
+});
+
 void test('slow diagnostics omit fast cancelled physical session checks', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'recall-slow-cancelled-physical-'));
   t.after(() => rm(directory, { recursive: true, force: true }));

@@ -592,7 +592,6 @@ export function createRecallOperationDiagnostics(
     }
     return (
       record.status === RecallDiagnosticStatus.FAILED ||
-      record.status === RecallDiagnosticStatus.CANCELLED ||
       (record.elapsedMilliseconds ?? 0) >= SLOW_RECALL_DIAGNOSTIC_THRESHOLD_MILLISECONDS
     );
   }

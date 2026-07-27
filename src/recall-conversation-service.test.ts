@@ -1586,6 +1586,152 @@ void test('slow diagnostics omit a fast unchanged live session reconciliation', 
   assert.equal(search.results[0]?.entryId.value, 'slow-diagnostic-entry');
 });
 
+void test('live and freshness diagnostics classify caller-signal cancellation without changing the error', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-service-cancelled-live-diagnostics-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionsDirectory = join(directory, 'sessions');
+  await mkdir(sessionsDirectory);
+  const sessionPath = join(sessionsDirectory, 'active.jsonl');
+  const sessionHeader = {
+    type: 'session',
+    version: 3,
+    id: 'cancelled-live-diagnostic-session',
+    timestamp: '2026-07-27T10:00:00Z',
+    cwd: '/project',
+  };
+  const initialEntries = [
+    sessionHeader,
+    {
+      type: 'message',
+      id: 'cancelled-live-initial-entry',
+      parentId: null,
+      timestamp: '2026-07-27T10:01:00Z',
+      message: { role: 'user', content: 'initial cancellation evidence' },
+    },
+  ];
+  await writeFile(
+    sessionPath,
+    initialEntries.map((entry) => JSON.stringify(entry)).join('\n') + '\n',
+  );
+  const config = {
+    ...createTestConfig(directory, sessionsDirectory),
+    diagnosticsMode: RecallDiagnosticsMode.ALL,
+  };
+  const diagnostics = createRecallOperationDiagnostics({
+    mode: config.diagnosticsMode,
+    activeLogPath: config.diagnosticLogPath,
+    retainedLogPath: config.retainedDiagnosticLogPath,
+    notifyWarning() {
+      assert.fail('successful cancellation diagnostics must not warn');
+    },
+  });
+  let pendingCancellation:
+    | { abortController: AbortController; cancellationError: Error }
+    | undefined;
+  const service = createRecallConversationService(config, {
+    diagnostics,
+    embeddings: {
+      async embedTexts(texts, signal) {
+        if (pendingCancellation && texts.some((text) => text !== RECALL_EMBEDDING_CANARY_TEXT)) {
+          assert.equal(signal, pendingCancellation.abortController.signal);
+          pendingCancellation.abortController.abort(pendingCancellation.cancellationError);
+          throw pendingCancellation.cancellationError;
+        }
+        return texts.map((text) => (text === RECALL_EMBEDDING_CANARY_TEXT ? [0, 0, 1] : [1, 0, 0]));
+      },
+    },
+    loadTokenizer: async () => tokenizer,
+  });
+  await service.index();
+  await writeFile(
+    sessionPath,
+    [
+      ...initialEntries,
+      {
+        type: 'message',
+        id: 'cancelled-live-new-entry',
+        parentId: 'cancelled-live-initial-entry',
+        timestamp: '2026-07-27T10:02:00Z',
+        message: { role: 'assistant', content: 'changed cancellation evidence' },
+      },
+    ]
+      .map((entry) => JSON.stringify(entry))
+      .join('\n') + '\n',
+  );
+
+  const directAbortController = new AbortController();
+  const directCancellationError = new Error('direct live cancellation sentinel');
+  pendingCancellation = {
+    abortController: directAbortController,
+    cancellationError: directCancellationError,
+  };
+  await assert.rejects(
+    () =>
+      service.reconcileSession(sessionPath, {
+        lifecycleTrigger: RecallLifecycleTrigger.AGENT_SETTLED,
+        signal: directAbortController.signal,
+      }),
+    (error) => error === directCancellationError,
+  );
+
+  const freshnessAbortController = new AbortController();
+  const freshnessCancellationError = new Error('freshness cancellation sentinel');
+  pendingCancellation = {
+    abortController: freshnessAbortController,
+    cancellationError: freshnessCancellationError,
+  };
+  await assert.rejects(
+    () =>
+      service.search('cancellation evidence', 1, {
+        scope: RecallSearchScope.GLOBAL,
+        activeSessionPath: sessionPath,
+        signal: freshnessAbortController.signal,
+      }),
+    (error) => error === freshnessCancellationError,
+  );
+  await diagnostics.flush();
+
+  const records = (await readFile(config.diagnosticLogPath, 'utf8'))
+    .trimEnd()
+    .split('\n')
+    .map((line): unknown => JSON.parse(line));
+  assert.ok(records.every(isUnknownRecord));
+  const liveCompletions = records.filter(
+    (record) =>
+      record.operationKind === RecallDiagnosticOperationKind.LIVE_SESSION_RECONCILIATION &&
+      record.status !== RecallDiagnosticStatus.STARTED,
+  );
+  assert.deepEqual(
+    liveCompletions.map((record) => ({
+      lifecycleTrigger: record.lifecycleTrigger,
+      status: record.status,
+      errorCategory: record.errorCategory,
+      failedSessionCount: record.failedSessionCount,
+    })),
+    [
+      {
+        lifecycleTrigger: RecallLifecycleTrigger.AGENT_SETTLED,
+        status: RecallDiagnosticStatus.CANCELLED,
+        errorCategory: RecallDiagnosticErrorCategory.OPERATION_CANCELLED,
+        failedSessionCount: 0,
+      },
+      {
+        lifecycleTrigger: RecallLifecycleTrigger.ACTIVE_SESSION_FRESHNESS,
+        status: RecallDiagnosticStatus.CANCELLED,
+        errorCategory: RecallDiagnosticErrorCategory.OPERATION_CANCELLED,
+        failedSessionCount: 0,
+      },
+    ],
+  );
+  const searchCompletion = records.find(
+    (record) =>
+      record.operationKind === RecallDiagnosticOperationKind.SEARCH &&
+      record.status !== RecallDiagnosticStatus.STARTED,
+  );
+  assert.equal(searchCompletion?.status, RecallDiagnosticStatus.CANCELLED);
+  assert.equal(searchCompletion?.errorCategory, RecallDiagnosticErrorCategory.OPERATION_CANCELLED);
+});
+
 void test('failed live diagnostics preserve the reconciliation error, lock cleanup, and source bytes', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'recall-service-failed-diagnostics-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -1739,7 +1885,7 @@ void test('failed live diagnostics preserve the reconciliation error, lock clean
   assert.deepEqual(await readFile(sessionPath), sourceBeforeEmbeddingFailure);
 });
 
-void test('failed and cancelled searches are retained without replacing manifest, reranker, or cancellation errors', async (t) => {
+void test('slow diagnostics retain failed searches, omit fast cancellation, and preserve errors', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'recall-service-failed-search-diagnostics-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const sessionsDirectory = join(directory, 'sessions');
@@ -1845,19 +1991,14 @@ void test('failed and cancelled searches are retained without replacing manifest
     .split('\n')
     .map((line): unknown => JSON.parse(line));
   assert.ok(records.every(isUnknownRecord));
-  assert.equal(records.length, 3);
+  assert.equal(records.length, 2);
   assert.deepEqual(
     records.map((record) => record.status),
-    [
-      RecallDiagnosticStatus.FAILED,
-      RecallDiagnosticStatus.CANCELLED,
-      RecallDiagnosticStatus.FAILED,
-    ],
+    [RecallDiagnosticStatus.FAILED, RecallDiagnosticStatus.FAILED],
   );
   assert.equal(records[0]?.searchMode, 'deep-rerank');
   assert.equal(records[0]?.deepRerankMilliseconds, 17);
-  assert.equal(records[1]?.errorCategory, RecallDiagnosticErrorCategory.OPERATION_CANCELLED);
-  assert.equal(records[2]?.embeddingModelVerificationMilliseconds, 0);
+  assert.equal(records[1]?.embeddingModelVerificationMilliseconds, 0);
   assert.doesNotMatch(diagnosticJsonl, /private reranker model response sentinel 25/u);
   assert.doesNotMatch(diagnosticJsonl, /private cancellation sentinel 25/u);
   assert.doesNotMatch(diagnosticJsonl, /private_manifest_sentinel_25/u);

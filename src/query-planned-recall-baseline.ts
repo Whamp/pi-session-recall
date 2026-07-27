@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { lstat, mkdir, readFile, rm } from 'node:fs/promises';
-import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 
 import { Type } from 'typebox';
 import { Value } from 'typebox/value';
@@ -14,6 +14,7 @@ import {
   RecallSearchScope,
 } from './enums.js';
 import type { RecallSearchResult } from './fuse-recall-ranked-lists.js';
+import { isPathInsideRecallEvaluationArea } from './recall-evaluation-file-system.js';
 import {
   createRecallConversationService,
   type RecallConversationConfig,
@@ -461,11 +462,6 @@ export interface PrivateQueryPlannedRecallBaselineResult {
   };
 }
 
-function isPathInsidePrivateBaselineArea(parentPath: string, childPath: string): boolean {
-  const pathFromParent = relative(parentPath, childPath);
-  return pathFromParent === '' || (!pathFromParent.startsWith('..') && !isAbsolute(pathFromParent));
-}
-
 function assertPrivateBaselineWorkDirectory(
   corpus: LoadedPrivateQueryPlannedRecallCorpus,
   workDirectory: string,
@@ -474,23 +470,23 @@ function assertPrivateBaselineWorkDirectory(
   const privateDirectory = dirname(corpus.manifestPath);
   if (
     resolvedWorkDirectory === privateDirectory ||
-    !isPathInsidePrivateBaselineArea(privateDirectory, resolvedWorkDirectory)
+    !isPathInsideRecallEvaluationArea(privateDirectory, resolvedWorkDirectory)
   ) {
     throw new Error(
       'Private query-planned recall baseline work directory must stay inside the private evaluation area',
     );
   }
   if (
-    isPathInsidePrivateBaselineArea(corpus.snapshotDirectory, resolvedWorkDirectory) ||
-    isPathInsidePrivateBaselineArea(resolvedWorkDirectory, corpus.snapshotDirectory)
+    isPathInsideRecallEvaluationArea(corpus.snapshotDirectory, resolvedWorkDirectory) ||
+    isPathInsideRecallEvaluationArea(resolvedWorkDirectory, corpus.snapshotDirectory)
   ) {
     throw new Error(
       'Private query-planned recall baseline work directory overlaps immutable snapshots',
     );
   }
   if (
-    isPathInsidePrivateBaselineArea(corpus.manifestPath, resolvedWorkDirectory) ||
-    isPathInsidePrivateBaselineArea(resolvedWorkDirectory, corpus.manifestPath)
+    isPathInsideRecallEvaluationArea(corpus.manifestPath, resolvedWorkDirectory) ||
+    isPathInsideRecallEvaluationArea(resolvedWorkDirectory, corpus.manifestPath)
   ) {
     throw new Error(
       'Private query-planned recall baseline work directory overlaps the private manifest',

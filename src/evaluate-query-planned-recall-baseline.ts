@@ -1,10 +1,9 @@
 import { execFileSync } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
-import { mkdir, rename, rm, writeFile } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { loadRecallConversationConfig } from './recall-conversation-config.js';
+import { writeAtomicRecallEvaluationFile } from './recall-evaluation-file-system.js';
 import {
   createPublishableQueryPlannedRecallBaselineEvidence,
   createPublishableQueryPlannedRecallControls,
@@ -26,18 +25,6 @@ Publishes privacy-safe controls and aggregate evidence to:
 
 The command indexes only unchanged snapshots declared by the private manifest and never scans or writes the production recall corpus. Query text, source text, entry IDs, session paths, project details, and relevant distractor identities stay private.
 `;
-
-async function writeAtomicBaselineFile(path: string, content: string): Promise<void> {
-  await mkdir(dirname(path), { recursive: true });
-  const temporaryPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
-  try {
-    await writeFile(temporaryPath, content, { encoding: 'utf8', flag: 'wx' });
-    await rename(temporaryPath, path);
-  } catch (error) {
-    await rm(temporaryPath, { force: true });
-    throw error;
-  }
-}
 
 /** Runs the private pre-planning hybrid baseline and writes only privacy-safe repository evidence. */
 export async function evaluateQueryPlannedRecallBaseline(
@@ -85,9 +72,9 @@ export async function evaluateQueryPlannedRecallBaseline(
     'query-planned-hybrid-baseline.md',
   );
   await Promise.all([
-    writeAtomicBaselineFile(controlsPath, `${JSON.stringify(controls, null, 2)}\n`),
-    writeAtomicBaselineFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`),
-    writeAtomicBaselineFile(
+    writeAtomicRecallEvaluationFile(controlsPath, `${JSON.stringify(controls, null, 2)}\n`),
+    writeAtomicRecallEvaluationFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`),
+    writeAtomicRecallEvaluationFile(
       reportPath,
       formatPublishableQueryPlannedRecallBaselineReport(evidence),
     ),

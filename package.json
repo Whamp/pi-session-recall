@@ -13,6 +13,7 @@
     "test": "node --import tsx --test src/**/*.test.ts",
     "evaluate:recall": "node --import tsx src/evaluate-recall-quality.ts",
     "evaluate:query-planned-baseline": "node --import tsx src/evaluate-query-planned-recall-baseline.ts",
+    "evaluate:query-planned": "node --import tsx src/evaluate-query-planned-recall.ts",
     "replay:session-import": "node --import tsx src/replaySessionImportCorpus.ts",
     "typecheck": "tsc --noEmit",
     "lint": "oxlint --type-aware src",

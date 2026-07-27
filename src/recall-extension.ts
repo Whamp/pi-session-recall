@@ -57,9 +57,10 @@ export async function searchPiRecall(
   });
 }
 
-/** Returns whether a Pi runtime should perform full recall catch-up during session startup. */
+/** Prevents full corpus catch-up from blocking any Pi runtime during session startup. */
 export function shouldRunRecallStartupCatchUp(mode: ExtensionContext['mode']): boolean {
-  return mode === 'tui';
+  void mode;
+  return false;
 }
 
 /** Returns whether a persistent Pi runtime should ingest sessions from lifecycle events. */

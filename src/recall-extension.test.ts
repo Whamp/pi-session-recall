@@ -69,7 +69,7 @@ void test('Pi session recall registers collision-free tool guidance and index co
   );
 });
 
-void test('Pi recall startup catch-up runs only for the interactive TUI', () => {
+void test('Pi recall startup never runs full corpus catch-up in the runtime process', () => {
   const modes: ExtensionContext['mode'][] = ['tui', 'rpc', 'json', 'print'];
 
   assert.deepEqual(
@@ -79,7 +79,7 @@ void test('Pi recall startup catch-up runs only for the interactive TUI', () => 
       shouldRunRecallLifecycleIngestion(mode),
     ]),
     [
-      ['tui', true, true],
+      ['tui', false, true],
       ['rpc', false, true],
       ['json', false, false],
       ['print', false, false],

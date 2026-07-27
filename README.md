@@ -89,14 +89,14 @@ The committed quality report passes and selects 512/64 chunks, 8 candidates per 
 /pi-session-recall-index --rebuild
 ```
 
-After that initial generation exists, the extension keeps it current from Pi's session lifecycle:
+After that initial generation exists, the extension keeps active sessions current from Pi's session lifecycle:
 
-- interactive TUI `session_start` starts a bounded background catch-up over missed session files; non-interactive print, JSON, and RPC runtimes skip the corpus scan;
+- startup and reload never scan the full corpus inside the Pi runtime;
 - persistent TUI and RPC runtimes reconcile the active session on `agent_settled` after retries and queued continuations finish;
 - persistent TUI and RPC runtimes await one final active-session reconciliation on `session_shutdown` before switching, forking, reloading, or exiting;
 - every `pi-session-recall` tool call reconciles the trusted active session before searching.
 
-Resume appends and branch changes reprocess the affected session. Forks enter through their new session file and retain parent-session provenance. The incremental state and unchanged JSONL files form the durable retry queue after crashes, model outages, or lock contention. Multiple Pi processes share the PID-owned writer lock.
+Resume appends and branch changes reprocess the affected session. Forks enter through their new session file and retain parent-session provenance. The incremental state and unchanged JSONL files form the durable retry queue after crashes, model outages, or lock contention. Multiple Pi processes share the PID-owned writer lock. Use the manual index command to catch up inactive sessions that no persistent runtime ingested.
 
 Use `/pi-session-recall-index` for an explicit full catch-up and optimization. Use `--rebuild` to replace an incompatible generation while preserving tokenizer assets and cached vectors.
 
@@ -272,7 +272,7 @@ Default data paths:
 ~/.pi/agent/recall/operation.lock/          explicit-index writer lock
 ```
 
-A process-local mutex and PID-owned writer lock serialize manual and automatic indexing. Background lifecycle ingestion waits at most 250 milliseconds for another writer, then defers quietly until the next lifecycle event. The active-session freshness barrier waits under the tool's cancellation signal because search must not silently return stale evidence from its invoking session. Search never clears or repairs another process's lock. Full catch-up checkpoints every 100 changed files; targeted reconciliation checkpoints its one session immediately. Embedding writes use bounded 128-chunk windows.
+A process-local mutex and PID-owned writer lock serialize manual and automatic indexing. Targeted lifecycle ingestion waits at most 250 milliseconds for another writer, then defers quietly until the next lifecycle event. The active-session freshness barrier waits under the tool's cancellation signal because search must not silently return stale evidence from its invoking session. Search never clears or repairs another process's lock. Manual full catch-up checkpoints every 100 changed files; targeted reconciliation checkpoints its one session immediately. Embedding writes use bounded 128-chunk windows.
 
 The embedding cache is a sibling of zvec rather than part of the collection. Each entry has a versioned identity header, FP32 payload, and SHA-256 checksum. Writers fsync a unique temporary file and atomically rename it only after validation. Readers reject identity, dimension, byte-length, checksum, and non-finite-value failures. Rebuilding only zvec and index state leaves the cache available, so unchanged chunks need zero chunk-embedding requests. Index completion reports cache hits, newly embedded chunks, and chunk-embedding request count separately; the model-identity canary request is not a chunk-embedding request.
 

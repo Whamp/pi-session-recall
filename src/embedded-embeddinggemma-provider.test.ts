@@ -9,7 +9,107 @@ function createEmbeddingVector(first: number, second: number): number[] {
   return [first, second, ...Array<number>(766).fill(0)];
 }
 
-void test('embedded EmbeddingGemma provider passes deterministic CPU and tokenizer conformance', async () => {
+void test('embedded EmbeddingGemma provider reports automatic accelerator selection and bounded parallelism', async (t) => {
+  const profile = createRecommendedEmbeddingGemmaModelProfile();
+  const probedIncludes: string[] = [];
+  const runtimeOptions: Array<Record<string, unknown>> = [];
+  const modelOptions: Array<Record<string, unknown>> = [];
+  const contextOptions: Array<Record<string, unknown>> = [];
+
+  const provider = createEmbeddedEmbeddingGemmaProvider(profile, {
+    modelCacheDirectory: '/models',
+    parallelism: 2,
+    async verifyModelArtifact() {
+      return '/models/model.gguf';
+    },
+    async loadNodeLlamaCpp() {
+      return {
+        version: '3.18.1',
+        LlamaLogLevel: { error: 'error' },
+        async getLlamaGpuTypes(include) {
+          probedIncludes.push(include);
+          return ['cuda', 'vulkan'];
+        },
+        async getLlama(options) {
+          runtimeOptions.push(options);
+          return {
+            gpu: 'cuda',
+            async getGpuDeviceNames() {
+              return ['NVIDIA Test Device'];
+            },
+            async loadModel(options) {
+              modelOptions.push(options);
+              return {
+                embeddingVectorSize: 768,
+                tokenize() {
+                  return [];
+                },
+                async createEmbeddingContext(options) {
+                  contextOptions.push(options);
+                  return {
+                    async getEmbeddingFor() {
+                      return { vector: createEmbeddingVector(3, 4) };
+                    },
+                    async dispose() {},
+                  };
+                },
+                async dispose() {},
+              };
+            },
+            async dispose() {},
+          };
+        },
+      };
+    },
+  });
+  t.after(() => provider.dispose());
+
+  await provider.embedQuery('accelerated recall');
+
+  assert.deepEqual(probedIncludes, ['supported']);
+  assert.equal(runtimeOptions.length, 1);
+  assert.equal(runtimeOptions[0]?.gpu, 'cuda');
+  assert.equal(runtimeOptions[0]?.progressLogs, false);
+  assert.equal(runtimeOptions[0]?.debug, false);
+  assert.equal(typeof runtimeOptions[0]?.logger, 'function');
+  assert.deepEqual(modelOptions, [
+    {
+      modelPath: '/models/model.gguf',
+      gpuLayers: {
+        fitContext: { contextSize: 2_048, embeddingContext: true },
+        max: 32,
+      },
+    },
+  ]);
+  assert.deepEqual(contextOptions, [{ contextSize: 2_048 }, { contextSize: 2_048 }]);
+  assert.deepEqual(provider.executionIdentity, {
+    adapter: 'node-llama-cpp-embedded-v2',
+    backend: 'embedded',
+    computeBackend: 'cuda',
+    deviceNames: ['NVIDIA Test Device'],
+    devicePolicy: 'auto',
+    fallbackFromComputeBackend: null,
+    nodeLlamaCppVersion: '3.18.1',
+    parallelism: 2,
+    probedComputeBackends: ['cuda', 'vulkan'],
+    profileId: 'embeddinggemma-300m-q8-0-v1',
+  });
+});
+
+void test('embedded EmbeddingGemma provider rejects unbounded context-pool parallelism', () => {
+  const profile = createRecommendedEmbeddingGemmaModelProfile();
+
+  assert.throws(
+    () =>
+      createEmbeddedEmbeddingGemmaProvider(profile, {
+        modelCacheDirectory: '/models',
+        parallelism: 5,
+      }),
+    /parallelism invalid: expected an integer from 1 through 4, received 5/u,
+  );
+});
+
+void test('embedded EmbeddingGemma provider passes deterministic explicit CPU and tokenizer conformance', async () => {
   const profile = createRecommendedEmbeddingGemmaModelProfile();
   const events: string[] = [];
   const embeddedInputs: string[] = [];
@@ -28,6 +128,7 @@ void test('embedded EmbeddingGemma provider passes deterministic CPU and tokeniz
   const provider = createEmbeddedEmbeddingGemmaProvider(profile, {
     modelCacheDirectory: '/models',
     contextSize: 2_048,
+    device: 'cpu',
     threads: 3,
     async verifyModelArtifact() {
       artifactVerificationCount += 1;
@@ -123,13 +224,19 @@ void test('embedded EmbeddingGemma provider passes deterministic CPU and tokeniz
     'title: none | text: first document',
     'title: none | text: second document',
   ]);
-  assert.deepEqual(getLlamaOptions, {
-    build: 'never',
-    gpu: false,
-    logLevel: 'error',
-    progressLogs: false,
-    skipDownload: true,
-  });
+  assert.equal(typeof getLlamaOptions?.logger, 'function');
+  assert.deepEqual(
+    { ...getLlamaOptions, logger: undefined },
+    {
+      build: 'never',
+      debug: false,
+      gpu: false,
+      logger: undefined,
+      logLevel: 'error',
+      progressLogs: false,
+      skipDownload: true,
+    },
+  );
   assert.deepEqual(loadModelOptions, {
     modelPath: '/models/embeddinggemma/profile/embeddinggemma-300M-Q8_0.gguf',
     gpuLayers: 0,
@@ -138,15 +245,257 @@ void test('embedded EmbeddingGemma provider passes deterministic CPU and tokeniz
   assert.equal(dynamicImportCount, 1);
   assert.equal(artifactVerificationCount, 1);
   assert.deepEqual(provider.executionIdentity, {
-    adapter: 'node-llama-cpp-embedded-v1',
+    adapter: 'node-llama-cpp-embedded-v2',
     backend: 'embedded',
-    device: 'cpu',
+    computeBackend: 'cpu',
+    deviceNames: ['CPU'],
+    devicePolicy: 'cpu',
+    fallbackFromComputeBackend: null,
     nodeLlamaCppVersion: '3.18.1',
+    parallelism: 1,
+    probedComputeBackends: [],
     profileId: 'embeddinggemma-300m-q8-0-v1',
   });
 
   await provider.dispose();
   assert.deepEqual(events.slice(-3), ['dispose context', 'dispose model', 'dispose runtime']);
+});
+
+void test('embedded EmbeddingGemma provider shares one model load across concurrent requests', async (t) => {
+  const profile = createRecommendedEmbeddingGemmaModelProfile();
+  let runtimeLoadCount = 0;
+  let modelLoadCount = 0;
+  let contextCreationCount = 0;
+  let activeContextCount = 0;
+  let maximumActiveContextCount = 0;
+  const provider = createEmbeddedEmbeddingGemmaProvider(profile, {
+    modelCacheDirectory: '/models',
+    device: 'cpu',
+    parallelism: 2,
+    async verifyModelArtifact() {
+      return '/models/model.gguf';
+    },
+    async loadNodeLlamaCpp() {
+      return {
+        version: '3.18.1',
+        LlamaLogLevel: { error: 'error' },
+        async getLlama() {
+          runtimeLoadCount += 1;
+          return {
+            gpu: false,
+            async loadModel() {
+              modelLoadCount += 1;
+              return {
+                embeddingVectorSize: 768,
+                tokenize() {
+                  return [];
+                },
+                async createEmbeddingContext() {
+                  contextCreationCount += 1;
+                  return {
+                    async getEmbeddingFor() {
+                      activeContextCount += 1;
+                      maximumActiveContextCount = Math.max(
+                        maximumActiveContextCount,
+                        activeContextCount,
+                      );
+                      await new Promise<void>((resolve) => {
+                        setImmediate(resolve);
+                      });
+                      activeContextCount -= 1;
+                      return { vector: createEmbeddingVector(3, 4) };
+                    },
+                    async dispose() {},
+                  };
+                },
+                async dispose() {},
+              };
+            },
+            async dispose() {},
+          };
+        },
+      };
+    },
+  });
+  t.after(() => provider.dispose());
+
+  const embeddings = await Promise.all([
+    provider.embedQuery('one'),
+    provider.embedQuery('two'),
+    provider.embedQuery('three'),
+    provider.embedQuery('four'),
+  ]);
+
+  assert.equal(runtimeLoadCount, 1);
+  assert.equal(modelLoadCount, 1);
+  assert.equal(contextCreationCount, 2);
+  assert.equal(maximumActiveContextCount, 2);
+  assert.deepEqual(
+    embeddings,
+    Array.from({ length: 4 }, () => createEmbeddingVector(0.6, 0.8)),
+  );
+});
+
+void test('embedded EmbeddingGemma provider fails a broken explicit accelerator without fallback', async () => {
+  const profile = createRecommendedEmbeddingGemmaModelProfile();
+  const requestedComputeBackends: unknown[] = [];
+  const warnings: string[] = [];
+  const provider = createEmbeddedEmbeddingGemmaProvider(profile, {
+    modelCacheDirectory: '/models',
+    device: 'cuda',
+    onWarning(warning) {
+      warnings.push(warning);
+    },
+    async verifyModelArtifact() {
+      return '/models/model.gguf';
+    },
+    async loadNodeLlamaCpp() {
+      return {
+        version: '3.18.1',
+        LlamaLogLevel: { error: 'error' },
+        async getLlama(options) {
+          requestedComputeBackends.push(options.gpu);
+          throw new Error('explicit CUDA fixture failed');
+        },
+      };
+    },
+  });
+
+  await assert.rejects(
+    () => provider.embedQuery('must not change devices'),
+    /explicit CUDA fixture failed/u,
+  );
+  assert.deepEqual(requestedComputeBackends, ['cuda']);
+  assert.deepEqual(warnings, []);
+  assert.equal(provider.executionIdentity.computeBackend, 'pending');
+  assert.equal(provider.executionIdentity.profileId, profile.profileId);
+});
+
+void test('embedded EmbeddingGemma provider disposes idle resources and reloads on demand', async (t) => {
+  const profile = createRecommendedEmbeddingGemmaModelProfile();
+  const firstIdleDisposal = Promise.withResolvers<void>();
+  let runtimeLoadCount = 0;
+  let contextDisposalCount = 0;
+  let modelDisposalCount = 0;
+  let runtimeDisposalCount = 0;
+  const provider = createEmbeddedEmbeddingGemmaProvider(profile, {
+    modelCacheDirectory: '/models',
+    device: 'cpu',
+    idleTimeoutMilliseconds: 5,
+    async verifyModelArtifact() {
+      return '/models/model.gguf';
+    },
+    async loadNodeLlamaCpp() {
+      return {
+        version: '3.18.1',
+        LlamaLogLevel: { error: 'error' },
+        async getLlama() {
+          runtimeLoadCount += 1;
+          return {
+            gpu: false,
+            async loadModel() {
+              return {
+                embeddingVectorSize: 768,
+                tokenize() {
+                  return [];
+                },
+                async createEmbeddingContext() {
+                  return {
+                    async getEmbeddingFor() {
+                      return { vector: createEmbeddingVector(3, 4) };
+                    },
+                    async dispose() {
+                      contextDisposalCount += 1;
+                    },
+                  };
+                },
+                async dispose() {
+                  modelDisposalCount += 1;
+                },
+              };
+            },
+            async dispose() {
+              runtimeDisposalCount += 1;
+              firstIdleDisposal.resolve();
+            },
+          };
+        },
+      };
+    },
+  });
+  t.after(() => provider.dispose());
+
+  await provider.embedQuery('first load');
+  await Promise.race([
+    firstIdleDisposal.promise,
+    new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('idle resources were not disposed')), 500);
+    }),
+  ]);
+
+  assert.equal(contextDisposalCount, 1);
+  assert.equal(modelDisposalCount, 1);
+  assert.equal(runtimeDisposalCount, 1);
+
+  await provider.embedQuery('reload after idle');
+  assert.equal(runtimeLoadCount, 2);
+});
+
+void test('embedded EmbeddingGemma provider keeps a loaded tokenizer valid until disposal', async () => {
+  const profile = createRecommendedEmbeddingGemmaModelProfile();
+  let modelDisposed = false;
+  const provider = createEmbeddedEmbeddingGemmaProvider(profile, {
+    modelCacheDirectory: '/models',
+    device: 'cpu',
+    idleTimeoutMilliseconds: 5,
+    async verifyModelArtifact() {
+      return '/models/model.gguf';
+    },
+    async loadNodeLlamaCpp() {
+      return {
+        version: '3.18.1',
+        LlamaLogLevel: { error: 'error' },
+        async getLlama() {
+          return {
+            gpu: false,
+            async loadModel() {
+              return {
+                embeddingVectorSize: 768,
+                tokenize() {
+                  if (modelDisposed) {
+                    throw new Error('tokenizer model disposed');
+                  }
+                  return [17, 19, 23];
+                },
+                async createEmbeddingContext() {
+                  return {
+                    async getEmbeddingFor() {
+                      return { vector: createEmbeddingVector(3, 4) };
+                    },
+                    async dispose() {},
+                  };
+                },
+                async dispose() {
+                  modelDisposed = true;
+                },
+              };
+            },
+            async dispose() {},
+          };
+        },
+      };
+    },
+  });
+  const tokenizer = await provider.loadConversationTokenizer();
+
+  await new Promise<void>((resolve) => {
+    setTimeout(resolve, 20);
+  });
+
+  assert.deepEqual(tokenizer.encodeConversationText('still valid').ids, [17, 19, 23]);
+  assert.equal(modelDisposed, false);
+  await provider.dispose();
+  assert.equal(modelDisposed, true);
 });
 
 void test('embedded EmbeddingGemma provider rejects an incompatible runtime dimension', async () => {

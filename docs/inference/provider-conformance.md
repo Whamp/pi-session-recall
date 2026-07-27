@@ -9,7 +9,7 @@ Conversation Recall separates model semantics from execution:
 
 The current Octen profile preserves the deployed behavior: both operations send their input text unchanged. The [pinned EmbeddingGemma profile](embeddinggemma-model-artifact.md) applies `task: search result | query: ` to queries and `title: none | text: ` to documents. Both profiles can use the llama.cpp `POST /v1/embeddings` adapter. The Qwen HTTP adapter uses `POST /v1/rerank`. These are capability-specific wire contracts, not a generic OpenAI-compatibility promise.
 
-The [embedded EmbeddingGemma provider](embedded-embeddinggemma.md) uses the same profile through dynamically loaded `node-llama-cpp@3.18.1`. Its execution identity records the embedded adapter and CPU device without changing vector compatibility.
+The [embedded EmbeddingGemma provider](embedded-embeddinggemma.md) uses the same profile through dynamically loaded `node-llama-cpp@3.18.1`. Its execution identity records the device policy, probed accelerators, selected compute backend and device names, CPU fallback source, and bounded parallelism without changing vector compatibility.
 
 The Octen manifest projection remains byte-for-byte compatible with manifest version 5. Changing only a backend URL does not change the profile or require a vector rebuild. Changing a recorded embedding identity field still makes the generation incompatible.
 
@@ -31,7 +31,12 @@ The probes use temporary HTTP servers and fixed vectors or scores. They verify:
 - vector count, dimensions, finite values, profile-required L2 normalization, and fixed expected values;
 - reranker score count, candidate order, finite values, and fixed expected values;
 - bounded query, document, and reranking request counts;
-- query, document, and reranking elapsed time through an injectable monotonic clock.
+- query, document, and reranking elapsed time through an injectable monotonic clock;
+- automatic accelerator probing and execution identity;
+- one-warning same-profile CPU fallback through the public conversation service;
+- exact explicit-device failure without fallback;
+- one shared model load across concurrent requests and bounded context-pool concurrency; and
+- idle disposal, reload, and synchronous tokenizer lifetime safety.
 
 Custom adapters can call `measureRecallEmbeddingProviderConformance` and `measureRecallRerankingProviderConformance` with profile-specific fixed fixtures. A mismatch fails with the capability and vector dimension or candidate index.
 
@@ -39,4 +44,4 @@ Custom adapters can call `measureRecallEmbeddingProviderConformance` and `measur
 
 This deterministic path proves adapter and service contract behavior. The embedded tests use an injected native boundary; they do not load the real 333,590,944-byte artifact. The HTTP tests use temporary fixed-response servers. Neither path proves that a live server loaded the claimed artifact or that live vectors and scores match acceptance fixtures.
 
-Real EmbeddingGemma tokenizer comparison, canary vectors, cold start, warm inference, throughput, storage, and device measurements remain pending because this environment has no Gemma distribution approval or operator-approved model download. [Embedded EmbeddingGemma execution](embedded-embeddinggemma.md) lists each missing measurement. The committed Octen quality report remains Octen-profile evidence only.
+Real EmbeddingGemma tokenizer comparison, canary vectors, cold start, warm inference, throughput, storage, automatic fallback, native-log isolation, and CPU/accelerator device measurements remain pending because this environment has no Gemma distribution approval or operator-approved model download. [Embedded EmbeddingGemma execution](embedded-embeddinggemma.md) lists each missing measurement. The committed Octen quality report remains Octen-profile evidence only.

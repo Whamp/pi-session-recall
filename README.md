@@ -183,9 +183,9 @@ Embedding text is normalized to Unicode NFC under `unicode-nfc-v1`. Cache identi
 
 Model profiles define inference semantics; backend settings define where those semantics execute. The Octen profile preserves raw text and its existing manifest identity. The EmbeddingGemma profile fixes asymmetric prompts, 768 dimensions, mean pooling, L2 normalization, GGUF tokenizer identity, immutable artifact identity, and query-canary behavior. `RecallEmbeddingProvider` keeps query and document operations separate.
 
-Backend URLs, devices, and adapter implementations are not model-profile identity. An EmbeddingGemma generation can move between the embedded CPU provider and the built-in llama.cpp HTTP provider without rebuilding. Moving between EmbeddingGemma and Octen requires another generation.
+Backend URLs, devices, and adapter implementations are not model-profile identity. An EmbeddingGemma generation can move between embedded CPU, Metal, CUDA, Vulkan, and the built-in llama.cpp HTTP provider without rebuilding. Moving between EmbeddingGemma and Octen requires another generation.
 
-`node-llama-cpp@3.18.1` is optional and loads dynamically only when embedded embedding or GGUF tokenization begins. HTTP-only search does not load the native runtime.
+`node-llama-cpp@3.18.1` is optional and loads dynamically only when embedded embedding or GGUF tokenization begins. Embedded execution probes supported accelerators by default, reports the selected backend and device, and retries the same profile on CPU with one warning when automatic accelerator initialization fails. Explicit device overrides fail closed. Parallelism is explicitly bounded from one through four, native logs stay on stderr, and idle resources unload after five minutes unless a checked-out synchronous tokenizer still needs the model. HTTP-only search does not load the native runtime.
 
 See [Inference profiles and provider conformance](docs/inference/provider-conformance.md) for shared adapter checks and [Embedded EmbeddingGemma execution](docs/inference/embedded-embeddinggemma.md) for service wiring, deterministic evidence, and pending real-model acceptance.
 

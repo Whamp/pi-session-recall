@@ -266,6 +266,87 @@ void test('recall service builds and searches one embedded-profile generation ac
   );
 });
 
+void test('recall service indexes with the same profile after automatic accelerator fallback', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-embeddinggemma-fallback-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionsDirectory = join(directory, 'sessions');
+  await mkdir(sessionsDirectory);
+  const profile = createRecommendedEmbeddingGemmaModelProfile();
+  const requestedComputeBackends: unknown[] = [];
+  const warnings: string[] = [];
+  let modelLoadCount = 0;
+  const provider = createEmbeddedEmbeddingGemmaProvider(profile, {
+    modelCacheDirectory: join(directory, 'models'),
+    onWarning(warning) {
+      warnings.push(warning);
+    },
+    async verifyModelArtifact() {
+      return join(directory, 'models', profile.source.artifact);
+    },
+    async loadNodeLlamaCpp() {
+      return {
+        version: '3.18.1',
+        LlamaLogLevel: { error: 'error' },
+        async getLlamaGpuTypes() {
+          return ['cuda'];
+        },
+        async getLlama(options) {
+          requestedComputeBackends.push(options.gpu);
+          if (options.gpu === 'cuda') {
+            throw new Error('CUDA fixture initialization failed');
+          }
+          return {
+            gpu: false,
+            async loadModel() {
+              modelLoadCount += 1;
+              return {
+                embeddingVectorSize: 768,
+                tokenize(text) {
+                  return Array.from(text).map((_, index) => index + 1);
+                },
+                async createEmbeddingContext() {
+                  return {
+                    async getEmbeddingFor() {
+                      return { vector: createSemanticFixtureVector('retained atlas architecture') };
+                    },
+                    async dispose() {},
+                  };
+                },
+                async dispose() {},
+              };
+            },
+            async dispose() {},
+          };
+        },
+      };
+    },
+  });
+  t.after(() => provider.dispose());
+  const service = createRecallConversationService(
+    createEmbeddingGemmaServiceConfig(directory, sessionsDirectory),
+    {
+      embeddingProfile: profile,
+      embeddingProvider: provider,
+      tokenizerIdentity: createEmbeddingGemmaTokenizerManifestIdentity(profile),
+      loadTokenizer: () => provider.loadConversationTokenizer(),
+    },
+  );
+
+  const indexed = await service.index();
+
+  assert.equal(indexed.totalChunks, 0);
+  assert.deepEqual(requestedComputeBackends, ['cuda', false]);
+  assert.equal(modelLoadCount, 1);
+  assert.equal(warnings.length, 1);
+  assert.match(
+    warnings[0] ?? '',
+    /accelerator initialization failed for cuda; retrying the same profile embeddinggemma-300m-q8-0-v1 on CPU: CUDA fixture initialization failed/u,
+  );
+  assert.equal(provider.executionIdentity.computeBackend, 'cpu');
+  assert.equal(provider.executionIdentity.fallbackFromComputeBackend, 'cuda');
+  assert.equal(provider.executionIdentity.profileId, profile.profileId);
+});
+
 void test('recall service rejects a non-repeatable EmbeddingGemma canary before indexing', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'recall-embeddinggemma-canary-'));
   t.after(() => rm(directory, { recursive: true, force: true }));

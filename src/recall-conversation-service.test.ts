@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -14,6 +15,7 @@ import {
   RecallDiagnosticsMode,
   RecallEvidenceRelation,
   RecallLifecycleTrigger,
+  RecallManualMaintenanceTrigger,
   RecallProjectIdentitySource,
   RecallSearchScope,
 } from './enums.js';
@@ -113,6 +115,865 @@ function readTestDiagnosticNumber(
   }
   return value;
 }
+
+void test('slow diagnostics retain fast manual incremental index start and completion summaries', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-service-manual-index-diagnostics-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionsDirectory = join(directory, 'sessions');
+  await mkdir(sessionsDirectory);
+  await writeFile(
+    join(sessionsDirectory, 'manual-index.jsonl'),
+    [
+      {
+        type: 'session',
+        version: 3,
+        id: 'manual-index-session',
+        timestamp: '2026-07-27T10:00:00.000Z',
+        cwd: '/workspace/manual-index',
+      },
+      {
+        type: 'message',
+        id: 'manual-index-entry',
+        parentId: null,
+        timestamp: '2026-07-27T10:00:01.000Z',
+        message: { role: 'assistant', content: 'manual index diagnostic evidence' },
+      },
+    ]
+      .map((entry) => JSON.stringify(entry))
+      .join('\n') + '\n',
+  );
+  const config = {
+    ...createTestConfig(directory, sessionsDirectory),
+    diagnosticsMode: RecallDiagnosticsMode.SLOW,
+  };
+  let monotonicMilliseconds = 0;
+  const diagnosticsClock = {
+    monotonicMilliseconds: () => monotonicMilliseconds,
+    wallClockIsoTimestamp: () => '2026-07-27T10:00:02.000Z',
+  };
+  const diagnostics = createRecallOperationDiagnostics({
+    mode: config.diagnosticsMode,
+    activeLogPath: config.diagnosticLogPath,
+    retainedLogPath: config.retainedDiagnosticLogPath,
+    clock: diagnosticsClock,
+    notifyWarning() {
+      assert.fail('successful manual index diagnostics must not warn');
+    },
+  });
+  const service = createRecallConversationService(config, {
+    diagnostics,
+    diagnosticsClock,
+    embeddings: {
+      async embedTexts(texts) {
+        monotonicMilliseconds += texts.includes(RECALL_EMBEDDING_CANARY_TEXT) ? 7 : 13;
+        return texts.map(() => [1, 0, 0]);
+      },
+    },
+    loadTokenizer: async () => tokenizer,
+  });
+
+  const result = await service.index({
+    manualMaintenanceTrigger: RecallManualMaintenanceTrigger.MANUAL_INCREMENTAL_INDEX,
+    optimize: true,
+  });
+  await diagnostics.flush();
+
+  assert.equal(result.totalChunks, 1);
+  assert.equal(result.indexSummary.scannedSessions, 1);
+  assert.equal(result.indexSummary.indexedSessions, 1);
+  const records = (await readFile(config.diagnosticLogPath, 'utf8'))
+    .trimEnd()
+    .split('\n')
+    .map((line): unknown => JSON.parse(line));
+  assert.ok(records.every(isUnknownRecord));
+  assert.deepEqual(
+    records.map((record) => ({
+      operationKind: record.operationKind,
+      manualMaintenanceTrigger: record.manualMaintenanceTrigger,
+      status: record.status,
+      elapsedMilliseconds: record.elapsedMilliseconds,
+    })),
+    [
+      {
+        operationKind: 'full_index',
+        manualMaintenanceTrigger: RecallManualMaintenanceTrigger.MANUAL_INCREMENTAL_INDEX,
+        status: RecallDiagnosticStatus.STARTED,
+        elapsedMilliseconds: null,
+      },
+      {
+        operationKind: 'full_index',
+        manualMaintenanceTrigger: RecallManualMaintenanceTrigger.MANUAL_INCREMENTAL_INDEX,
+        status: RecallDiagnosticStatus.SUCCEEDED,
+        elapsedMilliseconds: 20,
+      },
+    ],
+  );
+  assert.equal(records[1]?.manifestStorePreparationMilliseconds, 0);
+  assert.equal(records[1]?.embeddingServerRequestMilliseconds, 20);
+  assert.equal(records[1]?.scannedSessionCount, 1);
+  assert.equal(records[1]?.indexedSessionCount, 1);
+  assert.equal(records[1]?.totalDocumentCount, 1);
+  await assert.rejects(
+    () =>
+      service.index({
+        rebuild: true,
+        // @ts-expect-error Runtime guard rejects contradictory manual maintenance modes.
+        manualMaintenanceTrigger: RecallManualMaintenanceTrigger.MANUAL_INCREMENTAL_INDEX,
+      }),
+    /Recall manual maintenance trigger mismatch.*manual_rebuild.*manual_incremental_index/u,
+  );
+  await assert.rejects(
+    () =>
+      // @ts-expect-error Runtime guard rejects a manual rebuild trigger without rebuild mode.
+      service.index({
+        manualMaintenanceTrigger: RecallManualMaintenanceTrigger.MANUAL_REBUILD,
+      }),
+    /Recall manual maintenance trigger mismatch.*manual_incremental_index.*manual_rebuild/u,
+  );
+});
+
+void test('all diagnostics record changed and unchanged physical session checks', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-service-physical-check-diagnostics-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionsDirectory = join(directory, 'sessions');
+  await mkdir(sessionsDirectory);
+  const sessionPath = join(sessionsDirectory, 'physical-check.jsonl');
+  await writeFile(
+    sessionPath,
+    [
+      {
+        type: 'session',
+        version: 3,
+        id: 'physical-check-session',
+        timestamp: '2026-07-27T10:00:00.000Z',
+        cwd: '/workspace/physical-check',
+      },
+      {
+        type: 'message',
+        id: 'physical-check-entry',
+        parentId: null,
+        timestamp: '2026-07-27T10:00:01.000Z',
+        message: {
+          role: 'assistant',
+          content: Array.from({ length: 30 }, (value, index) => {
+            void value;
+            return `physical-check-token-${index}`;
+          }).join(' '),
+        },
+      },
+    ]
+      .map((entry) => JSON.stringify(entry))
+      .join('\n') + '\n',
+  );
+  const sourceByteSize = (await stat(sessionPath)).size;
+  const config = {
+    ...createTestConfig(directory, sessionsDirectory),
+    diagnosticsMode: RecallDiagnosticsMode.ALL,
+    chunkPolicy: { id: '2-0', maxTokens: 2, overlapTokens: 0 },
+  };
+  const diagnosticsClock = {
+    monotonicMilliseconds: () => 10,
+    wallClockIsoTimestamp: () => '2026-07-27T10:00:02.000Z',
+  };
+  const diagnostics = createRecallOperationDiagnostics({
+    mode: config.diagnosticsMode,
+    activeLogPath: config.diagnosticLogPath,
+    retainedLogPath: config.retainedDiagnosticLogPath,
+    clock: diagnosticsClock,
+    notifyWarning() {
+      assert.fail('successful physical check diagnostics must not warn');
+    },
+  });
+  const service = createRecallConversationService(config, {
+    diagnostics,
+    diagnosticsClock,
+    embeddings: {
+      async embedTexts(texts) {
+        return texts.map(() => [1, 0, 0]);
+      },
+    },
+    loadTokenizer: async () => tokenizer,
+  });
+
+  const changed = await service.index({
+    manualMaintenanceTrigger: RecallManualMaintenanceTrigger.MANUAL_INCREMENTAL_INDEX,
+    optimize: true,
+  });
+  const unchanged = await service.index({
+    manualMaintenanceTrigger: RecallManualMaintenanceTrigger.MANUAL_INCREMENTAL_INDEX,
+    optimize: true,
+  });
+  await rm(sessionPath);
+  const removed = await service.index({
+    manualMaintenanceTrigger: RecallManualMaintenanceTrigger.MANUAL_INCREMENTAL_INDEX,
+    optimize: true,
+  });
+  await diagnostics.flush();
+
+  assert.equal(changed.indexSummary.indexedSessions, 1);
+  assert.ok(changed.totalChunks > 1);
+  assert.equal(unchanged.indexSummary.indexedSessions, 0);
+  assert.equal(removed.indexSummary.removedSessions, 1);
+  assert.equal(removed.indexSummary.deletedChunks, changed.totalChunks);
+  assert.equal(removed.totalChunks, 0);
+  const records = (await readFile(config.diagnosticLogPath, 'utf8'))
+    .trimEnd()
+    .split('\n')
+    .map((line): unknown => JSON.parse(line));
+  assert.ok(records.every(isUnknownRecord));
+  const physicalSessionRecords = records.filter(
+    (record) => record.operationKind === 'physical_session_check',
+  );
+  assert.equal(records.length, 13);
+  assert.equal(physicalSessionRecords.length, 3);
+  const optimizationRecords = records.filter((record) => record.operationKind === 'optimization');
+  assert.deepEqual(
+    optimizationRecords.map((record) => record.status),
+    [
+      RecallDiagnosticStatus.STARTED,
+      RecallDiagnosticStatus.SUCCEEDED,
+      RecallDiagnosticStatus.STARTED,
+      RecallDiagnosticStatus.SUCCEEDED,
+    ],
+  );
+  assert.ok(
+    optimizationRecords.every((record) =>
+      records.some(
+        (parentRecord) =>
+          parentRecord.operationId === record.parentOperationId &&
+          parentRecord.operationKind === 'full_index',
+      ),
+    ),
+  );
+  const manualCompletionRecords = records.filter(
+    (record) =>
+      record.operationKind === 'full_index' && record.status === RecallDiagnosticStatus.SUCCEEDED,
+  );
+  assert.deepEqual(
+    manualCompletionRecords.map((record) => ({
+      optimizationRan: record.optimizationRan,
+      optimizationMilliseconds: record.optimizationMilliseconds,
+    })),
+    [
+      { optimizationRan: true, optimizationMilliseconds: 0 },
+      { optimizationRan: false, optimizationMilliseconds: 0 },
+      { optimizationRan: true, optimizationMilliseconds: 0 },
+    ],
+  );
+  const changedPhysicalSessionRecord = physicalSessionRecords[0];
+  assert.equal(changedPhysicalSessionRecord?.sessionPath, sessionPath);
+  assert.equal(changedPhysicalSessionRecord?.sourceByteSize, sourceByteSize);
+  assert.equal(changedPhysicalSessionRecord?.changed, true);
+  assert.equal(changedPhysicalSessionRecord?.skipped, false);
+  assert.equal(changedPhysicalSessionRecord?.status, RecallDiagnosticStatus.SUCCEEDED);
+  assert.equal(changedPhysicalSessionRecord?.elapsedMilliseconds, 0);
+  assert.equal(changedPhysicalSessionRecord?.upsertedDocumentCount, changed.totalChunks);
+  assert.equal(changedPhysicalSessionRecord?.cacheHitCount, 0);
+  assert.ok(readTestDiagnosticNumber(changedPhysicalSessionRecord, 'newEmbeddingCount') > 1);
+  assert.ok(readTestDiagnosticNumber(changedPhysicalSessionRecord, 'embeddingRequestCount') > 1);
+  assert.deepEqual(
+    {
+      sessionPath: physicalSessionRecords[1]?.sessionPath,
+      sourceByteSize: physicalSessionRecords[1]?.sourceByteSize,
+      changed: physicalSessionRecords[1]?.changed,
+      skipped: physicalSessionRecords[1]?.skipped,
+      status: physicalSessionRecords[1]?.status,
+      elapsedMilliseconds: physicalSessionRecords[1]?.elapsedMilliseconds,
+      upsertedDocumentCount: physicalSessionRecords[1]?.upsertedDocumentCount,
+      cacheHitCount: physicalSessionRecords[1]?.cacheHitCount,
+      newEmbeddingCount: physicalSessionRecords[1]?.newEmbeddingCount,
+      embeddingRequestCount: physicalSessionRecords[1]?.embeddingRequestCount,
+    },
+    {
+      sessionPath,
+      sourceByteSize,
+      changed: false,
+      skipped: true,
+      status: RecallDiagnosticStatus.SUCCEEDED,
+      elapsedMilliseconds: 0,
+      upsertedDocumentCount: 0,
+      cacheHitCount: 0,
+      newEmbeddingCount: 0,
+      embeddingRequestCount: 0,
+    },
+  );
+  assert.deepEqual(
+    {
+      sessionPath: physicalSessionRecords[2]?.sessionPath,
+      sourceByteSize: physicalSessionRecords[2]?.sourceByteSize,
+      changed: physicalSessionRecords[2]?.changed,
+      skipped: physicalSessionRecords[2]?.skipped,
+      status: physicalSessionRecords[2]?.status,
+      elapsedMilliseconds: physicalSessionRecords[2]?.elapsedMilliseconds,
+      upsertedDocumentCount: physicalSessionRecords[2]?.upsertedDocumentCount,
+      deletedDocumentCount: physicalSessionRecords[2]?.deletedDocumentCount,
+      cacheHitCount: physicalSessionRecords[2]?.cacheHitCount,
+      newEmbeddingCount: physicalSessionRecords[2]?.newEmbeddingCount,
+      embeddingRequestCount: physicalSessionRecords[2]?.embeddingRequestCount,
+    },
+    {
+      sessionPath,
+      sourceByteSize: 0,
+      changed: true,
+      skipped: false,
+      status: RecallDiagnosticStatus.SUCCEEDED,
+      elapsedMilliseconds: 0,
+      upsertedDocumentCount: 0,
+      deletedDocumentCount: changed.totalChunks,
+      cacheHitCount: 0,
+      newEmbeddingCount: 0,
+      embeddingRequestCount: 0,
+    },
+  );
+});
+
+void test('slow diagnostics retain only threshold physical session checks', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-service-slow-physical-checks-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionsDirectory = join(directory, 'sessions');
+  await mkdir(sessionsDirectory);
+  const writePhysicalSession = async (filename: string, content: string) => {
+    await writeFile(
+      join(sessionsDirectory, filename),
+      [
+        {
+          type: 'session',
+          version: 3,
+          id: `${filename}-session`,
+          timestamp: '2026-07-27T10:00:00.000Z',
+          cwd: '/workspace/slow-physical-checks',
+        },
+        {
+          type: 'message',
+          id: `${filename}-entry`,
+          parentId: null,
+          timestamp: '2026-07-27T10:00:01.000Z',
+          message: { role: 'assistant', content },
+        },
+      ]
+        .map((entry) => JSON.stringify(entry))
+        .join('\n') + '\n',
+    );
+  };
+  await writePhysicalSession('a-fast.jsonl', 'fast physical session evidence');
+  await writePhysicalSession('b-slow.jsonl', 'slow physical session evidence');
+  const config = {
+    ...createTestConfig(directory, sessionsDirectory),
+    diagnosticsMode: RecallDiagnosticsMode.SLOW,
+  };
+  let monotonicMilliseconds = 0;
+  const diagnosticsClock = {
+    monotonicMilliseconds: () => monotonicMilliseconds,
+    wallClockIsoTimestamp: () => '2026-07-27T10:00:02.000Z',
+  };
+  const diagnostics = createRecallOperationDiagnostics({
+    mode: config.diagnosticsMode,
+    activeLogPath: config.diagnosticLogPath,
+    retainedLogPath: config.retainedDiagnosticLogPath,
+    clock: diagnosticsClock,
+    notifyWarning() {
+      assert.fail('successful slow physical diagnostics must not warn');
+    },
+  });
+  const service = createRecallConversationService(config, {
+    diagnostics,
+    diagnosticsClock,
+    embeddings: {
+      async embedTexts(texts) {
+        if (texts.some((text) => text.includes('slow physical session evidence'))) {
+          monotonicMilliseconds += 1_000;
+        }
+        return texts.map(() => [1, 0, 0]);
+      },
+    },
+    loadTokenizer: async () => tokenizer,
+  });
+
+  await service.index({
+    manualMaintenanceTrigger: RecallManualMaintenanceTrigger.MANUAL_INCREMENTAL_INDEX,
+  });
+  await diagnostics.flush();
+
+  const records = (await readFile(config.diagnosticLogPath, 'utf8'))
+    .trimEnd()
+    .split('\n')
+    .map((line): unknown => JSON.parse(line));
+  assert.ok(records.every(isUnknownRecord));
+  const physicalSessionRecords = records.filter(
+    (record) => record.operationKind === 'physical_session_check',
+  );
+  assert.equal(physicalSessionRecords.length, 1);
+  assert.equal(physicalSessionRecords[0]?.sessionPath, join(sessionsDirectory, 'b-slow.jsonl'));
+  assert.equal(physicalSessionRecords[0]?.elapsedMilliseconds, 1_000);
+});
+
+void test('manual index diagnostics report continued physical session parse failure', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-service-parse-failed-manual-index-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionsDirectory = join(directory, 'sessions');
+  await mkdir(sessionsDirectory);
+  const privateParseSentinel = 'PRIVATE_PARSE_FAILURE_SENTINEL_26';
+  const sessionPath = join(sessionsDirectory, 'parse-failure.jsonl');
+  await writeFile(
+    sessionPath,
+    [
+      {
+        type: 'session',
+        version: 3,
+        id: 'parse-failure-session',
+        timestamp: '2026-07-27T10:00:00.000Z',
+        cwd: '/workspace/parse-failure',
+      },
+      {
+        type: 'message',
+        id: 'parse-failure-entry',
+        parentId: 'private-missing-parent-26',
+        timestamp: '2026-07-27T10:00:01.000Z',
+        message: { role: 'assistant', content: privateParseSentinel },
+      },
+    ]
+      .map((entry) => JSON.stringify(entry))
+      .join('\n') + '\n',
+  );
+  const sourceByteSize = (await stat(sessionPath)).size;
+  const config = {
+    ...createTestConfig(directory, sessionsDirectory),
+    diagnosticsMode: RecallDiagnosticsMode.SLOW,
+  };
+  const diagnostics = createRecallOperationDiagnostics({
+    mode: config.diagnosticsMode,
+    activeLogPath: config.diagnosticLogPath,
+    retainedLogPath: config.retainedDiagnosticLogPath,
+    notifyWarning() {
+      assert.fail('successful parse-failure diagnostics must not warn');
+    },
+  });
+  const service = createRecallConversationService(config, {
+    diagnostics,
+    embeddings: {
+      async embedTexts(texts) {
+        return texts.map(() => [1, 0, 0]);
+      },
+    },
+    loadTokenizer: async () => tokenizer,
+  });
+
+  const result = await service.index({
+    manualMaintenanceTrigger: RecallManualMaintenanceTrigger.MANUAL_INCREMENTAL_INDEX,
+  });
+  await diagnostics.flush();
+
+  assert.equal(result.totalChunks, 0);
+  assert.equal(result.indexSummary.scannedSessions, 1);
+  assert.equal(result.indexSummary.indexedSessions, 0);
+  assert.equal(result.indexSummary.failedSessions.length, 1);
+  const diagnosticJsonl = await readFile(config.diagnosticLogPath, 'utf8');
+  assert.doesNotMatch(diagnosticJsonl, new RegExp(privateParseSentinel, 'u'));
+  assert.doesNotMatch(diagnosticJsonl, /private-missing-parent-26/u);
+  const records = diagnosticJsonl
+    .trimEnd()
+    .split('\n')
+    .map((line): unknown => JSON.parse(line));
+  assert.ok(records.every(isUnknownRecord));
+  const physicalRecord = records.find(
+    (record) => record.operationKind === 'physical_session_check',
+  );
+  const completionRecord = records.find(
+    (record) =>
+      record.operationKind === 'full_index' && record.status === RecallDiagnosticStatus.FAILED,
+  );
+  assert.equal(physicalRecord?.sessionPath, sessionPath);
+  assert.equal(physicalRecord?.sourceByteSize, sourceByteSize);
+  assert.equal(physicalRecord?.status, RecallDiagnosticStatus.FAILED);
+  assert.equal(completionRecord?.scannedSessionCount, 1);
+  assert.equal(completionRecord?.failedSessionCount, 1);
+});
+
+void test('manual index diagnostics retain partial counts for fatal embedding failure', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-service-failed-manual-index-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionsDirectory = join(directory, 'sessions');
+  await mkdir(sessionsDirectory);
+  const privateFailureSentinel = 'PRIVATE_FATAL_EMBEDDING_SENTINEL_26';
+  await writeFile(
+    join(sessionsDirectory, 'fatal-embedding.jsonl'),
+    [
+      {
+        type: 'session',
+        version: 3,
+        id: 'fatal-embedding-session',
+        timestamp: '2026-07-27T10:00:00.000Z',
+        cwd: '/workspace/fatal-embedding',
+      },
+      {
+        type: 'message',
+        id: 'fatal-embedding-entry',
+        parentId: null,
+        timestamp: '2026-07-27T10:00:01.000Z',
+        message: { role: 'assistant', content: privateFailureSentinel },
+      },
+    ]
+      .map((entry) => JSON.stringify(entry))
+      .join('\n') + '\n',
+  );
+  const config = {
+    ...createTestConfig(directory, sessionsDirectory),
+    diagnosticsMode: RecallDiagnosticsMode.ALL,
+  };
+  let monotonicMilliseconds = 0;
+  const diagnosticsClock = {
+    monotonicMilliseconds: () => monotonicMilliseconds,
+    wallClockIsoTimestamp: () => '2026-07-27T10:00:02.000Z',
+  };
+  const diagnostics = createRecallOperationDiagnostics({
+    mode: config.diagnosticsMode,
+    activeLogPath: config.diagnosticLogPath,
+    retainedLogPath: config.retainedDiagnosticLogPath,
+    clock: diagnosticsClock,
+    notifyWarning() {
+      assert.fail('successful failure diagnostics must not warn');
+    },
+  });
+  const service = createRecallConversationService(config, {
+    diagnostics,
+    diagnosticsClock,
+    embeddings: {
+      async embedTexts(texts) {
+        if (!texts.includes(RECALL_EMBEDDING_CANARY_TEXT)) {
+          monotonicMilliseconds += 29;
+          throw new Error('private fatal embedding model response sentinel 26');
+        }
+        return texts.map(() => [1, 0, 0]);
+      },
+    },
+    loadTokenizer: async () => tokenizer,
+  });
+
+  await assert.rejects(
+    () =>
+      service.index({
+        manualMaintenanceTrigger: RecallManualMaintenanceTrigger.MANUAL_INCREMENTAL_INDEX,
+      }),
+    /private fatal embedding model response sentinel 26/u,
+  );
+  await diagnostics.flush();
+
+  await assert.rejects(() => stat(config.lockPath), { code: 'ENOENT' });
+  const diagnosticJsonl = await readFile(config.diagnosticLogPath, 'utf8');
+  assert.doesNotMatch(diagnosticJsonl, new RegExp(privateFailureSentinel, 'u'));
+  assert.doesNotMatch(diagnosticJsonl, /private fatal embedding model response sentinel 26/u);
+  const records = diagnosticJsonl
+    .trimEnd()
+    .split('\n')
+    .map((line): unknown => JSON.parse(line));
+  assert.ok(records.every(isUnknownRecord));
+  const physicalRecord = records.find(
+    (record) => record.operationKind === 'physical_session_check',
+  );
+  const completionRecord = records.find(
+    (record) =>
+      record.operationKind === 'full_index' && record.status === RecallDiagnosticStatus.FAILED,
+  );
+  assert.equal(physicalRecord?.status, RecallDiagnosticStatus.FAILED);
+  assert.equal(physicalRecord?.elapsedMilliseconds, 29);
+  assert.equal(completionRecord?.scannedSessionCount, 1);
+  assert.equal(completionRecord?.indexedSessionCount, 0);
+  assert.equal(completionRecord?.failedSessionCount, 1);
+  assert.equal(completionRecord?.embeddingRequestCount, 1);
+  assert.equal(completionRecord?.totalDocumentCount, null);
+});
+
+void test('manual rebuild diagnostics isolate final database optimization duration', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-service-rebuild-diagnostics-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionsDirectory = join(directory, 'sessions');
+  await mkdir(sessionsDirectory);
+  await writeFile(
+    join(sessionsDirectory, 'manual-rebuild.jsonl'),
+    [
+      {
+        type: 'session',
+        version: 3,
+        id: 'manual-rebuild-session',
+        timestamp: '2026-07-27T10:00:00.000Z',
+        cwd: '/workspace/manual-rebuild',
+      },
+      {
+        type: 'message',
+        id: 'manual-rebuild-entry',
+        parentId: null,
+        timestamp: '2026-07-27T10:00:01.000Z',
+        message: { role: 'assistant', content: 'manual rebuild diagnostic evidence' },
+      },
+    ]
+      .map((entry) => JSON.stringify(entry))
+      .join('\n') + '\n',
+  );
+  const config = {
+    ...createTestConfig(directory, sessionsDirectory),
+    diagnosticsMode: RecallDiagnosticsMode.SLOW,
+  };
+  let monotonicMilliseconds = 0;
+  let lockDurationRecorded = false;
+  let checkpointDurationRecorded = false;
+  let scanTimingEnabled = false;
+  let postStoreClockCallCount = 0;
+  let storedDocumentCount = 0;
+  let optimizationCallCount = 0;
+  const diagnosticsClock = {
+    monotonicMilliseconds() {
+      if (!lockDurationRecorded && existsSync(config.lockPath)) {
+        lockDurationRecorded = true;
+        monotonicMilliseconds += 11;
+      }
+      if (!checkpointDurationRecorded && existsSync(config.statePath)) {
+        checkpointDurationRecorded = true;
+        monotonicMilliseconds += 19;
+      }
+      if (scanTimingEnabled) {
+        postStoreClockCallCount += 1;
+        if (postStoreClockCallCount === 3) {
+          monotonicMilliseconds += 31;
+          scanTimingEnabled = false;
+        }
+      }
+      return monotonicMilliseconds;
+    },
+    wallClockIsoTimestamp: () => '2026-07-27T10:00:02.000Z',
+  };
+  const diagnostics = createRecallOperationDiagnostics({
+    mode: config.diagnosticsMode,
+    activeLogPath: config.diagnosticLogPath,
+    retainedLogPath: config.retainedDiagnosticLogPath,
+    clock: diagnosticsClock,
+    notifyWarning() {
+      assert.fail('successful rebuild diagnostics must not warn');
+    },
+  });
+  const service = createRecallConversationService(config, {
+    diagnostics,
+    diagnosticsClock,
+    embeddings: {
+      async embedTexts(texts) {
+        monotonicMilliseconds += texts.includes(RECALL_EMBEDDING_CANARY_TEXT) ? 7 : 13;
+        return texts.map(() => [1, 0, 0]);
+      },
+    },
+    async loadTokenizer() {
+      monotonicMilliseconds += 5;
+      return tokenizer;
+    },
+    openStore() {
+      monotonicMilliseconds += 3;
+      scanTimingEnabled = true;
+      return {
+        upsertChunks(chunks) {
+          monotonicMilliseconds += 17;
+          storedDocumentCount += chunks.length;
+        },
+        deleteChunks(ids) {
+          storedDocumentCount = Math.max(storedDocumentCount - ids.length, 0);
+        },
+        searchDenseCandidates() {
+          return [];
+        },
+        searchLexicalCandidates() {
+          return [];
+        },
+        searchIdentifierCandidates() {
+          return [];
+        },
+        fetchConversationChunks() {
+          return new Map();
+        },
+        fetchVectors() {
+          return new Map();
+        },
+        groupDenseCandidates() {
+          return [];
+        },
+        addColumn() {},
+        alterColumn() {},
+        createIndex() {},
+        async optimize() {
+          optimizationCallCount += 1;
+          monotonicMilliseconds += 37;
+        },
+        close() {
+          monotonicMilliseconds += 2;
+        },
+        count() {
+          return storedDocumentCount;
+        },
+      };
+    },
+  });
+
+  const result = await service.index({
+    rebuild: true,
+    manualMaintenanceTrigger: RecallManualMaintenanceTrigger.MANUAL_REBUILD,
+    optimize: true,
+  });
+  await diagnostics.flush();
+
+  assert.equal(optimizationCallCount, 1);
+  assert.equal(result.totalChunks, 1);
+  assert.equal(result.indexSummary.indexedSessions, 1);
+  const records = (await readFile(config.diagnosticLogPath, 'utf8'))
+    .trimEnd()
+    .split('\n')
+    .map((line): unknown => JSON.parse(line));
+  assert.ok(records.every(isUnknownRecord));
+  assert.equal(records.length, 2);
+  assert.equal(records[0]?.operationKind, 'rebuild');
+  assert.equal(records[0]?.manualMaintenanceTrigger, RecallManualMaintenanceTrigger.MANUAL_REBUILD);
+  assert.equal(records[0]?.status, RecallDiagnosticStatus.STARTED);
+  assert.equal(records[1]?.status, RecallDiagnosticStatus.SUCCEEDED);
+  assert.equal(records[1]?.writerLockWaitMilliseconds, 11);
+  assert.equal(records[1]?.manifestStorePreparationMilliseconds, 8);
+  assert.equal(records[1]?.physicalSessionScanMilliseconds, 31);
+  assert.equal(records[1]?.embeddingCacheResolutionMilliseconds, 0);
+  assert.equal(records[1]?.embeddingServerRequestMilliseconds, 20);
+  assert.equal(records[1]?.databaseWriteMilliseconds, 17);
+  assert.equal(records[1]?.indexStateCheckpointMilliseconds, 19);
+  assert.equal(records[1]?.optimizationRan, true);
+  assert.equal(records[1]?.optimizationMilliseconds, 37);
+  assert.equal(records[1]?.elapsedMilliseconds, 145);
+  assert.equal(records[1]?.unattributedMilliseconds, 2);
+});
+
+void test('manual index diagnostics preserve optimization failure and release the writer lock', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-service-optimization-failure-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionsDirectory = join(directory, 'sessions');
+  await mkdir(sessionsDirectory);
+  await writeFile(
+    join(sessionsDirectory, 'optimization-failure.jsonl'),
+    [
+      {
+        type: 'session',
+        version: 3,
+        id: 'optimization-failure-session',
+        timestamp: '2026-07-27T10:00:00.000Z',
+        cwd: '/workspace/optimization-failure',
+      },
+      {
+        type: 'message',
+        id: 'optimization-failure-entry',
+        parentId: null,
+        timestamp: '2026-07-27T10:00:01.000Z',
+        message: { role: 'assistant', content: 'optimization failure source sentinel 26' },
+      },
+    ]
+      .map((entry) => JSON.stringify(entry))
+      .join('\n') + '\n',
+  );
+  const config = {
+    ...createTestConfig(directory, sessionsDirectory),
+    diagnosticsMode: RecallDiagnosticsMode.ALL,
+  };
+  let monotonicMilliseconds = 0;
+  let storedDocumentCount = 0;
+  const diagnosticsClock = {
+    monotonicMilliseconds: () => monotonicMilliseconds,
+    wallClockIsoTimestamp: () => '2026-07-27T10:00:02.000Z',
+  };
+  const diagnostics = createRecallOperationDiagnostics({
+    mode: config.diagnosticsMode,
+    activeLogPath: config.diagnosticLogPath,
+    retainedLogPath: config.retainedDiagnosticLogPath,
+    clock: diagnosticsClock,
+    notifyWarning() {
+      assert.fail('successful optimization-failure diagnostics must not warn');
+    },
+  });
+  const service = createRecallConversationService(config, {
+    diagnostics,
+    diagnosticsClock,
+    embeddings: {
+      async embedTexts(texts) {
+        return texts.map(() => [1, 0, 0]);
+      },
+    },
+    loadTokenizer: async () => tokenizer,
+    openStore() {
+      return {
+        upsertChunks(chunks) {
+          storedDocumentCount += chunks.length;
+        },
+        deleteChunks(ids) {
+          storedDocumentCount = Math.max(storedDocumentCount - ids.length, 0);
+        },
+        searchDenseCandidates() {
+          return [];
+        },
+        searchLexicalCandidates() {
+          return [];
+        },
+        searchIdentifierCandidates() {
+          return [];
+        },
+        fetchConversationChunks() {
+          return new Map();
+        },
+        fetchVectors() {
+          return new Map();
+        },
+        groupDenseCandidates() {
+          return [];
+        },
+        addColumn() {},
+        alterColumn() {},
+        createIndex() {},
+        async optimize() {
+          monotonicMilliseconds += 43;
+          throw new Error('private optimization model response sentinel 26');
+        },
+        close() {},
+        count() {
+          return storedDocumentCount;
+        },
+      };
+    },
+  });
+
+  await assert.rejects(
+    () =>
+      service.index({
+        manualMaintenanceTrigger: RecallManualMaintenanceTrigger.MANUAL_INCREMENTAL_INDEX,
+        optimize: true,
+      }),
+    /private optimization model response sentinel 26/u,
+  );
+  await diagnostics.flush();
+
+  await assert.rejects(() => stat(config.lockPath), { code: 'ENOENT' });
+  const diagnosticJsonl = await readFile(config.diagnosticLogPath, 'utf8');
+  assert.doesNotMatch(diagnosticJsonl, /optimization failure source sentinel 26/u);
+  assert.doesNotMatch(diagnosticJsonl, /private optimization model response sentinel 26/u);
+  const records = diagnosticJsonl
+    .trimEnd()
+    .split('\n')
+    .map((line): unknown => JSON.parse(line));
+  assert.ok(records.every(isUnknownRecord));
+  const completionRecord = records.find(
+    (record) =>
+      record.operationKind === 'full_index' && record.status === RecallDiagnosticStatus.FAILED,
+  );
+  const optimizationCompletionRecord = records.find(
+    (record) =>
+      record.operationKind === 'optimization' && record.status === RecallDiagnosticStatus.FAILED,
+  );
+  assert.equal(optimizationCompletionRecord?.optimizationRan, true);
+  assert.equal(optimizationCompletionRecord?.optimizationMilliseconds, 43);
+  assert.equal(optimizationCompletionRecord?.parentOperationId, completionRecord?.operationId);
+  assert.equal(completionRecord?.scannedSessionCount, 1);
+  assert.equal(completionRecord?.indexedSessionCount, 1);
+  assert.equal(completionRecord?.failedSessionCount, 0);
+  assert.equal(completionRecord?.optimizationRan, true);
+  assert.equal(completionRecord?.optimizationMilliseconds, 43);
+  assert.equal(completionRecord?.totalDocumentCount, null);
+});
 
 void test('live session reconciliation records private-safe costs and keeps changed evidence searchable', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'recall-service-live-diagnostics-'));
@@ -1003,7 +1864,7 @@ void test('failed and cancelled searches are retained without replacing manifest
   await assert.rejects(() => stat(config.lockPath), { code: 'ENOENT' });
 });
 
-void test('diagnostic write failure cannot change successful live reconciliation', async (t) => {
+void test('diagnostic write failure cannot change manual or live indexing', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'recall-service-write-failed-diagnostics-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const sessionsDirectory = join(directory, 'sessions');
@@ -1052,7 +1913,15 @@ void test('diagnostic write failure cannot change successful live reconciliation
       return tokenizer;
     },
   });
-  await service.index();
+  const manualResult = await service.index({
+    manualMaintenanceTrigger: RecallManualMaintenanceTrigger.MANUAL_INCREMENTAL_INDEX,
+    optimize: true,
+  });
+  await diagnostics.flush();
+  assert.equal(manualResult.indexSummary.indexedSessions, 1);
+  assert.equal(manualResult.totalChunks, 1);
+  await assert.rejects(() => stat(config.lockPath), { code: 'ENOENT' });
+  assert.ok(await readRecallIndexManifest(config.manifestPath));
   const searchDuringDiagnosticFailure = await service.search('initial evidence', 1, {
     scope: RecallSearchScope.GLOBAL,
   });
@@ -2784,7 +3653,14 @@ void test('explicit rebuild preserves the old generation when model preflight fa
     },
   });
 
-  await assert.rejects(() => service.index({ rebuild: true }), /embedding preflight unavailable/);
+  await assert.rejects(
+    () =>
+      service.index({
+        rebuild: true,
+        manualMaintenanceTrigger: RecallManualMaintenanceTrigger.MANUAL_REBUILD,
+      }),
+    /embedding preflight unavailable/,
+  );
 
   assert.deepEqual(await readRecallIndexManifest(config.manifestPath), oldManifest);
   assert.equal(await readFile(config.statePath, 'utf8'), oldState);
@@ -2801,7 +3677,11 @@ void test('explicit rebuild preserves the old generation when model preflight fa
     },
   });
   await assert.rejects(
-    () => invalidCanaryService.index({ rebuild: true }),
+    () =>
+      invalidCanaryService.index({
+        rebuild: true,
+        manualMaintenanceTrigger: RecallManualMaintenanceTrigger.MANUAL_REBUILD,
+      }),
     /canary dimension mismatch: expected 3, received 2/,
   );
 

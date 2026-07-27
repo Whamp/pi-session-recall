@@ -8,11 +8,12 @@ import {
   RecallDiagnosticStatus,
   RecallDiagnosticsMode,
   type RecallLifecycleTrigger,
+  RecallManualMaintenanceTrigger,
   type RecallSearchScope,
 } from './enums.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
 
-const RECALL_DIAGNOSTIC_RECORD_VERSION = 1;
+const RECALL_DIAGNOSTIC_RECORD_VERSION = 2;
 const DEFAULT_MAXIMUM_DIAGNOSTIC_LOG_BYTES = 10 * 1_024 * 1_024;
 const PROCESS_RECALL_DIAGNOSTIC_PERSISTENCE_STATE = {
   disabled: false,
@@ -21,25 +22,48 @@ const PROCESS_RECALL_DIAGNOSTIC_PERSISTENCE_STATE = {
 const SLOW_RECALL_DIAGNOSTIC_THRESHOLD_MILLISECONDS = 1_000;
 const MAX_RECORDED_SESSION_PATH_CHARACTERS = 4_096;
 
+class RecallDiagnosticOperationId {
+  readonly value: string;
+
+  constructor(value: string) {
+    this.value = value;
+  }
+
+  toJSON(): string {
+    return this.value;
+  }
+}
+
+function createRecallDiagnosticOperationId(): RecallDiagnosticOperationId {
+  return new RecallDiagnosticOperationId(randomUUID());
+}
+
 /** Replaceable wall and monotonic time source for recall diagnostic durations. */
 export interface RecallDiagnosticsClock {
   monotonicMilliseconds(): number;
   wallClockIsoTimestamp(): string;
 }
 
-/** Exclusive phase totals and bounded work counts for one live session reconciliation. */
-export interface RecallLiveSessionDiagnosticMetrics {
+/** Exclusive phase totals and bounded work counts for one recall index operation. */
+export interface RecallIndexDiagnosticMetrics {
   sourceByteSize: number | null;
   changed: boolean | null;
   skipped: boolean | null;
   writerLockWaitMilliseconds: number;
   manifestStorePreparationMilliseconds: number;
+  physicalSessionScanMilliseconds: number;
   physicalSessionPreparationMilliseconds: number;
   projectIdentityResolutionMilliseconds: number;
   embeddingCacheResolutionMilliseconds: number;
   embeddingServerRequestMilliseconds: number;
   databaseWriteMilliseconds: number;
   indexStateCheckpointMilliseconds: number;
+  optimizationRan: boolean;
+  optimizationMilliseconds: number;
+  scannedSessionCount: number;
+  indexedSessionCount: number;
+  removedSessionCount: number;
+  failedSessionCount: number;
   cacheHitCount: number;
   newEmbeddingCount: number;
   embeddingRequestCount: number;
@@ -47,10 +71,10 @@ export interface RecallLiveSessionDiagnosticMetrics {
   deletedDocumentCount: number;
 }
 
-/** Bounded scalar completion data for one live session reconciliation. */
-export interface RecallLiveSessionDiagnosticCompletion {
+/** Bounded scalar completion data for one recall index operation. */
+export interface RecallIndexDiagnosticCompletion {
   status: RecallDiagnosticStatus;
-  metrics: RecallLiveSessionDiagnosticMetrics;
+  metrics: RecallIndexDiagnosticMetrics;
   scannedSessionCount: number;
   indexedSessionCount: number;
   removedSessionCount: number;
@@ -81,13 +105,27 @@ export interface RecallSearchDiagnosticCompletion {
   errorCategory?: RecallDiagnosticErrorCategory;
 }
 
+/** Bounded scalar outcome for one physical session check inside a full index scan. */
+export interface RecallPhysicalSessionDiagnostic {
+  sessionPath: string;
+  status: RecallDiagnosticStatus;
+  metrics: RecallIndexDiagnosticMetrics;
+  elapsedMilliseconds: number;
+  indexedSessionCount: number;
+  removedSessionCount: number;
+  failedSessionCount: number;
+  errorCategory?: RecallDiagnosticErrorCategory;
+}
+
 /** One bounded privacy-safe JSONL record for a recall diagnostic operation. */
 export interface RecallOperationDiagnosticRecord {
   version: number;
   timestamp: string;
-  operationId: string;
+  operationId: RecallDiagnosticOperationId;
+  parentOperationId: RecallDiagnosticOperationId | null;
   operationKind: RecallDiagnosticOperationKind;
   lifecycleTrigger: RecallLifecycleTrigger | null;
+  manualMaintenanceTrigger: RecallManualMaintenanceTrigger | null;
   processId: number;
   sessionPath: string | null;
   searchMode: 'hybrid' | 'deep-rerank' | null;
@@ -100,12 +138,15 @@ export interface RecallOperationDiagnosticRecord {
   elapsedMilliseconds: number | null;
   writerLockWaitMilliseconds: number | null;
   manifestStorePreparationMilliseconds: number | null;
+  physicalSessionScanMilliseconds: number | null;
   physicalSessionPreparationMilliseconds: number | null;
   projectIdentityResolutionMilliseconds: number | null;
   embeddingCacheResolutionMilliseconds: number | null;
   embeddingServerRequestMilliseconds: number | null;
   databaseWriteMilliseconds: number | null;
   indexStateCheckpointMilliseconds: number | null;
+  optimizationRan: boolean | null;
+  optimizationMilliseconds: number | null;
   embeddingModelVerificationMilliseconds: number | null;
   activeSessionFreshnessMilliseconds: number | null;
   queryEmbeddingMilliseconds: number | null;
@@ -127,12 +168,27 @@ export interface RecallOperationDiagnosticRecord {
 
 /** Handle that completes one already-started live session diagnostic without awaiting persistence. */
 export interface RecallLiveSessionDiagnosticOperation {
-  complete(completion: RecallLiveSessionDiagnosticCompletion): void;
+  complete(completion: RecallIndexDiagnosticCompletion): void;
 }
 
 /** Handle that completes one already-started search diagnostic without awaiting persistence. */
 export interface RecallSearchDiagnosticOperation {
   complete(completion: RecallSearchDiagnosticCompletion): void;
+}
+
+/** Handle that completes one final database optimization diagnostic. */
+export interface RecallOptimizationDiagnostic {
+  complete(input: {
+    status: RecallDiagnosticStatus;
+    errorCategory?: RecallDiagnosticErrorCategory;
+  }): void;
+}
+
+/** Handle that completes one explicitly requested full index diagnostic. */
+export interface RecallManualIndexDiagnostic {
+  recordPhysicalSessionCheck(completion: RecallPhysicalSessionDiagnostic): void;
+  startOptimization(): RecallOptimizationDiagnostic;
+  complete(completion: RecallIndexDiagnosticCompletion): void;
 }
 
 /** Non-critical recall diagnostic recorder with an explicit test-only drain boundary. */
@@ -145,6 +201,9 @@ export interface RecallOperationDiagnostics {
     searchMode: 'hybrid' | 'deep-rerank';
     recallScope: RecallSearchScope;
   }): RecallSearchDiagnosticOperation;
+  startManualIndexMaintenance(input: {
+    manualMaintenanceTrigger: RecallManualMaintenanceTrigger;
+  }): RecallManualIndexDiagnostic;
   flush(): Promise<void>;
 }
 
@@ -163,6 +222,33 @@ const SYSTEM_RECALL_DIAGNOSTICS_CLOCK: RecallDiagnosticsClock = {
   wallClockIsoTimestamp: () => new Date().toISOString(),
 };
 
+/** Accumulates one physical session check into full-index diagnostic totals. */
+export function accumulateRecallIndexMetrics(
+  aggregateMetrics: RecallIndexDiagnosticMetrics,
+  physicalSessionMetrics: RecallIndexDiagnosticMetrics,
+): void {
+  aggregateMetrics.sourceByteSize =
+    (aggregateMetrics.sourceByteSize ?? 0) + (physicalSessionMetrics.sourceByteSize ?? 0);
+  aggregateMetrics.physicalSessionPreparationMilliseconds +=
+    physicalSessionMetrics.physicalSessionPreparationMilliseconds;
+  aggregateMetrics.projectIdentityResolutionMilliseconds +=
+    physicalSessionMetrics.projectIdentityResolutionMilliseconds;
+  aggregateMetrics.embeddingCacheResolutionMilliseconds +=
+    physicalSessionMetrics.embeddingCacheResolutionMilliseconds;
+  aggregateMetrics.embeddingServerRequestMilliseconds +=
+    physicalSessionMetrics.embeddingServerRequestMilliseconds;
+  aggregateMetrics.databaseWriteMilliseconds += physicalSessionMetrics.databaseWriteMilliseconds;
+  aggregateMetrics.scannedSessionCount += physicalSessionMetrics.scannedSessionCount;
+  aggregateMetrics.indexedSessionCount += physicalSessionMetrics.indexedSessionCount;
+  aggregateMetrics.removedSessionCount += physicalSessionMetrics.removedSessionCount;
+  aggregateMetrics.failedSessionCount += physicalSessionMetrics.failedSessionCount;
+  aggregateMetrics.cacheHitCount += physicalSessionMetrics.cacheHitCount;
+  aggregateMetrics.newEmbeddingCount += physicalSessionMetrics.newEmbeddingCount;
+  aggregateMetrics.embeddingRequestCount += physicalSessionMetrics.embeddingRequestCount;
+  aggregateMetrics.upsertedDocumentCount += physicalSessionMetrics.upsertedDocumentCount;
+  aggregateMetrics.deletedDocumentCount += physicalSessionMetrics.deletedDocumentCount;
+}
+
 /** Creates zeroed search measurements whose phase totals remain non-overlapping. */
 export function createRecallSearchDiagnosticMetrics(): RecallSearchDiagnosticMetrics {
   return {
@@ -175,20 +261,27 @@ export function createRecallSearchDiagnosticMetrics(): RecallSearchDiagnosticMet
   };
 }
 
-/** Creates zeroed live session measurements whose phase totals remain non-overlapping. */
-export function createRecallLiveSessionDiagnosticMetrics(): RecallLiveSessionDiagnosticMetrics {
+/** Creates zeroed index measurements whose phase totals remain non-overlapping. */
+export function createRecallIndexMetrics(): RecallIndexDiagnosticMetrics {
   return {
     sourceByteSize: null,
     changed: null,
     skipped: null,
     writerLockWaitMilliseconds: 0,
     manifestStorePreparationMilliseconds: 0,
+    physicalSessionScanMilliseconds: 0,
     physicalSessionPreparationMilliseconds: 0,
     projectIdentityResolutionMilliseconds: 0,
     embeddingCacheResolutionMilliseconds: 0,
     embeddingServerRequestMilliseconds: 0,
     databaseWriteMilliseconds: 0,
     indexStateCheckpointMilliseconds: 0,
+    optimizationRan: false,
+    optimizationMilliseconds: 0,
+    scannedSessionCount: 0,
+    indexedSessionCount: 0,
+    removedSessionCount: 0,
+    failedSessionCount: 0,
     cacheHitCount: 0,
     newEmbeddingCount: 0,
     embeddingRequestCount: 0,
@@ -199,9 +292,11 @@ export function createRecallLiveSessionDiagnosticMetrics(): RecallLiveSessionDia
 
 function createRecallDiagnosticStartRecord(input: {
   clock: RecallDiagnosticsClock;
-  operationId: string;
+  operationId: RecallDiagnosticOperationId;
+  parentOperationId: RecallDiagnosticOperationId | null;
   operationKind: RecallDiagnosticOperationKind;
   lifecycleTrigger: RecallLifecycleTrigger | null;
+  manualMaintenanceTrigger: RecallManualMaintenanceTrigger | null;
   sessionPath: string | null;
   searchMode: 'hybrid' | 'deep-rerank' | null;
   recallScope: RecallSearchScope | null;
@@ -210,8 +305,10 @@ function createRecallDiagnosticStartRecord(input: {
     version: RECALL_DIAGNOSTIC_RECORD_VERSION,
     timestamp: input.clock.wallClockIsoTimestamp(),
     operationId: input.operationId,
+    parentOperationId: input.parentOperationId,
     operationKind: input.operationKind,
     lifecycleTrigger: input.lifecycleTrigger,
+    manualMaintenanceTrigger: input.manualMaintenanceTrigger,
     processId: process.pid,
     sessionPath: input.sessionPath?.slice(0, MAX_RECORDED_SESSION_PATH_CHARACTERS) ?? null,
     searchMode: input.searchMode,
@@ -224,12 +321,15 @@ function createRecallDiagnosticStartRecord(input: {
     elapsedMilliseconds: null,
     writerLockWaitMilliseconds: null,
     manifestStorePreparationMilliseconds: null,
+    physicalSessionScanMilliseconds: null,
     physicalSessionPreparationMilliseconds: null,
     projectIdentityResolutionMilliseconds: null,
     embeddingCacheResolutionMilliseconds: null,
     embeddingServerRequestMilliseconds: null,
     databaseWriteMilliseconds: null,
     indexStateCheckpointMilliseconds: null,
+    optimizationRan: null,
+    optimizationMilliseconds: null,
     embeddingModelVerificationMilliseconds: null,
     activeSessionFreshnessMilliseconds: null,
     queryEmbeddingMilliseconds: null,
@@ -254,7 +354,7 @@ function createRecallDiagnosticCompletionRecord(input: {
   startRecord: RecallOperationDiagnosticRecord;
   startedAtMilliseconds: number;
   clock: RecallDiagnosticsClock;
-  completion: RecallLiveSessionDiagnosticCompletion;
+  completion: RecallIndexDiagnosticCompletion;
 }): RecallOperationDiagnosticRecord {
   const elapsedMilliseconds = Math.max(
     input.clock.monotonicMilliseconds() - input.startedAtMilliseconds,
@@ -264,12 +364,14 @@ function createRecallDiagnosticCompletionRecord(input: {
   const attributedMilliseconds =
     metrics.writerLockWaitMilliseconds +
     metrics.manifestStorePreparationMilliseconds +
+    metrics.physicalSessionScanMilliseconds +
     metrics.physicalSessionPreparationMilliseconds +
     metrics.projectIdentityResolutionMilliseconds +
     metrics.embeddingCacheResolutionMilliseconds +
     metrics.embeddingServerRequestMilliseconds +
     metrics.databaseWriteMilliseconds +
-    metrics.indexStateCheckpointMilliseconds;
+    metrics.indexStateCheckpointMilliseconds +
+    metrics.optimizationMilliseconds;
   return {
     ...input.startRecord,
     timestamp: input.clock.wallClockIsoTimestamp(),
@@ -281,12 +383,15 @@ function createRecallDiagnosticCompletionRecord(input: {
     elapsedMilliseconds,
     writerLockWaitMilliseconds: metrics.writerLockWaitMilliseconds,
     manifestStorePreparationMilliseconds: metrics.manifestStorePreparationMilliseconds,
+    physicalSessionScanMilliseconds: metrics.physicalSessionScanMilliseconds,
     physicalSessionPreparationMilliseconds: metrics.physicalSessionPreparationMilliseconds,
     projectIdentityResolutionMilliseconds: metrics.projectIdentityResolutionMilliseconds,
     embeddingCacheResolutionMilliseconds: metrics.embeddingCacheResolutionMilliseconds,
     embeddingServerRequestMilliseconds: metrics.embeddingServerRequestMilliseconds,
     databaseWriteMilliseconds: metrics.databaseWriteMilliseconds,
     indexStateCheckpointMilliseconds: metrics.indexStateCheckpointMilliseconds,
+    optimizationRan: metrics.optimizationRan,
+    optimizationMilliseconds: metrics.optimizationMilliseconds,
     unattributedMilliseconds: Math.max(elapsedMilliseconds - attributedMilliseconds, 0),
     scannedSessionCount: input.completion.scannedSessionCount,
     indexedSessionCount: input.completion.indexedSessionCount,
@@ -298,6 +403,80 @@ function createRecallDiagnosticCompletionRecord(input: {
     cacheHitCount: input.completion.cacheHitCount,
     newEmbeddingCount: input.completion.newEmbeddingCount,
     embeddingRequestCount: input.completion.embeddingRequestCount,
+  };
+}
+
+function createRecallPhysicalSessionCompletionRecord(input: {
+  parentStartRecord: RecallOperationDiagnosticRecord;
+  clock: RecallDiagnosticsClock;
+  completion: RecallPhysicalSessionDiagnostic;
+}): RecallOperationDiagnosticRecord {
+  const metrics = input.completion.metrics;
+  const elapsedMilliseconds = Math.max(input.completion.elapsedMilliseconds, 0);
+  const attributedMilliseconds =
+    metrics.physicalSessionPreparationMilliseconds +
+    metrics.projectIdentityResolutionMilliseconds +
+    metrics.embeddingCacheResolutionMilliseconds +
+    metrics.embeddingServerRequestMilliseconds +
+    metrics.databaseWriteMilliseconds +
+    metrics.indexStateCheckpointMilliseconds;
+  return {
+    ...createRecallDiagnosticStartRecord({
+      clock: input.clock,
+      operationId: createRecallDiagnosticOperationId(),
+      parentOperationId: input.parentStartRecord.operationId,
+      operationKind: RecallDiagnosticOperationKind.PHYSICAL_SESSION_CHECK,
+      lifecycleTrigger: null,
+      manualMaintenanceTrigger: input.parentStartRecord.manualMaintenanceTrigger,
+      sessionPath: input.completion.sessionPath,
+      searchMode: null,
+      recallScope: null,
+    }),
+    status: input.completion.status,
+    errorCategory: input.completion.errorCategory ?? null,
+    sourceByteSize: metrics.sourceByteSize,
+    changed: metrics.changed,
+    skipped: metrics.skipped,
+    elapsedMilliseconds,
+    physicalSessionPreparationMilliseconds: metrics.physicalSessionPreparationMilliseconds,
+    projectIdentityResolutionMilliseconds: metrics.projectIdentityResolutionMilliseconds,
+    embeddingCacheResolutionMilliseconds: metrics.embeddingCacheResolutionMilliseconds,
+    embeddingServerRequestMilliseconds: metrics.embeddingServerRequestMilliseconds,
+    databaseWriteMilliseconds: metrics.databaseWriteMilliseconds,
+    indexStateCheckpointMilliseconds: metrics.indexStateCheckpointMilliseconds,
+    unattributedMilliseconds: Math.max(elapsedMilliseconds - attributedMilliseconds, 0),
+    scannedSessionCount: 1,
+    indexedSessionCount: input.completion.indexedSessionCount,
+    removedSessionCount: input.completion.removedSessionCount,
+    failedSessionCount: input.completion.failedSessionCount,
+    upsertedDocumentCount: metrics.upsertedDocumentCount,
+    deletedDocumentCount: metrics.deletedDocumentCount,
+    cacheHitCount: metrics.cacheHitCount,
+    newEmbeddingCount: metrics.newEmbeddingCount,
+    embeddingRequestCount: metrics.embeddingRequestCount,
+  };
+}
+
+function createRecallOptimizationCompletionRecord(input: {
+  startRecord: RecallOperationDiagnosticRecord;
+  startedAtMilliseconds: number;
+  clock: RecallDiagnosticsClock;
+  status: RecallDiagnosticStatus;
+  errorCategory?: RecallDiagnosticErrorCategory;
+}): RecallOperationDiagnosticRecord {
+  const elapsedMilliseconds = Math.max(
+    input.clock.monotonicMilliseconds() - input.startedAtMilliseconds,
+    0,
+  );
+  return {
+    ...input.startRecord,
+    timestamp: input.clock.wallClockIsoTimestamp(),
+    status: input.status,
+    errorCategory: input.errorCategory ?? null,
+    elapsedMilliseconds,
+    optimizationRan: true,
+    optimizationMilliseconds: elapsedMilliseconds,
+    unattributedMilliseconds: 0,
   };
 }
 
@@ -396,6 +575,18 @@ export function createRecallOperationDiagnostics(
     if (options.mode === RecallDiagnosticsMode.ALL) {
       return true;
     }
+    if (
+      record.operationKind === RecallDiagnosticOperationKind.FULL_INDEX ||
+      record.operationKind === RecallDiagnosticOperationKind.REBUILD
+    ) {
+      return true;
+    }
+    if (record.operationKind === RecallDiagnosticOperationKind.PHYSICAL_SESSION_CHECK) {
+      return (
+        record.status === RecallDiagnosticStatus.FAILED ||
+        (record.elapsedMilliseconds ?? 0) >= SLOW_RECALL_DIAGNOSTIC_THRESHOLD_MILLISECONDS
+      );
+    }
     if (record.status === RecallDiagnosticStatus.STARTED) {
       return false;
     }
@@ -421,9 +612,11 @@ export function createRecallOperationDiagnostics(
       const startedAtMilliseconds = clock.monotonicMilliseconds();
       const startRecord = createRecallDiagnosticStartRecord({
         clock,
-        operationId: randomUUID(),
+        operationId: createRecallDiagnosticOperationId(),
+        parentOperationId: null,
         operationKind: RecallDiagnosticOperationKind.LIVE_SESSION_RECONCILIATION,
         lifecycleTrigger: input.lifecycleTrigger,
+        manualMaintenanceTrigger: null,
         sessionPath: input.sessionPath,
         searchMode: null,
         recallScope: null,
@@ -451,9 +644,11 @@ export function createRecallOperationDiagnostics(
       const startedAtMilliseconds = clock.monotonicMilliseconds();
       const startRecord = createRecallDiagnosticStartRecord({
         clock,
-        operationId: randomUUID(),
+        operationId: createRecallDiagnosticOperationId(),
+        parentOperationId: null,
         operationKind: RecallDiagnosticOperationKind.SEARCH,
         lifecycleTrigger: null,
+        manualMaintenanceTrigger: null,
         sessionPath: null,
         searchMode: input.searchMode,
         recallScope: input.recallScope,
@@ -468,6 +663,84 @@ export function createRecallOperationDiagnostics(
           completed = true;
           queueDiagnosticRecord(
             createRecallSearchDiagnosticCompletionRecord({
+              startRecord,
+              startedAtMilliseconds,
+              clock,
+              completion,
+            }),
+          );
+        },
+      };
+    },
+    startManualIndexMaintenance(input) {
+      const startedAtMilliseconds = clock.monotonicMilliseconds();
+      const operationKind =
+        input.manualMaintenanceTrigger === RecallManualMaintenanceTrigger.MANUAL_REBUILD
+          ? RecallDiagnosticOperationKind.REBUILD
+          : RecallDiagnosticOperationKind.FULL_INDEX;
+      const startRecord = createRecallDiagnosticStartRecord({
+        clock,
+        operationId: createRecallDiagnosticOperationId(),
+        parentOperationId: null,
+        operationKind,
+        lifecycleTrigger: null,
+        manualMaintenanceTrigger: input.manualMaintenanceTrigger,
+        sessionPath: null,
+        searchMode: null,
+        recallScope: null,
+      });
+      queueDiagnosticRecord(startRecord);
+      let completed = false;
+      return {
+        recordPhysicalSessionCheck(completion) {
+          queueDiagnosticRecord(
+            createRecallPhysicalSessionCompletionRecord({
+              parentStartRecord: startRecord,
+              clock,
+              completion,
+            }),
+          );
+        },
+        startOptimization() {
+          const optimizationStartedAtMilliseconds = clock.monotonicMilliseconds();
+          const optimizationStartRecord = createRecallDiagnosticStartRecord({
+            clock,
+            operationId: createRecallDiagnosticOperationId(),
+            parentOperationId: startRecord.operationId,
+            operationKind: RecallDiagnosticOperationKind.OPTIMIZATION,
+            lifecycleTrigger: null,
+            manualMaintenanceTrigger: startRecord.manualMaintenanceTrigger,
+            sessionPath: null,
+            searchMode: null,
+            recallScope: null,
+          });
+          queueDiagnosticRecord(optimizationStartRecord);
+          let optimizationCompleted = false;
+          return {
+            complete(input) {
+              if (optimizationCompleted) {
+                return;
+              }
+              optimizationCompleted = true;
+              queueDiagnosticRecord(
+                createRecallOptimizationCompletionRecord({
+                  startRecord: optimizationStartRecord,
+                  startedAtMilliseconds: optimizationStartedAtMilliseconds,
+                  clock,
+                  status: input.status,
+                  ...(input.errorCategory ? { errorCategory: input.errorCategory } : {}),
+                }),
+              );
+            },
+          };
+        },
+        complete(completion) {
+          if (completed) {
+            return;
+          }
+          completed = true;
+          queueDiagnosticRecord(
+            createRecallDiagnosticCompletionRecord({
               startRecord,
               startedAtMilliseconds,
               clock,

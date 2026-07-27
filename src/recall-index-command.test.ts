@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { RecallManualMaintenanceTrigger } from './enums.js';
 import { runRecallIndexCommand } from './recall-index-command.js';
 import type { RecallConversationIndexOptions } from './recall-conversation-service.js';
 
@@ -35,6 +36,50 @@ void test('recall index command blocks before indexing when quality evidence fai
 
   assert.equal(indexCalls, 0);
   assert.deepEqual(statusUpdates, []);
+});
+
+void test('recall index command attributes explicit incremental maintenance', async () => {
+  let receivedOptions: RecallConversationIndexOptions | undefined;
+
+  await runRecallIndexCommand({
+    argumentsText: '',
+    qualityGateDecision: {
+      automatedGatePassed: true,
+      selectedPolicy: {
+        chunkPolicy: { id: '512-64', maxTokens: 512, overlapTokens: 64 },
+        candidateCount: 4,
+        finalCount: 3,
+      },
+      blockers: [],
+    },
+    service: {
+      async index(options) {
+        receivedOptions = options;
+        return {
+          totalChunks: 0,
+          indexSummary: {
+            scannedSessions: 0,
+            indexedSessions: 0,
+            removedSessions: 0,
+            cacheHits: 0,
+            newlyEmbeddedChunks: 0,
+            embeddingRequestCount: 0,
+            deletedChunks: 0,
+            failedSessions: [],
+          },
+        };
+      },
+    },
+    ui: {
+      setStatus() {},
+      notify() {},
+    },
+  });
+
+  assert.equal(
+    receivedOptions?.manualMaintenanceTrigger,
+    RecallManualMaintenanceTrigger.MANUAL_INCREMENTAL_INDEX,
+  );
 });
 
 void test('recall index command forwards explicit rebuild after a clean measured gate pass', async () => {
@@ -88,6 +133,10 @@ void test('recall index command forwards explicit rebuild after a clean measured
 
   assert.equal(receivedOptions?.rebuild, true);
   assert.equal(receivedOptions?.optimize, true);
+  assert.equal(
+    receivedOptions?.manualMaintenanceTrigger,
+    RecallManualMaintenanceTrigger.MANUAL_REBUILD,
+  );
   assert.deepEqual(statusUpdates, ['rebuilding conversations…', 'rebuilding 2/8', undefined]);
   assert.deepEqual(notifications, [
     'Recall index ready: 42 chunks · 10 cache hits · 2 newly embedded · 1 embedding requests · 3 removed',

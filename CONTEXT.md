@@ -112,6 +112,10 @@ _Avoid_: Verbosity level, tracing mode
 The Pi lifecycle event that requested a live session reconciliation: `agent_settled` or `session_shutdown`.
 _Avoid_: Session watcher event, polling reason
 
+**Manual maintenance trigger**:
+The explicit index command mode that requested a full corpus catch-up: incremental indexing or rebuilding.
+_Avoid_: Lifecycle trigger, rebuild flag
+
 **Physical session check**:
 One determination of whether a physical session file changed and therefore needs reconciliation work.
 _Avoid_: Session scan, logical session check

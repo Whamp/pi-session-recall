@@ -5,11 +5,15 @@ import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 
 import type { EmbeddingVectorCache } from './embedding-vector-cache.js';
+import { RecallDiagnosticErrorCategory, RecallDiagnosticStatus } from './enums.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
 import type { RecallChunkPolicy } from './recall-chunk-policy.js';
-import type {
-  RecallDiagnosticsClock,
-  RecallLiveSessionDiagnosticMetrics,
+import {
+  accumulateRecallIndexMetrics,
+  createRecallIndexMetrics,
+  type RecallDiagnosticsClock,
+  type RecallIndexDiagnosticMetrics,
+  type RecallPhysicalSessionDiagnostic,
 } from './recall-operation-diagnostics.js';
 import type { ResolvedProjectIdentity } from './resolve-project-identity.js';
 import {
@@ -81,8 +85,9 @@ export interface IncrementalSessionIndexerOptions {
   resolveProjectIdentity?: (sessionOrigin: string) => Promise<ResolvedProjectIdentity | null>;
   signal?: AbortSignal;
   onProgress?: (progress: ConversationIndexProgress) => void;
-  diagnosticMetrics?: RecallLiveSessionDiagnosticMetrics;
+  diagnosticMetrics?: RecallIndexDiagnosticMetrics;
   diagnosticsClock?: RecallDiagnosticsClock;
+  onPhysicalSessionCheck?: (completion: RecallPhysicalSessionDiagnostic) => void;
 }
 
 /** Dependencies for reconciling one active Pi session without scanning sibling files. */
@@ -95,7 +100,7 @@ export interface IncrementalConversationSessionIndexerOptions {
   chunkPolicy?: RecallChunkPolicy;
   resolveProjectIdentity?: (sessionOrigin: string) => Promise<ResolvedProjectIdentity | null>;
   signal?: AbortSignal;
-  diagnosticMetrics?: RecallLiveSessionDiagnosticMetrics;
+  diagnosticMetrics?: RecallIndexDiagnosticMetrics;
   diagnosticsClock?: RecallDiagnosticsClock;
 }
 
@@ -156,7 +161,7 @@ async function readChangedSessionChunks(
   previous: IndexedSessionState | undefined,
   tokenizer: ConversationTextTokenizer,
   chunkPolicy: RecallChunkPolicy | undefined,
-  diagnosticMetrics?: RecallLiveSessionDiagnosticMetrics,
+  diagnosticMetrics?: RecallIndexDiagnosticMetrics,
   diagnosticsClock?: RecallDiagnosticsClock,
 ): Promise<
   | { changed: false; size: number }
@@ -205,6 +210,11 @@ function throwIfIndexingAborted(signal: AbortSignal | undefined): void {
   }
 }
 
+interface PhysicalSessionIndexOutcome {
+  stateChanged: boolean;
+  failed: boolean;
+}
+
 function createConversationIndexSummary(): ConversationIndexSummary {
   return {
     scannedSessions: 0,
@@ -220,7 +230,7 @@ function createConversationIndexSummary(): ConversationIndexSummary {
 
 function runTimedDatabaseWrite<T>(
   operation: () => T,
-  diagnosticMetrics?: RecallLiveSessionDiagnosticMetrics,
+  diagnosticMetrics?: RecallIndexDiagnosticMetrics,
   diagnosticsClock?: RecallDiagnosticsClock,
 ): T {
   const startedAtMilliseconds = diagnosticsClock?.monotonicMilliseconds();
@@ -239,7 +249,7 @@ function runTimedDatabaseWrite<T>(
 async function writeConversationIndexStateWithDiagnostics(
   statePath: string,
   state: ConversationIndexState,
-  diagnosticMetrics?: RecallLiveSessionDiagnosticMetrics,
+  diagnosticMetrics?: RecallIndexDiagnosticMetrics,
   diagnosticsClock?: RecallDiagnosticsClock,
 ): Promise<void> {
   const startedAtMilliseconds = diagnosticsClock?.monotonicMilliseconds();
@@ -260,7 +270,7 @@ function removeIndexedConversationSession(
   sessionPath: string,
   store: ConversationChunkStore,
   summary: ConversationIndexSummary,
-  diagnosticMetrics?: RecallLiveSessionDiagnosticMetrics,
+  diagnosticMetrics?: RecallIndexDiagnosticMetrics,
   diagnosticsClock?: RecallDiagnosticsClock,
 ): boolean {
   const previous = state.sessions[sessionPath];
@@ -279,12 +289,15 @@ function removeIndexedConversationSession(
 }
 
 async function indexChangedConversationSessionFile(
-  options: Omit<IncrementalSessionIndexerOptions, 'sessionsDirectory' | 'onProgress'>,
+  options: Omit<
+    IncrementalSessionIndexerOptions,
+    'sessionsDirectory' | 'onProgress' | 'onPhysicalSessionCheck'
+  >,
   state: ConversationIndexState,
   sessionPath: string,
   summary: ConversationIndexSummary,
   resolveSessionProjectIdentity: (sessionOrigin: string) => Promise<ResolvedProjectIdentity | null>,
-): Promise<boolean> {
+): Promise<PhysicalSessionIndexOutcome> {
   const previous = state.sessions[sessionPath];
   let changedSession: Awaited<ReturnType<typeof readChangedSessionChunks>>;
   try {
@@ -302,7 +315,7 @@ async function indexChangedConversationSessionFile(
       error: error instanceof Error ? error.message : String(error),
     });
     if (!previous) {
-      return false;
+      return { stateChanged: false, failed: true };
     }
     const staleIds = previous.chunks.map((chunk) => chunk.id);
     runTimedDatabaseWrite(
@@ -315,10 +328,10 @@ async function indexChangedConversationSessionFile(
       options.diagnosticMetrics.deletedDocumentCount += staleIds.length;
     }
     delete state.sessions[sessionPath];
-    return true;
+    return { stateChanged: true, failed: true };
   }
   if (!changedSession.changed) {
-    return false;
+    return { stateChanged: false, failed: false };
   }
 
   const { chunks } = changedSession;
@@ -442,7 +455,7 @@ async function indexChangedConversationSessionFile(
     chunks: chunks.map(({ id }) => ({ id })),
   };
   summary.indexedSessions += 1;
-  return true;
+  return { stateChanged: true, failed: false };
 }
 
 function createSessionProjectIdentityResolver(
@@ -501,14 +514,14 @@ export async function indexChangedConversationSession(
     }
     return summary;
   }
-  const changed = await indexChangedConversationSessionFile(
+  const outcome = await indexChangedConversationSessionFile(
     options,
     state,
     options.sessionPath,
     summary,
     createSessionProjectIdentityResolver(options.resolveProjectIdentity),
   );
-  if (changed) {
+  if (outcome.stateChanged) {
     await writeConversationIndexStateWithDiagnostics(
       options.statePath,
       state,
@@ -519,12 +532,117 @@ export async function indexChangedConversationSession(
   return summary;
 }
 
+interface PhysicalSessionDiagnosticOutcome {
+  indexedSessionCount: number;
+  removedSessionCount: number;
+  failedSessionCount: number;
+}
+
+async function runPhysicalSessionCheck<T extends PhysicalSessionDiagnosticOutcome>(options: {
+  indexerOptions: IncrementalSessionIndexerOptions;
+  sessionPath: string;
+  performPhysicalSessionCheck: (diagnosticMetrics?: RecallIndexDiagnosticMetrics) => T | Promise<T>;
+}): Promise<T> {
+  const { indexerOptions } = options;
+  const physicalSessionMetrics =
+    indexerOptions.diagnosticMetrics || indexerOptions.onPhysicalSessionCheck
+      ? createRecallIndexMetrics()
+      : undefined;
+  const startedAtMilliseconds = physicalSessionMetrics
+    ? indexerOptions.diagnosticsClock?.monotonicMilliseconds()
+    : undefined;
+
+  function completePhysicalSessionCheck(
+    outcome: PhysicalSessionDiagnosticOutcome,
+    status: RecallDiagnosticStatus,
+    errorCategory?: RecallDiagnosticErrorCategory,
+  ): void {
+    if (!physicalSessionMetrics) {
+      return;
+    }
+    physicalSessionMetrics.indexedSessionCount = outcome.indexedSessionCount;
+    physicalSessionMetrics.removedSessionCount = outcome.removedSessionCount;
+    physicalSessionMetrics.failedSessionCount = outcome.failedSessionCount;
+    if (indexerOptions.diagnosticMetrics) {
+      accumulateRecallIndexMetrics(indexerOptions.diagnosticMetrics, physicalSessionMetrics);
+    }
+    const elapsedMilliseconds =
+      indexerOptions.diagnosticsClock && startedAtMilliseconds !== undefined
+        ? Math.max(
+            indexerOptions.diagnosticsClock.monotonicMilliseconds() - startedAtMilliseconds,
+            0,
+          )
+        : 0;
+    indexerOptions.onPhysicalSessionCheck?.({
+      sessionPath: options.sessionPath,
+      status,
+      metrics: physicalSessionMetrics,
+      elapsedMilliseconds,
+      indexedSessionCount: outcome.indexedSessionCount,
+      removedSessionCount: outcome.removedSessionCount,
+      failedSessionCount: outcome.failedSessionCount,
+      ...(errorCategory ? { errorCategory } : {}),
+    });
+  }
+
+  let outcome: T;
+  try {
+    outcome = await options.performPhysicalSessionCheck(physicalSessionMetrics);
+  } catch (error) {
+    const cancelled = indexerOptions.signal?.aborted === true;
+    const status = cancelled ? RecallDiagnosticStatus.CANCELLED : RecallDiagnosticStatus.FAILED;
+    const errorCategory = cancelled
+      ? RecallDiagnosticErrorCategory.OPERATION_CANCELLED
+      : RecallDiagnosticErrorCategory.OPERATION_FAILED;
+    completePhysicalSessionCheck(
+      {
+        indexedSessionCount: 0,
+        removedSessionCount: 0,
+        failedSessionCount: cancelled ? 0 : 1,
+      },
+      status,
+      errorCategory,
+    );
+    throw error;
+  }
+  const failed = outcome.failedSessionCount > 0;
+  completePhysicalSessionCheck(
+    outcome,
+    failed ? RecallDiagnosticStatus.FAILED : RecallDiagnosticStatus.SUCCEEDED,
+    failed ? RecallDiagnosticErrorCategory.OPERATION_FAILED : undefined,
+  );
+  return outcome;
+}
+
+async function scanPhysicalSessionFiles(options: IncrementalSessionIndexerOptions): Promise<{
+  state: ConversationIndexState;
+  sessionFiles: string[];
+}> {
+  const scanStartedAtMilliseconds = options.diagnosticsClock?.monotonicMilliseconds();
+  try {
+    return {
+      state: await readConversationIndexState(options.statePath),
+      sessionFiles: await listSessionFiles(options.sessionsDirectory),
+    };
+  } finally {
+    if (
+      options.diagnosticMetrics &&
+      options.diagnosticsClock &&
+      scanStartedAtMilliseconds !== undefined
+    ) {
+      options.diagnosticMetrics.physicalSessionScanMilliseconds += Math.max(
+        options.diagnosticsClock.monotonicMilliseconds() - scanStartedAtMilliseconds,
+        0,
+      );
+    }
+  }
+}
+
 /** Incrementally indexes changed Pi sessions while embedding only dense-searchable evidence. */
 export async function indexChangedConversationSessions(
   options: IncrementalSessionIndexerOptions,
 ): Promise<ConversationIndexSummary> {
-  const state = await readConversationIndexState(options.statePath);
-  const sessionFiles = await listSessionFiles(options.sessionsDirectory);
+  const { state, sessionFiles } = await scanPhysicalSessionFiles(options);
   const liveSessionPaths = new Set(sessionFiles);
   const summary = createConversationIndexSummary();
 
@@ -532,10 +650,38 @@ export async function indexChangedConversationSessions(
     (path) => !liveSessionPaths.has(path),
   )) {
     throwIfIndexingAborted(options.signal);
-    removeIndexedConversationSession(state, stalePath, options.store, summary);
+    await runPhysicalSessionCheck({
+      indexerOptions: options,
+      sessionPath: stalePath,
+      performPhysicalSessionCheck(physicalSessionMetrics) {
+        if (physicalSessionMetrics) {
+          physicalSessionMetrics.sourceByteSize = 0;
+          physicalSessionMetrics.changed = true;
+          physicalSessionMetrics.skipped = false;
+        }
+        const removed = removeIndexedConversationSession(
+          state,
+          stalePath,
+          options.store,
+          summary,
+          physicalSessionMetrics,
+          options.diagnosticsClock,
+        );
+        return {
+          indexedSessionCount: 0,
+          removedSessionCount: removed ? 1 : 0,
+          failedSessionCount: 0,
+        };
+      },
+    });
   }
   if (summary.removedSessions > 0) {
-    await writeConversationIndexState(options.statePath, state);
+    await writeConversationIndexStateWithDiagnostics(
+      options.statePath,
+      state,
+      options.diagnosticMetrics,
+      options.diagnosticsClock,
+    );
   }
 
   const resolveSessionProjectIdentity = createSessionProjectIdentityResolver(
@@ -550,25 +696,52 @@ export async function indexChangedConversationSessions(
       totalSessions: sessionFiles.length,
       sessionPath,
     });
-    const changed = await indexChangedConversationSessionFile(
-      options,
-      state,
+    const outcome = await runPhysicalSessionCheck({
+      indexerOptions: options,
       sessionPath,
-      summary,
-      resolveSessionProjectIdentity,
-    );
-    if (!changed) {
-      continue;
-    }
-    sessionsSinceCheckpoint += 1;
-    if (sessionsSinceCheckpoint >= 100) {
-      await writeConversationIndexState(options.statePath, state);
-      sessionsSinceCheckpoint = 0;
+      async performPhysicalSessionCheck(physicalSessionMetrics) {
+        if (physicalSessionMetrics) {
+          physicalSessionMetrics.scannedSessionCount = 1;
+        }
+        const indexOutcome = await indexChangedConversationSessionFile(
+          {
+            ...options,
+            ...(physicalSessionMetrics ? { diagnosticMetrics: physicalSessionMetrics } : {}),
+          },
+          state,
+          sessionPath,
+          summary,
+          resolveSessionProjectIdentity,
+        );
+        return {
+          ...indexOutcome,
+          indexedSessionCount: indexOutcome.stateChanged && !indexOutcome.failed ? 1 : 0,
+          removedSessionCount: 0,
+          failedSessionCount: indexOutcome.failed ? 1 : 0,
+        };
+      },
+    });
+    if (outcome.stateChanged) {
+      sessionsSinceCheckpoint += 1;
+      if (sessionsSinceCheckpoint >= 100) {
+        await writeConversationIndexStateWithDiagnostics(
+          options.statePath,
+          state,
+          options.diagnosticMetrics,
+          options.diagnosticsClock,
+        );
+        sessionsSinceCheckpoint = 0;
+      }
     }
   }
 
   if (sessionsSinceCheckpoint > 0) {
-    await writeConversationIndexState(options.statePath, state);
+    await writeConversationIndexStateWithDiagnostics(
+      options.statePath,
+      state,
+      options.diagnosticMetrics,
+      options.diagnosticsClock,
+    );
   }
   return summary;
 }

@@ -1,5 +1,9 @@
+import { RecallManualMaintenanceTrigger } from './enums.js';
 import type { RecallQualityGateDecision } from './recall-quality-gate.js';
-import type { RecallConversationService } from './recall-conversation-service.js';
+import type {
+  RecallConversationIndexOptions,
+  RecallConversationService,
+} from './recall-conversation-service.js';
 
 interface RecallIndexCommandUi {
   setStatus(status?: string): void;
@@ -46,15 +50,25 @@ export async function runRecallIndexCommand(options: RecallIndexCommandOptions):
   const rebuild = readRecallIndexRebuildFlag(options.argumentsText);
   options.ui.setStatus(rebuild ? 'rebuilding conversations…' : 'indexing conversations…');
   try {
-    const result = await options.service.index({
-      rebuild,
-      onProgress(progress) {
-        options.ui.setStatus(
-          `${rebuild ? 'rebuilding' : 'indexing'} ${progress.scannedSessions}/${progress.totalSessions}`,
-        );
-      },
-      optimize: true,
-    });
+    const onProgress: NonNullable<RecallConversationIndexOptions['onProgress']> = (progress) => {
+      options.ui.setStatus(
+        `${rebuild ? 'rebuilding' : 'indexing'} ${progress.scannedSessions}/${progress.totalSessions}`,
+      );
+    };
+    const indexOptions: RecallConversationIndexOptions = rebuild
+      ? {
+          rebuild: true,
+          manualMaintenanceTrigger: RecallManualMaintenanceTrigger.MANUAL_REBUILD,
+          onProgress,
+          optimize: true,
+        }
+      : {
+          rebuild: false,
+          manualMaintenanceTrigger: RecallManualMaintenanceTrigger.MANUAL_INCREMENTAL_INDEX,
+          onProgress,
+          optimize: true,
+        };
+    const result = await options.service.index(indexOptions);
     const failures = result.indexSummary.failedSessions.length;
     const message = [
       `Recall index ready: ${result.totalChunks} chunks`,

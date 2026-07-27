@@ -13,6 +13,7 @@ import {
   type RecallDiagnosticsMode,
   RecallEvidenceRelation,
   RecallLifecycleTrigger,
+  RecallManualMaintenanceTrigger,
   RecallProjectIdentitySource,
   RecallSearchScope,
 } from './enums.js';
@@ -43,12 +44,13 @@ import {
 } from './recall-index-manifest.js';
 import type { RecallChunkPolicy } from './recall-chunk-policy.js';
 import {
-  createRecallLiveSessionDiagnosticMetrics,
+  createRecallIndexMetrics,
   createRecallOperationDiagnostics,
   createRecallSearchDiagnosticMetrics,
   type RecallDiagnosticsClock,
-  type RecallLiveSessionDiagnosticMetrics,
+  type RecallIndexDiagnosticMetrics,
   type RecallOperationDiagnostics,
+  type RecallPhysicalSessionDiagnostic,
   type RecallSearchDiagnosticMetrics,
 } from './recall-operation-diagnostics.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
@@ -143,15 +145,34 @@ export interface RecallConversationSearch {
   searchPolicy: RecallSearchPolicy;
 }
 
-/** Cancellation, lock-wait milliseconds, and generation controls for conversation indexing. */
-export interface RecallConversationIndexOptions {
+interface RecallConversationIndexBaseOptions {
   signal?: AbortSignal;
   lockWaitMilliseconds?: number;
   requireExistingGeneration?: boolean;
   onProgress?: (progress: ConversationIndexProgress) => void;
   optimize?: boolean;
-  rebuild?: boolean;
 }
+
+interface RecallAutomaticIndexOptions extends RecallConversationIndexBaseOptions {
+  rebuild?: boolean;
+  manualMaintenanceTrigger?: never;
+}
+
+interface RecallManualIncrementalIndexOptions extends RecallConversationIndexBaseOptions {
+  rebuild?: false;
+  manualMaintenanceTrigger: RecallManualMaintenanceTrigger.MANUAL_INCREMENTAL_INDEX;
+}
+
+interface RecallManualRebuildIndexOptions extends RecallConversationIndexBaseOptions {
+  rebuild: true;
+  manualMaintenanceTrigger: RecallManualMaintenanceTrigger.MANUAL_REBUILD;
+}
+
+/** Valid automatic or manually attributed conversation index invocation. */
+export type RecallConversationIndexOptions =
+  | RecallAutomaticIndexOptions
+  | RecallManualIncrementalIndexOptions
+  | RecallManualRebuildIndexOptions;
 
 /** Cancellation, lock wait, and Pi lifecycle attribution for one targeted reconciliation. */
 export interface RecallConversationReconcileOptions {
@@ -197,7 +218,7 @@ interface LiveSessionReconciliationDiagnosticRunOptions {
   lifecycleTrigger: RecallLifecycleTrigger;
   sessionPath: string;
   reconcile: (
-    diagnosticMetrics: RecallLiveSessionDiagnosticMetrics,
+    diagnosticMetrics: RecallIndexDiagnosticMetrics,
   ) => Promise<RecallConversationIndexResult>;
 }
 
@@ -207,6 +228,33 @@ interface RecallSearchDiagnosticRunOptions {
   recallScope: RecallSearchScope;
   signal?: AbortSignal;
   search: (diagnosticMetrics: RecallSearchDiagnosticMetrics) => Promise<RecallConversationSearch>;
+}
+
+interface ManualIndexDiagnosticRunOptions {
+  diagnostics: RecallOperationDiagnostics;
+  manualMaintenanceTrigger: RecallManualMaintenanceTrigger;
+  signal?: AbortSignal;
+  runIndexMaintenance: (
+    diagnosticMetrics: RecallIndexDiagnosticMetrics,
+    onPhysicalSessionCheck: (completion: RecallPhysicalSessionDiagnostic) => void,
+    runOptimizationWithDiagnostics: (optimize: () => Promise<void>) => Promise<void>,
+  ) => Promise<RecallConversationIndexResult>;
+}
+
+function assertRecallManualMaintenanceTriggerMatchesIndexOptions(
+  options: RecallConversationIndexOptions,
+): void {
+  if (!options.manualMaintenanceTrigger) {
+    return;
+  }
+  const expectedTrigger = options.rebuild
+    ? RecallManualMaintenanceTrigger.MANUAL_REBUILD
+    : RecallManualMaintenanceTrigger.MANUAL_INCREMENTAL_INDEX;
+  if (options.manualMaintenanceTrigger !== expectedTrigger) {
+    throw new Error(
+      `Recall manual maintenance trigger mismatch: expected ${expectedTrigger}, received ${options.manualMaintenanceTrigger}`,
+    );
+  }
 }
 
 function isRecallOperationCancelled(error: unknown, signal?: AbortSignal): boolean {
@@ -225,7 +273,7 @@ async function runLiveSessionReconciliationWithDiagnostics(
     lifecycleTrigger: options.lifecycleTrigger,
     sessionPath: options.sessionPath,
   });
-  const diagnosticMetrics = createRecallLiveSessionDiagnosticMetrics();
+  const diagnosticMetrics = createRecallIndexMetrics();
   try {
     const result = await options.reconcile(diagnosticMetrics);
     diagnosticOperation.complete({
@@ -262,6 +310,77 @@ async function runLiveSessionReconciliationWithDiagnostics(
     });
     throw error;
   }
+}
+
+async function runManualIndexWithDiagnostics(
+  options: ManualIndexDiagnosticRunOptions,
+): Promise<RecallConversationIndexResult> {
+  const diagnosticOperation = options.diagnostics.startManualIndexMaintenance({
+    manualMaintenanceTrigger: options.manualMaintenanceTrigger,
+  });
+  const diagnosticMetrics = createRecallIndexMetrics();
+  async function runOptimizationWithDiagnostics(optimize: () => Promise<void>): Promise<void> {
+    const optimizationDiagnostic = diagnosticOperation.startOptimization();
+    try {
+      await optimize();
+    } catch (error) {
+      const cancelled = isRecallOperationCancelled(error, options.signal);
+      optimizationDiagnostic.complete({
+        status: cancelled ? RecallDiagnosticStatus.CANCELLED : RecallDiagnosticStatus.FAILED,
+        errorCategory: cancelled
+          ? RecallDiagnosticErrorCategory.OPERATION_CANCELLED
+          : RecallDiagnosticErrorCategory.OPERATION_FAILED,
+      });
+      throw error;
+    }
+    optimizationDiagnostic.complete({ status: RecallDiagnosticStatus.SUCCEEDED });
+  }
+
+  let result: RecallConversationIndexResult;
+  try {
+    result = await options.runIndexMaintenance(
+      diagnosticMetrics,
+      (completion) => {
+        diagnosticOperation.recordPhysicalSessionCheck(completion);
+      },
+      runOptimizationWithDiagnostics,
+    );
+  } catch (error) {
+    const cancelled = isRecallOperationCancelled(error, options.signal);
+    diagnosticOperation.complete({
+      status: cancelled ? RecallDiagnosticStatus.CANCELLED : RecallDiagnosticStatus.FAILED,
+      errorCategory: cancelled
+        ? RecallDiagnosticErrorCategory.OPERATION_CANCELLED
+        : RecallDiagnosticErrorCategory.OPERATION_FAILED,
+      metrics: diagnosticMetrics,
+      scannedSessionCount: diagnosticMetrics.scannedSessionCount,
+      indexedSessionCount: diagnosticMetrics.indexedSessionCount,
+      removedSessionCount: diagnosticMetrics.removedSessionCount,
+      failedSessionCount: diagnosticMetrics.failedSessionCount,
+      cacheHitCount: diagnosticMetrics.cacheHitCount,
+      newEmbeddingCount: diagnosticMetrics.newEmbeddingCount,
+      embeddingRequestCount: diagnosticMetrics.embeddingRequestCount,
+      deletedDocumentCount: diagnosticMetrics.deletedDocumentCount,
+      totalDocumentCount: null,
+    });
+    throw error;
+  }
+  const failed = result.indexSummary.failedSessions.length > 0;
+  diagnosticOperation.complete({
+    status: failed ? RecallDiagnosticStatus.FAILED : RecallDiagnosticStatus.SUCCEEDED,
+    ...(failed ? { errorCategory: RecallDiagnosticErrorCategory.OPERATION_FAILED } : {}),
+    metrics: diagnosticMetrics,
+    scannedSessionCount: result.indexSummary.scannedSessions,
+    indexedSessionCount: result.indexSummary.indexedSessions,
+    removedSessionCount: result.indexSummary.removedSessions,
+    failedSessionCount: result.indexSummary.failedSessions.length,
+    cacheHitCount: result.indexSummary.cacheHits,
+    newEmbeddingCount: result.indexSummary.newlyEmbeddedChunks,
+    embeddingRequestCount: result.indexSummary.embeddingRequestCount,
+    deletedDocumentCount: result.indexSummary.deletedChunks,
+    totalDocumentCount: result.totalChunks,
+  });
+  return result;
 }
 
 async function runRecallSearchWithDiagnostics(
@@ -503,6 +622,23 @@ export function createRecallConversationService(
     return [...embedding];
   }
 
+  async function readIndexEmbeddingCanary(
+    signal?: AbortSignal,
+    diagnosticMetrics?: RecallIndexDiagnosticMetrics,
+  ): Promise<number[]> {
+    const embeddingRequestStartedAtMilliseconds = diagnosticsClock.monotonicMilliseconds();
+    try {
+      return await readCurrentEmbeddingCanary(signal);
+    } finally {
+      if (diagnosticMetrics) {
+        diagnosticMetrics.embeddingServerRequestMilliseconds += Math.max(
+          diagnosticsClock.monotonicMilliseconds() - embeddingRequestStartedAtMilliseconds,
+          0,
+        );
+      }
+    }
+  }
+
   function createExpectedManifest(canaryEmbedding: readonly number[]): RecallIndexManifest {
     return createRecallIndexManifest({
       embeddingIdentity: createEmbeddingModelIdentity(config),
@@ -512,8 +648,12 @@ export function createRecallConversationService(
     });
   }
 
-  async function readCanonicalRebuildCanary(signal?: AbortSignal): Promise<number[]> {
-    const currentManifest = createExpectedManifest(await readCurrentEmbeddingCanary(signal));
+  async function readCanonicalRebuildCanary(
+    signal?: AbortSignal,
+    diagnosticMetrics?: RecallIndexDiagnosticMetrics,
+  ): Promise<number[]> {
+    const currentEmbeddingCanary = await readIndexEmbeddingCanary(signal, diagnosticMetrics);
+    const currentManifest = createExpectedManifest(currentEmbeddingCanary);
     const currentCanary = currentManifest.embedding.canaryVector;
     let previousCanary:
       | {
@@ -565,6 +705,7 @@ export function createRecallConversationService(
     signal?: AbortSignal,
     preflightedCanary?: readonly number[],
     requireExistingGeneration = false,
+    diagnosticMetrics?: RecallIndexDiagnosticMetrics,
   ): Promise<{
     tokenizer: ConversationTextTokenizer;
     manifest: RecallIndexManifest;
@@ -588,7 +729,7 @@ export function createRecallConversationService(
       return { tokenizer, manifest: actual, embeddingModelPreflighted: false };
     }
     const expected = createExpectedManifest(
-      preflightedCanary ?? (await readCurrentEmbeddingCanary(signal)),
+      preflightedCanary ?? (await readIndexEmbeddingCanary(signal, diagnosticMetrics)),
     );
     await writeRecallIndexManifest(config.manifestPath, expected);
     return { tokenizer, manifest: expected, embeddingModelPreflighted: true };
@@ -608,7 +749,8 @@ export function createRecallConversationService(
     signal?: AbortSignal,
     onProgress?: (progress: ConversationIndexProgress) => void,
     sessionPath?: string,
-    diagnosticMetrics?: RecallLiveSessionDiagnosticMetrics,
+    diagnosticMetrics?: RecallIndexDiagnosticMetrics,
+    onPhysicalSessionCheck?: (completion: RecallPhysicalSessionDiagnostic) => void,
   ): Promise<ConversationIndexSummary> {
     let modelPreflighted = embeddingModelPreflighted;
     async function embedTextsAfterModelPreflight(
@@ -644,6 +786,7 @@ export function createRecallConversationService(
       resolveProjectIdentity: resolveSearchProjectIdentity,
       ...(signal ? { signal } : {}),
       ...(diagnosticMetrics ? { diagnosticMetrics, diagnosticsClock } : {}),
+      ...(onPhysicalSessionCheck ? { onPhysicalSessionCheck } : {}),
     };
     return sessionPath
       ? indexChangedConversationSession({ ...indexerOptions, sessionPath })
@@ -658,7 +801,7 @@ export function createRecallConversationService(
     sessionPath: string,
     signal?: AbortSignal,
     lockWaitMilliseconds?: number,
-    diagnosticMetrics?: RecallLiveSessionDiagnosticMetrics,
+    diagnosticMetrics?: RecallIndexDiagnosticMetrics,
   ): Promise<RecallConversationIndexResult> {
     const lockSignal = createRecallLockAcquisitionSignal(signal, lockWaitMilliseconds);
     const lockStartedAtMilliseconds = diagnosticsClock.monotonicMilliseconds();
@@ -922,49 +1065,119 @@ export function createRecallConversationService(
           }),
       });
     },
-    index(options = {}) {
-      return runSerialized(async () => {
-        const lockSignal = createRecallLockAcquisitionSignal(
-          options.signal,
-          options.lockWaitMilliseconds,
-        );
-        const releaseLock = await acquireRecallConversationLock(config.lockPath, lockSignal);
-        let store: ZvecConversationStore | undefined;
-        try {
-          let rebuildCanary: number[] | undefined;
-          if (options.rebuild) {
-            await getConversationTokenizer();
-            rebuildCanary = await readCanonicalRebuildCanary(options.signal);
-            await removeRecallIndexGeneration();
-          }
-          const preparedIndex = await prepareIndexForWrite(
+    async index(options = {}) {
+      assertRecallManualMaintenanceTriggerMatchesIndexOptions(options);
+      const runConversationIndexMaintenance = (
+        diagnosticMetrics?: RecallIndexDiagnosticMetrics,
+        onPhysicalSessionCheck?: (completion: RecallPhysicalSessionDiagnostic) => void,
+        runOptimizationWithDiagnostics?: (optimize: () => Promise<void>) => Promise<void>,
+      ) =>
+        runSerialized(async () => {
+          const lockSignal = createRecallLockAcquisitionSignal(
             options.signal,
-            rebuildCanary,
-            options.requireExistingGeneration,
+            options.lockWaitMilliseconds,
           );
-          store = openStore('write');
-          const indexSummary = await updateConversationIndex(
-            store,
-            preparedIndex.tokenizer,
-            preparedIndex.manifest,
-            preparedIndex.embeddingModelPreflighted,
-            options.signal,
-            options.onProgress,
-          );
-          if (
-            options.optimize &&
-            (indexSummary.cacheHits > 0 ||
-              indexSummary.newlyEmbeddedChunks > 0 ||
-              indexSummary.deletedChunks > 0)
-          ) {
-            await store.optimize();
+          const lockStartedAtMilliseconds = diagnosticsClock.monotonicMilliseconds();
+          let releaseLock: (() => Promise<void>) | undefined;
+          try {
+            releaseLock = await acquireRecallConversationLock(config.lockPath, lockSignal);
+          } finally {
+            if (diagnosticMetrics) {
+              diagnosticMetrics.writerLockWaitMilliseconds += Math.max(
+                diagnosticsClock.monotonicMilliseconds() - lockStartedAtMilliseconds,
+                0,
+              );
+            }
           }
-          return { indexSummary, totalChunks: store.count() };
-        } finally {
-          store?.close();
-          await releaseLock();
-        }
-      });
+          let store: ZvecConversationStore | undefined;
+          try {
+            const preparationStartedAtMilliseconds = diagnosticsClock.monotonicMilliseconds();
+            const embeddingServerMillisecondsBeforePreparation =
+              diagnosticMetrics?.embeddingServerRequestMilliseconds ?? 0;
+            let preparedIndex: Awaited<ReturnType<typeof prepareIndexForWrite>>;
+            try {
+              let rebuildCanary: number[] | undefined;
+              if (options.rebuild) {
+                await getConversationTokenizer();
+                rebuildCanary = await readCanonicalRebuildCanary(options.signal, diagnosticMetrics);
+                await removeRecallIndexGeneration();
+              }
+              preparedIndex = await prepareIndexForWrite(
+                options.signal,
+                rebuildCanary,
+                options.requireExistingGeneration,
+                diagnosticMetrics,
+              );
+              store = openStore('write');
+            } finally {
+              if (diagnosticMetrics) {
+                const preparationElapsedMilliseconds = Math.max(
+                  diagnosticsClock.monotonicMilliseconds() - preparationStartedAtMilliseconds,
+                  0,
+                );
+                const embeddingServerMillisecondsDuringPreparation = Math.max(
+                  diagnosticMetrics.embeddingServerRequestMilliseconds -
+                    embeddingServerMillisecondsBeforePreparation,
+                  0,
+                );
+                diagnosticMetrics.manifestStorePreparationMilliseconds += Math.max(
+                  preparationElapsedMilliseconds - embeddingServerMillisecondsDuringPreparation,
+                  0,
+                );
+              }
+            }
+            const indexSummary = await updateConversationIndex(
+              store,
+              preparedIndex.tokenizer,
+              preparedIndex.manifest,
+              preparedIndex.embeddingModelPreflighted,
+              options.signal,
+              options.onProgress,
+              undefined,
+              diagnosticMetrics,
+              onPhysicalSessionCheck,
+            );
+            if (
+              options.optimize &&
+              (indexSummary.cacheHits > 0 ||
+                indexSummary.newlyEmbeddedChunks > 0 ||
+                indexSummary.deletedChunks > 0)
+            ) {
+              const optimizationStartedAtMilliseconds = diagnosticsClock.monotonicMilliseconds();
+              const storeToOptimize = store;
+              if (diagnosticMetrics) {
+                diagnosticMetrics.optimizationRan = true;
+              }
+              try {
+                const optimizeStore = () => storeToOptimize.optimize();
+                if (runOptimizationWithDiagnostics) {
+                  await runOptimizationWithDiagnostics(optimizeStore);
+                } else {
+                  await optimizeStore();
+                }
+              } finally {
+                if (diagnosticMetrics) {
+                  diagnosticMetrics.optimizationMilliseconds += Math.max(
+                    diagnosticsClock.monotonicMilliseconds() - optimizationStartedAtMilliseconds,
+                    0,
+                  );
+                }
+              }
+            }
+            return { indexSummary, totalChunks: store.count() };
+          } finally {
+            store?.close();
+            await releaseLock();
+          }
+        });
+      return options.manualMaintenanceTrigger
+        ? runManualIndexWithDiagnostics({
+            diagnostics,
+            manualMaintenanceTrigger: options.manualMaintenanceTrigger,
+            ...(options.signal ? { signal: options.signal } : {}),
+            runIndexMaintenance: runConversationIndexMaintenance,
+          })
+        : runConversationIndexMaintenance();
     },
     reconcileSession(sessionPath, options) {
       return runLiveSessionReconciliationWithDiagnostics({

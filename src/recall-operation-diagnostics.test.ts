@@ -10,11 +10,12 @@ import {
   RecallDiagnosticStatus,
   RecallDiagnosticsMode,
   RecallLifecycleTrigger,
+  RecallManualMaintenanceTrigger,
   RecallSearchScope,
 } from './enums.js';
 import { isUnknownRecord } from './is-unknown-record.js';
 import {
-  createRecallLiveSessionDiagnosticMetrics,
+  createRecallIndexMetrics,
   createRecallOperationDiagnostics,
   createRecallSearchDiagnosticMetrics,
   type RecallDiagnosticsClock,
@@ -39,7 +40,7 @@ function completeTestDiagnosticOperation(
 ): void {
   operation.complete({
     status,
-    metrics: createRecallLiveSessionDiagnosticMetrics(),
+    metrics: createRecallIndexMetrics(),
     scannedSessionCount: 1,
     indexedSessionCount: 0,
     removedSessionCount: 0,
@@ -76,7 +77,7 @@ void test('all diagnostics mode writes live reconciliation start and completion 
     lifecycleTrigger: RecallLifecycleTrigger.AGENT_SETTLED,
     sessionPath: '/sessions/active.jsonl',
   });
-  const metrics = createRecallLiveSessionDiagnosticMetrics();
+  const metrics = createRecallIndexMetrics();
   metrics.sourceByteSize = 512;
   metrics.changed = true;
   metrics.skipped = false;
@@ -207,6 +208,49 @@ void test('slow diagnostics mode retains the threshold boundary and failures onl
   );
 });
 
+void test('slow diagnostics omit fast cancelled physical session checks', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-slow-cancelled-physical-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const activeLogPath = join(directory, 'diagnostics.jsonl');
+  const diagnostics = createRecallOperationDiagnostics({
+    mode: RecallDiagnosticsMode.SLOW,
+    activeLogPath,
+    retainedLogPath: join(directory, 'diagnostics.previous.jsonl'),
+    clock: {
+      monotonicMilliseconds: () => 1,
+      wallClockIsoTimestamp: () => '2026-07-27T10:00:00.000Z',
+    },
+    notifyWarning() {
+      assert.fail('successful cancelled physical filtering must not warn');
+    },
+  });
+  const manualOperation = diagnostics.startManualIndexMaintenance({
+    manualMaintenanceTrigger: RecallManualMaintenanceTrigger.MANUAL_INCREMENTAL_INDEX,
+  });
+  manualOperation.recordPhysicalSessionCheck({
+    sessionPath: '/sessions/cancelled.jsonl',
+    status: RecallDiagnosticStatus.CANCELLED,
+    errorCategory: RecallDiagnosticErrorCategory.OPERATION_CANCELLED,
+    metrics: createRecallIndexMetrics(),
+    elapsedMilliseconds: 1,
+    indexedSessionCount: 0,
+    removedSessionCount: 0,
+    failedSessionCount: 0,
+  });
+  completeTestDiagnosticOperation(manualOperation, RecallDiagnosticStatus.SUCCEEDED);
+  await diagnostics.flush();
+
+  const records = (await readFile(activeLogPath, 'utf8'))
+    .trimEnd()
+    .split('\n')
+    .map((line): unknown => JSON.parse(line));
+  assert.ok(records.every(isUnknownRecord));
+  assert.equal(records.length, 2);
+  assert.ok(
+    records.every((record) => record.operationKind === RecallDiagnosticOperationKind.FULL_INDEX),
+  );
+});
+
 void test('diagnostic persistence rotates at its cap and retains one predecessor', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'recall-rotating-diagnostics-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -305,6 +349,20 @@ void test('off diagnostics mode performs no diagnostic filesystem operations', a
     metrics: createRecallSearchDiagnosticMetrics(),
     totalDocumentCount: 1,
   });
+  const manualOperation = diagnostics.startManualIndexMaintenance({
+    manualMaintenanceTrigger: RecallManualMaintenanceTrigger.MANUAL_INCREMENTAL_INDEX,
+  });
+  const physicalSessionMetrics = createRecallIndexMetrics();
+  manualOperation.recordPhysicalSessionCheck({
+    sessionPath: '/sessions/off-manual.jsonl',
+    status: RecallDiagnosticStatus.SUCCEEDED,
+    metrics: physicalSessionMetrics,
+    elapsedMilliseconds: 1_000,
+    indexedSessionCount: 0,
+    removedSessionCount: 0,
+    failedSessionCount: 0,
+  });
+  completeTestDiagnosticOperation(manualOperation, RecallDiagnosticStatus.SUCCEEDED);
   await diagnostics.flush();
 
   assert.equal(await readFile(filesystemBlocker, 'utf8'), 'unchanged');

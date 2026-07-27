@@ -2,6 +2,10 @@
 export enum RecallDiagnosticOperationKind {
   LIVE_SESSION_RECONCILIATION = 'live_session_reconciliation',
   SEARCH = 'search',
+  FULL_INDEX = 'full_index',
+  REBUILD = 'rebuild',
+  PHYSICAL_SESSION_CHECK = 'physical_session_check',
+  OPTIMIZATION = 'optimization',
 }
 
 /** Lifecycle state recorded for one recall diagnostic operation. */
@@ -30,6 +34,12 @@ export enum RecallLifecycleTrigger {
   AGENT_SETTLED = 'agent_settled',
   SESSION_SHUTDOWN = 'session_shutdown',
   ACTIVE_SESSION_FRESHNESS = 'active_session_freshness',
+}
+
+/** Manual maintenance trigger distinguishing explicit incremental indexing from rebuilding. */
+export enum RecallManualMaintenanceTrigger {
+  MANUAL_INCREMENTAL_INDEX = 'manual_incremental_index',
+  MANUAL_REBUILD = 'manual_rebuild',
 }
 
 /** Explicit source used to assign one stable project identity to recall evidence. */

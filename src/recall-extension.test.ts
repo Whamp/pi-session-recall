@@ -42,7 +42,7 @@ void test('Pi session recall registers collision-free tool guidance and index co
 
   assert.deepEqual(toolNames, ['pi-session-recall']);
   assert.deepEqual(commandNames, ['pi-session-recall-index']);
-  assert.deepEqual(lifecycleEvents, ['session_start', 'agent_settled', 'session_shutdown']);
+  assert.deepEqual(lifecycleEvents, ['session_start', 'agent_settled']);
   assert.ok(!toolNames.includes('recall'));
   assert.ok(!commandNames.includes('recall-index'));
   assert.match(commandDescriptions[0] ?? '', /quality gate/);
@@ -69,6 +69,21 @@ void test('Pi session recall registers collision-free tool guidance and index co
         guideline.includes('conversation or detail from a past session'),
     ),
   );
+});
+
+void test('Pi recall reload never starts session shutdown maintenance', async () => {
+  const lifecycleEvents: string[] = [];
+  const registrar: Pick<ExtensionAPI, 'on' | 'registerTool' | 'registerCommand'> = {
+    on(event) {
+      lifecycleEvents.push(event);
+    },
+    registerTool() {},
+    registerCommand() {},
+  };
+
+  await recallExtension(registrar);
+
+  assert.ok(!lifecycleEvents.includes('session_shutdown'));
 });
 
 void test('Pi recall startup never runs full corpus catch-up in the runtime process', () => {

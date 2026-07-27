@@ -114,13 +114,6 @@ export default async function recallExtension(
         void liveSessionIngestion.reconcileActiveSession(context.sessionManager.getSessionFile());
       }
     });
-    pi.on('session_shutdown', async (event, context) => {
-      void event;
-      if (shouldRunRecallLifecycleIngestion(context.mode)) {
-        recallWarningHandler = (message) => context.ui.notify(message, 'warning');
-        await liveSessionIngestion.shutdownActiveSession(context.sessionManager.getSessionFile());
-      }
-    });
   }
 
   pi.registerTool({

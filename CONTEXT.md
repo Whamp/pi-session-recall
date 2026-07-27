@@ -109,7 +109,7 @@ The persistence policy for recall diagnostic operations: `slow`, `all`, or `off`
 _Avoid_: Verbosity level, tracing mode
 
 **Lifecycle trigger**:
-The Pi lifecycle event that requested a live session reconciliation: `agent_settled` or `session_shutdown`.
+The reason a live session reconciliation was requested. Pi runtime maintenance uses `agent_settled` and tool-search freshness; `session_shutdown` remains a historical diagnostic value but no longer starts runtime maintenance.
 _Avoid_: Session watcher event, polling reason
 
 **Manual maintenance trigger**:

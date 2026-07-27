@@ -91,12 +91,12 @@ The committed quality report passes and selects 512/64 chunks, 8 candidates per 
 
 After that initial generation exists, the extension keeps active sessions current from Pi's session lifecycle:
 
-- startup and reload never scan the full corpus inside the Pi runtime;
+- startup never scans the full corpus inside the Pi runtime;
 - persistent TUI and RPC runtimes reconcile the active session on `agent_settled` after retries and queued continuations finish;
-- persistent TUI and RPC runtimes await one final active-session reconciliation on `session_shutdown` before switching, forking, reloading, or exiting;
+- shutdown and reload never start recall maintenance, so large active sessions cannot delay those Pi lifecycle operations;
 - every `pi-session-recall` tool call reconciles the trusted active session before searching.
 
-Resume appends and branch changes reprocess the affected session. Forks enter through their new session file and retain parent-session provenance. The incremental state and unchanged JSONL files form the durable retry queue after crashes, model outages, or lock contention. Multiple Pi processes share the PID-owned writer lock. Use the manual index command to catch up inactive sessions that no persistent runtime ingested.
+Resume appends and branch changes reprocess the affected session after the next settled turn or recall search. Forks enter through their new session file and retain parent-session provenance. The incremental state and unchanged JSONL files form the durable retry queue after crashes, model outages, or lock contention. Multiple Pi processes share the PID-owned writer lock. Use the manual index command to catch up inactive sessions that no persistent runtime ingested.
 
 Use `/pi-session-recall-index` for an explicit full catch-up and optimization. Use `--rebuild` to replace an incompatible generation while preserving tokenizer assets and cached vectors.
 

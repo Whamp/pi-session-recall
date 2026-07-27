@@ -53,7 +53,7 @@ npm run --silent setup:recall -- defer
 
 Deferral preserves the selected embedding configuration, estimate, staging manifest, and cached vectors. Recall remains unavailable until the first generation activates.
 
-Estimate/build state lives at `~/.pi/agent/recall/first-index-setup.json`. Successful embedding selection also writes the authoritative capability record to `~/.pi/agent/recall/inference-configuration.json`; later [mixed inference setup](mixed-inference-configuration.md) preserves this selection while adding or repairing optional capabilities. Existing background controls remain available through `/pi-session-recall-index --status`, `--stop`, `--resume`, and `--discard`.
+Estimate/build state lives at `~/.pi/agent/recall/first-index-setup.json`. Successful embedding selection also writes the authoritative capability record to `~/.pi/agent/recall/inference-configuration.json`; later [mixed inference setup](mixed-inference-configuration.md) may retain the profile while changing its backend or add and repair optional capabilities. Measured estimates, readiness checks, and first-generation launch reconstruct that authoritative selection, so changing EmbeddingGemma from embedded to HTTP cannot silently route setup work back through embedded inference. A pre-#43 first-index state without an inference-configuration record retains its documented embedded compatibility fallback. Existing background controls remain available through `/pi-session-recall-index --status`, `--stop`, `--resume`, and `--discard`.
 
 ## Deterministic verification
 
@@ -65,7 +65,8 @@ The committed tests use temporary session corpora, deterministic embedding provi
 - the sample manifest and cache are reused by the full rebuild;
 - configuration is absent before explicit selection and retained after deferral;
 - build approval is separate from download approval and estimation; and
-- a sample-created staging generation resumes through the background service boundary.
+- a sample-created staging generation resumes through the background service boundary; and
+- post-selection measurement and build control use the authoritative mixed inference runtime rather than the initial embedded selection.
 
 Run them with:
 

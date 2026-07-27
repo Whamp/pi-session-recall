@@ -117,14 +117,18 @@ export type RecallFirstIndexSetupCommandService = Pick<
   | 'resumeBackgroundIndexGeneration'
 >;
 
-/** Selected local service plus inspectable execution identity and explicit disposal. */
-export interface RecallFirstIndexSetupSelectedRuntime {
+/** Disposable service that follows the authoritative inference configuration during setup. */
+export interface RecallFirstIndexSetupConfiguredRuntime {
   service: RecallFirstIndexSetupCommandService;
+  dispose(): Promise<void>;
+}
+
+/** Recommended embedded runtime used only to verify the initial EmbeddingGemma selection. */
+export interface RecallFirstIndexSetupSelectedRuntime extends RecallFirstIndexSetupConfiguredRuntime {
   executionIdentity: Pick<
     EmbeddedEmbeddingGemmaExecutionIdentity,
     'adapter' | 'computeBackend' | 'deviceNames' | 'devicePolicy'
   >;
-  dispose(): Promise<void>;
 }
 
 /** Injectable filesystem, artifact, service, clock, and output boundaries for guided setup. */
@@ -140,6 +144,9 @@ export interface RecallFirstIndexSetupCommandOptions {
   createSelectedServiceRuntime?: () =>
     | RecallFirstIndexSetupSelectedRuntime
     | Promise<RecallFirstIndexSetupSelectedRuntime>;
+  createConfiguredServiceRuntime?: () =>
+    | RecallFirstIndexSetupConfiguredRuntime
+    | Promise<RecallFirstIndexSetupConfiguredRuntime>;
   nowIsoTimestamp?: () => string;
   writeOutput?: (value: string) => void;
 }
@@ -285,12 +292,12 @@ function formatFirstIndexSetupConfiguration(state: RecallFirstIndexSetupState): 
   };
 }
 
-async function runWithSelectedEmbeddingRuntime<T>(
+async function runWithConfiguredEmbeddingRuntime<T>(
   state: RecallFirstIndexSetupState,
   createRuntime: () =>
-    | RecallFirstIndexSetupSelectedRuntime
-    | Promise<RecallFirstIndexSetupSelectedRuntime>,
-  operation: (runtime: RecallFirstIndexSetupSelectedRuntime) => Promise<T>,
+    | RecallFirstIndexSetupConfiguredRuntime
+    | Promise<RecallFirstIndexSetupConfiguredRuntime>,
+  operation: (runtime: RecallFirstIndexSetupConfiguredRuntime) => Promise<T>,
 ): Promise<T> {
   if (!state.embedding) {
     throw new Error(
@@ -323,6 +330,8 @@ export async function runRecallFirstIndexSetupCommand(
   const createSelectedServiceRuntime =
     options.createSelectedServiceRuntime ??
     (() => createRecommendedEmbeddingGemmaConversationRuntime(options.config));
+  const createConfiguredServiceRuntime =
+    options.createConfiguredServiceRuntime ?? createSelectedServiceRuntime;
   const nowIsoTimestamp = options.nowIsoTimestamp ?? (() => new Date().toISOString());
   const writeOutput =
     options.writeOutput ?? ((value: string) => process.stdout.write(`${value}\n`));
@@ -346,9 +355,9 @@ export async function runRecallFirstIndexSetupCommand(
 
   if (parsedAction.action === 'status') {
     const recallReady = state.embedding
-      ? await runWithSelectedEmbeddingRuntime(
+      ? await runWithConfiguredEmbeddingRuntime(
           state,
-          createSelectedServiceRuntime,
+          createConfiguredServiceRuntime,
           async (runtime) => (await runtime.service.readIndexGenerationStatus()).active !== null,
         )
       : false;
@@ -449,9 +458,9 @@ export async function runRecallFirstIndexSetupCommand(
     }
     const measuredAt = nowIsoTimestamp();
     const estimate = parsedAction.measure
-      ? await runWithSelectedEmbeddingRuntime(
+      ? await runWithConfiguredEmbeddingRuntime(
           state,
-          createSelectedServiceRuntime,
+          createConfiguredServiceRuntime,
           async (runtime) => ({
             kind: 'measured' as const,
             measuredAt,
@@ -500,9 +509,9 @@ export async function runRecallFirstIndexSetupCommand(
       'Recall first-index setup start requires a completed metadata or measured estimate before build approval',
     );
   }
-  const backgroundBuild = await runWithSelectedEmbeddingRuntime(
+  const backgroundBuild = await runWithConfiguredEmbeddingRuntime(
     state,
-    createSelectedServiceRuntime,
+    createConfiguredServiceRuntime,
     async (runtime) => {
       const generations = await runtime.service.readIndexGenerationStatus();
       if (generations.active) {

@@ -48,7 +48,7 @@ Failed preparation, artifact validation, identity matching, conformance, or stag
 
 ## Replacement and cache behavior
 
-Changing only the embedding backend or adapter while retaining the same model profile updates configuration without calling an index-generation operation. The active vectors remain compatible.
+Changing only the embedding backend or adapter while retaining the same model profile updates configuration without calling an index-generation operation. The active vectors remain compatible. If the first generation has not activated yet, guided measurement and launch also reconstruct this updated selection instead of reusing the initial embedded setup runtime.
 
 Changing the embedding profile requires `--approve-replacement`. Setup calls the candidate's public generation service and starts a detached staging build, or resumes staging only when its embedding semantic identity is exact. A staging generation for another profile is never discarded or reused automatically. The active generation remains selected until the replacement validates and activates through the existing atomic-generation boundary.
 

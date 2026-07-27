@@ -54,7 +54,7 @@ function createSetupCommandTestConfig(root: string): RecallConversationConfig {
   };
 }
 
-void test('first-index setup stays unconfigured until approved selection and preserves deferred configuration', async (t) => {
+void test('first-index setup requires consent and uses the authoritative configured runtime after selection', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'recall-first-index-command-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const config = createSetupCommandTestConfig(root);
@@ -68,6 +68,7 @@ void test('first-index setup stays unconfigured until approved selection and pre
   let measuredSampleBound: number | undefined;
   let stagingAvailable = false;
   let selectedServiceCreationCount = 0;
+  let configuredServiceCreationCount = 0;
   let disposeCount = 0;
   const outputs: unknown[] = [];
 
@@ -208,6 +209,15 @@ void test('first-index setup stays unconfigured until approved selection and pre
         },
       };
     },
+    async createConfiguredServiceRuntime() {
+      configuredServiceCreationCount += 1;
+      return {
+        service,
+        async dispose() {
+          disposeCount += 1;
+        },
+      };
+    },
     nowIsoTimestamp: () => '2026-08-01T10:00:00.000Z',
     writeOutput(value: string) {
       outputs.push(JSON.parse(value));
@@ -286,6 +296,8 @@ void test('first-index setup stays unconfigured until approved selection and pre
     options,
   );
   assert.equal(measuredSampleBound, 2);
+  assert.equal(selectedServiceCreationCount, 1);
+  assert.equal(configuredServiceCreationCount, 1);
   assert.deepEqual(readLastSetupOutputProperty(outputs, 'estimate'), {
     kind: 'measured',
     measuredAt: '2026-08-01T10:00:00.000Z',
@@ -332,6 +344,9 @@ void test('first-index setup stays unconfigured until approved selection and pre
   await runRecallFirstIndexSetupCommand(['start', '--approve-build'], options);
   assert.equal(backgroundStartCount, 0);
   assert.equal(backgroundResumeCount, 1);
+  assert.equal(selectedServiceCreationCount, 1);
+  assert.equal(configuredServiceCreationCount, 2);
+  assert.equal(disposeCount, 3);
   assert.deepEqual(outputs.at(-1), {
     action: 'start',
     recallReady: false,

@@ -24,7 +24,7 @@ Turn-context documents are secondary evidence. Each starts with visible user tex
 
 Tool calls, results, and direct bash executions follow a separate lexical-only evidence path. Names, compact JSON argument objects, result text, commands, and shell output are stored without redaction. Every document stays within one tool source block or bash message field and records its evidence part, tool name, available call linkage, error state, and source path. Thinking and images are never tool evidence.
 
-All evidence uses the exact pinned Octen tokenizer for bounded geometry. The approved policy targets at most 512 tokens with 64 tokens of overlap between adjacent siblings. Tool evidence also contains at most 512 tokens, uses no overlap, and preserves every source character. Splitting prefers Markdown sections, paragraphs, fenced-code boundaries, lines, and sentences before a hard token cut.
+All evidence uses the tokenizer owned by its embedding profile: the exact pinned Octen tokenizer for Octen generations or the checksum-pinned GGUF tokenizer for EmbeddingGemma generations. The approved policy targets at most 512 tokens with 64 tokens of overlap between adjacent siblings. Tool evidence also contains at most 512 tokens, uses no overlap, and preserves every source character. Splitting prefers Markdown sections, paragraphs, fenced-code boundaries, lines, and sentences before a hard token cut.
 
 Every stored document includes:
 
@@ -150,7 +150,7 @@ The extension tells Pi to use `pi-session-recall` when a task depends on a past 
 
 Each atomic conversation, turn-context, or summary document is stored once with three searchable representations:
 
-- an Octen embedding queried by cosine distance, where lower is better;
+- its generation's configured profile embedding queried by cosine distance, where lower is better;
 - ordinary zvec FTS using the standard tokenizer and lowercase filter, where higher is better;
 - case-preserving zvec FTS using the standard tokenizer without filters and requiring every query token, where higher is better.
 
@@ -175,7 +175,7 @@ Search shapes the full fused candidate pool before applying the requested result
 
 Each duplicate group retains every suppressed candidate with its source geometry and fusion components. Neighbor context retains every contributing atomic chunk. A deep-rerank HTTP, JSON, coverage, index, or score failure rejects that deep search; default hybrid search never calls the reranker.
 
-After the quality gate passes, `/pi-session-recall-index` performs a manual full catch-up and optimizes zvec. Use `/pi-session-recall-index --rebuild` when a compatibility error requires a detached replacement generation, then inspect it with `--status`. The worker's staging lock does not block active-generation search. Automatic lifecycle ingestion never creates or replaces an incompatible generation. A search against a missing, locked, or incompatible active generation fails without clearing another process's lock.
+After the quality gate passes, `/pi-session-recall-index` performs a manual full catch-up and optimizes zvec. Use `/pi-session-recall-index --rebuild` when a compatibility error requires a detached replacement generation, then inspect it with `--status`. The worker's staging lock does not block active-generation search. Interactive lifecycle and search operations never create or replace a generation. A search against a missing, locked, or incompatible active generation fails without clearing another process's lock.
 
 ## Exact Octen tokenizer
 
@@ -216,7 +216,7 @@ Model profiles define inference semantics; backend settings define where those s
 
 Backend URLs, devices, and adapter implementations are not model-profile identity. An EmbeddingGemma generation can move between embedded CPU, Metal, CUDA, Vulkan, and the built-in llama.cpp HTTP provider without rebuilding. Moving between EmbeddingGemma and Octen requires another generation. Reranker or planner profile and adapter changes update only their capability/cache identity without changing vector compatibility.
 
-`node-llama-cpp@3.18.1` is optional and loads dynamically only when embedded embedding, GGUF tokenization, embedded reranking, or embedded query planning begins. Embedded execution probes supported accelerators by default, reports the selected backend and device, and retries the same profile on CPU with one warning when automatic accelerator initialization fails. Explicit device overrides fail closed. Parallelism and contexts are conservatively bounded, native logs stay on stderr, and idle resources unload after five minutes unless a checked-out synchronous tokenizer still needs the model. HTTP-only execution does not load the native runtime.
+`node-llama-cpp@3.18.1` is optional and loads dynamically only when embedded embedding, local GGUF tokenization, embedded reranking, or embedded query planning begins. Embedded execution probes supported accelerators by default, reports the selected backend and device, and retries the same profile on CPU with one warning when automatic accelerator initialization fails. Explicit device overrides fail closed. Parallelism and contexts are conservatively bounded, native logs stay on stderr, and idle resources unload after five minutes unless a checked-out synchronous tokenizer still needs the model. HTTP-only search does not load the native runtime; building an EmbeddingGemma generation still loads the checksum-pinned local GGUF tokenizer.
 
 See [Inference profiles and provider conformance](docs/inference/provider-conformance.md), [Embedded EmbeddingGemma execution](docs/inference/embedded-embeddinggemma.md), the [recommended Qwen reranker](docs/inference/qwen-reranker.md), and the [recommended QMD query planner](docs/inference/qmd-query-planner.md) for service wiring, deterministic evidence, and pending real-model acceptance.
 
@@ -255,7 +255,7 @@ npm run --silent model:qmd-query-planner -- repair --approve
 npm run --silent model:qmd-query-planner -- remove --approve
 ```
 
-Injecting a planner profile and identified embedded or HTTP adapter enables `RecallConversationService.verifyQueryPlanningCapability()`. It does not add a query-planned search mode; issue #29 owns retrieval and ranking integration. Artifact-only workflows never start inference or indexing. First-index setup persists the verified embedded embedding selection. The mixed inference command API independently configures, verifies, repairs, and removes optional capabilities; profile changes update only their own cache/search-policy identity, while embedding profile replacement starts staging. See [Mixed inference configuration and repair](docs/inference/mixed-inference-configuration.md), [Pinned EmbeddingGemma model artifact](docs/inference/embeddinggemma-model-artifact.md), [Embedded EmbeddingGemma execution](docs/inference/embedded-embeddinggemma.md), the [recommended Qwen reranker](docs/inference/qwen-reranker.md), and the [recommended QMD query planner](docs/inference/qmd-query-planner.md) for behavior and evidence limits.
+Injecting a planner profile and identified embedded or HTTP adapter enables `RecallConversationService.verifyQueryPlanningCapability()`. It does not add a query-planned search mode; issue #29 owns retrieval and ranking integration. Artifact-only workflows never start inference or indexing. First-index setup persists the verified embedded embedding selection. The mixed inference command API independently configures, verifies, repairs, and removes optional capabilities; profile changes update only their own cache/search-policy identity, while embedding profile replacement starts staging. After initial selection, measured estimates and first-generation launch reconstruct the authoritative mixed inference selection rather than silently returning to the original embedded backend. See [Mixed inference configuration and repair](docs/inference/mixed-inference-configuration.md), [Pinned EmbeddingGemma model artifact](docs/inference/embeddinggemma-model-artifact.md), [Embedded EmbeddingGemma execution](docs/inference/embedded-embeddinggemma.md), the [recommended Qwen reranker](docs/inference/qwen-reranker.md), and the [recommended QMD query planner](docs/inference/qmd-query-planner.md) for behavior and evidence limits.
 
 [Embedded profile acceptance evidence](docs/evaluation/embedded-profile-acceptance.md) records the no-download conformance result, the unchanged Octen report identity, background interruption coverage, the live EmbeddingGemma quality command, and every external release blocker. The linked [distribution review packet](docs/inference/embedded-profile-distribution-review.md) requires maintainer approval; it does not claim legal clearance.
 
@@ -352,7 +352,7 @@ Default data paths:
 ~/.pi/agent/recall/operation.lock/          explicit-index writer lock
 ```
 
-A process-local mutex and PID-owned writer lock serialize manual and automatic indexing. Targeted lifecycle ingestion waits at most 250 milliseconds for another writer, then defers quietly until the next lifecycle event. The active-session freshness barrier waits under the tool's cancellation signal because search must not silently return stale evidence from its invoking session. Search never clears or repairs another process's lock. Manual full catch-up checkpoints every 100 changed files; targeted reconciliation checkpoints its one session immediately. Embedding writes use bounded 128-chunk windows.
+A process-local mutex and PID-owned writer lock serialize explicit indexing. Interactive lifecycle events and recall search do not reconcile whole sessions. Search never clears or repairs another process's lock. Manual catch-up checkpoints each changed physical session, and embedding writes use bounded 128-chunk windows.
 
 The embedding cache is a sibling of zvec rather than part of the collection. Each entry has a versioned identity header, FP32 payload, and SHA-256 checksum. Writers fsync a unique temporary file and atomically rename it only after validation. Readers reject identity, dimension, byte-length, checksum, and non-finite-value failures. Rebuilding only zvec and index state leaves the cache available, so unchanged chunks need zero chunk-embedding requests. Index completion reports cache hits, newly embedded chunks, and chunk-embedding request count separately; the model-identity canary request is not a chunk-embedding request.
 

@@ -3,14 +3,21 @@ import { pathToFileURL } from 'node:url';
 import { applyRecallQualityPolicyToConversationConfig } from './apply-recall-quality-policy.js';
 import { loadRecallConversationConfig } from './recall-conversation-config.js';
 import { runRecallFirstIndexSetupCommand } from './recall-first-index-setup-command.js';
-import type { RecallInferenceConfigurationCandidate } from './recall-inference-configuration.js';
+import {
+  readRecallInferenceConfiguration,
+  type RecallInferenceConfigurationCandidate,
+} from './recall-inference-configuration.js';
 import { runRecallInferenceSetupCommand } from './recall-inference-setup-command.js';
 import {
   createRecommendedEmbeddingGemmaHttpInferenceCandidate,
   createRecommendedEmbeddingGemmaInferenceCandidate,
 } from './recommended-embeddinggemma-inference-candidate.js';
+import { createRecommendedEmbeddingGemmaConversationRuntime } from './recommended-embeddinggemma-conversation-service.js';
 import { createRecommendedOptionalInferenceCandidates } from './recommended-optional-inference-candidates.js';
-import { resolveRecallInferenceConfigurationPath } from './configured-recall-inference-runtime.js';
+import {
+  createConfiguredRecallInferenceRuntime,
+  resolveRecallInferenceConfigurationPath,
+} from './configured-recall-inference-runtime.js';
 import {
   readRecallQualityGateDecision,
   RECALL_QUALITY_RESULTS_PATH,
@@ -35,7 +42,18 @@ export async function runRecallFirstIndexSetupCli(
     });
     return;
   }
-  await runRecallFirstIndexSetupCommand(argumentsList, { config, qualityGateDecision });
+  await runRecallFirstIndexSetupCommand(argumentsList, {
+    config,
+    qualityGateDecision,
+    async createConfiguredServiceRuntime() {
+      const inferenceConfiguration = await readRecallInferenceConfiguration(
+        resolveRecallInferenceConfigurationPath(config),
+      );
+      return inferenceConfiguration.embedding
+        ? createConfiguredRecallInferenceRuntime(config)
+        : createRecommendedEmbeddingGemmaConversationRuntime(config);
+    },
+  });
 }
 
 const invokedPath = process.argv[1];

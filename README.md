@@ -181,13 +181,13 @@ Embedding text is normalized to Unicode NFC under `unicode-nfc-v1`. Cache identi
 
 ## Inference profiles and execution backends
 
-Model profiles define inference semantics; backend settings define where those semantics execute. The Octen profile preserves raw text and its existing manifest identity. The EmbeddingGemma profile fixes asymmetric prompts, 768 dimensions, mean pooling, L2 normalization, GGUF tokenizer identity, immutable artifact identity, and query-canary behavior. `RecallEmbeddingProvider` keeps query and document operations separate.
+Model profiles define inference semantics; backend settings define where those semantics execute. The Octen profile preserves raw text and its existing manifest identity. The EmbeddingGemma profile fixes asymmetric prompts, 768 dimensions, mean pooling, L2 normalization, GGUF tokenizer identity, immutable artifact identity, and query-canary behavior. The recommended Qwen reranker profile fixes its artifact and `[0,1]` llama.cpp probability semantics. `RecallEmbeddingProvider` keeps query and document operations separate; `RecallRerankingProvider` preserves candidate order.
 
-Backend URLs, devices, and adapter implementations are not model-profile identity. An EmbeddingGemma generation can move between embedded CPU, Metal, CUDA, Vulkan, and the built-in llama.cpp HTTP provider without rebuilding. Moving between EmbeddingGemma and Octen requires another generation.
+Backend URLs, devices, and adapter implementations are not model-profile identity. An EmbeddingGemma generation can move between embedded CPU, Metal, CUDA, Vulkan, and the built-in llama.cpp HTTP provider without rebuilding. Moving between EmbeddingGemma and Octen requires another generation. Reranker profile or adapter changes update deep-search and cache identity without changing vector compatibility.
 
-`node-llama-cpp@3.18.1` is optional and loads dynamically only when embedded embedding or GGUF tokenization begins. Embedded execution probes supported accelerators by default, reports the selected backend and device, and retries the same profile on CPU with one warning when automatic accelerator initialization fails. Explicit device overrides fail closed. Parallelism is explicitly bounded from one through four, native logs stay on stderr, and idle resources unload after five minutes unless a checked-out synchronous tokenizer still needs the model. HTTP-only search does not load the native runtime.
+`node-llama-cpp@3.18.1` is optional and loads dynamically only when embedded embedding, GGUF tokenization, or embedded reranking begins. Embedded execution probes supported accelerators by default, reports the selected backend and device, and retries the same profile on CPU with one warning when automatic accelerator initialization fails. Explicit device overrides fail closed. Parallelism is explicitly bounded from one through four, native logs stay on stderr, and idle resources unload after five minutes unless a checked-out synchronous tokenizer still needs the model. HTTP-only search does not load the native runtime.
 
-See [Inference profiles and provider conformance](docs/inference/provider-conformance.md) for shared adapter checks and [Embedded EmbeddingGemma execution](docs/inference/embedded-embeddinggemma.md) for service wiring, deterministic evidence, and pending real-model acceptance.
+See [Inference profiles and provider conformance](docs/inference/provider-conformance.md), [Embedded EmbeddingGemma execution](docs/inference/embedded-embeddinggemma.md), and the [recommended Qwen reranker](docs/inference/qwen-reranker.md) for service wiring, deterministic evidence, and pending real-model acceptance.
 
 The recommended EmbeddingGemma artifact is available only through an explicit operator workflow. Inspecting or checking it never downloads a model:
 
@@ -204,7 +204,17 @@ npm run --silent model:embeddinggemma -- repair --approve
 npm run --silent model:embeddinggemma -- remove --approve
 ```
 
-The artifact workflow never starts inference or indexing. Callers must explicitly wire the embedded provider and invoke indexing; the guided setup flow remains tracked by #28. See [Pinned EmbeddingGemma model artifact](docs/inference/embeddinggemma-model-artifact.md) for cache behavior and [Embedded EmbeddingGemma execution](docs/inference/embedded-embeddinggemma.md) for runtime use and evidence limits.
+The recommended Qwen reranker has the same explicit artifact workflow:
+
+```bash
+npm run --silent model:qwen-reranker -- inspect
+npm run --silent model:qwen-reranker -- doctor
+npm run --silent model:qwen-reranker -- download --approve
+npm run --silent model:qwen-reranker -- repair --approve
+npm run --silent model:qwen-reranker -- remove --approve
+```
+
+Artifact workflows never start inference or indexing. Callers must explicitly wire a provider; mixed-capability guided setup remains tracked by #43. See [Pinned EmbeddingGemma model artifact](docs/inference/embeddinggemma-model-artifact.md), [Embedded EmbeddingGemma execution](docs/inference/embedded-embeddinggemma.md), and the [recommended Qwen reranker](docs/inference/qwen-reranker.md) for cache behavior, runtime use, and evidence limits.
 
 ## Default local models
 
@@ -233,7 +243,7 @@ Optional deep-rerank defaults are:
 | Request model | `qwen3-rerank`                |
 | Endpoint      | `POST /v1/rerank`             |
 
-In `deep-rerank` mode, the request is `{ model, query, documents, top_n }`. The response must contain `{ model, object, usage, results }`, with one `{ index, relevance_score }` result for every submitted document. Embedding and reranker HTTP requests abort after 60 seconds unless the caller cancels first.
+In `deep-rerank` mode, the request is `{ model, query, documents, top_n }`. The response must contain `{ model, object, usage, results }`, with one `{ index, relevance_score }` result for every submitted document. Scores must be finite probabilities from `0` through `1`. Embedding and reranker HTTP requests abort after 60 seconds unless the caller cancels first. Deep-search output records the reranker profile, adapter, and profile-plus-adapter cache identity. A reranker failure rejects the requested mode without switching backend or falling back to hybrid.
 
 ## Configure
 

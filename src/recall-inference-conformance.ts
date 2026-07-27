@@ -1,6 +1,6 @@
 import type {
   RecallEmbeddingProvider,
-  RecallRerankingProvider,
+  RecallIdentifiedRerankingProvider,
 } from './recall-inference-capabilities.js';
 import type {
   RecallEmbeddingModelProfile,
@@ -30,7 +30,7 @@ export interface RecallEmbeddingProviderConformanceMeasurement {
 
 /** Deterministic probe and expected ordered scores for one reranking conformance run. */
 export interface RecallRerankingProviderConformanceOptions {
-  provider: RecallRerankingProvider;
+  provider: RecallIdentifiedRerankingProvider;
   profile: RecallRerankingModelProfile;
   query: string;
   documents: readonly string[];
@@ -170,6 +170,17 @@ export async function measureRecallRerankingProviderConformance(
       `Recall reranking conformance score meaning unsupported: ${String(options.profile.scoreMeaning)}`,
     );
   }
+  if (options.provider.executionIdentity.modelProfileId !== options.profile.profileId) {
+    throw new Error(
+      `Recall reranking conformance profile identity mismatch: expected ${options.profile.profileId}, received ${options.provider.executionIdentity.modelProfileId}`,
+    );
+  }
+  const expectedCacheIdentity = `${options.profile.profileId}:${options.provider.executionIdentity.adapterId}`;
+  if (options.provider.executionIdentity.cacheIdentity !== expectedCacheIdentity) {
+    throw new Error(
+      `Recall reranking conformance cache identity mismatch: expected ${expectedCacheIdentity}, received ${options.provider.executionIdentity.cacheIdentity}`,
+    );
+  }
   if (options.documents.length !== options.expectedScores.length) {
     throw new Error(
       `Recall reranking conformance fixture count mismatch: expected ${options.documents.length}, received ${options.expectedScores.length}`,
@@ -203,6 +214,14 @@ export async function measureRecallRerankingProviderConformance(
     if (actualScore === undefined || !Number.isFinite(actualScore)) {
       throw new Error(
         `Recall reranking conformance score invalid at candidate index ${index}: expected a finite number`,
+      );
+    }
+    if (
+      actualScore < options.profile.scoreRange.minimum ||
+      actualScore > options.profile.scoreRange.maximum
+    ) {
+      throw new Error(
+        `Recall reranking conformance score outside profile range at candidate index ${index}: expected ${options.profile.scoreRange.minimum} through ${options.profile.scoreRange.maximum}, received ${actualScore}`,
       );
     }
     if (expectedScore === undefined || !Number.isFinite(expectedScore)) {

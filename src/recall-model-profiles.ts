@@ -10,8 +10,11 @@ export interface RecallEmbeddingModelProfile {
 
 /** Reranking semantics shared by all backends serving one compatible model profile. */
 export interface RecallRerankingModelProfile {
+  profileId: string;
   model: string;
   scoreMeaning: 'higher-is-more-relevant';
+  scoreRange: Readonly<{ minimum: number; maximum: number }>;
+  scorePolicy: string;
 }
 
 /** Immutable Octen embedding semantics, excluding backend URL and adapter execution details. */
@@ -23,6 +26,16 @@ export interface OctenEmbeddingModelProfile extends RecallEmbeddingModelProfile 
 /** Immutable Qwen reranking semantics, excluding backend URL and adapter execution details. */
 export type QwenRerankingModelProfile = RecallRerankingModelProfile;
 
+/** Recommended Qwen reranker semantics and immutable downloadable artifact identity. */
+export interface RecommendedQwenRerankingModelProfile extends RecallRerankingModelProfile {
+  profileId: 'qwen3-reranker-0.6b-q8-0-v1';
+  model: 'qwen3-reranker-0.6b-q8_0';
+  purpose: string;
+  scorePolicy: 'llama-cpp-qwen3-rank-probability-v1';
+  source: Readonly<RecallModelArtifactSource>;
+  license: Readonly<RecallModelLicenseIdentity>;
+}
+
 /** Immutable artifact source pinned to one repository revision and SHA-256 identity. */
 export interface RecallModelArtifactSource {
   repository: string;
@@ -33,7 +46,7 @@ export interface RecallModelArtifactSource {
   downloadUrl: string;
 }
 
-/** Distribution terms that require review before the recommended model can be released. */
+/** Distribution terms and review status for one recommended model artifact. */
 export interface RecallModelLicenseIdentity {
   id: string;
   name: string;
@@ -84,15 +97,45 @@ export function createOctenEmbeddingModelProfile(
   });
 }
 
-/** Creates the Qwen profile whose finite scores increase with candidate relevance. */
+/** Creates the Qwen profile whose llama.cpp probability scores increase with relevance. */
 export function createQwenRerankingModelProfile(model: string): QwenRerankingModelProfile {
   const normalizedModel = model.trim();
   if (!normalizedModel) {
     throw new Error('Recall Qwen reranking model profile invalid: expected a non-blank model name');
   }
   return Object.freeze({
+    profileId: `qwen-reranking:${normalizedModel}`,
     model: normalizedModel,
     scoreMeaning: 'higher-is-more-relevant',
+    scoreRange: Object.freeze({ minimum: 0, maximum: 1 }),
+    scorePolicy: 'llama-cpp-qwen3-rank-probability-v1',
+  });
+}
+
+/** Creates the recommended Qwen3 reranker profile pinned by immutable revision and checksum. */
+export function createRecommendedQwenRerankingModelProfile(): RecommendedQwenRerankingModelProfile {
+  return Object.freeze({
+    profileId: 'qwen3-reranker-0.6b-q8-0-v1',
+    model: 'qwen3-reranker-0.6b-q8_0',
+    purpose: 'Score recall evidence against a submitted query for deep reranking.',
+    scoreMeaning: 'higher-is-more-relevant',
+    scoreRange: Object.freeze({ minimum: 0, maximum: 1 }),
+    scorePolicy: 'llama-cpp-qwen3-rank-probability-v1',
+    source: Object.freeze({
+      repository: 'ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF',
+      revision: 'a02f48bb4f057028298c21fa033da2b30d7742d5',
+      artifact: 'qwen3-reranker-0.6b-q8_0.gguf',
+      byteSize: 639_153_184,
+      sha256: '22c9979ce4fbcdc5acdc310c6641c32797eff1aa980b8f7a2db8a8ea23429a48',
+      downloadUrl:
+        'https://huggingface.co/ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF/resolve/a02f48bb4f057028298c21fa033da2b30d7742d5/qwen3-reranker-0.6b-q8_0.gguf',
+    }),
+    license: Object.freeze({
+      id: 'apache-2.0',
+      name: 'Apache License 2.0',
+      url: 'https://www.apache.org/licenses/LICENSE-2.0',
+      distributionStatus: 'review-required',
+    }),
   });
 }
 

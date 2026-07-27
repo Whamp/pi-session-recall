@@ -13,11 +13,14 @@ export const EMBEDDED_INFERENCE_MAX_PARALLELISM = 4;
 /** Conservative upper bound for EmbeddingGemma layers considered for GPU offload. */
 export const EMBEDDING_GEMMA_MAX_GPU_LAYERS = 32;
 
-type EmbeddedInferenceDevicePolicy = 'auto' | 'cpu' | 'metal' | 'cuda' | 'vulkan';
+/** Operator-selected embedded inference device policy shared by local model capabilities. */
+export type EmbeddedInferenceDevicePolicy = 'auto' | 'cpu' | 'metal' | 'cuda' | 'vulkan';
 
-type EmbeddedInferenceComputeBackend = 'cpu' | 'metal' | 'cuda' | 'vulkan';
+/** Actual compute backend selected for one embedded inference model. */
+export type EmbeddedInferenceComputeBackend = 'cpu' | 'metal' | 'cuda' | 'vulkan';
 
-type NodeLlamaCppGpuBackend = Exclude<EmbeddedInferenceComputeBackend, 'cpu'> | false;
+/** node-llama-cpp GPU selector, where false requests CPU execution. */
+export type NodeLlamaCppGpuBackend = Exclude<EmbeddedInferenceComputeBackend, 'cpu'> | false;
 
 interface EmbeddingGemmaLlamaEmbeddingContext {
   getEmbeddingFor(input: string): Promise<{ vector: readonly number[] }>;

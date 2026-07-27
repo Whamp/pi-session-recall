@@ -16,3 +16,30 @@ export interface RecallRerankingProvider {
     signal?: AbortSignal,
   ): Promise<number[]>;
 }
+
+/** Search and cache identity for one reranking adapter executing one model profile. */
+export interface RecallRerankingExecutionIdentity {
+  adapterId: string;
+  backend: 'embedded' | 'llama-cpp-http' | 'custom';
+  cacheIdentity: string;
+  modelProfileId: string;
+}
+
+/** Reranking provider whose profile and adapter identity can be verified before use. */
+export interface RecallIdentifiedRerankingProvider extends RecallRerankingProvider {
+  readonly executionIdentity: Readonly<RecallRerankingExecutionIdentity>;
+}
+
+/** Creates cache identity that changes with either reranker profile or adapter policy. */
+export function createRecallRerankingExecutionIdentity(
+  modelProfileId: string,
+  adapterId: string,
+  backend: RecallRerankingExecutionIdentity['backend'],
+): Readonly<RecallRerankingExecutionIdentity> {
+  return Object.freeze({
+    adapterId,
+    backend,
+    cacheIdentity: `${modelProfileId}:${adapterId}`,
+    modelProfileId,
+  });
+}

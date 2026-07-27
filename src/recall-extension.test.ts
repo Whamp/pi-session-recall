@@ -100,6 +100,7 @@ void test('Pi recall tool adapter propagates trusted cwd with project default an
           reciprocalRankConstant: 60,
           rerankPolicyVersion: null,
           rerankerModel: null,
+          rerankerIdentity: null,
           activeBranchPrior: 0.01,
           candidateLimits: { dense: 8, lexical: 8, identifier: 8 },
         },

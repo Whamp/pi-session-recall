@@ -214,6 +214,12 @@ void test('Qwen HTTP reranking provider passes shared ordered-score conformance'
   });
   const clockValues = [0, 13];
 
+  assert.deepEqual(provider.executionIdentity, {
+    adapterId: 'llama-cpp-http-reranking-v1',
+    backend: 'llama-cpp-http',
+    cacheIdentity: 'qwen-reranking:qwen3-rerank:llama-cpp-http-reranking-v1',
+    modelProfileId: 'qwen-reranking:qwen3-rerank',
+  });
   const measurement = await measureRecallRerankingProviderConformance({
     provider,
     profile,
@@ -240,6 +246,85 @@ void test('Qwen HTTP reranking provider passes shared ordered-score conformance'
     documentCount: 2,
     rerankingMilliseconds: 13,
   });
+});
+
+void test('Qwen HTTP reranking rejects out-of-range scores, timeout, and cancellation', async (t) => {
+  let responseMode: 'out-of-range' | 'pending' = 'out-of-range';
+  const server = createServer((request, response) => {
+    request.resume();
+    request.on('end', () => {
+      if (responseMode === 'pending') {
+        return;
+      }
+      response.setHeader('content-type', 'application/json');
+      response.end(
+        JSON.stringify({
+          model: 'qwen3-rerank',
+          object: 'list',
+          usage: { prompt_tokens: 1, total_tokens: 1 },
+          results: [{ index: 0, relevance_score: 1.01 }],
+        }),
+      );
+    });
+  });
+  await new Promise<void>((resolve) => {
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  t.after(() => {
+    server.closeAllConnections();
+    server.close();
+  });
+  const address = server.address();
+  assert.ok(address && typeof address === 'object');
+  const profile = createQwenRerankingModelProfile('qwen3-rerank');
+
+  const rangeProvider = createQwenHttpRerankingProvider(profile, {
+    baseUrl: `http://127.0.0.1:${address.port}/v1`,
+  });
+  await assert.rejects(
+    () =>
+      measureRecallRerankingProviderConformance({
+        provider: rangeProvider,
+        profile,
+        query: 'query',
+        documents: ['candidate'],
+        expectedScores: [1],
+      }),
+    /Recall Qwen HTTP reranker score outside profile range at candidate index 0/u,
+  );
+
+  responseMode = 'pending';
+  const timeoutProvider = createQwenHttpRerankingProvider(profile, {
+    baseUrl: `http://127.0.0.1:${address.port}/v1`,
+    requestTimeoutMilliseconds: 5,
+  });
+  await assert.rejects(
+    () =>
+      measureRecallRerankingProviderConformance({
+        provider: timeoutProvider,
+        profile,
+        query: 'query',
+        documents: ['candidate'],
+        expectedScores: [0.5],
+      }),
+    /Recall reranker request timed out after 5 ms/u,
+  );
+
+  const cancellation = new AbortController();
+  const cancellationReason = new Error('operator cancelled reranker conformance');
+  const cancelled = measureRecallRerankingProviderConformance({
+    provider: rangeProvider,
+    profile,
+    query: 'query',
+    documents: ['candidate'],
+    expectedScores: [0.5],
+    signal: cancellation.signal,
+  });
+  cancellation.abort(cancellationReason);
+  await assert.rejects(
+    () => cancelled,
+    /Recall reranker request failed .*operator cancelled reranker conformance/u,
+  );
 });
 
 void test('embedding conformance rejects non-normalized vectors for an L2 profile', async () => {
@@ -312,6 +397,12 @@ void test('reranking conformance rejects a non-finite relevance score', async ()
       measureRecallRerankingProviderConformance({
         profile,
         provider: {
+          executionIdentity: {
+            adapterId: 'fixture-reranking-v1',
+            backend: 'custom',
+            cacheIdentity: `${profile.profileId}:fixture-reranking-v1`,
+            modelProfileId: profile.profileId,
+          },
           async rerankDocuments() {
             return [Number.NaN];
           },
@@ -321,5 +412,60 @@ void test('reranking conformance rejects a non-finite relevance score', async ()
         expectedScores: [0.5],
       }),
     /Recall reranking conformance score invalid at candidate index 0/u,
+  );
+});
+
+void test('reranking conformance rejects double-sigmoid fixture scores', async () => {
+  const profile = createQwenRerankingModelProfile('fixture-reranker');
+  const expectedLlamaCppScores = [0.9, 0.1];
+  const doubleSigmoidScores = expectedLlamaCppScores.map((score) => 1 / (1 + Math.exp(-score)));
+
+  await assert.rejects(
+    () =>
+      measureRecallRerankingProviderConformance({
+        profile,
+        provider: {
+          executionIdentity: {
+            adapterId: 'known-double-sigmoid-v1',
+            backend: 'custom',
+            cacheIdentity: `${profile.profileId}:known-double-sigmoid-v1`,
+            modelProfileId: profile.profileId,
+          },
+          async rerankDocuments() {
+            return doubleSigmoidScores;
+          },
+        },
+        query: 'source provenance',
+        documents: ['relevant evidence', 'unrelated evidence'],
+        expectedScores: expectedLlamaCppScores,
+        maximumAbsoluteDifference: 1e-12,
+      }),
+    /Recall reranking conformance score mismatch at candidate index 0/u,
+  );
+});
+
+void test('reranking conformance rejects scores outside the profile range', async () => {
+  const profile = createQwenRerankingModelProfile('fixture-reranker');
+
+  await assert.rejects(
+    () =>
+      measureRecallRerankingProviderConformance({
+        profile,
+        provider: {
+          executionIdentity: {
+            adapterId: 'fixture-reranking-v1',
+            backend: 'custom',
+            cacheIdentity: `${profile.profileId}:fixture-reranking-v1`,
+            modelProfileId: profile.profileId,
+          },
+          async rerankDocuments() {
+            return [1.01];
+          },
+        },
+        query: 'query',
+        documents: ['candidate'],
+        expectedScores: [1.01],
+      }),
+    /Recall reranking conformance score outside profile range at candidate index 0/u,
   );
 });

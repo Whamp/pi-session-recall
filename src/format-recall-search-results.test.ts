@@ -41,6 +41,11 @@ void test('recall results include concise excerpts and exact source provenance',
         reciprocalRankConstant: 60,
         rerankPolicyVersion: 1,
         rerankerModel: 'qwen3-rerank',
+        rerankerIdentity: {
+          profileId: 'qwen3-reranker-0.6b-q8-0-v1',
+          adapterId: 'llama-cpp-http-reranking-v1',
+          cacheIdentity: 'qwen3-reranker-0.6b-q8-0-v1:llama-cpp-http-reranking-v1',
+        },
         activeBranchPrior: 0.01,
         candidateLimits: { dense: 40, lexical: 40, identifier: 40 },
       },
@@ -49,6 +54,10 @@ void test('recall results include concise excerpts and exact source provenance',
   );
 
   assert.match(output, /Qwen qwen3-rerank policy v1 \(active prior \+0\.0100\)/);
+  assert.match(
+    output,
+    /reranker profile qwen3-reranker-0\.6b-q8-0-v1 · adapter llama-cpp-http-reranking-v1 · cache qwen3-reranker-0\.6b-q8-0-v1:llama-cpp-http-reranking-v1/u,
+  );
   assert.match(output, /1\. Queue design/);
   assert.match(
     output,
@@ -90,6 +99,7 @@ void test('project-scoped output explains invocation identity, session origin, a
       reciprocalRankConstant: 60,
       rerankPolicyVersion: null,
       rerankerModel: null,
+      rerankerIdentity: null,
       activeBranchPrior: 0.01,
       candidateLimits: { dense: 8, lexical: 8, identifier: 8 },
     },
@@ -124,6 +134,7 @@ void test('configured-lineage output explains the historical session origin rela
       reciprocalRankConstant: 60,
       rerankPolicyVersion: null,
       rerankerModel: null,
+      rerankerIdentity: null,
       activeBranchPrior: 0.01,
       candidateLimits: { dense: 8, lexical: 8, identifier: 8 },
     },
@@ -147,6 +158,7 @@ void test('empty project recall recommends an explicit global retry without wide
       reciprocalRankConstant: 60,
       rerankPolicyVersion: null,
       rerankerModel: null,
+      rerankerIdentity: null,
       activeBranchPrior: 0.01,
       candidateLimits: { dense: 8, lexical: 8, identifier: 8 },
     },
@@ -169,6 +181,7 @@ void test('hybrid recall output does not claim Qwen reranking ran', () => {
       reciprocalRankConstant: 60,
       rerankPolicyVersion: null,
       rerankerModel: null,
+      rerankerIdentity: null,
       activeBranchPrior: 0.01,
       candidateLimits: { dense: 8, lexical: 8, identifier: 8 },
     },
@@ -205,6 +218,11 @@ void test('turn-context results identify their kind and every contributing entry
       reciprocalRankConstant: 60,
       rerankPolicyVersion: 1,
       rerankerModel: 'qwen3-rerank',
+      rerankerIdentity: {
+        profileId: 'qwen3-reranker-0.6b-q8-0-v1',
+        adapterId: 'llama-cpp-http-reranking-v1',
+        cacheIdentity: 'qwen3-reranker-0.6b-q8-0-v1:llama-cpp-http-reranking-v1',
+      },
       activeBranchPrior: 0.01,
       candidateLimits: { dense: 40, lexical: 40, identifier: 40 },
     },
@@ -248,6 +266,11 @@ void test('tool evidence results identify the exact call relationship and source
       reciprocalRankConstant: 60,
       rerankPolicyVersion: 1,
       rerankerModel: 'qwen3-rerank',
+      rerankerIdentity: {
+        profileId: 'qwen3-reranker-0.6b-q8-0-v1',
+        adapterId: 'llama-cpp-http-reranking-v1',
+        cacheIdentity: 'qwen3-reranker-0.6b-q8-0-v1:llama-cpp-http-reranking-v1',
+      },
       activeBranchPrior: 0.01,
       candidateLimits: { dense: 40, lexical: 40, identifier: 40 },
     },
@@ -313,6 +336,11 @@ void test('recall results format stitched neighbors and every suppressed provena
       reciprocalRankConstant: 60,
       rerankPolicyVersion: 1,
       rerankerModel: 'qwen3-rerank',
+      rerankerIdentity: {
+        profileId: 'qwen3-reranker-0.6b-q8-0-v1',
+        adapterId: 'llama-cpp-http-reranking-v1',
+        cacheIdentity: 'qwen3-reranker-0.6b-q8-0-v1:llama-cpp-http-reranking-v1',
+      },
       activeBranchPrior: 0.01,
       candidateLimits: { dense: 40, lexical: 40, identifier: 40 },
     },

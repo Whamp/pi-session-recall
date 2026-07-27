@@ -2927,6 +2927,7 @@ void test('recall service fuses bounded dense, lexical, and identifier candidate
     reciprocalRankConstant: 60,
     rerankPolicyVersion: null,
     rerankerModel: null,
+    rerankerIdentity: null,
     activeBranchPrior: 0.01,
     candidateLimits: { dense: 1, lexical: 1, identifier: 1 },
   });
@@ -3151,6 +3152,12 @@ void test('recall service defaults to fused ranking and reranks only in explicit
   assert.equal(deepSearch.results[0]?.lexical, null);
   assert.equal(deepSearch.results[0]?.identifier, null);
   assert.equal(deepSearch.searchPolicy.rankingMode, 'deep-rerank');
+  assert.deepEqual(deepSearch.searchPolicy.rerankerIdentity, {
+    profileId: 'qwen-reranking:test-reranker-model',
+    adapterId: 'custom-injected-reranking-v1',
+    cacheIdentity: 'qwen-reranking:test-reranker-model:custom-injected-reranking-v1',
+  });
+  assert.equal(defaultSearch.searchPolicy.rerankerIdentity, null);
 });
 
 void test('recall service fails clearly when Qwen reranking is unavailable', async (t) => {

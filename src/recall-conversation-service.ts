@@ -22,6 +22,7 @@ import {
   RECALL_RANK_FUSION_VERSION,
   RECALL_RRF_RANK_CONSTANT,
 } from './fuse-recall-search-candidates.js';
+import { isUnknownRecord } from './is-unknown-record.js';
 import {
   indexChangedConversationSession,
   indexChangedConversationSessions,
@@ -34,9 +35,12 @@ import {
   createOctenEmbeddingModelProfile,
   createQwenRerankingModelProfile,
   type RecallEmbeddingModelProfile,
+  type RecallRerankingModelProfile,
 } from './recall-model-profiles.js';
 import {
+  createRecallRerankingExecutionIdentity,
   type RecallEmbeddingProvider,
+  type RecallRerankingExecutionIdentity,
   type RecallRerankingProvider,
 } from './recall-inference-capabilities.js';
 import { createLlamaCppHttpEmbeddingProvider } from './llama-cpp-http-embedding-provider.js';
@@ -131,6 +135,13 @@ export interface RecallConversationSearchOptions {
   signal?: AbortSignal;
 }
 
+/** Profile, adapter, and cache identity for the reranker used by one deep search. */
+export interface RecallSearchRerankerIdentity {
+  profileId: string;
+  adapterId: string;
+  cacheIdentity: string;
+}
+
 /** Exact fusion, optional Qwen reranking, branch-prior, and neighbor policy for one search. */
 export interface RecallSearchPolicy {
   scope: RecallSearchScope;
@@ -140,6 +151,7 @@ export interface RecallSearchPolicy {
   reciprocalRankConstant: number;
   rerankPolicyVersion: number | null;
   rerankerModel: string | null;
+  rerankerIdentity: RecallSearchRerankerIdentity | null;
   activeBranchPrior: number;
   candidateLimits: RecallSearchCandidateLimits;
 }
@@ -220,7 +232,11 @@ export interface RecallConversationDependencies {
   embeddingProvider?: RecallEmbeddingProvider;
   /** @deprecated Use embeddingProvider so query and document semantics stay distinct. */
   embeddings?: LocalEmbeddingClient;
+  /** Model semantics recorded in deep-search policy without affecting vector compatibility. */
+  rerankingProfile?: RecallRerankingModelProfile;
   reranker?: RecallRerankingProvider;
+  /** Explicit identity for an injected custom reranker adapter. */
+  rerankerExecutionIdentity?: RecallRerankingExecutionIdentity;
   /** Profile-owned tokenizer identity recorded with chunk geometry in the index manifest. */
   tokenizerIdentity?: RecallTokenizerManifestIdentity;
   loadTokenizer?: () => Promise<ConversationTextTokenizer>;
@@ -548,6 +564,32 @@ async function assertRecallIndexUnlockedForSearch(lockPath: string): Promise<voi
   );
 }
 
+function readRecallRerankingExecutionIdentity(
+  provider: RecallRerankingProvider,
+): RecallRerankingExecutionIdentity | undefined {
+  if (!('executionIdentity' in provider)) {
+    return undefined;
+  }
+  const identity = provider.executionIdentity;
+  if (
+    !isUnknownRecord(identity) ||
+    typeof identity.adapterId !== 'string' ||
+    (identity.backend !== 'embedded' &&
+      identity.backend !== 'llama-cpp-http' &&
+      identity.backend !== 'custom') ||
+    typeof identity.cacheIdentity !== 'string' ||
+    typeof identity.modelProfileId !== 'string'
+  ) {
+    return undefined;
+  }
+  return {
+    adapterId: identity.adapterId,
+    backend: identity.backend,
+    cacheIdentity: identity.cacheIdentity,
+    modelProfileId: identity.modelProfileId,
+  };
+}
+
 function createEmbeddingModelIdentity(
   config: RecallConversationConfig,
 ): RecallEmbeddingModelIdentity {
@@ -603,12 +645,27 @@ export function createRecallConversationService(
           baseUrl: config.embeddingBaseUrl,
           batchSize: config.embeddingBatchSize,
         }));
-  const rerankingProfile = createQwenRerankingModelProfile(config.rerankerModel);
+  const rerankingProfile =
+    dependencies.rerankingProfile ?? createQwenRerankingModelProfile(config.rerankerModel);
   const reranker =
     dependencies.reranker ??
     createQwenHttpRerankingProvider(rerankingProfile, {
       baseUrl: config.rerankerBaseUrl,
     });
+  const providerExecutionIdentity = readRecallRerankingExecutionIdentity(reranker);
+  const rerankerExecutionIdentity =
+    dependencies.rerankerExecutionIdentity ??
+    providerExecutionIdentity ??
+    createRecallRerankingExecutionIdentity(
+      rerankingProfile.profileId,
+      'custom-injected-reranking-v1',
+      'custom',
+    );
+  if (rerankerExecutionIdentity.modelProfileId !== rerankingProfile.profileId) {
+    throw new Error(
+      `Recall reranker profile identity mismatch: expected ${rerankingProfile.profileId}, received ${rerankerExecutionIdentity.modelProfileId}`,
+    );
+  }
   const loadTokenizer =
     dependencies.loadTokenizer ??
     (() => loadOctenConversationTokenizer({ cacheDirectory: config.tokenizerCacheDirectory }));
@@ -1118,6 +1175,14 @@ export function createRecallConversationService(
                     rerankPolicyVersion:
                       mode === 'deep-rerank' ? RECALL_RERANK_POLICY_VERSION : null,
                     rerankerModel: mode === 'deep-rerank' ? rerankingProfile.model : null,
+                    rerankerIdentity:
+                      mode === 'deep-rerank'
+                        ? {
+                            profileId: rerankingProfile.profileId,
+                            adapterId: rerankerExecutionIdentity.adapterId,
+                            cacheIdentity: rerankerExecutionIdentity.cacheIdentity,
+                          }
+                        : null,
                     activeBranchPrior: RECALL_ACTIVE_BRANCH_PRIOR,
                     candidateLimits: { ...config.searchCandidateLimits },
                   },

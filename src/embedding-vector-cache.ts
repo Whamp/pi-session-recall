@@ -26,9 +26,16 @@ const embeddingCacheIdentitySchema = Type.Object(
         requestModel: Type.String({ minLength: 1 }),
         servedModelId: Type.String({ minLength: 1 }),
         artifact: Type.String({ minLength: 1 }),
+        artifactRepository: Type.Optional(Type.String({ minLength: 1 })),
+        artifactRevision: Type.Optional(Type.String({ minLength: 1 })),
+        artifactSha256: Type.Optional(Type.String({ pattern: '^[a-f0-9]{64}$' })),
         dimensions: Type.Integer({ minimum: 1 }),
         quantization: Type.String({ minLength: 1 }),
         pooling: Type.String({ minLength: 1 }),
+        normalization: Type.Optional(Type.Literal('l2')),
+        canaryOperation: Type.Optional(
+          Type.Union([Type.Literal('query'), Type.Literal('document')]),
+        ),
         canaryProbe: Type.String({ minLength: 1 }),
         canaryFingerprint: Type.String({ pattern: '^[a-f0-9]{64}$' }),
       },
@@ -60,7 +67,7 @@ const embeddingCacheIdentitySchema = Type.Object(
             },
             { additionalProperties: false },
           ),
-          { minItems: 2 },
+          { minItems: 1, maxItems: 2 },
         ),
       },
       { additionalProperties: false },
@@ -94,9 +101,14 @@ export interface EmbeddingVectorCacheIdentity {
     requestModel: string;
     servedModelId: string;
     artifact: string;
+    artifactRepository?: string;
+    artifactRevision?: string;
+    artifactSha256?: string;
     dimensions: number;
     quantization: string;
     pooling: string;
+    normalization?: 'l2';
+    canaryOperation?: 'query' | 'document';
     canaryProbe: string;
     canaryFingerprint: string;
   };
@@ -175,9 +187,24 @@ export function createEmbeddingVectorCacheIdentity(
       requestModel: manifest.embedding.requestModel,
       servedModelId: manifest.embedding.servedModelId,
       artifact: manifest.embedding.artifact,
+      ...(manifest.embedding.artifactRepository
+        ? { artifactRepository: manifest.embedding.artifactRepository }
+        : {}),
+      ...(manifest.embedding.artifactRevision
+        ? { artifactRevision: manifest.embedding.artifactRevision }
+        : {}),
+      ...(manifest.embedding.artifactSha256
+        ? { artifactSha256: manifest.embedding.artifactSha256 }
+        : {}),
       dimensions: manifest.embedding.dimensions,
       quantization: manifest.embedding.quantization,
       pooling: manifest.embedding.pooling,
+      ...(manifest.embedding.normalization
+        ? { normalization: manifest.embedding.normalization }
+        : {}),
+      ...(manifest.embedding.canaryOperation
+        ? { canaryOperation: manifest.embedding.canaryOperation }
+        : {}),
       canaryProbe: manifest.embedding.canaryProbe,
       canaryFingerprint: manifest.embedding.canaryFingerprint,
     },

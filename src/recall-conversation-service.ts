@@ -33,12 +33,13 @@ import { loadOctenConversationTokenizer } from './octen-conversation-tokenizer.j
 import {
   createOctenEmbeddingModelProfile,
   createQwenRerankingModelProfile,
+  type RecallEmbeddingModelProfile,
 } from './recall-model-profiles.js';
 import {
   type RecallEmbeddingProvider,
   type RecallRerankingProvider,
 } from './recall-inference-capabilities.js';
-import { createOctenHttpEmbeddingProvider } from './octen-http-embedding-provider.js';
+import { createLlamaCppHttpEmbeddingProvider } from './llama-cpp-http-embedding-provider.js';
 import { createQwenHttpRerankingProvider } from './qwen-http-reranking-provider.js';
 import {
   assertRecallIndexManifestCompatible,
@@ -50,6 +51,7 @@ import {
   writeRecallIndexManifest,
   type RecallEmbeddingModelIdentity,
   type RecallIndexManifest,
+  type RecallTokenizerManifestIdentity,
 } from './recall-index-manifest.js';
 import type { RecallChunkPolicy } from './recall-chunk-policy.js';
 import {
@@ -212,11 +214,15 @@ export interface RecallConversationService {
 
 /** Injectable inference, tokenizer, and zvec boundaries used by tests and bounded evaluation. */
 export interface RecallConversationDependencies {
+  /** Model semantics authoritative for manifest compatibility across embedded and HTTP execution. */
+  embeddingProfile?: RecallEmbeddingModelProfile;
   /** Capability-specific embedding provider; preferred over the legacy shared operation. */
   embeddingProvider?: RecallEmbeddingProvider;
   /** @deprecated Use embeddingProvider so query and document semantics stay distinct. */
   embeddings?: LocalEmbeddingClient;
   reranker?: RecallRerankingProvider;
+  /** Profile-owned tokenizer identity recorded with chunk geometry in the index manifest. */
+  tokenizerIdentity?: RecallTokenizerManifestIdentity;
   loadTokenizer?: () => Promise<ConversationTextTokenizer>;
   openStore?: (mode: 'read' | 'write') => ZvecConversationStore;
   resolveProjectIdentity?: (workingDirectory: string) => Promise<ResolvedProjectIdentity | null>;
@@ -560,7 +566,23 @@ export function createRecallConversationService(
   config: RecallConversationConfig,
   dependencies: RecallConversationDependencies = {},
 ): RecallConversationService {
-  const embeddingProfile = createOctenEmbeddingModelProfile(createEmbeddingModelIdentity(config));
+  const embeddingProfile =
+    dependencies.embeddingProfile ??
+    createOctenEmbeddingModelProfile(createEmbeddingModelIdentity(config));
+  if (dependencies.embeddingProfile && !dependencies.tokenizerIdentity) {
+    throw new Error(
+      'Recall embedding profile configuration incomplete: tokenizer manifest identity is required',
+    );
+  }
+  if (
+    embeddingProfile.canary &&
+    (embeddingProfile.canary.expectedDimensions !== embeddingProfile.identity.dimensions ||
+      embeddingProfile.canary.expectedNormalization !== embeddingProfile.identity.normalization)
+  ) {
+    throw new Error(
+      'Recall embedding profile canary incompatible: dimensions and normalization must match the embedding identity',
+    );
+  }
   const legacyEmbeddings = dependencies.embeddings;
   const embeddingProvider: RecallEmbeddingProvider =
     dependencies.embeddingProvider ??
@@ -577,7 +599,7 @@ export function createRecallConversationService(
             return legacyEmbeddings.embedTexts([...documents], signal);
           },
         }
-      : createOctenHttpEmbeddingProvider(embeddingProfile, {
+      : createLlamaCppHttpEmbeddingProvider(embeddingProfile, {
           baseUrl: config.embeddingBaseUrl,
           batchSize: config.embeddingBatchSize,
         }));
@@ -599,7 +621,7 @@ export function createRecallConversationService(
     ((mode) =>
       openZvecConversationStore({
         databasePath: config.databasePath,
-        dimensions: config.embeddingDimensions,
+        dimensions: embeddingProfile.identity.dimensions,
         createIfMissing: mode === 'write',
         readOnly: mode === 'read',
       }));
@@ -641,11 +663,30 @@ export function createRecallConversationService(
   }
 
   async function readCurrentEmbeddingCanary(signal?: AbortSignal): Promise<number[]> {
-    const embeddings = await embeddingProvider.embedDocuments(
-      [RECALL_EMBEDDING_CANARY_TEXT],
-      signal,
-    );
-    const embedding = embeddings[0];
+    if (embeddingProfile.canary) {
+      const firstEmbedding = await embeddingProvider.embedQuery(
+        embeddingProfile.canary.query,
+        signal,
+      );
+      const repeatedEmbedding = await embeddingProvider.embedQuery(
+        embeddingProfile.canary.query,
+        signal,
+      );
+      const repeatCosineSimilarity = calculateRecallEmbeddingCanaryCosineSimilarity(
+        firstEmbedding,
+        repeatedEmbedding,
+        embeddingProfile.identity.dimensions,
+      );
+      if (repeatCosineSimilarity < embeddingProfile.canary.minimumRepeatCosineSimilarity) {
+        throw new Error(
+          `Recall embedding canary repeatability mismatch: expected cosine similarity at least ${embeddingProfile.canary.minimumRepeatCosineSimilarity}, received ${repeatCosineSimilarity}`,
+        );
+      }
+      return [...firstEmbedding];
+    }
+    const embedding = (
+      await embeddingProvider.embedDocuments([RECALL_EMBEDDING_CANARY_TEXT], signal)
+    )[0];
     if (!embedding) {
       throw new Error('Recall embedding response missing canary vector');
     }
@@ -673,6 +714,10 @@ export function createRecallConversationService(
     return createRecallIndexManifest({
       embeddingIdentity: embeddingProfile.identity,
       canaryEmbedding,
+      ...(embeddingProfile.canary ? { embeddingCanary: embeddingProfile.canary } : {}),
+      ...(dependencies.tokenizerIdentity
+        ? { tokenizerIdentity: dependencies.tokenizerIdentity }
+        : {}),
       projectLineages: config.projectLineages,
       ...(config.chunkPolicy ? { chunkPolicy: config.chunkPolicy } : {}),
     });
@@ -705,16 +750,16 @@ export function createRecallConversationService(
       previousCanary =
         (await recoverRecallEmbeddingCanaryFromManifest(
           config.manifestPath,
-          config.embeddingDimensions,
+          embeddingProfile.identity.dimensions,
         )) ?? undefined;
     }
-    if (!previousCanary || previousCanary.dimensions !== config.embeddingDimensions) {
+    if (!previousCanary || previousCanary.dimensions !== embeddingProfile.identity.dimensions) {
       return currentCanary;
     }
     const cosineSimilarity = calculateRecallEmbeddingCanaryCosineSimilarity(
       previousCanary.canaryVector,
       currentCanary,
-      config.embeddingDimensions,
+      embeddingProfile.identity.dimensions,
     );
     return cosineSimilarity >= previousCanary.canaryMinimumCosineSimilarity
       ? [...previousCanary.canaryVector]
@@ -752,15 +797,16 @@ export function createRecallConversationService(
         `Recall index manifest missing at ${config.manifestPath} for existing index data; reindex with /pi-session-recall-index --rebuild`,
       );
     }
-    const tokenizer = await getConversationTokenizer();
     if (actual) {
       const expected = createExpectedManifest(actual.embedding.canaryVector);
       assertRecallIndexManifestCompatible(actual, expected, config.manifestPath);
+      const tokenizer = await getConversationTokenizer();
       return { tokenizer, manifest: actual, embeddingModelPreflighted: false };
     }
     const expected = createExpectedManifest(
       preflightedCanary ?? (await readIndexEmbeddingCanary(signal, diagnosticMetrics)),
     );
+    const tokenizer = await getConversationTokenizer();
     await writeRecallIndexManifest(config.manifestPath, expected);
     return { tokenizer, manifest: expected, embeddingModelPreflighted: true };
   }

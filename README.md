@@ -179,13 +179,15 @@ The extension validates the complete manifest before opening or updating zvec. M
 
 Embedding text is normalized to Unicode NFC under `unicode-nfc-v1`. Cache identity includes the normalized-text SHA-256; full served-model identity and dimensions; tokenizer revision, assets, library, and encode options; chunk-policy version; and normalization version. A model, text, tokenizer, policy, normalization, or dimension change therefore misses rather than reusing incompatible geometry.
 
-## Inference profiles and HTTP backends
+## Inference profiles and execution backends
 
-Model profiles define inference semantics; HTTP settings define where those semantics execute. The Octen embedding profile contains the existing manifest identity and preserves raw, unchanged text for both query and document operations. `RecallEmbeddingProvider` keeps those operations separate. The Qwen reranking profile defines ordered, finite, higher-is-more-relevant scores through `RecallRerankingProvider`.
+Model profiles define inference semantics; backend settings define where those semantics execute. The Octen profile preserves raw text and its existing manifest identity. The EmbeddingGemma profile fixes asymmetric prompts, 768 dimensions, mean pooling, L2 normalization, GGUF tokenizer identity, immutable artifact identity, and query-canary behavior. `RecallEmbeddingProvider` keeps query and document operations separate.
 
-Backend URLs, request timeouts, devices, and adapter implementations are not model-profile identity. Moving the same conforming profile to another HTTP backend does not require a vector rebuild. Changing an embedding identity field recorded in the manifest still requires a rebuild.
+Backend URLs, devices, and adapter implementations are not model-profile identity. An EmbeddingGemma generation can move between the embedded CPU provider and the built-in llama.cpp HTTP provider without rebuilding. Moving between EmbeddingGemma and Octen requires another generation.
 
-See [Inference profiles and provider conformance](docs/inference/provider-conformance.md) for the capability-specific HTTP contracts, deterministic conformance command, measurements, and live-evidence boundary.
+`node-llama-cpp@3.18.1` is optional and loads dynamically only when embedded embedding or GGUF tokenization begins. HTTP-only search does not load the native runtime.
+
+See [Inference profiles and provider conformance](docs/inference/provider-conformance.md) for shared adapter checks and [Embedded EmbeddingGemma execution](docs/inference/embedded-embeddinggemma.md) for service wiring, deterministic evidence, and pending real-model acceptance.
 
 The recommended EmbeddingGemma artifact is available only through an explicit operator workflow. Inspecting or checking it never downloads a model:
 
@@ -202,7 +204,7 @@ npm run --silent model:embeddinggemma -- repair --approve
 npm run --silent model:embeddinggemma -- remove --approve
 ```
 
-This artifact workflow does not yet configure embedded inference or index session text. See [Pinned EmbeddingGemma model artifact](docs/inference/embeddinggemma-model-artifact.md) for the exact revision, size, checksum, prompts, tokenizer and canary policies, cache states, and pending legal and live-model evidence.
+The artifact workflow never starts inference or indexing. Callers must explicitly wire the embedded provider and invoke indexing; the guided setup flow remains tracked by #28. See [Pinned EmbeddingGemma model artifact](docs/inference/embeddinggemma-model-artifact.md) for cache behavior and [Embedded EmbeddingGemma execution](docs/inference/embedded-embeddinggemma.md) for runtime use and evidence limits.
 
 ## Default local models
 

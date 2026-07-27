@@ -12,7 +12,9 @@ import {
 import {
   createOctenEmbeddingModelProfile,
   createQwenRerankingModelProfile,
+  createRecommendedEmbeddingGemmaModelProfile,
 } from './recall-model-profiles.js';
+import { createLlamaCppHttpEmbeddingProvider } from './llama-cpp-http-embedding-provider.js';
 import { createOctenHttpEmbeddingProvider } from './octen-http-embedding-provider.js';
 import { createQwenHttpRerankingProvider } from './qwen-http-reranking-provider.js';
 
@@ -110,6 +112,72 @@ void test('Octen HTTP embedding provider passes shared query and document confor
   });
 });
 
+void test('llama.cpp HTTP embedding provider preserves EmbeddingGemma asymmetric semantics', async (t) => {
+  const requests: Array<ReturnType<typeof Value.Parse<typeof embeddingRequestSchema>>> = [];
+  const profile = createRecommendedEmbeddingGemmaModelProfile();
+  const queryVector = [1, ...Array<number>(767).fill(0)];
+  const firstDocumentVector = [0, 1, ...Array<number>(766).fill(0)];
+  const secondDocumentVector = [0, 0, 1, ...Array<number>(765).fill(0)];
+  const vectorsByInput = new Map<string, number[]>([
+    [`${profile.queryInputPrefix}source provenance`, queryVector],
+    [`${profile.documentInputPrefix}Source provenance is retained.`, firstDocumentVector],
+    [`${profile.documentInputPrefix}The navigation bar is blue.`, secondDocumentVector],
+  ]);
+  const server = createServer((request, response) => {
+    let body = '';
+    request.setEncoding('utf8');
+    request.on('data', (chunk) => {
+      body += chunk;
+    });
+    request.on('end', () => {
+      const payload = Value.Parse(embeddingRequestSchema, JSON.parse(body));
+      requests.push(payload);
+      response.setHeader('content-type', 'application/json');
+      response.end(
+        JSON.stringify({
+          data: payload.input.map((input, index) => ({
+            index,
+            embedding: vectorsByInput.get(input),
+          })),
+        }),
+      );
+    });
+  });
+  await new Promise<void>((resolve) => {
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  t.after(() => server.close());
+  const address = server.address();
+  assert.ok(address && typeof address === 'object');
+  const provider = createLlamaCppHttpEmbeddingProvider(profile, {
+    baseUrl: `http://127.0.0.1:${address.port}/v1`,
+    batchSize: 8,
+  });
+
+  await measureRecallEmbeddingProviderConformance({
+    provider,
+    profile,
+    query: 'source provenance',
+    expectedQueryEmbedding: queryVector,
+    documents: ['Source provenance is retained.', 'The navigation bar is blue.'],
+    expectedDocumentEmbeddings: [firstDocumentVector, secondDocumentVector],
+  });
+
+  assert.deepEqual(requests, [
+    {
+      model: 'embeddinggemma-300M-Q8_0',
+      input: ['task: search result | query: source provenance'],
+    },
+    {
+      model: 'embeddinggemma-300M-Q8_0',
+      input: [
+        'title: none | text: Source provenance is retained.',
+        'title: none | text: The navigation bar is blue.',
+      ],
+    },
+  ]);
+});
+
 void test('Qwen HTTP reranking provider passes shared ordered-score conformance', async (t) => {
   const requests: Array<ReturnType<typeof Value.Parse<typeof rerankingRequestSchema>>> = [];
   const server = createServer((request, response) => {
@@ -172,6 +240,31 @@ void test('Qwen HTTP reranking provider passes shared ordered-score conformance'
     documentCount: 2,
     rerankingMilliseconds: 13,
   });
+});
+
+void test('embedding conformance rejects non-normalized vectors for an L2 profile', async () => {
+  const profile = createRecommendedEmbeddingGemmaModelProfile();
+  const nonNormalizedVector = [2, ...Array<number>(767).fill(0)];
+
+  await assert.rejects(
+    () =>
+      measureRecallEmbeddingProviderConformance({
+        profile,
+        provider: {
+          async embedQuery() {
+            return nonNormalizedVector;
+          },
+          async embedDocuments() {
+            return [nonNormalizedVector];
+          },
+        },
+        query: 'query',
+        expectedQueryEmbedding: nonNormalizedVector,
+        documents: ['document'],
+        expectedDocumentEmbeddings: [nonNormalizedVector],
+      }),
+    /Recall query embedding conformance normalization mismatch: expected L2 norm 1/u,
+  );
 });
 
 void test('embedding conformance rejects document vectors returned out of order', async () => {

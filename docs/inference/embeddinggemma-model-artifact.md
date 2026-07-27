@@ -70,6 +70,6 @@ The following external acceptance evidence remains pending:
 
 - a legal/distribution review of the Gemma Terms of Use and required notices;
 - an operator-approved download of the pinned real artifact and verification of its published size, SHA-256, and GGUF directory through this command;
-- model loading, tokenizer conformance, a canonical live canary vector, cold/warm inference, device identity, and throughput measurements, which belong to embedded execution issue #36 and parent issue #28.
+- real-model loading, an independent frozen tokenizer comparison, a canonical live canary vector, cold/warm inference, device identity, and throughput measurements. Issue #36 provides the deterministic runtime and service path; parent issue #28 still owns live acceptance.
 
-These pending items are not represented as passing evidence, and the profile remains marked `review-required`.
+These pending items are not represented as passing evidence, and the profile remains marked `review-required`. See [Embedded EmbeddingGemma execution](embedded-embeddinggemma.md) for the implemented CPU path and exact measurement gaps.

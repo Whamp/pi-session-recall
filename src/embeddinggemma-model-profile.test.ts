@@ -13,9 +13,13 @@ void test('recommended EmbeddingGemma profile pins artifact and embedding semant
       requestModel: 'embeddinggemma-300M-Q8_0',
       servedModelId: 'google/embeddinggemma-300M',
       artifact: 'embeddinggemma-300M-Q8_0.gguf',
+      artifactRepository: 'ggml-org/embeddinggemma-300M-GGUF',
+      artifactRevision: '0f741b5a6585bd53aeb15cd1372c56f2a0f65e12',
+      artifactSha256: 'b5ce9d77a3fc4b3b39ccb5643c36777911cc4eb46a66962eadfa3f5f60490d63',
       dimensions: 768,
       quantization: 'Q8_0',
       pooling: 'mean',
+      normalization: 'l2',
     },
     source: {
       repository: 'ggml-org/embeddinggemma-300M-GGUF',
@@ -45,6 +49,7 @@ void test('recommended EmbeddingGemma profile pins artifact and embedding semant
     },
     canary: {
       policy: 'repeat-cosine-v1',
+      operation: 'query',
       query: 'Which session evidence explains the retained implementation decision?',
       expectedDimensions: 768,
       expectedNormalization: 'l2',

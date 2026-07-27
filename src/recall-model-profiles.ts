@@ -5,6 +5,7 @@ export interface RecallEmbeddingModelProfile {
   identity: Readonly<RecallEmbeddingModelIdentity>;
   queryInputPrefix: string;
   documentInputPrefix: string;
+  canary?: Readonly<RecallEmbeddingCanaryPolicy>;
 }
 
 /** Reranking semantics shared by all backends serving one compatible model profile. */
@@ -51,6 +52,7 @@ export interface RecallGgufTokenizerIdentity {
 /** Repeatability policy for accepting one loaded embedding model without a frozen live vector. */
 export interface RecallEmbeddingCanaryPolicy {
   policy: 'repeat-cosine-v1';
+  operation: 'query';
   query: string;
   expectedDimensions: number;
   expectedNormalization: 'l2';
@@ -104,9 +106,13 @@ export function createRecommendedEmbeddingGemmaModelProfile(): RecommendedEmbedd
       requestModel: 'embeddinggemma-300M-Q8_0',
       servedModelId: 'google/embeddinggemma-300M',
       artifact: 'embeddinggemma-300M-Q8_0.gguf',
+      artifactRepository: 'ggml-org/embeddinggemma-300M-GGUF',
+      artifactRevision: '0f741b5a6585bd53aeb15cd1372c56f2a0f65e12',
+      artifactSha256,
       dimensions: 768,
       quantization: 'Q8_0',
       pooling: 'mean',
+      normalization: 'l2',
     }),
     source: Object.freeze({
       repository: 'ggml-org/embeddinggemma-300M-GGUF',
@@ -135,6 +141,7 @@ export function createRecommendedEmbeddingGemmaModelProfile(): RecommendedEmbedd
     }),
     canary: Object.freeze({
       policy: 'repeat-cosine-v1',
+      operation: 'query',
       query: 'Which session evidence explains the retained implementation decision?',
       expectedDimensions: 768,
       expectedNormalization: 'l2',

@@ -38,6 +38,9 @@
     "@earendil-works/pi-coding-agent": "*",
     "typebox": "*"
   },
+  "optionalDependencies": {
+    "node-llama-cpp": "3.18.1"
+  },
   "pi": {
     "extensions": [
       "./src/recall-extension.ts"

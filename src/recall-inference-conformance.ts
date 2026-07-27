@@ -53,6 +53,7 @@ function assertConformanceVector(
   expected: readonly number[],
   dimensions: number,
   maximumAbsoluteDifference: number,
+  normalization?: 'l2',
 ): void {
   if (actual.length !== dimensions) {
     throw new Error(
@@ -64,6 +65,7 @@ function assertConformanceVector(
       `Recall ${capability} conformance fixture dimension mismatch: expected ${dimensions}, received ${expected.length}`,
     );
   }
+  let actualSquaredNorm = 0;
   for (let index = 0; index < dimensions; index += 1) {
     const actualValue = actual[index];
     const expectedValue = expected[index];
@@ -72,6 +74,7 @@ function assertConformanceVector(
         `Recall ${capability} conformance vector invalid at dimension ${index}: expected a finite number`,
       );
     }
+    actualSquaredNorm += actualValue * actualValue;
     if (expectedValue === undefined || !Number.isFinite(expectedValue)) {
       throw new Error(
         `Recall ${capability} conformance fixture invalid at dimension ${index}: expected a finite number`,
@@ -80,6 +83,14 @@ function assertConformanceVector(
     if (Math.abs(actualValue - expectedValue) > maximumAbsoluteDifference) {
       throw new Error(
         `Recall ${capability} conformance vector mismatch at dimension ${index}: expected ${expectedValue}, received ${actualValue}`,
+      );
+    }
+  }
+  if (normalization === 'l2') {
+    const norm = Math.sqrt(actualSquaredNorm);
+    if (Math.abs(norm - 1) > 1e-5) {
+      throw new Error(
+        `Recall ${capability} conformance normalization mismatch: expected L2 norm 1, received ${norm}`,
       );
     }
   }
@@ -110,6 +121,7 @@ export async function measureRecallEmbeddingProviderConformance(
     options.expectedQueryEmbedding,
     options.profile.identity.dimensions,
     maximumAbsoluteDifference,
+    options.profile.identity.normalization,
   );
 
   const documentsStartedAtMilliseconds = monotonicMilliseconds();
@@ -138,6 +150,7 @@ export async function measureRecallEmbeddingProviderConformance(
       expected,
       options.profile.identity.dimensions,
       maximumAbsoluteDifference,
+      options.profile.identity.normalization,
     );
   }
   return {

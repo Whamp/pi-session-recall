@@ -1,9 +1,12 @@
 import type {
   RecallEmbeddingProvider,
+  RecallIdentifiedQueryPlanningProvider,
   RecallIdentifiedRerankingProvider,
+  RecallPlannedRetrievalQuery,
 } from './recall-inference-capabilities.js';
 import type {
   RecallEmbeddingModelProfile,
+  RecallQueryPlanningModelProfile,
   RecallRerankingModelProfile,
 } from './recall-model-profiles.js';
 
@@ -45,6 +48,27 @@ export interface RecallRerankingProviderConformanceMeasurement {
   queryCount: 1;
   documentCount: number;
   rerankingMilliseconds: number;
+}
+
+/** Deterministic prompt, protected terms, and expected plan for query planner conformance. */
+export interface RecallQueryPlanningProviderConformanceOptions {
+  provider: RecallIdentifiedQueryPlanningProvider;
+  profile: RecallQueryPlanningModelProfile;
+  query: string;
+  recallIntent?: string;
+  protectedTerms: readonly string[];
+  expectedPlan?: readonly Readonly<RecallPlannedRetrievalQuery>[];
+  monotonicMilliseconds?: () => number;
+  signal?: AbortSignal;
+}
+
+/** Bounded typed-query counts and timing measured by query planner conformance. */
+export interface RecallQueryPlanningProviderConformanceMeasurement {
+  plannedQueryCount: number;
+  lexQueryCount: number;
+  vecQueryCount: number;
+  hydeQueryCount: number;
+  planningMilliseconds: number;
 }
 
 function assertConformanceVector(
@@ -239,5 +263,134 @@ export async function measureRecallRerankingProviderConformance(
     queryCount: 1,
     documentCount: options.documents.length,
     rerankingMilliseconds,
+  };
+}
+
+/** Verifies planner identity, intent-capable invocation, typed bounds, terms, and fixed output. */
+export async function measureRecallQueryPlanningProviderConformance(
+  options: RecallQueryPlanningProviderConformanceOptions,
+): Promise<RecallQueryPlanningProviderConformanceMeasurement> {
+  const identity = options.provider.executionIdentity;
+  if (identity.modelProfileId !== options.profile.profileId) {
+    throw new Error(
+      `Recall query planning conformance profile identity mismatch: expected ${options.profile.profileId}, received ${identity.modelProfileId}`,
+    );
+  }
+  if (identity.promptPolicy !== options.profile.promptPolicy) {
+    throw new Error(
+      `Recall query planning conformance prompt policy mismatch: expected ${options.profile.promptPolicy}, received ${identity.promptPolicy}`,
+    );
+  }
+  if (identity.grammarVersion !== options.profile.grammarVersion) {
+    throw new Error(
+      `Recall query planning conformance grammar version mismatch: expected ${options.profile.grammarVersion}, received ${identity.grammarVersion}`,
+    );
+  }
+  const expectedCacheIdentity = `${options.profile.profileId}:${identity.adapterId}:${options.profile.promptPolicy}:${options.profile.grammarVersion}`;
+  if (identity.cacheIdentity !== expectedCacheIdentity) {
+    throw new Error(
+      `Recall query planning conformance cache identity mismatch: expected ${expectedCacheIdentity}, received ${identity.cacheIdentity}`,
+    );
+  }
+  if (
+    !Number.isInteger(identity.requestTimeoutMilliseconds) ||
+    identity.requestTimeoutMilliseconds < 1
+  ) {
+    throw new Error(
+      `Recall query planning conformance timeout invalid: expected a positive integer, received ${identity.requestTimeoutMilliseconds}`,
+    );
+  }
+  const protectedTerms = options.protectedTerms.map((term) => term.trim().toLocaleLowerCase());
+  if (protectedTerms.length === 0 || protectedTerms.some((term) => !term)) {
+    throw new Error(
+      'Recall query planning conformance protected terms invalid: expected at least one non-blank term',
+    );
+  }
+  const monotonicMilliseconds = options.monotonicMilliseconds ?? (() => performance.now());
+  const planningStartedAtMilliseconds = monotonicMilliseconds();
+  const plan = await options.provider.planRecallQuery(
+    {
+      query: options.query,
+      ...(options.recallIntent === undefined ? {} : { recallIntent: options.recallIntent }),
+    },
+    options.signal,
+  );
+  const planningMilliseconds = Math.max(monotonicMilliseconds() - planningStartedAtMilliseconds, 0);
+  let lexQueryCount = 0;
+  let vecQueryCount = 0;
+  let hydeQueryCount = 0;
+  const seenQueries = new Set<string>();
+  for (const [index, plannedQuery] of plan.entries()) {
+    if (
+      plannedQuery.type !== 'lex' &&
+      plannedQuery.type !== 'vec' &&
+      plannedQuery.type !== 'hyde'
+    ) {
+      throw new Error(
+        `Recall query planning conformance query type invalid at index ${index}: ${String(plannedQuery.type)}`,
+      );
+    }
+    const normalizedQuery = plannedQuery.query.trim();
+    if (!normalizedQuery || /[\r\n]/u.test(normalizedQuery)) {
+      throw new Error(
+        `Recall query planning conformance query invalid at index ${index}: expected non-blank single-line text`,
+      );
+    }
+    const queryIdentity = `${plannedQuery.type}:${normalizedQuery}`;
+    if (seenQueries.has(queryIdentity)) {
+      throw new Error(
+        `Recall query planning conformance duplicate typed query at index ${index}: ${queryIdentity}`,
+      );
+    }
+    seenQueries.add(queryIdentity);
+    const normalizedForTerms = normalizedQuery.toLocaleLowerCase();
+    if (!protectedTerms.some((term) => normalizedForTerms.includes(term))) {
+      throw new Error(
+        `Recall query planning conformance protected term missing at index ${index}: expected one of ${options.protectedTerms.join(', ')}`,
+      );
+    }
+    if (plannedQuery.type === 'lex') {
+      lexQueryCount += 1;
+    }
+    if (plannedQuery.type === 'vec') {
+      vecQueryCount += 1;
+    }
+    if (plannedQuery.type === 'hyde') {
+      hydeQueryCount += 1;
+    }
+  }
+  const bounds = options.profile.planBounds;
+  if (
+    lexQueryCount < bounds.minimumLexQueries ||
+    lexQueryCount > bounds.maximumLexQueries ||
+    vecQueryCount < bounds.minimumVecQueries ||
+    vecQueryCount > bounds.maximumVecQueries ||
+    hydeQueryCount > bounds.maximumHydeQueries
+  ) {
+    throw new Error(
+      `Recall query planning conformance bounds invalid: expected ${bounds.minimumLexQueries}-${bounds.maximumLexQueries} lex, ${bounds.minimumVecQueries}-${bounds.maximumVecQueries} vec, and 0-${bounds.maximumHydeQueries} hyde queries; received ${lexQueryCount} lex, ${vecQueryCount} vec, and ${hydeQueryCount} hyde`,
+    );
+  }
+  if (options.expectedPlan) {
+    if (plan.length !== options.expectedPlan.length) {
+      throw new Error(
+        `Recall query planning conformance fixture count mismatch: expected ${options.expectedPlan.length}, received ${plan.length}`,
+      );
+    }
+    for (const [index, expected] of options.expectedPlan.entries()) {
+      const actual = plan[index];
+      if (!actual || actual.type !== expected.type || actual.query !== expected.query) {
+        throw new Error(
+          `Recall query planning conformance fixture mismatch at index ${index}: expected ${expected.type}: ${expected.query}, received ${actual ? `${actual.type}: ${actual.query}` : 'missing query'}`,
+        );
+      }
+    }
+  }
+  return {
+    plannedQueryCount: plan.length,
+    lexQueryCount,
+    vecQueryCount,
+    hydeQueryCount,
+    planningMilliseconds,
   };
 }

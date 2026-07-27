@@ -84,6 +84,9 @@ void test('Pi recall tool adapter propagates trusted cwd with project default an
     options: RecallConversationSearchOptions;
   }> = [];
   const service: RecallConversationService = {
+    async verifyQueryPlanningCapability() {
+      throw new Error('Pi recall adapter test does not configure query planning');
+    },
     async search(query, limit, options) {
       if (!options) {
         throw new Error('Pi recall adapter test expected search options');

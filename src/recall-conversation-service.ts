@@ -35,14 +35,21 @@ import {
   createOctenEmbeddingModelProfile,
   createQwenRerankingModelProfile,
   type RecallEmbeddingModelProfile,
+  type RecallQueryPlanningModelProfile,
   type RecallRerankingModelProfile,
 } from './recall-model-profiles.js';
 import {
   createRecallRerankingExecutionIdentity,
   type RecallEmbeddingProvider,
+  type RecallIdentifiedQueryPlanningProvider,
+  type RecallQueryPlanningExecutionIdentity,
   type RecallRerankingExecutionIdentity,
   type RecallRerankingProvider,
 } from './recall-inference-capabilities.js';
+import {
+  measureRecallQueryPlanningProviderConformance,
+  type RecallQueryPlanningProviderConformanceMeasurement,
+} from './recall-inference-conformance.js';
 import { createLlamaCppHttpEmbeddingProvider } from './llama-cpp-http-embedding-provider.js';
 import { createQwenHttpRerankingProvider } from './qwen-http-reranking-provider.js';
 import {
@@ -210,8 +217,26 @@ export interface RecallConversationIndexResult {
   totalChunks: number;
 }
 
-/** Search plus full and targeted index-maintenance operations exposed by the extension. */
+/** Cancellation accepted by independent query planner setup verification. */
+export interface RecallQueryPlanningCapabilityVerificationOptions {
+  signal?: AbortSignal;
+}
+
+/** Inspectable profile, adapter, policy, and measurement from accepted planner conformance. */
+export interface RecallQueryPlanningCapabilityVerification {
+  profileId: string;
+  model: string;
+  promptPolicy: string;
+  grammarVersion: string;
+  executionIdentity: Readonly<RecallQueryPlanningExecutionIdentity>;
+  measurement: RecallQueryPlanningProviderConformanceMeasurement;
+}
+
+/** Search plus inference verification and explicit index-maintenance operations. */
 export interface RecallConversationService {
+  verifyQueryPlanningCapability(
+    options?: RecallQueryPlanningCapabilityVerificationOptions,
+  ): Promise<RecallQueryPlanningCapabilityVerification>;
   search(
     query: string,
     limit: number,
@@ -237,6 +262,10 @@ export interface RecallConversationDependencies {
   reranker?: RecallRerankingProvider;
   /** Explicit identity for an injected custom reranker adapter. */
   rerankerExecutionIdentity?: RecallRerankingExecutionIdentity;
+  /** Optional query planner semantics verified independently and excluded from vector identity. */
+  queryPlanningProfile?: RecallQueryPlanningModelProfile;
+  /** Optional identified planner adapter; query-planned retrieval remains outside this ticket. */
+  queryPlanner?: RecallIdentifiedQueryPlanningProvider;
   /** Profile-owned tokenizer identity recorded with chunk geometry in the index manifest. */
   tokenizerIdentity?: RecallTokenizerManifestIdentity;
   loadTokenizer?: () => Promise<ConversationTextTokenizer>;
@@ -666,6 +695,22 @@ export function createRecallConversationService(
       `Recall reranker profile identity mismatch: expected ${rerankingProfile.profileId}, received ${rerankerExecutionIdentity.modelProfileId}`,
     );
   }
+  const queryPlanningProfile = dependencies.queryPlanningProfile;
+  const queryPlanner = dependencies.queryPlanner;
+  if ((queryPlanningProfile && !queryPlanner) || (!queryPlanningProfile && queryPlanner)) {
+    throw new Error(
+      'Recall query planner configuration incomplete: profile and identified provider are both required',
+    );
+  }
+  if (
+    queryPlanningProfile &&
+    queryPlanner &&
+    queryPlanner.executionIdentity.modelProfileId !== queryPlanningProfile.profileId
+  ) {
+    throw new Error(
+      `Recall query planner profile identity mismatch: expected ${queryPlanningProfile.profileId}, received ${queryPlanner.executionIdentity.modelProfileId}`,
+    );
+  }
   const loadTokenizer =
     dependencies.loadTokenizer ??
     (() => loadOctenConversationTokenizer({ cacheDirectory: config.tokenizerCacheDirectory }));
@@ -987,6 +1032,29 @@ export function createRecallConversationService(
   }
 
   return {
+    async verifyQueryPlanningCapability(options = {}) {
+      if (!queryPlanningProfile || !queryPlanner) {
+        throw new Error(
+          'Recall query planner is not configured: select a profile and adapter before verification',
+        );
+      }
+      const measurement = await measureRecallQueryPlanningProviderConformance({
+        provider: queryPlanner,
+        profile: queryPlanningProfile,
+        query: queryPlanningProfile.conformanceCanary.query,
+        recallIntent: queryPlanningProfile.conformanceCanary.recallIntent,
+        protectedTerms: queryPlanningProfile.conformanceCanary.protectedTerms,
+        ...(options.signal ? { signal: options.signal } : {}),
+      });
+      return {
+        profileId: queryPlanningProfile.profileId,
+        model: queryPlanningProfile.model,
+        promptPolicy: queryPlanningProfile.promptPolicy,
+        grammarVersion: queryPlanningProfile.grammarVersion,
+        executionIdentity: queryPlanner.executionIdentity,
+        measurement,
+      };
+    },
     search(query, limit, options = {}) {
       const {
         mode = 'hybrid',

@@ -181,13 +181,13 @@ Embedding text is normalized to Unicode NFC under `unicode-nfc-v1`. Cache identi
 
 ## Inference profiles and execution backends
 
-Model profiles define inference semantics; backend settings define where those semantics execute. The Octen profile preserves raw text and its existing manifest identity. The EmbeddingGemma profile fixes asymmetric prompts, 768 dimensions, mean pooling, L2 normalization, GGUF tokenizer identity, immutable artifact identity, and query-canary behavior. The recommended Qwen reranker profile fixes its artifact and `[0,1]` llama.cpp probability semantics. `RecallEmbeddingProvider` keeps query and document operations separate; `RecallRerankingProvider` preserves candidate order.
+Model profiles define inference semantics; backend settings define where those semantics execute. The Octen profile preserves raw text and its existing manifest identity. The EmbeddingGemma profile fixes asymmetric prompts, 768 dimensions, mean pooling, L2 normalization, GGUF tokenizer identity, immutable artifact identity, and query-canary behavior. The recommended Qwen reranker profile fixes its artifact and `[0,1]` llama.cpp probability semantics. The recommended QMD query planner profile fixes its artifact, no-think prompt, grammar, typed bounds, and sampling policy. `RecallEmbeddingProvider` keeps query and document operations separate; `RecallRerankingProvider` preserves candidate order; `RecallQueryPlanningProvider` produces an ordered query plan without executing search.
 
-Backend URLs, devices, and adapter implementations are not model-profile identity. An EmbeddingGemma generation can move between embedded CPU, Metal, CUDA, Vulkan, and the built-in llama.cpp HTTP provider without rebuilding. Moving between EmbeddingGemma and Octen requires another generation. Reranker profile or adapter changes update deep-search and cache identity without changing vector compatibility.
+Backend URLs, devices, and adapter implementations are not model-profile identity. An EmbeddingGemma generation can move between embedded CPU, Metal, CUDA, Vulkan, and the built-in llama.cpp HTTP provider without rebuilding. Moving between EmbeddingGemma and Octen requires another generation. Reranker or planner profile and adapter changes update only their capability/cache identity without changing vector compatibility.
 
-`node-llama-cpp@3.18.1` is optional and loads dynamically only when embedded embedding, GGUF tokenization, or embedded reranking begins. Embedded execution probes supported accelerators by default, reports the selected backend and device, and retries the same profile on CPU with one warning when automatic accelerator initialization fails. Explicit device overrides fail closed. Parallelism is explicitly bounded from one through four, native logs stay on stderr, and idle resources unload after five minutes unless a checked-out synchronous tokenizer still needs the model. HTTP-only search does not load the native runtime.
+`node-llama-cpp@3.18.1` is optional and loads dynamically only when embedded embedding, GGUF tokenization, embedded reranking, or embedded query planning begins. Embedded execution probes supported accelerators by default, reports the selected backend and device, and retries the same profile on CPU with one warning when automatic accelerator initialization fails. Explicit device overrides fail closed. Parallelism and contexts are conservatively bounded, native logs stay on stderr, and idle resources unload after five minutes unless a checked-out synchronous tokenizer still needs the model. HTTP-only execution does not load the native runtime.
 
-See [Inference profiles and provider conformance](docs/inference/provider-conformance.md), [Embedded EmbeddingGemma execution](docs/inference/embedded-embeddinggemma.md), and the [recommended Qwen reranker](docs/inference/qwen-reranker.md) for service wiring, deterministic evidence, and pending real-model acceptance.
+See [Inference profiles and provider conformance](docs/inference/provider-conformance.md), [Embedded EmbeddingGemma execution](docs/inference/embedded-embeddinggemma.md), the [recommended Qwen reranker](docs/inference/qwen-reranker.md), and the [recommended QMD query planner](docs/inference/qmd-query-planner.md) for service wiring, deterministic evidence, and pending real-model acceptance.
 
 The recommended EmbeddingGemma artifact is available only through an explicit operator workflow. Inspecting or checking it never downloads a model:
 
@@ -214,7 +214,17 @@ npm run --silent model:qwen-reranker -- repair --approve
 npm run --silent model:qwen-reranker -- remove --approve
 ```
 
-Artifact workflows never start inference or indexing. Callers must explicitly wire a provider; mixed-capability guided setup remains tracked by #43. See [Pinned EmbeddingGemma model artifact](docs/inference/embeddinggemma-model-artifact.md), [Embedded EmbeddingGemma execution](docs/inference/embedded-embeddinggemma.md), and the [recommended Qwen reranker](docs/inference/qwen-reranker.md) for cache behavior, runtime use, and evidence limits.
+The recommended QMD query planner is independently managed and verified:
+
+```bash
+npm run --silent model:qmd-query-planner -- inspect
+npm run --silent model:qmd-query-planner -- doctor
+npm run --silent model:qmd-query-planner -- download --approve
+npm run --silent model:qmd-query-planner -- repair --approve
+npm run --silent model:qmd-query-planner -- remove --approve
+```
+
+Injecting a planner profile and identified embedded or HTTP adapter enables `RecallConversationService.verifyQueryPlanningCapability()`. It does not add a query-planned search mode; issue #29 owns retrieval and ranking integration. Artifact workflows never start inference or indexing. Persisted mixed-capability guided setup remains tracked by #43. See [Pinned EmbeddingGemma model artifact](docs/inference/embeddinggemma-model-artifact.md), [Embedded EmbeddingGemma execution](docs/inference/embedded-embeddinggemma.md), the [recommended Qwen reranker](docs/inference/qwen-reranker.md), and the [recommended QMD query planner](docs/inference/qmd-query-planner.md) for cache behavior, runtime use, and evidence limits.
 
 ## Default local models
 

@@ -76,6 +76,18 @@ _Avoid_: Exact result
 One conversation, summary, or tool evidence document deduplicated across retrieval channels, with its document kind and each component rank and score retained.
 _Avoid_: Semantic match
 
+**Query plan**:
+One ordered, validated collection of planned retrieval queries produced by an invoking agent or a configured query planning model. It does not itself execute retrieval or ranking.
+_Avoid_: Expanded query string, generated search
+
+**Planned retrieval query**:
+One typed `lex`, `vec`, or `hyde` query inside a query plan. Lexical queries target ordinary lexical evidence; semantic and hypothetical-answer queries target dense evidence.
+_Avoid_: Search result, identifier query
+
+**Query planning capability verification**:
+One independent conformance operation that checks planner profile, adapter, prompt, grammar, typed bounds, recall intent, cancellation, timeout, and cache identity before query-planned search can use it.
+_Avoid_: Query-planned search, model health check
+
 **Evidence occurrence**:
 One exact source location for recalled evidence, including its session, graph position, and source geometry. Copied evidence can have several occurrences.
 _Avoid_: Duplicate result, source alias

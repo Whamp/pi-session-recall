@@ -66,13 +66,16 @@ import {
   createRecallRerankingExecutionIdentity,
   type RecallEmbeddingProvider,
   type RecallIdentifiedQueryPlanningProvider,
+  type RecallPlannedRetrievalQuery,
   type RecallQueryPlanningExecutionIdentity,
   type RecallRerankingExecutionIdentity,
   type RecallRerankingProvider,
 } from './recall-inference-capabilities.js';
 import {
   measureRecallQueryPlanningProviderConformance,
+  measureRecallRerankingProviderConformance,
   type RecallQueryPlanningProviderConformanceMeasurement,
+  type RecallRerankingProviderConformanceMeasurement,
 } from './recall-inference-conformance.js';
 import { createLlamaCppHttpEmbeddingProvider } from './llama-cpp-http-embedding-provider.js';
 import { createQwenHttpRerankingProvider } from './qwen-http-reranking-provider.js';
@@ -259,8 +262,27 @@ export interface RecallFirstIndexSampleMeasurement {
   };
 }
 
+/** Independent fixed-score fixture required to accept one reranking adapter. */
+export interface RecallRerankingCapabilityVerificationOptions {
+  query: string;
+  documents: readonly string[];
+  expectedScores: readonly number[];
+  maximumAbsoluteDifference?: number;
+  signal?: AbortSignal;
+}
+
+/** Inspectable profile, adapter, score policy, and measurement from reranker conformance. */
+export interface RecallRerankingCapabilityVerification {
+  profileId: string;
+  model: string;
+  scorePolicy: string;
+  executionIdentity: Readonly<RecallRerankingExecutionIdentity>;
+  measurement: RecallRerankingProviderConformanceMeasurement;
+}
+
 /** Cancellation accepted by independent query planner setup verification. */
 export interface RecallQueryPlanningCapabilityVerificationOptions {
+  expectedPlan?: readonly Readonly<RecallPlannedRetrievalQuery>[];
   signal?: AbortSignal;
 }
 
@@ -286,6 +308,10 @@ export interface RecallConversationService {
   measureFirstIndexSample(
     options?: RecallFirstIndexSampleOptions,
   ): Promise<RecallFirstIndexSampleMeasurement>;
+  /** Verifies ordered reranker score semantics against an independent fixed fixture. */
+  verifyRerankingCapability(
+    options: RecallRerankingCapabilityVerificationOptions,
+  ): Promise<RecallRerankingCapabilityVerification>;
   verifyQueryPlanningCapability(
     options?: RecallQueryPlanningCapabilityVerificationOptions,
   ): Promise<RecallQueryPlanningCapabilityVerification>;
@@ -315,11 +341,12 @@ export interface RecallConversationDependencies {
   embeddingProvider?: RecallEmbeddingProvider;
   /** @deprecated Use embeddingProvider so query and document semantics stay distinct. */
   embeddings?: LocalEmbeddingClient;
-  /** Model semantics recorded in deep-search policy without affecting vector compatibility. */
-  rerankingProfile?: RecallRerankingModelProfile;
-  reranker?: RecallRerankingProvider;
+  /** Model semantics recorded in deep-search policy; pair null with a null provider to disable. */
+  rerankingProfile?: RecallRerankingModelProfile | null;
+  /** Optional reranker; pair null with a null profile for embedding-only hybrid recall. */
+  reranker?: RecallRerankingProvider | null;
   /** Explicit identity for an injected custom reranker adapter. */
-  rerankerExecutionIdentity?: RecallRerankingExecutionIdentity;
+  rerankerExecutionIdentity?: RecallRerankingExecutionIdentity | null;
   /** Optional query planner semantics verified independently and excluded from vector identity. */
   queryPlanningProfile?: RecallQueryPlanningModelProfile;
   /** Optional identified planner adapter; query-planned retrieval remains outside this ticket. */
@@ -734,23 +761,47 @@ export function createRecallConversationService(
           baseUrl: config.embeddingBaseUrl,
           batchSize: config.embeddingBatchSize,
         }));
-  const rerankingProfile =
-    dependencies.rerankingProfile ?? createQwenRerankingModelProfile(config.rerankerModel);
-  const reranker =
-    dependencies.reranker ??
-    createQwenHttpRerankingProvider(rerankingProfile, {
-      baseUrl: config.rerankerBaseUrl,
-    });
-  const providerExecutionIdentity = readRecallRerankingExecutionIdentity(reranker);
-  const rerankerExecutionIdentity =
-    dependencies.rerankerExecutionIdentity ??
-    providerExecutionIdentity ??
-    createRecallRerankingExecutionIdentity(
-      rerankingProfile.profileId,
-      'custom-injected-reranking-v1',
-      'custom',
+  const rerankingDisabled =
+    dependencies.rerankingProfile === null && dependencies.reranker === null;
+  if (
+    (dependencies.rerankingProfile === null) !== (dependencies.reranker === null) ||
+    (rerankingDisabled && dependencies.rerankerExecutionIdentity)
+  ) {
+    throw new Error(
+      'Recall reranker configuration incomplete: profile and provider must both be configured or both be null',
     );
-  if (rerankerExecutionIdentity.modelProfileId !== rerankingProfile.profileId) {
+  }
+  let rerankingProfile: RecallRerankingModelProfile | null;
+  let reranker: RecallRerankingProvider | null;
+  if (rerankingDisabled) {
+    rerankingProfile = null;
+    reranker = null;
+  } else {
+    rerankingProfile =
+      dependencies.rerankingProfile ?? createQwenRerankingModelProfile(config.rerankerModel);
+    reranker =
+      dependencies.reranker ??
+      createQwenHttpRerankingProvider(rerankingProfile, {
+        baseUrl: config.rerankerBaseUrl,
+      });
+  }
+  const providerExecutionIdentity = reranker
+    ? readRecallRerankingExecutionIdentity(reranker)
+    : null;
+  const rerankerExecutionIdentity = rerankingProfile
+    ? (dependencies.rerankerExecutionIdentity ??
+      providerExecutionIdentity ??
+      createRecallRerankingExecutionIdentity(
+        rerankingProfile.profileId,
+        'custom-injected-reranking-v1',
+        'custom',
+      ))
+    : null;
+  if (
+    rerankingProfile &&
+    rerankerExecutionIdentity &&
+    rerankerExecutionIdentity.modelProfileId !== rerankingProfile.profileId
+  ) {
     throw new Error(
       `Recall reranker profile identity mismatch: expected ${rerankingProfile.profileId}, received ${rerankerExecutionIdentity.modelProfileId}`,
     );
@@ -1319,6 +1370,34 @@ export function createRecallConversationService(
         }
       });
     },
+    async verifyRerankingCapability(options) {
+      if (!rerankingProfile || !reranker || !rerankerExecutionIdentity) {
+        throw new Error(
+          'Recall reranking is not configured: select a profile and adapter before verification',
+        );
+      }
+      const measurement = await measureRecallRerankingProviderConformance({
+        provider: {
+          executionIdentity: rerankerExecutionIdentity,
+          rerankDocuments: reranker.rerankDocuments.bind(reranker),
+        },
+        profile: rerankingProfile,
+        query: options.query,
+        documents: options.documents,
+        expectedScores: options.expectedScores,
+        ...(options.maximumAbsoluteDifference === undefined
+          ? {}
+          : { maximumAbsoluteDifference: options.maximumAbsoluteDifference }),
+        ...(options.signal ? { signal: options.signal } : {}),
+      });
+      return {
+        profileId: rerankingProfile.profileId,
+        model: rerankingProfile.model,
+        scorePolicy: rerankingProfile.scorePolicy,
+        executionIdentity: rerankerExecutionIdentity,
+        measurement,
+      };
+    },
     async verifyQueryPlanningCapability(options = {}) {
       if (!queryPlanningProfile || !queryPlanner) {
         throw new Error(
@@ -1331,6 +1410,7 @@ export function createRecallConversationService(
         query: queryPlanningProfile.conformanceCanary.query,
         recallIntent: queryPlanningProfile.conformanceCanary.recallIntent,
         protectedTerms: queryPlanningProfile.conformanceCanary.protectedTerms,
+        ...(options.expectedPlan ? { expectedPlan: options.expectedPlan } : {}),
         ...(options.signal ? { signal: options.signal } : {}),
       });
       return {
@@ -1350,6 +1430,14 @@ export function createRecallConversationService(
         activeSessionPath,
         signal,
       } = options;
+      if (
+        mode === 'deep-rerank' &&
+        (!rerankingProfile || !reranker || !rerankerExecutionIdentity)
+      ) {
+        throw new Error(
+          'Recall reranking is not configured: select and verify a reranking capability before deep-rerank search',
+        );
+      }
       return runRecallSearchWithDiagnostics({
         diagnostics,
         searchMode: mode,
@@ -1479,7 +1567,7 @@ export function createRecallConversationService(
                     const deepRerankStartedAtMilliseconds =
                       diagnosticsClock.monotonicMilliseconds();
                     try {
-                      return await reranker.rerankDocuments(
+                      return await reranker!.rerankDocuments(
                         rerankerQuery,
                         documents,
                         rerankerSignal,
@@ -1534,13 +1622,13 @@ export function createRecallConversationService(
                     reciprocalRankConstant: RECALL_RRF_RANK_CONSTANT,
                     rerankPolicyVersion:
                       mode === 'deep-rerank' ? RECALL_RERANK_POLICY_VERSION : null,
-                    rerankerModel: mode === 'deep-rerank' ? rerankingProfile.model : null,
+                    rerankerModel: mode === 'deep-rerank' ? rerankingProfile!.model : null,
                     rerankerIdentity:
                       mode === 'deep-rerank'
                         ? {
-                            profileId: rerankingProfile.profileId,
-                            adapterId: rerankerExecutionIdentity.adapterId,
-                            cacheIdentity: rerankerExecutionIdentity.cacheIdentity,
+                            profileId: rerankingProfile!.profileId,
+                            adapterId: rerankerExecutionIdentity!.adapterId,
+                            cacheIdentity: rerankerExecutionIdentity!.cacheIdentity,
                           }
                         : null,
                     activeBranchPrior: RECALL_ACTIVE_BRANCH_PRIOR,

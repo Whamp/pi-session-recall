@@ -10,6 +10,10 @@ import {
 } from '@earendil-works/pi-coding-agent';
 
 import { applyRecallQualityPolicyToConversationConfig } from './apply-recall-quality-policy.js';
+import {
+  createConfiguredRecallInferenceRuntime,
+  resolveRecallInferenceConfigurationPath,
+} from './configured-recall-inference-runtime.js';
 import { RecallSearchScope } from './enums.js';
 import { formatRecallSearchResults } from './format-recall-search-results.js';
 import { loadRecallConversationConfig } from './recall-conversation-config.js';
@@ -24,6 +28,7 @@ import {
   type RecallSearchMode,
 } from './recall-conversation-service.js';
 import { runRecallIndexCommand } from './recall-index-command.js';
+import { readRecallInferenceConfiguration } from './recall-inference-configuration.js';
 import { createRecommendedEmbeddingGemmaModelProfile } from './recall-model-profiles.js';
 import { createRecommendedEmbeddingGemmaConversationRuntime } from './recommended-embeddinggemma-conversation-service.js';
 import {
@@ -72,9 +77,13 @@ export default async function recallExtension(
   const firstIndexSetupState = await readRecallFirstIndexSetupState(
     resolveRecallFirstIndexSetupStatePath(config),
   );
+  const inferenceConfiguration = await readRecallInferenceConfiguration(
+    resolveRecallInferenceConfigurationPath(config),
+  );
   const selectedEmbeddingProfile = firstIndexSetupState.embedding?.profileId;
   const recommendedEmbeddingProfile = createRecommendedEmbeddingGemmaModelProfile();
   if (
+    !inferenceConfiguration.embedding &&
     selectedEmbeddingProfile &&
     selectedEmbeddingProfile !== recommendedEmbeddingProfile.profileId
   ) {
@@ -82,17 +91,25 @@ export default async function recallExtension(
       `Recall configured embedding profile unsupported: ${selectedEmbeddingProfile}; run setup:recall status instead of silently selecting another profile`,
     );
   }
-  const service = selectedEmbeddingProfile
-    ? createRecommendedEmbeddingGemmaConversationRuntime(config, {
-        onWarning(message) {
-          recallWarningHandler?.(message);
-        },
-      }).service
-    : createRecallConversationService(config, {
-        notifyWarning(message) {
-          recallWarningHandler?.(message);
-        },
-      });
+  const service = inferenceConfiguration.embedding
+    ? (
+        await createConfiguredRecallInferenceRuntime(config, {
+          onWarning(message) {
+            recallWarningHandler?.(message);
+          },
+        })
+      ).service
+    : selectedEmbeddingProfile
+      ? createRecommendedEmbeddingGemmaConversationRuntime(config, {
+          onWarning(message) {
+            recallWarningHandler?.(message);
+          },
+        }).service
+      : createRecallConversationService(config, {
+          notifyWarning(message) {
+            recallWarningHandler?.(message);
+          },
+        });
   pi.registerTool({
     name: 'pi-session-recall',
     label: 'Pi Session Recall',

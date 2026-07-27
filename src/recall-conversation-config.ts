@@ -31,6 +31,7 @@ const recallConfigFileSchema = Type.Object(
     embeddingBatchSize: Type.Optional(Type.Integer({ minimum: 1 })),
     rerankerBaseUrl: Type.Optional(Type.String({ minLength: 1 })),
     rerankerModel: Type.Optional(Type.String({ minLength: 1 })),
+    queryPlannerBaseUrl: Type.Optional(Type.String({ minLength: 1 })),
     denseCandidateLimit: Type.Optional(
       Type.Integer({ minimum: 1, maximum: MAX_RECALL_CHANNEL_CANDIDATE_LIMIT }),
     ),
@@ -89,6 +90,7 @@ export interface RecallConversationConfig {
   embeddingBatchSize: number;
   rerankerBaseUrl: string;
   rerankerModel: string;
+  queryPlannerBaseUrl?: string;
   projectLineages: RecallProjectLineages;
   searchCandidateLimits: RecallSearchCandidateLimits;
   chunkPolicy?: RecallChunkPolicy;
@@ -213,6 +215,10 @@ export async function loadRecallConversationConfig(
       file.rerankerBaseUrl ??
       'http://192.168.0.67:8091/v1',
     rerankerModel: environment.PI_RECALL_RERANKER_MODEL ?? file.rerankerModel ?? 'qwen3-rerank',
+    queryPlannerBaseUrl:
+      environment.PI_RECALL_QUERY_PLANNER_BASE_URL ??
+      file.queryPlannerBaseUrl ??
+      'http://192.168.0.67:8092/v1',
     projectLineages,
     searchCandidateLimits: {
       dense: resolveRecallCandidateLimit(

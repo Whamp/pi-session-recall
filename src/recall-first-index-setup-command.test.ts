@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import { RecallBackgroundIndexProcessState } from './enums.js';
+import { readRecallInferenceConfiguration } from './recall-inference-configuration.js';
 import { createRecommendedEmbeddingGemmaModelProfile } from './recall-model-profiles.js';
 import {
   runRecallFirstIndexSetupCommand,
@@ -245,6 +246,14 @@ void test('first-index setup stays unconfigured until approved selection and pre
   assert.equal(downloadCount, 1);
   assert.equal(verificationCount, 1);
   assert.equal(disposeCount, 1);
+  const inferenceConfiguration = await readRecallInferenceConfiguration(
+    join(root, 'data', 'inference-configuration.json'),
+  );
+  assert.equal(inferenceConfiguration.embedding?.profileId, profile.profileId);
+  assert.equal(inferenceConfiguration.embedding?.backend, 'embedded');
+  assert.equal(inferenceConfiguration.embedding?.artifact?.state, 'valid');
+  assert.equal(inferenceConfiguration.reranking, null);
+  assert.equal(inferenceConfiguration.queryPlanning, null);
 
   await runRecallFirstIndexSetupCommand(['estimate'], options);
   assert.deepEqual(readLastSetupOutputProperty(outputs, 'estimate'), {

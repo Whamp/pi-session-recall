@@ -99,6 +99,7 @@ const backgroundIndexServiceConfigSchema = Type.Object(
     embeddingBatchSize: Type.Integer({ minimum: 1 }),
     rerankerBaseUrl: Type.String({ minLength: 1 }),
     rerankerModel: Type.String({ minLength: 1 }),
+    queryPlannerBaseUrl: Type.Optional(Type.String({ minLength: 1 })),
     projectLineages: Type.Record(Type.String(), Type.Array(Type.String())),
     searchCandidateLimits: Type.Object(
       {

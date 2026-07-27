@@ -93,6 +93,9 @@ void test('Pi recall tool adapter propagates trusted cwd with project default an
     async measureFirstIndexSample() {
       throw new Error('Pi recall adapter test does not measure indexing');
     },
+    async verifyRerankingCapability() {
+      throw new Error('Pi recall adapter test does not configure reranking');
+    },
     async verifyQueryPlanningCapability() {
       throw new Error('Pi recall adapter test does not configure query planning');
     },

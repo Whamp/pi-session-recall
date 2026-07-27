@@ -52,6 +52,8 @@ The probes use temporary HTTP servers and fixed vectors or scores. They verify:
 
 Custom adapters can call `measureRecallEmbeddingProviderConformance`, `measureRecallRerankingProviderConformance`, and `measureRecallQueryPlanningProviderConformance` with profile-specific fixed fixtures. Identified reranking and planning providers must expose matching profile, adapter, and cache identity. A mismatch fails with the capability and vector dimension, candidate index, or planned-query index.
 
+Mixed setup persists a candidate only after its capability-specific operation passes. Reranker setup requires independent ordered expected scores. Planner setup requires an independent exact typed plan. A failed custom candidate leaves the prior atomic [inference configuration](mixed-inference-configuration.md) unchanged; setup never substitutes a built-in adapter.
+
 ## Evidence boundary
 
 This deterministic path proves adapter and service contract behavior. The embedded tests use an injected native boundary; they do not load the real 333,590,944-byte artifact. The HTTP tests use temporary fixed-response servers. Neither path proves that a live server loaded the claimed artifact or that live vectors and scores match acceptance fixtures.

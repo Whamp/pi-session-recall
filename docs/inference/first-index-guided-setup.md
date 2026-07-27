@@ -53,7 +53,7 @@ npm run --silent setup:recall -- defer
 
 Deferral preserves the selected embedding configuration, estimate, staging manifest, and cached vectors. Recall remains unavailable until the first generation activates.
 
-Setup state lives at `~/.pi/agent/recall/first-index-setup.json`. Existing background controls remain available through `/pi-session-recall-index --status`, `--stop`, `--resume`, and `--discard`.
+Estimate/build state lives at `~/.pi/agent/recall/first-index-setup.json`. Successful embedding selection also writes the authoritative capability record to `~/.pi/agent/recall/inference-configuration.json`; later [mixed inference setup](mixed-inference-configuration.md) preserves this selection while adding or repairing optional capabilities. Existing background controls remain available through `/pi-session-recall-index --status`, `--stop`, `--resume`, and `--discard`.
 
 ## Deterministic verification
 

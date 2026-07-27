@@ -88,6 +88,18 @@ _Avoid_: Search result, identifier query
 One independent conformance operation that checks planner profile, adapter, prompt, grammar, typed bounds, recall intent, cancellation, timeout, and cache identity before query-planned search can use it.
 _Avoid_: Query-planned search, model health check
 
+**Inference configuration**:
+The atomic local selection of independently verified embedding, reranking, and query-planning model profiles plus their execution backends. Embeddings are required; the other capabilities are optional.
+_Avoid_: Model stack, index manifest
+
+**Inference configuration candidate**:
+One exact capability profile, backend, adapter, artifact/device description, and conformance operation offered to setup. A candidate is never an automatic fallback.
+_Avoid_: Provider default, generic endpoint
+
+**Capability conformance record**:
+The accepted profile, backend, adapter, cache identity, verification time, and bounded measurement persisted after one capability-specific conformance operation passes.
+_Avoid_: Health check, model availability
+
 **Evidence occurrence**:
 One exact source location for recalled evidence, including its session, graph position, and source geometry. Copied evidence can have several occurrences.
 _Avoid_: Duplicate result, source alias

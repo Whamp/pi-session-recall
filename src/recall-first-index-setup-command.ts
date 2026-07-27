@@ -15,6 +15,10 @@ import {
   type RecallModelArtifactCache,
 } from './recall-model-artifact-cache.js';
 import {
+  readRecallInferenceConfiguration,
+  writeRecallInferenceConfiguration,
+} from './recall-inference-configuration.js';
+import {
   createRecommendedEmbeddingGemmaModelProfile,
   type RecommendedEmbeddingGemmaModelProfile,
 } from './recall-model-profiles.js';
@@ -127,6 +131,7 @@ export interface RecallFirstIndexSetupSelectedRuntime {
 export interface RecallFirstIndexSetupCommandOptions {
   config: RecallConversationConfig;
   statePath?: string;
+  inferenceConfigurationPath?: string;
   modelCacheDirectory?: string;
   profile?: RecommendedEmbeddingGemmaModelProfile;
   artifactCache?: RecallModelArtifactCache;
@@ -366,7 +371,7 @@ export async function runRecallFirstIndexSetupCommand(
         'Recall first-index setup selection requires explicit --approve-download after reviewing model purpose, source, license, exact size, cache path, and device policy',
       );
     }
-    await artifactCache.downloadArtifact({ approved: true });
+    const downloadedArtifact = await artifactCache.downloadArtifact({ approved: true });
     const selection = await (async () => {
       const runtime = await createSelectedServiceRuntime();
       try {
@@ -379,6 +384,7 @@ export async function runRecallFirstIndexSetupCommand(
         await runtime.dispose();
       }
     })();
+    const verifiedAt = nowIsoTimestamp();
     const selectedState: RecallFirstIndexSetupState = {
       ...state,
       embedding: {
@@ -386,9 +392,43 @@ export async function runRecallFirstIndexSetupCommand(
         backend: 'embedded',
         adapterId: selection.executionIdentity.adapter,
         devicePolicy: 'auto',
-        verifiedAt: nowIsoTimestamp(),
+        verifiedAt,
       },
     };
+    const inferenceConfigurationPath =
+      options.inferenceConfigurationPath ?? join(dataDirectory, 'inference-configuration.json');
+    const inferenceConfiguration = await readRecallInferenceConfiguration(
+      inferenceConfigurationPath,
+    );
+    await writeRecallInferenceConfiguration(inferenceConfigurationPath, {
+      ...inferenceConfiguration,
+      embedding: {
+        capability: 'embedding',
+        candidateId: 'recommended-embeddinggemma-embedded',
+        profileId: profile.profileId,
+        backend: 'embedded',
+        adapterId: selection.executionIdentity.adapter,
+        endpoint: null,
+        device: {
+          policy: selection.executionIdentity.devicePolicy,
+          computeBackend: selection.executionIdentity.computeBackend,
+          names: [...selection.executionIdentity.deviceNames],
+        },
+        artifact: {
+          path: downloadedArtifact.artifactPath,
+          repository: profile.source.repository,
+          revision: profile.source.revision,
+          sha256: profile.source.sha256,
+          byteSize: profile.source.byteSize,
+          state: 'valid',
+        },
+        conformance: {
+          verifiedAt,
+          cacheIdentity: selection.verification.embeddingProfileId,
+          measurement: { verificationOperations: 1 },
+        },
+      },
+    });
     await writeRecallFirstIndexSetupState(statePath, selectedState);
     writeOutput(
       JSON.stringify({

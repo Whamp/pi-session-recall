@@ -95,7 +95,14 @@ npm run --silent setup:recall -- start --approve-build
 
 The metadata estimate performs no model work. The optional measured sample warms the same profile-bound cache that the detached full build reuses. Build approval is separate from download approval and returns after worker launch. See [Guided setup for the first index](docs/inference/first-index-guided-setup.md).
 
-Existing Octen installations can continue to create a generation through `/pi-session-recall-index --rebuild`; guided migration and mixed-capability repair are tracked separately.
+Existing Octen installations can continue to create a generation through `/pi-session-recall-index --rebuild`. Later setup runs inspect and repair the independently verified capability selections without resetting valid siblings:
+
+```bash
+npm run --silent setup:recall -- inference status
+npm run --silent setup:recall -- inference doctor
+```
+
+Embedding is the only required capability. Reranking and query planning are optional; an embedding-only runtime serves hybrid recall and rejects deep reranking explicitly. See [Mixed inference configuration and repair](docs/inference/mixed-inference-configuration.md).
 
 After that initial generation exists, interactive Pi operations read it without performing whole-session maintenance:
 
@@ -248,7 +255,7 @@ npm run --silent model:qmd-query-planner -- repair --approve
 npm run --silent model:qmd-query-planner -- remove --approve
 ```
 
-Injecting a planner profile and identified embedded or HTTP adapter enables `RecallConversationService.verifyQueryPlanningCapability()`. It does not add a query-planned search mode; issue #29 owns retrieval and ranking integration. Artifact-only workflows never start inference or indexing. First-index setup persists the verified embedded embedding selection; independent mixed-capability add, replace, and repair behavior remains tracked by #43. See [Pinned EmbeddingGemma model artifact](docs/inference/embeddinggemma-model-artifact.md), [Embedded EmbeddingGemma execution](docs/inference/embedded-embeddinggemma.md), the [recommended Qwen reranker](docs/inference/qwen-reranker.md), and the [recommended QMD query planner](docs/inference/qmd-query-planner.md) for cache behavior, runtime use, and evidence limits.
+Injecting a planner profile and identified embedded or HTTP adapter enables `RecallConversationService.verifyQueryPlanningCapability()`. It does not add a query-planned search mode; issue #29 owns retrieval and ranking integration. Artifact-only workflows never start inference or indexing. First-index setup persists the verified embedded embedding selection. The mixed inference command API independently configures, verifies, repairs, and removes optional capabilities; profile changes update only their own cache/search-policy identity, while embedding profile replacement starts staging. See [Mixed inference configuration and repair](docs/inference/mixed-inference-configuration.md), [Pinned EmbeddingGemma model artifact](docs/inference/embeddinggemma-model-artifact.md), [Embedded EmbeddingGemma execution](docs/inference/embedded-embeddinggemma.md), the [recommended Qwen reranker](docs/inference/qwen-reranker.md), and the [recommended QMD query planner](docs/inference/qmd-query-planner.md) for behavior and evidence limits.
 
 ## Default local models
 

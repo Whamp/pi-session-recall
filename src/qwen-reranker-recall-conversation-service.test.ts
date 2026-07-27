@@ -153,7 +153,20 @@ void test('deep-rerank works end to end with built-in HTTP and embedded Qwen ada
     reranker: httpProvider,
     loadTokenizer: async () => tokenizer,
   });
+  const httpVerification = await httpService.verifyRerankingCapability({
+    query: 'recommended evidence',
+    documents: [fusionFavorite, rerankerFavorite],
+    expectedScores: [0.1, 0.9],
+  });
   await httpService.index();
+
+  assert.equal(httpVerification.profileId, profile.profileId);
+  assert.deepEqual(httpVerification.executionIdentity, httpProvider.executionIdentity);
+  assert.deepEqual(httpVerification.measurement, {
+    queryCount: 1,
+    documentCount: 2,
+    rerankingMilliseconds: httpVerification.measurement.rerankingMilliseconds,
+  });
 
   const httpSearch = await httpService.search('fusion favorite', 1, {
     mode: 'deep-rerank',
@@ -162,7 +175,7 @@ void test('deep-rerank works end to end with built-in HTTP and embedded Qwen ada
 
   assert.equal(httpSearch.results[0]?.entryId.value, 'reranker-favorite');
   assert.equal(httpSearch.results[0]?.rerankerScore, 0.9);
-  assert.equal(httpRequests.length, 1);
+  assert.equal(httpRequests.length, 2);
   assert.deepEqual(httpSearch.searchPolicy.rerankerIdentity, {
     profileId: profile.profileId,
     adapterId: 'llama-cpp-http-reranking-v1',
@@ -248,4 +261,25 @@ void test('deep-rerank works end to end with built-in HTTP and embedded Qwen ada
     adapterId: 'llama-cpp-http-reranking-v1',
     cacheIdentity: 'qwen-reranking:replacement-qwen-reranker:llama-cpp-http-reranking-v1',
   });
+
+  const embeddingOnlyService = createRecallConversationService(config, {
+    embeddingProvider,
+    rerankingProfile: null,
+    reranker: null,
+    loadTokenizer: async () => tokenizer,
+  });
+  const embeddingOnlySearch = await embeddingOnlyService.search('fusion favorite', 1, {
+    mode: 'hybrid',
+    scope: RecallSearchScope.GLOBAL,
+  });
+
+  assert.equal(embeddingOnlySearch.results[0]?.entryId.value, 'fusion-favorite');
+  assert.throws(
+    () =>
+      embeddingOnlyService.search('fusion favorite', 1, {
+        mode: 'deep-rerank',
+        scope: RecallSearchScope.GLOBAL,
+      }),
+    /Recall reranking is not configured/u,
+  );
 });

@@ -128,7 +128,7 @@ export interface RecallOperationDiagnosticRecord {
   manualMaintenanceTrigger: RecallManualMaintenanceTrigger | null;
   processId: number;
   sessionPath: string | null;
-  searchMode: 'hybrid' | 'deep-rerank' | null;
+  searchMode: 'hybrid' | 'deep-rerank' | 'query-planned' | null;
   recallScope: RecallSearchScope | null;
   status: RecallDiagnosticStatus;
   errorCategory: RecallDiagnosticErrorCategory | null;
@@ -198,7 +198,7 @@ export interface RecallOperationDiagnostics {
     sessionPath: string;
   }): RecallLiveSessionDiagnosticOperation;
   startRecallSearch(input: {
-    searchMode: 'hybrid' | 'deep-rerank';
+    searchMode: 'hybrid' | 'deep-rerank' | 'query-planned';
     recallScope: RecallSearchScope;
   }): RecallSearchDiagnosticOperation;
   startManualIndexMaintenance(input: {
@@ -298,7 +298,7 @@ function createRecallDiagnosticStartRecord(input: {
   lifecycleTrigger: RecallLifecycleTrigger | null;
   manualMaintenanceTrigger: RecallManualMaintenanceTrigger | null;
   sessionPath: string | null;
-  searchMode: 'hybrid' | 'deep-rerank' | null;
+  searchMode: 'hybrid' | 'deep-rerank' | 'query-planned' | null;
   recallScope: RecallSearchScope | null;
 }): RecallOperationDiagnosticRecord {
   return {

@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { RecallEvidenceRelation, RecallProjectIdentitySource, RecallSearchScope } from './enums.js';
+import {
+  RecallEvidenceRelation,
+  RecallProjectIdentitySource,
+  RecallRankedListSource,
+  RecallSearchScope,
+} from './enums.js';
 import { formatRecallSearchResults } from './format-recall-search-results.js';
 import { createTestRankedRecallSearchResult } from './recall-test-utils.js';
 import type { RankedRecallSearchResult } from './rank-recall-search-results.js';
@@ -192,6 +197,89 @@ void test('hybrid recall output does not claim Qwen reranking ran', () => {
   assert.match(output, /deterministic fusion v1/);
   assert.match(output, /without Qwen reranking/);
   assert.ok(!output.includes('Qwen reranker 0.'));
+});
+
+void test('query-planned output explains the agent plan, routed lists, QMD fusion, and position blend', () => {
+  const output = formatRecallSearchResults({
+    totalChunks: 42,
+    results: [
+      {
+        ...result,
+        topRankBonus: 0.05,
+        retrievalPositionRank: 2,
+        retrievalPositionScore: 0.5,
+        retrievalScoreWeight: 0.75,
+        rerankerScoreWeight: 0.25,
+        rankingScore: 0.613,
+      },
+    ],
+    searchPolicy: {
+      scope: RecallSearchScope.GLOBAL,
+      invocationProjectIdentity: null,
+      rankingMode: 'query-planned',
+      rankFusionVersion: 2,
+      reciprocalRankConstant: 60,
+      rerankPolicyVersion: 2,
+      rerankerModel: 'qwen3-rerank',
+      activeBranchPrior: 0.01,
+      candidateLimits: { dense: 20, lexical: 20, identifier: 20 },
+      fusedPoolLimit: 40,
+      rerankPoolLimit: 40,
+      finalResultLimit: 5,
+      queryPlan: {
+        source: 'agent',
+        intent: 'recover the accepted queue decision',
+        plannedQueries: [
+          { type: 'lex', query: 'durable queue' },
+          { type: 'hyde', query: 'The accepted design uses a durable queue.' },
+        ],
+        rankedLists: [
+          {
+            source: RecallRankedListSource.DENSE,
+            query: 'How did we preserve jobs?',
+            weight: 2,
+            candidateLimit: 20,
+            admittedCandidateCount: 20,
+          },
+          {
+            source: RecallRankedListSource.PLANNED_LEX,
+            query: 'durable queue',
+            weight: 1,
+            candidateLimit: 20,
+            admittedCandidateCount: 4,
+          },
+        ],
+        fusionPolicy: {
+          reciprocalRankConstant: 60,
+          submittedQueryListWeight: 2,
+          plannedQueryListWeight: 1,
+          rankOneBonus: 0.05,
+          rankTwoOrThreeBonus: 0.02,
+        },
+        rerankerProfile: {
+          model: 'qwen3-rerank',
+          policyVersion: 2,
+          fusedRankBlend: [
+            { firstRank: 1, lastRank: 3, retrievalWeight: 0.75, rerankerWeight: 0.25 },
+            { firstRank: 4, lastRank: 10, retrievalWeight: 0.6, rerankerWeight: 0.4 },
+            { firstRank: 11, lastRank: null, retrievalWeight: 0.4, rerankerWeight: 0.6 },
+          ],
+        },
+      },
+    },
+  });
+
+  assert.match(output, /Agent query plan/);
+  assert.match(output, /lex: durable queue/);
+  assert.match(output, /hyde: The accepted design uses a durable queue\./);
+  assert.match(output, /intent: recover the accepted queue decision/);
+  assert.match(output, /submitted weight 2.*planned weight 1/);
+  assert.match(output, /rank bonuses \+0\.0500.*\+0\.0200/);
+  assert.match(output, /dense.*20\/20/);
+  assert.match(output, /planned_lex.*4\/20/);
+  assert.match(output, /fused rank #2 position 0\.5000/);
+  assert.match(output, /blend 75% retrieval \/ 25% reranker/);
+  assert.match(output, /top-rank bonus \+0\.0500/);
 });
 
 void test('turn-context results identify their kind and every contributing entry', () => {

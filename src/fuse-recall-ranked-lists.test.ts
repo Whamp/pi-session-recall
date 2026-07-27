@@ -112,6 +112,45 @@ void test('ranked-list fusion counts a repeated document only at its first provi
   assert.deepEqual(fused[1]?.lexical, { rank: 3, fullTextScore: 3 });
 });
 
+void test('query-planned fusion applies one QMD bonus from each document best rank', () => {
+  const first = createTestConversationChunk('bonus-first');
+  const second = createTestConversationChunk('bonus-second');
+  const fused = fuseRecallRankedLists(
+    [
+      {
+        source: RecallRankedListSource.DENSE,
+        query: 'submitted query',
+        weight: 2,
+        candidateLimit: 2,
+        higherNativeScoresRankFirst: false,
+        candidates: [
+          { document: first, nativeScore: 0.1 },
+          { document: second, nativeScore: 0.2 },
+        ],
+      },
+      {
+        source: RecallRankedListSource.PLANNED_VEC,
+        query: 'semantic reformulation',
+        weight: 1,
+        candidateLimit: 2,
+        higherNativeScoresRankFirst: false,
+        candidates: [
+          { document: first, nativeScore: 0.15 },
+          { document: second, nativeScore: 0.25 },
+        ],
+      },
+    ],
+    2,
+    { rankOne: 0.05, rankTwoOrThree: 0.02 },
+  );
+
+  assert.equal(fused[0]?.id, 'bonus-first');
+  assert.equal(fused[0]?.topRankBonus, 0.05);
+  assert.equal(fused[0]?.fusedScore, 2 / 61 + 1 / 61 + 0.05);
+  assert.equal(fused[1]?.topRankBonus, 0.02);
+  assert.equal(fused[1]?.fusedScore, 2 / 62 + 1 / 62 + 0.02);
+});
+
 void test('recall rank fusion rejects a non-finite score from a one-item channel', () => {
   assert.throws(
     () =>

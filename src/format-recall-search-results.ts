@@ -66,6 +66,18 @@ function formatRecallScoreComponents(result: RankedRecallSearchResult): string {
     ...(result.rerankerScore === null ? [] : [`Qwen reranker ${result.rerankerScore.toFixed(4)}`]),
     `active prior +${result.activeBranchPrior.toFixed(4)}`,
     `fused RRF ${result.fusedScore.toFixed(4)}`,
+    ...(result.topRankBonus !== undefined && result.topRankBonus > 0
+      ? [`top-rank bonus +${result.topRankBonus.toFixed(4)}`]
+      : []),
+    ...(result.retrievalPositionRank === undefined ||
+    result.retrievalPositionScore === undefined ||
+    result.retrievalScoreWeight === undefined ||
+    result.rerankerScoreWeight === undefined
+      ? []
+      : [
+          `fused rank #${result.retrievalPositionRank} position ${result.retrievalPositionScore.toFixed(4)}`,
+          `blend ${Math.round(result.retrievalScoreWeight * 100)}% retrieval / ${Math.round(result.rerankerScoreWeight * 100)}% reranker`,
+        ]),
   ];
   if (result.dense) {
     components.push(
@@ -91,9 +103,11 @@ export function formatRecallSearchResults(
   maxExcerptCharacters = 2_000,
 ): string {
   const rankingDescription =
-    search.searchPolicy.rankingMode === 'deep-rerank'
-      ? `fusion v${search.searchPolicy.rankFusionVersion} (RRF k=${search.searchPolicy.reciprocalRankConstant}) and Qwen ${search.searchPolicy.rerankerModel} policy v${search.searchPolicy.rerankPolicyVersion}`
-      : `deterministic fusion v${search.searchPolicy.rankFusionVersion} (RRF k=${search.searchPolicy.reciprocalRankConstant}) without Qwen reranking`;
+    search.searchPolicy.rankingMode === 'hybrid'
+      ? `deterministic fusion v${search.searchPolicy.rankFusionVersion} (RRF k=${search.searchPolicy.reciprocalRankConstant}) without Qwen reranking`
+      : search.searchPolicy.rankingMode === 'query-planned'
+        ? `agent query-planned fusion v${search.searchPolicy.rankFusionVersion} (RRF k=${search.searchPolicy.reciprocalRankConstant}) and position-aware Qwen ${search.searchPolicy.rerankerModel} policy v${search.searchPolicy.rerankPolicyVersion}`
+        : `fusion v${search.searchPolicy.rankFusionVersion} (RRF k=${search.searchPolicy.reciprocalRankConstant}) and Qwen ${search.searchPolicy.rerankerModel} policy v${search.searchPolicy.rerankPolicyVersion}`;
   const scopeDescription =
     search.searchPolicy.scope === RecallSearchScope.PROJECT
       ? `project scope for ${search.searchPolicy.invocationProjectIdentity ?? 'an unresolved project'}`
@@ -101,6 +115,15 @@ export function formatRecallSearchResults(
   const lines = [
     `Recall searched ${scopeDescription} across ${search.totalChunks} indexed evidence documents with ${rankingDescription} (active prior +${search.searchPolicy.activeBranchPrior.toFixed(4)}).`,
   ];
+  const queryPlan = search.searchPolicy.queryPlan;
+  if (queryPlan) {
+    lines.push(
+      `Agent query plan (${queryPlan.source}): ${queryPlan.plannedQueries.map((plannedQuery) => `${plannedQuery.type}: ${plannedQuery.query}`).join(' · ')}`,
+      `Plan intent: ${queryPlan.intent ?? 'none'}`,
+      `Fusion policy: submitted weight ${queryPlan.fusionPolicy.submittedQueryListWeight}, planned weight ${queryPlan.fusionPolicy.plannedQueryListWeight}, rank bonuses +${queryPlan.fusionPolicy.rankOneBonus.toFixed(4)} / +${queryPlan.fusionPolicy.rankTwoOrThreeBonus.toFixed(4)}.`,
+      `Ranked lists: ${queryPlan.rankedLists.map((list) => `${list.source} ${list.admittedCandidateCount}/${list.candidateLimit} for ${list.query}`).join(' · ')}`,
+    );
+  }
   if (search.results.length === 0) {
     lines.push('No matching past conversations found.');
     if (search.searchPolicy.scope === RecallSearchScope.PROJECT) {

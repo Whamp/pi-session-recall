@@ -6,6 +6,24 @@ import type { SessionConversationChunk } from './session-conversation-index.js';
 /** Version of Qwen reranking, duplicate suppression, and active-branch scoring policy. */
 export const RECALL_RERANK_POLICY_VERSION = 1;
 
+/** Version of QMD position-aware reranking after duplicate evidence grouping. */
+export const QUERY_PLANNED_RECALL_RERANK_POLICY_VERSION = 2;
+
+/** One fused-rank interval and its retrieval-versus-reranker score weights. */
+export interface RecallFusedRankBlendBand {
+  firstRank: number;
+  lastRank: number | null;
+  retrievalWeight: number;
+  rerankerWeight: number;
+}
+
+/** QMD fused-rank bands that progressively give the reranker more influence. */
+export const QUERY_PLANNED_RECALL_FUSED_RANK_BLEND: readonly RecallFusedRankBlendBand[] = [
+  { firstRank: 1, lastRank: 3, retrievalWeight: 0.75, rerankerWeight: 0.25 },
+  { firstRank: 4, lastRank: 10, retrievalWeight: 0.6, rerankerWeight: 0.4 },
+  { firstRank: 11, lastRank: null, retrievalWeight: 0.4, rerankerWeight: 0.6 },
+];
+
 /** Small additive prior used to favor active-branch evidence without filtering other branches. */
 export const RECALL_ACTIVE_BRANCH_PRIOR = 0.01;
 
@@ -23,6 +41,10 @@ export interface RankedRecallSearchResult extends RecallSearchResult {
   rerankerScore: number | null;
   activeBranchPrior: number;
   rankingScore: number;
+  retrievalPositionRank?: number;
+  retrievalPositionScore?: number;
+  retrievalScoreWeight?: number;
+  rerankerScoreWeight?: number;
   duplicateOccurrences: RecallSearchResult[];
   neighborContext: RecallNeighborContext | null;
 }
@@ -40,6 +62,7 @@ export interface RerankRecallSearchResultsOptions {
   resultLimit: number;
   reranker: LocalRerankerClient;
   fetchConversationChunks: (ids: string[]) => Map<string, SessionConversationChunk>;
+  useQueryPlannedPositionBlend?: boolean;
   signal?: AbortSignal;
 }
 
@@ -350,16 +373,60 @@ function getRecallCandidateGroupActivePrior(group: RecallCandidateGroup): number
     : 0;
 }
 
+interface RecallPositionAwareBlendEvidence {
+  retrievalPositionRank: number;
+  retrievalPositionScore: number;
+  retrievalScoreWeight: number;
+  rerankerScoreWeight: number;
+  blendedScore: number;
+}
+
+function createRecallPositionAwareBlendEvidence(
+  retrievalPositionRank: number,
+  rerankerScore: number,
+): RecallPositionAwareBlendEvidence {
+  const blendBand = QUERY_PLANNED_RECALL_FUSED_RANK_BLEND.find(
+    (band) =>
+      retrievalPositionRank >= band.firstRank &&
+      (band.lastRank === null || retrievalPositionRank <= band.lastRank),
+  );
+  if (!blendBand) {
+    throw new Error(
+      `Recall query-planned blend missing policy for fused rank ${retrievalPositionRank}`,
+    );
+  }
+  const retrievalPositionScore = 1 / retrievalPositionRank;
+  return {
+    retrievalPositionRank,
+    retrievalPositionScore,
+    retrievalScoreWeight: blendBand.retrievalWeight,
+    rerankerScoreWeight: blendBand.rerankerWeight,
+    blendedScore:
+      blendBand.retrievalWeight * retrievalPositionScore + blendBand.rerankerWeight * rerankerScore,
+  };
+}
+
 function createRankedRecallSearchResult(
   group: RecallCandidateGroup,
   rerankerScore: number | null,
+  positionAwareBlend?: RecallPositionAwareBlendEvidence,
 ): RankedRecallSearchResult {
   const activeBranchPrior = getRecallCandidateGroupActivePrior(group);
   return {
     ...group.representative,
     rerankerScore,
     activeBranchPrior,
-    rankingScore: (rerankerScore ?? group.representative.fusedScore) + activeBranchPrior,
+    rankingScore:
+      (positionAwareBlend?.blendedScore ?? rerankerScore ?? group.representative.fusedScore) +
+      activeBranchPrior,
+    ...(positionAwareBlend
+      ? {
+          retrievalPositionRank: positionAwareBlend.retrievalPositionRank,
+          retrievalPositionScore: positionAwareBlend.retrievalPositionScore,
+          retrievalScoreWeight: positionAwareBlend.retrievalScoreWeight,
+          rerankerScoreWeight: positionAwareBlend.rerankerScoreWeight,
+        }
+      : {}),
     duplicateOccurrences: group.duplicateOccurrences,
     neighborContext: null,
   };
@@ -428,7 +495,13 @@ export async function rerankRecallSearchResults(
           `Recall reranker score invalid for candidate index ${index}: expected finite number`,
         );
       }
-      return createRankedRecallSearchResult(group, rerankerScore);
+      return createRankedRecallSearchResult(
+        group,
+        rerankerScore,
+        options.useQueryPlannedPositionBlend
+          ? createRecallPositionAwareBlendEvidence(index + 1, rerankerScore)
+          : undefined,
+      );
     })
     .toSorted(
       (left, right) =>

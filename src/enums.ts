@@ -71,6 +71,9 @@ export enum RecallRankedListSource {
   DENSE = 'dense',
   LEXICAL = 'lexical',
   IDENTIFIER = 'identifier',
+  PLANNED_LEX = 'planned_lex',
+  PLANNED_VEC = 'planned_vec',
+  PLANNED_HYDE = 'planned_hyde',
 }
 
 /** Corpus boundary selected for one recall search. */

@@ -55,12 +55,19 @@ export interface RecallRankedListEvidence {
   weight: number;
 }
 
+/** Optional QMD top-rank bonuses applied once from a document's best rank across all lists. */
+export interface RecallRankFusionBonuses {
+  rankOne: number;
+  rankTwoOrThree: number;
+}
+
 /** One source-backed fused result with generic list evidence and legacy component details. */
 export interface RecallSearchResult extends SessionConversationChunk {
   dense: RecallDenseScore | null;
   lexical: RecallFullTextScore | null;
   identifier: RecallFullTextScore | null;
   rankedListEvidence: RecallRankedListEvidence[];
+  topRankBonus?: number;
   fusedScore: number;
 }
 
@@ -124,10 +131,32 @@ function retainLegacyRecallComponent(
   }
 }
 
+function applyRecallTopRankBonuses(
+  results: Iterable<RecallSearchResult>,
+  bonuses: RecallRankFusionBonuses,
+): void {
+  if (
+    !Number.isFinite(bonuses.rankOne) ||
+    bonuses.rankOne < 0 ||
+    !Number.isFinite(bonuses.rankTwoOrThree) ||
+    bonuses.rankTwoOrThree < 0
+  ) {
+    throw new Error('Recall rank-fusion bonus invalid: expected nonnegative finite numbers');
+  }
+  for (const result of results) {
+    const bestRank = Math.min(...result.rankedListEvidence.map((evidence) => evidence.rank));
+    const topRankBonus =
+      bestRank === 1 ? bonuses.rankOne : bestRank <= 3 ? bonuses.rankTwoOrThree : 0;
+    result.topRankBonus = topRankBonus;
+    result.fusedScore += topRankBonus;
+  }
+}
+
 /** Fuses independently bounded weighted ranked lists and caps the deterministic RRF pool before grouping. */
 export function fuseRecallRankedLists(
   lists: readonly RecallRankedList[],
   fusedPoolLimit: number,
+  bonuses?: RecallRankFusionBonuses,
 ): RecallSearchResult[] {
   if (!Number.isInteger(fusedPoolLimit) || fusedPoolLimit < 1 || fusedPoolLimit > 600) {
     throw new Error('Recall fused pool limit invalid: expected an integer from 1 to 600');
@@ -164,6 +193,10 @@ export function fuseRecallRankedLists(
       retainLegacyRecallComponent(result, evidence);
       resultsById.set(result.id, result);
     }
+  }
+
+  if (bonuses) {
+    applyRecallTopRankBonuses(resultsById.values(), bonuses);
   }
 
   return Array.from(resultsById.values())

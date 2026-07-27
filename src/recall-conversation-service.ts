@@ -22,6 +22,7 @@ import {
   fuseRecallRankedLists,
   RECALL_RANK_FUSION_VERSION,
   RECALL_RRF_RANK_CONSTANT,
+  type RecallRankedList,
 } from './fuse-recall-ranked-lists.js';
 import {
   indexChangedConversationSession,
@@ -29,6 +30,7 @@ import {
   type ConversationIndexProgress,
   type ConversationIndexSummary,
 } from './incremental-session-indexer.js';
+import { isUnknownRecord } from './is-unknown-record.js';
 import { createLocalEmbeddingClient, type LocalEmbeddingClient } from './local-embedding-client.js';
 import { createLocalRerankerClient, type LocalRerankerClient } from './local-reranker-client.js';
 import { loadOctenConversationTokenizer } from './octen-conversation-tokenizer.js';
@@ -63,11 +65,14 @@ import {
   type ResolvedProjectIdentity,
 } from './resolve-project-identity.js';
 import {
+  QUERY_PLANNED_RECALL_FUSED_RANK_BLEND,
+  QUERY_PLANNED_RECALL_RERANK_POLICY_VERSION,
   rankFusedRecallSearchResults,
   rerankRecallSearchResults,
   RECALL_ACTIVE_BRANCH_PRIOR,
   RECALL_RERANK_POLICY_VERSION,
   type RankedRecallSearchResult,
+  type RecallFusedRankBlendBand,
 } from './rank-recall-search-results.js';
 import type { ConversationTextTokenizer } from './session-conversation-index.js';
 import {
@@ -111,8 +116,61 @@ export interface RecallSearchCandidateLimits {
   identifier: number;
 }
 
-/** User-selected ranking depth for hybrid-only or local Qwen recall search. */
-export type RecallSearchMode = 'hybrid' | 'deep-rerank';
+/** Maximum agent-supplied retrieval queries admitted by one query-planned recall search. */
+export const MAX_AGENT_RECALL_PLANNED_QUERY_COUNT = 10;
+
+/** Fixed project-eligible candidate admission limit for every query-planned ranked list. */
+export const QUERY_PLANNED_RECALL_LIST_CANDIDATE_LIMIT = 20;
+
+/** Duplicate evidence group limit applied before query-planned reranking. */
+export const QUERY_PLANNED_RECALL_GROUP_LIMIT = 40;
+
+/** Final result cap applied before query-planned neighbor context expansion. */
+export const QUERY_PLANNED_RECALL_FINAL_RESULT_LIMIT = 5;
+
+/** One agent-supplied retrieval query routed only to its declared channel. */
+export interface RecallPlannedRetrievalQuery {
+  type: 'lex' | 'vec' | 'hyde';
+  query: string;
+}
+
+/** User-selected ranking depth for hybrid-only, local Qwen, or agent-planned recall search. */
+export type RecallSearchMode = 'hybrid' | 'deep-rerank' | 'query-planned';
+
+/** One project-eligible ranked-list admission trace from query-planned retrieval. */
+export interface RecallRankedListTrace {
+  source: RecallRankedListSource;
+  query: string;
+  weight: number;
+  candidateLimit: number;
+  admittedCandidateCount: number;
+}
+
+/** QMD fusion constants used for one agent-supplied query plan. */
+export interface RecallQueryPlannedFusionPolicy {
+  reciprocalRankConstant: number;
+  submittedQueryListWeight: number;
+  plannedQueryListWeight: number;
+  rankOneBonus: number;
+  rankTwoOrThreeBonus: number;
+}
+
+/** Reranker model and position-aware blend profile used by query-planned recall. */
+export interface RecallQueryPlannedRerankerProfile {
+  model: string;
+  policyVersion: number;
+  fusedRankBlend: readonly RecallFusedRankBlendBand[];
+}
+
+/** Agent plan, intent, ranked-list traces, fusion constants, and reranker profile. */
+export interface RecallQueryPlanEvidence {
+  source: 'agent';
+  intent: string | null;
+  plannedQueries: readonly RecallPlannedRetrievalQuery[];
+  rankedLists: readonly RecallRankedListTrace[];
+  fusionPolicy: RecallQueryPlannedFusionPolicy;
+  rerankerProfile: RecallQueryPlannedRerankerProfile;
+}
 
 /** Trusted invocation context, cancellation, and ranking depth for one recall search. */
 export interface RecallConversationSearchOptions {
@@ -120,6 +178,8 @@ export interface RecallConversationSearchOptions {
   scope?: RecallSearchScope;
   invocationDirectory?: string;
   activeSessionPath?: string;
+  plan?: readonly RecallPlannedRetrievalQuery[];
+  intent?: string;
   signal?: AbortSignal;
 }
 
@@ -137,6 +197,7 @@ export interface RecallSearchPolicy {
   fusedPoolLimit: number;
   rerankPoolLimit: number;
   finalResultLimit: number;
+  queryPlan?: RecallQueryPlanEvidence;
 }
 
 /** One ranked recall result labeled by its explicit relationship to the invocation project. */
@@ -217,6 +278,86 @@ export interface RecallConversationDependencies {
   diagnostics?: RecallOperationDiagnostics;
   diagnosticsClock?: RecallDiagnosticsClock;
   notifyWarning?: (message: string) => void;
+}
+
+interface ValidatedRecallQueryPlanningOptions {
+  plannedQueries: RecallPlannedRetrievalQuery[];
+  intent: string | null;
+}
+
+const QUERY_PLANNED_RECALL_SUBMITTED_QUERY_LIST_WEIGHT = 2;
+const QUERY_PLANNED_RECALL_PLANNED_QUERY_LIST_WEIGHT = 1;
+const QUERY_PLANNED_RECALL_RANK_ONE_BONUS = 0.05;
+const QUERY_PLANNED_RECALL_RANK_TWO_OR_THREE_BONUS = 0.02;
+
+function validateRecallQueryPlanningOptions(
+  mode: RecallSearchMode,
+  plan: readonly RecallPlannedRetrievalQuery[] | undefined,
+  intent: string | undefined,
+): ValidatedRecallQueryPlanningOptions {
+  if (mode === 'hybrid' && intent !== undefined) {
+    throw new Error(
+      'Recall hybrid mode does not accept intent; remove intent or choose deep-rerank or query-planned mode',
+    );
+  }
+  if (mode !== 'query-planned' && plan !== undefined) {
+    throw new Error(
+      'Recall query plan is supported only in query-planned mode; remove plan or choose query-planned mode',
+    );
+  }
+  const normalizedIntent = intent?.trim() ?? null;
+  if (intent !== undefined && !normalizedIntent) {
+    throw new Error('Recall intent must not be blank');
+  }
+  if (mode !== 'query-planned') {
+    return { plannedQueries: [], intent: normalizedIntent };
+  }
+  if (!Array.isArray(plan)) {
+    throw new Error(
+      'Recall query plan invalid: provide plan with 1 to 10 { type: lex|vec|hyde, query: string } entries',
+    );
+  }
+  if (plan.length < 1 || plan.length > MAX_AGENT_RECALL_PLANNED_QUERY_COUNT) {
+    throw new Error(
+      `Recall query plan invalid: expected 1 to ${MAX_AGENT_RECALL_PLANNED_QUERY_COUNT} entries, received ${plan.length}`,
+    );
+  }
+  const plannedQueries: RecallPlannedRetrievalQuery[] = [];
+  for (const [index, plannedQuery] of plan.entries()) {
+    if (!isUnknownRecord(plannedQuery)) {
+      throw new Error(
+        `Recall query plan invalid at entry ${index + 1}: expected { type: lex|vec|hyde, query: string }`,
+      );
+    }
+    const unexpectedKeys = Object.keys(plannedQuery).filter(
+      (key) => key !== 'type' && key !== 'query',
+    );
+    if (unexpectedKeys.length > 0) {
+      throw new Error(
+        `Recall query plan invalid at entry ${index + 1}: unsupported field ${unexpectedKeys[0]}; use only type and query`,
+      );
+    }
+    const queryType = plannedQuery.type;
+    if (queryType !== 'lex' && queryType !== 'vec' && queryType !== 'hyde') {
+      throw new Error(
+        `Recall query plan invalid at entry ${index + 1}: unsupported type ${String(queryType)}; use lex, vec, or hyde`,
+      );
+    }
+    if (typeof plannedQuery.query !== 'string' || !plannedQuery.query.trim()) {
+      throw new Error(
+        `Recall query plan invalid at entry ${index + 1}: query must be a nonblank string`,
+      );
+    }
+    if (/\r|\n/u.test(plannedQuery.query)) {
+      throw new Error(`Recall query plan invalid at entry ${index + 1}: query must be single-line`);
+    }
+    plannedQueries.push({ type: queryType, query: plannedQuery.query.trim() });
+  }
+  return { plannedQueries, intent: normalizedIntent };
+}
+
+function createRecallRerankerQuery(query: string, intent: string | null): string {
+  return intent ? `${intent}\n\n${query}` : query;
 }
 
 interface LiveSessionReconciliationDiagnosticRunOptions {
@@ -861,15 +1002,18 @@ export function createRecallConversationService(
   }
 
   return {
-    search(query, limit, options = {}) {
+    async search(query, limit, options = {}) {
       const {
         mode = 'hybrid',
         scope = RecallSearchScope.PROJECT,
         invocationDirectory,
         activeSessionPath,
+        plan,
+        intent,
         signal,
       } = options;
-      return runRecallSearchWithDiagnostics({
+      const queryPlanning = validateRecallQueryPlanningOptions(mode, plan, intent);
+      return await runRecallSearchWithDiagnostics({
         diagnostics,
         searchMode: mode,
         recallScope: scope,
@@ -950,28 +1094,57 @@ export function createRecallConversationService(
               scope === RecallSearchScope.PROJECT ? invocationProject?.projectIdentity : undefined;
             const store = openStore('read');
             try {
+              const semanticQueryTexts = [
+                searchQuery,
+                ...queryPlanning.plannedQueries
+                  .filter(
+                    (plannedQuery) => plannedQuery.type === 'vec' || plannedQuery.type === 'hyde',
+                  )
+                  .map((plannedQuery) => plannedQuery.query),
+              ];
               const queryEmbeddingStartedAtMilliseconds = diagnosticsClock.monotonicMilliseconds();
-              let queryEmbedding: number[] | undefined;
+              let queryEmbeddings: number[][];
               try {
-                queryEmbedding = (await embeddings.embedTexts([searchQuery], signal))[0];
+                queryEmbeddings = await embeddings.embedTexts(semanticQueryTexts, signal);
               } finally {
                 diagnosticMetrics.queryEmbeddingMilliseconds += Math.max(
                   diagnosticsClock.monotonicMilliseconds() - queryEmbeddingStartedAtMilliseconds,
                   0,
                 );
               }
+              if (queryEmbeddings.length !== semanticQueryTexts.length) {
+                throw new Error(
+                  `Recall embedding response vector count mismatch: expected ${semanticQueryTexts.length}, received ${queryEmbeddings.length}`,
+                );
+              }
+              const queryEmbedding = queryEmbeddings[0];
               if (!queryEmbedding) {
-                throw new Error('Recall embedding response missing query vector');
+                throw new Error('Recall embedding response missing submitted query vector');
               }
               const retrievalStartedAtMilliseconds = diagnosticsClock.monotonicMilliseconds();
               const deepRerankStartedWithMilliseconds = diagnosticMetrics.deepRerankMilliseconds;
               try {
+                const isQueryPlanned = mode === 'query-planned';
+                const submittedQueryCandidateLimits = isQueryPlanned
+                  ? {
+                      dense: QUERY_PLANNED_RECALL_LIST_CANDIDATE_LIMIT,
+                      lexical: QUERY_PLANNED_RECALL_LIST_CANDIDATE_LIMIT,
+                      identifier: QUERY_PLANNED_RECALL_LIST_CANDIDATE_LIMIT,
+                    }
+                  : config.searchCandidateLimits;
+                const submittedQueryListWeight = isQueryPlanned
+                  ? QUERY_PLANNED_RECALL_SUBMITTED_QUERY_LIST_WEIGHT
+                  : 1;
                 const maximumCurrentCandidateCount =
                   config.searchCandidateLimits.dense +
                   config.searchCandidateLimits.lexical +
                   config.searchCandidateLimits.identifier;
-                const fusedPoolLimit = config.fusedPoolLimit ?? maximumCurrentCandidateCount;
-                const rerankPoolLimit = config.rerankPoolLimit ?? fusedPoolLimit;
+                const fusedPoolLimit = isQueryPlanned
+                  ? QUERY_PLANNED_RECALL_GROUP_LIMIT
+                  : (config.fusedPoolLimit ?? maximumCurrentCandidateCount);
+                const rerankPoolLimit = isQueryPlanned
+                  ? QUERY_PLANNED_RECALL_GROUP_LIMIT
+                  : (config.rerankPoolLimit ?? fusedPoolLimit);
                 if (
                   !Number.isInteger(rerankPoolLimit) ||
                   rerankPoolLimit < 1 ||
@@ -983,56 +1156,136 @@ export function createRecallConversationService(
                 }
                 const denseCandidates = store.searchDenseCandidates(
                   queryEmbedding,
-                  config.searchCandidateLimits.dense,
+                  submittedQueryCandidateLimits.dense,
                   projectIdentityPredicate,
                 );
                 const lexicalCandidates = store.searchLexicalCandidates(
                   searchQuery,
-                  config.searchCandidateLimits.lexical,
+                  submittedQueryCandidateLimits.lexical,
                   projectIdentityPredicate,
                 );
                 const identifierCandidates = store.searchIdentifierCandidates(
                   searchQuery,
-                  config.searchCandidateLimits.identifier,
+                  submittedQueryCandidateLimits.identifier,
                   projectIdentityPredicate,
                 );
+                const rankedLists: RecallRankedList[] = [
+                  {
+                    source: RecallRankedListSource.DENSE,
+                    query: searchQuery,
+                    weight: submittedQueryListWeight,
+                    candidateLimit: submittedQueryCandidateLimits.dense,
+                    higherNativeScoresRankFirst: false,
+                    candidates: denseCandidates.map(({ cosineDistance, ...document }) => ({
+                      document,
+                      nativeScore: cosineDistance,
+                    })),
+                  },
+                  {
+                    source: RecallRankedListSource.LEXICAL,
+                    query: searchQuery,
+                    weight: submittedQueryListWeight,
+                    candidateLimit: submittedQueryCandidateLimits.lexical,
+                    higherNativeScoresRankFirst: true,
+                    candidates: lexicalCandidates.map(({ fullTextScore, ...document }) => ({
+                      document,
+                      nativeScore: fullTextScore,
+                    })),
+                  },
+                  {
+                    source: RecallRankedListSource.IDENTIFIER,
+                    query: searchQuery,
+                    weight: submittedQueryListWeight,
+                    candidateLimit: submittedQueryCandidateLimits.identifier,
+                    higherNativeScoresRankFirst: true,
+                    candidates: identifierCandidates.map(({ fullTextScore, ...document }) => ({
+                      document,
+                      nativeScore: fullTextScore,
+                    })),
+                  },
+                ];
+                const rankedListTraces: RecallRankedListTrace[] = rankedLists.map((list) => ({
+                  source: list.source,
+                  query: list.query,
+                  weight: list.weight,
+                  candidateLimit: list.candidateLimit,
+                  admittedCandidateCount: list.candidates.length,
+                }));
+                let semanticEmbeddingIndex = 1;
+                for (const plannedQuery of queryPlanning.plannedQueries) {
+                  if (plannedQuery.type === 'lex') {
+                    const plannedCandidates = store.searchLexicalCandidates(
+                      plannedQuery.query,
+                      QUERY_PLANNED_RECALL_LIST_CANDIDATE_LIMIT,
+                      projectIdentityPredicate,
+                    );
+                    rankedLists.push({
+                      source: RecallRankedListSource.PLANNED_LEX,
+                      query: plannedQuery.query,
+                      weight: QUERY_PLANNED_RECALL_PLANNED_QUERY_LIST_WEIGHT,
+                      candidateLimit: QUERY_PLANNED_RECALL_LIST_CANDIDATE_LIMIT,
+                      higherNativeScoresRankFirst: true,
+                      candidates: plannedCandidates.map(({ fullTextScore, ...document }) => ({
+                        document,
+                        nativeScore: fullTextScore,
+                      })),
+                    });
+                    rankedListTraces.push({
+                      source: RecallRankedListSource.PLANNED_LEX,
+                      query: plannedQuery.query,
+                      weight: QUERY_PLANNED_RECALL_PLANNED_QUERY_LIST_WEIGHT,
+                      candidateLimit: QUERY_PLANNED_RECALL_LIST_CANDIDATE_LIMIT,
+                      admittedCandidateCount: plannedCandidates.length,
+                    });
+                    continue;
+                  }
+                  const plannedEmbedding = queryEmbeddings[semanticEmbeddingIndex];
+                  semanticEmbeddingIndex += 1;
+                  if (!plannedEmbedding) {
+                    throw new Error(
+                      `Recall embedding response missing ${plannedQuery.type} plan vector at entry ${semanticEmbeddingIndex - 1}`,
+                    );
+                  }
+                  const plannedCandidates = store.searchDenseCandidates(
+                    plannedEmbedding,
+                    QUERY_PLANNED_RECALL_LIST_CANDIDATE_LIMIT,
+                    projectIdentityPredicate,
+                  );
+                  const plannedSource =
+                    plannedQuery.type === 'vec'
+                      ? RecallRankedListSource.PLANNED_VEC
+                      : RecallRankedListSource.PLANNED_HYDE;
+                  rankedLists.push({
+                    source: plannedSource,
+                    query: plannedQuery.query,
+                    weight: QUERY_PLANNED_RECALL_PLANNED_QUERY_LIST_WEIGHT,
+                    candidateLimit: QUERY_PLANNED_RECALL_LIST_CANDIDATE_LIMIT,
+                    higherNativeScoresRankFirst: false,
+                    candidates: plannedCandidates.map(({ cosineDistance, ...document }) => ({
+                      document,
+                      nativeScore: cosineDistance,
+                    })),
+                  });
+                  rankedListTraces.push({
+                    source: plannedSource,
+                    query: plannedQuery.query,
+                    weight: QUERY_PLANNED_RECALL_PLANNED_QUERY_LIST_WEIGHT,
+                    candidateLimit: QUERY_PLANNED_RECALL_LIST_CANDIDATE_LIMIT,
+                    admittedCandidateCount: plannedCandidates.length,
+                  });
+                }
+                const preGroupingDocumentLimit = isQueryPlanned
+                  ? rankedLists.length * QUERY_PLANNED_RECALL_LIST_CANDIDATE_LIMIT
+                  : fusedPoolLimit;
                 const fusedCandidates = fuseRecallRankedLists(
-                  [
-                    {
-                      source: RecallRankedListSource.DENSE,
-                      query: searchQuery,
-                      weight: 1,
-                      candidateLimit: config.searchCandidateLimits.dense,
-                      higherNativeScoresRankFirst: false,
-                      candidates: denseCandidates.map(({ cosineDistance, ...document }) => ({
-                        document,
-                        nativeScore: cosineDistance,
-                      })),
-                    },
-                    {
-                      source: RecallRankedListSource.LEXICAL,
-                      query: searchQuery,
-                      weight: 1,
-                      candidateLimit: config.searchCandidateLimits.lexical,
-                      higherNativeScoresRankFirst: true,
-                      candidates: lexicalCandidates.map(({ fullTextScore, ...document }) => ({
-                        document,
-                        nativeScore: fullTextScore,
-                      })),
-                    },
-                    {
-                      source: RecallRankedListSource.IDENTIFIER,
-                      query: searchQuery,
-                      weight: 1,
-                      candidateLimit: config.searchCandidateLimits.identifier,
-                      higherNativeScoresRankFirst: true,
-                      candidates: identifierCandidates.map(({ fullTextScore, ...document }) => ({
-                        document,
-                        nativeScore: fullTextScore,
-                      })),
-                    },
-                  ],
-                  fusedPoolLimit,
+                  rankedLists,
+                  preGroupingDocumentLimit,
+                  isQueryPlanned
+                    ? {
+                        rankOne: QUERY_PLANNED_RECALL_RANK_ONE_BONUS,
+                        rankTwoOrThree: QUERY_PLANNED_RECALL_RANK_TWO_OR_THREE_BONUS,
+                      }
+                    : undefined,
                 );
                 const diagnosticReranker: LocalRerankerClient = {
                   async rerankDocuments(rerankerQuery, documents, rerankerSignal) {
@@ -1052,22 +1305,39 @@ export function createRecallConversationService(
                     }
                   },
                 };
-                const rankedResults =
-                  mode === 'deep-rerank'
-                    ? await rerankRecallSearchResults({
-                        query: searchQuery,
-                        candidates: fusedCandidates,
-                        rerankPoolLimit,
-                        resultLimit: limit,
-                        reranker: diagnosticReranker,
-                        fetchConversationChunks: store.fetchConversationChunks,
-                        ...(signal ? { signal } : {}),
-                      })
-                    : rankFusedRecallSearchResults(
-                        fusedCandidates,
-                        limit,
-                        store.fetchConversationChunks,
-                      );
+                const finalResultLimit = isQueryPlanned
+                  ? Math.min(limit, QUERY_PLANNED_RECALL_FINAL_RESULT_LIMIT)
+                  : limit;
+                let rankedResults: RankedRecallSearchResult[];
+                if (mode === 'hybrid') {
+                  rankedResults = rankFusedRecallSearchResults(
+                    fusedCandidates,
+                    finalResultLimit,
+                    store.fetchConversationChunks,
+                  );
+                } else {
+                  try {
+                    rankedResults = await rerankRecallSearchResults({
+                      query: createRecallRerankerQuery(searchQuery, queryPlanning.intent),
+                      candidates: fusedCandidates,
+                      rerankPoolLimit,
+                      resultLimit: finalResultLimit,
+                      reranker: diagnosticReranker,
+                      fetchConversationChunks: store.fetchConversationChunks,
+                      ...(isQueryPlanned ? { useQueryPlannedPositionBlend: true } : {}),
+                      ...(signal ? { signal } : {}),
+                    });
+                  } catch (error: unknown) {
+                    if (!isQueryPlanned || isRecallOperationCancelled(error, signal)) {
+                      throw error;
+                    }
+                    const reason = error instanceof Error ? error.message : String(error);
+                    throw new Error(
+                      `Recall query-planned reranking failed: verify the configured reranker and retry; ${reason}`,
+                      { cause: error },
+                    );
+                  }
+                }
                 const results: RecallConversationSearchResult[] = rankedResults.map((result) => ({
                   ...result,
                   evidenceRelation:
@@ -1094,13 +1364,41 @@ export function createRecallConversationService(
                     rankFusionVersion: RECALL_RANK_FUSION_VERSION,
                     reciprocalRankConstant: RECALL_RRF_RANK_CONSTANT,
                     rerankPolicyVersion:
-                      mode === 'deep-rerank' ? RECALL_RERANK_POLICY_VERSION : null,
-                    rerankerModel: mode === 'deep-rerank' ? config.rerankerModel : null,
+                      mode === 'query-planned'
+                        ? QUERY_PLANNED_RECALL_RERANK_POLICY_VERSION
+                        : mode === 'deep-rerank'
+                          ? RECALL_RERANK_POLICY_VERSION
+                          : null,
+                    rerankerModel: mode === 'hybrid' ? null : config.rerankerModel,
                     activeBranchPrior: RECALL_ACTIVE_BRANCH_PRIOR,
-                    candidateLimits: { ...config.searchCandidateLimits },
+                    candidateLimits: { ...submittedQueryCandidateLimits },
                     fusedPoolLimit,
                     rerankPoolLimit,
-                    finalResultLimit: limit,
+                    finalResultLimit,
+                    ...(isQueryPlanned
+                      ? {
+                          queryPlan: {
+                            source: 'agent',
+                            intent: queryPlanning.intent,
+                            plannedQueries: queryPlanning.plannedQueries,
+                            rankedLists: rankedListTraces,
+                            fusionPolicy: {
+                              reciprocalRankConstant: RECALL_RRF_RANK_CONSTANT,
+                              submittedQueryListWeight:
+                                QUERY_PLANNED_RECALL_SUBMITTED_QUERY_LIST_WEIGHT,
+                              plannedQueryListWeight:
+                                QUERY_PLANNED_RECALL_PLANNED_QUERY_LIST_WEIGHT,
+                              rankOneBonus: QUERY_PLANNED_RECALL_RANK_ONE_BONUS,
+                              rankTwoOrThreeBonus: QUERY_PLANNED_RECALL_RANK_TWO_OR_THREE_BONUS,
+                            },
+                            rerankerProfile: {
+                              model: config.rerankerModel,
+                              policyVersion: QUERY_PLANNED_RECALL_RERANK_POLICY_VERSION,
+                              fusedRankBlend: QUERY_PLANNED_RECALL_FUSED_RANK_BLEND,
+                            },
+                          },
+                        }
+                      : {}),
                   },
                 };
               } finally {

@@ -137,5 +137,7 @@ void test('live session ingestion warns and retries after a failed background up
   await ingestion.reconcileActiveSession('/sessions/retry.jsonl');
 
   assert.deepEqual(calls, ['catch-up', '/sessions/retry.jsonl']);
-  assert.deepEqual(warnings, ['Recall automatic session ingestion failed: model unavailable']);
+  assert.deepEqual(warnings, [
+    'Recall automatic session update skipped without changing the existing index: model unavailable',
+  ]);
 });

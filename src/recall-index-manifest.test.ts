@@ -10,6 +10,7 @@ import {
   createRecallEmbeddingCanaryFingerprint,
   createRecallIndexManifest,
   readRecallIndexManifest,
+  RECALL_INDEX_MANIFEST_VERSION,
   recoverRecallEmbeddingCanaryFromManifest,
   writeRecallIndexManifest,
 } from './recall-index-manifest.js';
@@ -233,6 +234,36 @@ void test('index manifest recovers only an intact canary from an incompatible ge
   );
 });
 
+void test('index manifest reader tells an older extension to reload instead of rebuilding', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-newer-manifest-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const manifestPath = join(directory, 'index-manifest.json');
+  const manifest = createRecallIndexManifest({
+    embeddingIdentity,
+    canaryEmbedding: [0.25, -0.5, 1],
+  });
+  await writeFile(
+    manifestPath,
+    JSON.stringify({
+      ...manifest,
+      manifestVersion: RECALL_INDEX_MANIFEST_VERSION + 1,
+    }),
+  );
+
+  await assert.rejects(
+    () => readRecallIndexManifest(manifestPath),
+    (error) => {
+      assert.ok(error instanceof Error);
+      assert.match(error.message, /newer than this pi-session-recall extension supports/);
+      assert.match(error.message, /Reload Pi to load the installed extension/);
+      assert.match(error.message, /update pi-session-recall and reload Pi again/i);
+      assert.match(error.message, /do not rebuild/i);
+      assert.doesNotMatch(error.message, /pi-session-recall-index --rebuild/);
+      return true;
+    },
+  );
+});
+
 void test('index manifest reader rejects malformed or unversioned data actionably', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'recall-invalid-manifest-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -251,15 +282,15 @@ void test('index manifest reader rejects malformed or unversioned data actionabl
 
   await assert.rejects(
     () => readRecallIndexManifest(malformedPath),
-    /Recall index manifest invalid.*\/pi-session-recall-index --rebuild/,
+    /Recall index manifest unreadable.*Reload Pi first.*Do not rebuild automatically/s,
   );
   await assert.rejects(
     () => readRecallIndexManifest(unversionedPath),
-    /Recall index manifest invalid.*\/pi-session-recall-index --rebuild/,
+    /Recall index manifest invalid.*Reload Pi first.*Do not rebuild automatically/s,
   );
   await assert.rejects(
     () => readRecallIndexManifest(preScopePath),
-    /Recall index manifest invalid.*\/pi-session-recall-index --rebuild/s,
+    /Recall index manifest invalid.*Reload Pi first.*Do not rebuild automatically/s,
   );
   assert.equal(await readRecallIndexManifest(join(directory, 'missing.json')), null);
 });

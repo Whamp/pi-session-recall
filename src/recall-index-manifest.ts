@@ -499,6 +499,17 @@ export function assertRecallIndexManifestCompatible(
   }
 }
 
+function readRecallIndexManifestVersion(value: unknown): number | undefined {
+  if (
+    !isUnknownRecord(value) ||
+    typeof value.manifestVersion !== 'number' ||
+    !Number.isInteger(value.manifestVersion)
+  ) {
+    return undefined;
+  }
+  return value.manifestVersion;
+}
+
 /** Reads and validates an index manifest, returning null only when the file is absent. */
 export async function readRecallIndexManifest(
   manifestPath: string,
@@ -512,15 +523,30 @@ export async function readRecallIndexManifest(
     }
     throw error;
   }
+  let parsed: unknown;
   try {
-    const parsed: unknown = JSON.parse(content);
+    parsed = JSON.parse(content);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `Recall index manifest unreadable at ${manifestPath}: ${message}. Reload Pi first. If this persists, update pi-session-recall and inspect or restore the manifest. Do not rebuild automatically.`,
+      { cause: error },
+    );
+  }
+  const manifestVersion = readRecallIndexManifestVersion(parsed);
+  if (manifestVersion !== undefined && manifestVersion > RECALL_INDEX_MANIFEST_VERSION) {
+    throw new Error(
+      `Recall index manifest version ${manifestVersion} at ${manifestPath} is newer than this pi-session-recall extension supports (${RECALL_INDEX_MANIFEST_VERSION}). Reload Pi to load the installed extension. If this persists, update pi-session-recall and reload Pi again. Do not rebuild the index.`,
+    );
+  }
+  try {
     const manifest = Value.Parse(recallIndexManifestSchema, parsed);
     assertRecallIndexManifestCanaryIntegrity(manifest);
     return manifest;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(
-      `Recall index manifest invalid at ${manifestPath}: ${message}; reindex with /pi-session-recall-index --rebuild`,
+      `Recall index manifest invalid at ${manifestPath}: ${message}. Reload Pi first. If this persists, update pi-session-recall and inspect or restore the manifest. Do not rebuild automatically.`,
       { cause: error },
     );
   }

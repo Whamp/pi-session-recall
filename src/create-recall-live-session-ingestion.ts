@@ -26,7 +26,9 @@ export function createRecallLiveSessionIngestion(
         if (message === 'Recall conversation operation cancelled') {
           return;
         }
-        notifyWarning(`Recall automatic session ingestion failed: ${message}`);
+        notifyWarning(
+          `Recall automatic session update skipped without changing the existing index: ${message}`,
+        );
       });
     return pendingIngestion;
   }

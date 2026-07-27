@@ -1,5 +1,5 @@
 import { compareRecallDocumentIds } from './compare-recall-document-ids.js';
-import type { RecallSearchResult } from './fuse-recall-search-candidates.js';
+import type { RecallSearchResult } from './fuse-recall-ranked-lists.js';
 import type { LocalRerankerClient } from './local-reranker-client.js';
 import type { SessionConversationChunk } from './session-conversation-index.js';
 
@@ -36,6 +36,7 @@ interface RecallCandidateGroup {
 export interface RerankRecallSearchResultsOptions {
   query: string;
   candidates: readonly RecallSearchResult[];
+  rerankPoolLimit: number;
   resultLimit: number;
   reranker: LocalRerankerClient;
   fetchConversationChunks: (ids: string[]) => Map<string, SessionConversationChunk>;
@@ -395,10 +396,20 @@ export async function rerankRecallSearchResults(
     options.resultLimit,
     'Recall reranked result limit invalid: expected an integer from 1 to 200',
   );
+  if (
+    !Number.isInteger(options.rerankPoolLimit) ||
+    options.rerankPoolLimit < 1 ||
+    options.rerankPoolLimit > 600
+  ) {
+    throw new Error('Recall rerank pool limit invalid: expected an integer from 1 to 600');
+  }
   if (options.candidates.length === 0) {
     return [];
   }
-  const candidateGroups = createRecallCandidateGroups(options.candidates);
+  const candidateGroups = createRecallCandidateGroups(options.candidates).slice(
+    0,
+    options.rerankPoolLimit,
+  );
   const scores = await options.reranker.rerankDocuments(
     options.query,
     candidateGroups.map((group) => group.representative.content),

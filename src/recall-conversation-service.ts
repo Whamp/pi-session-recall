@@ -15,13 +15,14 @@ import {
   RecallLifecycleTrigger,
   RecallManualMaintenanceTrigger,
   RecallProjectIdentitySource,
+  RecallRankedListSource,
   RecallSearchScope,
 } from './enums.js';
 import {
-  fuseRecallSearchCandidates,
+  fuseRecallRankedLists,
   RECALL_RANK_FUSION_VERSION,
   RECALL_RRF_RANK_CONSTANT,
-} from './fuse-recall-search-candidates.js';
+} from './fuse-recall-ranked-lists.js';
 import {
   indexChangedConversationSession,
   indexChangedConversationSessions,
@@ -98,6 +99,8 @@ export interface RecallConversationConfig {
   rerankerModel: string;
   projectLineages: RecallProjectLineages;
   searchCandidateLimits: RecallSearchCandidateLimits;
+  fusedPoolLimit?: number;
+  rerankPoolLimit?: number;
   chunkPolicy?: RecallChunkPolicy;
 }
 
@@ -131,6 +134,9 @@ export interface RecallSearchPolicy {
   rerankerModel: string | null;
   activeBranchPrior: number;
   candidateLimits: RecallSearchCandidateLimits;
+  fusedPoolLimit: number;
+  rerankPoolLimit: number;
+  finalResultLimit: number;
 }
 
 /** One ranked recall result labeled by its explicit relationship to the invocation project. */
@@ -960,27 +966,73 @@ export function createRecallConversationService(
               const retrievalStartedAtMilliseconds = diagnosticsClock.monotonicMilliseconds();
               const deepRerankStartedWithMilliseconds = diagnosticMetrics.deepRerankMilliseconds;
               try {
-                const fusedCandidates = fuseRecallSearchCandidates(
-                  {
-                    denseCandidates: store.searchDenseCandidates(
-                      queryEmbedding,
-                      config.searchCandidateLimits.dense,
-                      projectIdentityPredicate,
-                    ),
-                    lexicalCandidates: store.searchLexicalCandidates(
-                      searchQuery,
-                      config.searchCandidateLimits.lexical,
-                      projectIdentityPredicate,
-                    ),
-                    identifierCandidates: store.searchIdentifierCandidates(
-                      searchQuery,
-                      config.searchCandidateLimits.identifier,
-                      projectIdentityPredicate,
-                    ),
-                  },
+                const maximumCurrentCandidateCount =
                   config.searchCandidateLimits.dense +
-                    config.searchCandidateLimits.lexical +
-                    config.searchCandidateLimits.identifier,
+                  config.searchCandidateLimits.lexical +
+                  config.searchCandidateLimits.identifier;
+                const fusedPoolLimit = config.fusedPoolLimit ?? maximumCurrentCandidateCount;
+                const rerankPoolLimit = config.rerankPoolLimit ?? fusedPoolLimit;
+                if (
+                  !Number.isInteger(rerankPoolLimit) ||
+                  rerankPoolLimit < 1 ||
+                  rerankPoolLimit > fusedPoolLimit
+                ) {
+                  throw new Error(
+                    `Recall rerank pool limit invalid: expected an integer from 1 to fused pool limit ${fusedPoolLimit}`,
+                  );
+                }
+                const denseCandidates = store.searchDenseCandidates(
+                  queryEmbedding,
+                  config.searchCandidateLimits.dense,
+                  projectIdentityPredicate,
+                );
+                const lexicalCandidates = store.searchLexicalCandidates(
+                  searchQuery,
+                  config.searchCandidateLimits.lexical,
+                  projectIdentityPredicate,
+                );
+                const identifierCandidates = store.searchIdentifierCandidates(
+                  searchQuery,
+                  config.searchCandidateLimits.identifier,
+                  projectIdentityPredicate,
+                );
+                const fusedCandidates = fuseRecallRankedLists(
+                  [
+                    {
+                      source: RecallRankedListSource.DENSE,
+                      query: searchQuery,
+                      weight: 1,
+                      candidateLimit: config.searchCandidateLimits.dense,
+                      higherNativeScoresRankFirst: false,
+                      candidates: denseCandidates.map(({ cosineDistance, ...document }) => ({
+                        document,
+                        nativeScore: cosineDistance,
+                      })),
+                    },
+                    {
+                      source: RecallRankedListSource.LEXICAL,
+                      query: searchQuery,
+                      weight: 1,
+                      candidateLimit: config.searchCandidateLimits.lexical,
+                      higherNativeScoresRankFirst: true,
+                      candidates: lexicalCandidates.map(({ fullTextScore, ...document }) => ({
+                        document,
+                        nativeScore: fullTextScore,
+                      })),
+                    },
+                    {
+                      source: RecallRankedListSource.IDENTIFIER,
+                      query: searchQuery,
+                      weight: 1,
+                      candidateLimit: config.searchCandidateLimits.identifier,
+                      higherNativeScoresRankFirst: true,
+                      candidates: identifierCandidates.map(({ fullTextScore, ...document }) => ({
+                        document,
+                        nativeScore: fullTextScore,
+                      })),
+                    },
+                  ],
+                  fusedPoolLimit,
                 );
                 const diagnosticReranker: LocalRerankerClient = {
                   async rerankDocuments(rerankerQuery, documents, rerankerSignal) {
@@ -1005,6 +1057,7 @@ export function createRecallConversationService(
                     ? await rerankRecallSearchResults({
                         query: searchQuery,
                         candidates: fusedCandidates,
+                        rerankPoolLimit,
                         resultLimit: limit,
                         reranker: diagnosticReranker,
                         fetchConversationChunks: store.fetchConversationChunks,
@@ -1045,6 +1098,9 @@ export function createRecallConversationService(
                     rerankerModel: mode === 'deep-rerank' ? config.rerankerModel : null,
                     activeBranchPrior: RECALL_ACTIVE_BRANCH_PRIOR,
                     candidateLimits: { ...config.searchCandidateLimits },
+                    fusedPoolLimit,
+                    rerankPoolLimit,
+                    finalResultLimit: limit,
                   },
                 };
               } finally {

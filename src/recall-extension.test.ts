@@ -3,12 +3,13 @@ import test from 'node:test';
 
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 
-import { RecallSearchScope } from './enums.js';
-import recallExtension, { searchPiRecall } from './recall-extension.js';
+import { RecallRankedListSource, RecallSearchScope } from './enums.js';
+import recallExtension, { createPiRecallToolDetails, searchPiRecall } from './recall-extension.js';
 import type {
   RecallConversationSearchOptions,
   RecallConversationService,
 } from './recall-conversation-service.js';
+import { createTestRankedRecallSearchResult } from './recall-test-utils.js';
 
 void test('Pi session recall registers collision-free tool guidance and index command', async () => {
   const toolNames: string[] = [];
@@ -77,6 +78,55 @@ void test('Pi recall runtime never registers automatic whole-session maintenance
   assert.deepEqual(lifecycleEvents, []);
 });
 
+void test('Pi recall tool details retain ranked-list evidence and every explicit limit', () => {
+  const evidence = {
+    source: RecallRankedListSource.LEXICAL,
+    query: 'lease token',
+    rank: 1,
+    nativeScore: 8.5,
+    weight: 1,
+  };
+  const details = createPiRecallToolDetails({
+    totalChunks: 9,
+    results: [
+      createTestRankedRecallSearchResult({
+        id: 'tool-details-result',
+        rankedListEvidence: [evidence],
+      }),
+    ],
+    searchPolicy: {
+      scope: RecallSearchScope.GLOBAL,
+      invocationProjectIdentity: null,
+      rankingMode: 'hybrid',
+      rankFusionVersion: 2,
+      reciprocalRankConstant: 60,
+      rerankPolicyVersion: null,
+      rerankerModel: null,
+      activeBranchPrior: 0.01,
+      candidateLimits: { dense: 8, lexical: 8, identifier: 8 },
+      fusedPoolLimit: 24,
+      rerankPoolLimit: 24,
+      finalResultLimit: 5,
+    },
+  });
+
+  assert.deepEqual(details.searchPolicy, {
+    scope: RecallSearchScope.GLOBAL,
+    invocationProjectIdentity: null,
+    rankingMode: 'hybrid',
+    rankFusionVersion: 2,
+    reciprocalRankConstant: 60,
+    rerankPolicyVersion: null,
+    rerankerModel: null,
+    activeBranchPrior: 0.01,
+    candidateLimits: { dense: 8, lexical: 8, identifier: 8 },
+    fusedPoolLimit: 24,
+    rerankPoolLimit: 24,
+    finalResultLimit: 5,
+  });
+  assert.deepEqual(details.sources[0]?.rankedListEvidence, [evidence]);
+});
+
 void test('Pi recall tool adapter propagates trusted cwd with project default and explicit global scope', async () => {
   const calls: Array<{
     query: string;
@@ -102,6 +152,9 @@ void test('Pi recall tool adapter propagates trusted cwd with project default an
           rerankerModel: null,
           activeBranchPrior: 0.01,
           candidateLimits: { dense: 8, lexical: 8, identifier: 8 },
+          fusedPoolLimit: 24,
+          rerankPoolLimit: 24,
+          finalResultLimit: limit,
         },
       };
     },

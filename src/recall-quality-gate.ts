@@ -12,7 +12,7 @@ import {
 import {
   RECALL_RANK_FUSION_VERSION,
   RECALL_RRF_RANK_CONSTANT,
-} from './fuse-recall-search-candidates.js';
+} from './fuse-recall-ranked-lists.js';
 import { RECALL_ACTIVE_BRANCH_PRIOR } from './rank-recall-search-results.js';
 import { parseQualityCaseId } from './recall-quality-corpus.js';
 import {
@@ -184,6 +184,8 @@ const EVALUATION_IDENTITY_SCHEMA = Type.Object({
     lexical: POSITIVE_INTEGER_SCHEMA,
     identifier: POSITIVE_INTEGER_SCHEMA,
   }),
+  fusedPoolLimit: POSITIVE_INTEGER_SCHEMA,
+  rerankPoolLimit: POSITIVE_INTEGER_SCHEMA,
   finalResultCount: Type.Integer({ minimum: 1, maximum: MAX_RECALL_FINAL_RESULT_COUNT }),
 });
 const INDEX_SUMMARY_SCHEMA = Type.Object({
@@ -483,7 +485,9 @@ export async function readRecallQualityGateDecision(
     evaluationIdentity.rankingMode !== 'hybrid' ||
     evaluationIdentity.rankFusionVersion !== RECALL_RANK_FUSION_VERSION ||
     evaluationIdentity.reciprocalRankConstant !== RECALL_RRF_RANK_CONSTANT ||
-    evaluationIdentity.activeBranchPrior !== RECALL_ACTIVE_BRANCH_PRIOR
+    evaluationIdentity.activeBranchPrior !== RECALL_ACTIVE_BRANCH_PRIOR ||
+    evaluationIdentity.fusedPoolLimit !== 24 ||
+    evaluationIdentity.rerankPoolLimit !== 24
   ) {
     return {
       automatedGatePassed: false,
@@ -523,6 +527,8 @@ export async function readRecallQualityGateDecision(
     evaluationIdentity.candidateLimits.dense !== 8 ||
     evaluationIdentity.candidateLimits.lexical !== 8 ||
     evaluationIdentity.candidateLimits.identifier !== 8 ||
+    evaluationIdentity.fusedPoolLimit !== 24 ||
+    evaluationIdentity.rerankPoolLimit !== 24 ||
     evaluationIdentity.finalResultCount !== 5
   ) {
     return {

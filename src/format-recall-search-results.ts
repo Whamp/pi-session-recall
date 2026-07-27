@@ -1,5 +1,5 @@
 import { RecallSearchScope } from './enums.js';
-import type { RecallSearchResult } from './fuse-recall-search-candidates.js';
+import type { RecallSearchResult } from './fuse-recall-ranked-lists.js';
 import type { RecallConversationSearch } from './recall-conversation-service.js';
 import type { RankedRecallSearchResult } from './rank-recall-search-results.js';
 

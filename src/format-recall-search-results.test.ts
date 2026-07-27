@@ -43,6 +43,9 @@ void test('recall results include concise excerpts and exact source provenance',
         rerankerModel: 'qwen3-rerank',
         activeBranchPrior: 0.01,
         candidateLimits: { dense: 40, lexical: 40, identifier: 40 },
+        fusedPoolLimit: 120,
+        rerankPoolLimit: 120,
+        finalResultLimit: 5,
       },
     },
     40,
@@ -92,6 +95,9 @@ void test('project-scoped output explains invocation identity, session origin, a
       rerankerModel: null,
       activeBranchPrior: 0.01,
       candidateLimits: { dense: 8, lexical: 8, identifier: 8 },
+      fusedPoolLimit: 24,
+      rerankPoolLimit: 24,
+      finalResultLimit: 5,
     },
   });
 
@@ -126,6 +132,9 @@ void test('configured-lineage output explains the historical session origin rela
       rerankerModel: null,
       activeBranchPrior: 0.01,
       candidateLimits: { dense: 8, lexical: 8, identifier: 8 },
+      fusedPoolLimit: 24,
+      rerankPoolLimit: 24,
+      finalResultLimit: 5,
     },
   });
 
@@ -149,6 +158,9 @@ void test('empty project recall recommends an explicit global retry without wide
       rerankerModel: null,
       activeBranchPrior: 0.01,
       candidateLimits: { dense: 8, lexical: 8, identifier: 8 },
+      fusedPoolLimit: 24,
+      rerankPoolLimit: 24,
+      finalResultLimit: 5,
     },
   });
 
@@ -171,6 +183,9 @@ void test('hybrid recall output does not claim Qwen reranking ran', () => {
       rerankerModel: null,
       activeBranchPrior: 0.01,
       candidateLimits: { dense: 8, lexical: 8, identifier: 8 },
+      fusedPoolLimit: 24,
+      rerankPoolLimit: 24,
+      finalResultLimit: 5,
     },
   });
 
@@ -207,6 +222,9 @@ void test('turn-context results identify their kind and every contributing entry
       rerankerModel: 'qwen3-rerank',
       activeBranchPrior: 0.01,
       candidateLimits: { dense: 40, lexical: 40, identifier: 40 },
+      fusedPoolLimit: 120,
+      rerankPoolLimit: 120,
+      finalResultLimit: 5,
     },
   });
 
@@ -250,6 +268,9 @@ void test('tool evidence results identify the exact call relationship and source
       rerankerModel: 'qwen3-rerank',
       activeBranchPrior: 0.01,
       candidateLimits: { dense: 40, lexical: 40, identifier: 40 },
+      fusedPoolLimit: 120,
+      rerankPoolLimit: 120,
+      finalResultLimit: 5,
     },
   });
 
@@ -315,6 +336,9 @@ void test('recall results format stitched neighbors and every suppressed provena
       rerankerModel: 'qwen3-rerank',
       activeBranchPrior: 0.01,
       candidateLimits: { dense: 40, lexical: 40, identifier: 40 },
+      fusedPoolLimit: 120,
+      rerankPoolLimit: 120,
+      finalResultLimit: 5,
     },
   });
 

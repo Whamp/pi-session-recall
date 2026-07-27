@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import type { RecallSearchResult } from './fuse-recall-search-candidates.js';
+import type { RecallSearchResult } from './fuse-recall-ranked-lists.js';
 import type { LocalRerankerClient } from './local-reranker-client.js';
 import { createTestRecallSearchResult } from './recall-test-utils.js';
 import {
@@ -96,6 +96,7 @@ void test('recall reranking sends every candidate kind as original text and pres
   const results = await rerankRecallSearchResults({
     query: 'How did Atlas fail?',
     candidates,
+    rerankPoolLimit: candidates.length,
     resultLimit: 5,
     reranker,
     fetchConversationChunks() {
@@ -167,6 +168,7 @@ void test('recall reranking suppresses overlapping sibling slots and preserves t
   const results = await rerankRecallSearchResults({
     query: 'gamma',
     candidates: [second, unrelated, first],
+    rerankPoolLimit: 600,
     resultLimit: 3,
     reranker,
     fetchConversationChunks() {
@@ -234,6 +236,7 @@ void test('recall reranking keeps reciprocal siblings whose overlap text does no
   const results = await rerankRecallSearchResults({
     query: 'gamma',
     candidates: [first, second],
+    rerankPoolLimit: 600,
     resultLimit: 2,
     reranker,
     fetchConversationChunks() {
@@ -284,6 +287,7 @@ void test('recall reranking suppresses exact cross-session copies without confla
   const results = await rerankRecallSearchResults({
     query: 'source provenance',
     candidates: [firstCopy, secondCopy, syntheticSummary, checksumCollision],
+    rerankPoolLimit: 600,
     resultLimit: 4,
     reranker,
     fetchConversationChunks() {
@@ -327,6 +331,7 @@ void test('recall reranking favors an active branch without hiding a stronger ab
   const results = await rerankRecallSearchResults({
     query: 'branch evidence',
     candidates: [abandoned, active],
+    rerankPoolLimit: 600,
     resultLimit: 2,
     reranker,
     fetchConversationChunks() {
@@ -410,6 +415,7 @@ void test('recall reranking expands a winning atomic chunk through valid same-ru
   const results = await rerankRecallSearchResults({
     query: 'delta',
     candidates: [winner],
+    rerankPoolLimit: 600,
     resultLimit: 1,
     reranker,
     fetchConversationChunks(ids) {
@@ -482,6 +488,7 @@ void test('recall neighbor expansion rejects a source-offset gap between recipro
   const results = await rerankRecallSearchResults({
     query: 'alpha',
     candidates: [winner],
+    rerankPoolLimit: 600,
     resultLimit: 1,
     reranker,
     fetchConversationChunks() {
@@ -561,6 +568,7 @@ void test('recall neighbor expansion rejects reciprocal pointers across entry, r
   const results = await rerankRecallSearchResults({
     query: 'middle',
     candidates: [winner],
+    rerankPoolLimit: 600,
     resultLimit: 1,
     reranker,
     fetchConversationChunks() {

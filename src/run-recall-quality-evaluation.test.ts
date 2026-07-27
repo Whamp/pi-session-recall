@@ -181,6 +181,8 @@ void test('recall quality runner indexes and searches only the bounded declared 
     reciprocalRankConstant: 60,
     activeBranchPrior: 0.01,
     candidateLimits: { dense: 8, lexical: 8, identifier: 8 },
+    fusedPoolLimit: 24,
+    rerankPoolLimit: 24,
     finalResultCount: 5,
   });
   assert.equal(result.indexRuns.length, 1);

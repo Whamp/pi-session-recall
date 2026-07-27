@@ -2928,6 +2928,9 @@ void test('recall service fuses bounded dense, lexical, and identifier candidate
     rerankerModel: null,
     activeBranchPrior: 0.01,
     candidateLimits: { dense: 1, lexical: 1, identifier: 1 },
+    fusedPoolLimit: 3,
+    rerankPoolLimit: 3,
+    finalResultLimit: 1,
   });
   assert.equal(denseResult.results[0]?.entryId.value, 'dense-entry');
   assert.equal(denseResult.results[0]?.sessionPath, sessionPath);
@@ -3050,6 +3053,9 @@ void test('recall service defaults to fused ranking and reranks only in explicit
   assert.equal(defaultSearch.results[0]?.entryId.value, 'fusion-favorite');
   assert.equal(defaultSearch.results[0]?.rerankerScore, null);
   assert.equal(defaultSearch.searchPolicy.rankingMode, 'hybrid');
+  assert.equal(defaultSearch.searchPolicy.fusedPoolLimit, 6);
+  assert.equal(defaultSearch.searchPolicy.rerankPoolLimit, 6);
+  assert.equal(defaultSearch.searchPolicy.finalResultLimit, 1);
 
   const deepSearch = await service.search(query, 1, {
     mode: 'deep-rerank',
@@ -3064,7 +3070,63 @@ void test('recall service defaults to fused ranking and reranks only in explicit
   assert.ok(Number.isFinite(deepSearch.results[0]?.dense?.cosineDistance));
   assert.equal(deepSearch.results[0]?.lexical, null);
   assert.equal(deepSearch.results[0]?.identifier, null);
+  assert.deepEqual(deepSearch.results[0]?.rankedListEvidence, [
+    {
+      source: 'dense',
+      query,
+      rank: 2,
+      nativeScore: deepSearch.results[0]?.dense?.cosineDistance,
+      weight: 1,
+    },
+  ]);
   assert.equal(deepSearch.searchPolicy.rankingMode, 'deep-rerank');
+  assert.equal(deepSearch.searchPolicy.fusedPoolLimit, 6);
+  assert.equal(deepSearch.searchPolicy.rerankPoolLimit, 6);
+  assert.equal(deepSearch.searchPolicy.finalResultLimit, 1);
+
+  const cappedRerankerInputs: string[][] = [];
+  const cappedService = createRecallConversationService(
+    {
+      ...config,
+      fusedPoolLimit: 2,
+      rerankPoolLimit: 1,
+    },
+    {
+      embeddings: {
+        async embedTexts(texts) {
+          return texts.map((text) => {
+            if (text === RECALL_EMBEDDING_CANARY_TEXT) {
+              return [0, 0, 1];
+            }
+            if (text === rerankerFavorite) {
+              return [0.9, 0.1, 0];
+            }
+            return [1, 0, 0];
+          });
+        },
+      },
+      reranker: {
+        async rerankDocuments(receivedQuery, documents) {
+          assert.equal(receivedQuery, query);
+          cappedRerankerInputs.push([...documents]);
+          return documents.map(() => 0.5);
+        },
+      },
+      async loadTokenizer() {
+        return tokenizer;
+      },
+    },
+  );
+  const cappedSearch = await cappedService.search(query, 1, {
+    mode: 'deep-rerank',
+    scope: RecallSearchScope.GLOBAL,
+  });
+
+  assert.deepEqual(cappedRerankerInputs, [[fusionFavorite]]);
+  assert.equal(cappedSearch.results[0]?.entryId.value, 'fusion-favorite');
+  assert.equal(cappedSearch.searchPolicy.fusedPoolLimit, 2);
+  assert.equal(cappedSearch.searchPolicy.rerankPoolLimit, 1);
+  assert.equal(cappedSearch.searchPolicy.finalResultLimit, 1);
 });
 
 void test('recall service fails clearly when Qwen reranking is unavailable', async (t) => {

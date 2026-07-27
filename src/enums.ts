@@ -66,6 +66,13 @@ export enum SessionImportReplayOutcome {
 /** Version of trusted-invocation exact project filtering before every retrieval-channel limit. */
 export const PROJECT_SCOPE_POLICY_VERSION = 1;
 
+/** Retrieval channel that produced one bounded recall ranked list. */
+export enum RecallRankedListSource {
+  DENSE = 'dense',
+  LEXICAL = 'lexical',
+  IDENTIFIER = 'identifier',
+}
+
 /** Corpus boundary selected for one recall search. */
 export enum RecallSearchScope {
   PROJECT = 'project',

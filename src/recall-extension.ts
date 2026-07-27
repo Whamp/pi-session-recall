@@ -53,6 +53,63 @@ export async function searchPiRecall(
   });
 }
 
+/** Builds the structured Pi tool details for one source-backed recall search. */
+export function createPiRecallToolDetails(search: RecallConversationSearch) {
+  return {
+    totalChunks: search.totalChunks,
+    searchPolicy: search.searchPolicy,
+    sources: search.results.map((result) => ({
+      documentKind: result.documentKind,
+      summaryKind: result.summaryKind,
+      evidenceKind: result.evidenceKind,
+      evidenceRelation: result.evidenceRelation,
+      sessionOrigin: result.cwd,
+      projectIdentity: result.projectAttribution?.projectIdentity ?? null,
+      projectIdentitySource: result.projectAttribution?.identitySource ?? null,
+      sessionPath: result.sessionPath,
+      entryId: result.entryId.value,
+      contributingEntryIds: result.contributingEntryIds.map((id) => id.value),
+      isOnActiveBranch: result.isOnActiveBranch,
+      rankingScore: result.rankingScore,
+      rerankerScore: result.rerankerScore,
+      activeBranchPrior: result.activeBranchPrior,
+      fusedScore: result.fusedScore,
+      rankedListEvidence: result.rankedListEvidence,
+      dense: result.dense,
+      lexical: result.lexical,
+      identifier: result.identifier,
+      duplicateOccurrences: result.duplicateOccurrences.map((occurrence) => ({
+        documentId: occurrence.id,
+        documentKind: occurrence.documentKind,
+        summaryKind: occurrence.summaryKind,
+        evidenceKind: occurrence.evidenceKind,
+        sessionPath: occurrence.sessionPath,
+        entryId: occurrence.entryId.value,
+        contributingEntryIds: occurrence.contributingEntryIds.map((id) => id.value),
+        isOnActiveBranch: occurrence.isOnActiveBranch,
+        characterStart: occurrence.characterStart,
+        characterEnd: occurrence.characterEnd,
+        fusedScore: occurrence.fusedScore,
+        rankedListEvidence: occurrence.rankedListEvidence,
+        dense: occurrence.dense,
+        lexical: occurrence.lexical,
+        identifier: occurrence.identifier,
+      })),
+      expandedChunks:
+        result.neighborContext?.chunks.map((chunk) => ({
+          documentId: chunk.id,
+          sessionPath: chunk.sessionPath,
+          entryId: chunk.entryId.value,
+          role: chunk.role,
+          textRunId: chunk.textRunId,
+          chunkIndex: chunk.chunkIndex,
+          characterStart: chunk.characterStart,
+          characterEnd: chunk.characterEnd,
+        })) ?? [],
+    })),
+  };
+}
+
 /** Registers hybrid recall of past Pi conversations. Pi requires extension factories to be default exports. */
 export default async function recallExtension(
   pi: Pick<ExtensionAPI, 'registerTool' | 'registerCommand'>,
@@ -144,57 +201,7 @@ export default async function recallExtension(
         : truncation.content;
       return {
         content: [{ type: 'text', text }],
-        details: {
-          totalChunks: search.totalChunks,
-          searchPolicy: search.searchPolicy,
-          sources: search.results.map((result) => ({
-            documentKind: result.documentKind,
-            summaryKind: result.summaryKind,
-            evidenceKind: result.evidenceKind,
-            evidenceRelation: result.evidenceRelation,
-            sessionOrigin: result.cwd,
-            projectIdentity: result.projectAttribution?.projectIdentity ?? null,
-            projectIdentitySource: result.projectAttribution?.identitySource ?? null,
-            sessionPath: result.sessionPath,
-            entryId: result.entryId.value,
-            contributingEntryIds: result.contributingEntryIds.map((id) => id.value),
-            isOnActiveBranch: result.isOnActiveBranch,
-            rankingScore: result.rankingScore,
-            rerankerScore: result.rerankerScore,
-            activeBranchPrior: result.activeBranchPrior,
-            fusedScore: result.fusedScore,
-            dense: result.dense,
-            lexical: result.lexical,
-            identifier: result.identifier,
-            duplicateOccurrences: result.duplicateOccurrences.map((occurrence) => ({
-              documentId: occurrence.id,
-              documentKind: occurrence.documentKind,
-              summaryKind: occurrence.summaryKind,
-              evidenceKind: occurrence.evidenceKind,
-              sessionPath: occurrence.sessionPath,
-              entryId: occurrence.entryId.value,
-              contributingEntryIds: occurrence.contributingEntryIds.map((id) => id.value),
-              isOnActiveBranch: occurrence.isOnActiveBranch,
-              characterStart: occurrence.characterStart,
-              characterEnd: occurrence.characterEnd,
-              fusedScore: occurrence.fusedScore,
-              dense: occurrence.dense,
-              lexical: occurrence.lexical,
-              identifier: occurrence.identifier,
-            })),
-            expandedChunks:
-              result.neighborContext?.chunks.map((chunk) => ({
-                documentId: chunk.id,
-                sessionPath: chunk.sessionPath,
-                entryId: chunk.entryId.value,
-                role: chunk.role,
-                textRunId: chunk.textRunId,
-                chunkIndex: chunk.chunkIndex,
-                characterStart: chunk.characterStart,
-                characterEnd: chunk.characterEnd,
-              })) ?? [],
-          })),
-        },
+        details: createPiRecallToolDetails(search),
       };
     },
   });

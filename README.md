@@ -89,16 +89,15 @@ The committed quality report passes and selects 512/64 chunks, 8 candidates per 
 /pi-session-recall-index --rebuild
 ```
 
-After that initial generation exists, the extension keeps active sessions current from Pi's session lifecycle:
+After that initial generation exists, interactive Pi operations read it without performing whole-session maintenance:
 
-- startup never scans the full corpus inside the Pi runtime;
-- persistent TUI and RPC runtimes reconcile the active session on `agent_settled` after retries and queued continuations finish;
-- shutdown and reload never start recall maintenance, so large active sessions cannot delay those Pi lifecycle operations;
-- every `pi-session-recall` tool call reconciles the trusted active session before searching.
+- startup, settled turns, shutdown, and reload never reconcile session files;
+- `pi-session-recall` searches never reconcile the active session before retrieval;
+- `/pi-session-recall-index` is the only path that catches up changed, new, or removed sessions and optimizes the index.
 
-Resume appends and branch changes reprocess the affected session after the next settled turn or recall search. Forks enter through their new session file and retain parent-session provenance. The incremental state and unchanged JSONL files form the durable retry queue after crashes, model outages, or lock contention. Multiple Pi processes share the PID-owned writer lock. Use the manual index command to catch up inactive sessions that no persistent runtime ingested.
+This keeps session parsing, tokenization, embedding-cache checks, and zvec writes out of latency-sensitive Pi lifecycle and search operations. Active conversation content remains in Pi's model context; it becomes searchable recall evidence after explicit maintenance. The incremental state skips unchanged JSONL files, cached vectors prevent unchanged text from reaching the embedding model, and the PID-owned writer lock serializes multiple index processes.
 
-Use `/pi-session-recall-index` for an explicit full catch-up and optimization. Use `--rebuild` to replace an incompatible generation while preserving tokenizer assets and cached vectors.
+Use `/pi-session-recall-index` for an explicit full catch-up and optimization. Use `--rebuild` to replace an incompatible generation while preserving tokenizer assets and cached vectors. A future compaction-aware incremental path may index only content that has left the active model context; the current implementation deliberately does not approximate that behavior with whole-session work.
 
 ## Use
 

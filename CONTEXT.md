@@ -97,8 +97,8 @@ The versioned identity of the model, tokenizer, chunk policy, provenance schema,
 _Avoid_: Index state, configuration
 
 **Live session reconciliation**:
-A targeted update that reprocesses one active session file, reuses cached vectors, removes stale documents, and checkpoints its new state without scanning sibling sessions.
-_Avoid_: Append-only indexing, session watcher
+A lower-level targeted update that reprocesses one session file without scanning sibling sessions. Interactive Pi operations do not invoke it because it still rebuilds the whole changed session.
+_Avoid_: Incremental active-session ingestion, append-only indexing, session watcher
 
 **Recall diagnostic operation**:
 One bounded, local account of recall work and its costs, identified independently from the session or query that caused it.
@@ -109,8 +109,8 @@ The persistence policy for recall diagnostic operations: `slow`, `all`, or `off`
 _Avoid_: Verbosity level, tracing mode
 
 **Lifecycle trigger**:
-The reason a live session reconciliation was requested. Pi runtime maintenance uses `agent_settled` and tool-search freshness; `session_shutdown` remains a historical diagnostic value but no longer starts runtime maintenance.
-_Avoid_: Session watcher event, polling reason
+The historical reason recorded for live session reconciliation diagnostics. Interactive Pi no longer starts reconciliation from lifecycle or search events.
+_Avoid_: Current runtime maintenance policy, session watcher event, polling reason
 
 **Manual maintenance trigger**:
 The explicit index command mode that requested a full corpus catch-up: incremental indexing or rebuilding.

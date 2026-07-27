@@ -1,14 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
+import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 
 import { RecallSearchScope } from './enums.js';
-import recallExtension, {
-  searchPiRecall,
-  shouldRunRecallLifecycleIngestion,
-  shouldRunRecallStartupCatchUp,
-} from './recall-extension.js';
+import recallExtension, { searchPiRecall } from './recall-extension.js';
 import type {
   RecallConversationSearchOptions,
   RecallConversationService,
@@ -20,12 +16,8 @@ void test('Pi session recall registers collision-free tool guidance and index co
   const toolGuidelines: string[] = [];
   const commandNames: string[] = [];
   const commandDescriptions: string[] = [];
-  const lifecycleEvents: string[] = [];
   const toolParameterSchemas: string[] = [];
-  const registrar: Pick<ExtensionAPI, 'on' | 'registerTool' | 'registerCommand'> = {
-    on(event) {
-      lifecycleEvents.push(event);
-    },
+  const registrar: Pick<ExtensionAPI, 'registerTool' | 'registerCommand'> = {
     registerTool(definition) {
       toolNames.push(definition.name);
       toolDescriptions.push(definition.description);
@@ -42,7 +34,6 @@ void test('Pi session recall registers collision-free tool guidance and index co
 
   assert.deepEqual(toolNames, ['pi-session-recall']);
   assert.deepEqual(commandNames, ['pi-session-recall-index']);
-  assert.deepEqual(lifecycleEvents, ['session_start', 'agent_settled']);
   assert.ok(!toolNames.includes('recall'));
   assert.ok(!commandNames.includes('recall-index'));
   assert.match(commandDescriptions[0] ?? '', /quality gate/);
@@ -71,7 +62,7 @@ void test('Pi session recall registers collision-free tool guidance and index co
   );
 });
 
-void test('Pi recall reload never starts session shutdown maintenance', async () => {
+void test('Pi recall runtime never registers automatic whole-session maintenance', async () => {
   const lifecycleEvents: string[] = [];
   const registrar: Pick<ExtensionAPI, 'on' | 'registerTool' | 'registerCommand'> = {
     on(event) {
@@ -83,25 +74,7 @@ void test('Pi recall reload never starts session shutdown maintenance', async ()
 
   await recallExtension(registrar);
 
-  assert.ok(!lifecycleEvents.includes('session_shutdown'));
-});
-
-void test('Pi recall startup never runs full corpus catch-up in the runtime process', () => {
-  const modes: ExtensionContext['mode'][] = ['tui', 'rpc', 'json', 'print'];
-
-  assert.deepEqual(
-    modes.map((mode) => [
-      mode,
-      shouldRunRecallStartupCatchUp(mode),
-      shouldRunRecallLifecycleIngestion(mode),
-    ]),
-    [
-      ['tui', false, true],
-      ['rpc', false, true],
-      ['json', false, false],
-      ['print', false, false],
-    ],
-  );
+  assert.deepEqual(lifecycleEvents, []);
 });
 
 void test('Pi recall tool adapter propagates trusted cwd with project default and explicit global scope', async () => {
@@ -188,7 +161,6 @@ void test('Pi recall tool adapter propagates trusted cwd with project default an
         mode: 'hybrid',
         scope: RecallSearchScope.PROJECT,
         invocationDirectory: '/trusted/invocation',
-        activeSessionPath: '/sessions/active.jsonl',
       },
     },
     {
@@ -198,7 +170,6 @@ void test('Pi recall tool adapter propagates trusted cwd with project default an
         mode: 'deep-rerank',
         scope: RecallSearchScope.GLOBAL,
         invocationDirectory: '/trusted/invocation',
-        activeSessionPath: '/sessions/active.jsonl',
       },
     },
   ]);

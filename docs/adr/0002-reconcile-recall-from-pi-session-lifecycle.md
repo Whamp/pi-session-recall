@@ -1,8 +1,10 @@
 ---
-status: accepted
+status: superseded
 ---
 
 # Reconcile recall from Pi's session lifecycle
+
+This decision was superseded after diagnostics showed that a changed active session was reparsed, retokenized, and rewritten in Pi's process after every settled turn. See ADR 0003.
 
 Conversation Recall treats zvec as a live derived projection of Pi's JSONL session store. The initial generation remains explicit and quality-gated, but ordinary freshness no longer depends on a person running the index command.
 

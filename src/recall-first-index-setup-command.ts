@@ -1,0 +1,479 @@
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+
+import { Type } from 'typebox';
+import { Value } from 'typebox/value';
+
+import type { EmbeddedEmbeddingGemmaExecutionIdentity } from './embedded-embeddinggemma-provider.js';
+import { createRecallConversationService } from './recall-conversation-service.js';
+import type {
+  RecallConversationConfig,
+  RecallConversationService,
+} from './recall-conversation-service.js';
+import {
+  createRecallModelArtifactCache,
+  type RecallModelArtifactCache,
+} from './recall-model-artifact-cache.js';
+import {
+  createRecommendedEmbeddingGemmaModelProfile,
+  type RecommendedEmbeddingGemmaModelProfile,
+} from './recall-model-profiles.js';
+import { readNodeErrorCode } from './read-node-error-code.js';
+import type { RecallQualityGateDecision } from './recall-quality-gate.js';
+import { createRecommendedEmbeddingGemmaConversationRuntime } from './recommended-embeddinggemma-conversation-service.js';
+
+const RECALL_FIRST_INDEX_SETUP_STATE_VERSION = 1;
+const RECALL_FIRST_INDEX_SETUP_USAGE =
+  'usage: setup:recall [status|select-embeddinggemma --approve-download|estimate [--measure --sample-sessions N]|start --approve-build|defer]';
+
+const corpusInspectionSchema = Type.Object(
+  {
+    sessionCount: Type.Integer({ minimum: 0 }),
+    sourceByteSize: Type.Integer({ minimum: 0 }),
+  },
+  { additionalProperties: false },
+);
+
+const firstIndexSampleMeasurementSchema = Type.Object(
+  {
+    corpus: corpusInspectionSchema,
+    sampledSessionCount: Type.Integer({ minimum: 0 }),
+    sampledSourceByteSize: Type.Integer({ minimum: 0 }),
+    sampledDenseDocumentCount: Type.Integer({ minimum: 0 }),
+    coldStartMilliseconds: Type.Number({ minimum: 0 }),
+    measuredSampleMilliseconds: Type.Number({ minimum: 0 }),
+    sourceBytesPerSecond: Type.Number({ minimum: 0 }),
+    denseDocumentsPerSecond: Type.Number({ minimum: 0 }),
+    cacheHitCount: Type.Integer({ minimum: 0 }),
+    newlyEmbeddedDocumentCount: Type.Integer({ minimum: 0 }),
+    embeddingRequestCount: Type.Integer({ minimum: 0 }),
+    estimatedDurationMilliseconds: Type.Object(
+      {
+        minimum: Type.Integer({ minimum: 0 }),
+        maximum: Type.Integer({ minimum: 0 }),
+      },
+      { additionalProperties: false },
+    ),
+  },
+  { additionalProperties: false },
+);
+
+const recallFirstIndexSetupStateSchema = Type.Object(
+  {
+    version: Type.Literal(RECALL_FIRST_INDEX_SETUP_STATE_VERSION),
+    embedding: Type.Union([
+      Type.Null(),
+      Type.Object(
+        {
+          profileId: Type.String({ minLength: 1 }),
+          backend: Type.Literal('embedded'),
+          adapterId: Type.Literal('node-llama-cpp-embedded-v2'),
+          devicePolicy: Type.Literal('auto'),
+          verifiedAt: Type.String({ format: 'date-time' }),
+        },
+        { additionalProperties: false },
+      ),
+    ]),
+    lastEstimate: Type.Union([
+      Type.Null(),
+      Type.Object(
+        {
+          kind: Type.Literal('metadata'),
+          measuredAt: Type.String({ format: 'date-time' }),
+          corpus: corpusInspectionSchema,
+        },
+        { additionalProperties: false },
+      ),
+      Type.Object(
+        {
+          kind: Type.Literal('measured'),
+          measuredAt: Type.String({ format: 'date-time' }),
+          measurement: firstIndexSampleMeasurementSchema,
+        },
+        { additionalProperties: false },
+      ),
+    ]),
+  },
+  { additionalProperties: false },
+);
+
+/** Persisted verified embedding selection and latest first-index estimate. */
+export type RecallFirstIndexSetupState = ReturnType<
+  typeof Value.Parse<typeof recallFirstIndexSetupStateSchema>
+>;
+
+/** Service operations used by deterministic guided setup and no other runtime surface. */
+export type RecallFirstIndexSetupCommandService = Pick<
+  RecallConversationService,
+  | 'verifyEmbeddingCapability'
+  | 'inspectConversationCorpus'
+  | 'measureFirstIndexSample'
+  | 'readIndexGenerationStatus'
+  | 'startBackgroundIndexGeneration'
+  | 'resumeBackgroundIndexGeneration'
+>;
+
+/** Selected local service plus inspectable execution identity and explicit disposal. */
+export interface RecallFirstIndexSetupSelectedRuntime {
+  service: RecallFirstIndexSetupCommandService;
+  executionIdentity: Pick<
+    EmbeddedEmbeddingGemmaExecutionIdentity,
+    'adapter' | 'computeBackend' | 'deviceNames' | 'devicePolicy'
+  >;
+  dispose(): Promise<void>;
+}
+
+/** Injectable filesystem, artifact, service, clock, and output boundaries for guided setup. */
+export interface RecallFirstIndexSetupCommandOptions {
+  config: RecallConversationConfig;
+  statePath?: string;
+  modelCacheDirectory?: string;
+  profile?: RecommendedEmbeddingGemmaModelProfile;
+  artifactCache?: RecallModelArtifactCache;
+  qualityGateDecision?: RecallQualityGateDecision;
+  metadataService?: Pick<RecallConversationService, 'inspectConversationCorpus'>;
+  createSelectedServiceRuntime?: () =>
+    | RecallFirstIndexSetupSelectedRuntime
+    | Promise<RecallFirstIndexSetupSelectedRuntime>;
+  nowIsoTimestamp?: () => string;
+  writeOutput?: (value: string) => void;
+}
+
+type RecallFirstIndexSetupAction =
+  | { action: 'status' }
+  | { action: 'select-embeddinggemma'; approvedDownload: boolean }
+  | { action: 'estimate'; measure: boolean; maximumSessionCount?: number }
+  | { action: 'start'; approvedBuild: boolean }
+  | { action: 'defer' };
+
+function parseRecallFirstIndexSetupAction(
+  argumentsList: readonly string[],
+): RecallFirstIndexSetupAction {
+  if (argumentsList.length === 0 || (argumentsList.length === 1 && argumentsList[0] === 'status')) {
+    return { action: 'status' };
+  }
+  const [action, ...flags] = argumentsList;
+  if (action === 'select-embeddinggemma') {
+    if (flags.length === 0) {
+      return { action, approvedDownload: false };
+    }
+    if (flags.length === 1 && flags[0] === '--approve-download') {
+      return { action, approvedDownload: true };
+    }
+  }
+  if (action === 'estimate') {
+    let measure = false;
+    let maximumSessionCount: number | undefined;
+    for (let index = 0; index < flags.length; index += 1) {
+      const flag = flags[index];
+      if (flag === '--measure' && !measure) {
+        measure = true;
+        continue;
+      }
+      if (flag === '--sample-sessions' && maximumSessionCount === undefined) {
+        const rawValue = flags[index + 1];
+        const parsedValue = Number(rawValue);
+        if (!rawValue || !Number.isInteger(parsedValue)) {
+          throw new Error(
+            `Recall first-index setup sample bound invalid: ${rawValue ?? 'missing'}; ${RECALL_FIRST_INDEX_SETUP_USAGE}`,
+          );
+        }
+        maximumSessionCount = parsedValue;
+        index += 1;
+        continue;
+      }
+      throw new Error(
+        `Recall first-index setup arguments invalid: ${argumentsList.join(' ')}; ${RECALL_FIRST_INDEX_SETUP_USAGE}`,
+      );
+    }
+    if (maximumSessionCount !== undefined && !measure) {
+      throw new Error(
+        `Recall first-index setup --sample-sessions requires --measure; ${RECALL_FIRST_INDEX_SETUP_USAGE}`,
+      );
+    }
+    return {
+      action,
+      measure,
+      ...(maximumSessionCount === undefined ? {} : { maximumSessionCount }),
+    };
+  }
+  if (action === 'start') {
+    if (flags.length === 0) {
+      return { action, approvedBuild: false };
+    }
+    if (flags.length === 1 && flags[0] === '--approve-build') {
+      return { action, approvedBuild: true };
+    }
+  }
+  if (action === 'defer' && flags.length === 0) {
+    return { action };
+  }
+  throw new Error(
+    `Recall first-index setup arguments invalid: ${argumentsList.join(' ')}; ${RECALL_FIRST_INDEX_SETUP_USAGE}`,
+  );
+}
+
+function createUnconfiguredFirstIndexSetupState(): RecallFirstIndexSetupState {
+  return {
+    version: RECALL_FIRST_INDEX_SETUP_STATE_VERSION,
+    embedding: null,
+    lastEstimate: null,
+  };
+}
+
+/** Resolves the guided setup state beside managed recall index data. */
+export function resolveRecallFirstIndexSetupStatePath(config: RecallConversationConfig): string {
+  return join(dirname(config.manifestPath), 'first-index-setup.json');
+}
+
+/** Reads guided setup state, treating a missing file as a fresh unconfigured installation. */
+export async function readRecallFirstIndexSetupState(
+  statePath: string,
+): Promise<RecallFirstIndexSetupState> {
+  try {
+    const parsed: unknown = JSON.parse(await readFile(statePath, 'utf8'));
+    return Value.Parse(recallFirstIndexSetupStateSchema, parsed);
+  } catch (error) {
+    if (readNodeErrorCode(error) === 'ENOENT') {
+      return createUnconfiguredFirstIndexSetupState();
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Recall first-index setup state invalid at ${statePath}: ${message}`, {
+      cause: error,
+    });
+  }
+}
+
+async function writeRecallFirstIndexSetupState(
+  statePath: string,
+  state: RecallFirstIndexSetupState,
+): Promise<void> {
+  const validated = Value.Parse(recallFirstIndexSetupStateSchema, state);
+  await mkdir(dirname(statePath), { recursive: true });
+  const temporaryPath = `${statePath}.${process.pid}.tmp`;
+  await writeFile(temporaryPath, `${JSON.stringify(validated)}\n`, 'utf8');
+  await rename(temporaryPath, statePath);
+}
+
+function assertFirstIndexSetupQualityGatePassed(
+  decision: RecallQualityGateDecision | undefined,
+): void {
+  if (decision?.automatedGatePassed && decision.selectedPolicy) {
+    return;
+  }
+  const blockers =
+    decision && decision.blockers.length > 0
+      ? decision.blockers.join('; ')
+      : 'no measured chunk, candidate, and final-result policy passed';
+  throw new Error(
+    `Recall first-index setup build blocked because the quality gate has not passed: ${blockers}. Run npm run evaluate:recall before measured sampling or build approval.`,
+  );
+}
+
+function formatFirstIndexSetupConfiguration(state: RecallFirstIndexSetupState): {
+  state: 'configured' | 'unconfigured';
+  embedding: RecallFirstIndexSetupState['embedding'];
+} {
+  return {
+    state: state.embedding ? 'configured' : 'unconfigured',
+    embedding: state.embedding,
+  };
+}
+
+async function runWithSelectedEmbeddingRuntime<T>(
+  state: RecallFirstIndexSetupState,
+  createRuntime: () =>
+    | RecallFirstIndexSetupSelectedRuntime
+    | Promise<RecallFirstIndexSetupSelectedRuntime>,
+  operation: (runtime: RecallFirstIndexSetupSelectedRuntime) => Promise<T>,
+): Promise<T> {
+  if (!state.embedding) {
+    throw new Error(
+      'Recall first-index setup embedding is unconfigured: select and verify EmbeddingGemma first',
+    );
+  }
+  const runtime = await createRuntime();
+  try {
+    return await operation(runtime);
+  } finally {
+    await runtime.dispose();
+  }
+}
+
+/** Runs one deterministic, JSON-emitting first-index setup step with explicit consent gates. */
+export async function runRecallFirstIndexSetupCommand(
+  argumentsList: readonly string[],
+  options: RecallFirstIndexSetupCommandOptions,
+): Promise<void> {
+  const parsedAction = parseRecallFirstIndexSetupAction(argumentsList);
+  const profile = options.profile ?? createRecommendedEmbeddingGemmaModelProfile();
+  const dataDirectory = dirname(options.config.manifestPath);
+  const statePath = options.statePath ?? resolveRecallFirstIndexSetupStatePath(options.config);
+  const modelCacheDirectory = options.modelCacheDirectory ?? join(dataDirectory, 'models');
+  const artifactCache =
+    options.artifactCache ??
+    createRecallModelArtifactCache({ cacheDirectory: modelCacheDirectory, profile });
+  const metadataService =
+    options.metadataService ?? createRecallConversationService(options.config);
+  const createSelectedServiceRuntime =
+    options.createSelectedServiceRuntime ??
+    (() => createRecommendedEmbeddingGemmaConversationRuntime(options.config));
+  const nowIsoTimestamp = options.nowIsoTimestamp ?? (() => new Date().toISOString());
+  const writeOutput =
+    options.writeOutput ?? ((value: string) => process.stdout.write(`${value}\n`));
+  const state = await readRecallFirstIndexSetupState(statePath);
+  if (state.embedding && state.embedding.profileId !== profile.profileId) {
+    throw new Error(
+      `Recall first-index setup embedding profile unsupported: ${state.embedding.profileId}; this setup flow only accepts ${profile.profileId} and never substitutes model semantics`,
+    );
+  }
+  const inspection = await artifactCache.inspectArtifact();
+  const recommendation = {
+    profileId: profile.profileId,
+    purpose: profile.purpose,
+    source: profile.source,
+    license: profile.license,
+    exactSizeBytes: profile.source.byteSize,
+    cachePath: inspection.status.artifactPath,
+    devicePolicy: 'auto' as const,
+    selected: state.embedding?.profileId === profile.profileId,
+  };
+
+  if (parsedAction.action === 'status') {
+    const recallReady = state.embedding
+      ? await runWithSelectedEmbeddingRuntime(
+          state,
+          createSelectedServiceRuntime,
+          async (runtime) => (await runtime.service.readIndexGenerationStatus()).active !== null,
+        )
+      : false;
+    writeOutput(
+      JSON.stringify({
+        action: 'status',
+        configuration: formatFirstIndexSetupConfiguration(state),
+        recommendation,
+        artifactStatus: inspection.status.state,
+        corpusEstimate: state.lastEstimate,
+        recallReady,
+      }),
+    );
+    return;
+  }
+
+  if (parsedAction.action === 'select-embeddinggemma') {
+    if (!parsedAction.approvedDownload) {
+      throw new Error(
+        'Recall first-index setup selection requires explicit --approve-download after reviewing model purpose, source, license, exact size, cache path, and device policy',
+      );
+    }
+    await artifactCache.downloadArtifact({ approved: true });
+    const selection = await (async () => {
+      const runtime = await createSelectedServiceRuntime();
+      try {
+        const verification = await runtime.service.verifyEmbeddingCapability();
+        return {
+          verification,
+          executionIdentity: runtime.executionIdentity,
+        };
+      } finally {
+        await runtime.dispose();
+      }
+    })();
+    const selectedState: RecallFirstIndexSetupState = {
+      ...state,
+      embedding: {
+        profileId: profile.profileId,
+        backend: 'embedded',
+        adapterId: selection.executionIdentity.adapter,
+        devicePolicy: 'auto',
+        verifiedAt: nowIsoTimestamp(),
+      },
+    };
+    await writeRecallFirstIndexSetupState(statePath, selectedState);
+    writeOutput(
+      JSON.stringify({
+        action: 'select-embeddinggemma',
+        configuration: formatFirstIndexSetupConfiguration(selectedState),
+        recommendation: { ...recommendation, selected: true },
+        verification: selection.verification,
+        executionIdentity: selection.executionIdentity,
+        recallReady: false,
+      }),
+    );
+    return;
+  }
+
+  if (parsedAction.action === 'estimate') {
+    if (parsedAction.measure) {
+      assertFirstIndexSetupQualityGatePassed(options.qualityGateDecision);
+    }
+    const measuredAt = nowIsoTimestamp();
+    const estimate = parsedAction.measure
+      ? await runWithSelectedEmbeddingRuntime(
+          state,
+          createSelectedServiceRuntime,
+          async (runtime) => ({
+            kind: 'measured' as const,
+            measuredAt,
+            measurement: await runtime.service.measureFirstIndexSample({
+              ...(parsedAction.maximumSessionCount === undefined
+                ? {}
+                : { maximumSessionCount: parsedAction.maximumSessionCount }),
+            }),
+          }),
+        )
+      : {
+          kind: 'metadata' as const,
+          measuredAt,
+          corpus: await metadataService.inspectConversationCorpus(),
+        };
+    const estimatedState: RecallFirstIndexSetupState = {
+      ...state,
+      lastEstimate: estimate,
+    };
+    await writeRecallFirstIndexSetupState(statePath, estimatedState);
+    writeOutput(JSON.stringify({ action: 'estimate', estimate, recallReady: false }));
+    return;
+  }
+
+  if (parsedAction.action === 'defer') {
+    writeOutput(
+      JSON.stringify({
+        action: 'defer',
+        configuration: formatFirstIndexSetupConfiguration(state),
+        recallReady: false,
+        message:
+          'Recall configuration retained; recall is not ready until the first index generation activates.',
+      }),
+    );
+    return;
+  }
+
+  if (!parsedAction.approvedBuild) {
+    throw new Error(
+      'Recall first-index setup start requires explicit --approve-build after reviewing the estimate',
+    );
+  }
+  assertFirstIndexSetupQualityGatePassed(options.qualityGateDecision);
+  if (!state.lastEstimate) {
+    throw new Error(
+      'Recall first-index setup start requires a completed metadata or measured estimate before build approval',
+    );
+  }
+  const backgroundBuild = await runWithSelectedEmbeddingRuntime(
+    state,
+    createSelectedServiceRuntime,
+    async (runtime) => {
+      const generations = await runtime.service.readIndexGenerationStatus();
+      if (generations.active) {
+        throw new Error(
+          `Recall first-index setup already has active generation ${generations.active.generationId}`,
+        );
+      }
+      return generations.staging
+        ? runtime.service.resumeBackgroundIndexGeneration()
+        : runtime.service.startBackgroundIndexGeneration();
+    },
+  );
+  writeOutput(JSON.stringify({ action: 'start', recallReady: false, backgroundBuild }));
+}

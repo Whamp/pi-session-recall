@@ -124,6 +124,18 @@ _Avoid_: Daemon, background job framework
 The one bounded local record containing a background index build's generation, process state, progress, latest durable checkpoint, and latest actionable error.
 _Avoid_: Event log, job history
 
+**Corpus metadata estimate**:
+A model-free count of physical session files and their total source bytes before first-index approval.
+_Avoid_: Index estimate, corpus scan
+
+**Measured indexing sample**:
+Bounded first-index work that measures model cold start and throughput while retaining compatible embeddings for the approved full build.
+_Avoid_: Benchmark, throwaway sample
+
+**Recall readiness**:
+Whether one complete active index generation is available for recall search; selected inference configuration alone is not ready.
+_Avoid_: Setup complete, model ready
+
 **Index manifest**:
 The versioned identity of the model, tokenizer, chunk policy, provenance schema, and zvec schema used by one index generation.
 _Avoid_: Index state, configuration

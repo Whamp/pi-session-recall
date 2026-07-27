@@ -9,9 +9,14 @@ import {
   truncateHead,
 } from '@earendil-works/pi-coding-agent';
 
+import { applyRecallQualityPolicyToConversationConfig } from './apply-recall-quality-policy.js';
 import { RecallSearchScope } from './enums.js';
 import { formatRecallSearchResults } from './format-recall-search-results.js';
 import { loadRecallConversationConfig } from './recall-conversation-config.js';
+import {
+  readRecallFirstIndexSetupState,
+  resolveRecallFirstIndexSetupStatePath,
+} from './recall-first-index-setup-command.js';
 import {
   createRecallConversationService,
   type RecallConversationSearch,
@@ -19,6 +24,8 @@ import {
   type RecallSearchMode,
 } from './recall-conversation-service.js';
 import { runRecallIndexCommand } from './recall-index-command.js';
+import { createRecommendedEmbeddingGemmaModelProfile } from './recall-model-profiles.js';
+import { createRecommendedEmbeddingGemmaConversationRuntime } from './recommended-embeddinggemma-conversation-service.js';
 import {
   MAX_RECALL_FINAL_RESULT_COUNT,
   readRecallQualityGateDecision,
@@ -59,28 +66,33 @@ export default async function recallExtension(
 ): Promise<void> {
   const qualityGateDecision = await readRecallQualityGateDecision(RECALL_QUALITY_RESULTS_PATH);
   const configured = await loadRecallConversationConfig();
-  const selectedPolicy = qualityGateDecision.selectedPolicy;
-  const config = selectedPolicy
-    ? {
-        ...configured,
-        chunkPolicy: {
-          maxTokens: selectedPolicy.chunkPolicy.maxTokens,
-          overlapTokens: selectedPolicy.chunkPolicy.overlapTokens,
-        },
-        searchCandidateLimits: {
-          dense: selectedPolicy.candidateCount,
-          lexical: selectedPolicy.candidateCount,
-          identifier: selectedPolicy.candidateCount,
-        },
-      }
-    : configured;
-  const defaultResultLimit = selectedPolicy?.finalCount ?? 5;
+  const config = applyRecallQualityPolicyToConversationConfig(configured, qualityGateDecision);
+  const defaultResultLimit = qualityGateDecision.selectedPolicy?.finalCount ?? 5;
   let recallWarningHandler: ((message: string) => void) | undefined;
-  const service = createRecallConversationService(config, {
-    notifyWarning(message) {
-      recallWarningHandler?.(message);
-    },
-  });
+  const firstIndexSetupState = await readRecallFirstIndexSetupState(
+    resolveRecallFirstIndexSetupStatePath(config),
+  );
+  const selectedEmbeddingProfile = firstIndexSetupState.embedding?.profileId;
+  const recommendedEmbeddingProfile = createRecommendedEmbeddingGemmaModelProfile();
+  if (
+    selectedEmbeddingProfile &&
+    selectedEmbeddingProfile !== recommendedEmbeddingProfile.profileId
+  ) {
+    throw new Error(
+      `Recall configured embedding profile unsupported: ${selectedEmbeddingProfile}; run setup:recall status instead of silently selecting another profile`,
+    );
+  }
+  const service = selectedEmbeddingProfile
+    ? createRecommendedEmbeddingGemmaConversationRuntime(config, {
+        onWarning(message) {
+          recallWarningHandler?.(message);
+        },
+      }).service
+    : createRecallConversationService(config, {
+        notifyWarning(message) {
+          recallWarningHandler?.(message);
+        },
+      });
   pi.registerTool({
     name: 'pi-session-recall',
     label: 'Pi Session Recall',

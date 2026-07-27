@@ -83,11 +83,19 @@ pi install /home/will/projects/pi-session-recall
 
 Reload a running Pi session with `/reload`.
 
-The committed quality report passes and selects 512/64 chunks, 8 candidates per channel, and 5 final results. Create the initial production index explicitly:
+The committed quality report passes and selects 512/64 chunks, 8 candidates per channel, and 5 final results. A fresh guided setup remains unconfigured until the operator selects and verifies embeddings:
 
-```text
-/pi-session-recall-index --rebuild
+```bash
+npm run --silent setup:recall -- status
+npm run --silent setup:recall -- select-embeddinggemma --approve-download
+npm run --silent setup:recall -- estimate
+npm run --silent setup:recall -- estimate --measure --sample-sessions 3 # optional
+npm run --silent setup:recall -- start --approve-build
 ```
+
+The metadata estimate performs no model work. The optional measured sample warms the same profile-bound cache that the detached full build reuses. Build approval is separate from download approval and returns after worker launch. See [Guided setup for the first index](docs/inference/first-index-guided-setup.md).
+
+Existing Octen installations can continue to create a generation through `/pi-session-recall-index --rebuild`; guided migration and mixed-capability repair are tracked separately.
 
 After that initial generation exists, interactive Pi operations read it without performing whole-session maintenance:
 
@@ -205,7 +213,7 @@ Backend URLs, devices, and adapter implementations are not model-profile identit
 
 See [Inference profiles and provider conformance](docs/inference/provider-conformance.md), [Embedded EmbeddingGemma execution](docs/inference/embedded-embeddinggemma.md), the [recommended Qwen reranker](docs/inference/qwen-reranker.md), and the [recommended QMD query planner](docs/inference/qmd-query-planner.md) for service wiring, deterministic evidence, and pending real-model acceptance.
 
-The recommended EmbeddingGemma artifact is available only through an explicit operator workflow. Inspecting or checking it never downloads a model:
+The recommended EmbeddingGemma artifact is available only through an explicit operator workflow. [Guided first-index setup](docs/inference/first-index-guided-setup.md) combines selection, corpus estimates, and detached build approval. Inspecting or checking the artifact alone never downloads a model:
 
 ```bash
 npm run --silent model:embeddinggemma -- inspect
@@ -240,7 +248,7 @@ npm run --silent model:qmd-query-planner -- repair --approve
 npm run --silent model:qmd-query-planner -- remove --approve
 ```
 
-Injecting a planner profile and identified embedded or HTTP adapter enables `RecallConversationService.verifyQueryPlanningCapability()`. It does not add a query-planned search mode; issue #29 owns retrieval and ranking integration. Artifact workflows never start inference or indexing. Persisted mixed-capability guided setup remains tracked by #43. See [Pinned EmbeddingGemma model artifact](docs/inference/embeddinggemma-model-artifact.md), [Embedded EmbeddingGemma execution](docs/inference/embedded-embeddinggemma.md), the [recommended Qwen reranker](docs/inference/qwen-reranker.md), and the [recommended QMD query planner](docs/inference/qmd-query-planner.md) for cache behavior, runtime use, and evidence limits.
+Injecting a planner profile and identified embedded or HTTP adapter enables `RecallConversationService.verifyQueryPlanningCapability()`. It does not add a query-planned search mode; issue #29 owns retrieval and ranking integration. Artifact-only workflows never start inference or indexing. First-index setup persists the verified embedded embedding selection; independent mixed-capability add, replace, and repair behavior remains tracked by #43. See [Pinned EmbeddingGemma model artifact](docs/inference/embeddinggemma-model-artifact.md), [Embedded EmbeddingGemma execution](docs/inference/embedded-embeddinggemma.md), the [recommended Qwen reranker](docs/inference/qwen-reranker.md), and the [recommended QMD query planner](docs/inference/qmd-query-planner.md) for cache behavior, runtime use, and evidence limits.
 
 ## Default local models
 

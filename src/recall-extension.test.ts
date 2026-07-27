@@ -84,6 +84,15 @@ void test('Pi recall tool adapter propagates trusted cwd with project default an
     options: RecallConversationSearchOptions;
   }> = [];
   const service: RecallConversationService = {
+    async verifyEmbeddingCapability() {
+      throw new Error('Pi recall adapter test does not verify embeddings');
+    },
+    async inspectConversationCorpus() {
+      throw new Error('Pi recall adapter test does not inspect the corpus');
+    },
+    async measureFirstIndexSample() {
+      throw new Error('Pi recall adapter test does not measure indexing');
+    },
     async verifyQueryPlanningCapability() {
       throw new Error('Pi recall adapter test does not configure query planning');
     },

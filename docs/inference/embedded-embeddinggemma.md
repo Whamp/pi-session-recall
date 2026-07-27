@@ -32,7 +32,7 @@ The service runs the profile canary twice through the query operation. The vecto
 
 ## Service wiring
 
-The guided configuration flow tracked by #28 is not implemented yet. Current callers select embedded execution through the public service dependencies:
+The [guided first-index setup](first-index-guided-setup.md) selects embedded execution through the public service dependencies below. Later mixed-capability setup remains separate:
 
 ```typescript
 import {

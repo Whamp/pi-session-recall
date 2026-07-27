@@ -1,5 +1,5 @@
-import { mkdir, readdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
+import { dirname } from 'node:path';
 
 import { Type } from 'typebox';
 import { Value } from 'typebox/value';
@@ -7,6 +7,7 @@ import { Value } from 'typebox/value';
 import type { EmbeddingVectorCache } from './embedding-vector-cache.js';
 import { RecallDiagnosticErrorCategory, RecallDiagnosticStatus } from './enums.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
+import { listRecallConversationSessionFiles } from './recall-conversation-corpus.js';
 import type { RecallChunkPolicy } from './recall-chunk-policy.js';
 import {
   accumulateRecallIndexMetrics,
@@ -133,31 +134,6 @@ export interface IncrementalConversationSessionIndexerOptions {
   signal?: AbortSignal;
   diagnosticMetrics?: RecallIndexDiagnosticMetrics;
   diagnosticsClock?: RecallDiagnosticsClock;
-}
-
-async function listSessionFiles(directory: string): Promise<string[]> {
-  const files: string[] = [];
-  async function visit(current: string): Promise<void> {
-    let entries;
-    try {
-      entries = await readdir(current, { withFileTypes: true });
-    } catch (error) {
-      if (readNodeErrorCode(error) === 'ENOENT') {
-        return;
-      }
-      throw error;
-    }
-    for (const entry of entries) {
-      const path = join(current, entry.name);
-      if (entry.isDirectory()) {
-        await visit(path);
-      } else if (entry.isFile() && entry.name.endsWith('.jsonl')) {
-        files.push(path);
-      }
-    }
-  }
-  await visit(directory);
-  return files.sort();
 }
 
 async function readConversationIndexState(statePath: string): Promise<ConversationIndexState> {
@@ -653,7 +629,7 @@ async function scanPhysicalSessionFiles(options: IncrementalSessionIndexerOption
   try {
     return {
       state: await readConversationIndexState(options.statePath),
-      sessionFiles: await listSessionFiles(options.sessionsDirectory),
+      sessionFiles: await listRecallConversationSessionFiles(options.sessionsDirectory),
     };
   } finally {
     if (

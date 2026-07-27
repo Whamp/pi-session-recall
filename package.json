@@ -16,6 +16,7 @@
     "model:embeddinggemma": "node --import tsx src/manage-recall-embeddinggemma-model.ts",
     "model:qwen-reranker": "node --import tsx src/manage-recall-qwen-reranker-model.ts",
     "model:qmd-query-planner": "node --import tsx src/manage-recall-qmd-query-planner-model.ts",
+    "setup:recall": "node --import tsx src/setup-recall-first-index.ts",
     "typecheck": "tsc --noEmit",
     "lint": "oxlint --type-aware src",
     "format:check": "oxfmt --check ."

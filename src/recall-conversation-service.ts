@@ -27,6 +27,12 @@ import {
   RECALL_RANK_FUSION_VERSION,
   RECALL_RRF_RANK_CONSTANT,
 } from './fuse-recall-search-candidates.js';
+import {
+  inspectRecallConversationCorpus,
+  MAX_RECALL_FIRST_INDEX_SAMPLE_SESSION_COUNT,
+  selectRecallConversationCorpusSample,
+  type RecallConversationCorpusInspection,
+} from './recall-conversation-corpus.js';
 import { isUnknownRecord } from './is-unknown-record.js';
 import {
   indexChangedConversationSession,
@@ -117,7 +123,10 @@ import {
   RECALL_RERANK_POLICY_VERSION,
   type RankedRecallSearchResult,
 } from './rank-recall-search-results.js';
-import type { ConversationTextTokenizer } from './session-conversation-index.js';
+import {
+  readSessionConversationChunks,
+  type ConversationTextTokenizer,
+} from './session-conversation-index.js';
 import {
   openZvecConversationStore,
   type ZvecConversationStore,
@@ -216,6 +225,40 @@ export interface RecallConversationIndexResult {
   totalChunks: number;
 }
 
+/** Verified embedding profile and tokenizer identity accepted before guided setup persists it. */
+export interface RecallEmbeddingCapabilityVerification {
+  embeddingProfileId: string;
+  model: string;
+  dimensions: number;
+  normalization: 'l2' | null;
+  tokenizerModel: string;
+}
+
+/** Bound and cancellation for one optional first-index measurement sample. */
+export interface RecallFirstIndexSampleOptions {
+  maximumSessionCount?: number;
+  signal?: AbortSignal;
+}
+
+/** Cold start, throughput, cache reuse, and duration range from one bounded corpus sample. */
+export interface RecallFirstIndexSampleMeasurement {
+  corpus: RecallConversationCorpusInspection;
+  sampledSessionCount: number;
+  sampledSourceByteSize: number;
+  sampledDenseDocumentCount: number;
+  coldStartMilliseconds: number;
+  measuredSampleMilliseconds: number;
+  sourceBytesPerSecond: number;
+  denseDocumentsPerSecond: number;
+  cacheHitCount: number;
+  newlyEmbeddedDocumentCount: number;
+  embeddingRequestCount: number;
+  estimatedDurationMilliseconds: {
+    minimum: number;
+    maximum: number;
+  };
+}
+
 /** Cancellation accepted by independent query planner setup verification. */
 export interface RecallQueryPlanningCapabilityVerificationOptions {
   signal?: AbortSignal;
@@ -233,6 +276,16 @@ export interface RecallQueryPlanningCapabilityVerification {
 
 /** Search plus inference verification and explicit index-generation operations. */
 export interface RecallConversationService {
+  /** Verifies the selected embedding canary and tokenizer without indexing corpus documents. */
+  verifyEmbeddingCapability(options?: {
+    signal?: AbortSignal;
+  }): Promise<RecallEmbeddingCapabilityVerification>;
+  /** Inspects session count and source bytes without parsing sessions or invoking inference. */
+  inspectConversationCorpus(): Promise<RecallConversationCorpusInspection>;
+  /** Warms the staging generation's profile-bound cache from a bounded corpus sample. */
+  measureFirstIndexSample(
+    options?: RecallFirstIndexSampleOptions,
+  ): Promise<RecallFirstIndexSampleMeasurement>;
   verifyQueryPlanningCapability(
     options?: RecallQueryPlanningCapabilityVerificationOptions,
   ): Promise<RecallQueryPlanningCapabilityVerification>;
@@ -1107,6 +1160,165 @@ export function createRecallConversationService(
   }
 
   return {
+    async verifyEmbeddingCapability(options = {}) {
+      const canary = await readCurrentEmbeddingCanary(options.signal);
+      await getConversationTokenizer();
+      const manifest = createExpectedManifest(canary);
+      return {
+        embeddingProfileId,
+        model: embeddingProfile.identity.requestModel,
+        dimensions: embeddingProfile.identity.dimensions,
+        normalization: embeddingProfile.identity.normalization ?? null,
+        tokenizerModel: manifest.tokenizer.model,
+      };
+    },
+    async inspectConversationCorpus() {
+      return (await inspectRecallConversationCorpus(config.sessionsDirectory)).inspection;
+    },
+    measureFirstIndexSample(options = {}) {
+      return runSerialized(async () => {
+        const maximumSessionCount =
+          options.maximumSessionCount ?? MAX_RECALL_FIRST_INDEX_SAMPLE_SESSION_COUNT;
+        const corpus = await inspectRecallConversationCorpus(config.sessionsDirectory);
+        const sampleFiles = selectRecallConversationCorpusSample(corpus.files, maximumSessionCount);
+        const generationStatus = await readRecallIndexGenerationStatus(generationCoordinatorConfig);
+        if (generationStatus.active) {
+          throw new Error(
+            `Recall first-index sample requires no active generation; active generation ${generationStatus.active.generationId} already exists`,
+          );
+        }
+
+        const stagingBuildLockPath = join(
+          generationCoordinatorConfig.generationsDirectory,
+          'staging-operation.lock',
+        );
+        const stagingBuildSignal = createRecallLockAcquisitionSignal(options.signal, undefined);
+        const releaseStagingBuildLock = await acquireRecallConversationLock(
+          stagingBuildLockPath,
+          stagingBuildSignal,
+        );
+        let stagingGeneration:
+          | Awaited<ReturnType<typeof prepareStagingRecallIndexGeneration>>
+          | undefined;
+        let releaseGenerationLock: (() => Promise<void>) | undefined;
+        try {
+          stagingGeneration = await prepareStagingRecallIndexGeneration(
+            generationCoordinatorConfig,
+            embeddingProfileId,
+          );
+          releaseGenerationLock = await acquireRecallConversationLock(
+            stagingGeneration.paths.lockPath,
+            stagingBuildSignal,
+          );
+
+          const coldStartStartedAtMilliseconds = diagnosticsClock.monotonicMilliseconds();
+          const canary = await readCurrentEmbeddingCanary(options.signal);
+          await getConversationTokenizer();
+          const coldStartMilliseconds = Math.max(
+            diagnosticsClock.monotonicMilliseconds() - coldStartStartedAtMilliseconds,
+            0,
+          );
+          const preparedIndex = await prepareIndexForWrite(
+            stagingGeneration.paths,
+            options.signal,
+            canary,
+          );
+          const embeddingCache = createEmbeddingVectorCache({
+            cacheDirectory: config.embeddingCacheDirectory,
+            identity: createEmbeddingVectorCacheIdentity(preparedIndex.manifest),
+            embeddingRequestBatchSize: config.embeddingBatchSize,
+            embeddings: {
+              embedTexts: embeddingProvider.embedDocuments.bind(embeddingProvider),
+            },
+            diagnosticsClock,
+          });
+
+          let sampledDenseDocumentCount = 0;
+          let cacheHitCount = 0;
+          let newlyEmbeddedDocumentCount = 0;
+          let embeddingRequestCount = 0;
+          const measuredSampleStartedAtMilliseconds = diagnosticsClock.monotonicMilliseconds();
+          for (const file of sampleFiles) {
+            if (options.signal?.aborted) {
+              throw new Error('Recall first-index sample cancelled', {
+                cause: options.signal.reason,
+              });
+            }
+            const chunks = await readSessionConversationChunks(file.sessionPath, {
+              tokenizer: preparedIndex.tokenizer,
+              maxTokens: preparedIndex.manifest.chunkPolicy.maxTokens,
+              overlapTokens: preparedIndex.manifest.chunkPolicy.overlapTokens,
+            });
+            const denseDocuments = chunks
+              .filter((chunk) => chunk.isDenseSearchable)
+              .map((chunk) => chunk.content);
+            sampledDenseDocumentCount += denseDocuments.length;
+            for (let start = 0; start < denseDocuments.length; start += 128) {
+              const cacheResult = await embeddingCache.resolveEmbeddingVectors(
+                denseDocuments.slice(start, start + 128),
+                options.signal,
+              );
+              cacheHitCount += cacheResult.cacheHits;
+              newlyEmbeddedDocumentCount += cacheResult.newlyEmbeddedChunks;
+              embeddingRequestCount += cacheResult.embeddingRequestCount;
+            }
+          }
+          const measuredSampleMilliseconds = Math.max(
+            diagnosticsClock.monotonicMilliseconds() - measuredSampleStartedAtMilliseconds,
+            0,
+          );
+          const sampledSourceByteSize = sampleFiles.reduce(
+            (total, file) => total + file.sourceByteSize,
+            0,
+          );
+          const measuredSampleSeconds = measuredSampleMilliseconds / 1_000;
+          const sourceBytesPerSecond =
+            measuredSampleSeconds > 0 ? sampledSourceByteSize / measuredSampleSeconds : 0;
+          const denseDocumentsPerSecond =
+            measuredSampleSeconds > 0 ? sampledDenseDocumentCount / measuredSampleSeconds : 0;
+          const projectedVariableMilliseconds =
+            sampledSourceByteSize > 0
+              ? measuredSampleMilliseconds *
+                (corpus.inspection.sourceByteSize / sampledSourceByteSize)
+              : 0;
+          const projectedDurationMilliseconds =
+            coldStartMilliseconds + projectedVariableMilliseconds;
+
+          await preserveStagingRecallIndexGeneration(
+            generationCoordinatorConfig,
+            stagingGeneration.generationId,
+          );
+          return {
+            corpus: corpus.inspection,
+            sampledSessionCount: sampleFiles.length,
+            sampledSourceByteSize,
+            sampledDenseDocumentCount,
+            coldStartMilliseconds,
+            measuredSampleMilliseconds,
+            sourceBytesPerSecond,
+            denseDocumentsPerSecond,
+            cacheHitCount,
+            newlyEmbeddedDocumentCount,
+            embeddingRequestCount,
+            estimatedDurationMilliseconds: {
+              minimum: Math.floor(projectedDurationMilliseconds * 0.8),
+              maximum: Math.ceil(projectedDurationMilliseconds * 1.25),
+            },
+          };
+        } catch (error) {
+          if (stagingGeneration) {
+            await preserveStagingRecallIndexGeneration(
+              generationCoordinatorConfig,
+              stagingGeneration.generationId,
+            );
+          }
+          throw error;
+        } finally {
+          await releaseGenerationLock?.();
+          await releaseStagingBuildLock();
+        }
+      });
+    },
     async verifyQueryPlanningCapability(options = {}) {
       if (!queryPlanningProfile || !queryPlanner) {
         throw new Error(

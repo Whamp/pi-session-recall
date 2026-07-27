@@ -1,0 +1,232 @@
+import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
+import test from 'node:test';
+
+import { Type } from 'typebox';
+import { Value } from 'typebox/value';
+
+import {
+  measureRecallEmbeddingProviderConformance,
+  measureRecallRerankingProviderConformance,
+} from './recall-inference-conformance.js';
+import {
+  createOctenEmbeddingModelProfile,
+  createQwenRerankingModelProfile,
+} from './recall-model-profiles.js';
+import { createOctenHttpEmbeddingProvider } from './octen-http-embedding-provider.js';
+import { createQwenHttpRerankingProvider } from './qwen-http-reranking-provider.js';
+
+const embeddingRequestSchema = Type.Object({
+  input: Type.Array(Type.String()),
+  model: Type.String(),
+});
+
+const rerankingRequestSchema = Type.Object({
+  model: Type.String(),
+  query: Type.String(),
+  documents: Type.Array(Type.String()),
+  'top_n': Type.Integer(),
+});
+
+void test('Octen HTTP embedding provider passes shared query and document conformance', async (t) => {
+  const requests: Array<ReturnType<typeof Value.Parse<typeof embeddingRequestSchema>>> = [];
+  const vectorsByInput = new Map<string, number[]>([
+    ['Where is source provenance handled?', [1, 0, 0]],
+    ['Source provenance is retained.', [0, 1, 0]],
+    ['The navigation bar is blue.', [0, 0, 1]],
+  ]);
+  const server = createServer((request, response) => {
+    let body = '';
+    request.setEncoding('utf8');
+    request.on('data', (chunk) => {
+      body += chunk;
+    });
+    request.on('end', () => {
+      const payload = Value.Parse(embeddingRequestSchema, JSON.parse(body));
+      requests.push(payload);
+      response.setHeader('content-type', 'application/json');
+      response.end(
+        JSON.stringify({
+          data: payload.input.map((input, index) => ({
+            index,
+            embedding: vectorsByInput.get(input),
+          })),
+        }),
+      );
+    });
+  });
+  await new Promise<void>((resolve) => {
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  t.after(() => server.close());
+  const address = server.address();
+  assert.ok(address && typeof address === 'object');
+  const profile = createOctenEmbeddingModelProfile({
+    requestModel: 'octen-embed',
+    servedModelId: 'Octen/Octen-Embedding-4B',
+    artifact: 'Octen-Embedding-4B.Q8_0.gguf',
+    dimensions: 3,
+    quantization: 'Q8_0',
+    pooling: 'last',
+  });
+  const provider = createOctenHttpEmbeddingProvider(profile, {
+    baseUrl: `http://127.0.0.1:${address.port}/v1`,
+    batchSize: 8,
+  });
+  const clockValues = [0, 7, 7, 18];
+
+  const measurement = await measureRecallEmbeddingProviderConformance({
+    provider,
+    profile,
+    query: 'Where is source provenance handled?',
+    expectedQueryEmbedding: [1, 0, 0],
+    documents: ['Source provenance is retained.', 'The navigation bar is blue.'],
+    expectedDocumentEmbeddings: [
+      [0, 1, 0],
+      [0, 0, 1],
+    ],
+    monotonicMilliseconds() {
+      const value = clockValues.shift();
+      assert.notEqual(value, undefined);
+      return value ?? 0;
+    },
+  });
+
+  assert.deepEqual(requests, [
+    {
+      model: 'octen-embed',
+      input: ['Where is source provenance handled?'],
+    },
+    {
+      model: 'octen-embed',
+      input: ['Source provenance is retained.', 'The navigation bar is blue.'],
+    },
+  ]);
+  assert.deepEqual(measurement, {
+    queryCount: 1,
+    documentCount: 2,
+    queryMilliseconds: 7,
+    documentMilliseconds: 11,
+  });
+});
+
+void test('Qwen HTTP reranking provider passes shared ordered-score conformance', async (t) => {
+  const requests: Array<ReturnType<typeof Value.Parse<typeof rerankingRequestSchema>>> = [];
+  const server = createServer((request, response) => {
+    let body = '';
+    request.setEncoding('utf8');
+    request.on('data', (chunk) => {
+      body += chunk;
+    });
+    request.on('end', () => {
+      requests.push(Value.Parse(rerankingRequestSchema, JSON.parse(body)));
+      response.setHeader('content-type', 'application/json');
+      response.end(
+        JSON.stringify({
+          model: 'qwen3-rerank',
+          object: 'list',
+          usage: { 'prompt_tokens': 42, 'total_tokens': 42 },
+          results: [
+            { index: 1, 'relevance_score': 0.125 },
+            { index: 0, 'relevance_score': 0.875 },
+          ],
+        }),
+      );
+    });
+  });
+  await new Promise<void>((resolve) => {
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  t.after(() => server.close());
+  const address = server.address();
+  assert.ok(address && typeof address === 'object');
+  const profile = createQwenRerankingModelProfile('qwen3-rerank');
+  const provider = createQwenHttpRerankingProvider(profile, {
+    baseUrl: `http://127.0.0.1:${address.port}/v1`,
+  });
+  const clockValues = [0, 13];
+
+  const measurement = await measureRecallRerankingProviderConformance({
+    provider,
+    profile,
+    query: 'source provenance',
+    documents: ['Preserve exact source provenance.', 'The navigation bar is blue.'],
+    expectedScores: [0.875, 0.125],
+    monotonicMilliseconds() {
+      const value = clockValues.shift();
+      assert.notEqual(value, undefined);
+      return value ?? 0;
+    },
+  });
+
+  assert.deepEqual(requests, [
+    {
+      model: 'qwen3-rerank',
+      query: 'source provenance',
+      documents: ['Preserve exact source provenance.', 'The navigation bar is blue.'],
+      'top_n': 2,
+    },
+  ]);
+  assert.deepEqual(measurement, {
+    queryCount: 1,
+    documentCount: 2,
+    rerankingMilliseconds: 13,
+  });
+});
+
+void test('embedding conformance rejects document vectors returned out of order', async () => {
+  const profile = createOctenEmbeddingModelProfile({
+    requestModel: 'fixture-embed',
+    servedModelId: 'fixture-embed',
+    artifact: 'fixture.gguf',
+    dimensions: 2,
+    quantization: 'fixture',
+    pooling: 'last',
+  });
+
+  await assert.rejects(
+    () =>
+      measureRecallEmbeddingProviderConformance({
+        profile,
+        provider: {
+          async embedQuery() {
+            return [1, 0];
+          },
+          async embedDocuments() {
+            return [
+              [0, 1],
+              [1, 0],
+            ];
+          },
+        },
+        query: 'query',
+        expectedQueryEmbedding: [1, 0],
+        documents: ['first', 'second'],
+        expectedDocumentEmbeddings: [
+          [1, 0],
+          [0, 1],
+        ],
+      }),
+    /Recall document embedding index 0 conformance vector mismatch at dimension 0/u,
+  );
+});
+
+void test('reranking conformance rejects a non-finite relevance score', async () => {
+  const profile = createQwenRerankingModelProfile('fixture-reranker');
+
+  await assert.rejects(
+    () =>
+      measureRecallRerankingProviderConformance({
+        profile,
+        provider: {
+          async rerankDocuments() {
+            return [Number.NaN];
+          },
+        },
+        query: 'query',
+        documents: ['candidate'],
+        expectedScores: [0.5],
+      }),
+    /Recall reranking conformance score invalid at candidate index 0/u,
+  );
+});

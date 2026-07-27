@@ -28,9 +28,18 @@ import {
   type ConversationIndexProgress,
   type ConversationIndexSummary,
 } from './incremental-session-indexer.js';
-import { createLocalEmbeddingClient, type LocalEmbeddingClient } from './local-embedding-client.js';
-import { createLocalRerankerClient, type LocalRerankerClient } from './local-reranker-client.js';
+import type { LocalEmbeddingClient } from './local-embedding-client.js';
 import { loadOctenConversationTokenizer } from './octen-conversation-tokenizer.js';
+import {
+  createOctenEmbeddingModelProfile,
+  createQwenRerankingModelProfile,
+} from './recall-model-profiles.js';
+import {
+  type RecallEmbeddingProvider,
+  type RecallRerankingProvider,
+} from './recall-inference-capabilities.js';
+import { createOctenHttpEmbeddingProvider } from './octen-http-embedding-provider.js';
+import { createQwenHttpRerankingProvider } from './qwen-http-reranking-provider.js';
 import {
   assertRecallIndexManifestCompatible,
   calculateRecallEmbeddingCanaryCosineSimilarity,
@@ -201,10 +210,13 @@ export interface RecallConversationService {
   ): Promise<RecallConversationIndexResult>;
 }
 
-/** Injectable local model, tokenizer, and zvec boundaries used by tests and bounded evaluation. */
+/** Injectable inference, tokenizer, and zvec boundaries used by tests and bounded evaluation. */
 export interface RecallConversationDependencies {
+  /** Capability-specific embedding provider; preferred over the legacy shared operation. */
+  embeddingProvider?: RecallEmbeddingProvider;
+  /** @deprecated Use embeddingProvider so query and document semantics stay distinct. */
   embeddings?: LocalEmbeddingClient;
-  reranker?: LocalRerankerClient;
+  reranker?: RecallRerankingProvider;
   loadTokenizer?: () => Promise<ConversationTextTokenizer>;
   openStore?: (mode: 'read' | 'write') => ZvecConversationStore;
   resolveProjectIdentity?: (workingDirectory: string) => Promise<ResolvedProjectIdentity | null>;
@@ -548,19 +560,32 @@ export function createRecallConversationService(
   config: RecallConversationConfig,
   dependencies: RecallConversationDependencies = {},
 ): RecallConversationService {
-  const embeddings =
-    dependencies.embeddings ??
-    createLocalEmbeddingClient({
-      baseUrl: config.embeddingBaseUrl,
-      model: config.embeddingModel,
-      dimensions: config.embeddingDimensions,
-      batchSize: config.embeddingBatchSize,
-    });
+  const embeddingProfile = createOctenEmbeddingModelProfile(createEmbeddingModelIdentity(config));
+  const legacyEmbeddings = dependencies.embeddings;
+  const embeddingProvider: RecallEmbeddingProvider =
+    dependencies.embeddingProvider ??
+    (legacyEmbeddings
+      ? {
+          async embedQuery(query, signal) {
+            const embedding = (await legacyEmbeddings.embedTexts([query], signal))[0];
+            if (!embedding) {
+              throw new Error('Recall embedding response missing query vector');
+            }
+            return embedding;
+          },
+          embedDocuments(documents, signal) {
+            return legacyEmbeddings.embedTexts([...documents], signal);
+          },
+        }
+      : createOctenHttpEmbeddingProvider(embeddingProfile, {
+          baseUrl: config.embeddingBaseUrl,
+          batchSize: config.embeddingBatchSize,
+        }));
+  const rerankingProfile = createQwenRerankingModelProfile(config.rerankerModel);
   const reranker =
     dependencies.reranker ??
-    createLocalRerankerClient({
+    createQwenHttpRerankingProvider(rerankingProfile, {
       baseUrl: config.rerankerBaseUrl,
-      model: config.rerankerModel,
     });
   const loadTokenizer =
     dependencies.loadTokenizer ??
@@ -616,7 +641,11 @@ export function createRecallConversationService(
   }
 
   async function readCurrentEmbeddingCanary(signal?: AbortSignal): Promise<number[]> {
-    const embedding = (await embeddings.embedTexts([RECALL_EMBEDDING_CANARY_TEXT], signal))[0];
+    const embeddings = await embeddingProvider.embedDocuments(
+      [RECALL_EMBEDDING_CANARY_TEXT],
+      signal,
+    );
+    const embedding = embeddings[0];
     if (!embedding) {
       throw new Error('Recall embedding response missing canary vector');
     }
@@ -642,7 +671,7 @@ export function createRecallConversationService(
 
   function createExpectedManifest(canaryEmbedding: readonly number[]): RecallIndexManifest {
     return createRecallIndexManifest({
-      embeddingIdentity: createEmbeddingModelIdentity(config),
+      embeddingIdentity: embeddingProfile.identity,
       canaryEmbedding,
       projectLineages: config.projectLineages,
       ...(config.chunkPolicy ? { chunkPolicy: config.chunkPolicy } : {}),
@@ -763,7 +792,7 @@ export function createRecallConversationService(
         assertRecallIndexManifestCompatible(manifest, expected, config.manifestPath);
         modelPreflighted = true;
       }
-      return embeddings.embedTexts(texts, embeddingSignal);
+      return embeddingProvider.embedDocuments(texts, embeddingSignal);
     }
     const preflightedEmbeddings: LocalEmbeddingClient = {
       embedTexts: embedTextsAfterModelPreflight,
@@ -947,7 +976,7 @@ export function createRecallConversationService(
               const queryEmbeddingStartedAtMilliseconds = diagnosticsClock.monotonicMilliseconds();
               let queryEmbedding: number[] | undefined;
               try {
-                queryEmbedding = (await embeddings.embedTexts([searchQuery], signal))[0];
+                queryEmbedding = await embeddingProvider.embedQuery(searchQuery, signal);
               } finally {
                 diagnosticMetrics.queryEmbeddingMilliseconds += Math.max(
                   diagnosticsClock.monotonicMilliseconds() - queryEmbeddingStartedAtMilliseconds,
@@ -982,7 +1011,7 @@ export function createRecallConversationService(
                     config.searchCandidateLimits.lexical +
                     config.searchCandidateLimits.identifier,
                 );
-                const diagnosticReranker: LocalRerankerClient = {
+                const diagnosticReranker: RecallRerankingProvider = {
                   async rerankDocuments(rerankerQuery, documents, rerankerSignal) {
                     const deepRerankStartedAtMilliseconds =
                       diagnosticsClock.monotonicMilliseconds();
@@ -1042,7 +1071,7 @@ export function createRecallConversationService(
                     reciprocalRankConstant: RECALL_RRF_RANK_CONSTANT,
                     rerankPolicyVersion:
                       mode === 'deep-rerank' ? RECALL_RERANK_POLICY_VERSION : null,
-                    rerankerModel: mode === 'deep-rerank' ? config.rerankerModel : null,
+                    rerankerModel: mode === 'deep-rerank' ? rerankingProfile.model : null,
                     activeBranchPrior: RECALL_ACTIVE_BRANCH_PRIOR,
                     candidateLimits: { ...config.searchCandidateLimits },
                   },

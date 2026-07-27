@@ -21,6 +21,7 @@ import {
 } from './enums.js';
 import { formatRecallSearchResults } from './format-recall-search-results.js';
 import { isUnknownRecord } from './is-unknown-record.js';
+import type { RecallEmbeddingProvider } from './recall-inference-capabilities.js';
 import type { LocalEmbeddingClient } from './local-embedding-client.js';
 import type { LocalRerankerClient } from './local-reranker-client.js';
 import {
@@ -2972,6 +2973,91 @@ void test('recall service fuses bounded dense, lexical, and identifier candidate
   assert.ok(
     !quotedPhrase.results.some((result) => result.entryId.value === 'separated-phrase-entry'),
   );
+});
+
+void test('recall service routes indexed documents and search queries through distinct embedding operations', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-service-embedding-operations-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionsDirectory = join(directory, 'sessions');
+  await mkdir(sessionsDirectory);
+  const searchableDocument = 'Capability-specific embedding provider evidence.';
+  const searchQuery = 'find provider evidence';
+  await writeFile(
+    join(sessionsDirectory, 'embedding-operations.jsonl'),
+    [
+      JSON.stringify({
+        type: 'session',
+        version: 3,
+        id: 'embedding-operations-session',
+        timestamp: '2026-08-01T10:00:00Z',
+        cwd: '/embedding-operations-project',
+      }),
+      JSON.stringify({
+        type: 'message',
+        id: 'embedding-operations-entry',
+        parentId: null,
+        timestamp: '2026-08-01T10:01:00Z',
+        message: { role: 'assistant', content: searchableDocument },
+      }),
+    ].join('\n') + '\n',
+  );
+  const embeddedQueries: string[] = [];
+  const embeddedDocumentBatches: string[][] = [];
+  const embeddingProvider: RecallEmbeddingProvider = {
+    async embedQuery(query) {
+      embeddedQueries.push(query);
+      return [1, 0, 0];
+    },
+    async embedDocuments(documents) {
+      embeddedDocumentBatches.push([...documents]);
+      return documents.map((document) =>
+        document === RECALL_EMBEDDING_CANARY_TEXT ? [0, 0, 1] : [1, 0, 0],
+      );
+    },
+  };
+  const config = createTestConfig(directory, sessionsDirectory);
+  const service = createRecallConversationService(config, {
+    embeddingProvider,
+    async loadTokenizer() {
+      return tokenizer;
+    },
+  });
+
+  await service.index();
+  const result = await service.search(searchQuery, 1, { scope: RecallSearchScope.GLOBAL });
+  const manifestBeforeBackendMove = await readRecallIndexManifest(config.manifestPath);
+  const movedBackendService = createRecallConversationService(
+    { ...config, embeddingBaseUrl: 'http://moved-backend.test/v1' },
+    {
+      embeddingProvider,
+      async loadTokenizer() {
+        return tokenizer;
+      },
+    },
+  );
+  const movedBackendResult = await movedBackendService.search('provider evidence after move', 1, {
+    scope: RecallSearchScope.GLOBAL,
+  });
+
+  assert.deepEqual(embeddedQueries, [searchQuery, 'provider evidence after move']);
+  assert.ok(embeddedDocumentBatches.flat().includes(RECALL_EMBEDDING_CANARY_TEXT));
+  assert.ok(embeddedDocumentBatches.flat().includes(searchableDocument));
+  assert.ok(!embeddedDocumentBatches.flat().includes(searchQuery));
+  assert.equal(result.results[0]?.entryId.value, 'embedding-operations-entry');
+  assert.equal(movedBackendResult.results[0]?.entryId.value, 'embedding-operations-entry');
+  assert.deepEqual(await readRecallIndexManifest(config.manifestPath), manifestBeforeBackendMove);
+  assert.deepEqual(manifestBeforeBackendMove?.embedding, {
+    requestModel: config.embeddingModel,
+    servedModelId: config.embeddingServedModelId,
+    artifact: config.embeddingArtifact,
+    dimensions: config.embeddingDimensions,
+    quantization: config.embeddingQuantization,
+    pooling: config.embeddingPooling,
+    canaryProbe: RECALL_EMBEDDING_CANARY_TEXT,
+    canaryFingerprint: createRecallEmbeddingCanaryFingerprint([0, 0, 1], 3),
+    canaryVector: [0, 0, 1],
+    canaryMinimumCosineSimilarity: 0.9995,
+  });
 });
 
 void test('recall service defaults to fused ranking and reranks only in explicit deep mode', async (t) => {

@@ -1,6 +1,6 @@
 # Pi Session Recall
 
-`pi-session-recall` gives Pi a `pi-session-recall` tool for searching past conversations by meaning or exact text. It reads Pi session JSONL files, embeds user-visible conversation text with a local OpenAI-compatible model, stores durable FP32 vectors in a content-addressed cache, and builds dense plus full-text indexes in an in-process [zvec](https://github.com/alibaba/zvec) collection. Search fuses every bounded retrieval channel and suppresses duplicate evidence. Fast deterministic hybrid ranking is the default; local Qwen3 reranking is an explicit deep-search option.
+`pi-session-recall` gives Pi a `pi-session-recall` tool for searching past conversations by meaning or exact text. It reads Pi session JSONL files, embeds user-visible conversation text through a configured inference provider, stores durable FP32 vectors in a content-addressed cache, and builds dense plus full-text indexes in an in-process [zvec](https://github.com/alibaba/zvec) collection. Search fuses every bounded retrieval channel and suppresses duplicate evidence. Fast deterministic hybrid ranking is the default; Qwen3 reranking is an explicit deep-search option.
 
 ## What it indexes
 
@@ -179,6 +179,14 @@ The extension validates the complete manifest before opening or updating zvec. M
 
 Embedding text is normalized to Unicode NFC under `unicode-nfc-v1`. Cache identity includes the normalized-text SHA-256; full served-model identity and dimensions; tokenizer revision, assets, library, and encode options; chunk-policy version; and normalization version. A model, text, tokenizer, policy, normalization, or dimension change therefore misses rather than reusing incompatible geometry.
 
+## Inference profiles and HTTP backends
+
+Model profiles define inference semantics; HTTP settings define where those semantics execute. The Octen embedding profile contains the existing manifest identity and preserves raw, unchanged text for both query and document operations. `RecallEmbeddingProvider` keeps those operations separate. The Qwen reranking profile defines ordered, finite, higher-is-more-relevant scores through `RecallRerankingProvider`.
+
+Backend URLs, request timeouts, devices, and adapter implementations are not model-profile identity. Moving the same conforming profile to another HTTP backend does not require a vector rebuild. Changing an embedding identity field recorded in the manifest still requires a rebuild.
+
+See [Inference profiles and provider conformance](docs/inference/provider-conformance.md) for the capability-specific HTTP contracts, deterministic conformance command, measurements, and live-evidence boundary.
+
 ## Default local models
 
 The checked-in embedding defaults match `~/.pi/agent/LOCAL-AI.md`:
@@ -296,10 +304,11 @@ Only clean version-4 evidence can unblock production indexing. The gate binds th
 
 ## Develop
 
-All tests use explicit fixture session directories and temporary recall data directories.
+All tests use explicit fixture session directories and temporary recall data directories. The inference conformance tests use temporary deterministic HTTP servers; they do not require a live model.
 
 ```bash
 npm install
+node --import tsx --test src/recall-inference-conformance.test.ts
 npm test
 npm run typecheck
 npm run lint

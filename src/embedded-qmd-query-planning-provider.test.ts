@@ -106,7 +106,7 @@ void test('embedded QMD query planner passes shared conformance with profile gra
     adapterConfigurationIdentity,
     /^node-llama-cpp-qmd-query-planning-config-v1:[a-f0-9]{64}$/u,
   );
-  assert.notEqual(adapterConfigurationIdentity, pendingAdapterConfigurationIdentity);
+  assert.equal(adapterConfigurationIdentity, pendingAdapterConfigurationIdentity);
   assert.match(cacheIdentity, new RegExp(`${adapterConfigurationIdentity}$`, 'u'));
   assert.deepEqual(executionIdentity, {
     adapterId: 'node-llama-cpp-qmd-query-planning-v1',
@@ -184,6 +184,8 @@ void test('embedded QMD query planner retries automatic accelerator failure on C
     },
   });
   t.after(() => provider.dispose());
+  const pendingAdapterConfigurationIdentity =
+    provider.executionIdentity.adapterConfigurationIdentity;
 
   await measureRecallQueryPlanningProviderConformance({
     provider,
@@ -201,6 +203,10 @@ void test('embedded QMD query planner retries automatic accelerator failure on C
   );
   assert.equal(provider.executionIdentity.computeBackend, 'cpu');
   assert.equal(provider.executionIdentity.fallbackFromComputeBackend, 'metal');
+  assert.notEqual(
+    provider.executionIdentity.adapterConfigurationIdentity,
+    pendingAdapterConfigurationIdentity,
+  );
   assert.deepEqual(provider.executionIdentity.probedComputeBackends, ['metal']);
 });
 

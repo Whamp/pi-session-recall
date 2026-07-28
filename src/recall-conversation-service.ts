@@ -1962,9 +1962,7 @@ export function createRecallConversationService(
     stopBackgroundIndexGeneration() {
       return stopRecallBackgroundIndexGeneration(backgroundIndexCoordinatorConfig);
     },
-    readIndexGenerationStatus() {
-      return readCanonicalIndexGenerationStatus();
-    },
+    readIndexGenerationStatus: readCanonicalIndexGenerationStatus,
     async discardStagingIndexGeneration() {
       const status = await readCanonicalIndexGenerationStatus();
       if (!status.staging) {

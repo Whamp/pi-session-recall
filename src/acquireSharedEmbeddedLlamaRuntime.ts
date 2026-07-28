@@ -1,7 +1,13 @@
-import { EmbeddedInferenceComputeBackend } from './enums.js';
+import { EmbeddedInferenceComputeBackend, EmbeddedInferenceDevicePolicy } from './enums.js';
 
 /** node-llama-cpp GPU selector, where false requests CPU execution. */
 export type NodeLlamaCppGpuBackend = 'metal' | 'cuda' | 'vulkan' | false;
+
+/** Accelerator backends that may be requested before an automatic CPU fallback. */
+export type EmbeddedInferenceAcceleratorBackend =
+  | EmbeddedInferenceComputeBackend.METAL
+  | EmbeddedInferenceComputeBackend.CUDA
+  | EmbeddedInferenceComputeBackend.VULKAN;
 
 interface SharedEmbeddedLlamaRuntimeEntry {
   referenceCount: number;
@@ -15,6 +21,14 @@ export interface SharedEmbeddedLlamaRuntimeLease<Runtime> {
   release(): Promise<void>;
 }
 
+/** Result of selecting and initializing one embedded backend under auto/explicit device policy. */
+export interface EmbeddedInferenceBackendInitialization<Resources> {
+  resources: Resources;
+  selectedComputeBackend: EmbeddedInferenceComputeBackend;
+  fallbackFromComputeBackend: EmbeddedInferenceAcceleratorBackend | null;
+  fallbackWarningEmitted: boolean;
+}
+
 const SHARED_EMBEDDED_LLAMA_RUNTIME_POOLS = new WeakMap<
   object,
   Map<string, SharedEmbeddedLlamaRuntimeEntry>
@@ -23,10 +37,7 @@ const SHARED_EMBEDDED_LLAMA_RUNTIME_POOLS = new WeakMap<
 /** Converts a native GPU selector to the persisted embedded compute backend. */
 export function mapNodeLlamaCppComputeBackend(
   backend: Exclude<NodeLlamaCppGpuBackend, false>,
-):
-  | EmbeddedInferenceComputeBackend.METAL
-  | EmbeddedInferenceComputeBackend.CUDA
-  | EmbeddedInferenceComputeBackend.VULKAN {
+): EmbeddedInferenceAcceleratorBackend {
   if (backend === 'metal') {
     return EmbeddedInferenceComputeBackend.METAL;
   }
@@ -34,6 +45,87 @@ export function mapNodeLlamaCppComputeBackend(
     return EmbeddedInferenceComputeBackend.CUDA;
   }
   return EmbeddedInferenceComputeBackend.VULKAN;
+}
+
+/** Probes supported accelerator backends only when device policy is automatic. */
+export async function probeSupportedEmbeddedComputeBackends(
+  devicePolicy: EmbeddedInferenceDevicePolicy,
+  getLlamaGpuTypes?: (include: 'supported') => Promise<readonly NodeLlamaCppGpuBackend[]>,
+): Promise<readonly EmbeddedInferenceAcceleratorBackend[]> {
+  return devicePolicy === EmbeddedInferenceDevicePolicy.AUTO && getLlamaGpuTypes
+    ? (await getLlamaGpuTypes('supported'))
+        .filter((backend): backend is Exclude<NodeLlamaCppGpuBackend, false> => backend !== false)
+        .map(mapNodeLlamaCppComputeBackend)
+    : [];
+}
+
+/** Resolves the first automatic accelerator or an explicit device-policy backend. */
+export function resolveEmbeddedInferenceComputeBackend(
+  devicePolicy: EmbeddedInferenceDevicePolicy,
+  probedComputeBackends: readonly EmbeddedInferenceAcceleratorBackend[],
+): EmbeddedInferenceComputeBackend {
+  return devicePolicy === EmbeddedInferenceDevicePolicy.AUTO
+    ? (probedComputeBackends[0] ?? EmbeddedInferenceComputeBackend.CPU)
+    : devicePolicy === EmbeddedInferenceDevicePolicy.CPU
+      ? EmbeddedInferenceComputeBackend.CPU
+      : devicePolicy === EmbeddedInferenceDevicePolicy.METAL
+        ? EmbeddedInferenceComputeBackend.METAL
+        : devicePolicy === EmbeddedInferenceDevicePolicy.CUDA
+          ? EmbeddedInferenceComputeBackend.CUDA
+          : EmbeddedInferenceComputeBackend.VULKAN;
+}
+
+/**
+ * Initializes resources for the requested backend, retrying once on CPU only under AUTO.
+ * Explicit device policies remain fail-closed and never fall back.
+ */
+export async function initializeEmbeddedInferenceWithAutoCpuFallback<Resources>(options: {
+  devicePolicy: EmbeddedInferenceDevicePolicy;
+  requestedComputeBackend: EmbeddedInferenceComputeBackend;
+  initialize: (backend: EmbeddedInferenceComputeBackend) => Promise<Resources>;
+  fallbackWarningAlreadyEmitted: boolean;
+  writeFallbackWarning: (
+    fallbackFromComputeBackend: EmbeddedInferenceAcceleratorBackend,
+    error: unknown,
+  ) => void;
+}): Promise<EmbeddedInferenceBackendInitialization<Resources>> {
+  try {
+    return {
+      resources: await options.initialize(options.requestedComputeBackend),
+      selectedComputeBackend: options.requestedComputeBackend,
+      fallbackFromComputeBackend: null,
+      fallbackWarningEmitted: options.fallbackWarningAlreadyEmitted,
+    };
+  } catch (error) {
+    if (
+      options.devicePolicy !== EmbeddedInferenceDevicePolicy.AUTO ||
+      options.requestedComputeBackend === EmbeddedInferenceComputeBackend.CPU
+    ) {
+      throw error;
+    }
+    const fallbackFromComputeBackend = options.requestedComputeBackend;
+    let fallbackWarningEmitted = options.fallbackWarningAlreadyEmitted;
+    if (!fallbackWarningEmitted) {
+      fallbackWarningEmitted = true;
+      options.writeFallbackWarning(fallbackFromComputeBackend, error);
+    }
+    return {
+      resources: await options.initialize(EmbeddedInferenceComputeBackend.CPU),
+      selectedComputeBackend: EmbeddedInferenceComputeBackend.CPU,
+      fallbackFromComputeBackend,
+      fallbackWarningEmitted,
+    };
+  }
+}
+
+/** Reads CPU or accelerator device names for one initialized embedded runtime. */
+export async function readEmbeddedInferenceDeviceNames(
+  selectedComputeBackend: EmbeddedInferenceComputeBackend,
+  runtime: { getGpuDeviceNames?: () => Promise<readonly string[]> | readonly string[] },
+): Promise<readonly string[]> {
+  return selectedComputeBackend === EmbeddedInferenceComputeBackend.CPU
+    ? ['CPU']
+    : ((await runtime.getGpuDeviceNames?.()) ?? [selectedComputeBackend]);
 }
 
 /** Routes node-llama-cpp native logs to stderr without corrupting JSON stdout. */

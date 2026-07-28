@@ -251,6 +251,50 @@ export function createRecallActiveGenerationPointer(
   return { ...identity, checksum: calculateRecallActiveGenerationPointerChecksum(identity) };
 }
 
+/**
+ * Activates one validated replacement in the generation registry.
+ * Marks the replacement REPLAY_PENDING, demotes the prior active generation to ROLLBACK with
+ * retention, and retires any previous ROLLBACK entry. Does not write the pointer or filesystem.
+ */
+export function activateRecallReplacementInRegistry(
+  registry: RecallGenerationRegistry,
+  replacement: RecallGenerationRegistryEntry,
+  pointerChecksum: string,
+  activatedAtEpochMilliseconds: number,
+  rollbackRetentionMilliseconds: number,
+): RecallGenerationRegistry {
+  const previousGenerationId = registry.activeGenerationId;
+  return {
+    ...registry,
+    activeGenerationId: replacement.generationId,
+    buildingGenerationId: null,
+    rollbackGenerationId: previousGenerationId,
+    activePointerChecksum: pointerChecksum,
+    generations: registry.generations.map((entry): RecallGenerationRegistryEntry => {
+      if (entry.generationId === replacement.generationId) {
+        return {
+          ...replacement,
+          state: RecallGenerationCutoverState.REPLAY_PENDING,
+          stateChangedAtEpochMilliseconds: activatedAtEpochMilliseconds,
+        };
+      }
+      if (entry.generationId === previousGenerationId) {
+        return {
+          ...entry,
+          state: RecallGenerationCutoverState.ROLLBACK,
+          stateChangedAtEpochMilliseconds: activatedAtEpochMilliseconds,
+          retireAfterEpochMilliseconds:
+            activatedAtEpochMilliseconds + rollbackRetentionMilliseconds,
+        };
+      }
+      if (entry.state === RecallGenerationCutoverState.ROLLBACK) {
+        return { ...entry, state: RecallGenerationCutoverState.RETIRED };
+      }
+      return entry;
+    }),
+  };
+}
+
 /** Strictly validates and serializes one active-generation pointer without writing it. */
 export function encodeRecallActiveGenerationPointer(
   pointer: RecallActiveGenerationPointer,

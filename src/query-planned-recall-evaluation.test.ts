@@ -535,6 +535,34 @@ void test('fixed private plans prove new source admission through deterministic 
   assert.equal(acceptanceReport.includes(lexicalPlanQuery), false);
   assert.equal(acceptanceReport.includes('Private mechanism phrase'), false);
 
+  const blockedAcceptance = createPublishableLiveQueryPlannedProfileAcceptance({
+    recordedAgainstCommit: acceptance.recordedAgainstCommit,
+    defaultSearchMode: acceptance.defaultSearchMode,
+    committedCorpus: acceptance.committedCorpus,
+    profileRuns: acceptance.profileRuns.map((run) => ({
+      ...run,
+      quality: {
+        ...run.quality,
+        newCandidateAdmissionCount: 0,
+        preservedExistingSuccessCount: 0,
+      },
+    })),
+    requiredSuccessfulBaselineControlCount: 1,
+    privacyAudit: acceptance.privacyAudit,
+    failureSemantics: acceptance.failureSemantics,
+  });
+  assert.equal(blockedAcceptance.releaseDecision, 'blocked-quality-gate');
+  assert.equal(blockedAcceptance.approvedSearchMode, null);
+  assert.deepEqual(blockedAcceptance.qualityGate, {
+    liveNewCandidateAdmissionPassed: false,
+    existingSuccessPreservationPassed: false,
+    existingSuccessRegressionProfileRunIds: ['embedded-cpu', 'embedded-accelerated', 'http-cpu'],
+  });
+  assert.match(
+    formatPublishableLiveQueryPlannedProfileAcceptanceReport(blockedAcceptance),
+    /Blocked: live quality gate failed/u,
+  );
+
   await chmod(plansPath, 0o644);
   await assert.rejects(
     () => loadPrivateQueryPlannedRecallPlans(plansPath, corpus),

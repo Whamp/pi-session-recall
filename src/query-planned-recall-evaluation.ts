@@ -1291,12 +1291,12 @@ export interface CreateLiveQueryPlannedProfileAcceptanceOptions {
   failureSemantics: LiveQueryPlannedFailureSemanticsEvidence;
 }
 
-/** Publishable aggregate evidence approving only the measured explicit mode identities. */
+/** Publishable aggregate evidence deciding the measured explicit mode identities. */
 export interface PublishableLiveQueryPlannedProfileAcceptance {
   version: 1;
-  releaseDecision: 'approved-explicit-mode';
+  releaseDecision: 'approved-explicit-mode' | 'blocked-quality-gate';
   recordedAgainstCommit: string;
-  approvedSearchMode: 'query-planned';
+  approvedSearchMode: 'query-planned' | null;
   defaultSearchMode: 'hybrid';
   committedCorpus: readonly CommittedCorpusLiveProfileEvidence[];
   profileRuns: readonly LiveQueryPlannedProfileEvaluationResult[];
@@ -1307,6 +1307,11 @@ export interface PublishableLiveQueryPlannedProfileAcceptance {
     rankingOnlyPromotionCount: number;
     preservedExistingSuccessCount: number;
     plannerFallbackCount: number;
+  };
+  qualityGate: {
+    liveNewCandidateAdmissionPassed: boolean;
+    existingSuccessPreservationPassed: boolean;
+    existingSuccessRegressionProfileRunIds: readonly string[];
   };
   limitations: readonly string[];
 }
@@ -1466,6 +1471,7 @@ export function createPublishableLiveQueryPlannedProfileAcceptance(
       'Live query-planned profile acceptance failed: at least one profile run is required',
     );
   }
+  const existingSuccessRegressionProfileRunIds: string[] = [];
   for (const run of options.profileRuns) {
     if (run.corpus.privateManifestSha256 !== privateManifestSha256) {
       throw new Error(
@@ -1476,9 +1482,7 @@ export function createPublishableLiveQueryPlannedProfileAcceptance(
     if (
       run.quality.preservedExistingSuccessCount < options.requiredSuccessfulBaselineControlCount
     ) {
-      throw new Error(
-        `Live query-planned profile acceptance existing-success regression for ${run.profileRun.id}`,
-      );
+      existingSuccessRegressionProfileRunIds.push(run.profileRun.id);
     }
   }
   const aggregateQuality = {
@@ -1499,24 +1503,29 @@ export function createPublishableLiveQueryPlannedProfileAcceptance(
       0,
     ),
   };
-  if (aggregateQuality.newCandidateAdmissionCount < 1) {
-    throw new Error(
-      'Live query-planned profile acceptance requires at least one live planned-query candidate admission beyond equal-work controls',
-    );
-  }
+  const qualityGate = {
+    liveNewCandidateAdmissionPassed: aggregateQuality.newCandidateAdmissionCount >= 1,
+    existingSuccessPreservationPassed: existingSuccessRegressionProfileRunIds.length === 0,
+    existingSuccessRegressionProfileRunIds,
+  };
+  const releaseApproved =
+    qualityGate.liveNewCandidateAdmissionPassed && qualityGate.existingSuccessPreservationPassed;
   return {
     version: 1,
-    releaseDecision: 'approved-explicit-mode',
+    releaseDecision: releaseApproved ? 'approved-explicit-mode' : 'blocked-quality-gate',
     recordedAgainstCommit: options.recordedAgainstCommit,
-    approvedSearchMode: 'query-planned',
+    approvedSearchMode: releaseApproved ? 'query-planned' : null,
     defaultSearchMode: options.defaultSearchMode,
     committedCorpus: options.committedCorpus.map((evidence) => ({ ...evidence })),
     profileRuns: options.profileRuns.map((run) => ({ ...run })),
     privacyAudit: { ...options.privacyAudit },
     failureSemantics: { ...options.failureSemantics },
     aggregateQuality,
+    qualityGate,
     limitations: [
-      'Approval applies only to explicit query-planned mode with the accepted Octen embedding baseline and recorded planner, reranker, adapter, grammar, score, and search-policy identities.',
+      releaseApproved
+        ? 'Approval applies only to explicit query-planned mode with the accepted Octen embedding baseline and recorded planner, reranker, adapter, grammar, score, and search-policy identities.'
+        : 'Query-planned recall remains blocked because the measured live profile matrix did not pass every release-quality condition.',
       'EmbeddingGemma live candidates remain separate and are not approved when their committed-corpus quality gate fails.',
       'The committed corpus is synthetic-but-session-shaped; the private corpus is bounded and does not establish broad superiority.',
       'Private queries, plans, source text, session paths, and model artifacts remain outside Git.',
@@ -1533,10 +1542,14 @@ export function formatPublishableLiveQueryPlannedProfileAcceptanceReport(
   if (!firstRun) {
     throw new Error('Live query-planned profile acceptance report requires a profile run');
   }
+  const decision =
+    evidence.releaseDecision === 'approved-explicit-mode'
+      ? '**Decision: Approved for explicit mode only.** Hybrid remains the default.'
+      : '**Decision: Blocked: live quality gate failed.** Hybrid remains the default.';
   const lines = [
     '# Query-Planned Recall: Live Profile Acceptance',
     '',
-    '**Decision: Approved for explicit mode only.** Hybrid remains the default.',
+    decision,
     '',
     'This evidence covers the exact measured profile, backend adapter, device class, grammar, reranker score, and search-policy identities below. It does not claim broad superiority beyond the frozen committed corpus and bounded private corpus.',
     '',
@@ -1580,6 +1593,9 @@ export function formatPublishableLiveQueryPlannedProfileAcceptanceReport(
     `- Ranking-only promotions: ${evidence.aggregateQuality.rankingOnlyPromotionCount}`,
     `- Preserved existing successes across profile runs: ${evidence.aggregateQuality.preservedExistingSuccessCount}`,
     `- Planner fallbacks: ${evidence.aggregateQuality.plannerFallbackCount}`,
+    `- Live new-candidate admission gate: ${evidence.qualityGate.liveNewCandidateAdmissionPassed ? 'pass' : 'fail'}`,
+    `- Existing-success preservation gate: ${evidence.qualityGate.existingSuccessPreservationPassed ? 'pass' : 'fail'}`,
+    `- Existing-success regression profiles: ${evidence.qualityGate.existingSuccessRegressionProfileRunIds.length > 0 ? evidence.qualityGate.existingSuccessRegressionProfileRunIds.join(', ') : 'none'}`,
     '',
     '## Candidate work by opaque case',
     '',

@@ -12,13 +12,17 @@ import {
   QueryPlannedRecallControlKind,
   RecallDiagnosticsMode,
   RecallEvidenceRelation,
+  RecallInferenceBackend,
   RecallSearchScope,
 } from './enums.js';
 import {
+  createPublishableLiveQueryPlannedProfileAcceptance,
   createPublishableQueryPlannedRecallEvaluationEvidence,
   createPublishableQueryPlannedRecallPlanIdentity,
+  formatPublishableLiveQueryPlannedProfileAcceptanceReport,
   formatPublishableQueryPlannedRecallEvaluationReport,
   loadPrivateQueryPlannedRecallPlans,
+  runLiveQueryPlannedProfileEvaluation,
   runPrivateQueryPlannedRecallEvaluation,
 } from './query-planned-recall-evaluation.js';
 import {
@@ -27,6 +31,10 @@ import {
 } from './query-planned-recall-baseline.js';
 import { isUnknownRecord } from './is-unknown-record.js';
 import type { RecallConversationConfig } from './recall-conversation-service.js';
+import {
+  createRecommendedQmdQueryPlanningModelProfile,
+  createRecommendedQwenRerankingModelProfile,
+} from './recall-model-profiles.js';
 import { normalizeRecallProjectLineages } from './resolve-project-identity.js';
 
 function createSha256(content: string): string {
@@ -302,6 +310,221 @@ void test('fixed private plans prove new source admission through deterministic 
       ),
     /requires at least one new candidate admission/u,
   );
+
+  const queryPlanningProfile = createRecommendedQmdQueryPlanningModelProfile();
+  const rerankingProfile = createRecommendedQwenRerankingModelProfile();
+  let conformancePlannerRequestCount = 0;
+  const liveEvaluation = await runLiveQueryPlannedProfileEvaluation({
+    corpus,
+    baseConfig,
+    workDirectory: join(privateDirectory, 'live-evaluation-work'),
+    profileRun: {
+      id: 'fixture-embedded-cpu',
+      backend: RecallInferenceBackend.EMBEDDED,
+      deviceClass: 'cpu',
+      device: 'fixture CPU',
+    },
+    queryPlanningProfile,
+    queryPlanner: {
+      executionIdentity: {
+        adapterId: 'fixture-live-planner-v1',
+        backend: RecallInferenceBackend.EMBEDDED,
+        cacheIdentity: `${queryPlanningProfile.profileId}:fixture-live-planner-v1:${queryPlanningProfile.promptPolicy}:${queryPlanningProfile.grammarVersion}`,
+        modelProfileId: queryPlanningProfile.profileId,
+        promptPolicy: queryPlanningProfile.promptPolicy,
+        grammarVersion: queryPlanningProfile.grammarVersion,
+        requestTimeoutMilliseconds: 1_000,
+      },
+      async planRecallQuery(request) {
+        if (request.query === queryPlanningProfile.conformanceCanary.query) {
+          conformancePlannerRequestCount += 1;
+          if (conformancePlannerRequestCount === 2) {
+            throw new Error('fixture warm planner output invalid');
+          }
+          return [
+            { type: 'lex', query: 'Copper Finch records' },
+            { type: 'vec', query: 'Copper Finch evidence' },
+          ];
+        }
+        return [
+          { type: 'lex', query: lexicalPlanQuery },
+          { type: 'vec', query: semanticPlanQuery },
+        ];
+      },
+    },
+    rerankingProfile,
+    reranker: {
+      executionIdentity: {
+        adapterId: 'fixture-live-reranker-v1',
+        backend: RecallInferenceBackend.EMBEDDED,
+        cacheIdentity: `${rerankingProfile.profileId}:fixture-live-reranker-v1`,
+        modelProfileId: rerankingProfile.profileId,
+      },
+      async rerankDocuments(rerankerQuery, documents) {
+        if (rerankerQuery === 'source provenance') {
+          return [0.9, 0.1];
+        }
+        return documents.map((document) =>
+          document.includes('Private mechanism phrase.') ? 1 : 0,
+        );
+      },
+    },
+    rerankerConformance: {
+      query: 'source provenance',
+      documents: ['Source provenance is retained.', 'The navigation bar is blue.'],
+      expectedScores: [0.9, 0.1],
+      maximumAbsoluteDifference: 0,
+    },
+    dependencies: {
+      async loadTokenizer() {
+        return {
+          encodeConversationText(text: string) {
+            return { ids: Array.from(text.split(/\\s+/u).filter(Boolean).keys()) };
+          },
+        };
+      },
+    },
+  });
+  const publishedLiveEvaluation = JSON.stringify(liveEvaluation);
+  assert.equal(liveEvaluation.capabilityConformance.queryPlanning.measurement.plannedQueryCount, 2);
+  assert.equal(liveEvaluation.capabilityConformance.reranking.measurement.documentCount, 2);
+  assert.equal(liveEvaluation.latency.warmPlanningSucceeded, false);
+  assert.equal(liveEvaluation.quality.newCandidateAdmissionCount, 1);
+  assert.equal(liveEvaluation.quality.plannerFallbackCount, 0);
+  assert.equal(liveEvaluation.cases[0]?.planSource, 'planner');
+  assert.deepEqual(liveEvaluation.cases[0]?.plannedQueries, [
+    { type: 'lex', querySha256: createSha256(lexicalPlanQuery) },
+    { type: 'vec', querySha256: createSha256(semanticPlanQuery) },
+  ]);
+  assert.equal(liveEvaluation.cases[0]?.queryPlanned.candidateAdmissionVerified, true);
+  assert.equal(publishedLiveEvaluation.includes(lexicalPlanQuery), false);
+  assert.equal(publishedLiveEvaluation.includes(semanticPlanQuery), false);
+  assert.equal(publishedLiveEvaluation.includes('Private mechanism phrase'), false);
+
+  function createMeasuredProfileRun(
+    id: string,
+    backend: RecallInferenceBackend,
+    deviceClass: 'cpu' | 'accelerated',
+    adapterIds: { queryPlanning: string; reranking: string },
+  ) {
+    const queryPlanningExecutionIdentity = {
+      ...liveEvaluation.profileIdentity.queryPlanning.executionIdentity,
+      adapterId: adapterIds.queryPlanning,
+      backend,
+      cacheIdentity: `${queryPlanningProfile.profileId}:${adapterIds.queryPlanning}:${queryPlanningProfile.promptPolicy}:${queryPlanningProfile.grammarVersion}`,
+    };
+    const rerankingExecutionIdentity = {
+      ...liveEvaluation.profileIdentity.reranking.executionIdentity,
+      adapterId: adapterIds.reranking,
+      backend,
+      cacheIdentity: `${rerankingProfile.profileId}:${adapterIds.reranking}`,
+    };
+    return {
+      ...liveEvaluation,
+      profileRun: {
+        id,
+        backend,
+        deviceClass,
+        device: deviceClass === 'cpu' ? 'fixture CPU' : 'fixture accelerator',
+      },
+      profileIdentity: {
+        ...liveEvaluation.profileIdentity,
+        queryPlanning: {
+          ...liveEvaluation.profileIdentity.queryPlanning,
+          executionIdentity: queryPlanningExecutionIdentity,
+        },
+        reranking: {
+          ...liveEvaluation.profileIdentity.reranking,
+          executionIdentity: rerankingExecutionIdentity,
+        },
+      },
+      capabilityConformance: {
+        queryPlanning: {
+          ...liveEvaluation.capabilityConformance.queryPlanning,
+          executionIdentity: queryPlanningExecutionIdentity,
+        },
+        reranking: {
+          ...liveEvaluation.capabilityConformance.reranking,
+          executionIdentity: rerankingExecutionIdentity,
+        },
+      },
+    };
+  }
+  const embeddedAdapters = {
+    queryPlanning: 'node-llama-cpp-qmd-query-planning-v1',
+    reranking: 'node-llama-cpp-qwen-reranking-logit-recovery-v1',
+  };
+  const acceptance = createPublishableLiveQueryPlannedProfileAcceptance({
+    recordedAgainstCommit: '030396576c03c705a1f3c84dce1ff639256ed2cf',
+    defaultSearchMode: 'hybrid',
+    committedCorpus: [
+      {
+        evidenceKind: 'accepted-hybrid-baseline',
+        deviceClass: 'baseline',
+        profileId: 'octen-embed',
+        evidenceSha256: '0'.repeat(64),
+        qualityPassed: true,
+        candidatePoolRecall: 1,
+        finalRecall: 1,
+      },
+      {
+        evidenceKind: 'live-profile-candidate',
+        deviceClass: 'cpu',
+        profileId: 'embeddinggemma-300m-q8-0-v1',
+        evidenceSha256: '1'.repeat(64),
+        qualityPassed: false,
+        candidatePoolRecall: 0.941,
+        finalRecall: 0.941,
+      },
+      {
+        evidenceKind: 'live-profile-candidate',
+        deviceClass: 'accelerated',
+        profileId: 'embeddinggemma-300m-q8-0-v1',
+        evidenceSha256: '2'.repeat(64),
+        qualityPassed: false,
+        candidatePoolRecall: 0.941,
+        finalRecall: 0.941,
+      },
+    ],
+    profileRuns: [
+      createMeasuredProfileRun(
+        'embedded-cpu',
+        RecallInferenceBackend.EMBEDDED,
+        'cpu',
+        embeddedAdapters,
+      ),
+      createMeasuredProfileRun(
+        'embedded-accelerated',
+        RecallInferenceBackend.EMBEDDED,
+        'accelerated',
+        embeddedAdapters,
+      ),
+      createMeasuredProfileRun('http-cpu', RecallInferenceBackend.LLAMA_CPP_HTTP, 'cpu', {
+        queryPlanning: 'llama-cpp-http-query-planning-v1',
+        reranking: 'llama-cpp-http-reranking-v1',
+      }),
+    ],
+    requiredSuccessfulBaselineControlCount: 0,
+    privacyAudit: { checkedValueCount: 7, leakCount: 0 },
+    failureSemantics: {
+      plannerFallbackPublicServicePassed: true,
+      rerankerFailurePublicServicePassed: true,
+      piToolContractPassed: true,
+    },
+  });
+  assert.equal(acceptance.releaseDecision, 'approved-explicit-mode');
+  assert.equal(acceptance.defaultSearchMode, 'hybrid');
+  assert.equal(acceptance.aggregateQuality.newCandidateAdmissionCount, 3);
+  assert.equal(acceptance.profileRuns.length, 3);
+  const acceptanceReport = formatPublishableLiveQueryPlannedProfileAcceptanceReport(acceptance);
+  assert.match(acceptanceReport, /Approved for explicit mode only/u);
+  assert.match(acceptanceReport, /Hybrid remains the default/u);
+  assert.match(acceptanceReport, /embedded-cpu/u);
+  assert.match(acceptanceReport, /Cold planning/u);
+  assert.match(acceptanceReport, /Candidate work/u);
+  assert.match(acceptanceReport, /Planner fallbacks/u);
+  assert.equal(acceptanceReport.includes(lexicalPlanQuery), false);
+  assert.equal(acceptanceReport.includes('Private mechanism phrase'), false);
 
   await chmod(plansPath, 0o644);
   await assert.rejects(

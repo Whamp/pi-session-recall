@@ -343,12 +343,6 @@ export async function measureRecallQueryPlanningProviderConformance(
       );
     }
     seenQueries.add(queryIdentity);
-    const normalizedForTerms = normalizedQuery.toLocaleLowerCase();
-    if (!protectedTerms.some((term) => normalizedForTerms.includes(term))) {
-      throw new Error(
-        `Recall query planning conformance protected term missing at index ${index}: expected one of ${options.protectedTerms.join(', ')}`,
-      );
-    }
     if (plannedQuery.type === 'lex') {
       lexQueryCount += 1;
     }
@@ -358,6 +352,16 @@ export async function measureRecallQueryPlanningProviderConformance(
     if (plannedQuery.type === 'hyde') {
       hydeQueryCount += 1;
     }
+  }
+  const normalizedPlanText = plan
+    .map(({ query }) => query)
+    .join('\n')
+    .toLocaleLowerCase();
+  const missingProtectedTerms = protectedTerms.filter((term) => !normalizedPlanText.includes(term));
+  if (missingProtectedTerms.length > 0) {
+    throw new Error(
+      `Recall query planning conformance protected terms missing from plan: ${missingProtectedTerms.join(', ')}`,
+    );
   }
   const bounds = options.profile.planBounds;
   if (

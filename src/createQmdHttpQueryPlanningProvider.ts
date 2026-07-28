@@ -21,6 +21,7 @@ const QMD_HTTP_QUERY_PLANNING_RESPONSE_SCHEMA = Type.Object({
       message: Type.Object({
         role: Type.Literal('assistant'),
         content: Type.String(),
+        reasoning_content: Type.Optional(Type.String()),
       }),
     }),
     { minItems: 1, maxItems: 1 },
@@ -130,11 +131,14 @@ export function createQmdHttpQueryPlanningProvider(
           `Recall QMD query planner response model mismatch: expected ${profile.model}, received ${payload.model}`,
         );
       }
-      const content = payload.choices[0]?.message.content;
-      if (content === undefined) {
-        throw new Error('Recall QMD query planner response invalid: missing assistant content');
+      const message = payload.choices[0]?.message;
+      const generatedPlan = message?.content.trim() || message?.reasoning_content?.trim();
+      if (!generatedPlan) {
+        throw new Error(
+          'Recall QMD query planner response invalid: missing assistant content and reasoning content',
+        );
       }
-      return parseQmdQueryPlanningOutput(content, profile);
+      return parseQmdQueryPlanningOutput(generatedPlan, profile);
     },
   };
 }

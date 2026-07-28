@@ -94,8 +94,8 @@ void test('conversation service verifies replacement planners without rebuilding
     async planRecallQuery() {
       firstPlannerCalls += 1;
       return [
-        { type: 'lex' as const, query: 'source provenance evidence' },
-        { type: 'vec' as const, query: 'how source provenance is retained' },
+        { type: 'lex' as const, query: 'Copper Finch evidence' },
+        { type: 'vec' as const, query: 'how Copper Finch is retained' },
       ];
     },
   };
@@ -135,8 +135,8 @@ void test('conversation service verifies replacement planners without rebuilding
     ),
     async planRecallQuery() {
       return [
-        { type: 'lex' as const, query: 'source provenance records' },
-        { type: 'vec' as const, query: 'how provenance connects source evidence' },
+        { type: 'lex' as const, query: 'Copper Finch records' },
+        { type: 'vec' as const, query: 'how Finch connects recovery evidence' },
       ];
     },
   };
@@ -177,8 +177,8 @@ void test('conversation service verifies replacement planners without rebuilding
     async planRecallQuery() {
       replacementPlannerCalls += 1;
       return [
-        { type: 'lex' as const, query: 'source provenance records' },
-        { type: 'vec' as const, query: 'where provenance records connect to source evidence' },
+        { type: 'lex' as const, query: 'Copper Finch records' },
+        { type: 'vec' as const, query: 'where Finch records connect to recovery evidence' },
       ];
     },
   };
@@ -201,7 +201,7 @@ void test('conversation service verifies replacement planners without rebuilding
   assert.equal(replacementVerification.profileId, replacementProfile.profileId);
   assert.equal(
     replacementVerification.executionIdentity.cacheIdentity,
-    'replacement-query-planner-v2:replacement-query-planning-v2:qmd-query-expansion-no-think-v1:qmd-typed-query-plan-v1',
+    'replacement-query-planner-v2:replacement-query-planning-v2:qmd-query-expansion-no-think-v1:qmd-bounded-query-plan-v2',
   );
   assert.equal(replacementSearch.searchPolicy.rankingMode, 'hybrid');
 });

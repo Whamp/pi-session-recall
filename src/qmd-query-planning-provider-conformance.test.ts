@@ -33,11 +33,11 @@ void test('QMD HTTP query planner passes shared bounded-plan conformance with re
   const requests: Array<ReturnType<typeof Value.Parse<typeof QUERY_PLANNING_REQUEST_SCHEMA>>> = [];
   const profile = createRecommendedQmdQueryPlanningModelProfile();
   const generatedOutput = [
-    'hyde: Source provenance records connect recalled evidence to its Pi session location.',
-    'lex: source provenance session evidence',
-    'lex: retained provenance records',
-    'vec: how source provenance is retained for recalled conversation evidence',
-    'vec: where provenance connects recalled text to its original Pi session',
+    'hyde: Copper Finch records connect recalled recovery evidence to its Pi session location.',
+    'lex: recovery session evidence',
+    'lex: retained Finch recovery records',
+    'vec: how Copper Finch is retained for recalled conversation evidence',
+    'vec: where Finch recovery evidence connects to its original Pi session',
   ].join('\n');
   const server = createServer((request, response) => {
     let body = '';
@@ -51,7 +51,15 @@ void test('QMD HTTP query planner passes shared bounded-plan conformance with re
       response.end(
         JSON.stringify({
           model: profile.model,
-          choices: [{ message: { role: 'assistant', content: generatedOutput } }],
+          choices: [
+            {
+              message: {
+                role: 'assistant',
+                content: '',
+                reasoning_content: generatedOutput,
+              },
+            },
+          ],
           usage: { prompt_tokens: 28, completion_tokens: 52, total_tokens: 80 },
         }),
       );
@@ -78,17 +86,18 @@ void test('QMD HTTP query planner passes shared bounded-plan conformance with re
     expectedPlan: [
       {
         type: 'hyde',
-        query: 'Source provenance records connect recalled evidence to its Pi session location.',
+        query:
+          'Copper Finch records connect recalled recovery evidence to its Pi session location.',
       },
-      { type: 'lex', query: 'source provenance session evidence' },
-      { type: 'lex', query: 'retained provenance records' },
+      { type: 'lex', query: 'recovery session evidence' },
+      { type: 'lex', query: 'retained Finch recovery records' },
       {
         type: 'vec',
-        query: 'how source provenance is retained for recalled conversation evidence',
+        query: 'how Copper Finch is retained for recalled conversation evidence',
       },
       {
         type: 'vec',
-        query: 'where provenance connects recalled text to its original Pi session',
+        query: 'where Finch recovery evidence connects to its original Pi session',
       },
     ],
     monotonicMilliseconds() {
@@ -102,7 +111,7 @@ void test('QMD HTTP query planner passes shared bounded-plan conformance with re
     adapterId: 'llama-cpp-http-query-planning-v1',
     backend: 'llama-cpp-http',
     cacheIdentity:
-      'qmd-query-expansion-1.7b-q4-k-m-v1:llama-cpp-http-query-planning-v1:qmd-query-expansion-no-think-v1:qmd-typed-query-plan-v1',
+      'qmd-query-expansion-1.7b-q4-k-m-v1:llama-cpp-http-query-planning-v1:qmd-query-expansion-no-think-v1:qmd-bounded-query-plan-v2',
     modelProfileId: profile.profileId,
     promptPolicy: profile.promptPolicy,
     grammarVersion: profile.grammarVersion,
@@ -115,7 +124,7 @@ void test('QMD HTTP query planner passes shared bounded-plan conformance with re
         {
           role: 'user',
           content:
-            '/no_think Expand this search query: source provenance\nQuery intent: Find Pi conversation evidence about retained source provenance.',
+            '/no_think Expand this search query: Copper Finch\nQuery intent: Find Pi conversation evidence about the exact Copper Finch recovery entity.',
         },
       ],
       grammar: profile.grammar,
@@ -258,6 +267,6 @@ void test('query planning conformance rejects missing protected terms from a cus
         recallIntent: profile.conformanceCanary.recallIntent,
         protectedTerms: profile.conformanceCanary.protectedTerms,
       }),
-    /Recall query planning conformance protected term missing at index 0/u,
+    /Recall query planning conformance protected terms missing from plan/u,
   );
 });

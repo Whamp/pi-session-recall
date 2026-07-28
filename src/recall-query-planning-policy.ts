@@ -87,11 +87,23 @@ export function parseQmdQueryPlanningOutput(
       );
     }
     const type = match[1];
-    const query = match[2]?.trim();
+    const query = match[2]
+      ?.trim()
+      .replace(/<\/think>$/u, '')
+      .trim();
     if ((type !== 'lex' && type !== 'vec' && type !== 'hyde') || !query) {
       throw new Error(`Recall query planning output invalid at line ${index + 1}`);
     }
     return { type, query };
   });
-  return validateQmdQueryPlanningPlan(plan, profile);
+  const typedQueryIdentities = new Set<string>();
+  const uniquePlan = plan.filter((plannedQuery) => {
+    const identity = `${plannedQuery.type}:${plannedQuery.query}`;
+    if (typedQueryIdentities.has(identity)) {
+      return false;
+    }
+    typedQueryIdentities.add(identity);
+    return true;
+  });
+  return validateQmdQueryPlanningPlan(uniquePlan, profile);
 }

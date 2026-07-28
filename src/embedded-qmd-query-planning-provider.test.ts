@@ -28,9 +28,9 @@ void test('embedded QMD query planner passes shared conformance with profile gra
             async prompt(prompt: string, options: Record<string, unknown>) {
               calls.push({ prompt, options });
               return [
-                'hyde: Source provenance connects recalled evidence to its original session.',
-                'lex: source provenance evidence',
-                'vec: how source provenance identifies original conversation evidence',
+                'hyde: Copper Finch connects recalled recovery evidence to its original session.',
+                'lex: Copper Finch recovery evidence',
+                'vec: how Finch identifies original conversation evidence',
               ].join('\n');
             },
           };
@@ -86,7 +86,7 @@ void test('embedded QMD query planner passes shared conformance with profile gra
   assert.equal(calls.length, 1);
   assert.equal(
     calls[0]?.prompt,
-    '/no_think Expand this search query: source provenance\nQuery intent: Find Pi conversation evidence about retained source provenance.',
+    '/no_think Expand this search query: Copper Finch\nQuery intent: Find Pi conversation evidence about the exact Copper Finch recovery entity.',
   );
   assert.deepEqual(calls[0]?.options, {
     grammar: { grammar: profile.grammar },
@@ -102,7 +102,7 @@ void test('embedded QMD query planner passes shared conformance with profile gra
     adapterId: 'node-llama-cpp-qmd-query-planning-v1',
     backend: 'embedded',
     cacheIdentity:
-      'qmd-query-expansion-1.7b-q4-k-m-v1:node-llama-cpp-qmd-query-planning-v1:qmd-query-expansion-no-think-v1:qmd-typed-query-plan-v1',
+      'qmd-query-expansion-1.7b-q4-k-m-v1:node-llama-cpp-qmd-query-planning-v1:qmd-query-expansion-no-think-v1:qmd-bounded-query-plan-v2',
     modelProfileId: profile.profileId,
     promptPolicy: profile.promptPolicy,
     grammarVersion: profile.grammarVersion,
@@ -144,7 +144,7 @@ void test('embedded QMD query planner retries automatic accelerator failure on C
         createChatSession() {
           return {
             async prompt() {
-              return 'lex: source provenance records\nvec: source provenance evidence';
+              return 'lex: Copper Finch records\nvec: Copper Finch evidence';
             },
           };
         },

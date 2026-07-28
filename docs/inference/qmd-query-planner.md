@@ -14,12 +14,14 @@ Conversation Recall can configure and verify QMD's pinned Qwen3 1.7B query-expan
 | Byte size           | `1282438912`                                                       |
 | SHA-256             | `000dfb1c06efa6a049e9f64ba921c3740e2454f62abab6fa10e77bd30bb2bcc0` |
 | Prompt policy       | `qmd-query-expansion-no-think-v1`                                  |
-| Grammar version     | `qmd-typed-query-plan-v1`                                          |
+| Grammar version     | `qmd-bounded-query-plan-v2`                                        |
 | License metadata    | MIT                                                                |
 
 The download URL contains the immutable repository revision. Hugging Face's revision API and resolver headers report the same revision, filename, byte size, linked SHA-256, and MIT card metadata. That metadata check did not download or validate the complete GGUF.
 
-The profile carries QMD 2.6.3's `/no_think` prompt, sampling values, 2,048-token context, 600-token output limit, and `lex:`, `vec:`, `hyde:` grammar. Post-generation validation requires one to three `lex` queries, one to three `vec` queries, at most one `hyde` query, unique nonblank single-line text, and preservation of a protected original term during conformance.
+The profile carries QMD 2.6.3's `/no_think` prompt, sampling values, 2,048-token context, 600-token output limit, and `lex:`, `vec:`, `hyde:` vocabulary. Grammar revision `qmd-bounded-query-plan-v2` constrains generation itself to one to three lexical lines followed by one to three semantic lines and at most one hypothetical-answer line, with at most 512 characters per line. Post-generation validation independently enforces the same counts plus unique nonblank single-line text and preservation of a protected original term during conformance.
+
+The bounded revision fixes a live llama.cpp HTTP defect found during issue #46 acceptance: the original open-ended `line+` grammar could keep one `hyde` line alive until the 600-token cap. The HTTP adapter also accepts typed non-thinking output from llama.cpp's `reasoning_content` field when `content` is empty. Both adapters remove a terminal Qwen `</think>` control marker and collapse exact repeated typed lines to one bounded retrieval list before strict bounds validation. Capability conformance requires every protected entity term to appear somewhere across the complete plan, while sibling lexical and semantic lines may use different vocabulary. An invalid remaining plan fails into the specified planner fallback. These changes are cache-identified by the grammar revision; they do not alter model, prompt, sampling, retrieval, or fallback policy.
 
 Recall intent is appended as a separate `Query intent:` line. It guides planning but is not itself a planned retrieval query.
 

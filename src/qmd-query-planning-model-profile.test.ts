@@ -9,7 +9,17 @@ void test('recommended QMD query planner profile pins artifact and planning sema
   assert.equal(profile.profileId, 'qmd-query-expansion-1.7b-q4-k-m-v1');
   assert.equal(profile.model, 'qmd-query-expansion-1.7B-q4_k_m');
   assert.equal(profile.promptPolicy, 'qmd-query-expansion-no-think-v1');
-  assert.equal(profile.grammarVersion, 'qmd-typed-query-plan-v1');
+  assert.equal(profile.grammarVersion, 'qmd-bounded-query-plan-v2');
+  assert.equal(
+    profile.grammar,
+    [
+      'root ::= lex lex? lex? vec vec? vec? hyde?',
+      'lex ::= "lex: " content "\\n"',
+      'vec ::= "vec: " content "\\n"',
+      'hyde ::= "hyde: " content "\\n"',
+      'content ::= [^\\n]{1,512}',
+    ].join('\n'),
+  );
   assert.deepEqual(profile.planBounds, {
     minimumLexQueries: 1,
     maximumLexQueries: 3,
@@ -45,8 +55,8 @@ void test('recommended QMD query planner profile pins artifact and planning sema
     distributionStatus: 'review-required',
   });
   assert.deepEqual(profile.conformanceCanary, {
-    query: 'source provenance',
-    recallIntent: 'Find Pi conversation evidence about retained source provenance.',
-    protectedTerms: ['source', 'provenance'],
+    query: 'Copper Finch',
+    recallIntent: 'Find Pi conversation evidence about the exact Copper Finch recovery entity.',
+    protectedTerms: ['Copper', 'Finch'],
   });
 });

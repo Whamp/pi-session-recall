@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { lstat, mkdir, readFile, rm } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
+import { performance } from 'node:perf_hooks';
 
 import { Type } from 'typebox';
 import { Value } from 'typebox/value';
@@ -9,10 +10,15 @@ import {
   QueryPlannedRecallBaselineOutcome,
   QueryPlannedRecallControlKind,
   RecallDiagnosticsMode,
+  RecallInferenceBackend,
 } from './enums.js';
 import type { QueryPlannedRecallCaseCategory } from './enums.js';
 import type { RecallSearchResult } from './fuse-recall-ranked-lists.js';
 import type { LocalRerankerClient } from './local-reranker-client.js';
+import type {
+  RecallIdentifiedQueryPlanningProvider,
+  RecallIdentifiedRerankingProvider,
+} from './recall-inference-capabilities.js';
 import { isPathInsideRecallEvaluationArea } from './recall-evaluation-file-system.js';
 import type {
   LoadedPrivateQueryPlannedRecallCorpus,
@@ -26,8 +32,14 @@ import {
   type RecallConversationSearch,
   type RecallConversationSearchResult,
   type RecallPlannedRetrievalQuery,
+  type RecallQueryPlanningCapabilityVerification,
+  type RecallRerankingCapabilityVerification,
   type RecallSearchCandidateLimits,
 } from './recall-conversation-service.js';
+import type {
+  RecallQueryPlanningModelProfile,
+  RecallRerankingModelProfile,
+} from './recall-model-profiles.js';
 
 const SHA256_SCHEMA = Type.String({ pattern: '^[a-f0-9]{64}$' });
 /** Fixed vector width for deterministic token-hash quality evaluation embeddings. */
@@ -199,19 +211,22 @@ export function createPublishableQueryPlannedRecallPlanIdentity(
   };
 }
 
-/** Dependencies allowed to vary without changing deterministic embedding or reranker behavior. */
+/** Dependencies allowed to vary without changing deterministic evaluation embeddings. */
 export type PrivateQueryPlannedRecallEvaluationDependencies = Pick<
   RecallConversationDependencies,
   'loadTokenizer' | 'resolveProjectIdentity'
 >;
 
-/** Inputs for one deterministic fixed-plan evaluation isolated from production recall data. */
-export interface RunPrivateQueryPlannedRecallEvaluationOptions {
+interface PrivateQueryPlannedRecallEvaluationBaseOptions {
   corpus: LoadedPrivateQueryPlannedRecallCorpus;
-  plans: LoadedPrivateQueryPlannedRecallPlans;
   baseConfig: RecallConversationConfig;
-  workDirectory: string;
   dependencies?: PrivateQueryPlannedRecallEvaluationDependencies;
+}
+
+/** Inputs for one deterministic fixed-plan evaluation isolated from production recall data. */
+export interface RunPrivateQueryPlannedRecallEvaluationOptions extends PrivateQueryPlannedRecallEvaluationBaseOptions {
+  plans: LoadedPrivateQueryPlannedRecallPlans;
+  workDirectory: string;
 }
 
 /** Privacy-safe work performed by each planned ranked list. */
@@ -254,7 +269,7 @@ export interface QueryPlannedRecallArmMeasurement {
       rerankerWeight: number;
     }>;
   };
-  rankingProviderPolicy: 'neutral-fused-order-v1';
+  rankingProviderPolicy: 'neutral-fused-order-v1' | 'live-profile-v1';
   admissionProbeProviderPolicy: 'expected-source-promotion-v1';
 }
 
@@ -333,7 +348,7 @@ function assertPrivateQueryPlannedEvaluationWorkDirectory(
 }
 
 function createPrivateQueryPlannedEvaluationConfig(
-  options: RunPrivateQueryPlannedRecallEvaluationOptions,
+  options: PrivateQueryPlannedRecallEvaluationBaseOptions,
   workDirectory: string,
   candidateLimits: RecallSearchCandidateLimits,
 ): RecallConversationConfig {
@@ -384,7 +399,7 @@ function createDeterministicTokenHashVector(text: string, dimensions: number): n
 }
 
 function createDeterministicQueryPlannedEvaluationDependencies(
-  options: RunPrivateQueryPlannedRecallEvaluationOptions,
+  options: PrivateQueryPlannedRecallEvaluationBaseOptions,
   reranker: LocalRerankerClient,
 ): RecallConversationDependencies {
   const dimensions = QUERY_PLANNED_RECALL_EVALUATION_EMBEDDING_DIMENSIONS;
@@ -528,6 +543,7 @@ function measurePrivateQueryPlannedArm(
   evaluationCase: LoadedPrivateQueryPlannedRecallCorpus['manifest']['cases'][number],
   snapshotsById: ReadonlyMap<string, { fileName: string }>,
   rerankCandidatesExamined: number,
+  rankingProviderPolicy: QueryPlannedRecallArmMeasurement['rankingProviderPolicy'] = 'neutral-fused-order-v1',
 ): QueryPlannedRecallArmMeasurement {
   const rankedMatches = findPrivateExpectedSourceMatches(
     rankedSearch,
@@ -584,7 +600,7 @@ function measurePrivateQueryPlannedArm(
       activeBranchPrior: rankedSearch.searchPolicy.activeBranchPrior,
       fusedRankBlend: queryPlan.rerankerProfile.fusedRankBlend.map((band) => ({ ...band })),
     },
-    rankingProviderPolicy: 'neutral-fused-order-v1',
+    rankingProviderPolicy,
     admissionProbeProviderPolicy: 'expected-source-promotion-v1',
   };
 }
@@ -794,6 +810,807 @@ export async function runPrivateQueryPlannedRecallEvaluation(
       noImprovement: cases.filter(({ contribution }) => contribution.noImprovement).length,
     },
   };
+}
+
+/** Backend and device class measured by one live query-planned profile run. */
+export interface LiveQueryPlannedProfileRunIdentity {
+  id: string;
+  backend: RecallInferenceBackend;
+  deviceClass: 'cpu' | 'accelerated';
+  device: string;
+  backendVersion?: string;
+}
+
+/** Fixed public reranker fixture used to reject score-semantic drift before evaluation. */
+export interface LiveRerankerConformanceFixture {
+  query: string;
+  documents: readonly string[];
+  expectedScores: readonly number[];
+  maximumAbsoluteDifference: number;
+}
+
+/** Live planner and reranker inputs for one privacy-safe private-corpus evaluation. */
+export interface RunLiveQueryPlannedProfileEvaluationOptions extends PrivateQueryPlannedRecallEvaluationBaseOptions {
+  workDirectory: string;
+  profileRun: LiveQueryPlannedProfileRunIdentity;
+  queryPlanningProfile: RecallQueryPlanningModelProfile;
+  queryPlanner: RecallIdentifiedQueryPlanningProvider;
+  rerankingProfile: RecallRerankingModelProfile;
+  reranker: RecallIdentifiedRerankingProvider;
+  rerankerConformance: LiveRerankerConformanceFixture;
+}
+
+/** Aggregate latency summary in milliseconds for complete live service searches. */
+export interface LiveQueryPlannedSearchLatencySummary {
+  minimum: number;
+  median: number;
+  maximum: number;
+}
+
+/** Publishable profile-bound quality and latency without private query or source text. */
+export interface LiveQueryPlannedProfileEvaluationResult {
+  version: 1;
+  profileRun: LiveQueryPlannedProfileRunIdentity;
+  corpus: {
+    id: string;
+    privateManifestSha256: string;
+    snapshotCount: number;
+    indexedDocumentCount: number;
+    caseCount: number;
+  };
+  profileIdentity: {
+    embeddingPolicy: 'deterministic-token-hash-v1';
+    embeddingDimensions: number;
+    queryPlanning: {
+      profileId: string;
+      model: string;
+      promptPolicy: string;
+      grammarVersion: string;
+      executionIdentity: RecallIdentifiedQueryPlanningProvider['executionIdentity'];
+    };
+    reranking: {
+      profileId: string;
+      model: string;
+      scorePolicy: string;
+      executionIdentity: RecallIdentifiedRerankingProvider['executionIdentity'];
+    };
+  };
+  capabilityConformance: {
+    queryPlanning: RecallQueryPlanningCapabilityVerification;
+    reranking: RecallRerankingCapabilityVerification;
+  };
+  latency: {
+    coldPlanningMilliseconds: number;
+    warmPlanningMilliseconds: number;
+    warmPlanningSucceeded: boolean;
+    coldRerankingMilliseconds: number;
+    warmRerankingMilliseconds: number;
+    totalSearchMilliseconds: LiveQueryPlannedSearchLatencySummary;
+  };
+  cases: Array<{
+    caseId: string;
+    category: QueryPlannedRecallCaseCategory;
+    controlKind: QueryPlannedRecallControlKind;
+    planSource: 'planner' | 'fallback';
+    plannedQueries: Array<{ type: RecallPlannedRetrievalQuery['type']; querySha256: string }>;
+    normal: QueryPlannedRecallBaselineArmMeasurement;
+    retrievalWorkMatched: QueryPlannedRecallBaselineArmMeasurement;
+    queryPlanned: QueryPlannedRecallArmMeasurement;
+    planningMilliseconds: number;
+    rerankingMilliseconds: number;
+    totalSearchMilliseconds: number;
+    contribution: PrivateQueryPlannedRecallEvaluationResult['cases'][number]['contribution'];
+  }>;
+  quality: {
+    newCandidateAdmissionCount: number;
+    rankingOnlyPromotionCount: number;
+    preservedExistingSuccessCount: number;
+    plannerFallbackCount: number;
+  };
+}
+
+function createRetrievalWorkMatchedCandidateLimits(
+  plannedQueryCount: number,
+): RecallSearchCandidateLimits {
+  const totalCandidateLimit = (3 + plannedQueryCount) * 20;
+  const baseLimit = Math.floor(totalCandidateLimit / 3);
+  const remainder = totalCandidateLimit % 3;
+  return {
+    dense: baseLimit + (remainder > 0 ? 1 : 0),
+    lexical: baseLimit + (remainder > 1 ? 1 : 0),
+    identifier: baseLimit,
+  };
+}
+
+function summarizeLiveSearchLatencies(
+  measurements: readonly number[],
+): LiveQueryPlannedSearchLatencySummary {
+  if (measurements.length === 0) {
+    throw new Error('Live query-planned profile evaluation requires search latency measurements');
+  }
+  const ordered = [...measurements].sort((left, right) => left - right);
+  const middleIndex = Math.floor(ordered.length / 2);
+  const lowerMiddle = ordered[Math.max(middleIndex - 1, 0)] ?? 0;
+  const upperMiddle = ordered[middleIndex] ?? lowerMiddle;
+  return {
+    minimum: ordered[0] ?? 0,
+    median: ordered.length % 2 === 0 ? (lowerMiddle + upperMiddle) / 2 : upperMiddle,
+    maximum: ordered[ordered.length - 1] ?? 0,
+  };
+}
+
+/** Runs live planner/reranker conformance and public searches while publishing only aggregates. */
+export async function runLiveQueryPlannedProfileEvaluation(
+  options: RunLiveQueryPlannedProfileEvaluationOptions,
+): Promise<LiveQueryPlannedProfileEvaluationResult> {
+  const workDirectory = assertPrivateQueryPlannedEvaluationWorkDirectory(
+    options.corpus,
+    options.workDirectory,
+  );
+  await rm(workDirectory, { recursive: true, force: true });
+  await mkdir(workDirectory, { recursive: true, mode: 0o700 });
+  const normalCandidateLimits = options.corpus.manifest.policy.normalCandidateLimits;
+  const normalConfig = createPrivateQueryPlannedEvaluationConfig(
+    options,
+    workDirectory,
+    normalCandidateLimits,
+  );
+  const warnings: string[] = [];
+  let planningMilliseconds = 0;
+  let rerankingMilliseconds = 0;
+  let lastRerankCandidateCount = 0;
+  const timedQueryPlanner: RecallIdentifiedQueryPlanningProvider = {
+    get executionIdentity() {
+      return options.queryPlanner.executionIdentity;
+    },
+    async planRecallQuery(request, signal) {
+      const startedAt = performance.now();
+      try {
+        return await options.queryPlanner.planRecallQuery(request, signal);
+      } finally {
+        planningMilliseconds += Math.max(performance.now() - startedAt, 0);
+      }
+    },
+  };
+  const timedReranker: RecallIdentifiedRerankingProvider = {
+    get executionIdentity() {
+      return options.reranker.executionIdentity;
+    },
+    async rerankDocuments(query, documents, signal) {
+      lastRerankCandidateCount = documents.length;
+      const startedAt = performance.now();
+      try {
+        return await options.reranker.rerankDocuments(query, documents, signal);
+      } finally {
+        rerankingMilliseconds += Math.max(performance.now() - startedAt, 0);
+      }
+    },
+  };
+  const liveDependencies: RecallConversationDependencies = {
+    ...createDeterministicQueryPlannedEvaluationDependencies(options, timedReranker),
+    rerankingProfile: options.rerankingProfile,
+    reranker: timedReranker,
+    rerankerExecutionIdentity: timedReranker.executionIdentity,
+    queryPlanningProfile: options.queryPlanningProfile,
+    queryPlanner: timedQueryPlanner,
+    notifyWarning(warning) {
+      warnings.push(warning);
+    },
+  };
+  const conformanceService = createRecallConversationService(normalConfig, liveDependencies);
+  const queryPlanningConformance = await conformanceService.verifyQueryPlanningCapability();
+  const rerankingConformance = await conformanceService.verifyRerankingCapability({
+    query: options.rerankerConformance.query,
+    documents: options.rerankerConformance.documents,
+    expectedScores: options.rerankerConformance.expectedScores,
+    maximumAbsoluteDifference: options.rerankerConformance.maximumAbsoluteDifference,
+  });
+
+  const warmPlanningStartedAt = performance.now();
+  let warmPlanningSucceeded = true;
+  try {
+    await options.queryPlanner.planRecallQuery({
+      query: options.queryPlanningProfile.conformanceCanary.query,
+      recallIntent: options.queryPlanningProfile.conformanceCanary.recallIntent,
+    });
+  } catch {
+    warmPlanningSucceeded = false;
+  }
+  const warmPlanningMilliseconds = Math.max(performance.now() - warmPlanningStartedAt, 0);
+  const warmRerankingStartedAt = performance.now();
+  await options.reranker.rerankDocuments(
+    options.rerankerConformance.query,
+    options.rerankerConformance.documents,
+  );
+  const warmRerankingMilliseconds = Math.max(performance.now() - warmRerankingStartedAt, 0);
+
+  const indexReranker = createControlledEvaluationReranker();
+  const indexService = createRecallConversationService(
+    normalConfig,
+    createDeterministicQueryPlannedEvaluationDependencies(options, indexReranker.reranker),
+  );
+  const indexed = await indexService.index({ optimize: true });
+  if (
+    indexed.indexSummary.failedSessions.length > 0 ||
+    indexed.indexSummary.scannedSessions !== options.corpus.snapshots.length
+  ) {
+    throw new Error('Live query-planned profile index did not cover every private snapshot');
+  }
+
+  const snapshotsById = new Map(
+    options.corpus.snapshots.map((snapshot) => [snapshot.id, snapshot]),
+  );
+  const cases: LiveQueryPlannedProfileEvaluationResult['cases'] = [];
+  const totalSearchMeasurements: number[] = [];
+  for (const evaluationCase of options.corpus.manifest.cases) {
+    const normalService = createRecallConversationService(
+      normalConfig,
+      createDeterministicQueryPlannedEvaluationDependencies(options, indexReranker.reranker),
+    );
+    const normalSearch = await normalService.search(
+      evaluationCase.query,
+      normalCandidateLimits.dense +
+        normalCandidateLimits.lexical +
+        normalCandidateLimits.identifier,
+      {
+        mode: 'hybrid',
+        scope: evaluationCase.scope,
+        ...(evaluationCase.invocationDirectory
+          ? { invocationDirectory: evaluationCase.invocationDirectory }
+          : {}),
+      },
+    );
+    const normal = measurePrivateHybridControl(
+      normalSearch,
+      evaluationCase,
+      snapshotsById,
+      options.corpus.manifest.policy.finalResultLimit,
+    );
+
+    const planningBeforeSearch = planningMilliseconds;
+    const rerankingBeforeSearch = rerankingMilliseconds;
+    const warningsBeforeSearch = warnings.length;
+    const searchStartedAt = performance.now();
+    const liveService = createRecallConversationService(normalConfig, liveDependencies);
+    const liveSearch = await liveService.search(
+      evaluationCase.query,
+      options.corpus.manifest.policy.finalResultLimit,
+      {
+        mode: 'query-planned',
+        scope: evaluationCase.scope,
+        ...(evaluationCase.invocationDirectory
+          ? { invocationDirectory: evaluationCase.invocationDirectory }
+          : {}),
+      },
+    );
+    const totalSearchMilliseconds = Math.max(performance.now() - searchStartedAt, 0);
+    totalSearchMeasurements.push(totalSearchMilliseconds);
+    const queryPlan = liveSearch.searchPolicy.queryPlan;
+    if (!queryPlan || (queryPlan.source !== 'planner' && queryPlan.source !== 'fallback')) {
+      throw new Error(
+        'Live query-planned profile evaluation missing planner or fallback policy evidence',
+      );
+    }
+
+    const matchedCandidateLimits = createRetrievalWorkMatchedCandidateLimits(
+      queryPlan.plannedQueries.length,
+    );
+    const matchedConfig = createPrivateQueryPlannedEvaluationConfig(
+      options,
+      workDirectory,
+      matchedCandidateLimits,
+    );
+    const matchedService = createRecallConversationService(
+      matchedConfig,
+      createDeterministicQueryPlannedEvaluationDependencies(options, indexReranker.reranker),
+    );
+    const matchedPoolLimit =
+      matchedCandidateLimits.dense +
+      matchedCandidateLimits.lexical +
+      matchedCandidateLimits.identifier;
+    const matchedSearch = await matchedService.search(evaluationCase.query, matchedPoolLimit, {
+      mode: 'hybrid',
+      scope: evaluationCase.scope,
+      ...(evaluationCase.invocationDirectory
+        ? { invocationDirectory: evaluationCase.invocationDirectory }
+        : {}),
+    });
+    const retrievalWorkMatched = measurePrivateHybridControl(
+      matchedSearch,
+      evaluationCase,
+      snapshotsById,
+      options.corpus.manifest.policy.finalResultLimit,
+    );
+
+    let admissionProbeSearch = liveSearch;
+    if (queryPlan.source === 'planner') {
+      const admissionProbeReranker = createControlledEvaluationReranker(
+        evaluationCase.expectedSources.map(({ requiredText }) => requiredText),
+      );
+      const admissionProbeDependencies: RecallConversationDependencies = {
+        ...createDeterministicQueryPlannedEvaluationDependencies(
+          options,
+          admissionProbeReranker.reranker,
+        ),
+        rerankingProfile: options.rerankingProfile,
+        rerankerExecutionIdentity: timedReranker.executionIdentity,
+      };
+      const admissionProbeService = createRecallConversationService(
+        normalConfig,
+        admissionProbeDependencies,
+      );
+      admissionProbeSearch = await admissionProbeService.search(
+        evaluationCase.query,
+        options.corpus.manifest.policy.finalResultLimit,
+        {
+          mode: 'query-planned',
+          scope: evaluationCase.scope,
+          plan: queryPlan.plannedQueries,
+          ...(evaluationCase.invocationDirectory
+            ? { invocationDirectory: evaluationCase.invocationDirectory }
+            : {}),
+        },
+      );
+    }
+    const measuredQueryPlanned = measurePrivateQueryPlannedArm(
+      liveSearch,
+      admissionProbeSearch,
+      evaluationCase,
+      snapshotsById,
+      lastRerankCandidateCount,
+      'live-profile-v1',
+    );
+    const queryPlanned =
+      queryPlan.source === 'planner'
+        ? measuredQueryPlanned
+        : {
+            ...measuredQueryPlanned,
+            outcome: classifyPrivateQueryPlannedOutcome(
+              measuredQueryPlanned.expectedSourceRanks,
+              false,
+            ),
+            candidateAdmissionVerified: false,
+          };
+    const contribution = createQueryPlannedContribution(
+      evaluationCase.controlKind,
+      normal,
+      retrievalWorkMatched,
+      queryPlanned,
+    );
+    cases.push({
+      caseId: evaluationCase.id,
+      category: evaluationCase.category,
+      controlKind: evaluationCase.controlKind,
+      planSource: queryPlan.source,
+      plannedQueries: queryPlan.plannedQueries.map((plannedQuery) => ({
+        type: plannedQuery.type,
+        querySha256: createQueryPlannedRecallSha256(plannedQuery.query),
+      })),
+      normal,
+      retrievalWorkMatched,
+      queryPlanned,
+      planningMilliseconds: Math.max(planningMilliseconds - planningBeforeSearch, 0),
+      rerankingMilliseconds: Math.max(rerankingMilliseconds - rerankingBeforeSearch, 0),
+      totalSearchMilliseconds,
+      contribution,
+    });
+    if (queryPlan.source === 'fallback' && warnings.length === warningsBeforeSearch) {
+      throw new Error(
+        `Live query-planned profile fallback warning missing for ${evaluationCase.id}`,
+      );
+    }
+  }
+
+  return {
+    version: 1,
+    profileRun: { ...options.profileRun },
+    corpus: {
+      id: options.corpus.manifest.corpus.id,
+      privateManifestSha256: options.corpus.manifestSha256,
+      snapshotCount: options.corpus.snapshots.length,
+      indexedDocumentCount: indexed.totalChunks,
+      caseCount: cases.length,
+    },
+    profileIdentity: {
+      embeddingPolicy: 'deterministic-token-hash-v1',
+      embeddingDimensions: QUERY_PLANNED_RECALL_EVALUATION_EMBEDDING_DIMENSIONS,
+      queryPlanning: {
+        profileId: options.queryPlanningProfile.profileId,
+        model: options.queryPlanningProfile.model,
+        promptPolicy: options.queryPlanningProfile.promptPolicy,
+        grammarVersion: options.queryPlanningProfile.grammarVersion,
+        executionIdentity: options.queryPlanner.executionIdentity,
+      },
+      reranking: {
+        profileId: options.rerankingProfile.profileId,
+        model: options.rerankingProfile.model,
+        scorePolicy: options.rerankingProfile.scorePolicy,
+        executionIdentity: options.reranker.executionIdentity,
+      },
+    },
+    capabilityConformance: {
+      queryPlanning: queryPlanningConformance,
+      reranking: rerankingConformance,
+    },
+    latency: {
+      coldPlanningMilliseconds: queryPlanningConformance.measurement.planningMilliseconds,
+      warmPlanningMilliseconds,
+      warmPlanningSucceeded,
+      coldRerankingMilliseconds: rerankingConformance.measurement.rerankingMilliseconds,
+      warmRerankingMilliseconds,
+      totalSearchMilliseconds: summarizeLiveSearchLatencies(totalSearchMeasurements),
+    },
+    cases,
+    quality: {
+      newCandidateAdmissionCount: cases.filter(
+        ({ contribution }) => contribution.newCandidateAdmission,
+      ).length,
+      rankingOnlyPromotionCount: cases.filter(
+        ({ contribution }) => contribution.rankingOnlyPromotion,
+      ).length,
+      preservedExistingSuccessCount: cases.filter(
+        ({ contribution }) => contribution.preservedExistingSuccess,
+      ).length,
+      plannerFallbackCount: cases.filter(({ planSource }) => planSource === 'fallback').length,
+    },
+  };
+}
+
+/** Publishable committed-corpus profile result used by the live release gate. */
+export interface CommittedCorpusLiveProfileEvidence {
+  evidenceKind: 'accepted-hybrid-baseline' | 'live-profile-candidate';
+  deviceClass: 'baseline' | 'cpu' | 'accelerated';
+  profileId: string;
+  evidenceSha256: string;
+  qualityPassed: boolean;
+  candidatePoolRecall: number;
+  finalRecall: number;
+}
+
+/** Focused public-service and Pi contract results for required failure semantics. */
+export interface LiveQueryPlannedFailureSemanticsEvidence {
+  plannerFallbackPublicServicePassed: boolean;
+  rerankerFailurePublicServicePassed: boolean;
+  piToolContractPassed: boolean;
+}
+
+/** Inputs for the identity-bound explicit-mode release gate. */
+export interface CreateLiveQueryPlannedProfileAcceptanceOptions {
+  recordedAgainstCommit: string;
+  defaultSearchMode: 'hybrid';
+  committedCorpus: readonly CommittedCorpusLiveProfileEvidence[];
+  profileRuns: readonly LiveQueryPlannedProfileEvaluationResult[];
+  requiredSuccessfulBaselineControlCount: number;
+  privacyAudit: { checkedValueCount: number; leakCount: 0 };
+  failureSemantics: LiveQueryPlannedFailureSemanticsEvidence;
+}
+
+/** Publishable aggregate evidence approving only the measured explicit mode identities. */
+export interface PublishableLiveQueryPlannedProfileAcceptance {
+  version: 1;
+  releaseDecision: 'approved-explicit-mode';
+  recordedAgainstCommit: string;
+  approvedSearchMode: 'query-planned';
+  defaultSearchMode: 'hybrid';
+  committedCorpus: readonly CommittedCorpusLiveProfileEvidence[];
+  profileRuns: readonly LiveQueryPlannedProfileEvaluationResult[];
+  privacyAudit: { checkedValueCount: number; leakCount: 0 };
+  failureSemantics: LiveQueryPlannedFailureSemanticsEvidence;
+  aggregateQuality: {
+    newCandidateAdmissionCount: number;
+    rankingOnlyPromotionCount: number;
+    preservedExistingSuccessCount: number;
+    plannerFallbackCount: number;
+  };
+  limitations: readonly string[];
+}
+
+function assertLiveProfileExecutionIdentity(run: LiveQueryPlannedProfileEvaluationResult): void {
+  const expectedPlannerAdapter =
+    run.profileRun.backend === RecallInferenceBackend.EMBEDDED
+      ? 'node-llama-cpp-qmd-query-planning-v1'
+      : run.profileRun.backend === RecallInferenceBackend.LLAMA_CPP_HTTP
+        ? 'llama-cpp-http-query-planning-v1'
+        : null;
+  const expectedRerankerAdapter =
+    run.profileRun.backend === RecallInferenceBackend.EMBEDDED
+      ? 'node-llama-cpp-qwen-reranking-logit-recovery-v1'
+      : run.profileRun.backend === RecallInferenceBackend.LLAMA_CPP_HTTP
+        ? 'llama-cpp-http-reranking-v1'
+        : null;
+  const planner = run.profileIdentity.queryPlanning;
+  const reranker = run.profileIdentity.reranking;
+  if (
+    !expectedPlannerAdapter ||
+    !expectedRerankerAdapter ||
+    planner.profileId !== 'qmd-query-expansion-1.7b-q4-k-m-v1' ||
+    planner.promptPolicy !== 'qmd-query-expansion-no-think-v1' ||
+    planner.grammarVersion !== 'qmd-bounded-query-plan-v2' ||
+    planner.executionIdentity.adapterId !== expectedPlannerAdapter ||
+    planner.executionIdentity.backend !== run.profileRun.backend ||
+    reranker.profileId !== 'qwen3-reranker-0.6b-q8-0-v1' ||
+    reranker.scorePolicy !== 'llama-cpp-qwen3-rank-probability-v1' ||
+    reranker.executionIdentity.adapterId !== expectedRerankerAdapter ||
+    reranker.executionIdentity.backend !== run.profileRun.backend
+  ) {
+    throw new Error(
+      `Live query-planned profile acceptance identity mismatch for ${run.profileRun.id}`,
+    );
+  }
+  const conformancePlannerIdentity = run.capabilityConformance.queryPlanning.executionIdentity;
+  const conformanceRerankerIdentity = run.capabilityConformance.reranking.executionIdentity;
+  if (
+    conformancePlannerIdentity.adapterId !== planner.executionIdentity.adapterId ||
+    conformancePlannerIdentity.backend !== planner.executionIdentity.backend ||
+    conformancePlannerIdentity.cacheIdentity !== planner.executionIdentity.cacheIdentity ||
+    conformancePlannerIdentity.modelProfileId !== planner.executionIdentity.modelProfileId ||
+    conformancePlannerIdentity.promptPolicy !== planner.executionIdentity.promptPolicy ||
+    conformancePlannerIdentity.grammarVersion !== planner.executionIdentity.grammarVersion ||
+    conformancePlannerIdentity.requestTimeoutMilliseconds !==
+      planner.executionIdentity.requestTimeoutMilliseconds ||
+    conformanceRerankerIdentity.adapterId !== reranker.executionIdentity.adapterId ||
+    conformanceRerankerIdentity.backend !== reranker.executionIdentity.backend ||
+    conformanceRerankerIdentity.cacheIdentity !== reranker.executionIdentity.cacheIdentity ||
+    conformanceRerankerIdentity.modelProfileId !== reranker.executionIdentity.modelProfileId
+  ) {
+    throw new Error(
+      `Live query-planned profile acceptance conformance identity mismatch for ${run.profileRun.id}`,
+    );
+  }
+  for (const measuredCase of run.cases) {
+    if (
+      measuredCase.queryPlanned.rankingProviderPolicy !== 'live-profile-v1' ||
+      measuredCase.queryPlanned.rankFusionVersion !== 2 ||
+      measuredCase.queryPlanned.reciprocalRankConstant !== 60 ||
+      measuredCase.queryPlanned.fusedPoolLimit !== 40 ||
+      measuredCase.queryPlanned.rerankPoolLimit !== 40 ||
+      measuredCase.queryPlanned.finalResultLimit !== 5
+    ) {
+      throw new Error(
+        `Live query-planned profile acceptance search policy mismatch for ${run.profileRun.id}/${measuredCase.caseId}`,
+      );
+    }
+  }
+}
+
+/** Approves explicit query-planned mode only for the exact measured profile matrix. */
+export function createPublishableLiveQueryPlannedProfileAcceptance(
+  options: CreateLiveQueryPlannedProfileAcceptanceOptions,
+): PublishableLiveQueryPlannedProfileAcceptance {
+  if (!/^[a-f0-9]{40}$/u.test(options.recordedAgainstCommit)) {
+    throw new Error(
+      'Live query-planned profile acceptance invalid: recorded commit must be a full Git SHA-1',
+    );
+  }
+  if (
+    !Number.isInteger(options.requiredSuccessfulBaselineControlCount) ||
+    options.requiredSuccessfulBaselineControlCount < 0
+  ) {
+    throw new Error(
+      'Live query-planned profile acceptance invalid: successful baseline control count must be a nonnegative integer',
+    );
+  }
+  if (
+    !Number.isInteger(options.privacyAudit.checkedValueCount) ||
+    options.privacyAudit.checkedValueCount < 1 ||
+    options.privacyAudit.leakCount !== 0
+  ) {
+    throw new Error(
+      'Live query-planned profile acceptance failed: privacy audit must check private values with zero leaks',
+    );
+  }
+  if (
+    !options.failureSemantics.plannerFallbackPublicServicePassed ||
+    !options.failureSemantics.rerankerFailurePublicServicePassed ||
+    !options.failureSemantics.piToolContractPassed
+  ) {
+    throw new Error(
+      'Live query-planned profile acceptance failed: planner fallback, reranker failure, and Pi tool semantics must pass',
+    );
+  }
+  const acceptedOctenBaseline = options.committedCorpus.some(
+    (evidence) =>
+      evidence.evidenceKind === 'accepted-hybrid-baseline' &&
+      evidence.profileId === 'octen-embed' &&
+      evidence.qualityPassed &&
+      evidence.candidatePoolRecall === 1 &&
+      evidence.finalRecall === 1 &&
+      /^[a-f0-9]{64}$/u.test(evidence.evidenceSha256),
+  );
+  const measuredEmbeddingGemmaDeviceClasses = new Set(
+    options.committedCorpus
+      .filter(
+        (evidence) =>
+          evidence.evidenceKind === 'live-profile-candidate' &&
+          evidence.profileId === 'embeddinggemma-300m-q8-0-v1' &&
+          /^[a-f0-9]{64}$/u.test(evidence.evidenceSha256),
+      )
+      .map(({ deviceClass }) => deviceClass),
+  );
+  if (
+    !acceptedOctenBaseline ||
+    !measuredEmbeddingGemmaDeviceClasses.has('cpu') ||
+    !measuredEmbeddingGemmaDeviceClasses.has('accelerated')
+  ) {
+    throw new Error(
+      'Live query-planned profile acceptance failed: accepted Octen baseline plus measured CPU and accelerated EmbeddingGemma candidates are required',
+    );
+  }
+  const measuredBackends = new Set(options.profileRuns.map(({ profileRun }) => profileRun.backend));
+  const measuredDeviceClasses = new Set(
+    options.profileRuns.map(({ profileRun }) => profileRun.deviceClass),
+  );
+  if (
+    !measuredBackends.has(RecallInferenceBackend.EMBEDDED) ||
+    !measuredBackends.has(RecallInferenceBackend.LLAMA_CPP_HTTP) ||
+    !measuredDeviceClasses.has('cpu') ||
+    !measuredDeviceClasses.has('accelerated')
+  ) {
+    throw new Error(
+      'Live query-planned profile acceptance failed: embedded, HTTP, CPU, and accelerated profile runs are required',
+    );
+  }
+  const runIds = options.profileRuns.map(({ profileRun }) => profileRun.id);
+  if (new Set(runIds).size !== runIds.length) {
+    throw new Error('Live query-planned profile acceptance failed: profile run IDs must be unique');
+  }
+  const privateManifestSha256 = options.profileRuns[0]?.corpus.privateManifestSha256;
+  if (!privateManifestSha256) {
+    throw new Error(
+      'Live query-planned profile acceptance failed: at least one profile run is required',
+    );
+  }
+  for (const run of options.profileRuns) {
+    if (run.corpus.privateManifestSha256 !== privateManifestSha256) {
+      throw new Error(
+        'Live query-planned profile acceptance failed: every run must bind the same private manifest',
+      );
+    }
+    assertLiveProfileExecutionIdentity(run);
+    if (
+      run.quality.preservedExistingSuccessCount < options.requiredSuccessfulBaselineControlCount
+    ) {
+      throw new Error(
+        `Live query-planned profile acceptance existing-success regression for ${run.profileRun.id}`,
+      );
+    }
+  }
+  const aggregateQuality = {
+    newCandidateAdmissionCount: options.profileRuns.reduce(
+      (total, run) => total + run.quality.newCandidateAdmissionCount,
+      0,
+    ),
+    rankingOnlyPromotionCount: options.profileRuns.reduce(
+      (total, run) => total + run.quality.rankingOnlyPromotionCount,
+      0,
+    ),
+    preservedExistingSuccessCount: options.profileRuns.reduce(
+      (total, run) => total + run.quality.preservedExistingSuccessCount,
+      0,
+    ),
+    plannerFallbackCount: options.profileRuns.reduce(
+      (total, run) => total + run.quality.plannerFallbackCount,
+      0,
+    ),
+  };
+  if (aggregateQuality.newCandidateAdmissionCount < 1) {
+    throw new Error(
+      'Live query-planned profile acceptance requires at least one live planned-query candidate admission beyond equal-work controls',
+    );
+  }
+  return {
+    version: 1,
+    releaseDecision: 'approved-explicit-mode',
+    recordedAgainstCommit: options.recordedAgainstCommit,
+    approvedSearchMode: 'query-planned',
+    defaultSearchMode: options.defaultSearchMode,
+    committedCorpus: options.committedCorpus.map((evidence) => ({ ...evidence })),
+    profileRuns: options.profileRuns.map((run) => ({ ...run })),
+    privacyAudit: { ...options.privacyAudit },
+    failureSemantics: { ...options.failureSemantics },
+    aggregateQuality,
+    limitations: [
+      'Approval applies only to explicit query-planned mode with the accepted Octen embedding baseline and recorded planner, reranker, adapter, grammar, score, and search-policy identities.',
+      'EmbeddingGemma live candidates remain separate and are not approved when their committed-corpus quality gate fails.',
+      'The committed corpus is synthetic-but-session-shaped; the private corpus is bounded and does not establish broad superiority.',
+      'Private queries, plans, source text, session paths, and model artifacts remain outside Git.',
+      'Hybrid remains the default search mode.',
+    ],
+  };
+}
+
+/** Formats profile-bound live acceptance evidence without private query or source text. */
+export function formatPublishableLiveQueryPlannedProfileAcceptanceReport(
+  evidence: PublishableLiveQueryPlannedProfileAcceptance,
+): string {
+  const firstRun = evidence.profileRuns[0];
+  if (!firstRun) {
+    throw new Error('Live query-planned profile acceptance report requires a profile run');
+  }
+  const lines = [
+    '# Query-Planned Recall: Live Profile Acceptance',
+    '',
+    '**Decision: Approved for explicit mode only.** Hybrid remains the default.',
+    '',
+    'This evidence covers the exact measured profile, backend adapter, device class, grammar, reranker score, and search-policy identities below. It does not claim broad superiority beyond the frozen committed corpus and bounded private corpus.',
+    '',
+    '## Bounds and identity',
+    '',
+    `- Recorded against commit: \`${evidence.recordedAgainstCommit}\``,
+    `- Private manifest SHA-256: \`${firstRun.corpus.privateManifestSha256}\``,
+    `- Private corpus: ${firstRun.corpus.caseCount} cases, ${firstRun.corpus.snapshotCount} snapshots, ${firstRun.corpus.indexedDocumentCount} indexed documents`,
+    `- Planner profile: \`${firstRun.profileIdentity.queryPlanning.profileId}\` / \`${firstRun.profileIdentity.queryPlanning.model}\``,
+    `- Prompt / grammar: \`${firstRun.profileIdentity.queryPlanning.promptPolicy}\` / \`${firstRun.profileIdentity.queryPlanning.grammarVersion}\``,
+    `- Reranker profile / score policy: \`${firstRun.profileIdentity.reranking.profileId}\` / \`${firstRun.profileIdentity.reranking.scorePolicy}\``,
+    `- Search policy: RRF v${firstRun.cases[0]?.queryPlanned.rankFusionVersion ?? 'unknown'}, k=${firstRun.cases[0]?.queryPlanned.reciprocalRankConstant ?? 'unknown'}, fused/rerank/final limits ${firstRun.cases[0]?.queryPlanned.fusedPoolLimit ?? 'unknown'}/${firstRun.cases[0]?.queryPlanned.rerankPoolLimit ?? 'unknown'}/${firstRun.cases[0]?.queryPlanned.finalResultLimit ?? 'unknown'}`,
+    '',
+    '## Committed-corpus EmbeddingGemma evidence',
+    '',
+    '| Evidence | Device class | Profile | Candidate / final recall | Quality gate | Evidence SHA-256 |',
+    '| --- | --- | --- | ---: | --- | --- |',
+  ];
+  for (const committed of evidence.committedCorpus) {
+    lines.push(
+      `| ${committed.evidenceKind} | ${committed.deviceClass} | \`${committed.profileId}\` | ${committed.candidatePoolRecall.toFixed(3)} / ${committed.finalRecall.toFixed(3)} | ${committed.qualityPassed ? 'pass' : 'fail'} | \`${committed.evidenceSha256}\` |`,
+    );
+  }
+  lines.push(
+    '',
+    '## Live planner and reranker matrix',
+    '',
+    '| Run | Backend | Device class / device | Planner adapter | Reranker adapter | Cold planning | Warm planning | Cold reranking | Warm reranking | Total search min / median / max |',
+    '| --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: |',
+  );
+  for (const run of evidence.profileRuns) {
+    lines.push(
+      `| ${run.profileRun.id} | ${run.profileRun.backend}${run.profileRun.backendVersion ? ` (${run.profileRun.backendVersion})` : ''} | ${run.profileRun.deviceClass} / ${run.profileRun.device} | \`${run.profileIdentity.queryPlanning.executionIdentity.adapterId}\` | \`${run.profileIdentity.reranking.executionIdentity.adapterId}\` | ${run.latency.coldPlanningMilliseconds.toFixed(1)} ms | ${run.latency.warmPlanningMilliseconds.toFixed(1)} ms (${run.latency.warmPlanningSucceeded ? 'pass' : 'planner failure'}) | ${run.latency.coldRerankingMilliseconds.toFixed(1)} ms | ${run.latency.warmRerankingMilliseconds.toFixed(1)} ms | ${run.latency.totalSearchMilliseconds.minimum.toFixed(1)} / ${run.latency.totalSearchMilliseconds.median.toFixed(1)} / ${run.latency.totalSearchMilliseconds.maximum.toFixed(1)} ms |`,
+    );
+  }
+  lines.push(
+    '',
+    '## Aggregate quality',
+    '',
+    `- New candidate admissions beyond normal and retrieval-work-matched original-query controls: ${evidence.aggregateQuality.newCandidateAdmissionCount}`,
+    `- Ranking-only promotions: ${evidence.aggregateQuality.rankingOnlyPromotionCount}`,
+    `- Preserved existing successes across profile runs: ${evidence.aggregateQuality.preservedExistingSuccessCount}`,
+    `- Planner fallbacks: ${evidence.aggregateQuality.plannerFallbackCount}`,
+    '',
+    '## Candidate work by opaque case',
+    '',
+    '| Run / case | Plan source | Normal | Equal-work control | Query-planned | Candidate work (admitted / allowed) | Planning / reranking / total |',
+    '| --- | --- | --- | --- | --- | ---: | ---: |',
+  );
+  for (const run of evidence.profileRuns) {
+    for (const measuredCase of run.cases) {
+      const admittedCandidates = measuredCase.queryPlanned.listWork.reduce(
+        (total, list) => total + list.admittedCandidateCount,
+        0,
+      );
+      const allowedCandidates = measuredCase.queryPlanned.listWork.reduce(
+        (total, list) => total + list.candidateLimit,
+        0,
+      );
+      lines.push(
+        `| ${run.profileRun.id} / ${measuredCase.caseId} | ${measuredCase.planSource} | ${formatQueryPlannedRecallOutcome(measuredCase.normal.outcome)} | ${formatQueryPlannedRecallOutcome(measuredCase.retrievalWorkMatched.outcome)} | ${formatQueryPlannedRecallOutcome(measuredCase.queryPlanned.outcome)} | ${admittedCandidates} / ${allowedCandidates} | ${measuredCase.planningMilliseconds.toFixed(1)} / ${measuredCase.rerankingMilliseconds.toFixed(1)} / ${measuredCase.totalSearchMilliseconds.toFixed(1)} ms |`,
+      );
+    }
+  }
+  lines.push(
+    '',
+    '## Failure, tool, and privacy semantics',
+    '',
+    `- Privacy audit: ${evidence.privacyAudit.checkedValueCount} private values checked, ${evidence.privacyAudit.leakCount} leaks`,
+    `- Planner fallback through public service: ${evidence.failureSemantics.plannerFallbackPublicServicePassed ? 'pass' : 'fail'}`,
+    `- Reranker failure through public service: ${evidence.failureSemantics.rerankerFailurePublicServicePassed ? 'pass' : 'fail'}`,
+    `- Pi tool contract and policy evidence: ${evidence.failureSemantics.piToolContractPassed ? 'pass' : 'fail'}`,
+    '',
+    '## Limitations',
+    '',
+  );
+  for (const limitation of evidence.limitations) {
+    lines.push(`- ${limitation}`);
+  }
+  return `${lines.join('\n')}\n`;
 }
 
 /** Fixed Git point used to bind one deterministic query-planned quality result. */

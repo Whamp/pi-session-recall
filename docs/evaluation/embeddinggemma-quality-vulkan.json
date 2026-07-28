@@ -1,0 +1,890 @@
+{
+  "version": 1,
+  "evidenceKind": "embeddinggemma-live-quality-candidate",
+  "releaseDecision": "maintainer-review-required",
+  "command": "npm run evaluate:embeddinggemma -- --device vulkan",
+  "startedAt": "2026-07-28T01:19:24.612Z",
+  "completedAt": "2026-07-28T01:19:38.493Z",
+  "environment": {
+    "gitCommit": "85426d4639cd1a7cd4d5178df4a6a821782c3c44",
+    "gitDirty": false,
+    "nodeVersion": "v24.16.0",
+    "platform": "linux",
+    "architecture": "x64",
+    "cpuModel": "AMD Ryzen 7 8845HS w/ Radeon 780M Graphics"
+  },
+  "profile": {
+    "profileId": "embeddinggemma-300m-q8-0-v1",
+    "purpose": "Embed recall queries and conversation documents for local semantic retrieval.",
+    "identity": {
+      "requestModel": "embeddinggemma-300M-Q8_0",
+      "servedModelId": "google/embeddinggemma-300M",
+      "artifact": "embeddinggemma-300M-Q8_0.gguf",
+      "artifactRepository": "ggml-org/embeddinggemma-300M-GGUF",
+      "artifactRevision": "0f741b5a6585bd53aeb15cd1372c56f2a0f65e12",
+      "artifactSha256": "b5ce9d77a3fc4b3b39ccb5643c36777911cc4eb46a66962eadfa3f5f60490d63",
+      "dimensions": 768,
+      "quantization": "Q8_0",
+      "pooling": "mean",
+      "normalization": "l2"
+    },
+    "source": {
+      "repository": "ggml-org/embeddinggemma-300M-GGUF",
+      "revision": "0f741b5a6585bd53aeb15cd1372c56f2a0f65e12",
+      "artifact": "embeddinggemma-300M-Q8_0.gguf",
+      "byteSize": 333590944,
+      "sha256": "b5ce9d77a3fc4b3b39ccb5643c36777911cc4eb46a66962eadfa3f5f60490d63",
+      "downloadUrl": "https://huggingface.co/ggml-org/embeddinggemma-300M-GGUF/resolve/0f741b5a6585bd53aeb15cd1372c56f2a0f65e12/embeddinggemma-300M-Q8_0.gguf"
+    },
+    "license": {
+      "id": "gemma",
+      "name": "Gemma Terms of Use",
+      "url": "https://ai.google.dev/gemma/terms",
+      "distributionStatus": "review-required"
+    },
+    "nativeDimensions": 768,
+    "queryInputPrefix": "task: search result | query: ",
+    "documentInputPrefix": "title: none | text: ",
+    "normalization": "l2",
+    "tokenizer": {
+      "kind": "gguf-metadata",
+      "model": "google/embeddinggemma-300M",
+      "artifactSha256": "b5ce9d77a3fc4b3b39ccb5643c36777911cc4eb46a66962eadfa3f5f60490d63",
+      "identity": "embeddinggemma-300M-Q8_0.gguf@b5ce9d77a3fc4b3b39ccb5643c36777911cc4eb46a66962eadfa3f5f60490d63"
+    },
+    "canary": {
+      "policy": "repeat-cosine-v1",
+      "operation": "query",
+      "query": "Which session evidence explains the retained implementation decision?",
+      "expectedDimensions": 768,
+      "expectedNormalization": "l2",
+      "minimumRepeatCosineSimilarity": 0.9995
+    }
+  },
+  "backend": {
+    "adapter": "node-llama-cpp-embedded-v2",
+    "backend": "embedded",
+    "requestedDevicePolicy": "vulkan",
+    "executionIdentity": {
+      "adapter": "node-llama-cpp-embedded-v2",
+      "backend": "embedded",
+      "computeBackend": "vulkan",
+      "deviceNames": ["AMD Radeon 780M Graphics (RADV PHOENIX)"],
+      "devicePolicy": "vulkan",
+      "fallbackFromComputeBackend": null,
+      "nodeLlamaCppVersion": "3.18.1",
+      "parallelism": 1,
+      "probedComputeBackends": [],
+      "profileId": "embeddinggemma-300m-q8-0-v1"
+    }
+  },
+  "tokenizer": {
+    "model": "google/embeddinggemma-300M",
+    "revision": "0f741b5a6585bd53aeb15cd1372c56f2a0f65e12",
+    "library": {
+      "name": "node-llama-cpp",
+      "version": "3.18.1"
+    },
+    "encodeOptions": {
+      "addSpecialTokens": false,
+      "returnTokenTypeIds": false
+    },
+    "assets": [
+      {
+        "fileName": "embeddinggemma-300M-Q8_0.gguf",
+        "sha256": "b5ce9d77a3fc4b3b39ccb5643c36777911cc4eb46a66962eadfa3f5f60490d63"
+      }
+    ]
+  },
+  "embeddingCacheIdentity": {
+    "embedding": {
+      "requestModel": "embeddinggemma-300M-Q8_0",
+      "servedModelId": "google/embeddinggemma-300M",
+      "artifact": "embeddinggemma-300M-Q8_0.gguf",
+      "artifactRepository": "ggml-org/embeddinggemma-300M-GGUF",
+      "artifactRevision": "0f741b5a6585bd53aeb15cd1372c56f2a0f65e12",
+      "artifactSha256": "b5ce9d77a3fc4b3b39ccb5643c36777911cc4eb46a66962eadfa3f5f60490d63",
+      "dimensions": 768,
+      "quantization": "Q8_0",
+      "pooling": "mean",
+      "normalization": "l2",
+      "canaryOperation": "query",
+      "canaryProbe": "Which session evidence explains the retained implementation decision?",
+      "canaryFingerprint": "f4170fc0f71b91286228d0897650299b28c9c3bfcb977557fcf5a129ed72fd50"
+    },
+    "tokenizer": {
+      "model": "google/embeddinggemma-300M",
+      "revision": "0f741b5a6585bd53aeb15cd1372c56f2a0f65e12",
+      "library": {
+        "name": "node-llama-cpp",
+        "version": "3.18.1"
+      },
+      "encodeOptions": {
+        "addSpecialTokens": false,
+        "returnTokenTypeIds": false
+      },
+      "assets": [
+        {
+          "fileName": "embeddinggemma-300M-Q8_0.gguf",
+          "sha256": "b5ce9d77a3fc4b3b39ccb5643c36777911cc4eb46a66962eadfa3f5f60490d63"
+        }
+      ]
+    },
+    "chunkPolicy": {
+      "version": 2,
+      "normalization": "unicode-nfc-v1"
+    }
+  },
+  "candidatePolicy": {
+    "defaultScope": "project",
+    "projectScopePolicyVersion": 1,
+    "projectIdentityPolicyVersion": 4,
+    "projectIdentityMetadataSchemaVersion": 3,
+    "lineagePolicyVersion": 1,
+    "lineageDigest": "02023e9934990f61a81488144cb1b27d9002e0af750c38a1b83adc1de367bc4b",
+    "rankingMode": "hybrid",
+    "rankFusionVersion": 2,
+    "reciprocalRankConstant": 60,
+    "activeBranchPrior": 0.01,
+    "candidateLimits": {
+      "dense": 8,
+      "lexical": 8,
+      "identifier": 8
+    },
+    "fusedPoolLimit": 24,
+    "rerankPoolLimit": 24,
+    "finalResultCount": 5
+  },
+  "capabilityVerification": {
+    "embeddingProfileId": "embedding-profile-11a0262657d54aeccbb5c71998968b5578e52786524ff46dd3125545ff8e473d",
+    "model": "embeddinggemma-300M-Q8_0",
+    "dimensions": 768,
+    "normalization": "l2",
+    "tokenizerModel": "google/embeddinggemma-300M"
+  },
+  "measurements": {
+    "coldStartMilliseconds": 7834.196661999999,
+    "warmQueryMilliseconds": 12.927976999999373,
+    "warmDocumentBatchMilliseconds": 25.610577999999805,
+    "indexingThroughput": {
+      "sourceBytesPerSecond": 9989.8538561473,
+      "denseDocumentsPerSecond": 27.66036705435569
+    },
+    "indexSizeBytes": 5509971,
+    "embeddingCacheSizeBytes": 540640
+  },
+  "quality": {
+    "version": 4,
+    "evaluationIdentity": {
+      "defaultScope": "project",
+      "projectScopePolicyVersion": 1,
+      "projectIdentityPolicyVersion": 4,
+      "projectIdentityMetadataSchemaVersion": 3,
+      "lineagePolicyVersion": 1,
+      "lineageDigest": "02023e9934990f61a81488144cb1b27d9002e0af750c38a1b83adc1de367bc4b",
+      "rankingMode": "hybrid",
+      "rankFusionVersion": 2,
+      "reciprocalRankConstant": 60,
+      "activeBranchPrior": 0.01,
+      "candidateLimits": {
+        "dense": 8,
+        "lexical": 8,
+        "identifier": 8
+      },
+      "fusedPoolLimit": 24,
+      "rerankPoolLimit": 24,
+      "finalResultCount": 5
+    },
+    "startedAt": "2026-07-28T01:19:32.447Z",
+    "completedAt": "2026-07-28T01:19:38.453Z",
+    "durationMilliseconds": 6005.563671,
+    "specificationPath": "/home/will/projects/pi-session-recall/.worktrees/qmd-query-planned-recall/evaluation/recall-quality-cases.json",
+    "specificationSha256": "6208cfc632c8ff53815567dd5385297bb6cc513f62e3d50a5bfa8ae687c34439",
+    "corpusId": "recall-quality-project-scoped-bounded-v3",
+    "indexRuns": [
+      {
+        "chunkPolicy": {
+          "id": "512-64",
+          "maxTokens": 512,
+          "overlapTokens": 64
+        },
+        "totalChunks": 128,
+        "indexLatencyMilliseconds": 4482.948463999999,
+        "indexSummary": {
+          "scannedSessions": 15,
+          "indexedSessions": 15,
+          "removedSessions": 0,
+          "cacheHits": 1,
+          "newlyEmbeddedChunks": 124,
+          "embeddingRequestCount": 17,
+          "deletedChunks": 0,
+          "failedSessions": []
+        }
+      }
+    ],
+    "configurations": [
+      {
+        "chunkPolicy": {
+          "id": "512-64",
+          "maxTokens": 512,
+          "overlapTokens": 64
+        },
+        "candidateCount": 8,
+        "totalChunks": 128,
+        "indexLatencyMilliseconds": 4482.948463999999,
+        "measurement": {
+          "caseCount": 17,
+          "candidatePoolRecall": 0.9411764705882353,
+          "candidatePoolDuplicateRate": 0.008547008547008548,
+          "queryLatencyMilliseconds": {
+            "median": 62.82360100000005,
+            "p95": 71.59945100000004
+          },
+          "queryLatencyByScope": {
+            "project": {
+              "median": 59.475147000001016,
+              "p95": 63.90325800000028
+            },
+            "global": {
+              "median": 63.28781400000116,
+              "p95": 71.59945100000004
+            }
+          },
+          "policyFailureCaseIds": [],
+          "missedCandidatePoolCaseIds": ["semantic-image-retry-budget"],
+          "caseMeasurements": [
+            {
+              "caseId": "semantic-crash-safe-outbox",
+              "category": "semantic_paraphrase",
+              "scope": "global",
+              "searchScopeVerified": true,
+              "invocationProjectIdentityVerified": true,
+              "excludedSessionFilesAbsent": true,
+              "preLimitChannelsVerified": true,
+              "preLimitChannelMeasurements": [],
+              "candidatePoolRecalled": true,
+              "rawCandidateCount": 8,
+              "groupedCandidateCount": 8,
+              "candidatePoolDuplicateSlots": 0,
+              "queryLatencyMilliseconds": 64.00710100000106,
+              "finalCounts": [
+                {
+                  "finalCount": 5,
+                  "finalRecalled": true,
+                  "contextUseful": true,
+                  "sourceOccurrencesPreserved": true,
+                  "preservedSourceOccurrences": 1,
+                  "sessionOriginsVerified": true,
+                  "evidenceRelationsVerified": true,
+                  "contributingEntriesVerified": true,
+                  "branchesVerified": true,
+                  "finalDuplicateSlots": 0,
+                  "finalResultSlots": 5
+                }
+              ]
+            },
+            {
+              "caseId": "semantic-image-retry-budget",
+              "category": "semantic_paraphrase",
+              "scope": "global",
+              "searchScopeVerified": true,
+              "invocationProjectIdentityVerified": true,
+              "excludedSessionFilesAbsent": true,
+              "preLimitChannelsVerified": true,
+              "preLimitChannelMeasurements": [],
+              "candidatePoolRecalled": false,
+              "rawCandidateCount": 8,
+              "groupedCandidateCount": 8,
+              "candidatePoolDuplicateSlots": 0,
+              "queryLatencyMilliseconds": 62.62301800000023,
+              "finalCounts": [
+                {
+                  "finalCount": 5,
+                  "finalRecalled": false,
+                  "contextUseful": false,
+                  "sourceOccurrencesPreserved": false,
+                  "preservedSourceOccurrences": 0,
+                  "sessionOriginsVerified": false,
+                  "evidenceRelationsVerified": false,
+                  "contributingEntriesVerified": false,
+                  "branchesVerified": false,
+                  "finalDuplicateSlots": 0,
+                  "finalResultSlots": 5
+                }
+              ]
+            },
+            {
+              "caseId": "exact-read-node-error-code",
+              "category": "exact_identifier",
+              "scope": "global",
+              "searchScopeVerified": true,
+              "invocationProjectIdentityVerified": true,
+              "excludedSessionFilesAbsent": true,
+              "preLimitChannelsVerified": true,
+              "preLimitChannelMeasurements": [],
+              "candidatePoolRecalled": true,
+              "rawCandidateCount": 3,
+              "groupedCandidateCount": 3,
+              "candidatePoolDuplicateSlots": 0,
+              "queryLatencyMilliseconds": 63.35339600000043,
+              "finalCounts": [
+                {
+                  "finalCount": 5,
+                  "finalRecalled": true,
+                  "contextUseful": true,
+                  "sourceOccurrencesPreserved": true,
+                  "preservedSourceOccurrences": 1,
+                  "sessionOriginsVerified": true,
+                  "evidenceRelationsVerified": true,
+                  "contributingEntriesVerified": true,
+                  "branchesVerified": true,
+                  "finalDuplicateSlots": 0,
+                  "finalResultSlots": 3
+                }
+              ]
+            },
+            {
+              "caseId": "tool-evidence-lease-token",
+              "category": "tool_evidence",
+              "scope": "global",
+              "searchScopeVerified": true,
+              "invocationProjectIdentityVerified": true,
+              "excludedSessionFilesAbsent": true,
+              "preLimitChannelsVerified": true,
+              "preLimitChannelMeasurements": [],
+              "candidatePoolRecalled": true,
+              "rawCandidateCount": 4,
+              "groupedCandidateCount": 4,
+              "candidatePoolDuplicateSlots": 0,
+              "queryLatencyMilliseconds": 62.4919949999985,
+              "finalCounts": [
+                {
+                  "finalCount": 5,
+                  "finalRecalled": true,
+                  "contextUseful": true,
+                  "sourceOccurrencesPreserved": true,
+                  "preservedSourceOccurrences": 1,
+                  "sessionOriginsVerified": true,
+                  "evidenceRelationsVerified": true,
+                  "contributingEntriesVerified": true,
+                  "branchesVerified": true,
+                  "finalDuplicateSlots": 0,
+                  "finalResultSlots": 4
+                }
+              ]
+            },
+            {
+              "caseId": "context-europe-rollout-conditions",
+              "category": "context_dependent_reply",
+              "scope": "global",
+              "searchScopeVerified": true,
+              "invocationProjectIdentityVerified": true,
+              "excludedSessionFilesAbsent": true,
+              "preLimitChannelsVerified": true,
+              "preLimitChannelMeasurements": [],
+              "candidatePoolRecalled": true,
+              "rawCandidateCount": 8,
+              "groupedCandidateCount": 8,
+              "candidatePoolDuplicateSlots": 0,
+              "queryLatencyMilliseconds": 64.50105900000017,
+              "finalCounts": [
+                {
+                  "finalCount": 5,
+                  "finalRecalled": true,
+                  "contextUseful": true,
+                  "sourceOccurrencesPreserved": true,
+                  "preservedSourceOccurrences": 1,
+                  "sessionOriginsVerified": true,
+                  "evidenceRelationsVerified": true,
+                  "contributingEntriesVerified": true,
+                  "branchesVerified": true,
+                  "finalDuplicateSlots": 0,
+                  "finalResultSlots": 5
+                }
+              ]
+            },
+            {
+              "caseId": "branch-abandoned-redis-group",
+              "category": "branch",
+              "scope": "global",
+              "searchScopeVerified": true,
+              "invocationProjectIdentityVerified": true,
+              "excludedSessionFilesAbsent": true,
+              "preLimitChannelsVerified": true,
+              "preLimitChannelMeasurements": [],
+              "candidatePoolRecalled": true,
+              "rawCandidateCount": 8,
+              "groupedCandidateCount": 8,
+              "candidatePoolDuplicateSlots": 0,
+              "queryLatencyMilliseconds": 62.82360100000005,
+              "finalCounts": [
+                {
+                  "finalCount": 5,
+                  "finalRecalled": true,
+                  "contextUseful": true,
+                  "sourceOccurrencesPreserved": true,
+                  "preservedSourceOccurrences": 1,
+                  "sessionOriginsVerified": true,
+                  "evidenceRelationsVerified": true,
+                  "contributingEntriesVerified": true,
+                  "branchesVerified": true,
+                  "finalDuplicateSlots": 0,
+                  "finalResultSlots": 5
+                }
+              ]
+            },
+            {
+              "caseId": "branch-active-offline-queue",
+              "category": "branch",
+              "scope": "global",
+              "searchScopeVerified": true,
+              "invocationProjectIdentityVerified": true,
+              "excludedSessionFilesAbsent": true,
+              "preLimitChannelsVerified": true,
+              "preLimitChannelMeasurements": [],
+              "candidatePoolRecalled": true,
+              "rawCandidateCount": 9,
+              "groupedCandidateCount": 9,
+              "candidatePoolDuplicateSlots": 0,
+              "queryLatencyMilliseconds": 64.24546399999963,
+              "finalCounts": [
+                {
+                  "finalCount": 5,
+                  "finalRecalled": true,
+                  "contextUseful": true,
+                  "sourceOccurrencesPreserved": true,
+                  "preservedSourceOccurrences": 1,
+                  "sessionOriginsVerified": true,
+                  "evidenceRelationsVerified": true,
+                  "contributingEntriesVerified": true,
+                  "branchesVerified": true,
+                  "finalDuplicateSlots": 0,
+                  "finalResultSlots": 5
+                }
+              ]
+            },
+            {
+              "caseId": "branch-summary-hosted-services",
+              "category": "summary",
+              "scope": "global",
+              "searchScopeVerified": true,
+              "invocationProjectIdentityVerified": true,
+              "excludedSessionFilesAbsent": true,
+              "preLimitChannelsVerified": true,
+              "preLimitChannelMeasurements": [],
+              "candidatePoolRecalled": true,
+              "rawCandidateCount": 8,
+              "groupedCandidateCount": 8,
+              "candidatePoolDuplicateSlots": 0,
+              "queryLatencyMilliseconds": 63.28781400000116,
+              "finalCounts": [
+                {
+                  "finalCount": 5,
+                  "finalRecalled": true,
+                  "contextUseful": true,
+                  "sourceOccurrencesPreserved": true,
+                  "preservedSourceOccurrences": 1,
+                  "sessionOriginsVerified": true,
+                  "evidenceRelationsVerified": true,
+                  "contributingEntriesVerified": true,
+                  "branchesVerified": true,
+                  "finalDuplicateSlots": 0,
+                  "finalResultSlots": 5
+                }
+              ]
+            },
+            {
+              "caseId": "compaction-copper-finch",
+              "category": "summary",
+              "scope": "global",
+              "searchScopeVerified": true,
+              "invocationProjectIdentityVerified": true,
+              "excludedSessionFilesAbsent": true,
+              "preLimitChannelsVerified": true,
+              "preLimitChannelMeasurements": [],
+              "candidatePoolRecalled": true,
+              "rawCandidateCount": 8,
+              "groupedCandidateCount": 8,
+              "candidatePoolDuplicateSlots": 0,
+              "queryLatencyMilliseconds": 71.59945100000004,
+              "finalCounts": [
+                {
+                  "finalCount": 5,
+                  "finalRecalled": true,
+                  "contextUseful": true,
+                  "sourceOccurrencesPreserved": true,
+                  "preservedSourceOccurrences": 1,
+                  "sessionOriginsVerified": true,
+                  "evidenceRelationsVerified": true,
+                  "contributingEntriesVerified": true,
+                  "branchesVerified": true,
+                  "finalDuplicateSlots": 0,
+                  "finalResultSlots": 5
+                }
+              ]
+            },
+            {
+              "caseId": "duplicate-meridian-release",
+              "category": "duplicate_content",
+              "scope": "global",
+              "searchScopeVerified": true,
+              "invocationProjectIdentityVerified": true,
+              "excludedSessionFilesAbsent": true,
+              "preLimitChannelsVerified": true,
+              "preLimitChannelMeasurements": [],
+              "candidatePoolRecalled": true,
+              "rawCandidateCount": 8,
+              "groupedCandidateCount": 7,
+              "candidatePoolDuplicateSlots": 1,
+              "queryLatencyMilliseconds": 58.223823000000266,
+              "finalCounts": [
+                {
+                  "finalCount": 5,
+                  "finalRecalled": true,
+                  "contextUseful": true,
+                  "sourceOccurrencesPreserved": true,
+                  "preservedSourceOccurrences": 2,
+                  "sessionOriginsVerified": true,
+                  "evidenceRelationsVerified": true,
+                  "contributingEntriesVerified": true,
+                  "branchesVerified": true,
+                  "finalDuplicateSlots": 0,
+                  "finalResultSlots": 5
+                }
+              ]
+            },
+            {
+              "caseId": "project-main-retrieves-worktree-before-limits",
+              "category": "project_scope",
+              "scope": "project",
+              "searchScopeVerified": true,
+              "invocationProjectIdentityVerified": true,
+              "excludedSessionFilesAbsent": true,
+              "preLimitChannelsVerified": true,
+              "preLimitChannelMeasurements": [
+                {
+                  "channel": "dense",
+                  "projectSourceAdmitted": true,
+                  "globalSourceDisplaced": true,
+                  "pollutingCandidateCount": 8,
+                  "passed": true
+                },
+                {
+                  "channel": "lexical",
+                  "projectSourceAdmitted": true,
+                  "globalSourceDisplaced": true,
+                  "pollutingCandidateCount": 8,
+                  "passed": true
+                },
+                {
+                  "channel": "identifier",
+                  "projectSourceAdmitted": true,
+                  "globalSourceDisplaced": true,
+                  "pollutingCandidateCount": 8,
+                  "passed": true
+                }
+              ],
+              "candidatePoolRecalled": true,
+              "rawCandidateCount": 3,
+              "groupedCandidateCount": 3,
+              "candidatePoolDuplicateSlots": 0,
+              "queryLatencyMilliseconds": 62.97828800000025,
+              "finalCounts": [
+                {
+                  "finalCount": 5,
+                  "finalRecalled": true,
+                  "contextUseful": true,
+                  "sourceOccurrencesPreserved": true,
+                  "preservedSourceOccurrences": 1,
+                  "sessionOriginsVerified": true,
+                  "evidenceRelationsVerified": true,
+                  "contributingEntriesVerified": true,
+                  "branchesVerified": true,
+                  "finalDuplicateSlots": 0,
+                  "finalResultSlots": 3
+                }
+              ]
+            },
+            {
+              "caseId": "project-worktree-retrieves-main",
+              "category": "project_scope",
+              "scope": "project",
+              "searchScopeVerified": true,
+              "invocationProjectIdentityVerified": true,
+              "excludedSessionFilesAbsent": true,
+              "preLimitChannelsVerified": true,
+              "preLimitChannelMeasurements": [],
+              "candidatePoolRecalled": true,
+              "rawCandidateCount": 8,
+              "groupedCandidateCount": 8,
+              "candidatePoolDuplicateSlots": 0,
+              "queryLatencyMilliseconds": 63.90325800000028,
+              "finalCounts": [
+                {
+                  "finalCount": 5,
+                  "finalRecalled": true,
+                  "contextUseful": true,
+                  "sourceOccurrencesPreserved": true,
+                  "preservedSourceOccurrences": 1,
+                  "sessionOriginsVerified": true,
+                  "evidenceRelationsVerified": true,
+                  "contributingEntriesVerified": true,
+                  "branchesVerified": true,
+                  "finalDuplicateSlots": 0,
+                  "finalResultSlots": 5
+                }
+              ]
+            },
+            {
+              "caseId": "project-equivalent-clone-origin",
+              "category": "project_scope",
+              "scope": "project",
+              "searchScopeVerified": true,
+              "invocationProjectIdentityVerified": true,
+              "excludedSessionFilesAbsent": true,
+              "preLimitChannelsVerified": true,
+              "preLimitChannelMeasurements": [],
+              "candidatePoolRecalled": true,
+              "rawCandidateCount": 8,
+              "groupedCandidateCount": 8,
+              "candidatePoolDuplicateSlots": 0,
+              "queryLatencyMilliseconds": 59.38877800000046,
+              "finalCounts": [
+                {
+                  "finalCount": 5,
+                  "finalRecalled": true,
+                  "contextUseful": true,
+                  "sourceOccurrencesPreserved": true,
+                  "preservedSourceOccurrences": 1,
+                  "sessionOriginsVerified": true,
+                  "evidenceRelationsVerified": true,
+                  "contributingEntriesVerified": true,
+                  "branchesVerified": true,
+                  "finalDuplicateSlots": 0,
+                  "finalResultSlots": 5
+                }
+              ]
+            },
+            {
+              "caseId": "project-configured-lineage",
+              "category": "project_scope",
+              "scope": "project",
+              "searchScopeVerified": true,
+              "invocationProjectIdentityVerified": true,
+              "excludedSessionFilesAbsent": true,
+              "preLimitChannelsVerified": true,
+              "preLimitChannelMeasurements": [],
+              "candidatePoolRecalled": true,
+              "rawCandidateCount": 8,
+              "groupedCandidateCount": 8,
+              "candidatePoolDuplicateSlots": 0,
+              "queryLatencyMilliseconds": 60.60591899999963,
+              "finalCounts": [
+                {
+                  "finalCount": 5,
+                  "finalRecalled": true,
+                  "contextUseful": true,
+                  "sourceOccurrencesPreserved": true,
+                  "preservedSourceOccurrences": 1,
+                  "sessionOriginsVerified": true,
+                  "evidenceRelationsVerified": true,
+                  "contributingEntriesVerified": true,
+                  "branchesVerified": true,
+                  "finalDuplicateSlots": 0,
+                  "finalResultSlots": 5
+                }
+              ]
+            },
+            {
+              "caseId": "project-similar-name-remains-unrelated",
+              "category": "project_scope",
+              "scope": "project",
+              "searchScopeVerified": true,
+              "invocationProjectIdentityVerified": true,
+              "excludedSessionFilesAbsent": true,
+              "preLimitChannelsVerified": true,
+              "preLimitChannelMeasurements": [],
+              "candidatePoolRecalled": true,
+              "rawCandidateCount": 7,
+              "groupedCandidateCount": 7,
+              "candidatePoolDuplicateSlots": 0,
+              "queryLatencyMilliseconds": 59.475147000001016,
+              "finalCounts": [
+                {
+                  "finalCount": 5,
+                  "finalRecalled": true,
+                  "contextUseful": true,
+                  "sourceOccurrencesPreserved": true,
+                  "preservedSourceOccurrences": 1,
+                  "sessionOriginsVerified": true,
+                  "evidenceRelationsVerified": true,
+                  "contributingEntriesVerified": true,
+                  "branchesVerified": true,
+                  "finalDuplicateSlots": 0,
+                  "finalResultSlots": 5
+                }
+              ]
+            },
+            {
+              "caseId": "project-exact-non-git-origin",
+              "category": "project_scope",
+              "scope": "project",
+              "searchScopeVerified": true,
+              "invocationProjectIdentityVerified": true,
+              "excludedSessionFilesAbsent": true,
+              "preLimitChannelsVerified": true,
+              "preLimitChannelMeasurements": [],
+              "candidatePoolRecalled": true,
+              "rawCandidateCount": 3,
+              "groupedCandidateCount": 3,
+              "candidatePoolDuplicateSlots": 0,
+              "queryLatencyMilliseconds": 59.45240600000034,
+              "finalCounts": [
+                {
+                  "finalCount": 5,
+                  "finalRecalled": true,
+                  "contextUseful": true,
+                  "sourceOccurrencesPreserved": true,
+                  "preservedSourceOccurrences": 1,
+                  "sessionOriginsVerified": true,
+                  "evidenceRelationsVerified": true,
+                  "contributingEntriesVerified": true,
+                  "branchesVerified": true,
+                  "finalDuplicateSlots": 0,
+                  "finalResultSlots": 3
+                }
+              ]
+            },
+            {
+              "caseId": "global-explicit-cross-project",
+              "category": "project_scope",
+              "scope": "global",
+              "searchScopeVerified": true,
+              "invocationProjectIdentityVerified": true,
+              "excludedSessionFilesAbsent": true,
+              "preLimitChannelsVerified": true,
+              "preLimitChannelMeasurements": [],
+              "candidatePoolRecalled": true,
+              "rawCandidateCount": 8,
+              "groupedCandidateCount": 8,
+              "candidatePoolDuplicateSlots": 0,
+              "queryLatencyMilliseconds": 58.964357999999265,
+              "finalCounts": [
+                {
+                  "finalCount": 5,
+                  "finalRecalled": true,
+                  "contextUseful": true,
+                  "sourceOccurrencesPreserved": true,
+                  "preservedSourceOccurrences": 1,
+                  "sessionOriginsVerified": true,
+                  "evidenceRelationsVerified": true,
+                  "contributingEntriesVerified": true,
+                  "branchesVerified": true,
+                  "finalDuplicateSlots": 0,
+                  "finalResultSlots": 5
+                }
+              ]
+            }
+          ],
+          "finalCounts": [
+            {
+              "finalCount": 5,
+              "finalRecall": 0.9411764705882353,
+              "contextUsefulness": 0.9411764705882353,
+              "sourceOccurrencePreservation": 0.9411764705882353,
+              "sessionOriginVerification": 0.9411764705882353,
+              "evidenceRelationVerification": 0.9411764705882353,
+              "contributingEntryVerification": 0.9411764705882353,
+              "branchVerification": 0.9411764705882353,
+              "finalDuplicateRate": 0,
+              "missedCaseIds": ["semantic-image-retry-budget"],
+              "contextFailureCaseIds": ["semantic-image-retry-budget"],
+              "sourceOccurrenceFailureCaseIds": ["semantic-image-retry-budget"],
+              "sessionOriginFailureCaseIds": ["semantic-image-retry-budget"],
+              "evidenceRelationFailureCaseIds": ["semantic-image-retry-budget"],
+              "contributingEntryFailureCaseIds": ["semantic-image-retry-budget"],
+              "branchFailureCaseIds": ["semantic-image-retry-budget"],
+              "finalDuplicateSlots": 0,
+              "finalResultSlots": 78
+            }
+          ]
+        }
+      }
+    ],
+    "selection": {
+      "passed": false,
+      "selected": null,
+      "blockers": [
+        "512-64, 8 candidates/channel, 5 final: candidate-pool recall 0.941 is below 1.000",
+        "512-64, 8 candidates/channel, 5 final: source occurrence preservation 0.941 is below 1.000",
+        "512-64, 8 candidates/channel, 5 final: session-origin verification 0.941 is below 1.000",
+        "512-64, 8 candidates/channel, 5 final: evidence-relation verification 0.941 is below 1.000",
+        "512-64, 8 candidates/channel, 5 final: contributing-entry verification 0.941 is below 1.000",
+        "512-64, 8 candidates/channel, 5 final: branch verification 0.941 is below 1.000"
+      ],
+      "combinations": [
+        {
+          "chunkPolicy": {
+            "id": "512-64",
+            "maxTokens": 512,
+            "overlapTokens": 64
+          },
+          "candidateCount": 8,
+          "finalCount": 5,
+          "totalChunks": 128,
+          "indexLatencyMilliseconds": 4482.948463999999,
+          "candidatePoolRecall": 0.9411764705882353,
+          "candidatePoolDuplicateRate": 0.008547008547008548,
+          "finalRecall": 0.9411764705882353,
+          "contextUsefulness": 0.9411764705882353,
+          "sourceOccurrencePreservation": 0.9411764705882353,
+          "sessionOriginVerification": 0.9411764705882353,
+          "evidenceRelationVerification": 0.9411764705882353,
+          "contributingEntryVerification": 0.9411764705882353,
+          "branchVerification": 0.9411764705882353,
+          "finalDuplicateRate": 0,
+          "queryLatencyMilliseconds": {
+            "median": 62.82360100000005,
+            "p95": 71.59945100000004
+          },
+          "queryLatencyByScope": {
+            "project": {
+              "median": 59.475147000001016,
+              "p95": 63.90325800000028
+            },
+            "global": {
+              "median": 63.28781400000116,
+              "p95": 71.59945100000004
+            }
+          },
+          "policyFailureCaseIds": [],
+          "gatePassed": false,
+          "failures": [
+            "candidate-pool recall 0.941 is below 1.000",
+            "source occurrence preservation 0.941 is below 1.000",
+            "session-origin verification 0.941 is below 1.000",
+            "evidence-relation verification 0.941 is below 1.000",
+            "contributing-entry verification 0.941 is below 1.000",
+            "branch verification 0.941 is below 1.000"
+          ]
+        }
+      ]
+    },
+    "boundedWork": {
+      "sessionFiles": 15,
+      "evaluationCases": 17,
+      "indexRuns": 1,
+      "executedSearchRequests": 20,
+      "rerankerRequests": 0,
+      "chunkEmbeddingRequests": 17,
+      "maximumCandidatesPerSearch": 24,
+      "repositoryIdentityResolutions": 5
+    }
+  },
+  "limitations": [
+    "This committed corpus is synthetic-but-session-shaped and cannot establish private-corpus quality.",
+    "One device-policy run does not provide both CPU and accelerated-device evidence.",
+    "Maintainer distribution and notice approval remains a separate release decision.",
+    "Independent live tokenizer, embedding canary, HTTP parity, reranker, and planner fixtures remain separate acceptance evidence."
+  ]
+}

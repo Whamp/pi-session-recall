@@ -1161,3 +1161,77 @@ void test('kernel flock admits one worker, rejects losers promptly, and releases
   assert.equal((await recoveredWinner.completed).code, 0);
   assert.equal((await readFile(probePath, 'utf8')).trim().split('\n').length, 3);
 });
+
+void test('metadata sweep of unknown jsonl publishes arrival marker and schedules follow-up', async (t) => {
+  const fixture = await createWorkerFixture(t, { kind: RecallWorkMarkerTrigger.ARRIVAL });
+  // Publish the arrival marker for session.jsonl to trigger a metadata sweep in this pass.
+  await fixture.publishMarker();
+  // Arrange: a second session file that has NO marker in the spool (crash-missed arrival).
+  const unknownSessionPath = join(fixture.sessionsDirectory, 'unknown-session.jsonl');
+  const sessionHeaderRecord = {
+    type: 'session',
+    version: 3,
+    id: 'unknown-physical-session',
+    timestamp: '2026-07-27T10:00:00.000Z',
+    cwd: '/workspace/unknown',
+  };
+  await writeFile(unknownSessionPath, `${JSON.stringify(sessionHeaderRecord)}\n`);
+
+  let sweepCount = 0;
+  const spoolDirectory = fixture.markerSpoolDirectory;
+
+  const result = await runRecallIncrementalWorker({
+    markerSpoolDirectory: fixture.markerSpoolDirectory,
+    markerQuarantineDirectory: fixture.markerQuarantineDirectory,
+    controlDirectory: fixture.controlDirectory,
+    targetGenerationId: 'generation-1',
+    trustedSessionRoots: [fixture.sessionsDirectory],
+    nowEpochMilliseconds: () => fixture.marker.createdAtEpochMilliseconds + 1,
+    async loadKnownSourceInventory() {
+      return { knownSources: [], physicalProjections: [] };
+    },
+    async scanSessionMetadata() {
+      sweepCount += 1;
+      return {
+        sweepId: 'arrival-recovery-sweep',
+        status: RecallMetadataSweepStatus.COMPLETE,
+        rootHealthy: true,
+        deletionConfirmationSuppressed: false,
+        scannedFileCount: 1,
+        observedSessionFileCount: 1,
+        observedSessionMetadata: [
+          {
+            physicalSessionId: null,
+            relativePath: 'unknown-session.jsonl',
+            sizeBytes: 100,
+            modifiedAtEpochMilliseconds: fixture.marker.createdAtEpochMilliseconds,
+            sourceDevice: '1',
+            sourceInode: '99',
+          },
+        ],
+        observedKnownSourceIdentities: [],
+        missingPhysicalSessionIds: [],
+        continuationPersisted: false,
+        elapsedMilliseconds: 1,
+      };
+    },
+  });
+
+  // Check that the follow-up is requested (arrival marker was published).
+  assert.equal(sweepCount, 1);
+  assert.equal(result.metadataSweepFollowUpRequired, true);
+
+  // Verify the arrival marker was written to the spool.
+  const { readdir } = await import('node:fs/promises');
+  const spoolFiles = await readdir(spoolDirectory);
+  const arrivalFiles = spoolFiles.filter((f) => f.endsWith('.json'));
+  // The fixture's own marker is in the spool plus the newly published arrival marker.
+  const arrivalMarkerContent = await Promise.all(
+    arrivalFiles.map(async (f) => readFile(join(spoolDirectory, f), 'utf8')),
+  );
+  const arrivalMarkers = arrivalMarkerContent.filter((content) =>
+    content.includes('"unknown-physical-session"'),
+  );
+  assert.equal(arrivalMarkers.length, 1);
+  assert.match(arrivalMarkers[0] ?? '', /"kind":"arrival"/u);
+});

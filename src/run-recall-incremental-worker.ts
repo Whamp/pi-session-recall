@@ -1,5 +1,5 @@
-import { access, readFile, stat } from 'node:fs/promises';
-import { isAbsolute, relative, resolve } from 'node:path';
+import { access, open, readFile, stat } from 'node:fs/promises';
+import { isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { completeRecallGenerationReplay } from './complete-recall-generation-replay.js';
@@ -36,7 +36,14 @@ import {
 } from './recall-incremental-worker-schedule.js';
 import type { ConfirmedSessionDeletionReconciliationResult } from './reconcile-confirmed-session-deletion.js';
 import type { PhysicalSessionProjection } from './recall-session-projection.js';
-import type { RecallWorkMarkerCodecOptions } from './recall-work-marker.js';
+import {
+  createRecallWorkMarkerId,
+  RECALL_WORK_MARKER_VERSION,
+  type RecallWorkMarkerCodecOptions,
+  type RecallWorkMarkerIdentity,
+} from './recall-work-marker.js';
+import { publishRecallWorkMarker } from './publish-recall-work-marker.js';
+import { isUnknownRecord } from './is-unknown-record.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
 import { createLineageResolver, resolveProjectIdentity } from './resolve-project-identity.js';
 import {
@@ -228,6 +235,104 @@ function workPlanRequestsRecallMetadataSweep(workPlan: RecallMarkerReplayWorkPla
   return workPlan.workItems.some(
     ({ marker }) => marker.trigger.kind === RecallWorkMarkerTrigger.ARRIVAL,
   );
+}
+
+/**
+ * Reads the first line of a physical session JSONL file and extracts the logical session ID
+ * from the session header record. Returns null if the header cannot be read or is not a valid
+ * session header.
+ */
+async function readPhysicalSessionIdFromJsonlHeader(filePath: string): Promise<string | null> {
+  const handle = await open(filePath, 'r');
+  try {
+    const buffer = Buffer.allocUnsafe(4096);
+    const { bytesRead } = await handle.read(buffer, 0, 4096, 0);
+    const text = buffer.subarray(0, bytesRead).toString('utf8');
+    const newlineIndex = text.indexOf('\n');
+    const firstLine = newlineIndex >= 0 ? text.slice(0, newlineIndex) : text;
+    const trimmed = firstLine.endsWith('\r') ? firstLine.slice(0, -1) : firstLine;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch {
+      return null;
+    }
+    if (
+      isUnknownRecord(parsed) &&
+      (parsed.type === 'session' || parsed.type === 'v1_session') &&
+      typeof parsed.id === 'string' &&
+      parsed.id.length > 0
+    ) {
+      return parsed.id;
+    }
+    return null;
+  } finally {
+    await handle.close();
+  }
+}
+
+/**
+ * Publishes durable ARRIVAL markers for session files observed by a metadata sweep that are not
+ * yet represented in the marker spool or the known-source inventory. Returns the count of markers
+ * published.
+ */
+async function publishMetadataSweepArrivalMarkers(
+  metadataSweep: RecallSessionMetadataSweepResult,
+  options: Pick<
+    RunRecallIncrementalWorkerOptions,
+    'trustedSessionRoots' | 'markerSpoolDirectory' | 'knownSources' | 'loadKnownSourceInventory'
+  >,
+  existingPhysicalSessionIds: ReadonlySet<string>,
+  nowEpochMilliseconds: number,
+): Promise<number> {
+  const unknownObservedFiles = metadataSweep.observedSessionMetadata.filter(
+    (entry) => entry.physicalSessionId === null,
+  );
+  if (unknownObservedFiles.length === 0) {
+    return 0;
+  }
+  const sessionRootDirectory = options.trustedSessionRoots[0] ?? '';
+  let published = 0;
+  const sweepRuntimeInstanceId = `metadata-sweep:${metadataSweep.sweepId}`;
+  for (const [index, entry] of unknownObservedFiles.entries()) {
+    const absolutePath = join(sessionRootDirectory, entry.relativePath);
+    let physicalSessionId: string | null;
+    try {
+      physicalSessionId = await readPhysicalSessionIdFromJsonlHeader(absolutePath);
+    } catch {
+      continue;
+    }
+    if (physicalSessionId === null) {
+      continue;
+    }
+    if (existingPhysicalSessionIds.has(physicalSessionId)) {
+      continue;
+    }
+    const markerIdentity: RecallWorkMarkerIdentity = {
+      version: RECALL_WORK_MARKER_VERSION,
+      physicalSessionId,
+      physicalSessionPath: absolutePath,
+      runtimeInstanceId: sweepRuntimeInstanceId,
+      runtimeSequence: index + 1,
+      createdAtEpochMilliseconds: nowEpochMilliseconds,
+      trigger: { kind: RecallWorkMarkerTrigger.ARRIVAL },
+    };
+    try {
+      await publishRecallWorkMarker(
+        { ...markerIdentity, markerId: createRecallWorkMarkerId(markerIdentity) },
+        {
+          markerSpoolDirectory: options.markerSpoolDirectory,
+          trustedSessionRoots: options.trustedSessionRoots,
+          // No-op signal: we are already inside the worker; the caller sets follow-up instead.
+          workerSignal: { signalDetachedWorker() {} },
+        },
+      );
+      published += 1;
+    } catch {
+      // Best-effort: skip files that cannot be published (e.g. path outside trust boundary).
+    }
+  }
+  return published;
 }
 
 function splitRecallWorkPlanByPhysicalSession(
@@ -484,6 +589,24 @@ export async function runRecallIncrementalWorker(
       workPlan,
     );
     metadataSweepFollowUpRequired = (deletionResult?.sourceMissingRecordedCount ?? 0) > 0;
+  }
+  if (
+    metadataSweep !== null &&
+    metadataSweep.observedSessionMetadata.some((entry) => entry.physicalSessionId === null)
+  ) {
+    const existingPhysicalSessionIds = new Set([
+      ...workPlan.workItems.map(({ marker }) => marker.physicalSessionId),
+      ...(knownSourceInventory?.physicalProjections.map((p) => p.physicalSessionId) ?? []),
+    ]);
+    const publishedCount = await publishMetadataSweepArrivalMarkers(
+      metadataSweep,
+      options,
+      existingPhysicalSessionIds,
+      nowEpochMilliseconds(),
+    );
+    if (publishedCount > 0) {
+      metadataSweepFollowUpRequired = true;
+    }
   }
   const transferOutcomes: IncrementalRecallWorkPlanTransferOutcome[] = [];
   const largeTransferDeferrals: RecallLargeTransferDeferral[] = [];

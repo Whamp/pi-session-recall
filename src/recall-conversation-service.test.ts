@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -393,9 +394,10 @@ void test('all diagnostics record changed and unchanged physical session checks'
   assert.equal(changed.indexSummary.indexedSessions, 1);
   assert.ok(changed.totalChunks > 1);
   assert.equal(unchanged.indexSummary.indexedSessions, 0);
-  assert.equal(removed.indexSummary.removedSessions, 1);
-  assert.equal(removed.indexSummary.deletedChunks, changed.totalChunks);
-  assert.equal(removed.totalChunks, 0);
+  // Managed maintenance with retireMissingSourcesImmediately: false defers deletion to the worker.
+  assert.equal(removed.indexSummary.removedSessions, 0);
+  assert.equal(removed.indexSummary.deletedChunks, 0);
+  assert.equal(removed.totalChunks, changed.totalChunks);
   const records = (await readFile(config.diagnosticLogPath, 'utf8'))
     .trimEnd()
     .split('\n')
@@ -404,8 +406,9 @@ void test('all diagnostics record changed and unchanged physical session checks'
   const physicalSessionRecords = records.filter(
     (record) => record.operationKind === 'physical_session_check',
   );
-  assert.equal(records.length, 9);
-  assert.equal(physicalSessionRecords.length, 3);
+  // Pass 3 skips the stale-path loop, so only 2 physical-session checks are emitted.
+  assert.equal(records.length, 8);
+  assert.equal(physicalSessionRecords.length, 2);
   const optimizationRecords = records.filter((record) => record.operationKind === 'optimization');
   assert.deepEqual(optimizationRecords, []);
   const manualCompletionRecords = records.filter(
@@ -460,34 +463,8 @@ void test('all diagnostics record changed and unchanged physical session checks'
       embeddingRequestCount: 0,
     },
   );
-  assert.deepEqual(
-    {
-      sessionPath: physicalSessionRecords[2]?.sessionPath,
-      sourceByteSize: physicalSessionRecords[2]?.sourceByteSize,
-      changed: physicalSessionRecords[2]?.changed,
-      skipped: physicalSessionRecords[2]?.skipped,
-      status: physicalSessionRecords[2]?.status,
-      elapsedMilliseconds: physicalSessionRecords[2]?.elapsedMilliseconds,
-      upsertedDocumentCount: physicalSessionRecords[2]?.upsertedDocumentCount,
-      deletedDocumentCount: physicalSessionRecords[2]?.deletedDocumentCount,
-      cacheHitCount: physicalSessionRecords[2]?.cacheHitCount,
-      newEmbeddingCount: physicalSessionRecords[2]?.newEmbeddingCount,
-      embeddingRequestCount: physicalSessionRecords[2]?.embeddingRequestCount,
-    },
-    {
-      sessionPath,
-      sourceByteSize: 0,
-      changed: true,
-      skipped: false,
-      status: RecallDiagnosticStatus.SUCCEEDED,
-      elapsedMilliseconds: 0,
-      upsertedDocumentCount: 0,
-      deletedDocumentCount: changed.totalChunks,
-      cacheHitCount: 0,
-      newEmbeddingCount: 0,
-      embeddingRequestCount: 0,
-    },
-  );
+  // Pass 3 skips the stale-path loop entirely; no third physical-session check record.
+  assert.equal(physicalSessionRecords[2], undefined);
 });
 
 void test('slow diagnostics retain only threshold physical session checks', async (t) => {
@@ -3243,7 +3220,8 @@ void test('schema migration keeps canonical cache identity across tolerated cana
     firstManifest?.embedding.canaryFingerprint,
   );
   assert.equal(canaryRequests, 2);
-  assert.equal(workerSignalCalls, 1);
+  // Managed catch-up signals the incremental worker; rebuild cutover signals again.
+  assert.equal(workerSignalCalls, 2);
 });
 
 void test('explicit indexing retries a transient embedding-canary failure in the same process', async (t) => {
@@ -3610,4 +3588,214 @@ void test('explicit indexing refuses unmanifested legacy state before tokenizer 
   assert.equal(embeddingRequests, 0);
   assert.equal(tokenizerLoads, 0);
   assert.equal(storeOpens, 0);
+});
+
+void test('rebuild rejects when approved projection fingerprint no longer matches live file', async (t) => {
+  const directory = await mkdtemp(
+    join(tmpdir(), 'recall-service-rebuild-fingerprint-mismatch-'),
+  );
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionsDirectory = join(directory, 'sessions');
+  await mkdir(sessionsDirectory);
+  const sessionPath = join(sessionsDirectory, 'fp-session.jsonl');
+
+  const headerRecord = {
+    type: 'session',
+    version: 3,
+    id: 'fp-session',
+    timestamp: '2026-07-27T10:00:00.000Z',
+    cwd: '/workspace/fp',
+  };
+  const entryRecord = {
+    type: 'message',
+    id: 'fp-entry',
+    parentId: null,
+    timestamp: '2026-07-27T10:00:01.000Z',
+    message: { role: 'user', content: 'original searchable text' },
+  };
+  const headerText = JSON.stringify(headerRecord);
+  const entryText = JSON.stringify(entryRecord);
+  const originalContent = `${headerText}\n${entryText}\n`;
+  await writeFile(sessionPath, originalContent);
+
+  const headerStart = 0;
+  const headerEnd = Buffer.byteLength(headerText, 'utf8') + 1;
+  const entryStart = headerEnd;
+  const entryEnd = entryStart + Buffer.byteLength(entryText, 'utf8') + 1;
+  const headerFingerprint = createHash('sha256').update(headerText).digest('hex');
+  const entryFingerprint = createHash('sha256').update(entryText).digest('hex');
+
+  const config = createTestConfig(directory, sessionsDirectory);
+  await mkdir(join(config.generationRootDirectory, TEST_ACTIVE_GENERATION_ID), { recursive: true });
+  await writeRecallIndexManifest(
+    config.manifestPath,
+    createRecallIndexManifest({
+      embeddingIdentity: {
+        requestModel: config.embeddingModel,
+        servedModelId: config.embeddingServedModelId,
+        artifact: config.embeddingArtifact,
+        dimensions: config.embeddingDimensions,
+        quantization: config.embeddingQuantization,
+        pooling: config.embeddingPooling,
+      },
+      canaryEmbedding: [1, 0, 0],
+    }),
+  );
+
+  const physicalSessionId = 'fp-physical-session';
+  const physicalProjectionId = createPhysicalSessionProjectionId(physicalSessionId);
+  const physicalProjection: PhysicalSessionProjection = {
+    schemaVersion: RECALL_SESSION_PROJECTION_SCHEMA_VERSION,
+    projectionKind: RecallSessionProjectionKind.PHYSICAL_SESSION,
+    projectionId: physicalProjectionId,
+    generationId: TEST_ACTIVE_GENERATION_ID,
+    physicalSessionId,
+    sourcePath: sessionPath,
+    sourceDevice: '1',
+    sourceInode: '2',
+    appendCursorBytes: entryEnd,
+    appendCursorLines: 2,
+    boundaryFingerprint: 'a'.repeat(64),
+    lastEntryId: 'fp-entry',
+    logicalSessionIds: ['fp-session'],
+    sourceAvailability: RecallSourceAvailability.PRESENT,
+    sourceMissingObservedAtEpochMilliseconds: null,
+    sourceMissingObservationCount: 0,
+    sourceMissingSweepId: null,
+    deletionCheckpoint: null,
+    markerCheckpoint: {
+      generationId: TEST_ACTIVE_GENERATION_ID,
+      coveredMarkerIds: [],
+      runtimeSequences: [],
+    },
+    repairState: RecallProjectionRepairState.READY,
+    repairReason: null,
+  };
+  const logicalProjection: LogicalSessionProjection = {
+    schemaVersion: RECALL_SESSION_PROJECTION_SCHEMA_VERSION,
+    projectionKind: RecallSessionProjectionKind.LOGICAL_SESSION,
+    projectionId: createLogicalSessionProjectionId(physicalSessionId, 'fp-session'),
+    generationId: TEST_ACTIVE_GENERATION_ID,
+    physicalSessionId,
+    physicalProjectionId,
+    logicalSessionId: 'fp-session',
+    effectiveLeafEntryId: 'fp-entry',
+    activeContextBoundary: { firstEntryId: 'fp-entry', lastEntryId: 'fp-entry' },
+    compactionBoundary: null,
+    runtimeLeafObservations: [],
+    preservedBranchExits: [],
+    headerDescriptor: {
+      sourceLine: 1,
+      startByte: headerStart,
+      endByte: headerEnd,
+      sourceFingerprint: headerFingerprint,
+      cwd: '/workspace/fp',
+      parentSessionPath: null,
+    },
+    entryDescriptors: [
+      {
+        entryId: 'fp-entry',
+        parentEntryId: null,
+        entryType: 'message',
+        timestamp: '2026-07-27T10:00:01.000Z',
+        messageRole: 'user',
+        branchSummaryFromEntryId: null,
+        sourceLine: 2,
+        startByte: entryStart,
+        endByte: entryEnd,
+        sourceFingerprint: entryFingerprint,
+        firstKeptEntryId: null,
+        hasRetainedTail: false,
+        toolCalls: [],
+        toolResult: null,
+      },
+    ],
+    eligibleContributorEntryIds: ['fp-entry'],
+    eligibleSpans: [{ startByte: entryStart, endByte: entryEnd, startEntryId: 'fp-entry', endEntryId: 'fp-entry', contributorEntryIds: ['fp-entry'] }],
+    labels: [],
+    markerCheckpoint: {
+      generationId: TEST_ACTIVE_GENERATION_ID,
+      coveredMarkerIds: [],
+      runtimeSequences: [],
+    },
+    repairState: RecallProjectionRepairState.READY,
+    repairReason: null,
+  };
+  const projectionStore = openZvecSessionProjectionStore({
+    databasePath: config.projectionDatabasePath,
+    generationId: TEST_ACTIVE_GENERATION_ID,
+  });
+  await projectionStore.upsertProjections([physicalProjection, logicalProjection]);
+  projectionStore.close();
+
+  // Overwrite the file with different content at the same path (in-place edit),
+  // keeping session/entry IDs but changing payload so fingerprints no longer match.
+  const modifiedEntryRecord = {
+    ...entryRecord,
+    message: { role: 'user', content: 'MODIFIED content that changes the fingerprint' },
+  };
+  const modifiedContent = `${headerText}\n${JSON.stringify(modifiedEntryRecord)}\n`;
+  await writeFile(sessionPath, modifiedContent);
+
+  const service = createRecallConversationService(config, {
+    embeddings: {
+      async embedTexts(texts) {
+        return texts.map(() => [1, 0, 0]);
+      },
+    },
+    async loadTokenizer() {
+      return tokenizer;
+    },
+    openStore(mode, databasePath) {
+      void mode;
+      void databasePath;
+      return {
+        async upsertChunks() {},
+        async deleteChunks() {},
+        async listChunkIdsByPhysicalSessionProjectionId() {
+          return [];
+        },
+        async searchDenseCandidates() {
+          return [];
+        },
+        async searchLexicalCandidates() {
+          return [];
+        },
+        async searchIdentifierCandidates() {
+          return [];
+        },
+        fetchConversationChunks() {
+          return new Map();
+        },
+        fetchVectors() {
+          return new Map();
+        },
+        groupDenseCandidates() {
+          return [];
+        },
+        addColumn() {},
+        alterColumn() {},
+        createIndex() {},
+        async optimize() {},
+        close() {},
+        count() {
+          return 0;
+        },
+      };
+    },
+  });
+
+  await assert.rejects(
+    () => service.index({ rebuild: true }),
+    /Recall rebuild approved evidence changed.*fingerprint mismatch/u,
+  );
+  assert.equal(
+    (
+      await readRecallActiveGenerationSelection(
+        config.activeGenerationPointerPath,
+        config.generationRootDirectory,
+      )
+    ).activeGenerationId,
+    TEST_ACTIVE_GENERATION_ID,
+  );
 });

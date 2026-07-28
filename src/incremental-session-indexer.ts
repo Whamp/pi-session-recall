@@ -124,6 +124,12 @@ export interface IncrementalSessionIndexerOptions {
     string,
     ReadonlyMap<string, ReadonlySet<string>>
   >;
+  /**
+   * When false, skips immediate removal of stale-path sessions and suppresses
+   * error-path chunk deletion for previously indexed sessions, deferring to confirmed
+   * deletion via the incremental worker. Defaults to true (rebuild/legacy behavior).
+   */
+  retireMissingSourcesImmediately?: boolean;
 }
 
 async function readConversationIndexState(statePath: string): Promise<ConversationIndexState> {
@@ -321,6 +327,9 @@ async function indexChangedConversationSessionFile(
       error: error instanceof Error ? error.message : String(error),
     });
     if (!previous) {
+      return { stateChanged: false, failed: true };
+    }
+    if (options.retireMissingSourcesImmediately === false) {
       return { stateChanged: false, failed: true };
     }
     const staleIds = previous.chunks.map((chunk) => chunk.id);
@@ -595,42 +604,44 @@ export async function indexChangedConversationSessions(
   const liveSessionPaths = new Set(sessionFiles);
   const summary = createConversationIndexSummary();
 
-  for (const stalePath of Object.keys(state.sessions).filter(
-    (path) => !liveSessionPaths.has(path),
-  )) {
-    throwIfIndexingAborted(options.signal);
-    await runPhysicalSessionCheck({
-      indexerOptions: options,
-      sessionPath: stalePath,
-      async performPhysicalSessionCheck(physicalSessionMetrics) {
-        if (physicalSessionMetrics) {
-          physicalSessionMetrics.sourceByteSize = 0;
-          physicalSessionMetrics.changed = true;
-          physicalSessionMetrics.skipped = false;
-        }
-        const removed = await removeIndexedConversationSession(
-          state,
-          stalePath,
-          options.store,
-          summary,
-          physicalSessionMetrics,
-          options.diagnosticsClock,
-        );
-        return {
-          indexedSessionCount: 0,
-          removedSessionCount: removed ? 1 : 0,
-          failedSessionCount: 0,
-        };
-      },
-    });
-  }
-  if (summary.removedSessions > 0) {
-    await writeConversationIndexStateWithDiagnostics(
-      options.statePath,
-      state,
-      options.diagnosticMetrics,
-      options.diagnosticsClock,
-    );
+  if (options.retireMissingSourcesImmediately !== false) {
+    for (const stalePath of Object.keys(state.sessions).filter(
+      (path) => !liveSessionPaths.has(path),
+    )) {
+      throwIfIndexingAborted(options.signal);
+      await runPhysicalSessionCheck({
+        indexerOptions: options,
+        sessionPath: stalePath,
+        async performPhysicalSessionCheck(physicalSessionMetrics) {
+          if (physicalSessionMetrics) {
+            physicalSessionMetrics.sourceByteSize = 0;
+            physicalSessionMetrics.changed = true;
+            physicalSessionMetrics.skipped = false;
+          }
+          const removed = await removeIndexedConversationSession(
+            state,
+            stalePath,
+            options.store,
+            summary,
+            physicalSessionMetrics,
+            options.diagnosticsClock,
+          );
+          return {
+            indexedSessionCount: 0,
+            removedSessionCount: removed ? 1 : 0,
+            failedSessionCount: 0,
+          };
+        },
+      });
+    }
+    if (summary.removedSessions > 0) {
+      await writeConversationIndexStateWithDiagnostics(
+        options.statePath,
+        state,
+        options.diagnosticMetrics,
+        options.diagnosticsClock,
+      );
+    }
   }
 
   const resolveSessionProjectIdentity = createSessionProjectIdentityResolver(

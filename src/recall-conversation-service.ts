@@ -110,6 +110,10 @@ import {
 } from './recall-inference-capabilities.js';
 import { clearPendingRecallEmbeddingReplacement } from './recall-inference-configuration.js';
 import {
+  persistRecallIncrementalWorkerSchedule,
+  RECALL_INCREMENTAL_WORKER_SCHEDULE_VERSION,
+} from './recall-incremental-worker-schedule.js';
+import {
   measureRecallQueryPlanningProviderConformance,
   measureRecallRerankingProviderConformance,
   type RecallQueryPlanningProviderConformanceMeasurement,
@@ -124,6 +128,7 @@ import {
   createLogicalSessionProjectionId,
   type RecallSessionProjection,
 } from './recall-session-projection.js';
+import { readRecallSessionSourceRange } from './read-recall-session-append-delta.js';
 import {
   createRecallIndexMetrics,
   createRecallOperationDiagnostics,
@@ -654,6 +659,79 @@ interface ApprovedRecallRebuildSnapshot {
   eligibleContributorEntryIdsBySessionPath: Map<string, Map<string, ReadonlySet<string>>>;
 }
 
+async function readApprovedSourceRange(
+  sourcePath: string,
+  startByte: number,
+  endByteExclusive: number,
+): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let byteLength = 0;
+  for await (const chunk of readRecallSessionSourceRange(sourcePath, startByte, endByteExclusive)) {
+    chunks.push(chunk);
+    byteLength += chunk.length;
+  }
+  const bytes = Buffer.concat(chunks, byteLength);
+  if (bytes.length !== endByteExclusive - startByte) {
+    throw new Error(
+      `Recall rebuild approved evidence source range incomplete at ${sourcePath}:${startByte}-${endByteExclusive}`,
+    );
+  }
+  return bytes;
+}
+
+/**
+ * Validates that every approved logical projection's descriptors still match the live source
+ * fingerprints. Throws if any descriptor's fingerprint no longer matches the live file, preventing
+ * rebuild cutover with stale evidence.
+ */
+async function validateApprovedRebuildSourceFingerprints(
+  projections: RecallSessionProjection[],
+): Promise<void> {
+  const sourcePathByProjectionId = new Map<string, string>();
+  for (const projection of projections) {
+    if (projection.projectionKind === RecallSessionProjectionKind.PHYSICAL_SESSION) {
+      sourcePathByProjectionId.set(projection.projectionId, projection.sourcePath);
+    }
+  }
+  for (const projection of projections) {
+    if (projection.projectionKind !== RecallSessionProjectionKind.LOGICAL_SESSION) {
+      continue;
+    }
+    const sourcePath = sourcePathByProjectionId.get(projection.physicalProjectionId);
+    if (sourcePath === undefined) {
+      throw new Error(
+        `Recall rebuild approved evidence changed: physical source missing for ${projection.projectionId}`,
+      );
+    }
+    const descriptors: Array<{
+      sourceLine: number;
+      startByte: number;
+      endByte: number;
+      sourceFingerprint: string;
+    }> = [projection.headerDescriptor, ...projection.entryDescriptors];
+    for (const descriptor of descriptors) {
+      let bytes: Buffer;
+      try {
+        bytes = await readApprovedSourceRange(sourcePath, descriptor.startByte, descriptor.endByte);
+      } catch (error) {
+        throw new Error(
+          `Recall rebuild approved evidence changed: source unreadable at ${sourcePath}:${descriptor.sourceLine}`,
+          { cause: error },
+        );
+      }
+      const lineEnd = bytes.at(-1) === 0x0a ? bytes.length - 1 : bytes.length;
+      const contentEnd = lineEnd > 0 && bytes.at(lineEnd - 1) === 0x0d ? lineEnd - 1 : lineEnd;
+      const text = bytes.subarray(0, contentEnd).toString('utf8');
+      const fingerprint = createHash('sha256').update(text).digest('hex');
+      if (fingerprint !== descriptor.sourceFingerprint) {
+        throw new Error(
+          `Recall rebuild approved evidence changed: fingerprint mismatch at ${sourcePath}:${descriptor.sourceLine}`,
+        );
+      }
+    }
+  }
+}
+
 async function readApprovedRecallRebuildSnapshot(
   projectionDatabasePath: string,
   generationId: string,
@@ -1144,6 +1222,7 @@ export function createRecallConversationService(
       string,
       ReadonlyMap<string, ReadonlySet<string>>
     >,
+    retireMissingSourcesImmediately?: boolean,
   ): Promise<ConversationIndexSummary> {
     let modelPreflighted = embeddingModelPreflighted;
     async function embedTextsAfterModelPreflight(
@@ -1183,6 +1262,9 @@ export function createRecallConversationService(
       ...(onCheckpoint ? { onCheckpoint } : {}),
       ...(eligibleContributorEntryIdsBySessionPath
         ? { eligibleContributorEntryIdsBySessionPath }
+        : {}),
+      ...(retireMissingSourcesImmediately === false
+        ? { retireMissingSourcesImmediately: false }
         : {}),
     };
     return indexChangedConversationSessions({
@@ -1737,6 +1819,11 @@ export function createRecallConversationService(
                   }
                 }
                 const result = { indexSummary, totalChunks: store.count() };
+                if (approvedRebuildSnapshot != null) {
+                  await validateApprovedRebuildSourceFingerprints(
+                    approvedRebuildSnapshot.projections,
+                  );
+                }
                 const replacementProjections: RecallSessionProjection[] =
                   approvedRebuildSnapshot == null
                     ? (
@@ -1923,6 +2010,8 @@ export function createRecallConversationService(
                   options.onCheckpoint,
                   diagnosticMetrics,
                   onPhysicalSessionCheck,
+                  undefined,
+                  false,
                 );
                 if (options.optimize === true) {
                   await runRecallStoreOptimization({
@@ -1932,7 +2021,22 @@ export function createRecallConversationService(
                     ...(runOptimizationWithDiagnostics ? { runOptimizationWithDiagnostics } : {}),
                   });
                 }
-                return { indexSummary, totalChunks: store.count() };
+                const indexResult = { indexSummary, totalChunks: store.count() };
+                await persistRecallIncrementalWorkerSchedule({
+                  schedulePath: join(
+                    config.markerControlDirectory,
+                    'incremental-worker-schedule.json',
+                  ),
+                  nowEpochMilliseconds: diagnosticsClock.monotonicMilliseconds(),
+                  schedule: {
+                    version: RECALL_INCREMENTAL_WORKER_SCHEDULE_VERSION,
+                    nextWakeAtEpochMilliseconds: null,
+                    metadataSweepRequested: true,
+                    largeTransferDeferrals: [],
+                  },
+                });
+                workerSignal.signalDetachedWorker();
+                return indexResult;
               } finally {
                 closeRecallWriteStore(writeWindow, 'Recall maintenance store close failed', store);
               }

@@ -523,3 +523,131 @@ void test('incremental index fails fast when the local embedding model is unavai
   );
   assert.equal(embeddingCalls, 1);
 });
+
+void test('managed incremental index with retireMissingSourcesImmediately false does not delete chunks for temporarily absent sessions', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-indexer-no-immediate-retire-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionsDirectory = join(directory, 'sessions');
+  await mkdir(sessionsDirectory);
+  const sessionPath = join(sessionsDirectory, 'present.jsonl');
+  await writeFile(
+    sessionPath,
+    sessionLines([
+      {
+        type: 'session',
+        version: 3,
+        id: 'present-session',
+        timestamp: '2026-07-27T10:00:00Z',
+        cwd: '/project',
+      },
+      {
+        type: 'message',
+        id: 'entry-1',
+        parentId: null,
+        timestamp: '2026-07-27T10:00:01Z',
+        message: { role: 'user', content: 'Remember this important thing' },
+      },
+    ]),
+  );
+  const store = new MemoryConversationStore();
+  const embeddings: LocalEmbeddingClient = {
+    async embedTexts(texts) {
+      return texts.map(() => [1, 0, 0]);
+    },
+  };
+  const statePath = join(directory, 'state.json');
+
+  // First pass: index the session to establish state with chunks.
+  const firstSummary = await indexChangedConversationSessions({
+    sessionsDirectory,
+    statePath,
+    store,
+    embeddingCache: createTestEmbeddingCache(directory, embeddings),
+    tokenizer,
+    retireMissingSourcesImmediately: false,
+  });
+  assert.equal(firstSummary.indexedSessions, 1);
+  const chunkCountAfterFirstIndex = store.chunks.size;
+  assert.ok(chunkCountAfterFirstIndex > 0, 'should have indexed at least one chunk');
+
+  // Simulate a temporary absence: remove the session file.
+  await rm(sessionPath);
+
+  // Second pass with retireMissingSourcesImmediately: false — should NOT delete chunks.
+  const secondSummary = await indexChangedConversationSessions({
+    sessionsDirectory,
+    statePath,
+    store,
+    embeddingCache: createTestEmbeddingCache(directory, embeddings),
+    tokenizer,
+    retireMissingSourcesImmediately: false,
+  });
+
+  // Stale-path loop is skipped: no removals.
+  assert.equal(secondSummary.removedSessions, 0);
+  assert.equal(secondSummary.deletedChunks, 0);
+  assert.equal(store.deleted.length, 0);
+  // Chunks from the first pass are still present.
+  assert.equal(store.chunks.size, chunkCountAfterFirstIndex);
+});
+
+void test('incremental index with retireMissingSourcesImmediately default deletes chunks for absent sessions', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-indexer-immediate-retire-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionsDirectory = join(directory, 'sessions');
+  await mkdir(sessionsDirectory);
+  const sessionPath = join(sessionsDirectory, 'will-disappear.jsonl');
+  await writeFile(
+    sessionPath,
+    sessionLines([
+      {
+        type: 'session',
+        version: 3,
+        id: 'disappearing-session',
+        timestamp: '2026-07-27T10:00:00Z',
+        cwd: '/project',
+      },
+      {
+        type: 'message',
+        id: 'entry-2',
+        parentId: null,
+        timestamp: '2026-07-27T10:00:01Z',
+        message: { role: 'user', content: 'Content that will be deleted' },
+      },
+    ]),
+  );
+  const store = new MemoryConversationStore();
+  const embeddings: LocalEmbeddingClient = {
+    async embedTexts(texts) {
+      return texts.map(() => [1, 0, 0]);
+    },
+  };
+  const statePath = join(directory, 'state.json');
+
+  // First pass: index the session.
+  await indexChangedConversationSessions({
+    sessionsDirectory,
+    statePath,
+    store,
+    embeddingCache: createTestEmbeddingCache(directory, embeddings),
+    tokenizer,
+  });
+  assert.ok(store.chunks.size > 0);
+
+  // Remove the session file.
+  await rm(sessionPath);
+
+  // Second pass with default behavior: should delete chunks immediately.
+  const secondSummary = await indexChangedConversationSessions({
+    sessionsDirectory,
+    statePath,
+    store,
+    embeddingCache: createTestEmbeddingCache(directory, embeddings),
+    tokenizer,
+  });
+
+  assert.equal(secondSummary.removedSessions, 1);
+  assert.ok(secondSummary.deletedChunks > 0);
+  assert.ok(store.deleted.length > 0);
+  assert.equal(store.chunks.size, 0);
+});

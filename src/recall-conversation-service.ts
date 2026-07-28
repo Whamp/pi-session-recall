@@ -77,6 +77,7 @@ import {
 /** Runtime paths, bounded retrieval channels, and local embedding plus reranker identity. */
 export interface RecallConversationConfig {
   sessionsDirectory: string;
+  dataDirectory: string;
   databasePath: string;
   statePath: string;
   manifestPath: string;
@@ -86,6 +87,14 @@ export interface RecallConversationConfig {
   diagnosticsMode: RecallDiagnosticsMode;
   diagnosticLogPath: string;
   retainedDiagnosticLogPath: string;
+  markerSpoolDirectory: string;
+  markerQuarantineDirectory: string;
+  workerOwnershipLockPath: string;
+  generationRootDirectory: string;
+  activeGenerationPointerPath: string;
+  generationRegistryPath: string;
+  backlogSummaryPath: string;
+  incrementalDiagnosticLogPath: string;
   embeddingBaseUrl: string;
   embeddingModel: string;
   embeddingServedModelId: string;

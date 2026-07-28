@@ -117,6 +117,7 @@ void test('recall quality runner indexes and searches only the bounded declared 
   const corpus = await loadRecallQualityCorpus(specificationPath);
   const baseConfig: RecallConversationConfig = {
     sessionsDirectory: join(directory, 'must-not-scan-production-sessions'),
+    dataDirectory: directory,
     databasePath: join(directory, 'unused-zvec'),
     statePath: join(directory, 'unused-state.json'),
     manifestPath: join(directory, 'unused-manifest.json'),
@@ -126,6 +127,14 @@ void test('recall quality runner indexes and searches only the bounded declared 
     diagnosticsMode: RecallDiagnosticsMode.OFF,
     diagnosticLogPath: join(directory, 'unused-diagnostics.jsonl'),
     retainedDiagnosticLogPath: join(directory, 'unused-diagnostics.previous.jsonl'),
+    markerSpoolDirectory: join(directory, 'unused-markers', 'pending'),
+    markerQuarantineDirectory: join(directory, 'unused-markers', 'quarantine'),
+    workerOwnershipLockPath: join(directory, 'unused-incremental-worker.lock'),
+    generationRootDirectory: join(directory, 'unused-generations'),
+    activeGenerationPointerPath: join(directory, 'unused-active-generation.json'),
+    generationRegistryPath: join(directory, 'unused-generation-registry.json'),
+    backlogSummaryPath: join(directory, 'unused-backlog-summary.json'),
+    incrementalDiagnosticLogPath: join(directory, 'unused-incremental-diagnostics.jsonl'),
     embeddingBaseUrl: 'http://unused.test/v1',
     embeddingModel: 'test-embedding',
     embeddingServedModelId: 'test-embedding-served',

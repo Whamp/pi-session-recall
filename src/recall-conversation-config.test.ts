@@ -1,11 +1,17 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { RecallDiagnosticsMode } from './enums.js';
+import { RecallDiagnosticsMode, RecallWorkMarkerTrigger } from './enums.js';
 import { loadRecallConversationConfig } from './recall-conversation-config.js';
+import {
+  createRecallWorkMarkerId,
+  decodeRecallWorkMarker,
+  encodeRecallWorkMarker,
+  RECALL_WORK_MARKER_VERSION,
+} from './recall-work-marker.js';
 
 void test('recall config uses local octen embeddings and supports file plus environment overrides', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'recall-config-'));
@@ -54,6 +60,124 @@ void test('recall config uses local octen embeddings and supports file plus envi
     join(directory, 'file-data', 'diagnostics.previous.jsonl'),
   );
   assert.equal(config.sessionsDirectory, join(directory, '.pi', 'agent', 'sessions'));
+});
+
+void test('recall config isolates incremental paths from sessions and marker I/O from zvec', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-config-paths-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const dataDirectory = join(directory, 'isolated-recall-data');
+  const sessionsDirectory = join(directory, 'isolated-sessions');
+  const physicalSessionPath = join(sessionsDirectory, 'session.jsonl');
+  await mkdir(sessionsDirectory, { recursive: true });
+  await writeFile(physicalSessionPath, '{}\n');
+
+  const config = await loadRecallConversationConfig({
+    homeDirectory: directory,
+    configPath: join(directory, 'missing-recall.json'),
+    environment: {
+      PI_RECALL_DATA_DIRECTORY: dataDirectory,
+      PI_RECALL_SESSIONS_DIRECTORY: sessionsDirectory,
+    },
+  });
+
+  const dataPaths = [
+    config.databasePath,
+    config.statePath,
+    config.manifestPath,
+    config.tokenizerCacheDirectory,
+    config.embeddingCacheDirectory,
+    config.lockPath,
+    config.diagnosticLogPath,
+    config.retainedDiagnosticLogPath,
+    config.markerSpoolDirectory,
+    config.markerQuarantineDirectory,
+    config.workerOwnershipLockPath,
+    config.generationRootDirectory,
+    config.activeGenerationPointerPath,
+    config.generationRegistryPath,
+    config.backlogSummaryPath,
+    config.incrementalDiagnosticLogPath,
+  ];
+  assert.equal(config.dataDirectory, dataDirectory);
+  for (const configuredPath of dataPaths) {
+    assert.equal(configuredPath.startsWith(`${dataDirectory}/`), true);
+    assert.equal(configuredPath.startsWith(`${sessionsDirectory}/`), false);
+  }
+
+  const markerWithoutId = {
+    version: RECALL_WORK_MARKER_VERSION,
+    physicalSessionId: 'physical-session-1',
+    physicalSessionPath,
+    runtimeInstanceId: 'runtime-1',
+    runtimeSequence: 1,
+    createdAtEpochMilliseconds: 1_753_315_200_000,
+    trigger: { kind: RecallWorkMarkerTrigger.ACTIVITY },
+  } as const;
+  const marker = {
+    ...markerWithoutId,
+    markerId: createRecallWorkMarkerId(markerWithoutId),
+  };
+  await mkdir(config.markerSpoolDirectory, { recursive: true });
+  const markerPath = join(config.markerSpoolDirectory, `${marker.markerId}.json`);
+  await writeFile(
+    markerPath,
+    await encodeRecallWorkMarker(marker, { trustedSessionRoots: [config.sessionsDirectory] }),
+  );
+  assert.deepEqual(
+    await decodeRecallWorkMarker(await readFile(markerPath, 'utf8'), {
+      trustedSessionRoots: [config.sessionsDirectory],
+    }),
+    marker,
+  );
+  await assert.rejects(() => stat(config.databasePath), { code: 'ENOENT' });
+});
+
+void test('recall config rejects relative or canonically session-nested data roots', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-config-path-boundary-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionsDirectory = join(directory, 'sessions');
+  const sessionNestedDataDirectory = join(sessionsDirectory, 'nested-data');
+  await mkdir(sessionNestedDataDirectory, { recursive: true });
+
+  await assert.rejects(
+    () =>
+      loadRecallConversationConfig({
+        homeDirectory: directory,
+        configPath: join(directory, 'missing-recall.json'),
+        environment: {
+          PI_RECALL_DATA_DIRECTORY: 'relative-recall-data',
+          PI_RECALL_SESSIONS_DIRECTORY: sessionsDirectory,
+        },
+      }),
+    /data directory must be absolute/iu,
+  );
+  await assert.rejects(
+    () =>
+      loadRecallConversationConfig({
+        homeDirectory: directory,
+        configPath: join(directory, 'missing-recall.json'),
+        environment: {
+          PI_RECALL_DATA_DIRECTORY: sessionNestedDataDirectory,
+          PI_RECALL_SESSIONS_DIRECTORY: sessionsDirectory,
+        },
+      }),
+    /data directory.*session directory/iu,
+  );
+
+  const symlinkedDataDirectory = join(directory, 'data-link');
+  await symlink(sessionNestedDataDirectory, symlinkedDataDirectory);
+  await assert.rejects(
+    () =>
+      loadRecallConversationConfig({
+        homeDirectory: directory,
+        configPath: join(directory, 'missing-recall.json'),
+        environment: {
+          PI_RECALL_DATA_DIRECTORY: symlinkedDataDirectory,
+          PI_RECALL_SESSIONS_DIRECTORY: sessionsDirectory,
+        },
+      }),
+    /data directory.*session directory/iu,
+  );
 });
 
 void test('recall config accepts canonical repository identities mapped to absolute historical roots', async (t) => {

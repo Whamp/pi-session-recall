@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 
 import { Type } from 'typebox';
 import { Value } from 'typebox/value';
@@ -9,6 +9,10 @@ import type { RecallConversationConfig } from './recall-conversation-service.js'
 import { RecallDiagnosticsMode } from './enums.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
 import { normalizeRecallProjectLineages } from './resolve-project-identity.js';
+import {
+  isCanonicalPathWithinBoundary,
+  resolveCanonicalPathBoundary,
+} from './trusted-path-boundary.js';
 
 const DEFAULT_RECALL_CHANNEL_CANDIDATE_LIMIT = 40;
 const MAX_RECALL_CHANNEL_CANDIDATE_LIMIT = 200;
@@ -82,6 +86,33 @@ function resolveRecallCandidateLimit(
     : parseRecallCandidateLimit(environmentValue, settingName);
 }
 
+async function assertRecallDataDirectoryIsolated(
+  dataDirectory: string,
+  sessionsDirectory: string,
+): Promise<void> {
+  if (!isAbsolute(dataDirectory)) {
+    throw new Error(`Recall configuration data directory must be absolute: ${dataDirectory}`);
+  }
+  if (!isAbsolute(sessionsDirectory)) {
+    throw new Error(
+      `Recall configuration session directory must be absolute: ${sessionsDirectory}`,
+    );
+  }
+  const [canonicalDataDirectory, canonicalSessionsDirectory] = await Promise.all([
+    resolveCanonicalPathBoundary(dataDirectory),
+    resolveCanonicalPathBoundary(sessionsDirectory),
+  ]);
+  if (
+    canonicalDataDirectory === canonicalSessionsDirectory ||
+    isCanonicalPathWithinBoundary(canonicalDataDirectory, canonicalSessionsDirectory) ||
+    isCanonicalPathWithinBoundary(canonicalSessionsDirectory, canonicalDataDirectory)
+  ) {
+    throw new Error(
+      `Recall configuration data directory must not overlap the session directory: ${dataDirectory}`,
+    );
+  }
+}
+
 async function readRecallConfigFile(
   configPath: string,
 ): Promise<ReturnType<typeof Value.Parse<typeof recallConfigFileSchema>>> {
@@ -112,13 +143,16 @@ export async function loadRecallConversationConfig(
     environment.PI_RECALL_DATA_DIRECTORY ??
     file.dataDirectory ??
     join(homeDirectory, '.pi', 'agent', 'recall');
+  const sessionsDirectory =
+    environment.PI_RECALL_SESSIONS_DIRECTORY ??
+    file.sessionsDirectory ??
+    join(homeDirectory, '.pi', 'agent', 'sessions');
+  await assertRecallDataDirectoryIsolated(dataDirectory, sessionsDirectory);
   const projectLineages = normalizeRecallProjectLineages(file.projectLineages ?? {});
 
   return {
-    sessionsDirectory:
-      environment.PI_RECALL_SESSIONS_DIRECTORY ??
-      file.sessionsDirectory ??
-      join(homeDirectory, '.pi', 'agent', 'sessions'),
+    sessionsDirectory,
+    dataDirectory,
     databasePath: join(dataDirectory, 'zvec'),
     statePath: join(dataDirectory, 'index-state.json'),
     manifestPath: join(dataDirectory, 'index-manifest.json'),
@@ -128,6 +162,14 @@ export async function loadRecallConversationConfig(
     diagnosticsMode: file.diagnostics ?? RecallDiagnosticsMode.SLOW,
     diagnosticLogPath: join(dataDirectory, 'diagnostics.jsonl'),
     retainedDiagnosticLogPath: join(dataDirectory, 'diagnostics.previous.jsonl'),
+    markerSpoolDirectory: join(dataDirectory, 'markers', 'pending'),
+    markerQuarantineDirectory: join(dataDirectory, 'markers', 'quarantine'),
+    workerOwnershipLockPath: join(dataDirectory, 'incremental-worker.lock'),
+    generationRootDirectory: join(dataDirectory, 'generations'),
+    activeGenerationPointerPath: join(dataDirectory, 'active-generation.json'),
+    generationRegistryPath: join(dataDirectory, 'generation-registry.json'),
+    backlogSummaryPath: join(dataDirectory, 'backlog-summary.json'),
+    incrementalDiagnosticLogPath: join(dataDirectory, 'incremental-diagnostics.jsonl'),
     embeddingBaseUrl:
       environment.PI_RECALL_EMBEDDING_BASE_URL ??
       file.embeddingBaseUrl ??

@@ -63,6 +63,68 @@ export enum SessionImportReplayOutcome {
   REJECTED = 'rejected',
 }
 
+/** Trigger kind persisted in one immutable recall work marker. */
+export enum RecallWorkMarkerTrigger {
+  ACTIVITY = 'activity',
+  COMPACTION = 'compaction',
+  BRANCH_EXIT = 'branch_exit',
+  DEPARTURE = 'departure',
+  ARRIVAL = 'arrival',
+}
+
+/** Record kind persisted in the scalar-only session projection collection. */
+export enum RecallSessionProjectionKind {
+  PHYSICAL_SESSION = 'physical_session',
+  LOGICAL_SESSION = 'logical_session',
+}
+
+/** Whether a session projection may continue incremental ingestion. */
+export enum RecallProjectionRepairState {
+  READY = 'ready',
+  REQUIRES_RECONCILIATION = 'requires_reconciliation',
+}
+
+/** Stable reason that a session projection requires explicit reconciliation. */
+export enum RecallProjectionRepairReason {
+  APPEND_CURSOR_MISSING = 'append_cursor_missing',
+  SOURCE_SHRANK = 'source_shrank',
+  BOUNDARY_MISMATCH = 'boundary_mismatch',
+  UNSUPPORTED_LAYOUT = 'unsupported_layout',
+  MALFORMED_GRAPH = 'malformed_graph',
+  PROJECTION_OVERFLOW = 'projection_overflow',
+}
+
+/** Durable observation state for one physical session source. */
+export enum RecallSourceAvailability {
+  PRESENT = 'present',
+  SOURCE_MISSING = 'source_missing',
+  DELETION_CONFIRMED = 'deletion_confirmed',
+}
+
+/** Outcome of encoding one bounded session projection candidate. */
+export enum RecallProjectionEncodingStatus {
+  ENCODED = 'encoded',
+  REQUIRES_RECONCILIATION = 'requires_reconciliation',
+}
+
+/** Durable generation registry state used by explicit side-by-side cutover. */
+export enum RecallGenerationCutoverState {
+  BUILDING = 'building',
+  READY = 'ready',
+  ACTIVE = 'active',
+  ROLLBACK = 'rollback',
+  FAILED = 'failed',
+}
+
+/** Privacy-safe failure category exposed by the scalar material backlog summary. */
+export enum RecallBacklogFailureCategory {
+  MARKER_DECODE_FAILED = 'marker_decode_failed',
+  PROJECTION_RECONCILIATION_REQUIRED = 'projection_reconciliation_required',
+  WRITE_FAILED = 'write_failed',
+  RECOVERY_REQUIRED = 'recovery_required',
+  REBUILD_FAILED = 'rebuild_failed',
+}
+
 /** Version of trusted-invocation exact project filtering before every retrieval-channel limit. */
 export const PROJECT_SCOPE_POLICY_VERSION = 1;
 

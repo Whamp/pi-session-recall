@@ -60,6 +60,7 @@ const tokenizer: ConversationTextTokenizer = {
 function createTestConfig(directory: string, sessionsDirectory: string) {
   return {
     sessionsDirectory,
+    dataDirectory: directory,
     databasePath: join(directory, 'zvec'),
     statePath: join(directory, 'index-state.json'),
     manifestPath: join(directory, 'index-manifest.json'),
@@ -69,6 +70,14 @@ function createTestConfig(directory: string, sessionsDirectory: string) {
     diagnosticsMode: RecallDiagnosticsMode.OFF,
     diagnosticLogPath: join(directory, 'diagnostics.jsonl'),
     retainedDiagnosticLogPath: join(directory, 'diagnostics.previous.jsonl'),
+    markerSpoolDirectory: join(directory, 'markers', 'pending'),
+    markerQuarantineDirectory: join(directory, 'markers', 'quarantine'),
+    workerOwnershipLockPath: join(directory, 'incremental-worker.lock'),
+    generationRootDirectory: join(directory, 'generations'),
+    activeGenerationPointerPath: join(directory, 'active-generation.json'),
+    generationRegistryPath: join(directory, 'generation-registry.json'),
+    backlogSummaryPath: join(directory, 'backlog-summary.json'),
+    incrementalDiagnosticLogPath: join(directory, 'incremental-diagnostics.jsonl'),
     embeddingBaseUrl: 'http://unused.test/v1',
     embeddingModel: 'test-request-model',
     embeddingServedModelId: 'test-served-model',

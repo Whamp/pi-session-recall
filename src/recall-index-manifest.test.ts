@@ -39,8 +39,10 @@ void test('index manifest round-trips the complete reproducibility identity atom
 
   assert.deepEqual(await readRecallIndexManifest(manifestPath), manifest);
   assert.deepEqual(await readdir(directory), ['index-manifest.json']);
-  assert.equal(manifest.manifestVersion, 5);
+  assert.equal(manifest.manifestVersion, 6);
   assert.deepEqual(manifest.importPolicy, { version: 3 });
+  assert.equal(manifest.markerSchemaVersion, 1);
+  assert.equal(manifest.sessionProjectionSchemaVersion, 1);
   assert.equal(Object.hasOwn(createEmbeddingVectorCacheIdentity(manifest), 'importPolicy'), false);
   assert.equal(
     manifest.embedding.canaryFingerprint,
@@ -161,6 +163,8 @@ void test('index manifest incompatibility reports every mismatch with the rebuil
   actual.tokenizer.revision = 'mutable-main';
   actual.chunkPolicy.maxTokens = 512;
   actual.conversationSchemaVersion = 1;
+  actual.markerSchemaVersion = 99;
+  actual.sessionProjectionSchemaVersion = 99;
   actual.projectIdentity.policyVersion = 1;
   actual.projectIdentity.metadataSchemaVersion = 1;
   actual.projectIdentity.lineagePolicyVersion = 99;
@@ -176,6 +180,8 @@ void test('index manifest incompatibility reports every mismatch with the rebuil
       assert.match(error.message, /tokenizer\.revision/);
       assert.match(error.message, /chunkPolicy\.maxTokens/);
       assert.match(error.message, /conversationSchemaVersion/);
+      assert.match(error.message, /markerSchemaVersion/);
+      assert.match(error.message, /sessionProjectionSchemaVersion/);
       assert.match(error.message, /projectIdentity\.policyVersion/);
       assert.match(error.message, /projectIdentity\.metadataSchemaVersion/);
       assert.match(error.message, /projectIdentity\.lineagePolicyVersion/);

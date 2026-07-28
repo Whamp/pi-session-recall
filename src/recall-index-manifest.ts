@@ -16,6 +16,8 @@ import {
   type ConversationTokenizerAssetIdentity,
 } from './octen-conversation-tokenizer.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
+import { RECALL_SESSION_PROJECTION_SCHEMA_VERSION } from './recall-session-projection.js';
+import { RECALL_WORK_MARKER_VERSION } from './recall-work-marker.js';
 import {
   createLineageDigest,
   normalizeRecallProjectLineages,
@@ -35,7 +37,7 @@ import {
 } from './zvec-conversation-store.js';
 
 /** Version of the index-manifest file format, independent from document and zvec schemas. */
-export const RECALL_INDEX_MANIFEST_VERSION = 5;
+export const RECALL_INDEX_MANIFEST_VERSION = 6;
 
 /** Lowest accepted cosine similarity across parallel slots serving the same embedding model. */
 export const RECALL_EMBEDDING_CANARY_MINIMUM_COSINE_SIMILARITY = 0.9995;
@@ -64,10 +66,12 @@ export interface RecallEmbeddingModelIdentity {
 
 /** Versioned identity required before one zvec index generation can be read or updated. */
 export interface RecallIndexManifest {
-  manifestVersion: 5;
+  manifestVersion: 6;
   importPolicy: {
     version: number;
   };
+  markerSchemaVersion: number;
+  sessionProjectionSchemaVersion: number;
   embedding: {
     requestModel: string;
     servedModelId: string;
@@ -146,13 +150,15 @@ const manifestAssetSchema = Type.Object(
 
 const recallIndexManifestSchema = Type.Object(
   {
-    manifestVersion: Type.Literal(5),
+    manifestVersion: Type.Literal(RECALL_INDEX_MANIFEST_VERSION),
     importPolicy: Type.Object(
       {
         version: Type.Literal(SESSION_IMPORT_POLICY_VERSION),
       },
       { additionalProperties: false },
     ),
+    markerSchemaVersion: Type.Literal(RECALL_WORK_MARKER_VERSION),
+    sessionProjectionSchemaVersion: Type.Literal(RECALL_SESSION_PROJECTION_SCHEMA_VERSION),
     embedding: Type.Object(
       {
         requestModel: Type.String({ minLength: 1 }),
@@ -343,6 +349,8 @@ export function createRecallIndexManifest(options: {
     importPolicy: {
       version: SESSION_IMPORT_POLICY_VERSION,
     },
+    markerSchemaVersion: RECALL_WORK_MARKER_VERSION,
+    sessionProjectionSchemaVersion: RECALL_SESSION_PROJECTION_SCHEMA_VERSION,
     embedding: {
       ...options.embeddingIdentity,
       canaryProbe: RECALL_EMBEDDING_CANARY_TEXT,

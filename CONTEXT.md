@@ -40,6 +40,22 @@ _Avoid_: Branch ID
 The entries visible from the effective leaf after Pi applies the latest compaction checkpoint.
 _Avoid_: Active branch
 
+**Recall eligibility**:
+The monotonic state of evidence after compaction, branch navigation, session departure, session quiescence, or creation as a context-exit summary makes it available to recall. Evidence remains eligible if another runtime still has it active or a runtime later resumes it.
+_Avoid_: Global inactivity, current-session status
+
+**Context-exit summary**:
+A compaction or branch summary created while source evidence leaves direct active context. It becomes recall-eligible when created even if Pi retains the summary itself in active context.
+_Avoid_: Active-tail message, mutable summary
+
+**Session quiescence**:
+A sustained period with no growth in a dirty physical session file. Quiescence makes its remaining active tail recall-eligible without proving whether a Pi process is still alive.
+_Avoid_: Process death, closed session, inactive session
+
+**Recall horizon**:
+The deliberate boundary behind active work where evidence becomes worth indexing for future recall. It favors forgotten and older context over immediate freshness so recall maintenance does not compete with interactive Pi use.
+_Avoid_: Real-time freshness, active-session mirror
+
 **Visible text run**:
 One or more adjacent, nonempty text blocks from one entry. Any non-text or empty block ends the run.
 _Avoid_: Message text, joined content
@@ -59,6 +75,22 @@ _Avoid_: Tool transcript, conversation chunk
 **Evidence part**:
 The source component represented by one document: conversation or summary content, tool name, tool arguments, tool result, bash command, or bash output.
 _Avoid_: Chunk type
+
+**Immutable recall evidence**:
+Source-backed content finalized once when it becomes recall-eligible. Later leaf, branch, compaction, label, or session-name changes do not rewrite it.
+_Avoid_: Session snapshot, mutable chunk
+
+**Session projection**:
+The small mutable account of physical source ingestion and logical session state kept separately from immutable recall evidence.
+_Avoid_: Conversation index, evidence document, global index state
+
+**Physical session projection**:
+The session projection for one physical session file's append boundary, logical-session membership, source availability, generation, and repair status.
+_Avoid_: Logical session projection, process lease, file snapshot
+
+**Logical session projection**:
+The session projection for one logical session's effective leaf, active context, branches, compaction boundary, labels, eligible spans, and repair status.
+_Avoid_: Physical session projection, session graph, evidence document
 
 **Dense candidate**:
 An atomic conversation chunk surfaced because its meaning is close to the search query.
@@ -156,6 +188,22 @@ _Avoid_: Index state, configuration
 A lower-level targeted update that reprocesses one session file without scanning sibling sessions. Interactive Pi operations do not invoke it because it still rebuilds the whole changed session.
 _Avoid_: Incremental active-session ingestion, append-only indexing, session watcher
 
+**Recall work marker**:
+One immutable, atomically published event file telling an external worker that a physical session may contain newly eligible evidence. The worker orders and coalesces markers; Pi processes never overwrite them.
+_Avoid_: Index job, mutable session marker, session lock
+
+**Incremental recall worker**:
+The sole writer for deferred incremental transfer. This short-lived process runs outside Pi, drains recall work markers, processes eligible append deltas, and exits when no work remains.
+_Avoid_: Daemon, Pi lifecycle handler, full indexer
+
+**Recall maintenance class**:
+The cost and scheduling category of recall work: immediate bookkeeping, deferred incremental transfer, or explicit reconciliation. Measured work size separates prompt small transfers from transfers that wait for a longer quiet period.
+_Avoid_: Worker priority, ingestion mode, adaptive scheduler
+
+**Recall write window**:
+The bounded period when an incremental recall worker owns zvec exclusively to commit prepared evidence and session projection changes. A search may wait for the current window but never for the worker to finish all pending ingestion.
+_Avoid_: Maintenance outage, freshness barrier, indexing run
+
 **Recall diagnostic operation**:
 One bounded, local account of recall work and its costs, identified independently from the session or query that caused it.
 _Avoid_: Trace, span, telemetry
@@ -200,9 +248,17 @@ _Avoid_: Telemetry stream, trace file
 The one previous active diagnostic log kept after rotation.
 _Avoid_: Log archive, diagnostic history
 
-**Active-session freshness barrier**:
-The mandatory live session reconciliation completed from Pi's trusted current session path before a recall search opens zvec for reading.
-_Avoid_: Search-time full scan, eventual active-session indexing
+**Read-only recall search**:
+A query against the last durable recall generation. It neither waits for source ingestion nor writes recall state.
+_Avoid_: Active-session freshness barrier, search-triggered reconciliation, read-your-writes search
+
+**Confirmed session deletion**:
+A source absence observed again on a later metadata sweep while the session root is healthy and no suspicious mass disappearance is present. Confirmation removes the physical projection, its logical projections, and every recall evidence occurrence backed by that source.
+_Avoid_: Missing source, one-sweep deletion, retained historical memory
+
+**Material recall backlog**:
+Eligible ingestion work whose oldest marker exceeds the service objective, whose latest attempt failed, or whose rebuild still serves an older generation. Search remains available on the last durable generation and reports only scalar backlog state.
+_Avoid_: Active-tail delay, freshness barrier, pending activity marker
 
 **Derived recall evidence**:
 The `pi-session-recall` tool call and its result. The index excludes both because they restate search inputs or previously indexed evidence and would create a feedback loop.

@@ -25,10 +25,20 @@ export interface RecallMarkerReplayWorkItem {
   coveredMarkerIds: string[];
 }
 
+/** Generation-state paths used after ordinary replay proves the retained spool empty. */
+export interface RecallGenerationReplayCompletionPaths {
+  activeGenerationPointerPath: string;
+  generationRegistryPath: string;
+  backlogSummaryPath: string;
+  lockPath: string;
+}
+
 /** Deterministic marker work that remains unacknowledged until a generation checkpoint covers it. */
 export interface RecallMarkerReplayWorkPlan {
   targetGenerationId: string;
   markerSpoolDirectory: string;
+  retainedMarkerDirectory?: string;
+  generationReplayCompletion?: RecallGenerationReplayCompletionPaths;
   discoveredMarkerCount: number;
   sourceMarkerIds: string[];
   workItems: RecallMarkerReplayWorkItem[];
@@ -39,6 +49,8 @@ export interface RecallMarkerReplayWorkPlan {
 export interface CoordinateRecallMarkerReplayOptions extends RecallWorkMarkerCodecOptions {
   markerSpoolDirectory: string;
   markerQuarantineDirectory: string;
+  retainedMarkerDirectory?: string;
+  generationReplayCompletion?: RecallGenerationReplayCompletionPaths;
   targetGenerationId: string;
   nowEpochMilliseconds?: () => number;
 }
@@ -241,6 +253,12 @@ export async function coordinateRecallMarkerReplay(
   return {
     targetGenerationId: options.targetGenerationId,
     markerSpoolDirectory: options.markerSpoolDirectory,
+    ...(options.retainedMarkerDirectory
+      ? { retainedMarkerDirectory: options.retainedMarkerDirectory }
+      : {}),
+    ...(options.generationReplayCompletion
+      ? { generationReplayCompletion: options.generationReplayCompletion }
+      : {}),
     discoveredMarkerCount: discovery.markers.length,
     sourceMarkerIds: discovery.markers.map(({ markerId }) => markerId),
     workItems: coalesceRecallWorkMarkers(discovery.markers),

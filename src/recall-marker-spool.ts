@@ -1,4 +1,5 @@
-import { rm } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { copyFile, mkdir, open, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import type { RecallMarkerReplayWorkPlan } from './coordinate-recall-marker-replay.js';
@@ -25,8 +26,28 @@ export async function acknowledgeCoveredRecallMarkers(
     if (!coveredMarkerIds.has(markerId)) {
       continue;
     }
+    const markerPath = join(workPlan.markerSpoolDirectory, `${markerId}.json`);
+    if (workPlan.retainedMarkerDirectory) {
+      await mkdir(workPlan.retainedMarkerDirectory, { recursive: true });
+      try {
+        const retainedMarkerPath = join(workPlan.retainedMarkerDirectory, `${markerId}.json`);
+        await copyFile(markerPath, retainedMarkerPath, constants.COPYFILE_EXCL);
+        const retainedMarkerFile = await open(retainedMarkerPath, 'r');
+        try {
+          await retainedMarkerFile.sync();
+        } finally {
+          await retainedMarkerFile.close();
+        }
+        await syncRecallDirectory(workPlan.retainedMarkerDirectory);
+      } catch (error) {
+        const code = readNodeErrorCode(error);
+        if (code !== 'EEXIST' && code !== 'ENOENT') {
+          throw error;
+        }
+      }
+    }
     try {
-      await rm(join(workPlan.markerSpoolDirectory, `${markerId}.json`));
+      await rm(markerPath);
       acknowledgedMarkerCount += 1;
     } catch (error) {
       if (readNodeErrorCode(error) !== 'ENOENT') {

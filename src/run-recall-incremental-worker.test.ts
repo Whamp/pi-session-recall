@@ -7,11 +7,19 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import test from 'node:test';
 
 import {
+  RecallGenerationCutoverState,
   RecallProjectionRepairState,
   RecallSessionProjectionKind,
   RecallSourceAvailability,
   RecallWorkMarkerTrigger,
 } from './enums.js';
+import {
+  createRecallActiveGenerationPointer,
+  readRecallGenerationRegistry,
+  writeRecallActiveGenerationPointer,
+  writeRecallGenerationRegistry,
+  RECALL_GENERATION_REGISTRY_VERSION,
+} from './recall-generation-state.js';
 import {
   createPhysicalSessionProjectionId,
   RECALL_SESSION_PROJECTION_SCHEMA_VERSION,
@@ -149,6 +157,123 @@ function createWorkerPhysicalProjection(fixture: WorkerFixture): PhysicalSession
     repairReason: null,
   };
 }
+
+void test('building generation freezes incremental commits while retaining published markers', async (t) => {
+  const fixture = await createWorkerFixture(t);
+  await fixture.publishMarker();
+  const generationRegistryPath = join(fixture.controlDirectory, 'generation-registry.json');
+  const activePointer = createRecallActiveGenerationPointer('generation-1');
+  await writeRecallGenerationRegistry(generationRegistryPath, {
+    version: RECALL_GENERATION_REGISTRY_VERSION,
+    activeGenerationId: 'generation-1',
+    buildingGenerationId: 'generation-building',
+    rollbackGenerationId: null,
+    activePointerChecksum: activePointer.checksum,
+    generations: [
+      {
+        generationId: 'generation-1',
+        state: RecallGenerationCutoverState.ACTIVE,
+        indexManifestVersion: 6,
+        markerSchemaVersion: 1,
+        sessionProjectionSchemaVersion: 2,
+        indexManifestFingerprint: 'a'.repeat(64),
+        rebuildStartedAtEpochMilliseconds: 1,
+        stateChangedAtEpochMilliseconds: 2,
+        rebuildStartMarkerId: null,
+      },
+      {
+        generationId: 'generation-building',
+        state: RecallGenerationCutoverState.BUILDING,
+        indexManifestVersion: 6,
+        markerSchemaVersion: 1,
+        sessionProjectionSchemaVersion: 2,
+        indexManifestFingerprint: 'b'.repeat(64),
+        rebuildStartedAtEpochMilliseconds: 3,
+        stateChangedAtEpochMilliseconds: 3,
+        rebuildStartMarkerId: fixture.marker.markerId,
+      },
+    ],
+  });
+  let heavyImportCount = 0;
+
+  const result = await runRecallIncrementalWorker({
+    markerSpoolDirectory: fixture.markerSpoolDirectory,
+    markerQuarantineDirectory: fixture.markerQuarantineDirectory,
+    controlDirectory: fixture.controlDirectory,
+    targetGenerationId: 'generation-1',
+    generationRegistryPath,
+    trustedSessionRoots: [fixture.sessionsDirectory],
+    async loadHeavyDependencies() {
+      heavyImportCount += 1;
+    },
+  });
+
+  assert.equal(result.commitsFrozen, true);
+  assert.equal(result.heavyDependenciesLoaded, false);
+  assert.equal(result.workPlan.workItems.length, 1);
+  assert.equal(heavyImportCount, 0);
+  assert.equal(
+    await readFile(
+      join(fixture.markerSpoolDirectory, `${fixture.marker.markerId}.json`),
+      'utf8',
+    ).then((source) => source.length > 0),
+    true,
+  );
+});
+
+void test('empty ordinary worker pass completes replay-pending generation backlog', async (t) => {
+  const fixture = await createWorkerFixture(t);
+  const generationRegistryPath = join(fixture.controlDirectory, 'generation-registry.json');
+  const activeGenerationPointerPath = join(fixture.controlDirectory, 'active-generation.json');
+  const backlogSummaryPath = join(fixture.controlDirectory, 'backlog-summary.json');
+  const lockPath = join(fixture.controlDirectory, 'operation.lock');
+  const pointer = createRecallActiveGenerationPointer('generation-1');
+  await writeRecallActiveGenerationPointer(activeGenerationPointerPath, pointer);
+  await writeRecallGenerationRegistry(generationRegistryPath, {
+    version: RECALL_GENERATION_REGISTRY_VERSION,
+    activeGenerationId: 'generation-1',
+    buildingGenerationId: null,
+    rollbackGenerationId: null,
+    activePointerChecksum: pointer.checksum,
+    generations: [
+      {
+        generationId: 'generation-1',
+        state: RecallGenerationCutoverState.REPLAY_PENDING,
+        indexManifestVersion: 6,
+        markerSchemaVersion: 1,
+        sessionProjectionSchemaVersion: 2,
+        indexManifestFingerprint: 'a'.repeat(64),
+        rebuildStartedAtEpochMilliseconds: 1,
+        stateChangedAtEpochMilliseconds: 2,
+        rebuildStartMarkerId: null,
+        rebuildMarkerWatermark: [],
+        validatedAtEpochMilliseconds: 2,
+        retireAfterEpochMilliseconds: null,
+      },
+    ],
+  });
+
+  const result = await runRecallIncrementalWorker({
+    markerSpoolDirectory: fixture.markerSpoolDirectory,
+    markerQuarantineDirectory: fixture.markerQuarantineDirectory,
+    controlDirectory: fixture.controlDirectory,
+    targetGenerationId: 'generation-1',
+    generationRegistryPath,
+    generationReplayCompletion: {
+      activeGenerationPointerPath,
+      generationRegistryPath,
+      backlogSummaryPath,
+      lockPath,
+    },
+    trustedSessionRoots: [fixture.sessionsDirectory],
+  });
+
+  assert.equal(result.generationReplayCompleted, true);
+  assert.equal(
+    (await readRecallGenerationRegistry(generationRegistryPath))?.generations[0]?.state,
+    RecallGenerationCutoverState.ACTIVE,
+  );
+});
 
 void test('arrival metadata sweep lazily loads active projections and invokes deletion reconciliation', async (t) => {
   const fixture = await createWorkerFixture(t, RecallWorkMarkerTrigger.ARRIVAL);

@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, rm } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { promisify } from 'node:util';
@@ -30,10 +30,6 @@ import {
   type RecallConversationDependencies,
   type RecallConversationSearchOptions,
 } from './recall-conversation-service.js';
-import {
-  createRecallActiveGenerationPointer,
-  encodeRecallActiveGenerationPointer,
-} from './recall-generation-state.js';
 import {
   selectRecallQualityPolicy,
   type RecallQualityConfigurationMeasurement,
@@ -203,7 +199,12 @@ function createChunkPolicyConfig(
     lockPath: join(policyDirectory, 'operation.lock'),
     generationRootDirectory,
     activeGenerationPointerPath: join(policyDirectory, 'active-generation.json'),
+    generationRegistryPath: join(policyDirectory, 'generation-registry.json'),
     backlogSummaryPath: join(policyDirectory, 'backlog-summary.json'),
+    markerSpoolDirectory: join(policyDirectory, 'markers', 'pending'),
+    markerQuarantineDirectory: join(policyDirectory, 'markers', 'quarantine'),
+    markerControlDirectory: join(policyDirectory, 'markers', 'control'),
+    workerOwnershipLockPath: join(policyDirectory, 'incremental-worker.lock'),
     projectLineages: normalizeRecallProjectLineages(corpus.specification.projectLineages),
     chunkPolicy: {
       maxTokens: chunkPolicy.maxTokens,
@@ -215,18 +216,6 @@ function createChunkPolicyConfig(
       identifier: candidateCount,
     },
   };
-}
-
-async function prepareRecallQualityGeneration(config: RecallConversationConfig): Promise<void> {
-  await mkdir(join(config.generationRootDirectory, RECALL_QUALITY_GENERATION_ID), {
-    recursive: true,
-  });
-  await writeFile(
-    config.activeGenerationPointerPath,
-    encodeRecallActiveGenerationPointer(
-      createRecallActiveGenerationPointer(RECALL_QUALITY_GENERATION_ID),
-    ),
-  );
 }
 
 interface EvaluationProjectResolver {
@@ -391,7 +380,6 @@ export async function runRecallQualityEvaluation(
       chunkPolicy,
       firstCandidateCount,
     );
-    await prepareRecallQualityGeneration(indexConfig);
     const indexService = createRecallConversationService(
       indexConfig,
       createServiceDependencies(
@@ -402,7 +390,7 @@ export async function runRecallQualityEvaluation(
       ),
     );
     const indexStarted = performance.now();
-    const indexed = await indexService.index({ optimize: true });
+    const indexed = await indexService.index({ rebuild: true, optimize: true });
     const indexLatencyMilliseconds = performance.now() - indexStarted;
     if (indexed.indexSummary.failedSessions.length > 0) {
       const failures = indexed.indexSummary.failedSessions

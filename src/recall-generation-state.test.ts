@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, open, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -18,6 +18,8 @@ import {
   encodeRecallGenerationRegistry,
   readRecallActiveGenerationSelection,
   readRecallMaterialBacklogWarning,
+  writeRecallActiveGenerationPointer,
+  type RecallGenerationStateFilesystem,
   RECALL_ACTIVE_GENERATION_POINTER_VERSION,
   RECALL_BACKLOG_SUMMARY_VERSION,
   RECALL_GENERATION_REGISTRY_VERSION,
@@ -169,10 +171,19 @@ void test('search generation selection reads only one checksummed pointer direct
       generationDirectory,
       databasePath: join(generationDirectory, 'zvec'),
       projectionDatabasePath: join(generationDirectory, 'session-projections'),
+      statePath: join(generationDirectory, 'index-state.json'),
       manifestPath: join(generationDirectory, 'index-manifest.json'),
     },
   );
 
+  await writeFile(
+    pointerPath,
+    encodeRecallActiveGenerationPointer(createRecallActiveGenerationPointer('generation_missing')),
+  );
+  await assert.rejects(
+    () => readRecallActiveGenerationSelection(pointerPath, generationRootDirectory),
+    RecallGenerationPointerError,
+  );
   await writeFile(pointerPath, '{"version":1,"activeGenerationId":"other","checksum":"bad"}\n');
   await assert.rejects(
     () => readRecallActiveGenerationSelection(pointerPath, generationRootDirectory),
@@ -183,6 +194,141 @@ void test('search generation selection reads only one checksummed pointer direct
     () => readRecallActiveGenerationSelection(pointerPath, generationRootDirectory),
     RecallGenerationPointerError,
   );
+});
+
+void test('generation selection rejects traversal and symlink escape without heuristic fallback', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-generation-boundary-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const generationRootDirectory = join(directory, 'generations');
+  const outsideDirectory = join(directory, 'outside');
+  const pointerPath = join(directory, 'active-generation.json');
+  await mkdir(generationRootDirectory);
+  await mkdir(outsideDirectory);
+  await symlink(outsideDirectory, join(generationRootDirectory, 'escaped_generation'));
+  await writeFile(
+    pointerPath,
+    encodeRecallActiveGenerationPointer(createRecallActiveGenerationPointer('escaped_generation')),
+  );
+
+  await assert.rejects(
+    () => readRecallActiveGenerationSelection(pointerPath, generationRootDirectory),
+    /symlink escapes/iu,
+  );
+  assert.throws(() => createRecallActiveGenerationPointer('../outside'), /generation ID invalid/iu);
+});
+
+function createFaultingGenerationStateFilesystem(
+  failureStage: 'directory-sync' | 'file-sync' | 'rename',
+): RecallGenerationStateFilesystem {
+  return {
+    async createDirectory(path) {
+      await mkdir(path, { recursive: true });
+    },
+    async openExclusiveFile(path) {
+      const handle = await open(path, 'wx', 0o600);
+      return {
+        async writeFile(content) {
+          await handle.writeFile(content);
+        },
+        async sync() {
+          if (failureStage === 'file-sync') {
+            throw new Error('injected generation state file sync failure');
+          }
+          await handle.sync();
+        },
+        async close() {
+          await handle.close();
+        },
+      };
+    },
+    async renameFile(temporaryPath, destinationPath) {
+      if (failureStage === 'rename') {
+        throw new Error('injected generation state rename failure');
+      }
+      await rename(temporaryPath, destinationPath);
+    },
+    async syncDirectory(path) {
+      if (failureStage === 'directory-sync') {
+        throw new Error('injected generation state directory sync failure');
+      }
+      const handle = await open(path, 'r');
+      try {
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+    },
+    async removeFile(path) {
+      await rm(path, { force: true });
+    },
+  };
+}
+
+void test('atomic pointer publication preserves the old pointer on fsync and rename failure', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-generation-atomic-failure-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const pointerPath = join(directory, 'active-generation.json');
+  const oldPointer = createRecallActiveGenerationPointer('generation_old');
+  const newPointer = createRecallActiveGenerationPointer('generation_new');
+  await writeRecallActiveGenerationPointer(pointerPath, oldPointer);
+
+  for (const failureStage of ['file-sync', 'rename'] as const) {
+    await assert.rejects(
+      () =>
+        writeRecallActiveGenerationPointer(pointerPath, newPointer, {
+          filesystem: createFaultingGenerationStateFilesystem(failureStage),
+        }),
+      /injected generation state/iu,
+    );
+    assert.deepEqual(
+      decodeRecallActiveGenerationPointer(await readFile(pointerPath, 'utf8')),
+      oldPointer,
+    );
+  }
+});
+
+void test('directory fsync failure reports failure after exposing only the complete new pointer', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-generation-directory-sync-failure-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const pointerPath = join(directory, 'active-generation.json');
+  const oldPointer = createRecallActiveGenerationPointer('generation_old');
+  const newPointer = createRecallActiveGenerationPointer('generation_new');
+  await writeRecallActiveGenerationPointer(pointerPath, oldPointer);
+
+  await assert.rejects(
+    () =>
+      writeRecallActiveGenerationPointer(pointerPath, newPointer, {
+        filesystem: createFaultingGenerationStateFilesystem('directory-sync'),
+      }),
+    /directory sync failure/iu,
+  );
+  assert.deepEqual(
+    decodeRecallActiveGenerationPointer(await readFile(pointerPath, 'utf8')),
+    newPointer,
+  );
+});
+
+void test('atomic pointer readers observe only the complete old or complete new pointer', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-generation-atomic-visibility-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const pointerPath = join(directory, 'active-generation.json');
+  const oldPointer = createRecallActiveGenerationPointer('generation_old');
+  const newPointer = createRecallActiveGenerationPointer('generation_new');
+  await writeRecallActiveGenerationPointer(pointerPath, oldPointer);
+  const observedGenerationIds = new Set<string>();
+  const publication = writeRecallActiveGenerationPointer(pointerPath, newPointer);
+  for (let index = 0; index < 100; index += 1) {
+    const observed = decodeRecallActiveGenerationPointer(await readFile(pointerPath, 'utf8'));
+    observedGenerationIds.add(observed.activeGenerationId);
+  }
+  await publication;
+  observedGenerationIds.add(
+    decodeRecallActiveGenerationPointer(await readFile(pointerPath, 'utf8')).activeGenerationId,
+  );
+  assert.ok(
+    [...observedGenerationIds].every((id) => id === 'generation_old' || id === 'generation_new'),
+  );
+  assert.ok(observedGenerationIds.has('generation_new'));
 });
 
 void test('material backlog warning is scalar-only and silent for ordinary pending work', async (t) => {

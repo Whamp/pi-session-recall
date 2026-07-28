@@ -1,6 +1,10 @@
+import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { rm } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 
+import { adoptLegacyRecallGeneration } from './adopt-legacy-recall-generation.js';
+import { collectRetiredRecallGenerations } from './collect-retired-recall-generations.js';
 import {
   coordinateRecallReadWindow,
   coordinateRecallWriteWindow,
@@ -16,6 +20,7 @@ import {
   RecallDiagnosticStatus,
   type RecallDiagnosticsMode,
   RecallEvidenceRelation,
+  RecallGenerationCutoverState,
   RecallManualMaintenanceTrigger,
   RecallProjectIdentitySource,
   RecallSearchScope,
@@ -38,6 +43,7 @@ import {
   calculateRecallEmbeddingCanaryCosineSimilarity,
   createRecallIndexManifest,
   readRecallIndexManifest,
+  readRecallSearchManifest,
   recoverRecallEmbeddingCanaryFromManifest,
   RECALL_EMBEDDING_CANARY_TEXT,
   writeRecallIndexManifest,
@@ -45,10 +51,13 @@ import {
   type RecallIndexManifest,
 } from './recall-index-manifest.js';
 import {
+  readRecallActiveGenerationPointer,
   readRecallActiveGenerationSelection,
+  readRecallGenerationRegistry,
   readRecallMaterialBacklogWarning,
 } from './recall-generation-state.js';
 import type { RecallChunkPolicy } from './recall-chunk-policy.js';
+import { rebuildRecallGeneration } from './rebuild-recall-generation.js';
 import {
   createRecallIndexMetrics,
   createRecallOperationDiagnostics,
@@ -66,6 +75,7 @@ import {
   type RecallProjectLineages,
   type ResolvedProjectIdentity,
 } from './resolve-project-identity.js';
+import { rollbackRecallGeneration } from './rollback-recall-generation.js';
 import {
   rankFusedRecallSearchResults,
   rerankRecallSearchResults,
@@ -78,6 +88,7 @@ import {
   openZvecConversationStore,
   type ZvecConversationStore,
 } from './zvec-conversation-store.js';
+import { openZvecSessionProjectionStore } from './zvec-session-projection-store.js';
 
 /** Runtime paths, bounded retrieval channels, and local embedding plus reranker identity. */
 export interface RecallConversationConfig {
@@ -168,12 +179,17 @@ interface RecallConversationIndexBaseOptions {
   lockWaitMilliseconds?: number;
   requireExistingGeneration?: boolean;
   onProgress?: (progress: ConversationIndexProgress) => void;
-  optimize?: boolean;
 }
 
 interface RecallAutomaticIndexOptions extends RecallConversationIndexBaseOptions {
-  rebuild?: boolean;
+  rebuild?: false;
   manualMaintenanceTrigger?: never;
+}
+
+interface RecallAutomaticRebuildIndexOptions extends RecallConversationIndexBaseOptions {
+  rebuild: true;
+  manualMaintenanceTrigger?: never;
+  optimize?: boolean;
 }
 
 interface RecallManualIncrementalIndexOptions extends RecallConversationIndexBaseOptions {
@@ -184,11 +200,13 @@ interface RecallManualIncrementalIndexOptions extends RecallConversationIndexBas
 interface RecallManualRebuildIndexOptions extends RecallConversationIndexBaseOptions {
   rebuild: true;
   manualMaintenanceTrigger: RecallManualMaintenanceTrigger.MANUAL_REBUILD;
+  optimize?: boolean;
 }
 
 /** Valid automatic or manually attributed conversation index invocation. */
 export type RecallConversationIndexOptions =
   | RecallAutomaticIndexOptions
+  | RecallAutomaticRebuildIndexOptions
   | RecallManualIncrementalIndexOptions
   | RecallManualRebuildIndexOptions;
 
@@ -196,6 +214,13 @@ export type RecallConversationIndexOptions =
 export interface RecallConversationIndexResult {
   indexSummary: ConversationIndexSummary;
   totalChunks: number;
+}
+
+/** Generation paths used by one ordinary update or isolated replacement build. */
+interface RecallIndexTargetPaths {
+  databasePath: string;
+  statePath: string;
+  manifestPath: string;
 }
 
 /** Read-only search plus explicit full index maintenance exposed by the extension. */
@@ -206,6 +231,12 @@ export interface RecallConversationService {
     options?: RecallConversationSearchOptions,
   ): Promise<RecallConversationSearch>;
   index(options?: RecallConversationIndexOptions): Promise<RecallConversationIndexResult>;
+  /** Restores the bounded rollback generation and republishes retained markers. */
+  rollback?(): Promise<void>;
+  /** Explicitly adopts the exact pre-generation version-5 layout as read-only. */
+  adoptLegacy?(): Promise<void>;
+  /** Collects only expired validated generations after replay completes. */
+  collectRetired?(): Promise<void>;
 }
 
 /** Injectable local model, tokenizer, and zvec boundaries used by tests and bounded evaluation. */
@@ -508,6 +539,7 @@ export function createRecallConversationService(
   }
 
   async function readCanonicalRebuildCanary(
+    activeManifestPath: string | null,
     signal?: AbortSignal,
     diagnosticMetrics?: RecallIndexDiagnosticMetrics,
   ): Promise<number[]> {
@@ -521,21 +553,23 @@ export function createRecallConversationService(
           canaryMinimumCosineSimilarity: number;
         }
       | undefined;
-    try {
-      const actualManifest = await readRecallIndexManifest(config.manifestPath);
-      previousCanary = actualManifest?.embedding;
-    } catch (error) {
-      if (
-        !(error instanceof Error) ||
-        !error.message.startsWith(`Recall index manifest invalid at ${config.manifestPath}:`)
-      ) {
-        throw error;
+    if (activeManifestPath !== null) {
+      try {
+        const actualManifest = await readRecallSearchManifest(activeManifestPath);
+        previousCanary = actualManifest?.embedding;
+      } catch (error) {
+        if (
+          !(error instanceof Error) ||
+          !error.message.startsWith(`Recall index manifest invalid at ${activeManifestPath}:`)
+        ) {
+          throw error;
+        }
+        previousCanary =
+          (await recoverRecallEmbeddingCanaryFromManifest(
+            activeManifestPath,
+            config.embeddingDimensions,
+          )) ?? undefined;
       }
-      previousCanary =
-        (await recoverRecallEmbeddingCanaryFromManifest(
-          config.manifestPath,
-          config.embeddingDimensions,
-        )) ?? undefined;
     }
     if (!previousCanary || previousCanary.dimensions !== config.embeddingDimensions) {
       return currentCanary;
@@ -551,7 +585,7 @@ export function createRecallConversationService(
   }
 
   async function readRequiredManifest(manifestPath: string): Promise<RecallIndexManifest> {
-    const actual = await readRecallIndexManifest(manifestPath);
+    const actual = await readRecallSearchManifest(manifestPath);
     if (!actual) {
       throw new Error(
         `Recall index manifest missing at ${manifestPath}; reindex with /pi-session-recall-index --rebuild`,
@@ -561,6 +595,7 @@ export function createRecallConversationService(
   }
 
   async function prepareIndexForWrite(
+    targetPaths: RecallIndexTargetPaths,
     signal?: AbortSignal,
     preflightedCanary?: readonly number[],
     requireExistingGeneration = false,
@@ -570,34 +605,28 @@ export function createRecallConversationService(
     manifest: RecallIndexManifest;
     embeddingModelPreflighted: boolean;
   }> {
-    const actual = await readRecallIndexManifest(config.manifestPath);
+    const actual = await readRecallIndexManifest(targetPaths.manifestPath);
     if (!actual && requireExistingGeneration) {
       throw new Error(
-        `Recall automatic session ingestion requires an existing index generation at ${config.manifestPath}; initialize it with /pi-session-recall-index --rebuild`,
+        `Recall automatic session ingestion requires an existing index generation at ${targetPaths.manifestPath}; initialize it with /pi-session-recall-index --rebuild`,
       );
     }
-    if (!actual && (existsSync(config.databasePath) || existsSync(config.statePath))) {
+    if (!actual && (existsSync(targetPaths.databasePath) || existsSync(targetPaths.statePath))) {
       throw new Error(
-        `Recall index manifest missing at ${config.manifestPath} for existing index data; reindex with /pi-session-recall-index --rebuild`,
+        `Recall index manifest missing at ${targetPaths.manifestPath} for existing index data; reindex with /pi-session-recall-index --rebuild`,
       );
     }
     const tokenizer = await getConversationTokenizer();
     if (actual) {
       const expected = createExpectedManifest(actual.embedding.canaryVector);
-      assertRecallIndexManifestCompatible(actual, expected, config.manifestPath);
+      assertRecallIndexManifestCompatible(actual, expected, targetPaths.manifestPath);
       return { tokenizer, manifest: actual, embeddingModelPreflighted: false };
     }
     const expected = createExpectedManifest(
       preflightedCanary ?? (await readIndexEmbeddingCanary(signal, diagnosticMetrics)),
     );
-    await writeRecallIndexManifest(config.manifestPath, expected);
+    await writeRecallIndexManifest(targetPaths.manifestPath, expected);
     return { tokenizer, manifest: expected, embeddingModelPreflighted: true };
-  }
-
-  async function removeRecallIndexGeneration(): Promise<void> {
-    await rm(config.databasePath, { recursive: true, force: true });
-    await rm(config.statePath, { force: true });
-    await rm(config.manifestPath, { force: true });
   }
 
   async function updateConversationIndex(
@@ -605,6 +634,7 @@ export function createRecallConversationService(
     tokenizer: ConversationTextTokenizer,
     manifest: RecallIndexManifest,
     embeddingModelPreflighted: boolean,
+    targetPaths: RecallIndexTargetPaths,
     signal?: AbortSignal,
     onProgress?: (progress: ConversationIndexProgress) => void,
     diagnosticMetrics?: RecallIndexDiagnosticMetrics,
@@ -617,7 +647,7 @@ export function createRecallConversationService(
     ): Promise<number[][]> {
       if (!modelPreflighted) {
         const expected = createExpectedManifest(await readCurrentEmbeddingCanary(embeddingSignal));
-        assertRecallIndexManifestCompatible(manifest, expected, config.manifestPath);
+        assertRecallIndexManifestCompatible(manifest, expected, targetPaths.manifestPath);
         modelPreflighted = true;
       }
       return embeddings.embedTexts(texts, embeddingSignal);
@@ -633,7 +663,7 @@ export function createRecallConversationService(
       diagnosticsClock,
     });
     const indexerOptions = {
-      statePath: config.statePath,
+      statePath: targetPaths.statePath,
       store,
       embeddingCache,
       tokenizer,
@@ -878,132 +908,236 @@ export function createRecallConversationService(
     },
     async index(options = {}) {
       assertRecallManualMaintenanceTriggerMatchesIndexOptions(options);
-      const runConversationIndexMaintenance = (
+      const runConversationIndexMaintenance = async (
         diagnosticMetrics?: RecallIndexDiagnosticMetrics,
         onPhysicalSessionCheck?: (completion: RecallPhysicalSessionDiagnostic) => void,
         runOptimizationWithDiagnostics?: (optimize: () => Promise<void>) => Promise<void>,
-      ) =>
-        runSerialized(async () => {
+      ): Promise<RecallConversationIndexResult> => {
+        if (options.rebuild) {
+          const startingPointer = await readRecallActiveGenerationPointer(
+            config.activeGenerationPointerPath,
+          );
+          const activeManifestPath = startingPointer
+            ? (
+                await readRecallActiveGenerationSelection(
+                  config.activeGenerationPointerPath,
+                  config.generationRootDirectory,
+                )
+              ).manifestPath
+            : null;
+          const rebuilt = await rebuildRecallGeneration({
+            generationRootDirectory: config.generationRootDirectory,
+            activeGenerationPointerPath: config.activeGenerationPointerPath,
+            generationRegistryPath: config.generationRegistryPath,
+            backlogSummaryPath: config.backlogSummaryPath,
+            markerSpoolDirectory: config.markerSpoolDirectory,
+            lockPath: config.lockPath,
+            ...(options.signal ? { signal: options.signal } : {}),
+            async buildGeneration(paths) {
+              const preparationStartedAtMilliseconds = diagnosticsClock.monotonicMilliseconds();
+              const embeddingServerMillisecondsBeforePreparation =
+                diagnosticMetrics?.embeddingServerRequestMilliseconds ?? 0;
+              const targetPaths: RecallIndexTargetPaths = paths;
+              let store: ZvecConversationStore | undefined;
+              let preparedIndex: Awaited<ReturnType<typeof prepareIndexForWrite>>;
+              try {
+                await getConversationTokenizer();
+                const rebuildCanary = await readCanonicalRebuildCanary(
+                  activeManifestPath,
+                  options.signal,
+                  diagnosticMetrics,
+                );
+                preparedIndex = await prepareIndexForWrite(
+                  targetPaths,
+                  options.signal,
+                  rebuildCanary,
+                  false,
+                  diagnosticMetrics,
+                );
+                store = openStore('write', paths.databasePath);
+              } finally {
+                if (diagnosticMetrics) {
+                  const preparationElapsedMilliseconds = Math.max(
+                    diagnosticsClock.monotonicMilliseconds() - preparationStartedAtMilliseconds,
+                    0,
+                  );
+                  const embeddingServerMillisecondsDuringPreparation = Math.max(
+                    diagnosticMetrics.embeddingServerRequestMilliseconds -
+                      embeddingServerMillisecondsBeforePreparation,
+                    0,
+                  );
+                  diagnosticMetrics.manifestStorePreparationMilliseconds += Math.max(
+                    preparationElapsedMilliseconds - embeddingServerMillisecondsDuringPreparation,
+                    0,
+                  );
+                }
+              }
+              try {
+                const indexSummary = await updateConversationIndex(
+                  store,
+                  preparedIndex.tokenizer,
+                  preparedIndex.manifest,
+                  preparedIndex.embeddingModelPreflighted,
+                  targetPaths,
+                  options.signal,
+                  options.onProgress,
+                  diagnosticMetrics,
+                  onPhysicalSessionCheck,
+                );
+                const result = { indexSummary, totalChunks: store.count() };
+                const storeToClose = store;
+                store = undefined;
+                const shouldOptimize =
+                  options.optimize === true &&
+                  (indexSummary.cacheHits > 0 ||
+                    indexSummary.newlyEmbeddedChunks > 0 ||
+                    indexSummary.deletedChunks > 0);
+                return {
+                  result,
+                  ...(shouldOptimize
+                    ? {
+                        async optimize() {
+                          const optimizationStartedAtMilliseconds =
+                            diagnosticsClock.monotonicMilliseconds();
+                          if (diagnosticMetrics) {
+                            diagnosticMetrics.optimizationRan = true;
+                          }
+                          try {
+                            const optimizeStore = () => storeToClose.optimize();
+                            if (runOptimizationWithDiagnostics) {
+                              await runOptimizationWithDiagnostics(optimizeStore);
+                            } else {
+                              await optimizeStore();
+                            }
+                          } finally {
+                            if (diagnosticMetrics) {
+                              diagnosticMetrics.optimizationMilliseconds += Math.max(
+                                diagnosticsClock.monotonicMilliseconds() -
+                                  optimizationStartedAtMilliseconds,
+                                0,
+                              );
+                            }
+                          }
+                        },
+                      }
+                    : {}),
+                  async close() {
+                    storeToClose.close();
+                    const projectionStore = openZvecSessionProjectionStore({
+                      databasePath: paths.projectionDatabasePath,
+                      generationId: paths.generationId,
+                      createIfMissing: true,
+                      readOnly: false,
+                    });
+                    projectionStore.close();
+                  },
+                };
+              } catch (error) {
+                store?.close();
+                throw error;
+              }
+            },
+            async validateGeneration(paths, result) {
+              const manifest = await readRecallIndexManifest(paths.manifestPath);
+              if (!manifest) {
+                throw new Error('Recall replacement generation manifest missing during validation');
+              }
+              const validationStore = openStore('read', paths.databasePath);
+              try {
+                if (validationStore.count() !== result.totalChunks) {
+                  throw new Error('Recall replacement generation count changed during validation');
+                }
+              } finally {
+                validationStore.close();
+              }
+              const projectionValidationStore = openZvecSessionProjectionStore({
+                databasePath: paths.projectionDatabasePath,
+                generationId: paths.generationId,
+                createIfMissing: false,
+                readOnly: true,
+              });
+              try {
+                projectionValidationStore.listPhysicalProjections();
+              } finally {
+                projectionValidationStore.close();
+              }
+              return {
+                indexManifestFingerprint: createHash('sha256')
+                  .update(await readFile(paths.manifestPath))
+                  .digest('hex'),
+              };
+            },
+          });
+          return rebuilt.result;
+        }
+
+        return runSerialized(async () => {
           const lockSignal = createRecallWriteWindowAcquisitionSignal(
             options.signal,
             options.lockWaitMilliseconds,
           );
           const lockStartedAtMilliseconds = diagnosticsClock.monotonicMilliseconds();
-          let lockWaitRecorded = false;
-          try {
-            return await coordinateRecallWriteWindow(
-              {
-                lockPath: config.lockPath,
-                allowRecovery: false,
-                ...(lockSignal ? { signal: lockSignal } : {}),
-              },
-              async (writeWindow) => {
-                if (diagnosticMetrics) {
-                  diagnosticMetrics.writerLockWaitMilliseconds += Math.max(
-                    diagnosticsClock.monotonicMilliseconds() - lockStartedAtMilliseconds,
-                    0,
-                  );
-                }
-                lockWaitRecorded = true;
-                let store: ZvecConversationStore | undefined;
-                try {
-                  const preparationStartedAtMilliseconds = diagnosticsClock.monotonicMilliseconds();
-                  const embeddingServerMillisecondsBeforePreparation =
-                    diagnosticMetrics?.embeddingServerRequestMilliseconds ?? 0;
-                  let preparedIndex: Awaited<ReturnType<typeof prepareIndexForWrite>>;
-                  try {
-                    let rebuildCanary: number[] | undefined;
-                    if (options.rebuild) {
-                      await getConversationTokenizer();
-                      rebuildCanary = await readCanonicalRebuildCanary(
-                        options.signal,
-                        diagnosticMetrics,
-                      );
-                      await removeRecallIndexGeneration();
-                    }
-                    preparedIndex = await prepareIndexForWrite(
-                      options.signal,
-                      rebuildCanary,
-                      options.requireExistingGeneration,
-                      diagnosticMetrics,
-                    );
-                    store = openStore('write');
-                  } finally {
-                    if (diagnosticMetrics) {
-                      const preparationElapsedMilliseconds = Math.max(
-                        diagnosticsClock.monotonicMilliseconds() - preparationStartedAtMilliseconds,
-                        0,
-                      );
-                      const embeddingServerMillisecondsDuringPreparation = Math.max(
-                        diagnosticMetrics.embeddingServerRequestMilliseconds -
-                          embeddingServerMillisecondsBeforePreparation,
-                        0,
-                      );
-                      diagnosticMetrics.manifestStorePreparationMilliseconds += Math.max(
-                        preparationElapsedMilliseconds -
-                          embeddingServerMillisecondsDuringPreparation,
-                        0,
-                      );
-                    }
-                  }
-                  const indexSummary = await updateConversationIndex(
-                    store,
-                    preparedIndex.tokenizer,
-                    preparedIndex.manifest,
-                    preparedIndex.embeddingModelPreflighted,
-                    options.signal,
-                    options.onProgress,
-                    diagnosticMetrics,
-                    onPhysicalSessionCheck,
-                  );
-                  if (
-                    options.optimize &&
-                    (indexSummary.cacheHits > 0 ||
-                      indexSummary.newlyEmbeddedChunks > 0 ||
-                      indexSummary.deletedChunks > 0)
-                  ) {
-                    const optimizationStartedAtMilliseconds =
-                      diagnosticsClock.monotonicMilliseconds();
-                    const storeToOptimize = store;
-                    if (diagnosticMetrics) {
-                      diagnosticMetrics.optimizationRan = true;
-                    }
-                    try {
-                      const optimizeStore = () => storeToOptimize.optimize();
-                      if (runOptimizationWithDiagnostics) {
-                        await runOptimizationWithDiagnostics(optimizeStore);
-                      } else {
-                        await optimizeStore();
-                      }
-                    } finally {
-                      if (diagnosticMetrics) {
-                        diagnosticMetrics.optimizationMilliseconds += Math.max(
-                          diagnosticsClock.monotonicMilliseconds() -
-                            optimizationStartedAtMilliseconds,
-                          0,
-                        );
-                      }
-                    }
-                  }
-                  return { indexSummary, totalChunks: store.count() };
-                } finally {
-                  closeRecallWriteStore(
-                    store,
-                    writeWindow,
-                    'Recall maintenance store close failed',
-                  );
-                }
-              },
-            );
-          } finally {
-            if (diagnosticMetrics && !lockWaitRecorded) {
-              diagnosticMetrics.writerLockWaitMilliseconds += Math.max(
-                diagnosticsClock.monotonicMilliseconds() - lockStartedAtMilliseconds,
-                0,
+          return coordinateRecallWriteWindow(
+            {
+              lockPath: config.lockPath,
+              allowRecovery: false,
+              ...(lockSignal ? { signal: lockSignal } : {}),
+            },
+            async (writeWindow) => {
+              const activeGeneration = await readRecallActiveGenerationSelection(
+                config.activeGenerationPointerPath,
+                config.generationRootDirectory,
               );
-            }
-          }
+              const registry = await readRecallGenerationRegistry(config.generationRegistryPath);
+              const activeRegistryEntry = registry?.generations.find(
+                ({ generationId }) => generationId === activeGeneration.activeGenerationId,
+              );
+              if (registry?.buildingGenerationId != null) {
+                throw new Error(
+                  'Recall incremental commits are frozen while a replacement generation builds',
+                );
+              }
+              if (activeRegistryEntry?.state === RecallGenerationCutoverState.LEGACY_READ_ONLY) {
+                throw new Error(
+                  'Recall adopted legacy generation is read-only; run an explicit rebuild',
+                );
+              }
+              const targetPaths: RecallIndexTargetPaths = activeGeneration;
+              if (diagnosticMetrics) {
+                diagnosticMetrics.writerLockWaitMilliseconds += Math.max(
+                  diagnosticsClock.monotonicMilliseconds() - lockStartedAtMilliseconds,
+                  0,
+                );
+              }
+              let store: ZvecConversationStore | undefined;
+              try {
+                const preparedIndex = await prepareIndexForWrite(
+                  targetPaths,
+                  options.signal,
+                  undefined,
+                  options.requireExistingGeneration,
+                  diagnosticMetrics,
+                );
+                store = openStore('write', targetPaths.databasePath);
+                const indexSummary = await updateConversationIndex(
+                  store,
+                  preparedIndex.tokenizer,
+                  preparedIndex.manifest,
+                  preparedIndex.embeddingModelPreflighted,
+                  targetPaths,
+                  options.signal,
+                  options.onProgress,
+                  diagnosticMetrics,
+                  onPhysicalSessionCheck,
+                );
+                return { indexSummary, totalChunks: store.count() };
+              } finally {
+                closeRecallWriteStore(store, writeWindow, 'Recall maintenance store close failed');
+              }
+            },
+          );
         });
+      };
       return options.manualMaintenanceTrigger
         ? runManualIndexWithDiagnostics({
             diagnostics,
@@ -1012,6 +1146,48 @@ export function createRecallConversationService(
             runIndexMaintenance: runConversationIndexMaintenance,
           })
         : runConversationIndexMaintenance();
+    },
+    async rollback() {
+      await rollbackRecallGeneration({
+        activeGenerationPointerPath: config.activeGenerationPointerPath,
+        generationRegistryPath: config.generationRegistryPath,
+        generationRootDirectory: config.generationRootDirectory,
+        backlogSummaryPath: config.backlogSummaryPath,
+        markerSpoolDirectory: config.markerSpoolDirectory,
+        retainedMarkerDirectory: join(config.markerControlDirectory, 'rollback-retained'),
+        lockPath: config.lockPath,
+      });
+    },
+    async adoptLegacy() {
+      await adoptLegacyRecallGeneration({
+        dataDirectory: config.dataDirectory,
+        legacyDatabasePath: config.databasePath,
+        legacyStatePath: config.statePath,
+        legacyManifestPath: config.manifestPath,
+        generationRootDirectory: config.generationRootDirectory,
+        activeGenerationPointerPath: config.activeGenerationPointerPath,
+        generationRegistryPath: config.generationRegistryPath,
+        backlogSummaryPath: config.backlogSummaryPath,
+        backupEvidencePath: join(config.dataDirectory, 'legacy-adoption-backup.json'),
+        lockPath: config.lockPath,
+        async validateLegacyDatabase(databasePath) {
+          const legacyStore = openStore('read', databasePath);
+          try {
+            legacyStore.count();
+          } finally {
+            legacyStore.close();
+          }
+        },
+      });
+    },
+    async collectRetired() {
+      await collectRetiredRecallGenerations({
+        activeGenerationPointerPath: config.activeGenerationPointerPath,
+        generationRegistryPath: config.generationRegistryPath,
+        generationRootDirectory: config.generationRootDirectory,
+        lockPath: config.lockPath,
+        retainedMarkerDirectory: join(config.markerControlDirectory, 'rollback-retained'),
+      });
     },
   };
 }

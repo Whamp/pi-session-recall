@@ -42,9 +42,11 @@ void test('recall marker acknowledgement requires exact target-generation checkp
       await encodeRecallWorkMarker(marker, { trustedSessionRoots: [sessionsDirectory] }),
     );
   }
+  const retainedMarkerDirectory = join(directory, 'recall', 'markers', 'rollback-retained');
   const workPlan = await coordinateRecallMarkerReplay({
     markerSpoolDirectory,
     markerQuarantineDirectory: join(directory, 'recall', 'markers', 'quarantine'),
+    retainedMarkerDirectory,
     targetGenerationId: 'generation-1',
     trustedSessionRoots: [sessionsDirectory],
   });
@@ -69,6 +71,12 @@ void test('recall marker acknowledgement requires exact target-generation checkp
     1,
   );
   assert.deepEqual(await readdir(markerSpoolDirectory), [`${markers[1]?.markerId}.json`]);
+  const firstMarker = markers[0];
+  assert.ok(firstMarker);
+  assert.equal(
+    await readFile(join(retainedMarkerDirectory, `${firstMarker.markerId}.json`), 'utf8'),
+    await encodeRecallWorkMarker(firstMarker, { trustedSessionRoots: [sessionsDirectory] }),
+  );
 
   const outsidePath = join(directory, 'outside.json');
   await writeFile(outsidePath, 'must remain');

@@ -1,6 +1,6 @@
-import { createHash } from 'node:crypto';
-import { readFile, stat } from 'node:fs/promises';
-import { join } from 'node:path';
+import { createHash, randomUUID } from 'node:crypto';
+import { mkdir, open, readFile, realpath, rename, rm, stat } from 'node:fs/promises';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 import { Type } from 'typebox';
 import { Value } from 'typebox/value';
@@ -8,7 +8,9 @@ import { Value } from 'typebox/value';
 import { RecallBacklogFailureCategory, RecallGenerationCutoverState } from './enums.js';
 import { RecallGenerationPointerError } from './errors.js';
 import { RECALL_INDEX_MANIFEST_VERSION } from './recall-index-manifest.js';
+import { readNodeErrorCode } from './read-node-error-code.js';
 import { RECALL_SESSION_PROJECTION_SCHEMA_VERSION } from './recall-session-projection.js';
+import { syncRecallDirectory } from './sync-recall-directory.js';
 import { RECALL_WORK_MARKER_VERSION } from './recall-work-marker.js';
 
 /** Current strict version for the checksummed active-generation pointer. */
@@ -23,12 +25,15 @@ export const RECALL_BACKLOG_SUMMARY_VERSION = 1;
 /** Service objective starts after the longest expected 30-minute quiescence window. */
 export const RECALL_MATERIAL_BACKLOG_SERVICE_OBJECTIVE_MILLISECONDS = 30 * 60_000;
 
+const RECALL_GENERATION_IDENTIFIER_PATTERN = /^[A-Za-z0-9_-]+$/u;
+
 /** Pointer-selected immutable paths used by one read-only recall search. */
 export interface RecallActiveGenerationSelection {
   activeGenerationId: string;
   generationDirectory: string;
   databasePath: string;
   projectionDatabasePath: string;
+  statePath: string;
   manifestPath: string;
 }
 
@@ -45,26 +50,29 @@ export interface RecallActiveGenerationPointerIdentity {
   activeGenerationId: string;
 }
 
-/** One generation's durable explicit-rebuild and cutover state. */
+/** One generation's durable explicit-rebuild, replay, rollback, and retention state. */
 export interface RecallGenerationRegistryEntry {
   generationId: string;
   state: RecallGenerationCutoverState;
-  indexManifestVersion: 6;
-  markerSchemaVersion: 1;
-  sessionProjectionSchemaVersion: 2;
+  indexManifestVersion: 5 | 6;
+  markerSchemaVersion: 1 | null;
+  sessionProjectionSchemaVersion: 2 | null;
   indexManifestFingerprint: string;
   rebuildStartedAtEpochMilliseconds: number;
   stateChangedAtEpochMilliseconds: number;
   rebuildStartMarkerId: string | null;
+  rebuildMarkerWatermark?: string[];
+  validatedAtEpochMilliseconds?: number | null;
+  retireAfterEpochMilliseconds?: number | null;
 }
 
-/** Durable registry of active, optional building, and bounded rollback generations. */
+/** Durable registry; active selection is nullable only before the first successful cutover. */
 export interface RecallGenerationRegistry {
   version: 1;
-  activeGenerationId: string;
+  activeGenerationId: string | null;
   buildingGenerationId: string | null;
   rollbackGenerationId: string | null;
-  activePointerChecksum: string;
+  activePointerChecksum: string | null;
   generations: RecallGenerationRegistryEntry[];
 }
 
@@ -82,9 +90,48 @@ export interface RecallBacklogSummary {
   observedAtEpochMilliseconds: number;
 }
 
+/** Writable file capability used by atomic generation-state fault tests. */
+export interface RecallGenerationStateFile {
+  writeFile(content: string): Promise<void>;
+  sync(): Promise<void>;
+  close(): Promise<void>;
+}
+
+/** Minimal filesystem boundary for checksummed atomic generation-state replacement. */
+export interface RecallGenerationStateFilesystem {
+  createDirectory(path: string): Promise<void>;
+  openExclusiveFile(path: string): Promise<RecallGenerationStateFile>;
+  renameFile(temporaryPath: string, destinationPath: string): Promise<void>;
+  syncDirectory(path: string): Promise<void>;
+  removeFile(path: string): Promise<void>;
+}
+
+/** Optional fault-injection boundary for durable generation-state writes. */
+export interface RecallGenerationStateWriteOptions {
+  filesystem?: RecallGenerationStateFilesystem;
+}
+
+const nodeGenerationStateFilesystem: RecallGenerationStateFilesystem = {
+  async createDirectory(path) {
+    await mkdir(path, { recursive: true });
+  },
+  async openExclusiveFile(path) {
+    return open(path, 'wx', 0o600);
+  },
+  renameFile: rename,
+  syncDirectory: syncRecallDirectory,
+  async removeFile(path) {
+    await rm(path, { force: true });
+  },
+};
+
 const nonemptyStringSchema = Type.String({ minLength: 1 });
 const generationIdentifierSchema = Type.String({ pattern: '^[A-Za-z0-9_-]+$' });
-const nullableIdentifierSchema = Type.Union([nonemptyStringSchema, Type.Null()]);
+const nullableIdentifierSchema = Type.Union([generationIdentifierSchema, Type.Null()]);
+const nullableChecksumSchema = Type.Union([
+  Type.String({ pattern: '^[a-f0-9]{64}$' }),
+  Type.Null(),
+]);
 const recallActiveGenerationPointerSchema = Type.Object(
   {
     version: Type.Literal(RECALL_ACTIVE_GENERATION_POINTER_VERSION),
@@ -95,26 +142,39 @@ const recallActiveGenerationPointerSchema = Type.Object(
 );
 const recallGenerationRegistryEntrySchema = Type.Object(
   {
-    generationId: nonemptyStringSchema,
+    generationId: generationIdentifierSchema,
     state: Type.Enum(RecallGenerationCutoverState),
-    indexManifestVersion: Type.Literal(RECALL_INDEX_MANIFEST_VERSION),
-    markerSchemaVersion: Type.Literal(RECALL_WORK_MARKER_VERSION),
-    sessionProjectionSchemaVersion: Type.Literal(RECALL_SESSION_PROJECTION_SCHEMA_VERSION),
+    indexManifestVersion: Type.Union([
+      Type.Literal(5),
+      Type.Literal(RECALL_INDEX_MANIFEST_VERSION),
+    ]),
+    markerSchemaVersion: Type.Union([Type.Literal(RECALL_WORK_MARKER_VERSION), Type.Null()]),
+    sessionProjectionSchemaVersion: Type.Union([
+      Type.Literal(RECALL_SESSION_PROJECTION_SCHEMA_VERSION),
+      Type.Null(),
+    ]),
     indexManifestFingerprint: Type.String({ pattern: '^[a-f0-9]{64}$' }),
     rebuildStartedAtEpochMilliseconds: Type.Integer({ minimum: 0 }),
     stateChangedAtEpochMilliseconds: Type.Integer({ minimum: 0 }),
-    rebuildStartMarkerId: nullableIdentifierSchema,
+    rebuildStartMarkerId: Type.Union([generationIdentifierSchema, Type.Null()]),
+    rebuildMarkerWatermark: Type.Optional(Type.Array(generationIdentifierSchema)),
+    validatedAtEpochMilliseconds: Type.Optional(
+      Type.Union([Type.Integer({ minimum: 0 }), Type.Null()]),
+    ),
+    retireAfterEpochMilliseconds: Type.Optional(
+      Type.Union([Type.Integer({ minimum: 0 }), Type.Null()]),
+    ),
   },
   { additionalProperties: false },
 );
 const recallGenerationRegistrySchema = Type.Object(
   {
     version: Type.Literal(RECALL_GENERATION_REGISTRY_VERSION),
-    activeGenerationId: nonemptyStringSchema,
+    activeGenerationId: nullableIdentifierSchema,
     buildingGenerationId: nullableIdentifierSchema,
     rollbackGenerationId: nullableIdentifierSchema,
-    activePointerChecksum: Type.String({ pattern: '^[a-f0-9]{64}$' }),
-    generations: Type.Array(recallGenerationRegistryEntrySchema, { minItems: 1 }),
+    activePointerChecksum: nullableChecksumSchema,
+    generations: Type.Array(recallGenerationRegistryEntrySchema),
   },
   { additionalProperties: false },
 );
@@ -166,10 +226,7 @@ export function calculateRecallActiveGenerationPointerChecksum(
 ): string {
   return createHash('sha256')
     .update(
-      JSON.stringify({
-        version: pointer.version,
-        activeGenerationId: pointer.activeGenerationId,
-      }),
+      JSON.stringify({ version: pointer.version, activeGenerationId: pointer.activeGenerationId }),
     )
     .digest('hex');
 }
@@ -178,8 +235,8 @@ export function calculateRecallActiveGenerationPointerChecksum(
 export function createRecallActiveGenerationPointer(
   activeGenerationId: string,
 ): RecallActiveGenerationPointer {
-  if (activeGenerationId.length === 0) {
-    throw new Error('Recall active generation pointer generation ID must not be empty');
+  if (!RECALL_GENERATION_IDENTIFIER_PATTERN.test(activeGenerationId)) {
+    throw new Error('Recall active generation pointer generation ID invalid');
   }
   const identity: RecallActiveGenerationPointerIdentity = {
     version: RECALL_ACTIVE_GENERATION_POINTER_VERSION,
@@ -218,22 +275,60 @@ function findRegistryGeneration(
   return generation;
 }
 
+function assertUniqueGenerationValues(values: readonly string[], label: string): void {
+  if (new Set(values).size !== values.length) {
+    throw new Error(`Recall generation registry contains duplicate ${label}`);
+  }
+}
+
 function assertRecallGenerationRegistryInvariants(registry: RecallGenerationRegistry): void {
-  const generationIds = registry.generations.map(({ generationId }) => generationId);
-  if (new Set(generationIds).size !== generationIds.length) {
-    throw new Error('Recall generation registry contains a duplicate generation ID');
-  }
-  const expectedPointer = createRecallActiveGenerationPointer(registry.activeGenerationId);
-  if (registry.activePointerChecksum !== expectedPointer.checksum) {
-    throw new Error(
-      `Recall generation registry active pointer checksum mismatch: expected ${expectedPointer.checksum}, received ${registry.activePointerChecksum}`,
+  assertUniqueGenerationValues(
+    registry.generations.map(({ generationId }) => generationId),
+    'generation IDs',
+  );
+  for (const entry of registry.generations) {
+    assertUniqueGenerationValues(
+      entry.rebuildMarkerWatermark ?? [],
+      'rebuild marker watermark IDs',
     );
+    if (entry.indexManifestVersion === 5) {
+      if (entry.markerSchemaVersion !== null || entry.sessionProjectionSchemaVersion !== null) {
+        throw new Error(
+          'Recall legacy generation registry entry must not synthesize incremental schemas',
+        );
+      }
+      if (
+        entry.state !== RecallGenerationCutoverState.LEGACY_READ_ONLY &&
+        entry.state !== RecallGenerationCutoverState.ROLLBACK &&
+        entry.state !== RecallGenerationCutoverState.RETIRED
+      ) {
+        throw new Error('Recall version-5 generation registry entry must remain read-only');
+      }
+    }
   }
-  const active = findRegistryGeneration(registry, registry.activeGenerationId, 'active');
-  if (active.state !== RecallGenerationCutoverState.ACTIVE) {
-    throw new Error(
-      `Recall generation registry active generation has invalid state: ${active.state}`,
-    );
+  if (registry.activeGenerationId === null) {
+    if (registry.activePointerChecksum !== null || registry.rollbackGenerationId !== null) {
+      throw new Error(
+        'Recall generation registry bootstrap state cannot reference active or rollback state',
+      );
+    }
+  } else {
+    const expectedPointer = createRecallActiveGenerationPointer(registry.activeGenerationId);
+    if (registry.activePointerChecksum !== expectedPointer.checksum) {
+      throw new Error(
+        `Recall generation registry active pointer checksum mismatch: expected ${expectedPointer.checksum}, received ${registry.activePointerChecksum}`,
+      );
+    }
+    const active = findRegistryGeneration(registry, registry.activeGenerationId, 'active');
+    if (
+      active.state !== RecallGenerationCutoverState.ACTIVE &&
+      active.state !== RecallGenerationCutoverState.REPLAY_PENDING &&
+      active.state !== RecallGenerationCutoverState.LEGACY_READ_ONLY
+    ) {
+      throw new Error(
+        `Recall generation registry active generation has invalid state: ${active.state}`,
+      );
+    }
   }
   if (registry.buildingGenerationId !== null) {
     const building = findRegistryGeneration(registry, registry.buildingGenerationId, 'building');
@@ -297,6 +392,152 @@ export function decodeRecallBacklogSummary(source: string): RecallBacklogSummary
   return parseRecallBacklogSummary(parseJsonContract(source, 'Recall backlog summary'));
 }
 
+async function writeAtomicRecallGenerationState(
+  destinationPath: string,
+  content: string,
+  options: RecallGenerationStateWriteOptions,
+): Promise<void> {
+  const filesystem = options.filesystem ?? nodeGenerationStateFilesystem;
+  const directoryPath = dirname(destinationPath);
+  await filesystem.createDirectory(directoryPath);
+  const temporaryPath = `${destinationPath}.${randomUUID()}.tmp`;
+  let file: RecallGenerationStateFile | undefined;
+  try {
+    file = await filesystem.openExclusiveFile(temporaryPath);
+    await file.writeFile(content);
+    await file.sync();
+    await file.close();
+    file = undefined;
+    await filesystem.renameFile(temporaryPath, destinationPath);
+    await filesystem.syncDirectory(directoryPath);
+  } catch (error) {
+    const cleanupErrors: unknown[] = [];
+    if (file) {
+      try {
+        await file.close();
+      } catch (closeError) {
+        cleanupErrors.push(closeError);
+      }
+    }
+    try {
+      await filesystem.removeFile(temporaryPath);
+    } catch (removeError) {
+      cleanupErrors.push(removeError);
+    }
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError(
+        [error, ...cleanupErrors],
+        'Recall atomic generation state write and cleanup failed',
+      );
+    }
+    throw error;
+  }
+}
+
+/** Atomically writes and durably publishes one checksummed active-generation pointer. */
+export async function writeRecallActiveGenerationPointer(
+  pointerPath: string,
+  pointer: RecallActiveGenerationPointer,
+  options: RecallGenerationStateWriteOptions = {},
+): Promise<void> {
+  await writeAtomicRecallGenerationState(
+    pointerPath,
+    encodeRecallActiveGenerationPointer(pointer),
+    options,
+  );
+}
+
+/** Reads one active pointer, returning null only when no pointer has ever been cut over. */
+export async function readRecallActiveGenerationPointer(
+  pointerPath: string,
+): Promise<RecallActiveGenerationPointer | null> {
+  try {
+    return decodeRecallActiveGenerationPointer(await readFile(pointerPath, 'utf8'));
+  } catch (error) {
+    if (readNodeErrorCode(error) === 'ENOENT') {
+      return null;
+    }
+    throw error;
+  }
+}
+
+/** Atomically writes and durably publishes one strict generation registry. */
+export async function writeRecallGenerationRegistry(
+  registryPath: string,
+  registry: RecallGenerationRegistry,
+  options: RecallGenerationStateWriteOptions = {},
+): Promise<void> {
+  await writeAtomicRecallGenerationState(
+    registryPath,
+    encodeRecallGenerationRegistry(registry),
+    options,
+  );
+}
+
+/** Atomically writes one scalar-only backlog summary after strict validation. */
+export async function writeRecallBacklogSummary(
+  backlogSummaryPath: string,
+  summary: RecallBacklogSummary,
+  options: RecallGenerationStateWriteOptions = {},
+): Promise<void> {
+  await writeAtomicRecallGenerationState(
+    backlogSummaryPath,
+    encodeRecallBacklogSummary(summary),
+    options,
+  );
+}
+
+/** Reads one generation registry, returning null only before generation management is initialized. */
+export async function readRecallGenerationRegistry(
+  registryPath: string,
+): Promise<RecallGenerationRegistry | null> {
+  try {
+    return decodeRecallGenerationRegistry(await readFile(registryPath, 'utf8'));
+  } catch (error) {
+    if (readNodeErrorCode(error) === 'ENOENT') {
+      return null;
+    }
+    throw error;
+  }
+}
+
+function isPathWithinRoot(candidatePath: string, rootPath: string): boolean {
+  const relativePath = relative(rootPath, candidatePath);
+  return (
+    relativePath !== '' &&
+    relativePath !== '..' &&
+    !relativePath.startsWith(`..${sep}`) &&
+    !isAbsolute(relativePath)
+  );
+}
+
+/** Resolves one existing generation directory and rejects lexical or symlink root escape. */
+export async function resolveRecallGenerationDirectory(
+  generationRootDirectory: string,
+  generationId: string,
+): Promise<string> {
+  if (!RECALL_GENERATION_IDENTIFIER_PATTERN.test(generationId)) {
+    throw new Error('Recall generation identifier invalid');
+  }
+  const rootPath = resolve(generationRootDirectory);
+  const candidatePath = resolve(rootPath, generationId);
+  if (!isPathWithinRoot(candidatePath, rootPath)) {
+    throw new Error('Recall generation directory escapes the configured generation root');
+  }
+  const [canonicalRootPath, canonicalCandidatePath] = await Promise.all([
+    realpath(rootPath),
+    realpath(candidatePath),
+  ]);
+  if (!isPathWithinRoot(canonicalCandidatePath, canonicalRootPath)) {
+    throw new Error('Recall generation directory symlink escapes the configured generation root');
+  }
+  const generationStats = await stat(canonicalCandidatePath);
+  if (!generationStats.isDirectory()) {
+    throw new Error('selected generation is not a directory');
+  }
+  return canonicalCandidatePath;
+}
+
 /** Reads and validates the only pointer-selected generation directory available to search. */
 export async function readRecallActiveGenerationSelection(
   activeGenerationPointerPath: string,
@@ -306,16 +547,16 @@ export async function readRecallActiveGenerationSelection(
     const pointer = decodeRecallActiveGenerationPointer(
       await readFile(activeGenerationPointerPath, 'utf8'),
     );
-    const generationDirectory = join(generationRootDirectory, pointer.activeGenerationId);
-    const generationStats = await stat(generationDirectory);
-    if (!generationStats.isDirectory()) {
-      throw new Error('selected generation is not a directory');
-    }
+    const generationDirectory = await resolveRecallGenerationDirectory(
+      generationRootDirectory,
+      pointer.activeGenerationId,
+    );
     return {
       activeGenerationId: pointer.activeGenerationId,
       generationDirectory,
       databasePath: join(generationDirectory, 'zvec'),
       projectionDatabasePath: join(generationDirectory, 'session-projections'),
+      statePath: join(generationDirectory, 'index-state.json'),
       manifestPath: join(generationDirectory, 'index-manifest.json'),
     };
   } catch (error) {
@@ -333,9 +574,7 @@ export async function readRecallMaterialBacklogWarning(
   try {
     summary = decodeRecallBacklogSummary(await readFile(backlogSummaryPath, 'utf8'));
   } catch (error) {
-    const errorCode =
-      typeof error === 'object' && error !== null && 'code' in error ? error.code : undefined;
-    if (errorCode === 'ENOENT') {
+    if (readNodeErrorCode(error) === 'ENOENT') {
       return null;
     }
     throw error;
@@ -354,7 +593,15 @@ export async function readRecallMaterialBacklogWarning(
     summary.buildingGenerationId !== null &&
     (summary.generationState === RecallGenerationCutoverState.BUILDING ||
       summary.generationState === RecallGenerationCutoverState.READY);
-  if (!materiallyStale && !failed && !rebuildingOnOlderGeneration) {
+  const legacyReadOnly = summary.generationState === RecallGenerationCutoverState.LEGACY_READ_ONLY;
+  const replayPending = summary.generationState === RecallGenerationCutoverState.REPLAY_PENDING;
+  if (
+    !materiallyStale &&
+    !failed &&
+    !rebuildingOnOlderGeneration &&
+    !legacyReadOnly &&
+    !replayPending
+  ) {
     return null;
   }
   const scalarFields = [
@@ -363,7 +610,7 @@ export async function readRecallMaterialBacklogWarning(
     `activeGenerationAgeMilliseconds=${summary.activeGenerationAgeMilliseconds}`,
     `generationState=${summary.generationState}`,
   ];
-  if (rebuildingOnOlderGeneration) {
+  if (rebuildingOnOlderGeneration || legacyReadOnly) {
     scalarFields.push(`rebuildAgeMilliseconds=${summary.rebuildAgeMilliseconds ?? 'none'}`);
   }
   if (summary.lastFailureCategory !== null) {

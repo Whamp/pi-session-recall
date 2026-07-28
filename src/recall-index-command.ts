@@ -14,20 +14,36 @@ interface RecallIndexCommandUi {
 export interface RecallIndexCommandOptions {
   argumentsText: string;
   qualityGateDecision: RecallQualityGateDecision;
-  service: Pick<RecallConversationService, 'index'>;
+  service: Pick<RecallConversationService, 'adoptLegacy' | 'collectRetired' | 'index' | 'rollback'>;
   ui: RecallIndexCommandUi;
 }
 
-function readRecallIndexRebuildFlag(argumentsText: string): boolean {
+type RecallIndexCommandAction =
+  | 'adopt-legacy'
+  | 'collect-retired'
+  | 'incremental'
+  | 'rebuild'
+  | 'rollback';
+
+function readRecallIndexCommandAction(argumentsText: string): RecallIndexCommandAction {
   const args = argumentsText.trim();
   if (!args) {
-    return false;
+    return 'incremental';
   }
   if (args === '--rebuild') {
-    return true;
+    return 'rebuild';
+  }
+  if (args === '--rollback') {
+    return 'rollback';
+  }
+  if (args === '--adopt-legacy') {
+    return 'adopt-legacy';
+  }
+  if (args === '--collect-retired') {
+    return 'collect-retired';
   }
   throw new Error(
-    `Recall index command arguments invalid: ${args}; usage: /pi-session-recall-index [--rebuild]`,
+    `Recall index command arguments invalid: ${args}; usage: /pi-session-recall-index [--rebuild|--rollback|--adopt-legacy|--collect-retired]`,
   );
 }
 
@@ -44,10 +60,56 @@ function assertRecallBackfillGatePassed(decision: RecallQualityGateDecision): vo
   );
 }
 
-/** Runs explicit incremental or rebuilding index maintenance only after the quality gate passes. */
+/** Runs gated indexing or explicit rollback, legacy adoption, and retired-generation collection. */
 export async function runRecallIndexCommand(options: RecallIndexCommandOptions): Promise<void> {
+  const action = readRecallIndexCommandAction(options.argumentsText);
+  if (action === 'rollback') {
+    if (!options.service.rollback) {
+      throw new Error('Recall generation rollback is unavailable in this service');
+    }
+    options.ui.setStatus('rolling back recall generation…');
+    try {
+      await options.service.rollback();
+      options.ui.notify(
+        'Recall generation rolled back; retained markers are pending replay',
+        'warning',
+      );
+    } finally {
+      options.ui.setStatus();
+    }
+    return;
+  }
+  if (action === 'collect-retired') {
+    if (!options.service.collectRetired) {
+      throw new Error('Recall retired generation collection is unavailable in this service');
+    }
+    options.ui.setStatus('collecting retired recall generations…');
+    try {
+      await options.service.collectRetired();
+      options.ui.notify('Expired recall generations collected', 'info');
+    } finally {
+      options.ui.setStatus();
+    }
+    return;
+  }
+  if (action === 'adopt-legacy') {
+    if (!options.service.adoptLegacy) {
+      throw new Error('Recall legacy generation adoption is unavailable in this service');
+    }
+    options.ui.setStatus('adopting legacy recall generation…');
+    try {
+      await options.service.adoptLegacy();
+      options.ui.notify(
+        'Legacy recall generation adopted read-only; run --rebuild next',
+        'warning',
+      );
+    } finally {
+      options.ui.setStatus();
+    }
+    return;
+  }
   assertRecallBackfillGatePassed(options.qualityGateDecision);
-  const rebuild = readRecallIndexRebuildFlag(options.argumentsText);
+  const rebuild = action === 'rebuild';
   options.ui.setStatus(rebuild ? 'rebuilding conversations…' : 'indexing conversations…');
   try {
     const onProgress: NonNullable<RecallConversationIndexOptions['onProgress']> = (progress) => {
@@ -66,7 +128,6 @@ export async function runRecallIndexCommand(options: RecallIndexCommandOptions):
           rebuild: false,
           manualMaintenanceTrigger: RecallManualMaintenanceTrigger.MANUAL_INCREMENTAL_INDEX,
           onProgress,
-          optimize: true,
         };
     const result = await options.service.index(indexOptions);
     const failures = result.indexSummary.failedSessions.length;

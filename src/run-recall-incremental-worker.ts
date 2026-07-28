@@ -2,16 +2,26 @@ import { access } from 'node:fs/promises';
 import { isAbsolute, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { completeRecallGenerationReplay } from './complete-recall-generation-replay.js';
 import {
   coordinateRecallMarkerReplay,
+  type RecallGenerationReplayCompletionPaths,
   type RecallMarkerReplayWorkPlan,
 } from './coordinate-recall-marker-replay.js';
-import { RecallMetadataSweepStatus, RecallWorkMarkerTrigger } from './enums.js';
+import {
+  RecallGenerationCutoverState,
+  RecallMetadataSweepStatus,
+  RecallWorkMarkerTrigger,
+} from './enums.js';
 import { loadRecallConversationConfig } from './recall-conversation-config.js';
-import { readRecallActiveGenerationSelection } from './recall-generation-state.js';
+import {
+  readRecallActiveGenerationSelection,
+  readRecallGenerationRegistry,
+} from './recall-generation-state.js';
 import type { PhysicalSessionProjection } from './recall-session-projection.js';
 import type { RecallWorkMarkerCodecOptions } from './recall-work-marker.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
+import { recoverRecallGenerationCutover } from './recover-recall-generation-cutover.js';
 import {
   RECALL_METADATA_SWEEP_CONTINUATION_FILENAME,
   scanRecallSessionMetadata,
@@ -25,6 +35,9 @@ export interface RunRecallIncrementalWorkerOptions extends RecallWorkMarkerCodec
   markerQuarantineDirectory: string;
   controlDirectory: string;
   targetGenerationId: string;
+  generationRegistryPath?: string;
+  retainedMarkerDirectory?: string;
+  generationReplayCompletion?: RecallGenerationReplayCompletionPaths;
   knownSources?: readonly KnownRecallSessionMetadataSource[];
   confirmedDeletionMaxMissingSourceCount?: number;
   confirmedDeletionMaxMissingSourceRatio?: number;
@@ -47,6 +60,8 @@ export interface RecallIncrementalWorkerResult {
   workPlan: RecallMarkerReplayWorkPlan;
   metadataSweep: RecallSessionMetadataSweepResult | null;
   heavyDependenciesLoaded: boolean;
+  commitsFrozen: boolean;
+  generationReplayCompleted: boolean | null;
 }
 
 async function loadRecallIncrementalWorkerDependencies(): Promise<void> {
@@ -93,12 +108,42 @@ function hasRecallIncrementalTransferWork(
 export async function runRecallIncrementalWorker(
   options: RunRecallIncrementalWorkerOptions,
 ): Promise<RecallIncrementalWorkerResult> {
+  const registry = options.generationRegistryPath
+    ? await readRecallGenerationRegistry(options.generationRegistryPath)
+    : null;
+  if (
+    registry?.activeGenerationId !== null &&
+    registry?.activeGenerationId !== undefined &&
+    registry.activeGenerationId !== options.targetGenerationId
+  ) {
+    throw new Error('Recall incremental worker target does not match the generation registry');
+  }
+  const buildingInProgress = registry?.buildingGenerationId != null;
+  const activeGenerationIsLegacy =
+    registry?.generations.find(({ generationId }) => generationId === registry.activeGenerationId)
+      ?.state === RecallGenerationCutoverState.LEGACY_READ_ONLY;
+  const commitsFrozen = buildingInProgress || activeGenerationIsLegacy;
   const workPlan = await coordinateRecallMarkerReplay({
     markerSpoolDirectory: options.markerSpoolDirectory,
     markerQuarantineDirectory: options.markerQuarantineDirectory,
     targetGenerationId: options.targetGenerationId,
     trustedSessionRoots: options.trustedSessionRoots,
+    ...(options.retainedMarkerDirectory
+      ? { retainedMarkerDirectory: options.retainedMarkerDirectory }
+      : {}),
+    ...(options.generationReplayCompletion
+      ? { generationReplayCompletion: options.generationReplayCompletion }
+      : {}),
   });
+  if (commitsFrozen) {
+    return {
+      workPlan,
+      metadataSweep: null,
+      heavyDependenciesLoaded: false,
+      commitsFrozen: true,
+      generationReplayCompleted: null,
+    };
+  }
   const shouldSweepMetadata =
     workPlanRequestsRecallMetadataSweep(workPlan) ||
     (await hasRecallMetadataSweepContinuation(options.controlDirectory));
@@ -129,7 +174,24 @@ export async function runRecallIncrementalWorker(
       })
     : null;
   if (!hasRecallIncrementalTransferWork(workPlan, metadataSweep)) {
-    return { workPlan, metadataSweep, heavyDependenciesLoaded: false };
+    const activeEntry = registry?.generations.find(
+      ({ generationId }) => generationId === options.targetGenerationId,
+    );
+    const generationReplayCompleted =
+      activeEntry?.state === RecallGenerationCutoverState.REPLAY_PENDING &&
+      options.generationReplayCompletion
+        ? await completeRecallGenerationReplay({
+            ...options.generationReplayCompletion,
+            markerSpoolDirectory: options.markerSpoolDirectory,
+          })
+        : null;
+    return {
+      workPlan,
+      metadataSweep,
+      heavyDependenciesLoaded: false,
+      commitsFrozen: false,
+      generationReplayCompleted,
+    };
   }
   await (options.loadHeavyDependencies ?? loadRecallIncrementalWorkerDependencies)();
   if (
@@ -142,7 +204,13 @@ export async function runRecallIncrementalWorker(
       knownSourceInventory?.physicalProjections ?? [],
     );
   }
-  return { workPlan, metadataSweep, heavyDependenciesLoaded: true };
+  return {
+    workPlan,
+    metadataSweep,
+    heavyDependenciesLoaded: true,
+    commitsFrozen: false,
+    generationReplayCompleted: null,
+  };
 }
 
 async function loadRecallKnownSourceInventory(
@@ -174,6 +242,12 @@ async function loadRecallKnownSourceInventory(
 
 async function runRecallIncrementalWorkerExecutable(): Promise<void> {
   const config = await loadRecallConversationConfig();
+  await recoverRecallGenerationCutover({
+    activeGenerationPointerPath: config.activeGenerationPointerPath,
+    generationRegistryPath: config.generationRegistryPath,
+    backlogSummaryPath: config.backlogSummaryPath,
+    lockPath: config.lockPath,
+  });
   try {
     await access(config.activeGenerationPointerPath);
   } catch (error) {
@@ -186,11 +260,22 @@ async function runRecallIncrementalWorkerExecutable(): Promise<void> {
     config.activeGenerationPointerPath,
     config.generationRootDirectory,
   );
+  const registry = await readRecallGenerationRegistry(config.generationRegistryPath);
   await runRecallIncrementalWorker({
     markerSpoolDirectory: config.markerSpoolDirectory,
     markerQuarantineDirectory: config.markerQuarantineDirectory,
     controlDirectory: config.markerControlDirectory,
     targetGenerationId: activeSelection.activeGenerationId,
+    generationRegistryPath: config.generationRegistryPath,
+    generationReplayCompletion: {
+      activeGenerationPointerPath: config.activeGenerationPointerPath,
+      generationRegistryPath: config.generationRegistryPath,
+      backlogSummaryPath: config.backlogSummaryPath,
+      lockPath: config.lockPath,
+    },
+    ...(registry?.rollbackGenerationId
+      ? { retainedMarkerDirectory: resolve(config.markerControlDirectory, 'rollback-retained') }
+      : {}),
     trustedSessionRoots: [config.sessionsDirectory],
     confirmedDeletionMaxMissingSourceCount: config.confirmedDeletionMaxMissingSourceCount,
     confirmedDeletionMaxMissingSourceRatio: config.confirmedDeletionMaxMissingSourceRatio,

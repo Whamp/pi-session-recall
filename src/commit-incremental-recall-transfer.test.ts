@@ -7,6 +7,7 @@ import test from 'node:test';
 
 import {
   commitIncrementalRecallTransfer,
+  type CommitIncrementalRecallTransferOptions,
   type IncrementalRecallCommitEvidenceStore,
   type IncrementalRecallCommitProjectionStore,
 } from './commit-incremental-recall-transfer.js';
@@ -16,6 +17,7 @@ import {
   inspectRecallWriteWindow,
 } from './coordinate-recall-write-window.js';
 import {
+  RecallGenerationCutoverState,
   RecallProjectionEncodingStatus,
   RecallProjectionRepairState,
   RecallSessionProjectionKind,
@@ -23,6 +25,14 @@ import {
   RecallWorkMarkerTrigger,
 } from './enums.js';
 import type { PreparedIncrementalRecallTransfer } from './prepare-incremental-recall-transfer.js';
+import {
+  createRecallActiveGenerationPointer,
+  readRecallGenerationRegistry,
+  writeRecallActiveGenerationPointer,
+  writeRecallGenerationRegistry,
+  RECALL_GENERATION_REGISTRY_VERSION,
+  type RecallGenerationRegistryEntry,
+} from './recall-generation-state.js';
 import { createTestSessionConversationChunk } from './recall-test-utils.js';
 import {
   createPhysicalSessionProjectionId,
@@ -235,6 +245,90 @@ void test('commit writes at most 32 evidence documents per closed window, then o
   );
   assert.equal(stores.optimizeCallCount, 0);
   assert.equal(result.writeWindowDiagnostics.length, 2);
+  assert.equal(result.generationReplayCompleted, null);
+});
+
+void test('ordinary commit clears replay backlog only after checkpoint observation and acknowledgement', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-commit-replay-completion-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const prepared = createPreparedTransfer(1);
+  const stores = createFakeCommitStores({ prepared });
+  const activeGenerationPointerPath = join(directory, 'active-generation.json');
+  const generationRegistryPath = join(directory, 'generation-registry.json');
+  const backlogSummaryPath = join(directory, 'backlog-summary.json');
+  const markerSpoolDirectory = join(directory, 'markers', 'pending');
+  await mkdir(markerSpoolDirectory, { recursive: true });
+  const pointer = createRecallActiveGenerationPointer(generationId);
+  await writeRecallActiveGenerationPointer(activeGenerationPointerPath, pointer);
+  const activeRegistryEntry: RecallGenerationRegistryEntry = {
+    generationId,
+    state: RecallGenerationCutoverState.REPLAY_PENDING,
+    indexManifestVersion: 6,
+    markerSchemaVersion: 1,
+    sessionProjectionSchemaVersion: 2,
+    indexManifestFingerprint: 'a'.repeat(64),
+    rebuildStartedAtEpochMilliseconds: 1,
+    stateChangedAtEpochMilliseconds: 2,
+    rebuildStartMarkerId: prepared.workPlan.sourceMarkerIds[0] ?? null,
+    rebuildMarkerWatermark: [...prepared.workPlan.sourceMarkerIds],
+    validatedAtEpochMilliseconds: 2,
+    retireAfterEpochMilliseconds: null,
+  };
+  const buildingRegistryEntry = {
+    ...activeRegistryEntry,
+    generationId: 'generation_building',
+    state: RecallGenerationCutoverState.BUILDING,
+    indexManifestFingerprint: 'b'.repeat(64),
+  };
+  await writeRecallGenerationRegistry(generationRegistryPath, {
+    version: RECALL_GENERATION_REGISTRY_VERSION,
+    activeGenerationId: generationId,
+    buildingGenerationId: buildingRegistryEntry.generationId,
+    rollbackGenerationId: null,
+    activePointerChecksum: pointer.checksum,
+    generations: [activeRegistryEntry, buildingRegistryEntry],
+  });
+  prepared.workPlan.markerSpoolDirectory = markerSpoolDirectory;
+  prepared.workPlan.generationReplayCompletion = {
+    activeGenerationPointerPath,
+    generationRegistryPath,
+    backlogSummaryPath,
+    lockPath: join(directory, 'operation.lock'),
+  };
+
+  const commitOptions: CommitIncrementalRecallTransferOptions = {
+    prepared,
+    lockPath: join(directory, 'operation.lock'),
+    evidenceDatabasePath: join(directory, 'evidence'),
+    projectionDatabasePath: join(directory, 'projections'),
+    embeddingDimensions: 3,
+    openEvidenceStore: () => stores.openEvidenceStore(),
+    openProjectionStore: (mode) => stores.openProjectionStore(mode),
+    acknowledgeMarkers: () => stores.acknowledge(),
+  };
+  await assert.rejects(
+    () => commitIncrementalRecallTransfer(commitOptions),
+    /target is no longer the writable active generation/,
+  );
+  assert.equal(stores.events.length, 0);
+  await writeRecallGenerationRegistry(generationRegistryPath, {
+    version: RECALL_GENERATION_REGISTRY_VERSION,
+    activeGenerationId: generationId,
+    buildingGenerationId: null,
+    rollbackGenerationId: null,
+    activePointerChecksum: pointer.checksum,
+    generations: [activeRegistryEntry],
+  });
+  const committed = await commitIncrementalRecallTransfer(commitOptions);
+
+  assert.equal(committed.generationReplayCompleted, true);
+  assert.equal(
+    (await readRecallGenerationRegistry(generationRegistryPath))?.generations[0]?.state,
+    RecallGenerationCutoverState.ACTIVE,
+  );
+  assert.ok(
+    stores.events.indexOf('marker-acknowledge') > stores.events.indexOf('projection-fetch'),
+  );
 });
 
 for (const failEvidencePosition of Array.from({ length: 32 }, (_, index) => index)) {

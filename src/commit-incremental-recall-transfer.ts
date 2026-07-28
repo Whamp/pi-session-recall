@@ -1,9 +1,15 @@
+import { completeRecallGenerationReplayWithinWriteWindow } from './complete-recall-generation-replay.js';
 import { acknowledgeCoveredRecallMarkers } from './recall-marker-spool.js';
 import {
   coordinateRecallWriteWindow,
   type RecallWriteWindow,
 } from './coordinate-recall-write-window.js';
+import { RecallGenerationCutoverState } from './enums.js';
 import type { PreparedIncrementalRecallTransfer } from './prepare-incremental-recall-transfer.js';
+import {
+  readRecallActiveGenerationPointer,
+  readRecallGenerationRegistry,
+} from './recall-generation-state.js';
 import type {
   RecallMarkerCheckpoint,
   RecallSessionProjection,
@@ -51,6 +57,7 @@ export interface CommittedIncrementalRecallTransfer {
   readonly committedDocumentCount: number;
   readonly writeWindowCount: number;
   readonly acknowledgedMarkerCount: number;
+  readonly generationReplayCompleted: boolean | null;
   readonly checkpointObservationMilliseconds: number;
   readonly markerAcknowledgementMilliseconds: number;
   readonly writeWindowDiagnostics: readonly IncrementalRecallWriteWindowDiagnostic[];
@@ -165,6 +172,34 @@ function defaultProjectionStore(
   });
 }
 
+async function assertIncrementalRecallCommitTargetActive(
+  options: CommitIncrementalRecallTransferOptions,
+): Promise<void> {
+  const completionPaths = options.prepared.workPlan.generationReplayCompletion;
+  if (!completionPaths) {
+    return;
+  }
+  const [pointer, registry] = await Promise.all([
+    readRecallActiveGenerationPointer(completionPaths.activeGenerationPointerPath),
+    readRecallGenerationRegistry(completionPaths.generationRegistryPath),
+  ]);
+  const activeEntry = registry?.generations.find(
+    ({ generationId }) => generationId === options.prepared.targetGenerationId,
+  );
+  if (
+    !pointer ||
+    !registry ||
+    pointer.activeGenerationId !== options.prepared.targetGenerationId ||
+    registry.activeGenerationId !== options.prepared.targetGenerationId ||
+    registry.activePointerChecksum !== pointer.checksum ||
+    registry.buildingGenerationId !== null ||
+    (activeEntry?.state !== RecallGenerationCutoverState.ACTIVE &&
+      activeEntry?.state !== RecallGenerationCutoverState.REPLAY_PENDING)
+  ) {
+    throw new Error('Recall incremental commit target is no longer the writable active generation');
+  }
+}
+
 async function commitOneIncrementalRecallWindow(
   options: CommitIncrementalRecallTransferOptions,
   documents: readonly IndexedSessionConversationChunk[],
@@ -190,6 +225,7 @@ async function commitOneIncrementalRecallWindow(
       ...(options.signal ? { signal: options.signal } : {}),
     },
     async (writeWindow) => {
+      await assertIncrementalRecallCommitTargetActive(options);
       diagnostic.recovering = writeWindow.recovering;
       diagnostic.lockWaitMilliseconds = elapsedMilliseconds(
         clock,
@@ -324,25 +360,54 @@ export async function commitIncrementalRecallTransfer(
       ),
     );
   }
-  const observationStartedAtMilliseconds = clock();
-  const observedCheckpoint = await observeIncrementalRecallCheckpoint(options);
-  const checkpointObservationMilliseconds = elapsedMilliseconds(
-    clock,
-    observationStartedAtMilliseconds,
-  );
-  const acknowledgementStartedAtMilliseconds = clock();
-  const acknowledgedMarkerCount = await (options.acknowledgeMarkers?.(
-    options.prepared.workPlan,
-    observedCheckpoint,
-  ) ?? acknowledgeCoveredRecallMarkers(options.prepared.workPlan, observedCheckpoint));
-  const markerAcknowledgementMilliseconds = elapsedMilliseconds(
-    clock,
-    acknowledgementStartedAtMilliseconds,
-  );
+  let checkpointObservationMilliseconds = 0;
+  let markerAcknowledgementMilliseconds = 0;
+  let acknowledgedMarkerCount = 0;
+  let generationReplayCompleted: boolean | null = null;
+  const replayCompletion = options.prepared.workPlan.generationReplayCompletion;
+  const observeAcknowledgeAndComplete = async (): Promise<void> => {
+    if (replayCompletion) {
+      await assertIncrementalRecallCommitTargetActive(options);
+    }
+    const observationStartedAtMilliseconds = clock();
+    const observedCheckpoint = await observeIncrementalRecallCheckpoint(options);
+    checkpointObservationMilliseconds = elapsedMilliseconds(
+      clock,
+      observationStartedAtMilliseconds,
+    );
+    const acknowledgementStartedAtMilliseconds = clock();
+    acknowledgedMarkerCount = await (options.acknowledgeMarkers?.(
+      options.prepared.workPlan,
+      observedCheckpoint,
+    ) ?? acknowledgeCoveredRecallMarkers(options.prepared.workPlan, observedCheckpoint));
+    markerAcknowledgementMilliseconds = elapsedMilliseconds(
+      clock,
+      acknowledgementStartedAtMilliseconds,
+    );
+    generationReplayCompleted = replayCompletion
+      ? await completeRecallGenerationReplayWithinWriteWindow({
+          ...replayCompletion,
+          markerSpoolDirectory: options.prepared.workPlan.markerSpoolDirectory,
+        })
+      : null;
+  };
+  if (replayCompletion) {
+    await coordinateRecallWriteWindow(
+      {
+        lockPath: replayCompletion.lockPath,
+        allowRecovery: false,
+        ...(options.signal ? { signal: options.signal } : {}),
+      },
+      observeAcknowledgeAndComplete,
+    );
+  } else {
+    await observeAcknowledgeAndComplete();
+  }
   return Object.freeze({
     committedDocumentCount: options.prepared.documents.length,
     writeWindowCount: batches.length,
     acknowledgedMarkerCount,
+    generationReplayCompleted,
     checkpointObservationMilliseconds,
     markerAcknowledgementMilliseconds,
     writeWindowDiagnostics: Object.freeze(diagnostics),

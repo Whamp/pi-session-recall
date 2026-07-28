@@ -168,7 +168,10 @@ export enum RecallGenerationCutoverState {
   BUILDING = 'building',
   READY = 'ready',
   ACTIVE = 'active',
+  REPLAY_PENDING = 'replay_pending',
+  LEGACY_READ_ONLY = 'legacy_read_only',
   ROLLBACK = 'rollback',
+  RETIRED = 'retired',
   FAILED = 'failed',
 }
 

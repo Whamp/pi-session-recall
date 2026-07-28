@@ -128,6 +128,22 @@ _Avoid_: Expanded transcript, joined messages
 The versioned identity of the model, tokenizer, chunk policy, provenance schema, and zvec schema used by one index generation.
 _Avoid_: Index state, configuration
 
+**Recall generation**:
+One self-contained, validated recall evidence store, session projection store, index state, and index manifest. A replacement generation is built beside the searchable generation rather than overwriting it.
+_Avoid_: Database, index directory, mutable release
+
+**Active generation pointer**:
+The checksummed atomic selection of the sole recall generation served by search and targeted by incremental commits.
+_Avoid_: Latest directory, generation scan, fallback generation
+
+**Replay-pending generation**:
+A newly active generation whose retained generation-independent work markers have not all been covered by durable session projection checkpoints. Search may serve it while the ordinary incremental worker completes replay.
+_Avoid_: Building generation, dual-write generation, failed generation
+
+**Rollback generation**:
+The one validated former active generation retained for a bounded period after cutover. Restoring it is explicit and republishes retained markers before incremental writes resume.
+_Avoid_: Backup copy, automatic fallback, second write target
+
 **Recall work marker**:
 One immutable, atomically published event file telling an external worker that a physical session may contain newly eligible evidence. The worker orders and coalesces markers; Pi processes never overwrite them.
 _Avoid_: Index job, mutable session marker, session lock

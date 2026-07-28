@@ -43,6 +43,7 @@ import {
   createRecallActiveGenerationPointer,
   encodeRecallActiveGenerationPointer,
   encodeRecallBacklogSummary,
+  readRecallActiveGenerationSelection,
   RECALL_BACKLOG_SUMMARY_VERSION,
 } from './recall-generation-state.js';
 import {
@@ -220,7 +221,6 @@ void test('slow diagnostics retain fast manual incremental index start and compl
 
   const result = await service.index({
     manualMaintenanceTrigger: RecallManualMaintenanceTrigger.MANUAL_INCREMENTAL_INDEX,
-    optimize: true,
   });
   await diagnostics.flush();
 
@@ -343,16 +343,13 @@ void test('all diagnostics record changed and unchanged physical session checks'
 
   const changed = await service.index({
     manualMaintenanceTrigger: RecallManualMaintenanceTrigger.MANUAL_INCREMENTAL_INDEX,
-    optimize: true,
   });
   const unchanged = await service.index({
     manualMaintenanceTrigger: RecallManualMaintenanceTrigger.MANUAL_INCREMENTAL_INDEX,
-    optimize: true,
   });
   await rm(sessionPath);
   const removed = await service.index({
     manualMaintenanceTrigger: RecallManualMaintenanceTrigger.MANUAL_INCREMENTAL_INDEX,
-    optimize: true,
   });
   await diagnostics.flush();
 
@@ -370,27 +367,10 @@ void test('all diagnostics record changed and unchanged physical session checks'
   const physicalSessionRecords = records.filter(
     (record) => record.operationKind === 'physical_session_check',
   );
-  assert.equal(records.length, 13);
+  assert.equal(records.length, 9);
   assert.equal(physicalSessionRecords.length, 3);
   const optimizationRecords = records.filter((record) => record.operationKind === 'optimization');
-  assert.deepEqual(
-    optimizationRecords.map((record) => record.status),
-    [
-      RecallDiagnosticStatus.STARTED,
-      RecallDiagnosticStatus.SUCCEEDED,
-      RecallDiagnosticStatus.STARTED,
-      RecallDiagnosticStatus.SUCCEEDED,
-    ],
-  );
-  assert.ok(
-    optimizationRecords.every((record) =>
-      records.some(
-        (parentRecord) =>
-          parentRecord.operationId === record.parentOperationId &&
-          parentRecord.operationKind === 'full_index',
-      ),
-    ),
-  );
+  assert.deepEqual(optimizationRecords, []);
   const manualCompletionRecords = records.filter(
     (record) =>
       record.operationKind === 'full_index' && record.status === RecallDiagnosticStatus.SUCCEEDED,
@@ -401,9 +381,9 @@ void test('all diagnostics record changed and unchanged physical session checks'
       optimizationMilliseconds: record.optimizationMilliseconds,
     })),
     [
-      { optimizationRan: true, optimizationMilliseconds: 0 },
       { optimizationRan: false, optimizationMilliseconds: 0 },
-      { optimizationRan: true, optimizationMilliseconds: 0 },
+      { optimizationRan: false, optimizationMilliseconds: 0 },
+      { optimizationRan: false, optimizationMilliseconds: 0 },
     ],
   );
   const changedPhysicalSessionRecord = physicalSessionRecords[0];
@@ -759,6 +739,23 @@ void test('manual rebuild diagnostics isolate final database optimization durati
     ...createTestConfig(directory, sessionsDirectory),
     diagnosticsMode: RecallDiagnosticsMode.SLOW,
   };
+  await mkdir(join(config.generationRootDirectory, TEST_ACTIVE_GENERATION_ID), {
+    recursive: true,
+  });
+  await writeRecallIndexManifest(
+    config.manifestPath,
+    createRecallIndexManifest({
+      embeddingIdentity: {
+        requestModel: config.embeddingModel,
+        servedModelId: config.embeddingServedModelId,
+        artifact: config.embeddingArtifact,
+        dimensions: config.embeddingDimensions,
+        quantization: config.embeddingQuantization,
+        pooling: config.embeddingPooling,
+      },
+      canaryEmbedding: [1, 0, 0],
+    }),
+  );
   let monotonicMilliseconds = 0;
   let lockDurationRecorded = false;
   let checkpointDurationRecorded = false;
@@ -766,6 +763,7 @@ void test('manual rebuild diagnostics isolate final database optimization durati
   let postStoreClockCallCount = 0;
   let storedDocumentCount = 0;
   let optimizationCallCount = 0;
+  const rebuildWriteStorePaths: string[] = [];
   const diagnosticsClock = {
     monotonicMilliseconds() {
       if (!lockDurationRecorded && existsSync(config.lockPath)) {
@@ -809,7 +807,10 @@ void test('manual rebuild diagnostics isolate final database optimization durati
       monotonicMilliseconds += 5;
       return tokenizer;
     },
-    openStore() {
+    openStore(mode, databasePath) {
+      if (mode === 'write') {
+        rebuildWriteStorePaths.push(databasePath ?? config.databasePath);
+      }
       monotonicMilliseconds += 3;
       scanTimingEnabled = true;
       return {
@@ -867,6 +868,17 @@ void test('manual rebuild diagnostics isolate final database optimization durati
 
   assert.equal(optimizationCallCount, 1);
   assert.equal(result.totalChunks, 1);
+  assert.equal(rebuildWriteStorePaths.length, 1);
+  assert.notEqual(rebuildWriteStorePaths[0], config.databasePath);
+  assert.equal(
+    rebuildWriteStorePaths[0],
+    (
+      await readRecallActiveGenerationSelection(
+        config.activeGenerationPointerPath,
+        config.generationRootDirectory,
+      )
+    ).databasePath,
+  );
   assert.equal(result.indexSummary.indexedSessions, 1);
   const records = (await readFile(config.diagnosticLogPath, 'utf8'))
     .trimEnd()
@@ -878,17 +890,17 @@ void test('manual rebuild diagnostics isolate final database optimization durati
   assert.equal(records[0]?.manualMaintenanceTrigger, RecallManualMaintenanceTrigger.MANUAL_REBUILD);
   assert.equal(records[0]?.status, RecallDiagnosticStatus.STARTED);
   assert.equal(records[1]?.status, RecallDiagnosticStatus.SUCCEEDED);
-  assert.equal(records[1]?.writerLockWaitMilliseconds, 11);
+  assert.equal(records[1]?.writerLockWaitMilliseconds, 0);
   assert.equal(records[1]?.manifestStorePreparationMilliseconds, 8);
   assert.equal(records[1]?.physicalSessionScanMilliseconds, 31);
   assert.equal(records[1]?.embeddingCacheResolutionMilliseconds, 0);
   assert.equal(records[1]?.embeddingServerRequestMilliseconds, 20);
   assert.equal(records[1]?.databaseWriteMilliseconds, 17);
-  assert.equal(records[1]?.indexStateCheckpointMilliseconds, 19);
+  assert.equal(records[1]?.indexStateCheckpointMilliseconds, 0);
   assert.equal(records[1]?.optimizationRan, true);
   assert.equal(records[1]?.optimizationMilliseconds, 37);
-  assert.equal(records[1]?.elapsedMilliseconds, 145);
-  assert.equal(records[1]?.unattributedMilliseconds, 2);
+  assert.equal(records[1]?.elapsedMilliseconds, 131);
+  assert.equal(records[1]?.unattributedMilliseconds, 18);
 });
 
 void test('manual index diagnostics preserve optimization failure and release the writer lock', async (t) => {
@@ -989,10 +1001,12 @@ void test('manual index diagnostics preserve optimization failure and release th
     },
   });
 
+  await service.index();
   await assert.rejects(
     () =>
       service.index({
-        manualMaintenanceTrigger: RecallManualMaintenanceTrigger.MANUAL_INCREMENTAL_INDEX,
+        rebuild: true,
+        manualMaintenanceTrigger: RecallManualMaintenanceTrigger.MANUAL_REBUILD,
         optimize: true,
       }),
     /private optimization model response sentinel 26/u,
@@ -1010,7 +1024,7 @@ void test('manual index diagnostics preserve optimization failure and release th
   assert.ok(records.every(isUnknownRecord));
   const completionRecord = records.find(
     (record) =>
-      record.operationKind === 'full_index' && record.status === RecallDiagnosticStatus.FAILED,
+      record.operationKind === 'rebuild' && record.status === RecallDiagnosticStatus.FAILED,
   );
   const optimizationCompletionRecord = records.find(
     (record) =>
@@ -2869,13 +2883,13 @@ void test('schema migration keeps canonical cache identity across tolerated cana
   const first = await service.index();
   const firstManifest = await readRecallIndexManifest(config.manifestPath);
   assert.ok(firstManifest);
-  await writeFile(
-    config.manifestPath,
-    JSON.stringify({ ...firstManifest, manifestVersion: firstManifest.manifestVersion - 1 }),
-  );
   useJitteredCanary = true;
   const rebuilt = await service.index({ rebuild: true });
-  const rebuiltManifest = await readRecallIndexManifest(config.manifestPath);
+  const rebuiltSelection = await readRecallActiveGenerationSelection(
+    config.activeGenerationPointerPath,
+    config.generationRootDirectory,
+  );
+  const rebuiltManifest = await readRecallIndexManifest(rebuiltSelection.manifestPath);
 
   assert.equal(first.indexSummary.newlyEmbeddedChunks, 1);
   assert.equal(rebuilt.indexSummary.cacheHits, 1);
@@ -2989,7 +3003,11 @@ void test('recall search detects an embedding model swap in the same service pro
   );
 
   await service.index({ rebuild: true });
-  const rebuiltManifest = await readRecallIndexManifest(config.manifestPath);
+  const rebuiltSelection = await readRecallActiveGenerationSelection(
+    config.activeGenerationPointerPath,
+    config.generationRootDirectory,
+  );
+  const rebuiltManifest = await readRecallIndexManifest(rebuiltSelection.manifestPath);
   assert.equal(
     rebuiltManifest?.embedding.canaryFingerprint,
     createRecallEmbeddingCanaryFingerprint([0, 1, 0], 3),
@@ -3129,7 +3147,11 @@ void test('explicit rebuild replaces incompatible index metadata while preservin
   });
 
   const rebuilt = await service.index({ rebuild: true });
-  const rebuiltManifest = await readRecallIndexManifest(config.manifestPath);
+  const rebuiltSelection = await readRecallActiveGenerationSelection(
+    config.activeGenerationPointerPath,
+    config.generationRootDirectory,
+  );
+  const rebuiltManifest = await readRecallIndexManifest(rebuiltSelection.manifestPath);
 
   assert.equal(rebuilt.totalChunks, 0);
   assert.equal(rebuiltManifest?.embedding.pooling, 'last');

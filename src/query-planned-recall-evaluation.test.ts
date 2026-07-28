@@ -531,6 +531,12 @@ void test('fixed private plans prove new source admission through deterministic 
   assert.match(acceptanceReport, /embedded-cpu/u);
   assert.match(acceptanceReport, /Cold planning/u);
   assert.match(acceptanceReport, /Candidate work/u);
+  assert.match(
+    acceptanceReport,
+    /Every matrix row uses `deterministic-token-hash-v1` test embeddings/u,
+  );
+  assert.match(acceptanceReport, /Planner\/reranker backend/u);
+  assert.match(acceptanceReport, /does not measure end-to-end production inference/u);
   assert.match(acceptanceReport, /Planner fallbacks/u);
   assert.equal(acceptanceReport.includes(lexicalPlanQuery), false);
   assert.equal(acceptanceReport.includes('Private mechanism phrase'), false);

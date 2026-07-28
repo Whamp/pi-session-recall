@@ -1546,13 +1546,14 @@ export function formatPublishableLiveQueryPlannedProfileAcceptanceReport(
     '',
     decision,
     '',
-    'This evidence covers the exact measured profile, backend adapter, device class, grammar, reranker score, and search-policy identities below. It does not claim broad superiority beyond the frozen committed corpus and bounded private corpus.',
+    'This evidence measures live query planning and reranking with fixed test embeddings. It does not measure one end-to-end production inference profile or claim broad retrieval superiority.',
     '',
     '## Bounds and identity',
     '',
     `- Recorded against commit: \`${evidence.recordedAgainstCommit}\``,
     `- Private manifest SHA-256: \`${firstRun.corpus.privateManifestSha256}\``,
     `- Private corpus: ${firstRun.corpus.caseCount} cases, ${firstRun.corpus.snapshotCount} snapshots, ${firstRun.corpus.indexedDocumentCount} indexed documents`,
+    `- Retrieval embedding policy for every live matrix row: \`${firstRun.profileIdentity.embeddingPolicy}\`, ${firstRun.profileIdentity.embeddingDimensions} dimensions`,
     `- Planner profile: \`${firstRun.profileIdentity.queryPlanning.profileId}\` / \`${firstRun.profileIdentity.queryPlanning.model}\``,
     `- Prompt / grammar: \`${firstRun.profileIdentity.queryPlanning.promptPolicy}\` / \`${firstRun.profileIdentity.queryPlanning.grammarVersion}\``,
     `- Reranker profile / score policy: \`${firstRun.profileIdentity.reranking.profileId}\` / \`${firstRun.profileIdentity.reranking.scorePolicy}\``,
@@ -1570,9 +1571,15 @@ export function formatPublishableLiveQueryPlannedProfileAcceptanceReport(
   }
   lines.push(
     '',
+    '## What the live matrix measures',
+    '',
+    `Every matrix row uses \`${firstRun.profileIdentity.embeddingPolicy}\` test embeddings. The run name, backend, and device describe only where the query planner and reranker execute.`,
+    '',
+    'The total search time includes retrieval with those fixed test embeddings plus live planning and live reranking. It does not measure end-to-end production inference with Octen or EmbeddingGemma embeddings. The committed-corpus table above reports EmbeddingGemma separately.',
+    '',
     '## Live planner and reranker matrix',
     '',
-    '| Run | Backend | Device class / device | Planner adapter | Reranker adapter | Cold planning | Warm planning | Cold reranking | Warm reranking | Total search min / median / max |',
+    '| Planner/reranker run | Planner/reranker backend | Planner/reranker device | Planner adapter | Reranker adapter | Cold planning | Warm planning | Cold reranking | Warm reranking | Query-planned search min / median / max |',
     '| --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: |',
   );
   for (const run of evidence.profileRuns) {
@@ -1595,7 +1602,7 @@ export function formatPublishableLiveQueryPlannedProfileAcceptanceReport(
     '',
     '## Candidate work by opaque case',
     '',
-    '| Run / case | Plan source | Normal | Equal-work control | Query-planned | Candidate work (admitted / allowed) | Planning / reranking / total |',
+    '| Planner/reranker run / case | Plan source | Normal | Equal-work control | Query-planned | Candidate work (admitted / allowed) | Planning / reranking / total |',
     '| --- | --- | --- | --- | --- | ---: | ---: |',
   );
   for (const run of evidence.profileRuns) {

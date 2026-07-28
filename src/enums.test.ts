@@ -98,5 +98,8 @@ void test('incremental recall contract values keep their persisted wire spelling
     'write_failed',
     'recovery_required',
     'rebuild_failed',
+    'incremental_worker_failed',
+    'diagnostics_persistence_failed',
+    'confirmed_deletion_halted',
   ]);
 });

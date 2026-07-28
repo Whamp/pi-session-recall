@@ -333,8 +333,9 @@ void test('fixed private plans prove new source admission through deterministic 
     queryPlanner: {
       executionIdentity: {
         adapterId: 'fixture-live-planner-v1',
+        adapterConfigurationIdentity: 'fixture-live-planner-configuration-v1',
         backend: RecallInferenceBackend.EMBEDDED,
-        cacheIdentity: `${queryPlanningProfile.profileId}:fixture-live-planner-v1:${queryPlanningProfile.promptPolicy}:${queryPlanningProfile.grammarVersion}`,
+        cacheIdentity: `${queryPlanningProfile.profileId}:fixture-live-planner-v1:${queryPlanningProfile.promptPolicy}:${queryPlanningProfile.grammarVersion}:fixture-live-planner-configuration-v1`,
         modelProfileId: queryPlanningProfile.profileId,
         promptPolicy: queryPlanningProfile.promptPolicy,
         grammarVersion: queryPlanningProfile.grammarVersion,

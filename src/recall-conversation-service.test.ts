@@ -3415,6 +3415,7 @@ void test('query-planned recall routes agent lists through capability-specific e
         executionIdentity: createRecallQueryPlanningExecutionIdentity(
           queryPlanningProfile,
           'query-planned-search-test-adapter-v1',
+          'query-planned-search-test-configuration-v1',
           RecallInferenceBackend.CUSTOM,
           5_000,
         ),
@@ -3584,6 +3585,28 @@ void test('query-planned recall routes agent lists through capability-specific e
     changedQuerySearch.searchPolicy.queryPlan?.plannerIdentity?.cacheIdentity,
     plannerIdentity?.cacheIdentity,
   );
+
+  const plannerRequestCountBeforeInvalidInput = plannerRequests.length;
+  const plannerWarningCountBeforeInvalidInput = plannerWarnings.length;
+  await assert.rejects(
+    () =>
+      service.search(`${query}\nsecond line`, 10, {
+        mode: 'query-planned',
+        scope: RecallSearchScope.GLOBAL,
+      }),
+    /Recall query-planned query invalid: expected a single-line string/u,
+  );
+  await assert.rejects(
+    () =>
+      service.search(query, 10, {
+        mode: 'query-planned',
+        scope: RecallSearchScope.GLOBAL,
+        intent: 'recover the implementation decision\nwithout planner fallback',
+      }),
+    /Recall query-planned intent invalid: expected a single-line string/u,
+  );
+  assert.equal(plannerRequests.length, plannerRequestCountBeforeInvalidInput);
+  assert.equal(plannerWarnings.length, plannerWarningCountBeforeInvalidInput);
 
   const deepRerankSearch = await service.search(query, 10, {
     mode: 'deep-rerank',
@@ -3833,6 +3856,7 @@ void test('recall service fails clearly when Qwen reranking is unavailable', asy
       executionIdentity: createRecallQueryPlanningExecutionIdentity(
         failingPlannerProfile,
         'failing-query-planner-v1',
+        'failing-query-planner-configuration-v1',
         RecallInferenceBackend.CUSTOM,
         5_000,
       ),

@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import {
   acquireSharedEmbeddedLlamaRuntime,
   mapNodeLlamaCppComputeBackend,
@@ -26,6 +28,28 @@ import {
 export const QMD_QUERY_PLANNER_MAX_GPU_LAYERS = 40;
 
 const NODE_LLAMA_CPP_QUERY_PLANNING_ADAPTER_ID = 'node-llama-cpp-qmd-query-planning-v1';
+
+function createEmbeddedQmdQueryPlanningAdapterConfigurationIdentity(configuration: {
+  devicePolicy: EmbeddedInferenceDevicePolicy;
+  computeBackend: EmbeddedInferenceComputeBackend | 'pending';
+  fallbackFromComputeBackend:
+    | EmbeddedInferenceComputeBackend.METAL
+    | EmbeddedInferenceComputeBackend.CUDA
+    | EmbeddedInferenceComputeBackend.VULKAN
+    | null;
+  deviceNames: readonly string[];
+  threads: number | null;
+  requestTimeoutMilliseconds: number;
+}): string {
+  return `node-llama-cpp-qmd-query-planning-config-v1:${createHash('sha256')
+    .update(
+      JSON.stringify({
+        ...configuration,
+        nodeLlamaCppVersion: EMBEDDED_NODE_LLAMA_CPP_VERSION,
+      }),
+    )
+    .digest('hex')}`;
+}
 
 type QmdQueryPlanningGrammar = object;
 
@@ -271,14 +295,32 @@ export function createEmbeddedQmdQueryPlanningProvider(
   let activeOperationCount = 0;
   let disposed = false;
   let cpuFallbackWarningEmitted = false;
-  const baseExecutionIdentity = createRecallQueryPlanningExecutionIdentity(
-    profile,
-    NODE_LLAMA_CPP_QUERY_PLANNING_ADAPTER_ID,
-    RecallInferenceBackend.EMBEDDED,
-    requestTimeoutMilliseconds,
-  );
+  function createBaseExecutionIdentity(
+    computeBackend: EmbeddedInferenceComputeBackend | 'pending',
+    fallbackFromComputeBackend:
+      | EmbeddedInferenceComputeBackend.METAL
+      | EmbeddedInferenceComputeBackend.CUDA
+      | EmbeddedInferenceComputeBackend.VULKAN
+      | null,
+    deviceNames: readonly string[],
+  ): Readonly<RecallQueryPlanningExecutionIdentity> {
+    return createRecallQueryPlanningExecutionIdentity(
+      profile,
+      NODE_LLAMA_CPP_QUERY_PLANNING_ADAPTER_ID,
+      createEmbeddedQmdQueryPlanningAdapterConfigurationIdentity({
+        devicePolicy,
+        computeBackend,
+        fallbackFromComputeBackend,
+        deviceNames,
+        threads: options.threads ?? null,
+        requestTimeoutMilliseconds,
+      }),
+      RecallInferenceBackend.EMBEDDED,
+      requestTimeoutMilliseconds,
+    );
+  }
   let executionIdentity: Readonly<EmbeddedQmdQueryPlanningExecutionIdentity> = Object.freeze({
-    ...baseExecutionIdentity,
+    ...createBaseExecutionIdentity('pending', null, []),
     adapterId: NODE_LLAMA_CPP_QUERY_PLANNING_ADAPTER_ID,
     backend: RecallInferenceBackend.EMBEDDED,
     computeBackend: 'pending',
@@ -464,7 +506,11 @@ export function createEmbeddedQmdQueryPlanningProvider(
           ? ['CPU']
           : ((await resources.runtime.getGpuDeviceNames?.()) ?? [selectedComputeBackend]);
       executionIdentity = Object.freeze({
-        ...baseExecutionIdentity,
+        ...createBaseExecutionIdentity(
+          selectedComputeBackend,
+          fallbackFromComputeBackend,
+          deviceNames,
+        ),
         adapterId: NODE_LLAMA_CPP_QUERY_PLANNING_ADAPTER_ID,
         backend: RecallInferenceBackend.EMBEDDED,
         computeBackend: selectedComputeBackend,

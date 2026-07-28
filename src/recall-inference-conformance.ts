@@ -286,7 +286,7 @@ export async function measureRecallQueryPlanningProviderConformance(
       `Recall query planning conformance grammar version mismatch: expected ${options.profile.grammarVersion}, received ${identity.grammarVersion}`,
     );
   }
-  const expectedCacheIdentity = `${options.profile.profileId}:${identity.adapterId}:${options.profile.promptPolicy}:${options.profile.grammarVersion}`;
+  const expectedCacheIdentity = `${options.profile.profileId}:${identity.adapterId}:${options.profile.promptPolicy}:${options.profile.grammarVersion}:${identity.adapterConfigurationIdentity}`;
   if (identity.cacheIdentity !== expectedCacheIdentity) {
     throw new Error(
       `Recall query planning conformance cache identity mismatch: expected ${expectedCacheIdentity}, received ${identity.cacheIdentity}`,

@@ -20,6 +20,7 @@ import type {
   RecallIdentifiedRerankingProvider,
 } from './recall-inference-capabilities.js';
 import { isPathInsideRecallEvaluationArea } from './recall-evaluation-file-system.js';
+import { classifyQueryPlannedRecallContribution } from './query-planned-recall-contribution.js';
 import type {
   LoadedPrivateQueryPlannedRecallCorpus,
   PublishableQueryPlannedRecallControls,
@@ -611,24 +612,19 @@ function createQueryPlannedContribution(
   retrievalWorkMatched: QueryPlannedRecallBaselineArmMeasurement,
   queryPlanned: QueryPlannedRecallArmMeasurement,
 ): PrivateQueryPlannedRecallEvaluationResult['cases'][number]['contribution'] {
-  const newCandidateAdmission =
-    queryPlanned.candidateAdmissionVerified &&
-    normal.outcome === QueryPlannedRecallBaselineOutcome.CANDIDATE_UNION_MISS &&
-    retrievalWorkMatched.outcome === QueryPlannedRecallBaselineOutcome.CANDIDATE_UNION_MISS;
-  const rankingOnlyPromotion =
-    queryPlanned.outcome === QueryPlannedRecallBaselineOutcome.SUCCESS &&
-    !newCandidateAdmission &&
-    [normal.outcome, retrievalWorkMatched.outcome].includes(
-      QueryPlannedRecallBaselineOutcome.FINAL_RANK_MISS,
-    );
-  const preservedExistingSuccess =
-    controlKind === QueryPlannedRecallControlKind.SUCCESSFUL_BASELINE_CONTROL &&
-    queryPlanned.outcome === QueryPlannedRecallBaselineOutcome.SUCCESS;
+  const classified = classifyQueryPlannedRecallContribution({
+    controlKind,
+    normalOutcome: normal.outcome,
+    retrievalWorkMatchedOutcome: retrievalWorkMatched.outcome,
+    queryPlannedOutcome: queryPlanned.outcome,
+    candidateAdmissionVerified: queryPlanned.candidateAdmissionVerified,
+  });
   return {
-    newCandidateAdmission,
-    rankingOnlyPromotion,
-    preservedExistingSuccess,
-    noImprovement: !newCandidateAdmission && !rankingOnlyPromotion && !preservedExistingSuccess,
+    ...classified,
+    noImprovement:
+      !classified.newCandidateAdmission &&
+      !classified.rankingOnlyPromotion &&
+      !classified.preservedExistingSuccess,
   };
 }
 
@@ -1352,6 +1348,8 @@ function assertLiveProfileExecutionIdentity(run: LiveQueryPlannedProfileEvaluati
   const conformanceRerankerIdentity = run.capabilityConformance.reranking.executionIdentity;
   if (
     conformancePlannerIdentity.adapterId !== planner.executionIdentity.adapterId ||
+    conformancePlannerIdentity.adapterConfigurationIdentity !==
+      planner.executionIdentity.adapterConfigurationIdentity ||
     conformancePlannerIdentity.backend !== planner.executionIdentity.backend ||
     conformancePlannerIdentity.cacheIdentity !== planner.executionIdentity.cacheIdentity ||
     conformancePlannerIdentity.modelProfileId !== planner.executionIdentity.modelProfileId ||
@@ -1869,7 +1867,7 @@ export function formatPublishableQueryPlannedRecallEvaluationReport(
     `- Preserved existing success: ${evaluation.contributionCounts.preservedExistingSuccess}`,
     `- No improvement: ${evaluation.contributionCounts.noImprovement}`,
     '',
-    'A planned search receives source-admission credit only when its admission probe finds the expected source and both original-query candidate unions miss. Promotion of a source admitted by either control is reported separately as ranking-only behavior. Existing-success preservation is an independent guard and can overlap a contribution class.',
+    'A planned search receives source-admission credit only when its admission probe finds the expected source and both original-query candidate unions miss. Promotion of a source admitted by either control is reported separately as ranking-only behavior. Existing-success preservation requires both the measured normal hybrid arm and query-planned arm to succeed.',
     '',
     '## Ranking policy',
     '',

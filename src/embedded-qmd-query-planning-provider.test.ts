@@ -73,6 +73,8 @@ void test('embedded QMD query planner passes shared conformance with profile gra
     },
   });
   t.after(() => provider.dispose());
+  const pendingAdapterConfigurationIdentity =
+    provider.executionIdentity.adapterConfigurationIdentity;
 
   const measurement = await measureRecallQueryPlanningProviderConformance({
     provider,
@@ -98,11 +100,17 @@ void test('embedded QMD query planner passes shared conformance with profile gra
     signal: calls[0]?.options.signal,
   });
   assert.ok(calls[0]?.options.signal instanceof AbortSignal);
-  assert.deepEqual(provider.executionIdentity, {
+  const { adapterConfigurationIdentity, cacheIdentity, ...executionIdentity } =
+    provider.executionIdentity;
+  assert.match(
+    adapterConfigurationIdentity,
+    /^node-llama-cpp-qmd-query-planning-config-v1:[a-f0-9]{64}$/u,
+  );
+  assert.notEqual(adapterConfigurationIdentity, pendingAdapterConfigurationIdentity);
+  assert.match(cacheIdentity, new RegExp(`${adapterConfigurationIdentity}$`, 'u'));
+  assert.deepEqual(executionIdentity, {
     adapterId: 'node-llama-cpp-qmd-query-planning-v1',
     backend: 'embedded',
-    cacheIdentity:
-      'qmd-query-expansion-1.7b-q4-k-m-v1:node-llama-cpp-qmd-query-planning-v1:qmd-query-expansion-no-think-v1:qmd-bounded-query-plan-v2',
     modelProfileId: profile.profileId,
     promptPolicy: profile.promptPolicy,
     grammarVersion: profile.grammarVersion,

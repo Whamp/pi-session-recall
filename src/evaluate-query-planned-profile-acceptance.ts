@@ -22,6 +22,7 @@ import {
 } from './live-query-planned-profile-checkpoints.js';
 import { loadRecallConversationConfig } from './recall-conversation-config.js';
 import { writeAtomicRecallEvaluationFile } from './recall-evaluation-file-system.js';
+import { readCleanRecallEvaluationGitRevision } from './recall-evaluation-git-revision.js';
 import {
   loadPrivateQueryPlannedRecallCorpus,
   type LoadedPrivateQueryPlannedRecallCorpus,
@@ -502,6 +503,7 @@ export async function evaluateQueryPlannedProfileAcceptance(
   projectDirectory: string = process.cwd(),
 ): Promise<PublishableLiveQueryPlannedProfileAcceptance> {
   const resolvedProjectDirectory = resolve(projectDirectory);
+  const recordedAgainstCommit = readCleanRecallEvaluationGitRevision(resolvedProjectDirectory);
   const privateDirectory = join(resolvedProjectDirectory, '.recall-data', 'query-planned-recall');
   const corpus = await loadPrivateQueryPlannedRecallCorpus(join(privateDirectory, 'manifest.json'));
   const fixedPlans = await loadPrivateQueryPlannedRecallPlans(
@@ -533,10 +535,6 @@ export async function evaluateQueryPlannedProfileAcceptance(
   ]);
 
   verifyFocusedFailureAndToolSemantics(resolvedProjectDirectory);
-  const recordedAgainstCommit = execFileSync('git', ['rev-parse', 'HEAD'], {
-    cwd: resolvedProjectDirectory,
-    encoding: 'utf8',
-  }).trim();
   const reportProgress = (message: string): void => {
     process.stderr.write(`[${new Date().toISOString()}] ${message}\n`);
   };

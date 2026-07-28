@@ -451,6 +451,7 @@ const QUERY_PLANNED_RECALL_RANK_TWO_OR_THREE_BONUS = 0.02;
 
 function validateRecallQueryPlanningOptions(
   mode: RecallSearchMode,
+  query: string,
   plan?: readonly RecallPlannedRetrievalQuery[],
   intent?: string,
 ): ValidatedRecallQueryPlanningOptions {
@@ -470,6 +471,12 @@ function validateRecallQueryPlanningOptions(
   }
   if (mode !== 'query-planned') {
     return { plannedQueries: [], intent: normalizedIntent };
+  }
+  if (/\r|\n/u.test(query)) {
+    throw new Error('Recall query-planned query invalid: expected a single-line string');
+  }
+  if (normalizedIntent !== null && /\r|\n/u.test(normalizedIntent)) {
+    throw new Error('Recall query-planned intent invalid: expected a single-line string');
   }
   if (plan === undefined) {
     return { plannedQueries: null, intent: normalizedIntent };
@@ -553,6 +560,7 @@ function createRecallQueryPlanningCacheIdentity(
     },
     adapterPolicy: {
       adapterId: executionIdentity.adapterId,
+      adapterConfigurationIdentity: executionIdentity.adapterConfigurationIdentity,
       backend: executionIdentity.backend,
       cacheIdentity: executionIdentity.cacheIdentity,
       modelProfileId: executionIdentity.modelProfileId,
@@ -1642,7 +1650,7 @@ export function createRecallConversationService(
       } = options;
       let queryPlanning: ValidatedRecallQueryPlanningOptions;
       try {
-        queryPlanning = validateRecallQueryPlanningOptions(mode, plan, intent);
+        queryPlanning = validateRecallQueryPlanningOptions(mode, query, plan, intent);
       } catch (error) {
         return Promise.reject(error);
       }
@@ -1681,21 +1689,6 @@ export function createRecallConversationService(
                   'Recall query planner became unavailable before query-planned search',
                 );
               }
-              const executionIdentity = queryPlanner.executionIdentity;
-              plannerIdentity = {
-                profileId: queryPlanningProfile.profileId,
-                model: queryPlanningProfile.model,
-                adapterId: executionIdentity.adapterId,
-                backend: executionIdentity.backend,
-                promptPolicy: queryPlanningProfile.promptPolicy,
-                grammarVersion: queryPlanningProfile.grammarVersion,
-                cacheIdentity: createRecallQueryPlanningCacheIdentity(
-                  searchQuery,
-                  queryPlanning.intent,
-                  queryPlanningProfile,
-                  executionIdentity,
-                ),
-              };
               try {
                 const generatedPlan = await queryPlanner.planRecallQuery(
                   {
@@ -1722,6 +1715,21 @@ export function createRecallConversationService(
                 queryPlanning = { plannedQueries: [], intent: queryPlanning.intent };
                 planSource = 'fallback';
               }
+              const executionIdentity = queryPlanner.executionIdentity;
+              plannerIdentity = {
+                profileId: queryPlanningProfile.profileId,
+                model: queryPlanningProfile.model,
+                adapterId: executionIdentity.adapterId,
+                backend: executionIdentity.backend,
+                promptPolicy: queryPlanningProfile.promptPolicy,
+                grammarVersion: queryPlanningProfile.grammarVersion,
+                cacheIdentity: createRecallQueryPlanningCacheIdentity(
+                  searchQuery,
+                  queryPlanning.intent,
+                  queryPlanningProfile,
+                  executionIdentity,
+                ),
+              };
             }
             const activeGeneration = await resolveActiveRecallIndexGeneration(
               generationCoordinatorConfig,

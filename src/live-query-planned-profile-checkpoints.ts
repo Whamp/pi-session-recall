@@ -24,6 +24,7 @@ const PROFILE_RUN_SCHEMA = Type.Object({
 });
 const QUERY_PLANNING_EXECUTION_IDENTITY_SCHEMA = Type.Object({
   adapterId: Type.String(),
+  adapterConfigurationIdentity: Type.String(),
   backend: EXECUTION_BACKEND_SCHEMA,
   cacheIdentity: Type.String(),
   modelProfileId: Type.String(),

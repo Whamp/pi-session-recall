@@ -204,6 +204,8 @@ function createChunkPolicyConfig(
       lexical: candidateCount,
       identifier: candidateCount,
     },
+    fusedPoolLimit: candidateCount * 3,
+    rerankPoolLimit: candidateCount * 3,
   };
 }
 

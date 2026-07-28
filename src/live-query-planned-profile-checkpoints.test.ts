@@ -64,6 +64,7 @@ function createProfileResult(): LiveQueryPlannedProfileEvaluationResult {
         grammarVersion: 'qmd-query-plan-v1',
         executionIdentity: {
           adapterId: 'embedded-qmd-query-planner-v1',
+          adapterConfigurationIdentity: 'planner-configuration-identity',
           backend: RecallInferenceBackend.EMBEDDED,
           cacheIdentity: 'planner-cache-identity',
           modelProfileId: 'qmd-query-expansion-1.7b-q4-k-m-v1',
@@ -92,6 +93,7 @@ function createProfileResult(): LiveQueryPlannedProfileEvaluationResult {
         grammarVersion: 'qmd-query-plan-v1',
         executionIdentity: {
           adapterId: 'embedded-qmd-query-planner-v1',
+          adapterConfigurationIdentity: 'planner-configuration-identity',
           backend: RecallInferenceBackend.EMBEDDED,
           cacheIdentity: 'planner-cache-identity',
           modelProfileId: 'qmd-query-expansion-1.7b-q4-k-m-v1',

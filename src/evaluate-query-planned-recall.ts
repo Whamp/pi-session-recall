@@ -4,6 +4,7 @@ import { pathToFileURL } from 'node:url';
 
 import { loadRecallConversationConfig } from './recall-conversation-config.js';
 import { writeAtomicRecallEvaluationFile } from './recall-evaluation-file-system.js';
+import { readCleanRecallEvaluationGitRevision } from './recall-evaluation-git-revision.js';
 import {
   createPublishableQueryPlannedRecallControls,
   loadPrivateQueryPlannedRecallCorpus,
@@ -36,6 +37,7 @@ export async function evaluateQueryPlannedRecall(
   projectDirectory: string = process.cwd(),
 ): Promise<PublishableQueryPlannedRecallEvaluationEvidence> {
   const resolvedProjectDirectory = resolve(projectDirectory);
+  const recordedAgainstCommit = readCleanRecallEvaluationGitRevision(resolvedProjectDirectory);
   const privateDirectory = join(resolvedProjectDirectory, '.recall-data', 'query-planned-recall');
   const corpus = await loadPrivateQueryPlannedRecallCorpus(join(privateDirectory, 'manifest.json'));
   const plans = await loadPrivateQueryPlannedRecallPlans(
@@ -51,10 +53,7 @@ export async function evaluateQueryPlannedRecall(
     workDirectory: join(privateDirectory, 'evaluation-work'),
   });
   const evidence = createPublishableQueryPlannedRecallEvaluationEvidence(controls, evaluation, {
-    recordedAgainstCommit: execFileSync('git', ['rev-parse', 'HEAD'], {
-      cwd: resolvedProjectDirectory,
-      encoding: 'utf8',
-    }).trim(),
+    recordedAgainstCommit,
   });
   const evidencePath = join(
     resolvedProjectDirectory,

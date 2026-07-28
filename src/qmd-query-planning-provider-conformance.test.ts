@@ -107,11 +107,16 @@ void test('QMD HTTP query planner passes shared bounded-plan conformance with re
     },
   });
 
-  assert.deepEqual(provider.executionIdentity, {
+  const { adapterConfigurationIdentity, cacheIdentity, ...executionIdentity } =
+    provider.executionIdentity;
+  assert.match(
+    adapterConfigurationIdentity,
+    /^llama-cpp-http-query-planning-config-v1:[a-f0-9]{64}$/u,
+  );
+  assert.match(cacheIdentity, new RegExp(`${adapterConfigurationIdentity}$`, 'u'));
+  assert.deepEqual(executionIdentity, {
     adapterId: 'llama-cpp-http-query-planning-v1',
     backend: 'llama-cpp-http',
-    cacheIdentity:
-      'qmd-query-expansion-1.7b-q4-k-m-v1:llama-cpp-http-query-planning-v1:qmd-query-expansion-no-think-v1:qmd-bounded-query-plan-v2',
     modelProfileId: profile.profileId,
     promptPolicy: profile.promptPolicy,
     grammarVersion: profile.grammarVersion,
@@ -248,8 +253,9 @@ void test('query planning conformance rejects missing protected terms from a cus
         provider: {
           executionIdentity: {
             adapterId,
+            adapterConfigurationIdentity: 'unprotected-query-planning-configuration-v1',
             backend: RecallInferenceBackend.CUSTOM,
-            cacheIdentity: `${profile.profileId}:${adapterId}:${profile.promptPolicy}:${profile.grammarVersion}`,
+            cacheIdentity: `${profile.profileId}:${adapterId}:${profile.promptPolicy}:${profile.grammarVersion}:unprotected-query-planning-configuration-v1`,
             modelProfileId: profile.profileId,
             promptPolicy: profile.promptPolicy,
             grammarVersion: profile.grammarVersion,

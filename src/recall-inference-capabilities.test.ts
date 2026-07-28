@@ -28,6 +28,7 @@ void test('capability identities include adapter policy without changing model p
     createRecallQueryPlanningExecutionIdentity(
       plannerProfile,
       'custom-planner-v1',
+      'custom-planner-configuration-v1',
       RecallInferenceBackend.CUSTOM,
       1_000,
     ).cacheIdentity,

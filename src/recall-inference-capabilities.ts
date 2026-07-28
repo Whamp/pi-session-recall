@@ -44,6 +44,8 @@ export interface RecallQueryPlanningProvider {
 /** Inspectable adapter, policy, timeout, and cache identity for query planning execution. */
 export interface RecallQueryPlanningExecutionIdentity {
   adapterId: string;
+  /** Opaque identity for endpoint or device settings that can change generated plans. */
+  adapterConfigurationIdentity: string;
   backend: RecallInferenceBackend;
   cacheIdentity: string;
   modelProfileId: string;
@@ -57,17 +59,19 @@ export interface RecallIdentifiedQueryPlanningProvider extends RecallQueryPlanni
   readonly executionIdentity: Readonly<RecallQueryPlanningExecutionIdentity>;
 }
 
-/** Creates query planner cache identity from profile, adapter, prompt, and grammar policy. */
+/** Creates query planner identity from model, adapter, endpoint or device, prompt, and grammar policy. */
 export function createRecallQueryPlanningExecutionIdentity(
   profile: RecallQueryPlanningModelProfile,
   adapterId: string,
+  adapterConfigurationIdentity: string,
   backend: RecallQueryPlanningExecutionIdentity['backend'],
   requestTimeoutMilliseconds: number,
 ): Readonly<RecallQueryPlanningExecutionIdentity> {
   return Object.freeze({
     adapterId,
+    adapterConfigurationIdentity,
     backend,
-    cacheIdentity: `${profile.profileId}:${adapterId}:${profile.promptPolicy}:${profile.grammarVersion}`,
+    cacheIdentity: `${profile.profileId}:${adapterId}:${profile.promptPolicy}:${profile.grammarVersion}:${adapterConfigurationIdentity}`,
     modelProfileId: profile.profileId,
     promptPolicy: profile.promptPolicy,
     grammarVersion: profile.grammarVersion,

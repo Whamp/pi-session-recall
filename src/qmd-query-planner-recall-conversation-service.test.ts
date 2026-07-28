@@ -88,6 +88,7 @@ void test('conversation service verifies replacement planners without rebuilding
     executionIdentity: createRecallQueryPlanningExecutionIdentity(
       recommendedProfile,
       firstAdapterId,
+      'first-planner-configuration',
       RecallInferenceBackend.CUSTOM,
       7_000,
     ),
@@ -130,6 +131,7 @@ void test('conversation service verifies replacement planners without rebuilding
     executionIdentity: createRecallQueryPlanningExecutionIdentity(
       recommendedProfile,
       adapterOnlyId,
+      'adapter-only-planner-configuration',
       RecallInferenceBackend.CUSTOM,
       7_500,
     ),
@@ -171,6 +173,7 @@ void test('conversation service verifies replacement planners without rebuilding
     executionIdentity: createRecallQueryPlanningExecutionIdentity(
       replacementProfile,
       replacementAdapterId,
+      'replacement-planner-configuration',
       RecallInferenceBackend.CUSTOM,
       8_000,
     ),
@@ -201,7 +204,7 @@ void test('conversation service verifies replacement planners without rebuilding
   assert.equal(replacementVerification.profileId, replacementProfile.profileId);
   assert.equal(
     replacementVerification.executionIdentity.cacheIdentity,
-    'replacement-query-planner-v2:replacement-query-planning-v2:qmd-query-expansion-no-think-v1:qmd-bounded-query-plan-v2',
+    'replacement-query-planner-v2:replacement-query-planning-v2:qmd-query-expansion-no-think-v1:qmd-bounded-query-plan-v2:replacement-planner-configuration',
   );
   assert.equal(replacementSearch.searchPolicy.rankingMode, 'hybrid');
 });

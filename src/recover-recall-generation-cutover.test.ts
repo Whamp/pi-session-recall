@@ -1,9 +1,13 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
+import {
+  inspectRecallWriteWindow,
+  recallWriteWindowStatePaths,
+} from './coordinate-recall-write-window.js';
 import { RecallGenerationCutoverState } from './enums.js';
 import {
   createRecallActiveGenerationPointer,
@@ -53,6 +57,57 @@ void test('consistent active pointer requires no generation cutover recovery', a
     }),
     false,
   );
+});
+
+void test('consistent cutover no-op does not clear stale write recovery state', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recover-recall-cutover-stale-window-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const activeGenerationPointerPath = join(directory, 'active-generation.json');
+  const generationRegistryPath = join(directory, 'generation-registry.json');
+  const lockPath = join(directory, 'operation.lock');
+  const pointer = createRecallActiveGenerationPointer('generation_active');
+  await writeRecallActiveGenerationPointer(activeGenerationPointerPath, pointer);
+  await writeRecallGenerationRegistry(generationRegistryPath, {
+    version: RECALL_GENERATION_REGISTRY_VERSION,
+    activeGenerationId: pointer.activeGenerationId,
+    buildingGenerationId: null,
+    rollbackGenerationId: null,
+    activePointerChecksum: pointer.checksum,
+    generations: [
+      {
+        generationId: pointer.activeGenerationId,
+        state: RecallGenerationCutoverState.ACTIVE,
+        indexManifestVersion: 6,
+        markerSchemaVersion: 1,
+        sessionProjectionSchemaVersion: 2,
+        indexManifestFingerprint: 'a'.repeat(64),
+        rebuildStartedAtEpochMilliseconds: 1,
+        stateChangedAtEpochMilliseconds: 2,
+        rebuildStartMarkerId: null,
+        validatedAtEpochMilliseconds: 2,
+        retireAfterEpochMilliseconds: null,
+      },
+    ],
+  });
+  const statePaths = recallWriteWindowStatePaths(lockPath);
+  await writeFile(
+    statePaths.recoveryRequiredPath,
+    `${JSON.stringify({ version: 1, state: 'recovery_required' })}\n`,
+  );
+
+  assert.equal(
+    await recoverRecallGenerationCutover({
+      activeGenerationPointerPath,
+      generationRegistryPath,
+      backlogSummaryPath: join(directory, 'backlog-summary.json'),
+      lockPath,
+    }),
+    false,
+  );
+  assert.deepEqual(await inspectRecallWriteWindow(lockPath), {
+    currentWindow: true,
+    recoveryRequired: true,
+  });
 });
 
 void test('registry-first rollback cutover recovery publishes the retained target pointer', async (t) => {

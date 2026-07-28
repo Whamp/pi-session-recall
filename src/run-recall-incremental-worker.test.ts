@@ -100,6 +100,7 @@ void test('incremental worker launch uses nonblocking kernel flock without PID o
 void test('incremental worker exits empty before heavy imports and a later signal drains visible work', async (t) => {
   const fixture = await createWorkerFixture(t);
   let heavyImportCount = 0;
+  let transferCount = 0;
   const options = {
     markerSpoolDirectory: fixture.markerSpoolDirectory,
     markerQuarantineDirectory: fixture.markerQuarantineDirectory,
@@ -108,6 +109,10 @@ void test('incremental worker exits empty before heavy imports and a later signa
     trustedSessionRoots: [fixture.sessionsDirectory],
     async loadHeavyDependencies() {
       heavyImportCount += 1;
+    },
+    async transferWorkPlan(workPlan: { workItems: readonly unknown[] }) {
+      transferCount += 1;
+      assert.equal(workPlan.workItems.length, 1);
     },
   };
 
@@ -121,6 +126,7 @@ void test('incremental worker exits empty before heavy imports and a later signa
   assert.equal(afterLaterSignal.workPlan.workItems.length, 1);
   assert.equal(afterLaterSignal.heavyDependenciesLoaded, true);
   assert.equal(heavyImportCount, 1);
+  assert.equal(transferCount, 1);
   assert.equal(
     await readFile(
       join(fixture.markerSpoolDirectory, `${fixture.marker.markerId}.json`),

@@ -104,13 +104,55 @@ export async function recoverRecallGenerationCutover(
         ({ generationId }) =>
           generationId === registry.buildingGenerationId && registry.buildingGenerationId !== null,
       );
-      if (
+      const pointerAndRegistrySelectSameGeneration =
         pointer !== null &&
         registry?.activeGenerationId === pointer.activeGenerationId &&
-        registry.activePointerChecksum === pointer.checksum &&
+        registry.activePointerChecksum === pointer.checksum;
+      if (
+        pointerAndRegistrySelectSameGeneration &&
         readyBuildingGeneration?.state !== RecallGenerationCutoverState.READY
       ) {
         return false;
+      }
+      if (
+        pointerAndRegistrySelectSameGeneration &&
+        registry !== null &&
+        readyBuildingGeneration?.state === RecallGenerationCutoverState.READY
+      ) {
+        const recoveredAt = options.nowEpochMilliseconds?.() ?? Date.now();
+        const activeEntry = registry.generations.find(
+          ({ generationId }) => generationId === registry.activeGenerationId,
+        );
+        if (activeEntry === undefined) {
+          writeWindow.retainRecoveryRequired();
+          throw new Error('Recall generation cutover recovery active registry entry missing');
+        }
+        await writeRecallGenerationRegistry(options.generationRegistryPath, {
+          ...registry,
+          buildingGenerationId: null,
+          generations: registry.generations.map((entry) =>
+            entry.generationId === readyBuildingGeneration.generationId
+              ? {
+                  ...entry,
+                  state: RecallGenerationCutoverState.RETIRED,
+                  stateChangedAtEpochMilliseconds: recoveredAt,
+                }
+              : entry,
+          ),
+        });
+        await writeRecallBacklogSummary(options.backlogSummaryPath, {
+          version: RECALL_BACKLOG_SUMMARY_VERSION,
+          pendingEligibleSessionCount: 0,
+          oldestEligibleMarkerAgeMilliseconds: null,
+          activeGenerationId: pointer.activeGenerationId,
+          buildingGenerationId: null,
+          generationState: activeEntry.state,
+          activeGenerationAgeMilliseconds: 0,
+          rebuildAgeMilliseconds: null,
+          lastFailureCategory: null,
+          observedAtEpochMilliseconds: recoveredAt,
+        });
+        return true;
       }
       const registrySelectedEntry = registry?.generations.find(
         ({ generationId }) => generationId === registry.activeGenerationId,
@@ -146,23 +188,10 @@ export async function recoverRecallGenerationCutover(
         });
         return true;
       }
-      let replacement = registry?.generations.find(
+      const replacement = registry?.generations.find(
         ({ generationId }) => generationId === pointer?.activeGenerationId,
       );
-      let replacementPointer = pointer;
-      if (
-        pointer !== null &&
-        registry !== null &&
-        registry.activeGenerationId === pointer.activeGenerationId &&
-        readyBuildingGeneration?.state === RecallGenerationCutoverState.READY
-      ) {
-        replacement = readyBuildingGeneration;
-        replacementPointer = createRecallActiveGenerationPointer(replacement.generationId);
-        await writeRecallActiveGenerationPointer(
-          options.activeGenerationPointerPath,
-          replacementPointer,
-        );
-      }
+      const replacementPointer = pointer;
       if (
         !replacementPointer ||
         !registry ||

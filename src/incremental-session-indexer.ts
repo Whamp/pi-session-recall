@@ -88,6 +88,10 @@ export interface IncrementalSessionIndexerOptions {
   diagnosticMetrics?: RecallIndexDiagnosticMetrics;
   diagnosticsClock?: RecallDiagnosticsClock;
   onPhysicalSessionCheck?: (completion: RecallPhysicalSessionDiagnostic) => void;
+  eligibleContributorEntryIdsBySessionPath?: ReadonlyMap<
+    string,
+    ReadonlyMap<string, ReadonlySet<string>>
+  >;
 }
 
 async function listSessionFiles(directory: string): Promise<string[]> {
@@ -149,6 +153,7 @@ async function readChangedSessionChunks(
   chunkPolicy?: RecallChunkPolicy,
   diagnosticMetrics?: RecallIndexDiagnosticMetrics,
   diagnosticsClock?: RecallDiagnosticsClock,
+  eligibleContributorEntryIdsByLogicalSessionId?: ReadonlyMap<string, ReadonlySet<string>>,
 ): Promise<
   | { changed: false; size: number }
   | {
@@ -178,6 +183,9 @@ async function readChangedSessionChunks(
       chunks: await readSessionConversationChunks(sessionPath, {
         tokenizer,
         ...(chunkPolicy ? chunkPolicy : {}),
+        ...(eligibleContributorEntryIdsByLogicalSessionId
+          ? { eligibleContributorEntryIdsByLogicalSessionId }
+          : {}),
       }),
     };
   } finally {
@@ -298,6 +306,7 @@ async function indexChangedConversationSessionFile(
       options.chunkPolicy,
       options.diagnosticMetrics,
       options.diagnosticsClock,
+      options.eligibleContributorEntryIdsBySessionPath?.get(sessionPath),
     );
   } catch (error) {
     summary.failedSessions.push({

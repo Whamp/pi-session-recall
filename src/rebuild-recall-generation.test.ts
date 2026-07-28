@@ -299,13 +299,23 @@ for (const faultStage of [
       }),
       true,
     );
+    const recoveredActiveGenerationId = (
+      await readRecallGenerationRegistry(fixture.generationRegistryPath)
+    )?.activeGenerationId;
     assert.equal(
-      (await readRecallGenerationRegistry(fixture.generationRegistryPath))?.activeGenerationId,
-      `generation_${faultStage}`,
+      recoveredActiveGenerationId,
+      faultStage === RecallGenerationCutoverStage.BEFORE_POINTER_SWAP
+        ? fixture.oldGenerationId
+        : `generation_${faultStage}`,
+    );
+    assert.equal(
+      (await readRecallActiveGenerationPointer(fixture.activeGenerationPointerPath))
+        ?.activeGenerationId,
+      recoveredActiveGenerationId,
     );
     assert.deepEqual(await inspectRecallWriteWindow(fixture.lockPath), {
-      currentWindow: false,
-      recoveryRequired: false,
+      currentWindow: faultStage === RecallGenerationCutoverStage.AFTER_POINTER_SWAP,
+      recoveryRequired: faultStage === RecallGenerationCutoverStage.AFTER_POINTER_SWAP,
     });
   });
 }

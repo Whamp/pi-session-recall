@@ -312,6 +312,49 @@ void test('repeated overlapping and split-turn compaction is monotonic and repla
   ]);
 });
 
+void test('uncovered late branch exit remains eligible below the runtime sequence checkpoint', () => {
+  const projection = logical(
+    [
+      descriptor('e1', null),
+      descriptor('e2', 'e1'),
+      descriptor('e3', 'e2'),
+      descriptor('e4', 'e1'),
+    ],
+    'e4',
+  );
+  projection.markerCheckpoint = {
+    generationId,
+    coveredMarkerIds: ['sequence-2'],
+    runtimeSequences: [{ runtimeInstanceId: 'runtime-1', sequence: 2 }],
+  };
+  const lateBranchExit = marker(
+    'late-branch-exit',
+    {
+      kind: RecallWorkMarkerTrigger.BRANCH_EXIT,
+      oldLeafEntryId: 'e3',
+      newLeafEntryId: 'e4',
+    },
+    'runtime-1',
+    1,
+  );
+
+  const result = reduceRecallEligibility({
+    physicalProjection: physical(),
+    logicalProjection: projection,
+    markers: [lateBranchExit],
+    quiescenceObserved: false,
+  });
+
+  assert.deepEqual(result.newlyEligibleContributorEntryIds, ['e2', 'e3']);
+  assert.deepEqual(result.logicalProjection?.markerCheckpoint.coveredMarkerIds, [
+    'late-branch-exit',
+    'sequence-2',
+  ]);
+  assert.deepEqual(result.logicalProjection?.markerCheckpoint.runtimeSequences, [
+    { runtimeInstanceId: 'runtime-1', sequence: 2 },
+  ]);
+});
+
 void test('concurrent runtimes union eligibility without choosing one authoritative leaf', () => {
   const projection = logical([
     descriptor('e1', null),

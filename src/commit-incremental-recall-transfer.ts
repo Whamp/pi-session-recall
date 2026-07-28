@@ -267,9 +267,13 @@ async function commitOneIncrementalRecallWindow(
         if (commitProjection) {
           startedAtMilliseconds = clock();
           try {
+            if (options.prepared.checkpointIntent.logicalProjections.length > 0) {
+              await projectionStore.upsertProjections(
+                options.prepared.checkpointIntent.logicalProjections,
+              );
+            }
             await projectionStore.upsertProjections([
               options.prepared.checkpointIntent.physicalProjection,
-              ...options.prepared.checkpointIntent.logicalProjections,
             ]);
           } finally {
             diagnostic.projectionWriteMilliseconds = elapsedMilliseconds(
@@ -291,6 +295,7 @@ async function commitOneIncrementalRecallWindow(
       const immutableDiagnostic = Object.freeze({ ...diagnostic });
       options.onWriteWindowDiagnostic?.(immutableDiagnostic);
       throwCommitAndCloseErrors(operationError, closeErrors);
+      writeWindow.attestRecoveryCompleted();
       return immutableDiagnostic;
     },
   );

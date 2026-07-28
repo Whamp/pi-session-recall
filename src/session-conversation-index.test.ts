@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
 import { SessionImportFormat } from './enums.js';
+import { createPhysicalSessionProjectionId } from './recall-session-projection.js';
 import {
   readSessionConversationChunks,
   readSessionConversationImport,
@@ -39,6 +40,56 @@ function summarizeSessionChunkParity(chunks: readonly SessionConversationChunk[]
     sourceLineEnd: chunk.sourceLineEnd,
   }));
 }
+
+void test('rebuild import emits only documents whose contributors are already eligible', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-rebuild-eligibility-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionPath = join(directory, 'session.jsonl');
+  await writeFile(
+    sessionPath,
+    [
+      {
+        type: 'session',
+        version: 3,
+        id: 'session-approved',
+        timestamp: '2026-07-24T10:00:00Z',
+        cwd: '/project',
+      },
+      {
+        type: 'message',
+        id: 'eligible-entry',
+        parentId: null,
+        timestamp: '2026-07-24T10:01:00Z',
+        message: { role: 'user', content: 'approved historical evidence' },
+      },
+      {
+        type: 'message',
+        id: 'active-tail-entry',
+        parentId: 'eligible-entry',
+        timestamp: '2026-07-24T10:02:00Z',
+        message: { role: 'assistant', content: 'unapproved active tail' },
+      },
+    ]
+      .map((entry) => JSON.stringify(entry))
+      .join('\n') + '\n',
+  );
+
+  const imported = await readSessionConversationImport(sessionPath, {
+    tokenizer: createWhitespaceConversationTokenizer(),
+    eligibleContributorEntryIdsByLogicalSessionId: new Map([
+      ['session-approved', new Set(['eligible-entry'])],
+    ]),
+  });
+
+  assert.equal(
+    imported.chunks.some(({ content }) => content.includes('approved historical')),
+    true,
+  );
+  assert.equal(
+    imported.chunks.some(({ content }) => content.includes('unapproved active')),
+    false,
+  );
+});
 
 void test('session JSONL becomes searchable conversation chunks with provenance', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'recall-session-'));
@@ -120,6 +171,10 @@ void test('session JSONL becomes searchable conversation chunks with provenance'
   });
 
   assert.equal(chunks[0]?.sessionId.value, 'session-1');
+  assert.equal(
+    chunks[0]?.physicalSessionProjectionId,
+    createPhysicalSessionProjectionId('session-1'),
+  );
   assert.equal(chunks[0]?.cwd, '/project');
   assert.equal(chunks[0]?.sessionName, 'Migration planning');
   assert.equal(chunks[0]?.currentLeafId?.value, 'name-1');

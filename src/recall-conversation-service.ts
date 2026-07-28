@@ -24,6 +24,7 @@ import {
   RecallManualMaintenanceTrigger,
   RecallProjectIdentitySource,
   RecallSearchScope,
+  RecallSessionProjectionKind,
 } from './enums.js';
 import {
   fuseRecallSearchCandidates,
@@ -58,6 +59,10 @@ import {
 } from './recall-generation-state.js';
 import type { RecallChunkPolicy } from './recall-chunk-policy.js';
 import { rebuildRecallGeneration } from './rebuild-recall-generation.js';
+import {
+  createLogicalSessionProjectionId,
+  type RecallSessionProjection,
+} from './recall-session-projection.js';
 import {
   createRecallIndexMetrics,
   createRecallOperationDiagnostics,
@@ -432,6 +437,67 @@ function createEmbeddingModelIdentity(
   };
 }
 
+interface ApprovedRecallRebuildSnapshot {
+  projections: RecallSessionProjection[];
+  eligibleContributorEntryIdsBySessionPath: Map<string, Map<string, ReadonlySet<string>>>;
+}
+
+async function readApprovedRecallRebuildSnapshot(
+  projectionDatabasePath: string,
+  generationId: string,
+): Promise<ApprovedRecallRebuildSnapshot> {
+  const store = openZvecSessionProjectionStore({
+    databasePath: projectionDatabasePath,
+    generationId,
+    createIfMissing: false,
+    readOnly: true,
+  });
+  try {
+    const physicalProjections = store.listPhysicalProjections();
+    const projections: RecallSessionProjection[] = [...physicalProjections];
+    const eligibleContributorEntryIdsBySessionPath = new Map<
+      string,
+      Map<string, ReadonlySet<string>>
+    >();
+    for (const physicalProjection of physicalProjections) {
+      const logicalProjectionIds = physicalProjection.logicalSessionIds.map((logicalSessionId) =>
+        createLogicalSessionProjectionId(physicalProjection.physicalSessionId, logicalSessionId),
+      );
+      const fetched = store.fetchProjections(logicalProjectionIds);
+      const eligibleByLogicalSessionId = new Map<string, ReadonlySet<string>>();
+      for (const projectionId of logicalProjectionIds) {
+        const projection = fetched.get(projectionId);
+        if (projection?.projectionKind !== RecallSessionProjectionKind.LOGICAL_SESSION) {
+          throw new Error(`Recall rebuild approved logical projection missing: ${projectionId}`);
+        }
+        projections.push(projection);
+        eligibleByLogicalSessionId.set(
+          projection.logicalSessionId,
+          new Set(projection.eligibleContributorEntryIds),
+        );
+      }
+      eligibleContributorEntryIdsBySessionPath.set(
+        physicalProjection.sourcePath,
+        eligibleByLogicalSessionId,
+      );
+    }
+    return { projections, eligibleContributorEntryIdsBySessionPath };
+  } finally {
+    store.close();
+  }
+}
+
+function retargetRecallRebuildProjection(
+  projection: RecallSessionProjection,
+  generationId: string,
+): RecallSessionProjection {
+  return {
+    ...projection,
+    generationId,
+    markerCheckpoint: { ...projection.markerCheckpoint, generationId },
+  };
+}
+
 /** Creates the explicit indexing and read-only search service used by the Pi recall extension. */
 export function createRecallConversationService(
   config: RecallConversationConfig,
@@ -639,6 +705,10 @@ export function createRecallConversationService(
     onProgress?: (progress: ConversationIndexProgress) => void,
     diagnosticMetrics?: RecallIndexDiagnosticMetrics,
     onPhysicalSessionCheck?: (completion: RecallPhysicalSessionDiagnostic) => void,
+    eligibleContributorEntryIdsBySessionPath?: ReadonlyMap<
+      string,
+      ReadonlyMap<string, ReadonlySet<string>>
+    >,
   ): Promise<ConversationIndexSummary> {
     let modelPreflighted = embeddingModelPreflighted;
     async function embedTextsAfterModelPreflight(
@@ -675,6 +745,9 @@ export function createRecallConversationService(
       ...(signal ? { signal } : {}),
       ...(diagnosticMetrics ? { diagnosticMetrics, diagnosticsClock } : {}),
       ...(onPhysicalSessionCheck ? { onPhysicalSessionCheck } : {}),
+      ...(eligibleContributorEntryIdsBySessionPath
+        ? { eligibleContributorEntryIdsBySessionPath }
+        : {}),
     };
     return indexChangedConversationSessions({
       ...indexerOptions,
@@ -917,14 +990,20 @@ export function createRecallConversationService(
           const startingPointer = await readRecallActiveGenerationPointer(
             config.activeGenerationPointerPath,
           );
-          const activeManifestPath = startingPointer
-            ? (
-                await readRecallActiveGenerationSelection(
-                  config.activeGenerationPointerPath,
-                  config.generationRootDirectory,
-                )
-              ).manifestPath
+          const startingGeneration = startingPointer
+            ? await readRecallActiveGenerationSelection(
+                config.activeGenerationPointerPath,
+                config.generationRootDirectory,
+              )
             : null;
+          const activeManifestPath = startingGeneration?.manifestPath ?? null;
+          const approvedRebuildSnapshot =
+            startingGeneration && existsSync(startingGeneration.projectionDatabasePath)
+              ? await readApprovedRecallRebuildSnapshot(
+                  startingGeneration.projectionDatabasePath,
+                  startingGeneration.activeGenerationId,
+                )
+              : null;
           const rebuilt = await rebuildRecallGeneration({
             generationRootDirectory: config.generationRootDirectory,
             activeGenerationPointerPath: config.activeGenerationPointerPath,
@@ -983,6 +1062,7 @@ export function createRecallConversationService(
                   options.onProgress,
                   diagnosticMetrics,
                   onPhysicalSessionCheck,
+                  approvedRebuildSnapshot?.eligibleContributorEntryIdsBySessionPath,
                 );
                 const result = { indexSummary, totalChunks: store.count() };
                 const storeToClose = store;
@@ -1029,7 +1109,15 @@ export function createRecallConversationService(
                       createIfMissing: true,
                       readOnly: false,
                     });
-                    projectionStore.close();
+                    try {
+                      await projectionStore.upsertProjections(
+                        approvedRebuildSnapshot?.projections.map((projection) =>
+                          retargetRecallRebuildProjection(projection, paths.generationId),
+                        ) ?? [],
+                      );
+                    } finally {
+                      projectionStore.close();
+                    }
                   },
                 };
               } catch (error) {
@@ -1057,7 +1145,25 @@ export function createRecallConversationService(
                 readOnly: true,
               });
               try {
-                projectionValidationStore.listPhysicalProjections();
+                const physicalProjections = projectionValidationStore.listPhysicalProjections();
+                const expectedPhysicalProjectionCount =
+                  approvedRebuildSnapshot?.eligibleContributorEntryIdsBySessionPath.size ?? 0;
+                if (physicalProjections.length !== expectedPhysicalProjectionCount) {
+                  throw new Error(
+                    'Recall replacement generation projection snapshot changed during validation',
+                  );
+                }
+                const expectedProjectionIds =
+                  approvedRebuildSnapshot?.projections.map(({ projectionId }) => projectionId) ??
+                  [];
+                if (
+                  projectionValidationStore.fetchProjections(expectedProjectionIds).size !==
+                  expectedProjectionIds.length
+                ) {
+                  throw new Error(
+                    'Recall replacement generation logical projection snapshot incomplete',
+                  );
+                }
               } finally {
                 projectionValidationStore.close();
               }

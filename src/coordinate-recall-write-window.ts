@@ -16,6 +16,9 @@ export interface RecallWriteWindowStatePaths {
 /** Exclusive write-window capability granted only after the kernel lock is held. */
 export interface RecallWriteWindow {
   recovering: boolean;
+  /** Attests that write-capable recovery and normal close completed successfully. */
+  attestRecoveryCompleted(): void;
+  /** Forces recovery state to remain after the operation returns. */
   retainRecoveryRequired(): void;
 }
 
@@ -222,7 +225,7 @@ async function clearRecallWriteWindow(paths: RecallWriteWindowStatePaths): Promi
 
 /**
  * Runs one bounded write window under a crash-released kernel lock.
- * Recovery state is cleared only after the supplied write-capable operation returns normally or throws normally.
+ * Recovery state clears only after normal completion and explicit attestation when recovering.
  */
 export async function coordinateRecallWriteWindow<T>(
   options: CoordinateRecallWriteWindowOptions,
@@ -237,16 +240,24 @@ export async function coordinateRecallWriteWindow<T>(
       throw new Error('Recall write recovery required before another write window can open');
     }
     await markRecallWriteWindow(paths, recovering);
+    let operationCompleted = false;
+    let recoveryCompleted = !recovering;
     let retainRecoveryRequired = false;
     try {
-      return await operation({
+      const result = await operation({
         recovering,
+        attestRecoveryCompleted() {
+          recoveryCompleted = true;
+        },
         retainRecoveryRequired() {
           retainRecoveryRequired = true;
         },
       });
+      operationCompleted = true;
+      return result;
     } finally {
-      if (!retainRecoveryRequired) {
+      const recoveryMayClear = !recovering || (operationCompleted && recoveryCompleted);
+      if (recoveryMayClear && !retainRecoveryRequired) {
         await clearRecallWriteWindow(paths);
       }
     }

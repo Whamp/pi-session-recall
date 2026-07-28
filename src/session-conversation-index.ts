@@ -8,6 +8,7 @@ import {
   type ParsedRecallSessionEntry,
   type ParsedRecallSessionGraph,
 } from './parse-recall-session-record.js';
+import { createPhysicalSessionProjectionId } from './recall-session-projection.js';
 import type { ResolvedProjectIdentity } from './resolve-project-identity.js';
 import { assertRecallChunkPolicy } from './recall-chunk-policy.js';
 import { importSessionJsonl } from './import-session-jsonl.js';
@@ -40,6 +41,8 @@ export interface SessionConversationChunkOptions {
   tokenizer: ConversationTextTokenizer;
   maxTokens?: number;
   overlapTokens?: number;
+  /** Optional rebuild boundary containing approved contributors per logical session. */
+  eligibleContributorEntryIdsByLogicalSessionId?: ReadonlyMap<string, ReadonlySet<string>>;
 }
 
 /** Source identity and chunk policy used to build documents from one validated logical graph. */
@@ -1340,8 +1343,7 @@ export function buildSessionConversationDocuments(
     graph,
     sessionPath: options.sessionPath,
     physicalSessionProjectionId:
-      options.physicalSessionProjectionId ??
-      `physical_${hashConversationValue(`${SESSION_CONVERSATION_SCHEMA_VERSION}\0${options.sessionPath}`)}`,
+      options.physicalSessionProjectionId ?? createPhysicalSessionProjectionId(graph.header.id),
     logicalSessionIdentity: options.logicalSessionIdentity,
     tokenizer: options.tokenizer,
     maxTokens,
@@ -1394,17 +1396,25 @@ export async function readSessionConversationImport(
   const imported = await importSessionJsonl(sessionPath);
   const logicalSessions: SessionConversationLogicalSession[] = [];
   const chunks: SessionConversationChunk[] = [];
+  let physicalSessionProjectionId: string | undefined;
   for (const session of imported.sessions) {
     const graph = parseRecallSessionGraph(session);
+    physicalSessionProjectionId ??= createPhysicalSessionProjectionId(graph.header.id);
     logicalSessions.push(createLogicalSessionSummary(session, graph));
     const logicalSessionIdentity =
       imported.format === SessionImportFormat.PI_SESSION_REUSE_HISTORY
         ? `${graph.header.id}@${graph.header.lineIndex}`
         : graph.header.id;
+    const approvedContributorEntryIds =
+      options.eligibleContributorEntryIdsByLogicalSessionId === undefined
+        ? new Set(graph.entries.map(({ id }) => id))
+        : (options.eligibleContributorEntryIdsByLogicalSessionId.get(logicalSessionIdentity) ??
+          new Set<string>());
     chunks.push(
-      ...buildSessionConversationDocuments(graph, new Set(graph.entries.map(({ id }) => id)), {
+      ...buildSessionConversationDocuments(graph, approvedContributorEntryIds, {
         sessionPath,
         logicalSessionIdentity,
+        physicalSessionProjectionId,
         tokenizer: options.tokenizer,
         maxTokens,
         overlapTokens,

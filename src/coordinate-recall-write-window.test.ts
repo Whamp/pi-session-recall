@@ -52,11 +52,54 @@ void test('only a recovery-capable writer clears explicit interrupted-window sta
   let recovering = false;
   await coordinateRecallWriteWindow({ lockPath, allowRecovery: true }, async (window) => {
     recovering = window.recovering;
+    window.attestRecoveryCompleted();
   });
   assert.equal(recovering, true);
   assert.deepEqual(await inspectRecallWriteWindow(lockPath), {
     currentWindow: false,
     recoveryRequired: false,
+  });
+});
+
+void test('throwing recovery operation retains explicit recovery state by default', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-write-recovery-failure-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const lockPath = join(directory, 'operation.lock');
+  const paths = recallWriteWindowStatePaths(lockPath);
+  await writeFile(
+    paths.recoveryRequiredPath,
+    `${JSON.stringify({ version: 1, state: 'recovery_required' })}\n`,
+  );
+
+  await assert.rejects(
+    () =>
+      coordinateRecallWriteWindow({ lockPath, allowRecovery: true }, async () => {
+        throw new Error('recovery failed');
+      }),
+    /recovery failed/u,
+  );
+
+  assert.deepEqual(await inspectRecallWriteWindow(lockPath), {
+    currentWindow: true,
+    recoveryRequired: true,
+  });
+});
+
+void test('successful recovery no-op retains recovery state without explicit attestation', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-write-recovery-no-op-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const lockPath = join(directory, 'operation.lock');
+  const paths = recallWriteWindowStatePaths(lockPath);
+  await writeFile(
+    paths.recoveryRequiredPath,
+    `${JSON.stringify({ version: 1, state: 'recovery_required' })}\n`,
+  );
+
+  await coordinateRecallWriteWindow({ lockPath, allowRecovery: true }, async () => undefined);
+
+  assert.deepEqual(await inspectRecallWriteWindow(lockPath), {
+    currentWindow: true,
+    recoveryRequired: true,
   });
 });
 

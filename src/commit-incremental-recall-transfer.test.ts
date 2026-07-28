@@ -35,8 +35,10 @@ import {
 } from './recall-generation-state.js';
 import { createTestSessionConversationChunk } from './recall-test-utils.js';
 import {
+  createLogicalSessionProjectionId,
   createPhysicalSessionProjectionId,
   RECALL_SESSION_PROJECTION_SCHEMA_VERSION,
+  type LogicalSessionProjection,
   type PhysicalSessionProjection,
 } from './recall-session-projection.js';
 import { createRecallWorkMarkerId, type RecallWorkMarker } from './recall-work-marker.js';
@@ -95,6 +97,33 @@ function createPhysicalProjection(workPlan: RecallMarkerReplayWorkPlan): Physica
       coveredMarkerIds: [...workPlan.sourceMarkerIds],
       runtimeSequences: [{ runtimeInstanceId: 'runtime-commit', sequence: 4 }],
     },
+    repairState: RecallProjectionRepairState.READY,
+    repairReason: null,
+  };
+}
+
+function createLogicalProjection(
+  physicalProjection: PhysicalSessionProjection,
+): LogicalSessionProjection {
+  const logicalSessionId = 'logical-session-commit';
+  return {
+    schemaVersion: RECALL_SESSION_PROJECTION_SCHEMA_VERSION,
+    projectionKind: RecallSessionProjectionKind.LOGICAL_SESSION,
+    projectionId: createLogicalSessionProjectionId(physicalSessionId, logicalSessionId),
+    generationId,
+    physicalSessionId,
+    physicalProjectionId,
+    logicalSessionId,
+    effectiveLeafEntryId: null,
+    activeContextBoundary: null,
+    compactionBoundary: null,
+    runtimeLeafObservations: [],
+    preservedBranchExits: [],
+    entryDescriptors: [],
+    eligibleContributorEntryIds: [],
+    eligibleSpans: [],
+    labels: [],
+    markerCheckpoint: physicalProjection.markerCheckpoint,
     repairState: RecallProjectionRepairState.READY,
     repairReason: null,
   };
@@ -253,6 +282,60 @@ void test('commit writes at most 32 evidence documents per closed window, then o
   assert.equal(result.writeWindowDiagnostics.length, 2);
   assert.deepEqual(diagnosticDocumentCounts, [32, 1]);
   assert.equal(result.generationReplayCompleted, null);
+});
+
+void test('logical projection failure does not publish the physical append cursor', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-commit-projection-order-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const basePrepared = createPreparedTransfer(1);
+  const logicalProjection = createLogicalProjection(
+    basePrepared.checkpointIntent.physicalProjection,
+  );
+  const prepared: PreparedIncrementalRecallTransfer = {
+    ...basePrepared,
+    checkpointIntent: {
+      physicalProjection: {
+        ...basePrepared.checkpointIntent.physicalProjection,
+        logicalSessionIds: [logicalProjection.logicalSessionId],
+      },
+      logicalProjections: [logicalProjection],
+    },
+  };
+  let physicalCursorPublished = false;
+
+  await assert.rejects(
+    () =>
+      commitIncrementalRecallTransfer({
+        prepared,
+        lockPath: join(directory, 'operation.lock'),
+        evidenceDatabasePath: join(directory, 'evidence'),
+        projectionDatabasePath: join(directory, 'projections'),
+        embeddingDimensions: 3,
+        openEvidenceStore() {
+          return { async upsertChunks() {}, close() {} };
+        },
+        openProjectionStore() {
+          return {
+            async upsertProjections(projections) {
+              for (const projection of projections) {
+                if (projection.projectionKind === RecallSessionProjectionKind.PHYSICAL_SESSION) {
+                  physicalCursorPublished = true;
+                } else {
+                  throw new Error('fake logical projection status failed');
+                }
+              }
+            },
+            fetchProjections() {
+              return new Map();
+            },
+            close() {},
+          };
+        },
+      }),
+    /fake logical projection status failed/u,
+  );
+
+  assert.equal(physicalCursorPublished, false);
 });
 
 void test('ordinary commit clears replay backlog only after checkpoint observation and acknowledgement', async (t) => {

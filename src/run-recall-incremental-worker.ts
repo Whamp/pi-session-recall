@@ -4,6 +4,10 @@ import { fileURLToPath } from 'node:url';
 
 import { completeRecallGenerationReplay } from './complete-recall-generation-replay.js';
 import {
+  createEmbeddingVectorCache,
+  createEmbeddingVectorCacheIdentity,
+} from './embedding-vector-cache.js';
+import {
   coordinateRecallMarkerReplay,
   type RecallGenerationReplayCompletionPaths,
   type RecallMarkerReplayWorkPlan,
@@ -16,6 +20,9 @@ import {
   RecallWorkMarkerTrigger,
 } from './enums.js';
 import { loadRecallConversationConfig } from './recall-conversation-config.js';
+import { readRecallIndexManifest } from './recall-index-manifest.js';
+import { createLocalEmbeddingClient } from './local-embedding-client.js';
+import { loadOctenConversationTokenizer } from './octen-conversation-tokenizer.js';
 import {
   readRecallActiveGenerationSelection,
   readRecallGenerationRegistry,
@@ -23,6 +30,7 @@ import {
 import type { PhysicalSessionProjection } from './recall-session-projection.js';
 import type { RecallWorkMarkerCodecOptions } from './recall-work-marker.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
+import { createLineageResolver, resolveProjectIdentity } from './resolve-project-identity.js';
 import {
   createRecallIncrementalDiagnosticMetrics,
   createRecallOperationDiagnostics,
@@ -35,6 +43,7 @@ import {
   type KnownRecallSessionMetadataSource,
   type RecallSessionMetadataSweepResult,
 } from './scan-recall-session-metadata.js';
+import { transferIncrementalRecallWorkPlan } from './transfer-incremental-recall-work-plan.js';
 
 /** Explicit lightweight paths and lazy import boundary for one short-lived incremental worker. */
 export interface RunRecallIncrementalWorkerOptions extends RecallWorkMarkerCodecOptions {
@@ -54,6 +63,7 @@ export interface RunRecallIncrementalWorkerOptions extends RecallWorkMarkerCodec
     physicalProjections: readonly PhysicalSessionProjection[],
   ) => Promise<void>;
   loadHeavyDependencies?: () => Promise<void>;
+  transferWorkPlan?: (workPlan: RecallMarkerReplayWorkPlan) => Promise<void>;
   operationDiagnostics?: Pick<RecallOperationDiagnostics, 'recordIncrementalOperation'>;
   nowEpochMilliseconds?: () => number;
   monotonicMilliseconds?: () => number;
@@ -98,6 +108,35 @@ function workPlanRequestsRecallMetadataSweep(workPlan: RecallMarkerReplayWorkPla
   return workPlan.workItems.some(
     ({ marker }) => marker.trigger.kind === RecallWorkMarkerTrigger.ARRIVAL,
   );
+}
+
+function splitRecallWorkPlanByPhysicalSession(
+  workPlan: RecallMarkerReplayWorkPlan,
+): RecallMarkerReplayWorkPlan[] {
+  const workItemsByPhysicalSource = new Map<string, RecallMarkerReplayWorkPlan['workItems']>();
+  for (const workItem of workPlan.workItems) {
+    const key = JSON.stringify([
+      workItem.marker.physicalSessionId,
+      workItem.marker.physicalSessionPath,
+    ]);
+    const existing = workItemsByPhysicalSource.get(key);
+    if (existing === undefined) {
+      workItemsByPhysicalSource.set(key, [workItem]);
+    } else {
+      existing.push(workItem);
+    }
+  }
+  return [...workItemsByPhysicalSource.values()].map((workItems) => {
+    const sourceMarkerIds = [
+      ...new Set(workItems.flatMap(({ coveredMarkerIds }) => coveredMarkerIds)),
+    ].toSorted();
+    return {
+      ...workPlan,
+      discoveredMarkerCount: sourceMarkerIds.length,
+      sourceMarkerIds,
+      workItems,
+    };
+  });
 }
 
 function hasRecallIncrementalTransferWork(
@@ -239,6 +278,9 @@ export async function runRecallIncrementalWorker(
     });
   }
   await (options.loadHeavyDependencies ?? loadRecallIncrementalWorkerDependencies)();
+  for (const physicalWorkPlan of splitRecallWorkPlanByPhysicalSession(workPlan)) {
+    await options.transferWorkPlan?.(physicalWorkPlan);
+  }
   if (
     metadataSweep !== null &&
     metadataSweep.status !== RecallMetadataSweepStatus.CONTINUATION_REQUIRED &&
@@ -314,6 +356,28 @@ async function runRecallIncrementalWorkerExecutable(): Promise<void> {
       process.emitWarning(message);
     },
   });
+  const manifest = await readRecallIndexManifest(activeSelection.manifestPath);
+  if (manifest === null) {
+    throw new Error('Recall incremental worker active generation manifest missing');
+  }
+  const embeddings = createLocalEmbeddingClient({
+    baseUrl: config.embeddingBaseUrl,
+    model: config.embeddingModel,
+    dimensions: config.embeddingDimensions,
+    batchSize: config.embeddingBatchSize,
+  });
+  const embeddingCache = createEmbeddingVectorCache({
+    cacheDirectory: config.embeddingCacheDirectory,
+    identity: createEmbeddingVectorCacheIdentity(manifest),
+    embeddingRequestBatchSize: config.embeddingBatchSize,
+    embeddings,
+  });
+  const loadTokenizer = () =>
+    loadOctenConversationTokenizer({ cacheDirectory: config.tokenizerCacheDirectory });
+  const resolveWorkerProjectIdentity = createLineageResolver(
+    config.projectLineages,
+    resolveProjectIdentity,
+  );
   await runRecallIncrementalWorker({
     markerSpoolDirectory: config.markerSpoolDirectory,
     markerQuarantineDirectory: config.markerQuarantineDirectory,
@@ -333,6 +397,18 @@ async function runRecallIncrementalWorkerExecutable(): Promise<void> {
     confirmedDeletionMaxMissingSourceCount: config.confirmedDeletionMaxMissingSourceCount,
     confirmedDeletionMaxMissingSourceRatio: config.confirmedDeletionMaxMissingSourceRatio,
     operationDiagnostics,
+    transferWorkPlan: (workPlan) =>
+      transferIncrementalRecallWorkPlan({
+        workPlan,
+        lockPath: config.lockPath,
+        evidenceDatabasePath: activeSelection.databasePath,
+        projectionDatabasePath: activeSelection.projectionDatabasePath,
+        embeddingDimensions: config.embeddingDimensions,
+        chunkPolicy: manifest.chunkPolicy,
+        loadTokenizer,
+        resolveProjectIdentity: resolveWorkerProjectIdentity,
+        embeddingCache,
+      }),
     loadKnownSourceInventory: () =>
       loadRecallKnownSourceInventory(
         activeSelection.projectionDatabasePath,

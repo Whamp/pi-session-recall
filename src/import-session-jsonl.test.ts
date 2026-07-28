@@ -60,7 +60,7 @@ void test('session JSONL importer preserves Unicode separators through the publi
     })),
     [
       {
-        id: '1feae4e3d522a38dbf49e8160728c02193752e7f',
+        id: 'f64cf01af7127d72072018e4314cc4e3281eab05',
         checksum: 'c1fe6fe86a3c831881eb9b7a9aa6b2477ad60188b8eee7269af62f1020fba97b',
         entryId: 'unicode-entry',
         parentEntryId: null,

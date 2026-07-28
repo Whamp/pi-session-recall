@@ -20,11 +20,13 @@ import {
 } from './recall-generation-state.js';
 import { runRecallInferenceSetupCommand } from './runRecallInferenceSetupCommand.js';
 import {
+  clearPendingRecallEmbeddingReplacement,
   configureRecallInferenceCapability,
   inspectRecallInferenceConfiguration,
   readRecallInferenceConfiguration,
   removeRecallInferenceCapability,
   repairRecallInferenceCapability,
+  writeRecallInferenceConfiguration,
   type RecallInferenceConfigurationCandidate,
 } from './recall-inference-configuration.js';
 import type { ConversationTextTokenizer } from './session-conversation-index.js';
@@ -740,4 +742,92 @@ void test('configured runtime reconstructs registered custom adapters and reject
 
   assert.equal(customEmbeddingOperationCount, 1);
   assert.equal(customTokenizerOperationCount, 1);
+});
+
+void test('clearing pending embedding replacement cancels a discarded profile change', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-inference-clear-pending-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const statePath = join(root, 'inference-configuration.json');
+  const embedded = createConformingCandidate(
+    RecallInferenceCapability.EMBEDDING,
+    'embedding-embedded',
+    'embedding-profile-v1',
+    RecallInferenceBackend.EMBEDDED,
+    'embedding-embedded-v1',
+  );
+  const replacement = {
+    ...createConformingCandidate(
+      RecallInferenceCapability.EMBEDDING,
+      'embedding-replacement',
+      'embedding-profile-v2',
+      RecallInferenceBackend.CUSTOM,
+      'embedding-custom-v2',
+    ),
+    generationService: {
+      async readIndexGenerationStatus() {
+        return { active: null, staging: null };
+      },
+      async startBackgroundIndexGeneration() {
+        return { generationId: 'generation-staging' };
+      },
+      async resumeBackgroundIndexGeneration() {
+        throw new Error('no resumable replacement expected');
+      },
+    },
+  } satisfies RecallInferenceConfigurationCandidate;
+
+  await configureRecallInferenceCapability(statePath, embedded);
+  await configureRecallInferenceCapability(statePath, replacement, {
+    approvedEmbeddingReplacement: true,
+  });
+  assert.equal(
+    (await readRecallInferenceConfiguration(statePath)).pendingEmbeddingReplacement?.selection
+      .profileId,
+    'embedding-profile-v2',
+  );
+
+  assert.equal(
+    await clearPendingRecallEmbeddingReplacement(statePath, {
+      matchingEmbeddingProfileId: 'embedding-profile-v2',
+    }),
+    true,
+  );
+  const cleared = await readRecallInferenceConfiguration(statePath);
+  assert.equal(cleared.embedding?.profileId, 'embedding-profile-v1');
+  assert.equal(cleared.pendingEmbeddingReplacement, null);
+  assert.equal(await clearPendingRecallEmbeddingReplacement(statePath), false);
+
+  await writeRecallInferenceConfiguration(statePath, {
+    ...cleared,
+    pendingEmbeddingReplacement: {
+      embeddingProfileId: 'embedding-profile-v3',
+      selection: {
+        capability: RecallInferenceCapability.EMBEDDING,
+        candidateId: 'embedding-other',
+        profileId: 'embedding-profile-v3',
+        backend: RecallInferenceBackend.CUSTOM,
+        adapterId: 'embedding-other-v3',
+        endpoint: null,
+        device: null,
+        artifact: null,
+        conformance: {
+          verifiedAt: '2026-01-01T00:00:00.000Z',
+          cacheIdentity: 'embedding-profile-v3',
+          embeddingProfileId: 'embedding-profile-v3',
+          measurement: { verificationOperations: 1 },
+        },
+      },
+    },
+  });
+  assert.equal(
+    await clearPendingRecallEmbeddingReplacement(statePath, {
+      matchingEmbeddingProfileId: 'embedding-profile-v2',
+    }),
+    false,
+  );
+  assert.equal(
+    (await readRecallInferenceConfiguration(statePath)).pendingEmbeddingReplacement
+      ?.embeddingProfileId,
+    'embedding-profile-v3',
+  );
 });

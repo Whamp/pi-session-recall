@@ -10,6 +10,7 @@ import { isUnknownRecord } from './is-unknown-record.js';
 import {
   readProjectedRecallSessionEntryPath,
   validateProjectedRecallSessionEntryLinks,
+  type ParsedRecallSessionRecord,
 } from './parse-recall-session-record.js';
 import {
   createLogicalSessionProjectionId,
@@ -64,6 +65,7 @@ function reconciliation(
 function createLogicalProjection(
   physicalProjection: PhysicalSessionProjection,
   logicalSessionId: string,
+  headerRecord: ParsedRecallSessionRecord,
 ): LogicalSessionProjection {
   return {
     schemaVersion: physicalProjection.schemaVersion,
@@ -81,6 +83,17 @@ function createLogicalProjection(
     compactionBoundary: null,
     runtimeLeafObservations: [],
     preservedBranchExits: [],
+    headerDescriptor: {
+      sourceLine: headerRecord.sourceLine,
+      startByte: headerRecord.startByte,
+      endByte: headerRecord.endByte,
+      sourceFingerprint: headerRecord.sourceFingerprint,
+      cwd: typeof headerRecord.value.cwd === 'string' ? headerRecord.value.cwd : '',
+      parentSessionPath:
+        typeof headerRecord.value.parentSession === 'string'
+          ? headerRecord.value.parentSession
+          : null,
+    },
     entryDescriptors: [],
     eligibleContributorEntryIds: [],
     eligibleSpans: [],
@@ -152,6 +165,7 @@ function createProjectedEntryDescriptor(
   sourceLine: number,
   startByte: number,
   endByte: number,
+  sourceFingerprint: string,
 ): RecallProjectedEntryDescriptor | null {
   const entryId = readRequiredEntryString(value.id);
   const timestamp = readRequiredEntryString(value.timestamp);
@@ -164,6 +178,12 @@ function createProjectedEntryDescriptor(
   }
   const toolCalls = readProjectedToolCalls(value);
   const toolResult = readProjectedToolResult(value);
+  const messageRole =
+    value.type === 'message' &&
+    isUnknownRecord(value.message) &&
+    typeof value.message.role === 'string'
+      ? value.message.role
+      : null;
   if (toolCalls === null || toolResult === false) {
     return null;
   }
@@ -171,9 +191,14 @@ function createProjectedEntryDescriptor(
     entryId,
     parentEntryId: value.parentId,
     entryType: String(value.type),
+    timestamp,
+    messageRole,
+    branchSummaryFromEntryId:
+      value.type === 'branch_summary' && typeof value.fromId === 'string' ? value.fromId : null,
     sourceLine,
     startByte,
     endByte,
+    sourceFingerprint,
     firstKeptEntryId:
       value.type === 'compaction' && typeof value.firstKeptEntryId === 'string'
         ? value.firstKeptEntryId
@@ -247,7 +272,7 @@ function projectAppendRecords(
       }
       projectionsById.set(
         logicalSessionId,
-        createLogicalProjection(input.physicalProjection, logicalSessionId),
+        createLogicalProjection(input.physicalProjection, logicalSessionId, record),
       );
       currentLogicalSessionId = logicalSessionId;
       continue;
@@ -274,6 +299,7 @@ function projectAppendRecords(
       record.sourceLine,
       record.startByte,
       record.endByte,
+      record.sourceFingerprint,
     );
     if (descriptor === null) {
       return null;

@@ -42,7 +42,7 @@ void test('index manifest round-trips the complete reproducibility identity atom
   assert.equal(manifest.manifestVersion, 6);
   assert.deepEqual(manifest.importPolicy, { version: 3 });
   assert.equal(manifest.markerSchemaVersion, 1);
-  assert.equal(manifest.sessionProjectionSchemaVersion, 2);
+  assert.equal(manifest.sessionProjectionSchemaVersion, 3);
   assert.equal(Object.hasOwn(createEmbeddingVectorCacheIdentity(manifest), 'importPolicy'), false);
   assert.equal(
     manifest.embedding.canaryFingerprint,

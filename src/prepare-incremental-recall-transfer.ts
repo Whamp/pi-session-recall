@@ -1,10 +1,7 @@
 import type { RecallMarkerReplayWorkPlan } from './coordinate-recall-marker-replay.js';
 import type { EmbeddingVectorCache } from './embedding-vector-cache.js';
 import { RecallProjectionEncodingStatus, RecallProjectionRepairReason } from './enums.js';
-import {
-  parseRecallSessionGraph,
-  type CanonicalSessionRepresentation,
-} from './parse-recall-session-record.js';
+import type { IncrementalRecallEligibleGraphView } from './materialize-incremental-recall-eligible-graph-view.js';
 import type { RecallChunkPolicy } from './recall-chunk-policy.js';
 import {
   encodeRecallSessionProjection,
@@ -22,7 +19,7 @@ import type { IndexedSessionConversationChunk } from './zvec-conversation-store.
 
 /** One validated logical graph plus only the spans that crossed recall eligibility now. */
 export interface IncrementalRecallEligibleLogicalSession {
-  canonicalSession: CanonicalSessionRepresentation;
+  graphView: IncrementalRecallEligibleGraphView;
   logicalProjection: LogicalSessionProjection;
   newlyEligibleSpans: readonly RecallEligibleSourceSpan[];
 }
@@ -248,11 +245,11 @@ export async function prepareIncrementalRecallTransfer(
   }
   const tokenizer = await options.loadTokenizer();
   const builtDocuments = options.eligibleSessions.flatMap(
-    ({ canonicalSession, logicalProjection, newlyEligibleSpans }) => {
-      if (canonicalSession.logicalSessionId !== logicalProjection.logicalSessionId) {
+    ({ graphView, logicalProjection, newlyEligibleSpans }) => {
+      if (graphView.logicalSessionId !== logicalProjection.logicalSessionId) {
         throw new Error('Recall incremental preparation logical session identity mismatch');
       }
-      const graph = parseRecallSessionGraph(canonicalSession);
+      const graph = graphView.graph;
       const newlyEligibleContributorEntryIds = new Set(
         newlyEligibleSpans.flatMap(({ contributorEntryIds }) => contributorEntryIds),
       );
@@ -260,7 +257,7 @@ export async function prepareIncrementalRecallTransfer(
         graph,
         new Set(logicalProjection.eligibleContributorEntryIds),
         {
-          sessionPath: canonicalSession.physicalPath,
+          sessionPath: graphView.physicalPath,
           logicalSessionIdentity: logicalProjection.logicalSessionId,
           physicalSessionProjectionId: options.physicalProjection.projectionId,
           newlyEligibleContributorEntryIds,

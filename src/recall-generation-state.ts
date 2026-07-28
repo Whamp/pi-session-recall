@@ -56,7 +56,7 @@ export interface RecallGenerationRegistryEntry {
   state: RecallGenerationCutoverState;
   indexManifestVersion: 5 | 6;
   markerSchemaVersion: 1 | null;
-  sessionProjectionSchemaVersion: 2 | null;
+  sessionProjectionSchemaVersion: 3 | null;
   indexManifestFingerprint: string;
   rebuildStartedAtEpochMilliseconds: number;
   stateChangedAtEpochMilliseconds: number;

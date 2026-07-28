@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import test from 'node:test';
 
 import type { RecallMarkerReplayWorkPlan } from './coordinate-recall-marker-replay.js';
@@ -11,7 +12,10 @@ import {
   RecallWorkMarkerTrigger,
   SessionImportFormat,
 } from './enums.js';
-import type { CanonicalSessionRepresentation } from './parse-recall-session-record.js';
+import {
+  parseRecallSessionGraph,
+  type CanonicalSessionRepresentation,
+} from './parse-recall-session-record.js';
 import {
   prepareIncrementalRecallTransfer,
   type IncrementalRecallEligibleLogicalSession,
@@ -147,13 +151,31 @@ function createPreparationFixture(): {
     },
     runtimeLeafObservations: [],
     preservedBranchExits: [],
+    headerDescriptor: {
+      sourceLine: 1,
+      startByte: 0,
+      endByte: 100,
+      sourceFingerprint: createHash('sha256').update(JSON.stringify(records[0])).digest('hex'),
+      cwd: '/isolated/project',
+      parentSessionPath: null,
+    },
     entryDescriptors: records.slice(1).map((value, index) => ({
       entryId: value.id,
       parentEntryId: value.parentId ?? null,
       entryType: value.type,
+      timestamp: value.timestamp,
+      messageRole:
+        value.type === 'message' && 'message' in value && typeof value.message.role === 'string'
+          ? value.message.role
+          : null,
+      branchSummaryFromEntryId:
+        value.type === 'branch_summary' && 'fromId' in value && typeof value.fromId === 'string'
+          ? value.fromId
+          : null,
       sourceLine: index + 2,
       startByte: 100 + index * 100,
       endByte: 200 + index * 100,
+      sourceFingerprint: createHash('sha256').update(JSON.stringify(value)).digest('hex'),
       firstKeptEntryId:
         value.type === 'compaction' && typeof value.firstKeptEntryId === 'string'
           ? value.firstKeptEntryId
@@ -181,7 +203,11 @@ function createPreparationFixture(): {
     physicalProjection,
     eligibleSessions: [
       {
-        canonicalSession,
+        graphView: {
+          graph: parseRecallSessionGraph(canonicalSession),
+          physicalPath: canonicalSession.physicalPath,
+          logicalSessionId: canonicalSession.logicalSessionId,
+        },
         logicalProjection,
         newlyEligibleSpans: [
           {

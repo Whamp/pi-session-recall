@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import { SessionImportFormat } from './enums.js';
 import { isUnknownRecord } from './is-unknown-record.js';
 import type { RecallProjectedEntryDescriptor } from './recall-session-projection.js';
@@ -23,6 +25,7 @@ export interface ParsedRecallSessionRecord {
   sourceLine: number;
   startByte: number;
   endByte: number;
+  sourceFingerprint: string;
   value: Record<string, unknown>;
 }
 
@@ -48,7 +51,13 @@ export function parseRecallSessionRecord(
       `Recall session graph invalid at ${sourcePath}:${sourceLine}: each record must be an object with a type`,
     );
   }
-  return { sourceLine, startByte, endByte, value: parsed };
+  return {
+    sourceLine,
+    startByte,
+    endByte,
+    sourceFingerprint: createHash('sha256').update(text).digest('hex'),
+    value: parsed,
+  };
 }
 
 /** Reports whether a record is a complete current canonical logical-session header. */
@@ -64,6 +73,7 @@ export function isSupportedRecallSessionHeader(record: Record<string, unknown>):
   );
 }
 
+/** Validated logical-session identity and source origin used by recall document construction. */
 export interface ParsedRecallSessionHeader {
   id: string;
   cwd: string;
@@ -71,6 +81,7 @@ export interface ParsedRecallSessionHeader {
   lineIndex: number;
 }
 
+/** Validated session-graph entry retaining its complete record and physical source line. */
 export interface ParsedRecallSessionEntry {
   id: string;
   parentId: string | null;
@@ -80,6 +91,7 @@ export interface ParsedRecallSessionEntry {
   record: Record<string, unknown>;
 }
 
+/** Strict logical-session graph with validated topology, lifecycle state, and tool relationships. */
 export interface ParsedRecallSessionGraph {
   header: ParsedRecallSessionHeader;
   entries: ParsedRecallSessionEntry[];

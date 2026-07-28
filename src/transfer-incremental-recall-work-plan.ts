@@ -11,7 +11,7 @@ import {
   RecallSessionProjectionKind,
   RecallSourceAvailability,
 } from './enums.js';
-import { importSessionJsonl } from './import-session-jsonl.js';
+import { materializeIncrementalRecallEligibleGraphView } from './materialize-incremental-recall-eligible-graph-view.js';
 import { prepareIncrementalRecallTransfer } from './prepare-incremental-recall-transfer.js';
 import { projectRecallSessionAppend } from './project-recall-session-append.js';
 import type { RecallChunkPolicy } from './recall-chunk-policy.js';
@@ -23,7 +23,10 @@ import {
   type PhysicalSessionProjection,
   type RecallEligibleSourceSpan,
 } from './recall-session-projection.js';
-import { readRecallSessionAppendDelta } from './read-recall-session-append-delta.js';
+import {
+  readRecallSessionAppendDelta,
+  type RecallSessionSourceRangeReader,
+} from './read-recall-session-append-delta.js';
 import type { ResolvedProjectIdentity } from './resolve-project-identity.js';
 import type { ConversationTextTokenizer } from './session-conversation-index.js';
 import { commitIncrementalRecallTransfer } from './commit-incremental-recall-transfer.js';
@@ -40,6 +43,7 @@ export interface TransferIncrementalRecallWorkPlanOptions {
   loadTokenizer(): Promise<ConversationTextTokenizer>;
   resolveProjectIdentity(sessionOrigin: string): Promise<ResolvedProjectIdentity | null>;
   embeddingCache: Pick<EmbeddingVectorCache, 'resolveEmbeddingVectors'>;
+  readRange?: RecallSessionSourceRangeReader;
   signal?: AbortSignal;
 }
 
@@ -164,6 +168,7 @@ export async function transferIncrementalRecallWorkPlan(
   const appendDelta = await readRecallSessionAppendDelta(
     firstMarker.physicalSessionPath,
     physicalProjection,
+    options.readRange ? { readRange: options.readRange } : {},
   );
   if (appendDelta.status !== RecallAppendDeltaStatus.APPENDED) {
     throw new Error(
@@ -182,26 +187,22 @@ export async function transferIncrementalRecallWorkPlan(
       `Recall incremental projection requires reconciliation: ${projected.repairReason}`,
     );
   }
-  const imported = await importSessionJsonl(firstMarker.physicalSessionPath);
-  const canonicalSessions = new Map(
-    imported.sessions.map((session) => [session.logicalSessionId, session]),
-  );
-  const eligibleSessions = projected.logicalProjections.map((logicalProjection) => {
-    const canonicalSession = canonicalSessions.get(logicalProjection.logicalSessionId);
-    if (canonicalSession === undefined) {
-      throw new Error(
-        `Recall incremental canonical session missing: ${logicalProjection.logicalSessionId}`,
-      );
-    }
-    return {
-      canonicalSession,
-      logicalProjection,
-      newlyEligibleSpans: spansForLogicalProjection(
+  const eligibleSessions = await Promise.all(
+    projected.logicalProjections.map(async (logicalProjection) => {
+      const newlyEligibleSpans = spansForLogicalProjection(
         projected.newlyEligibleSpans,
         logicalProjection,
-      ),
-    };
-  });
+      );
+      const graphView = await materializeIncrementalRecallEligibleGraphView({
+        physicalProjection: projected.physicalProjection,
+        logicalProjection,
+        newlyEligibleSpans,
+        appendDelta,
+        ...(options.readRange ? { readRange: options.readRange } : {}),
+      });
+      return { graphView, logicalProjection, newlyEligibleSpans };
+    }),
+  );
   const prepared = await prepareIncrementalRecallTransfer({
     physicalProjection: projected.physicalProjection,
     eligibleSessions,

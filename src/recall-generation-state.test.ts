@@ -144,7 +144,7 @@ void test('generation registry round-trips cutover states and rejects inconsiste
         JSON.stringify({
           ...registry,
           generations: registry.generations.map((generation, index) =>
-            index === 0 ? { ...generation, sessionProjectionSchemaVersion: 3 } : generation,
+            index === 0 ? { ...generation, sessionProjectionSchemaVersion: 4 } : generation,
           ),
         }),
       ),

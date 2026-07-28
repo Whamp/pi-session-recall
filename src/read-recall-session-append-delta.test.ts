@@ -106,6 +106,9 @@ void test('append reader advances through complete LF-framed records and retains
       sourceLine: 2,
       startByte: header.length,
       endByte: header.length + complete.length,
+      sourceFingerprint: createHash('sha256')
+        .update(complete.subarray(0, complete.length - 2))
+        .digest('hex'),
       value: {
         type: 'message',
         id: 'entry-1',

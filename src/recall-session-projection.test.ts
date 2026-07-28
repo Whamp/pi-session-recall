@@ -86,14 +86,26 @@ function createLogicalProjection(): LogicalSessionProjection {
         summaryEntryId: null,
       },
     ],
+    headerDescriptor: {
+      sourceLine: 1,
+      startByte: 0,
+      endByte: 128,
+      sourceFingerprint: 'a'.repeat(64),
+      cwd: '/isolated/project',
+      parentSessionPath: null,
+    },
     entryDescriptors: [
       {
         entryId: 'entry-span-first',
         parentEntryId: null,
         entryType: 'message',
+        timestamp: '2026-01-01T00:00:00Z',
+        messageRole: 'user',
+        branchSummaryFromEntryId: null,
         sourceLine: 2,
         startByte: 128,
         endByte: 512,
+        sourceFingerprint: 'b'.repeat(64),
         firstKeptEntryId: null,
         hasRetainedTail: false,
         toolCalls: [],
@@ -173,7 +185,7 @@ void test('projection codec rejects forward versions, extra fields, generation m
     );
 
   assert.throws(
-    () => decodeInner({ ...projection, schemaVersion: 3 }),
+    () => decodeInner({ ...projection, schemaVersion: 4 }),
     /projection|schema|invalid/iu,
   );
   assert.throws(() => decodeInner({ ...projection, unexpected: true }), /projection|invalid/iu);

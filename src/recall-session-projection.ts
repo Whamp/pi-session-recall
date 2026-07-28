@@ -13,7 +13,7 @@ import {
 } from './enums.js';
 
 /** Current strict schema version for physical and logical session projections. */
-export const RECALL_SESSION_PROJECTION_SCHEMA_VERSION = 2;
+export const RECALL_SESSION_PROJECTION_SCHEMA_VERSION = 3;
 
 /** Maximum encoded scalar projection candidate size accepted without reconciliation. */
 export const RECALL_SESSION_PROJECTION_MAX_BYTES = 1_048_576;
@@ -68,14 +68,28 @@ export interface RecallProjectedToolResult {
   toolName: string;
 }
 
+/** Scalar source geometry and identity retained for one logical-session header. */
+export interface RecallProjectedSessionHeaderDescriptor {
+  sourceLine: number;
+  startByte: number;
+  endByte: number;
+  sourceFingerprint: string;
+  cwd: string;
+  parentSessionPath: string | null;
+}
+
 /** Scalar source geometry and graph links retained for one canonical session entry. */
 export interface RecallProjectedEntryDescriptor {
   entryId: string;
   parentEntryId: string | null;
   entryType: string;
+  timestamp: string;
+  messageRole: string | null;
+  branchSummaryFromEntryId: string | null;
   sourceLine: number;
   startByte: number;
   endByte: number;
+  sourceFingerprint: string;
   firstKeptEntryId: string | null;
   hasRetainedTail: boolean;
   toolCalls: RecallProjectedToolCall[];
@@ -92,7 +106,7 @@ export interface RecallEligibleSourceSpan {
 }
 
 interface RecallSessionProjectionBase {
-  schemaVersion: 2;
+  schemaVersion: 3;
   projectionKind: RecallSessionProjectionKind;
   projectionId: string;
   generationId: string;
@@ -140,6 +154,7 @@ export interface LogicalSessionProjection extends RecallSessionProjectionBase {
   compactionBoundary: RecallCompactionBoundary | null;
   runtimeLeafObservations: RecallRuntimeLeafObservation[];
   preservedBranchExits: RecallPreservedBranchExit[];
+  headerDescriptor: RecallProjectedSessionHeaderDescriptor;
   entryDescriptors: RecallProjectedEntryDescriptor[];
   eligibleContributorEntryIds: string[];
   eligibleSpans: RecallEligibleSourceSpan[];
@@ -151,7 +166,7 @@ export type RecallSessionProjection = PhysicalSessionProjection | LogicalSession
 
 /** Scalar-only zvec candidate containing one strict projection as canonical JSON. */
 export interface EncodedRecallSessionProjectionPayload {
-  schemaVersion: 2;
+  schemaVersion: 3;
   projectionKind: RecallSessionProjectionKind;
   projectionId: string;
   generationId: string;
@@ -291,15 +306,30 @@ const logicalSessionProjectionSchema = Type.Object(
         { additionalProperties: false },
       ),
     ),
+    headerDescriptor: Type.Object(
+      {
+        sourceLine: Type.Integer({ minimum: 1 }),
+        startByte: Type.Integer({ minimum: 0 }),
+        endByte: Type.Integer({ minimum: 1 }),
+        sourceFingerprint: Type.String({ pattern: '^[a-f0-9]{64}$' }),
+        cwd: Type.String(),
+        parentSessionPath: Type.Union([Type.String(), Type.Null()]),
+      },
+      { additionalProperties: false },
+    ),
     entryDescriptors: Type.Array(
       Type.Object(
         {
           entryId: nonemptyStringSchema,
           parentEntryId: nullableIdentifierSchema,
           entryType: nonemptyStringSchema,
+          timestamp: nonemptyStringSchema,
+          messageRole: Type.Union([nonemptyStringSchema, Type.Null()]),
+          branchSummaryFromEntryId: nullableIdentifierSchema,
           sourceLine: Type.Integer({ minimum: 1 }),
           startByte: Type.Integer({ minimum: 0 }),
           endByte: Type.Integer({ minimum: 1 }),
+          sourceFingerprint: Type.String({ pattern: '^[a-f0-9]{64}$' }),
           firstKeptEntryId: nullableIdentifierSchema,
           hasRetainedTail: Type.Boolean(),
           toolCalls: Type.Array(
@@ -492,6 +522,11 @@ function assertRecallSessionProjectionInvariants(projection: RecallSessionProjec
     projection.eligibleContributorEntryIds,
     'eligible contributor entry IDs',
   );
+  if (projection.headerDescriptor.endByte <= projection.headerDescriptor.startByte) {
+    throw new Error(
+      `Recall logical session projection header descriptor invalid: ${projection.headerDescriptor.startByte}-${projection.headerDescriptor.endByte}`,
+    );
+  }
   for (const descriptor of projection.entryDescriptors) {
     if (descriptor.endByte <= descriptor.startByte) {
       throw new Error(

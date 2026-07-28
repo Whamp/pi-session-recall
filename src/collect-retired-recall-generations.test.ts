@@ -26,7 +26,7 @@ function createGenerationEntry(
     state,
     indexManifestVersion: 6,
     markerSchemaVersion: 1,
-    sessionProjectionSchemaVersion: 2,
+    sessionProjectionSchemaVersion: 3,
     indexManifestFingerprint: createRecallActiveGenerationPointer(generationId).checksum,
     rebuildStartedAtEpochMilliseconds: 1,
     stateChangedAtEpochMilliseconds: 2,

@@ -1,17 +1,17 @@
 import assert from 'node:assert/strict';
-import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { access, appendFile, mkdir, mkdtemp, open, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { RecallWorkMarkerTrigger } from './enums.js';
+import { RecallSessionProjectionKind, RecallWorkMarkerTrigger } from './enums.js';
 import { createPhysicalSessionProjectionId } from './recall-session-projection.js';
 import { createRecallWorkMarkerId, type RecallWorkMarker } from './recall-work-marker.js';
 import { transferIncrementalRecallWorkPlan } from './transfer-incremental-recall-work-plan.js';
 import { openZvecConversationStore } from './zvec-conversation-store.js';
 import { openZvecSessionProjectionStore } from './zvec-session-projection-store.js';
 
-void test('durable marker becomes searchable evidence before checkpoint acknowledgement', async (t) => {
+void test('nonzero durable append cursor commits new evidence without a whole-session read', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'recall-transfer-work-plan-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const sessionsDirectory = join(directory, 'sessions');
@@ -38,7 +38,10 @@ void test('durable marker becomes searchable evidence before checkpoint acknowle
         id: 'entry-1',
         parentId: null,
         timestamp: '2026-07-28T00:00:01Z',
-        message: { role: 'user', content: 'durable marker searchable evidence' },
+        message: {
+          role: 'user',
+          content: `durable marker searchable evidence ${'old-body-padding '.repeat(400)}`,
+        },
       },
     ]
       .map((record) => JSON.stringify(record))
@@ -65,15 +68,7 @@ void test('durable marker becomes searchable evidence before checkpoint acknowle
   });
   emptyProjectionStore.close();
 
-  await transferIncrementalRecallWorkPlan({
-    workPlan: {
-      targetGenerationId: generationId,
-      markerSpoolDirectory,
-      discoveredMarkerCount: 1,
-      sourceMarkerIds: [marker.markerId],
-      workItems: [{ marker, coveredMarkerIds: [marker.markerId] }],
-      quarantineDiagnostics: [],
-    },
+  const transferDependencies = {
     lockPath: join(directory, 'operation.lock'),
     evidenceDatabasePath,
     projectionDatabasePath,
@@ -81,7 +76,7 @@ void test('durable marker becomes searchable evidence before checkpoint acknowle
     chunkPolicy: { maxTokens: 64, overlapTokens: 8 },
     async loadTokenizer() {
       return {
-        encodeConversationText(text) {
+        encodeConversationText(text: string) {
           return {
             ids: text
               .split(/\s+/u)
@@ -95,7 +90,7 @@ void test('durable marker becomes searchable evidence before checkpoint acknowle
       return null;
     },
     embeddingCache: {
-      async resolveEmbeddingVectors(texts) {
+      async resolveEmbeddingVectors(texts: readonly string[]) {
         return {
           vectors: texts.map(() => [1, 0, 0]),
           cacheHits: 0,
@@ -106,7 +101,84 @@ void test('durable marker becomes searchable evidence before checkpoint acknowle
         };
       },
     },
+  };
+  await transferIncrementalRecallWorkPlan({
+    ...transferDependencies,
+    workPlan: {
+      targetGenerationId: generationId,
+      markerSpoolDirectory,
+      discoveredMarkerCount: 1,
+      sourceMarkerIds: [marker.markerId],
+      workItems: [{ marker, coveredMarkerIds: [marker.markerId] }],
+      quarantineDiagnostics: [],
+    },
   });
+
+  const initialSourceSize = Number((await stat(sessionPath)).size);
+  await appendFile(
+    sessionPath,
+    `${JSON.stringify({
+      type: 'message',
+      id: 'entry-2',
+      parentId: 'entry-1',
+      timestamp: '2026-07-28T00:00:02Z',
+      message: { role: 'assistant', content: 'new bounded append evidence' },
+    })}\n`,
+  );
+  const secondMarkerIdentity = {
+    ...markerIdentity,
+    runtimeSequence: 2,
+    createdAtEpochMilliseconds: 2,
+  } as const;
+  const secondMarker: RecallWorkMarker = {
+    ...secondMarkerIdentity,
+    markerId: createRecallWorkMarkerId(secondMarkerIdentity),
+  };
+  const secondMarkerPath = join(markerSpoolDirectory, `${secondMarker.markerId}.json`);
+  await writeFile(secondMarkerPath, '{}\n');
+  const readRanges: Array<{ startByte: number; endByteExclusive: number }> = [];
+  await transferIncrementalRecallWorkPlan({
+    ...transferDependencies,
+    workPlan: {
+      targetGenerationId: generationId,
+      markerSpoolDirectory,
+      discoveredMarkerCount: 1,
+      sourceMarkerIds: [secondMarker.markerId],
+      workItems: [{ marker: secondMarker, coveredMarkerIds: [secondMarker.markerId] }],
+      quarantineDiagnostics: [],
+    },
+    async *readRange(sourcePath, startByte, endByteExclusive) {
+      readRanges.push({ startByte, endByteExclusive });
+      const handle = await open(sourcePath, 'r');
+      try {
+        const bytes = Buffer.alloc(endByteExclusive - startByte);
+        const result = await handle.read(bytes, 0, bytes.length, startByte);
+        yield bytes.subarray(0, result.bytesRead);
+      } finally {
+        await handle.close();
+      }
+    },
+  });
+  const finalSourceSize = Number((await stat(sessionPath)).size);
+  assert.ok(
+    readRanges.some(
+      (range) =>
+        range.startByte === Math.max(0, initialSourceSize - 4_096) &&
+        range.endByteExclusive === initialSourceSize,
+    ),
+  );
+  assert.ok(
+    readRanges.some(
+      (range) =>
+        range.startByte === initialSourceSize && range.endByteExclusive === finalSourceSize,
+    ),
+  );
+  assert.equal(
+    readRanges.some(
+      ({ startByte, endByteExclusive }) => startByte === 0 && endByteExclusive === finalSourceSize,
+    ),
+    false,
+  );
 
   const evidenceStore = openZvecConversationStore({
     databasePath: evidenceDatabasePath,
@@ -115,11 +187,18 @@ void test('durable marker becomes searchable evidence before checkpoint acknowle
     readOnly: true,
   });
   try {
-    const result = await evidenceStore.searchLexicalCandidates('searchable evidence', 5);
+    const initialResult = await evidenceStore.searchLexicalCandidates('searchable evidence', 5);
     assert.equal(
-      result.some(({ content }) => content.includes('searchable evidence')),
+      initialResult.some(({ content }) => content.includes('searchable evidence')),
       true,
     );
+    const appendedResult = await evidenceStore.searchLexicalCandidates('bounded append', 5);
+    const appendedEvidence = appendedResult.find(({ content }) =>
+      content.includes('bounded append evidence'),
+    );
+    assert.ok(appendedEvidence);
+    assert.equal(appendedEvidence.sourceLineStart, 3);
+    assert.equal(appendedEvidence.sourceLineEnd, 3);
   } finally {
     evidenceStore.close();
   }
@@ -138,8 +217,23 @@ void test('durable marker becomes searchable evidence before checkpoint acknowle
       physicalProjection?.markerCheckpoint.coveredMarkerIds.includes(marker.markerId),
       true,
     );
+    assert.equal(physicalProjection?.projectionKind, RecallSessionProjectionKind.PHYSICAL_SESSION);
+    if (
+      physicalProjection === undefined ||
+      physicalProjection.projectionKind !== RecallSessionProjectionKind.PHYSICAL_SESSION
+    ) {
+      return;
+    }
+    assert.equal(physicalProjection.appendCursorBytes, finalSourceSize);
+    assert.equal(
+      physicalProjection.markerCheckpoint.coveredMarkerIds.filter(
+        (markerId) => markerId === secondMarker.markerId,
+      ).length,
+      1,
+    );
   } finally {
     projectionStore.close();
   }
   await assert.rejects(() => access(markerPath), { code: 'ENOENT' });
+  await assert.rejects(() => access(secondMarkerPath), { code: 'ENOENT' });
 });

@@ -11,13 +11,14 @@ import type { PhysicalSessionProjection } from './recall-session-projection.js';
 
 const RECALL_APPEND_BOUNDARY_WINDOW_BYTES = 4_096;
 
+/** Reads one exact half-open source byte range for bounded append and graph materialization. */
+export interface RecallSessionSourceRangeReader {
+  (sourcePath: string, startByte: number, endByteExclusive: number): AsyncIterable<Buffer>;
+}
+
 /** Injectable bounded range reader used to verify which source bytes append projection consumes. */
 export interface RecallSessionAppendReadOptions {
-  readRange?: (
-    sourcePath: string,
-    startByte: number,
-    endByteExclusive: number,
-  ) => AsyncIterable<Buffer>;
+  readRange?: RecallSessionSourceRangeReader;
 }
 
 /** Successfully framed complete append records and the next durable physical cursor. */
@@ -43,7 +44,11 @@ export type RecallSessionAppendDeltaResult =
   | RecallSessionAppendDelta
   | RecallSessionAppendReconciliation;
 
-async function* readRecallFileRange(
+/**
+ * Streams one exact half-open range from a physical session source.
+ * @yields Bounded source byte chunks in ascending file order.
+ */
+export async function* readRecallSessionSourceRange(
   sourcePath: string,
   startByte: number,
   endByteExclusive: number,
@@ -174,7 +179,7 @@ export async function readRecallSessionAppendDelta(
     return reconciliation(RecallProjectionRepairReason.SOURCE_SHRANK);
   }
 
-  const readRange = options.readRange ?? readRecallFileRange;
+  const readRange = options.readRange ?? readRecallSessionSourceRange;
   const boundaryStart = Math.max(0, cursorBytes - RECALL_APPEND_BOUNDARY_WINDOW_BYTES);
   const boundaryBytes =
     boundaryStart === cursorBytes

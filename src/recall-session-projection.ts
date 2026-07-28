@@ -149,7 +149,7 @@ export interface LogicalSessionProjection extends RecallSessionProjectionBase {
   projectionKind: RecallSessionProjectionKind.LOGICAL_SESSION;
   physicalProjectionId: string;
   logicalSessionId: string;
-  /** Raw header ID retained separately when reuse history requires an occurrence identity. */
+  /** Raw logical-session header ID retained separately from the stable occurrence identity. */
   rawSessionId?: string;
   effectiveLeafEntryId: string | null;
   activeContextBoundary: RecallActiveContextBoundary | null;
@@ -393,6 +393,14 @@ function createProjectionDigest(domain: string, parts: readonly string[]): strin
 /** Derives the deterministic zvec-safe ID for one physical session projection. */
 export function createPhysicalSessionProjectionId(physicalSessionId: string): string {
   return `physical_${createProjectionDigest('physical_session_projection_v1', [physicalSessionId])}`;
+}
+
+/** Identifies one logical-session occurrence from its raw header ID and first source line. */
+export function createLogicalSessionOccurrenceId(
+  rawSessionId: string,
+  headerSourceLine: number,
+): string {
+  return `${rawSessionId}@${headerSourceLine}`;
 }
 
 /** Derives the deterministic zvec-safe ID for one logical session projection. */

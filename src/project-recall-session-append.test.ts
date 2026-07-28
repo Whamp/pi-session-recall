@@ -16,7 +16,10 @@ import {
   RecallSourceAvailability,
   RecallWorkMarkerTrigger,
 } from './enums.js';
-import { projectRecallSessionAppend } from './project-recall-session-append.js';
+import {
+  projectRecallSessionAppend,
+  type ProjectRecallSessionAppendInput,
+} from './project-recall-session-append.js';
 import {
   createPhysicalSessionProjectionId,
   RECALL_SESSION_PROJECTION_SCHEMA_VERSION,
@@ -215,6 +218,156 @@ void test('projector gives repeated raw header IDs distinct occurrence identitie
   );
 });
 
+void test('projector keeps the first repeated-header occurrence identity stable across later appends and replay', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-project-stable-occurrence-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionPath = join(directory, 'session.jsonl');
+  const firstOccurrence = [
+    {
+      type: 'session',
+      version: 3,
+      id: 'reused-logical',
+      timestamp: '2026-01-01T00:00:00Z',
+      cwd: '/one',
+    },
+    {
+      type: 'message',
+      id: 'first-entry',
+      parentId: null,
+      timestamp: '2026-01-01T00:00:01Z',
+      message: { role: 'user', content: 'one' },
+    },
+  ];
+  await writeFile(sessionPath, jsonl(firstOccurrence));
+  const initialPhysicalProjection = await emptyPhysicalProjection(sessionPath);
+  const firstDelta = await readRecallSessionAppendDelta(sessionPath, initialPhysicalProjection);
+  assert.equal(firstDelta.status, RecallAppendDeltaStatus.APPENDED);
+  if (firstDelta.status !== RecallAppendDeltaStatus.APPENDED) {
+    return;
+  }
+  const firstProjection = projectRecallSessionAppend({
+    physicalProjection: initialPhysicalProjection,
+    logicalProjections: [],
+    appendDelta: firstDelta,
+    markers: [],
+    quiescenceObserved: false,
+  });
+  assert.equal(firstProjection.status, RecallAppendProjectionStatus.PROJECTED);
+  if (firstProjection.status !== RecallAppendProjectionStatus.PROJECTED) {
+    return;
+  }
+  const firstLogicalProjection = firstProjection.logicalProjections[0];
+  assert.equal(firstLogicalProjection?.logicalSessionId, 'reused-logical@1');
+  assert.equal(firstLogicalProjection?.rawSessionId, 'reused-logical');
+
+  await appendFile(
+    sessionPath,
+    jsonl([
+      {
+        type: 'session',
+        version: 3,
+        id: 'reused-logical',
+        timestamp: '2026-01-02T00:00:00Z',
+        cwd: '/two',
+      },
+      {
+        type: 'message',
+        id: 'second-entry',
+        parentId: null,
+        timestamp: '2026-01-02T00:00:01Z',
+        message: { role: 'user', content: 'two' },
+      },
+    ]),
+  );
+  const secondDelta = await readRecallSessionAppendDelta(
+    sessionPath,
+    firstProjection.physicalProjection,
+  );
+  assert.equal(secondDelta.status, RecallAppendDeltaStatus.APPENDED);
+  if (secondDelta.status !== RecallAppendDeltaStatus.APPENDED) {
+    return;
+  }
+  const secondProjection = projectRecallSessionAppend({
+    physicalProjection: firstProjection.physicalProjection,
+    logicalProjections: firstProjection.logicalProjections,
+    appendDelta: secondDelta,
+    markers: [],
+    quiescenceObserved: false,
+  });
+  assert.equal(secondProjection.status, RecallAppendProjectionStatus.PROJECTED);
+  if (secondProjection.status !== RecallAppendProjectionStatus.PROJECTED) {
+    return;
+  }
+  assert.deepEqual(
+    secondProjection.logicalProjections.map(({ logicalSessionId, projectionId }) => ({
+      logicalSessionId,
+      projectionId,
+    })),
+    [
+      {
+        logicalSessionId: 'reused-logical@1',
+        projectionId: firstLogicalProjection?.projectionId,
+      },
+      {
+        logicalSessionId: 'reused-logical@3',
+        projectionId: secondProjection.logicalProjections[1]?.projectionId,
+      },
+    ],
+  );
+
+  const uniqueBranchMarker = marker('unique-repeated-raw-branch', {
+    kind: RecallWorkMarkerTrigger.BRANCH_EXIT,
+    logicalSessionId: 'reused-logical',
+    oldLeafEntryId: 'first-entry',
+    newLeafEntryId: null,
+  });
+  const routed = projectRecallSessionAppend({
+    physicalProjection: secondProjection.physicalProjection,
+    logicalProjections: secondProjection.logicalProjections,
+    appendDelta: { ...secondDelta, records: [] },
+    markers: [uniqueBranchMarker],
+    quiescenceObserved: false,
+  });
+  assert.equal(routed.status, RecallAppendProjectionStatus.PROJECTED);
+  if (routed.status !== RecallAppendProjectionStatus.PROJECTED) {
+    return;
+  }
+  assert.deepEqual(
+    routed.logicalProjections.map((projection) => ({
+      logicalSessionId: projection.logicalSessionId,
+      eligibleEntryIds: projection.eligibleContributorEntryIds,
+      coveredMarkerIds: projection.markerCheckpoint.coveredMarkerIds,
+    })),
+    [
+      {
+        logicalSessionId: 'reused-logical@1',
+        eligibleEntryIds: ['first-entry'],
+        coveredMarkerIds: [uniqueBranchMarker.markerId],
+      },
+      {
+        logicalSessionId: 'reused-logical@3',
+        eligibleEntryIds: [],
+        coveredMarkerIds: [],
+      },
+    ],
+  );
+
+  const replay = projectRecallSessionAppend({
+    physicalProjection: routed.physicalProjection,
+    logicalProjections: routed.logicalProjections,
+    appendDelta: { ...secondDelta, records: [] },
+    markers: [uniqueBranchMarker],
+    quiescenceObserved: false,
+  });
+  assert.equal(replay.status, RecallAppendProjectionStatus.PROJECTED);
+  if (replay.status !== RecallAppendProjectionStatus.PROJECTED) {
+    return;
+  }
+  assert.deepEqual(replay.newlyEligibleSpans, []);
+  assert.deepEqual(replay.physicalProjection, routed.physicalProjection);
+  assert.deepEqual(replay.logicalProjections, routed.logicalProjections);
+});
+
 void test('projector scopes colliding context exits to their logical sessions with durable provenance', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'recall-project-reused-session-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -409,6 +562,121 @@ void test('projector scopes colliding context exits to their logical sessions wi
   assert.deepEqual(replayed.newlyEligibleSpans, []);
   assert.deepEqual(replayed.physicalProjection, projected.physicalProjection);
   assert.deepEqual(replayed.logicalProjections, projected.logicalProjections);
+});
+
+void test('projector reconciles context-exit markers that resolve to zero or multiple logical occurrences', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-project-ambiguous-marker-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionPath = join(directory, 'session.jsonl');
+  const repeatedGraph = (timestampDate: string) => [
+    {
+      type: 'session',
+      version: 3,
+      id: 'reused-logical',
+      timestamp: `${timestampDate}T00:00:00Z`,
+      cwd: '/project',
+    },
+    {
+      type: 'message',
+      id: 'shared-root',
+      parentId: null,
+      timestamp: `${timestampDate}T00:00:01Z`,
+      message: { role: 'user', content: 'root' },
+    },
+    {
+      type: 'message',
+      id: 'shared-old',
+      parentId: 'shared-root',
+      timestamp: `${timestampDate}T00:00:02Z`,
+      message: { role: 'assistant', content: 'old' },
+    },
+    {
+      type: 'message',
+      id: 'shared-new',
+      parentId: 'shared-root',
+      timestamp: `${timestampDate}T00:00:03Z`,
+      message: { role: 'assistant', content: 'new' },
+    },
+    {
+      type: 'branch_summary',
+      id: 'shared-summary',
+      parentId: 'shared-new',
+      timestamp: `${timestampDate}T00:00:04Z`,
+      fromId: 'shared-old',
+      summary: 'summary',
+    },
+    {
+      type: 'compaction',
+      id: 'shared-compaction',
+      parentId: 'shared-summary',
+      timestamp: `${timestampDate}T00:00:05Z`,
+      summary: 'compaction',
+      firstKeptEntryId: 'shared-new',
+      tokensBefore: 100,
+    },
+  ];
+  await writeFile(
+    sessionPath,
+    jsonl([...repeatedGraph('2026-01-01'), ...repeatedGraph('2026-01-02')]),
+  );
+  const physicalProjection = await emptyPhysicalProjection(sessionPath);
+  const appendDelta = await readRecallSessionAppendDelta(sessionPath, physicalProjection);
+  assert.equal(appendDelta.status, RecallAppendDeltaStatus.APPENDED);
+  if (appendDelta.status !== RecallAppendDeltaStatus.APPENDED) {
+    return;
+  }
+  const baseline = projectRecallSessionAppend({
+    physicalProjection,
+    logicalProjections: [],
+    appendDelta,
+    markers: [],
+    quiescenceObserved: false,
+  });
+  assert.equal(baseline.status, RecallAppendProjectionStatus.PROJECTED);
+  if (baseline.status !== RecallAppendProjectionStatus.PROJECTED) {
+    return;
+  }
+
+  const ambiguousMarkers = [
+    marker('ambiguous-compaction', {
+      kind: RecallWorkMarkerTrigger.COMPACTION,
+      logicalSessionId: 'reused-logical',
+      compactionEntryId: 'shared-compaction',
+    }),
+    marker('ambiguous-branch', {
+      kind: RecallWorkMarkerTrigger.BRANCH_EXIT,
+      logicalSessionId: 'reused-logical',
+      oldLeafEntryId: 'shared-old',
+      newLeafEntryId: 'shared-new',
+      summaryEntryId: 'shared-summary',
+    }),
+    marker('missing-compaction', {
+      kind: RecallWorkMarkerTrigger.COMPACTION,
+      logicalSessionId: 'reused-logical',
+      compactionEntryId: 'missing-compaction',
+    }),
+  ];
+  for (const contextExitMarker of ambiguousMarkers) {
+    const replayInput: ProjectRecallSessionAppendInput = {
+      physicalProjection: baseline.physicalProjection,
+      logicalProjections: baseline.logicalProjections,
+      appendDelta: { ...appendDelta, records: [] },
+      markers: [contextExitMarker],
+      quiescenceObserved: false,
+    };
+    const expected = {
+      status: RecallAppendProjectionStatus.REQUIRES_RECONCILIATION,
+      repairReason: RecallProjectionRepairReason.MALFORMED_GRAPH,
+    } as const;
+    assert.deepEqual(projectRecallSessionAppend(replayInput), expected);
+    assert.deepEqual(projectRecallSessionAppend(replayInput), expected);
+    assert.deepEqual(baseline.physicalProjection.markerCheckpoint.coveredMarkerIds, []);
+    assert.ok(
+      baseline.logicalProjections.every(
+        (projection) => projection.markerCheckpoint.coveredMarkerIds.length === 0,
+      ),
+    );
+  }
 });
 
 void test('projector applies label metadata and explicit leaf records without making content eligible', async () => {

@@ -13,6 +13,7 @@ import {
   type ParsedRecallSessionRecord,
 } from './parse-recall-session-record.js';
 import {
+  createLogicalSessionOccurrenceId,
   createLogicalSessionProjectionId,
   createPhysicalSessionProjectionId,
   encodeRecallSessionProjection,
@@ -257,29 +258,10 @@ function updateLogicalActiveContext(
 function projectAppendRecords(
   input: ProjectRecallSessionAppendInput,
 ): LogicalSessionProjection[] | null {
-  const appendedHeaderCount = input.appendDelta.records.filter(
-    ({ value }) => value.type === 'session',
-  ).length;
-  const hasReuseHistory = input.logicalProjections.length + appendedHeaderCount > 1;
-  const normalizedLogicalProjections = input.logicalProjections.map((projection) => {
-    const rawSessionId = projection.rawSessionId ?? projection.logicalSessionId;
-    const logicalSessionId = hasReuseHistory
-      ? `${rawSessionId}@${projection.headerDescriptor.sourceLine}`
-      : rawSessionId;
-    return {
-      ...projection,
-      projectionId: createLogicalSessionProjectionId(
-        projection.physicalSessionId,
-        logicalSessionId,
-      ),
-      logicalSessionId,
-      rawSessionId,
-    };
-  });
   const projectionsById = new Map<string, LogicalSessionProjection>(
-    normalizedLogicalProjections.map((projection) => [projection.logicalSessionId, projection]),
+    input.logicalProjections.map((projection) => [projection.logicalSessionId, projection]),
   );
-  let currentLogicalSessionId = normalizedLogicalProjections.at(-1)?.logicalSessionId ?? null;
+  let currentLogicalSessionId = input.logicalProjections.at(-1)?.logicalSessionId ?? null;
   for (const record of input.appendDelta.records) {
     const value = record.value;
     if (value.type === 'session') {
@@ -287,9 +269,7 @@ function projectAppendRecords(
       if (rawSessionId === null || (value.version !== 2 && value.version !== 3)) {
         return null;
       }
-      const logicalSessionId = hasReuseHistory
-        ? `${rawSessionId}@${record.sourceLine}`
-        : rawSessionId;
+      const logicalSessionId = createLogicalSessionOccurrenceId(rawSessionId, record.sourceLine);
       if (projectionsById.has(logicalSessionId)) {
         return null;
       }
@@ -347,7 +327,7 @@ function projectAppendRecords(
       labels,
     });
   }
-  const existingLogicalSessionIds = normalizedLogicalProjections.map(
+  const existingLogicalSessionIds = input.logicalProjections.map(
     ({ logicalSessionId }) => logicalSessionId,
   );
   const orderedIds = [
@@ -374,33 +354,72 @@ function projectAppendRecords(
   return projected;
 }
 
-function markerAppliesToLogicalProjection(
+function contextExitMarkerMatchesLogicalProjection(
   marker: RecallWorkMarker,
   projection: LogicalSessionProjection,
 ): boolean {
+  const rawSessionId = projection.rawSessionId ?? projection.logicalSessionId;
   switch (marker.trigger.kind) {
     case RecallWorkMarkerTrigger.COMPACTION: {
-      if (
-        marker.trigger.logicalSessionId !== (projection.rawSessionId ?? projection.logicalSessionId)
-      ) {
+      if (marker.trigger.logicalSessionId !== rawSessionId) {
         return false;
       }
       const compactionEntryId = marker.trigger.compactionEntryId;
       return projection.entryDescriptors.some(({ entryId }) => entryId === compactionEntryId);
     }
     case RecallWorkMarkerTrigger.BRANCH_EXIT: {
-      if (
-        marker.trigger.logicalSessionId !== (projection.rawSessionId ?? projection.logicalSessionId)
-      ) {
+      if (marker.trigger.logicalSessionId !== rawSessionId) {
         return false;
       }
       const entryIds = new Set(projection.entryDescriptors.map(({ entryId }) => entryId));
-      return (
-        (marker.trigger.oldLeafEntryId !== null && entryIds.has(marker.trigger.oldLeafEntryId)) ||
-        (marker.trigger.newLeafEntryId !== null && entryIds.has(marker.trigger.newLeafEntryId)) ||
-        (marker.trigger.summaryEntryId !== undefined && entryIds.has(marker.trigger.summaryEntryId))
-      );
+      const markerEntryIds = [
+        marker.trigger.oldLeafEntryId,
+        marker.trigger.newLeafEntryId,
+        marker.trigger.summaryEntryId,
+      ].filter((entryId): entryId is string => typeof entryId === 'string');
+      return markerEntryIds.length > 0 && markerEntryIds.every((entryId) => entryIds.has(entryId));
     }
+    default:
+      return false;
+  }
+}
+
+function resolveContextExitMarkerOccurrences(
+  markers: readonly RecallWorkMarker[],
+  projections: readonly LogicalSessionProjection[],
+): Map<RecallWorkMarker, string> | null {
+  const logicalSessionIdByMarker = new Map<RecallWorkMarker, string>();
+  for (const marker of markers) {
+    if (
+      marker.trigger.kind !== RecallWorkMarkerTrigger.COMPACTION &&
+      marker.trigger.kind !== RecallWorkMarkerTrigger.BRANCH_EXIT
+    ) {
+      continue;
+    }
+    const matches = projections.filter((projection) =>
+      contextExitMarkerMatchesLogicalProjection(marker, projection),
+    );
+    if (matches.length !== 1) {
+      return null;
+    }
+    const match = matches[0];
+    if (match === undefined) {
+      return null;
+    }
+    logicalSessionIdByMarker.set(marker, match.logicalSessionId);
+  }
+  return logicalSessionIdByMarker;
+}
+
+function markerAppliesToLogicalProjection(
+  marker: RecallWorkMarker,
+  projection: LogicalSessionProjection,
+  contextExitMarkerOccurrences: ReadonlyMap<RecallWorkMarker, string>,
+): boolean {
+  switch (marker.trigger.kind) {
+    case RecallWorkMarkerTrigger.COMPACTION:
+    case RecallWorkMarkerTrigger.BRANCH_EXIT:
+      return contextExitMarkerOccurrences.get(marker) === projection.logicalSessionId;
     case RecallWorkMarkerTrigger.ACTIVITY:
     case RecallWorkMarkerTrigger.ARRIVAL:
     case RecallWorkMarkerTrigger.DEPARTURE:
@@ -459,16 +478,12 @@ export function projectRecallSessionAppend(
   if (appendedLogicalProjections === null) {
     return reconciliation(RecallProjectionRepairReason.MALFORMED_GRAPH);
   }
-  for (const marker of input.markers) {
-    if (
-      (marker.trigger.kind === RecallWorkMarkerTrigger.COMPACTION ||
-        marker.trigger.kind === RecallWorkMarkerTrigger.BRANCH_EXIT) &&
-      !appendedLogicalProjections.some((projection) =>
-        markerAppliesToLogicalProjection(marker, projection),
-      )
-    ) {
-      return reconciliation(RecallProjectionRepairReason.MALFORMED_GRAPH);
-    }
+  const contextExitMarkerOccurrences = resolveContextExitMarkerOccurrences(
+    input.markers,
+    appendedLogicalProjections,
+  );
+  if (contextExitMarkerOccurrences === null) {
+    return reconciliation(RecallProjectionRepairReason.MALFORMED_GRAPH);
   }
   const logicalProjections: LogicalSessionProjection[] = [];
   const newlyEligibleSpans: RecallEligibleSourceSpan[] = [];
@@ -477,7 +492,7 @@ export function projectRecallSessionAppend(
       physicalProjection: input.physicalProjection,
       logicalProjection: projection,
       markers: input.markers.filter((marker) =>
-        markerAppliesToLogicalProjection(marker, projection),
+        markerAppliesToLogicalProjection(marker, projection, contextExitMarkerOccurrences),
       ),
       quiescenceObserved: input.quiescenceObserved,
     });

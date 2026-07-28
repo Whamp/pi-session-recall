@@ -8,7 +8,10 @@ import {
   type ParsedRecallSessionEntry,
   type ParsedRecallSessionGraph,
 } from './parse-recall-session-record.js';
-import { createPhysicalSessionProjectionId } from './recall-session-projection.js';
+import {
+  createLogicalSessionOccurrenceId,
+  createPhysicalSessionProjectionId,
+} from './recall-session-projection.js';
 import type { ResolvedProjectIdentity } from './resolve-project-identity.js';
 import { assertRecallChunkPolicy } from './recall-chunk-policy.js';
 import { importSessionJsonl } from './import-session-jsonl.js';
@@ -1403,7 +1406,7 @@ export async function readSessionConversationImport(
     logicalSessions.push(createLogicalSessionSummary(session, graph));
     const logicalSessionIdentity =
       imported.format === SessionImportFormat.PI_SESSION_REUSE_HISTORY
-        ? `${graph.header.id}@${graph.header.lineIndex}`
+        ? createLogicalSessionOccurrenceId(graph.header.id, graph.header.lineIndex)
         : graph.header.id;
     const approvedContributorEntryIds =
       options.eligibleContributorEntryIdsByLogicalSessionId === undefined

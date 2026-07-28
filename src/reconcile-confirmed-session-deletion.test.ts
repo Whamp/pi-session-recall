@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { appendFile, mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
+import { commitIncrementalRecallTransfer } from './commit-incremental-recall-transfer.js';
+import type { RecallMarkerReplayWorkPlan } from './coordinate-recall-marker-replay.js';
 import {
   coordinateRecallReadWindow,
   inspectRecallWriteWindow,
@@ -13,11 +16,18 @@ import {
   RecallConfirmedDeletionDecisionKind,
   RecallConfirmedDeletionHaltCategory,
   RecallConfirmedDeletionPhase,
+  RecallAppendDeltaStatus,
+  RecallAppendProjectionStatus,
   RecallMetadataSweepStatus,
+  RecallProjectionEncodingStatus,
   RecallProjectionRepairState,
   RecallSessionProjectionKind,
   RecallSourceAvailability,
+  SessionImportFormat,
 } from './enums.js';
+import type { PreparedIncrementalRecallTransfer } from './prepare-incremental-recall-transfer.js';
+import { projectRecallSessionAppend } from './project-recall-session-append.js';
+import { readRecallSessionAppendDelta } from './read-recall-session-append-delta.js';
 import {
   decideConfirmedSessionDeletion,
   formatConfirmedSessionDeletionResult,
@@ -37,6 +47,7 @@ import {
   type PhysicalSessionProjection,
 } from './recall-session-projection.js';
 import type { RecallSessionMetadataSweepResult } from './scan-recall-session-metadata.js';
+import { readSessionConversationImport } from './session-conversation-index.js';
 import { createTestSessionConversationChunk } from './recall-test-utils.js';
 import { openZvecConversationStore } from './zvec-conversation-store.js';
 import { openZvecSessionProjectionStore } from './zvec-session-projection-store.js';
@@ -496,6 +507,226 @@ void test('scratch zvec confirmed deletion removes only one physical source and 
   const output = formatConfirmedSessionDeletionResult(second);
   assert.match(output, /confirmedSourceDeletions=1/u);
   assert.doesNotMatch(output, /private conversation sentinel|private-path-sentinel/u);
+});
+
+void test('incremental repeated-header commits reopen without an orphan and confirmed deletion removes both occurrences', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'confirmed-session-occurrence-identity-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const generationRootDirectory = join(directory, 'generations');
+  const generationDirectory = join(generationRootDirectory, generationId);
+  await mkdir(generationDirectory, { recursive: true });
+  const activeGenerationPointerPath = join(directory, 'active-generation.json');
+  await writeFile(
+    activeGenerationPointerPath,
+    encodeRecallActiveGenerationPointer(createRecallActiveGenerationPointer(generationId)),
+  );
+  const sessionPath = join(directory, 'reused-session.jsonl');
+  await writeFile(sessionPath, '');
+  const metadata = await stat(sessionPath, { bigint: true });
+  const initialPhysicalProjection = createPhysicalProjection({
+    sourcePath: sessionPath,
+    sourceDevice: metadata.dev.toString(),
+    sourceInode: metadata.ino.toString(),
+    appendCursorBytes: 0,
+    appendCursorLines: 0,
+    boundaryFingerprint: createHash('sha256').update('').digest('hex'),
+    lastEntryId: null,
+    logicalSessionIds: [],
+    markerCheckpoint: { generationId, coveredMarkerIds: [], runtimeSequences: [] },
+  });
+  const firstRecords = [
+    {
+      type: 'session',
+      version: 3,
+      id: 'reused-logical',
+      timestamp: '2026-01-01T00:00:00Z',
+      cwd: '/one',
+    },
+    {
+      type: 'message',
+      id: 'first-entry',
+      parentId: null,
+      timestamp: '2026-01-01T00:00:01Z',
+      message: { role: 'user', content: 'first historical occurrence' },
+    },
+  ];
+  await appendFile(
+    sessionPath,
+    `${firstRecords.map((record) => JSON.stringify(record)).join('\n')}\n`,
+  );
+  const firstDelta = await readRecallSessionAppendDelta(sessionPath, initialPhysicalProjection);
+  assert.equal(firstDelta.status, RecallAppendDeltaStatus.APPENDED);
+  if (firstDelta.status !== RecallAppendDeltaStatus.APPENDED) {
+    return;
+  }
+  const firstProjection = projectRecallSessionAppend({
+    physicalProjection: initialPhysicalProjection,
+    logicalProjections: [],
+    appendDelta: firstDelta,
+    markers: [],
+    quiescenceObserved: false,
+  });
+  assert.equal(firstProjection.status, RecallAppendProjectionStatus.PROJECTED);
+  if (firstProjection.status !== RecallAppendProjectionStatus.PROJECTED) {
+    return;
+  }
+  const firstLogicalProjection = firstProjection.logicalProjections[0];
+  assert.equal(firstLogicalProjection?.logicalSessionId, 'reused-logical@1');
+  assert.equal(firstLogicalProjection?.rawSessionId, 'reused-logical');
+
+  const workPlan: RecallMarkerReplayWorkPlan = {
+    targetGenerationId: generationId,
+    markerSpoolDirectory: join(directory, 'markers'),
+    discoveredMarkerCount: 0,
+    sourceMarkerIds: [],
+    workItems: [],
+    quarantineDiagnostics: [],
+  };
+  const commitProjection = async (
+    physicalProjection: PhysicalSessionProjection,
+    logicalProjections: readonly LogicalSessionProjection[],
+  ): Promise<void> => {
+    const prepared: PreparedIncrementalRecallTransfer = {
+      status: RecallProjectionEncodingStatus.ENCODED,
+      targetGenerationId: generationId,
+      documents: [],
+      checkpointIntent: { physicalProjection, logicalProjections },
+      workPlan,
+      cacheHits: 0,
+      newlyEmbeddedChunks: 0,
+      embeddingRequestCount: 0,
+    };
+    await commitIncrementalRecallTransfer({
+      prepared,
+      lockPath: join(directory, 'recall.lock'),
+      evidenceDatabasePath: join(generationDirectory, 'zvec'),
+      projectionDatabasePath: join(generationDirectory, 'session-projections'),
+      embeddingDimensions: 3,
+      async acknowledgeMarkers() {
+        return 0;
+      },
+    });
+  };
+  await commitProjection(firstProjection.physicalProjection, firstProjection.logicalProjections);
+
+  const secondRecords = [
+    {
+      type: 'session',
+      version: 3,
+      id: 'reused-logical',
+      timestamp: '2026-01-02T00:00:00Z',
+      cwd: '/two',
+    },
+    {
+      type: 'message',
+      id: 'second-entry',
+      parentId: null,
+      timestamp: '2026-01-02T00:00:01Z',
+      message: { role: 'user', content: 'second historical occurrence' },
+    },
+  ];
+  await appendFile(
+    sessionPath,
+    `${secondRecords.map((record) => JSON.stringify(record)).join('\n')}\n`,
+  );
+  const secondDelta = await readRecallSessionAppendDelta(
+    sessionPath,
+    firstProjection.physicalProjection,
+  );
+  assert.equal(secondDelta.status, RecallAppendDeltaStatus.APPENDED);
+  if (secondDelta.status !== RecallAppendDeltaStatus.APPENDED) {
+    return;
+  }
+  const secondProjection = projectRecallSessionAppend({
+    physicalProjection: firstProjection.physicalProjection,
+    logicalProjections: firstProjection.logicalProjections,
+    appendDelta: secondDelta,
+    markers: [],
+    quiescenceObserved: false,
+  });
+  assert.equal(secondProjection.status, RecallAppendProjectionStatus.PROJECTED);
+  if (secondProjection.status !== RecallAppendProjectionStatus.PROJECTED) {
+    return;
+  }
+  assert.equal(
+    secondProjection.logicalProjections[0]?.projectionId,
+    firstLogicalProjection?.projectionId,
+  );
+  assert.deepEqual(secondProjection.physicalProjection.logicalSessionIds, [
+    'reused-logical@1',
+    'reused-logical@3',
+  ]);
+  await commitProjection(secondProjection.physicalProjection, secondProjection.logicalProjections);
+
+  const imported = await readSessionConversationImport(sessionPath, {
+    tokenizer: {
+      encodeConversationText(text) {
+        return {
+          ids: text
+            .split(/\s+/u)
+            .filter(Boolean)
+            .map((_, index) => index),
+        };
+      },
+    },
+    eligibleContributorEntryIdsByLogicalSessionId: new Map(
+      secondProjection.logicalProjections.map((projection) => [
+        projection.logicalSessionId,
+        new Set(projection.entryDescriptors.map(({ entryId }) => entryId)),
+      ]),
+    ),
+  });
+  assert.equal(imported.format, SessionImportFormat.PI_SESSION_REUSE_HISTORY);
+  assert.deepEqual(
+    imported.chunks.map(({ content }) => content),
+    ['first historical occurrence', 'second historical occurrence'],
+  );
+
+  const oldRawProjectionId = createLogicalSessionProjectionId(physicalSessionId, 'reused-logical');
+  const projectionIds = [
+    secondProjection.physicalProjection.projectionId,
+    ...secondProjection.logicalProjections.map(({ projectionId }) => projectionId),
+    oldRawProjectionId,
+  ];
+  const reopenedProjectionStore = openZvecSessionProjectionStore({
+    databasePath: join(generationDirectory, 'session-projections'),
+    generationId,
+    createIfMissing: false,
+    readOnly: true,
+  });
+  assert.equal(reopenedProjectionStore.fetchProjections(projectionIds).size, 3);
+  assert.equal(reopenedProjectionStore.fetchProjections([oldRawProjectionId]).size, 0);
+  reopenedProjectionStore.close();
+
+  const deletionOptions = {
+    physicalProjections: [secondProjection.physicalProjection],
+    activeGenerationPointerPath,
+    generationRootDirectory,
+    lockPath: join(directory, 'recall.lock'),
+    embeddingDimensions: 3,
+  };
+  const firstDeletionSweep = createMetadataSweep('occurrence-sweep-1', false);
+  const secondDeletionSweep = createMetadataSweep('occurrence-sweep-2', false);
+  const firstDeletion = await reconcileConfirmedSessionDeletion({
+    ...deletionOptions,
+    metadataSweep: firstDeletionSweep,
+  });
+  assert.equal(firstDeletion.sourceMissingRecordedCount, 1);
+  const confirmedDeletion = await reconcileConfirmedSessionDeletion({
+    ...deletionOptions,
+    metadataSweep: secondDeletionSweep,
+  });
+  assert.equal(confirmedDeletion.removedLogicalProjectionCount, 2);
+  assert.equal(confirmedDeletion.removedPhysicalProjectionCount, 1);
+
+  const reopenedAfterDeletion = openZvecSessionProjectionStore({
+    databasePath: join(generationDirectory, 'session-projections'),
+    generationId,
+    createIfMissing: false,
+    readOnly: true,
+  });
+  assert.equal(reopenedAfterDeletion.fetchProjections(projectionIds).size, 0);
+  reopenedAfterDeletion.close();
 });
 
 void test('scratch zvec source reappearance clears source_missing without changing eligible evidence', async (t) => {

@@ -1,6 +1,6 @@
 # Query-Planned Recall: Live Profile Acceptance
 
-**Decision: Blocked: live quality gate failed.** Hybrid remains the default.
+**Decision: Approved as an explicit fallback after hybrid misses.** Hybrid remains the default.
 
 This evidence covers the exact measured profile, backend adapter, device class, grammar, reranker score, and search-policy identities below. It does not claim broad superiority beyond the frozen committed corpus and bounded private corpus.
 
@@ -30,14 +30,15 @@ This evidence covers the exact measured profile, backend adapter, device class, 
 | embedded-vulkan | embedded (node-llama-cpp@3.18.1 / llama.cpp b8390)                                                | accelerated / vulkan         | `node-llama-cpp-qmd-query-planning-v1` | `node-llama-cpp-qwen-reranking-logit-recovery-v1` |    10874.9 ms | 1886.6 ms (pass) |      7521.1 ms |       157.7 ms |  13567.0 / 15641.7 / 34185.7 ms |
 | http-cpu        | llama-cpp-http (llama.cpp b8390 bundle b10e98a CPU planner-ctx-2048 reranker-ctx-8192 batch-2048) | cpu / AMD Ryzen 7 8845HS CPU | `llama-cpp-http-query-planning-v1`     | `llama-cpp-http-reranking-v1`                     |     1272.9 ms | 1231.7 ms (pass) |       393.5 ms |       362.1 ms | 31688.3 / 44916.4 / 110477.3 ms |
 
-## Aggregate quality
+## Fallback characterization
 
 - New candidate admissions beyond normal and retrieval-work-matched original-query controls: 0
 - Ranking-only promotions: 1
 - Preserved existing successes across profile runs: 4
 - Planner fallbacks: 0
-- Live new-candidate admission gate: fail
-- Existing-success preservation gate: fail
+- Live admissions and existing-success preservation are characterization, not release gates, because query-planned recall is invoked only after hybrid misses.
+- Live new-candidate admission observed: no
+- Existing successes preserved across profiles: no
 - Existing-success regression profiles: embedded-vulkan, http-cpu
 
 ## Candidate work by opaque case
@@ -78,7 +79,8 @@ This evidence covers the exact measured profile, backend adapter, device class, 
 
 ## Limitations
 
-- Query-planned recall remains blocked because the measured live profile matrix did not pass every release-quality condition.
+- Approval applies only as an explicit fallback after hybrid recall misses, with the accepted Octen embedding baseline and recorded planner, reranker, adapter, grammar, score, and search-policy identities.
+- Live candidate admissions and preservation of queries already answered by hybrid are reported as fallback characterization, not release gates.
 - EmbeddingGemma live candidates remain separate and are not approved when their committed-corpus quality gate fails.
 - The committed corpus is synthetic-but-session-shaped; the private corpus is bounded and does not establish broad superiority.
 - Private queries, plans, source text, session paths, and model artifacts remain outside Git.

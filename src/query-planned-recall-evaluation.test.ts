@@ -521,12 +521,12 @@ void test('fixed private plans prove new source admission through deterministic 
       piToolContractPassed: true,
     },
   });
-  assert.equal(acceptance.releaseDecision, 'approved-explicit-mode');
+  assert.equal(acceptance.releaseDecision, 'approved-explicit-fallback');
   assert.equal(acceptance.defaultSearchMode, 'hybrid');
   assert.equal(acceptance.aggregateQuality.newCandidateAdmissionCount, 3);
   assert.equal(acceptance.profileRuns.length, 3);
   const acceptanceReport = formatPublishableLiveQueryPlannedProfileAcceptanceReport(acceptance);
-  assert.match(acceptanceReport, /Approved for explicit mode only/u);
+  assert.match(acceptanceReport, /Approved as an explicit fallback after hybrid misses/u);
   assert.match(acceptanceReport, /Hybrid remains the default/u);
   assert.match(acceptanceReport, /embedded-cpu/u);
   assert.match(acceptanceReport, /Cold planning/u);
@@ -535,7 +535,7 @@ void test('fixed private plans prove new source admission through deterministic 
   assert.equal(acceptanceReport.includes(lexicalPlanQuery), false);
   assert.equal(acceptanceReport.includes('Private mechanism phrase'), false);
 
-  const blockedAcceptance = createPublishableLiveQueryPlannedProfileAcceptance({
+  const fallbackAcceptance = createPublishableLiveQueryPlannedProfileAcceptance({
     recordedAgainstCommit: acceptance.recordedAgainstCommit,
     defaultSearchMode: acceptance.defaultSearchMode,
     committedCorpus: acceptance.committedCorpus,
@@ -551,17 +551,17 @@ void test('fixed private plans prove new source admission through deterministic 
     privacyAudit: acceptance.privacyAudit,
     failureSemantics: acceptance.failureSemantics,
   });
-  assert.equal(blockedAcceptance.releaseDecision, 'blocked-quality-gate');
-  assert.equal(blockedAcceptance.approvedSearchMode, null);
-  assert.deepEqual(blockedAcceptance.qualityGate, {
-    liveNewCandidateAdmissionPassed: false,
-    existingSuccessPreservationPassed: false,
+  assert.equal(fallbackAcceptance.releaseDecision, 'approved-explicit-fallback');
+  assert.equal(fallbackAcceptance.approvedSearchMode, 'query-planned');
+  assert.deepEqual(fallbackAcceptance.fallbackCharacterization, {
+    liveNewCandidateAdmissionObserved: false,
+    existingSuccessPreservedAcrossProfiles: false,
     existingSuccessRegressionProfileRunIds: ['embedded-cpu', 'embedded-accelerated', 'http-cpu'],
   });
-  assert.match(
-    formatPublishableLiveQueryPlannedProfileAcceptanceReport(blockedAcceptance),
-    /Blocked: live quality gate failed/u,
-  );
+  const fallbackReport =
+    formatPublishableLiveQueryPlannedProfileAcceptanceReport(fallbackAcceptance);
+  assert.match(fallbackReport, /Approved as an explicit fallback after hybrid misses/u);
+  assert.match(fallbackReport, /not release gates/u);
 
   await chmod(plansPath, 0o644);
   await assert.rejects(

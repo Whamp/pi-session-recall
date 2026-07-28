@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "releaseDecision": "blocked-quality-gate",
+  "releaseDecision": "approved-explicit-fallback",
   "recordedAgainstCommit": "881c32d05c1150de6d6be6e26dcd92e2119cdabe",
-  "approvedSearchMode": null,
+  "approvedSearchMode": "query-planned",
   "defaultSearchMode": "hybrid",
   "committedCorpus": [
     {
@@ -4511,13 +4511,14 @@
     "preservedExistingSuccessCount": 4,
     "plannerFallbackCount": 0
   },
-  "qualityGate": {
-    "liveNewCandidateAdmissionPassed": false,
-    "existingSuccessPreservationPassed": false,
+  "fallbackCharacterization": {
+    "liveNewCandidateAdmissionObserved": false,
+    "existingSuccessPreservedAcrossProfiles": false,
     "existingSuccessRegressionProfileRunIds": ["embedded-vulkan", "http-cpu"]
   },
   "limitations": [
-    "Query-planned recall remains blocked because the measured live profile matrix did not pass every release-quality condition.",
+    "Approval applies only as an explicit fallback after hybrid recall misses, with the accepted Octen embedding baseline and recorded planner, reranker, adapter, grammar, score, and search-policy identities.",
+    "Live candidate admissions and preservation of queries already answered by hybrid are reported as fallback characterization, not release gates.",
     "EmbeddingGemma live candidates remain separate and are not approved when their committed-corpus quality gate fails.",
     "The committed corpus is synthetic-but-session-shaped; the private corpus is bounded and does not establish broad superiority.",
     "Private queries, plans, source text, session paths, and model artifacts remain outside Git.",

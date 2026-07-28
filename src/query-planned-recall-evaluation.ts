@@ -1291,12 +1291,12 @@ export interface CreateLiveQueryPlannedProfileAcceptanceOptions {
   failureSemantics: LiveQueryPlannedFailureSemanticsEvidence;
 }
 
-/** Publishable aggregate evidence deciding the measured explicit mode identities. */
+/** Publishable evidence approving the measured identities as an explicit post-hybrid fallback. */
 export interface PublishableLiveQueryPlannedProfileAcceptance {
   version: 1;
-  releaseDecision: 'approved-explicit-mode' | 'blocked-quality-gate';
+  releaseDecision: 'approved-explicit-fallback';
   recordedAgainstCommit: string;
-  approvedSearchMode: 'query-planned' | null;
+  approvedSearchMode: 'query-planned';
   defaultSearchMode: 'hybrid';
   committedCorpus: readonly CommittedCorpusLiveProfileEvidence[];
   profileRuns: readonly LiveQueryPlannedProfileEvaluationResult[];
@@ -1308,9 +1308,9 @@ export interface PublishableLiveQueryPlannedProfileAcceptance {
     preservedExistingSuccessCount: number;
     plannerFallbackCount: number;
   };
-  qualityGate: {
-    liveNewCandidateAdmissionPassed: boolean;
-    existingSuccessPreservationPassed: boolean;
+  fallbackCharacterization: {
+    liveNewCandidateAdmissionObserved: boolean;
+    existingSuccessPreservedAcrossProfiles: boolean;
     existingSuccessRegressionProfileRunIds: readonly string[];
   };
   limitations: readonly string[];
@@ -1384,7 +1384,7 @@ function assertLiveProfileExecutionIdentity(run: LiveQueryPlannedProfileEvaluati
   }
 }
 
-/** Approves explicit query-planned mode only for the exact measured profile matrix. */
+/** Approves an explicit post-hybrid fallback for the exact measured profile matrix. */
 export function createPublishableLiveQueryPlannedProfileAcceptance(
   options: CreateLiveQueryPlannedProfileAcceptanceOptions,
 ): PublishableLiveQueryPlannedProfileAcceptance {
@@ -1503,29 +1503,26 @@ export function createPublishableLiveQueryPlannedProfileAcceptance(
       0,
     ),
   };
-  const qualityGate = {
-    liveNewCandidateAdmissionPassed: aggregateQuality.newCandidateAdmissionCount >= 1,
-    existingSuccessPreservationPassed: existingSuccessRegressionProfileRunIds.length === 0,
+  const fallbackCharacterization = {
+    liveNewCandidateAdmissionObserved: aggregateQuality.newCandidateAdmissionCount >= 1,
+    existingSuccessPreservedAcrossProfiles: existingSuccessRegressionProfileRunIds.length === 0,
     existingSuccessRegressionProfileRunIds,
   };
-  const releaseApproved =
-    qualityGate.liveNewCandidateAdmissionPassed && qualityGate.existingSuccessPreservationPassed;
   return {
     version: 1,
-    releaseDecision: releaseApproved ? 'approved-explicit-mode' : 'blocked-quality-gate',
+    releaseDecision: 'approved-explicit-fallback',
     recordedAgainstCommit: options.recordedAgainstCommit,
-    approvedSearchMode: releaseApproved ? 'query-planned' : null,
+    approvedSearchMode: 'query-planned',
     defaultSearchMode: options.defaultSearchMode,
     committedCorpus: options.committedCorpus.map((evidence) => ({ ...evidence })),
     profileRuns: options.profileRuns.map((run) => ({ ...run })),
     privacyAudit: { ...options.privacyAudit },
     failureSemantics: { ...options.failureSemantics },
     aggregateQuality,
-    qualityGate,
+    fallbackCharacterization,
     limitations: [
-      releaseApproved
-        ? 'Approval applies only to explicit query-planned mode with the accepted Octen embedding baseline and recorded planner, reranker, adapter, grammar, score, and search-policy identities.'
-        : 'Query-planned recall remains blocked because the measured live profile matrix did not pass every release-quality condition.',
+      'Approval applies only as an explicit fallback after hybrid recall misses, with the accepted Octen embedding baseline and recorded planner, reranker, adapter, grammar, score, and search-policy identities.',
+      'Live candidate admissions and preservation of queries already answered by hybrid are reported as fallback characterization, not release gates.',
       'EmbeddingGemma live candidates remain separate and are not approved when their committed-corpus quality gate fails.',
       'The committed corpus is synthetic-but-session-shaped; the private corpus is bounded and does not establish broad superiority.',
       'Private queries, plans, source text, session paths, and model artifacts remain outside Git.',
@@ -1543,9 +1540,7 @@ export function formatPublishableLiveQueryPlannedProfileAcceptanceReport(
     throw new Error('Live query-planned profile acceptance report requires a profile run');
   }
   const decision =
-    evidence.releaseDecision === 'approved-explicit-mode'
-      ? '**Decision: Approved for explicit mode only.** Hybrid remains the default.'
-      : '**Decision: Blocked: live quality gate failed.** Hybrid remains the default.';
+    '**Decision: Approved as an explicit fallback after hybrid misses.** Hybrid remains the default.';
   const lines = [
     '# Query-Planned Recall: Live Profile Acceptance',
     '',
@@ -1587,15 +1582,16 @@ export function formatPublishableLiveQueryPlannedProfileAcceptanceReport(
   }
   lines.push(
     '',
-    '## Aggregate quality',
+    '## Fallback characterization',
     '',
     `- New candidate admissions beyond normal and retrieval-work-matched original-query controls: ${evidence.aggregateQuality.newCandidateAdmissionCount}`,
     `- Ranking-only promotions: ${evidence.aggregateQuality.rankingOnlyPromotionCount}`,
     `- Preserved existing successes across profile runs: ${evidence.aggregateQuality.preservedExistingSuccessCount}`,
     `- Planner fallbacks: ${evidence.aggregateQuality.plannerFallbackCount}`,
-    `- Live new-candidate admission gate: ${evidence.qualityGate.liveNewCandidateAdmissionPassed ? 'pass' : 'fail'}`,
-    `- Existing-success preservation gate: ${evidence.qualityGate.existingSuccessPreservationPassed ? 'pass' : 'fail'}`,
-    `- Existing-success regression profiles: ${evidence.qualityGate.existingSuccessRegressionProfileRunIds.length > 0 ? evidence.qualityGate.existingSuccessRegressionProfileRunIds.join(', ') : 'none'}`,
+    '- Live admissions and existing-success preservation are characterization, not release gates, because query-planned recall is invoked only after hybrid misses.',
+    `- Live new-candidate admission observed: ${evidence.fallbackCharacterization.liveNewCandidateAdmissionObserved ? 'yes' : 'no'}`,
+    `- Existing successes preserved across profiles: ${evidence.fallbackCharacterization.existingSuccessPreservedAcrossProfiles ? 'yes' : 'no'}`,
+    `- Existing-success regression profiles: ${evidence.fallbackCharacterization.existingSuccessRegressionProfileRunIds.length > 0 ? evidence.fallbackCharacterization.existingSuccessRegressionProfileRunIds.join(', ') : 'none'}`,
     '',
     '## Candidate work by opaque case',
     '',

@@ -214,6 +214,7 @@ void test('commit writes at most 32 evidence documents per closed window, then o
   t.after(() => rm(directory, { recursive: true, force: true }));
   const prepared = createPreparedTransfer(33);
   const stores = createFakeCommitStores({ prepared });
+  const diagnosticDocumentCounts: number[] = [];
 
   const result = await commitIncrementalRecallTransfer({
     prepared,
@@ -224,6 +225,11 @@ void test('commit writes at most 32 evidence documents per closed window, then o
     openEvidenceStore: () => stores.openEvidenceStore(),
     openProjectionStore: (mode) => stores.openProjectionStore(mode),
     acknowledgeMarkers: () => stores.acknowledge(),
+    operationDiagnostics: {
+      recordIncrementalOperation({ metrics }) {
+        diagnosticDocumentCounts.push(metrics.eligibleDocumentCount);
+      },
+    },
   });
 
   assert.equal(result.committedDocumentCount, 33);
@@ -245,6 +251,7 @@ void test('commit writes at most 32 evidence documents per closed window, then o
   );
   assert.equal(stores.optimizeCallCount, 0);
   assert.equal(result.writeWindowDiagnostics.length, 2);
+  assert.deepEqual(diagnosticDocumentCounts, [32, 1]);
   assert.equal(result.generationReplayCompleted, null);
 });
 

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -48,7 +48,12 @@ void test('recall quality runner indexes and searches only the bounded declared 
       .map((record) => JSON.stringify(record))
       .join('\n') + '\n';
   const sessionFileName = 'bounded.jsonl';
-  await writeFile(join(corpusDirectory, sessionFileName), sessionContent);
+  const sessionPath = join(corpusDirectory, sessionFileName);
+  await writeFile(sessionPath, sessionContent);
+  const sourceBefore = {
+    bytes: await readFile(sessionPath),
+    metadata: await stat(sessionPath),
+  };
   const sha256 = createHash('sha256').update(sessionContent).digest('hex');
   const specification = {
     version: 3,
@@ -115,28 +120,29 @@ void test('recall quality runner indexes and searches only the bounded declared 
   const specificationPath = join(evaluationDirectory, 'recall-quality-cases.json');
   await writeFile(specificationPath, `${JSON.stringify(specification, null, 2)}\n`);
   const corpus = await loadRecallQualityCorpus(specificationPath);
+  const protectedDataDirectory = join(directory, 'must-not-touch-production-recall');
   const baseConfig: RecallConversationConfig = {
     sessionsDirectory: join(directory, 'must-not-scan-production-sessions'),
-    dataDirectory: directory,
-    databasePath: join(directory, 'unused-zvec'),
-    projectionDatabasePath: join(directory, 'unused-session-projections'),
-    statePath: join(directory, 'unused-state.json'),
-    manifestPath: join(directory, 'unused-manifest.json'),
-    tokenizerCacheDirectory: join(directory, 'unused-tokenizers'),
-    embeddingCacheDirectory: join(directory, 'unused-embedding-cache'),
-    lockPath: join(directory, 'unused.lock'),
+    dataDirectory: protectedDataDirectory,
+    databasePath: join(protectedDataDirectory, 'zvec'),
+    projectionDatabasePath: join(protectedDataDirectory, 'session-projections'),
+    statePath: join(protectedDataDirectory, 'index-state.json'),
+    manifestPath: join(protectedDataDirectory, 'index-manifest.json'),
+    tokenizerCacheDirectory: join(protectedDataDirectory, 'tokenizers'),
+    embeddingCacheDirectory: join(protectedDataDirectory, 'embedding-cache'),
+    lockPath: join(protectedDataDirectory, 'operation.lock'),
     diagnosticsMode: RecallDiagnosticsMode.OFF,
-    diagnosticLogPath: join(directory, 'unused-diagnostics.jsonl'),
-    retainedDiagnosticLogPath: join(directory, 'unused-diagnostics.previous.jsonl'),
-    markerSpoolDirectory: join(directory, 'unused-markers', 'pending'),
-    markerQuarantineDirectory: join(directory, 'unused-markers', 'quarantine'),
-    markerControlDirectory: join(directory, 'unused-markers', 'control'),
-    workerOwnershipLockPath: join(directory, 'unused-incremental-worker.lock'),
-    generationRootDirectory: join(directory, 'unused-generations'),
-    activeGenerationPointerPath: join(directory, 'unused-active-generation.json'),
-    generationRegistryPath: join(directory, 'unused-generation-registry.json'),
-    backlogSummaryPath: join(directory, 'unused-backlog-summary.json'),
-    incrementalDiagnosticLogPath: join(directory, 'unused-incremental-diagnostics.jsonl'),
+    diagnosticLogPath: join(protectedDataDirectory, 'diagnostics.jsonl'),
+    retainedDiagnosticLogPath: join(protectedDataDirectory, 'diagnostics.previous.jsonl'),
+    markerSpoolDirectory: join(protectedDataDirectory, 'markers', 'pending'),
+    markerQuarantineDirectory: join(protectedDataDirectory, 'markers', 'quarantine'),
+    markerControlDirectory: join(protectedDataDirectory, 'markers', 'control'),
+    workerOwnershipLockPath: join(protectedDataDirectory, 'incremental-worker.lock'),
+    generationRootDirectory: join(protectedDataDirectory, 'generations'),
+    activeGenerationPointerPath: join(protectedDataDirectory, 'active-generation.json'),
+    generationRegistryPath: join(protectedDataDirectory, 'generation-registry.json'),
+    backlogSummaryPath: join(protectedDataDirectory, 'backlog-summary.json'),
+    incrementalDiagnosticLogPath: join(protectedDataDirectory, 'incremental-diagnostics.jsonl'),
     embeddingBaseUrl: 'http://unused.test/v1',
     embeddingModel: 'test-embedding',
     embeddingServedModelId: 'test-embedding-served',
@@ -178,7 +184,13 @@ void test('recall quality runner indexes and searches only the bounded declared 
     },
   });
 
-  assert.equal(result.version, 4);
+  assert.equal(result.version, 5);
+  assert.deepEqual(result.storageIdentity, {
+    conversationSchemaVersion: 9,
+    zvecSchemaVersion: 8,
+    indexManifestVersion: 6,
+    incrementalEligibilityPolicyVersion: 1,
+  });
   assert.equal(result.boundedWork.indexRuns, 1);
   assert.equal(result.boundedWork.executedSearchRequests, 1);
   assert.equal(result.boundedWork.rerankerRequests, 0);
@@ -222,4 +234,26 @@ void test('recall quality runner indexes and searches only the bounded declared 
       }),
     /work directory must stay inside evaluation data area/,
   );
+
+  const sourceAfter = {
+    bytes: await readFile(sessionPath),
+    metadata: await stat(sessionPath),
+  };
+  assert.deepEqual(sourceAfter.bytes, sourceBefore.bytes);
+  assert.deepEqual(
+    {
+      size: sourceAfter.metadata.size,
+      mode: sourceAfter.metadata.mode,
+      mtimeMs: sourceAfter.metadata.mtimeMs,
+      ino: sourceAfter.metadata.ino,
+    },
+    {
+      size: sourceBefore.metadata.size,
+      mode: sourceBefore.metadata.mode,
+      mtimeMs: sourceBefore.metadata.mtimeMs,
+      ino: sourceBefore.metadata.ino,
+    },
+  );
+  await rm(directory, { recursive: true, force: true });
+  await assert.rejects(() => access(directory), /ENOENT/u);
 });

@@ -9,6 +9,8 @@ import {
   type RecallMarkerReplayWorkPlan,
 } from './coordinate-recall-marker-replay.js';
 import {
+  RecallDiagnosticOperationKind,
+  RecallDiagnosticStatus,
   RecallGenerationCutoverState,
   RecallMetadataSweepStatus,
   RecallWorkMarkerTrigger,
@@ -21,6 +23,11 @@ import {
 import type { PhysicalSessionProjection } from './recall-session-projection.js';
 import type { RecallWorkMarkerCodecOptions } from './recall-work-marker.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
+import {
+  createRecallIncrementalDiagnosticMetrics,
+  createRecallOperationDiagnostics,
+  type RecallOperationDiagnostics,
+} from './recall-operation-diagnostics.js';
 import { recoverRecallGenerationCutover } from './recover-recall-generation-cutover.js';
 import {
   RECALL_METADATA_SWEEP_CONTINUATION_FILENAME,
@@ -47,6 +54,9 @@ export interface RunRecallIncrementalWorkerOptions extends RecallWorkMarkerCodec
     physicalProjections: readonly PhysicalSessionProjection[],
   ) => Promise<void>;
   loadHeavyDependencies?: () => Promise<void>;
+  operationDiagnostics?: Pick<RecallOperationDiagnostics, 'recordIncrementalOperation'>;
+  nowEpochMilliseconds?: () => number;
+  monotonicMilliseconds?: () => number;
 }
 
 /** Known active-generation source projections loaded only when a metadata sweep is requested. */
@@ -108,6 +118,9 @@ function hasRecallIncrementalTransferWork(
 export async function runRecallIncrementalWorker(
   options: RunRecallIncrementalWorkerOptions,
 ): Promise<RecallIncrementalWorkerResult> {
+  const monotonicMilliseconds = options.monotonicMilliseconds ?? (() => performance.now());
+  const startedAtMilliseconds = monotonicMilliseconds();
+  const nowEpochMilliseconds = options.nowEpochMilliseconds ?? Date.now;
   const registry = options.generationRegistryPath
     ? await readRecallGenerationRegistry(options.generationRegistryPath)
     : null;
@@ -135,14 +148,46 @@ export async function runRecallIncrementalWorker(
       ? { generationReplayCompletion: options.generationReplayCompletion }
       : {}),
   });
+  function finishWorkerResult(
+    result: RecallIncrementalWorkerResult,
+  ): RecallIncrementalWorkerResult {
+    const metrics = createRecallIncrementalDiagnosticMetrics();
+    metrics.elapsedMilliseconds = Math.max(monotonicMilliseconds() - startedAtMilliseconds, 0);
+    const oldestMarkerCreatedAt = workPlan.workItems.reduce(
+      (oldest, { marker }) => Math.min(oldest, marker.createdAtEpochMilliseconds),
+      Number.POSITIVE_INFINITY,
+    );
+    metrics.markerAgeMilliseconds = Number.isFinite(oldestMarkerCreatedAt)
+      ? Math.max(nowEpochMilliseconds() - oldestMarkerCreatedAt, 0)
+      : null;
+    metrics.metadataSweepScannedFileCount = result.metadataSweep?.scannedFileCount ?? 0;
+    metrics.metadataSweepObservedSessionCount = result.metadataSweep?.observedSessionFileCount ?? 0;
+    metrics.metadataSweepElapsedMilliseconds = result.metadataSweep?.elapsedMilliseconds ?? 0;
+    metrics.generationId = options.targetGenerationId;
+    metrics.generationState =
+      registry?.generations.find(({ generationId }) => generationId === options.targetGenerationId)
+        ?.state ?? null;
+    metrics.deletionSafeguardCategory =
+      result.metadataSweep?.deletionConfirmationSuppressed === true
+        ? result.metadataSweep.status
+        : null;
+    metrics.backlogPendingEligibleSessionCount = workPlan.workItems.length;
+    metrics.backlogOldestEligibleMarkerAgeMilliseconds = metrics.markerAgeMilliseconds;
+    options.operationDiagnostics?.recordIncrementalOperation({
+      operationKind: RecallDiagnosticOperationKind.INCREMENTAL_WORKER,
+      status: RecallDiagnosticStatus.SUCCEEDED,
+      metrics,
+    });
+    return result;
+  }
   if (commitsFrozen) {
-    return {
+    return finishWorkerResult({
       workPlan,
       metadataSweep: null,
       heavyDependenciesLoaded: false,
       commitsFrozen: true,
       generationReplayCompleted: null,
-    };
+    });
   }
   const shouldSweepMetadata =
     workPlanRequestsRecallMetadataSweep(workPlan) ||
@@ -185,13 +230,13 @@ export async function runRecallIncrementalWorker(
             markerSpoolDirectory: options.markerSpoolDirectory,
           })
         : null;
-    return {
+    return finishWorkerResult({
       workPlan,
       metadataSweep,
       heavyDependenciesLoaded: false,
       commitsFrozen: false,
       generationReplayCompleted,
-    };
+    });
   }
   await (options.loadHeavyDependencies ?? loadRecallIncrementalWorkerDependencies)();
   if (
@@ -204,13 +249,13 @@ export async function runRecallIncrementalWorker(
       knownSourceInventory?.physicalProjections ?? [],
     );
   }
-  return {
+  return finishWorkerResult({
     workPlan,
     metadataSweep,
     heavyDependenciesLoaded: true,
     commitsFrozen: false,
     generationReplayCompleted: null,
-  };
+  });
 }
 
 async function loadRecallKnownSourceInventory(
@@ -261,6 +306,14 @@ async function runRecallIncrementalWorkerExecutable(): Promise<void> {
     config.generationRootDirectory,
   );
   const registry = await readRecallGenerationRegistry(config.generationRegistryPath);
+  const operationDiagnostics = createRecallOperationDiagnostics({
+    mode: config.diagnosticsMode,
+    activeLogPath: config.incrementalDiagnosticLogPath,
+    retainedLogPath: config.incrementalDiagnosticLogPath.replace(/\.jsonl$/u, '.previous.jsonl'),
+    notifyWarning(message) {
+      process.emitWarning(message);
+    },
+  });
   await runRecallIncrementalWorker({
     markerSpoolDirectory: config.markerSpoolDirectory,
     markerQuarantineDirectory: config.markerQuarantineDirectory,
@@ -279,6 +332,7 @@ async function runRecallIncrementalWorkerExecutable(): Promise<void> {
     trustedSessionRoots: [config.sessionsDirectory],
     confirmedDeletionMaxMissingSourceCount: config.confirmedDeletionMaxMissingSourceCount,
     confirmedDeletionMaxMissingSourceRatio: config.confirmedDeletionMaxMissingSourceRatio,
+    operationDiagnostics,
     loadKnownSourceInventory: () =>
       loadRecallKnownSourceInventory(
         activeSelection.projectionDatabasePath,
@@ -303,6 +357,7 @@ async function runRecallIncrementalWorkerExecutable(): Promise<void> {
       }
     },
   });
+  await operationDiagnostics.flush();
 }
 
 const executedModulePath = process.argv[1];

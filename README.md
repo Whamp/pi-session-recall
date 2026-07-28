@@ -89,15 +89,11 @@ The committed quality report passes and selects 512/64 chunks, 8 candidates per 
 /pi-session-recall-index --rebuild
 ```
 
-After that initial generation exists, interactive Pi operations read it without performing whole-session maintenance:
+After an active generation exists, Pi hooks publish immutable lifecycle markers and signal a short-lived external worker. Hooks do not read session bodies, parse index state, tokenize, embed, or open zvec. The worker reads bounded append deltas and transfers evidence only after compaction, branch exit, clean departure, or session quiescence moves it beyond the recall horizon. Context-exit summaries become eligible immediately. Search stays read-only and never starts or waits for ingestion.
 
-- startup, settled turns, shutdown, and reload never reconcile session files;
-- `pi-session-recall` searches never reconcile the active session before retrieval;
-- `/pi-session-recall-index` is the only path that catches up changed, new, or removed sessions and optimizes the index.
+The worker prepares parsing, tokenization, project attribution, cache resolution, and embedding requests before taking the operation lock. It commits at most 32 evidence documents per write window, then commits session projections and acknowledges markers only after a later read observes checkpoint coverage. It exits when no eligible work remains; it is not a daemon or filesystem watcher.
 
-This keeps session parsing, tokenization, embedding-cache checks, and zvec writes out of latency-sensitive Pi lifecycle and search operations. Active conversation content remains in Pi's model context; it becomes searchable recall evidence after explicit maintenance. The incremental state skips unchanged JSONL files, cached vectors prevent unchanged text from reaching the embedding model, and the PID-owned writer lock serializes multiple index processes.
-
-Use `/pi-session-recall-index` for an explicit full catch-up and optimization. Use `--rebuild` to replace an incompatible generation while preserving tokenizer assets and cached vectors. A future compaction-aware incremental path may index only content that has left the active model context; the current implementation deliberately does not approximate that behavior with whole-session work.
+Use `/pi-session-recall-index` for an explicit full catch-up. Use `--rebuild` for a side-by-side replacement generation, `--rollback` to restore the retained former generation, `--adopt-legacy` for exact version-5 read-only adoption, and `--collect-retired` after the rollback retention period. Automatic ingestion never optimizes or creates an incompatible generation.
 
 ## Use
 
@@ -175,7 +171,7 @@ Each index generation has a separately versioned `index-manifest.json`. It ident
 - project identity, lineage policy versions, and a canonical digest of personal lineage declarations;
 - zvec schema, ordinary and case-preserving FTS configuration, FP32 vector storage, and pinned HNSW parameters.
 
-The extension validates the complete manifest before opening or updating zvec. Missing or mismatched manifests are incompatible. The error reports every mismatched field and points to the implemented `/pi-session-recall-index --rebuild` operation. Rebuild removes only zvec, incremental state, and the old manifest under the writer lock; it preserves tokenizer assets and cached vectors. The quality gate must pass before the production command can run.
+The extension validates the complete manifest before opening or updating zvec. Missing or mismatched manifests are incompatible. The error reports every mismatched field and points to `/pi-session-recall-index --rebuild`. Rebuild keeps the active generation searchable, builds and optimizes a replacement under `generations/<generation-id>/`, atomically replaces the checksummed active pointer, replays retained markers, and keeps the former generation for bounded rollback. The quality gate must pass before the production command can run.
 
 Embedding text is normalized to Unicode NFC under `unicode-nfc-v1`. Cache identity includes the normalized-text SHA-256; full served-model identity and dimensions; tokenizer revision, assets, library, and encode options; chunk-policy version; and normalization version. A model, text, tokenizer, policy, normalization, or dimension change therefore misses rather than reusing incompatible geometry.
 
@@ -194,7 +190,7 @@ The checked-in embedding defaults match `~/.pi/agent/LOCAL-AI.md`:
 | Dimensions      | `2560`                         |
 | Batch size      | `16`                           |
 
-The embedding endpoint must implement `POST /v1/embeddings` with the OpenAI request and response shape. Read-only search embeds the fixed canary before every query, so an in-process model swap is rejected before zvec opens. On ordinary indexing, an all-hit cache-only rebuild makes no Octen call; the first cache miss validates a fresh canary before any new chunk text reaches the model, preventing new-model vectors from entering an old generation. Explicit `--rebuild` refreshes and preflights the canary before deleting the old generation.
+The embedding endpoint must implement `POST /v1/embeddings` with the OpenAI request and response shape. Read-only search embeds the fixed canary before every query, so an in-process model swap is rejected before zvec opens. On ordinary indexing, an all-hit cache-only rebuild makes no Octen call; the first cache miss validates a fresh canary before any new chunk text reaches the model, preventing new-model vectors from entering an old generation. Explicit `--rebuild` refreshes and preflights the canary before building the replacement generation.
 
 The manifest stores one canonical FP32 canary vector and uses its exact hash as embedding-cache identity. Compatibility compares a fresh canary by cosine similarity with a minimum of `0.9995`. This tolerates the measured geometry variation across llama.cpp parallel slots while rejecting larger drift. A tolerated rebuild retains the persisted canonical hash and can reuse vectors; a canary below the floor creates a new identity and misses the old cache.
 
@@ -263,15 +259,24 @@ Changing an embedding, session-import, project-lineage, or index identity record
 Default data paths:
 
 ```text
-~/.pi/agent/recall/zvec/                    zvec collection
-~/.pi/agent/recall/index-state.json         incremental session fingerprints
-~/.pi/agent/recall/index-manifest.json      generation compatibility identity
-~/.pi/agent/recall/tokenizers/<revision>/   checksum-verified tokenizer assets
-~/.pi/agent/recall/embedding-cache/v1/      durable content-addressed FP32 vectors
-~/.pi/agent/recall/operation.lock/          explicit-index writer lock
+~/.pi/agent/recall/active-generation.json       checksummed active-generation pointer
+~/.pi/agent/recall/generation-registry.json     build, active, rollback, and retired state
+~/.pi/agent/recall/backlog-summary.json         scalar material-backlog state
+~/.pi/agent/recall/generations/<id>/zvec/       immutable recall evidence collection
+~/.pi/agent/recall/generations/<id>/session-projections/  mutable scalar projections
+~/.pi/agent/recall/generations/<id>/index-state.json      generation index state
+~/.pi/agent/recall/generations/<id>/index-manifest.json   generation compatibility identity
+~/.pi/agent/recall/markers/{pending,quarantine,control}/   generation-independent work
+~/.pi/agent/recall/tokenizers/<revision>/        checksum-verified tokenizer assets
+~/.pi/agent/recall/embedding-cache/v1/           durable content-addressed FP32 vectors
+~/.pi/agent/recall/operation.lock/               bounded zvec write-window lock
+~/.pi/agent/recall/incremental-worker.lock       nonblocking worker ownership flock
+~/.pi/agent/recall/incremental-diagnostics.jsonl scalar worker diagnostics
 ```
 
-A process-local mutex and PID-owned writer lock serialize manual and automatic indexing. Targeted lifecycle ingestion waits at most 250 milliseconds for another writer, then defers quietly until the next lifecycle event. The active-session freshness barrier waits under the tool's cancellation signal because search must not silently return stale evidence from its invoking session. Search never clears or repairs another process's lock. Manual full catch-up checkpoints every 100 changed files; targeted reconciliation checkpoints its one session immediately. Embedding writes use bounded 128-chunk windows.
+A nonblocking kernel flock admits one short-lived worker. The operation lock serializes zvec write windows, rebuild cutover, rollback, and recovery. Search waits at most 500 ms for a current write window, never for marker replay or source freshness, and never clears another process's lock. Interrupted writer state requires a write-capable recovery open before read-only search resumes.
+
+The target-host policy is p95 ≤25 ms for marker publication and detached spawn, ≤500 ms per 10,000-file metadata sweep slice, batches ≤32 documents, write-window p95 ≤300 ms, projection payloads ≤1 MiB, and search wait ≤500 ms. These are measured host candidates. A miss returns to design review with version-3 scalar diagnostic records.
 
 The embedding cache is a sibling of zvec rather than part of the collection. Each entry has a versioned identity header, FP32 payload, and SHA-256 checksum. Writers fsync a unique temporary file and atomically rename it only after validation. Readers reject identity, dimension, byte-length, checksum, and non-finite-value failures. Rebuilding only zvec and index state leaves the cache available, so unchanged chunks need zero chunk-embedding requests. Index completion reports cache hits, newly embedded chunks, and chunk-embedding request count separately; the model-identity canary request is not a chunk-embedding request.
 
@@ -285,14 +290,16 @@ Run the fixed quality and latency gate before approving a full corpus backfill:
 npm run evaluate:recall
 ```
 
-The command reads only the 15 checksum-fixed sessions under `evaluation/corpus/`. It builds one temporary 512/64 index under the ignored `evaluation/.recall-data/recall-quality-evaluation/` directory and measures the approved policy of 8 candidates per channel and 5 final results. Its Git fixtures are temporary repositories in that same guarded directory; the production project identity resolver must derive the declared main-checkout, worktree, clone, and unrelated-repository identities before indexing begins. The 17 cases preserve the established global retrieval classes and add main/worktree, equivalent-clone, configured-lineage, unrelated-similar-project, exact non-Git, and explicit-global coverage. A global control proves dense, lexical, and identifier project restrictions apply before each channel limit. The default hybrid run makes zero reranker requests and writes:
+The command reads only the 15 checksum-fixed sessions under `evaluation/corpus/`. It uses a deterministic in-process fixture embedding and whitespace tokenizer, makes no network requests, builds one temporary 512/64 index under the ignored `evaluation/.recall-data/recall-quality-evaluation/` directory, and deletes that scratch root in `finally`. It measures the approved policy of 8 candidates per channel and 5 final results. Its Git fixtures are temporary repositories in that same guarded directory; the production project identity resolver must derive the declared main-checkout, worktree, clone, and unrelated-repository identities before indexing begins. The 17 cases preserve the established global retrieval classes and add main/worktree, equivalent-clone, configured-lineage, unrelated-similar-project, exact non-Git, and explicit-global coverage. A global control proves dense, lexical, and identifier project restrictions apply before each channel limit. The default hybrid run makes zero reranker requests and writes:
 
 - `docs/evaluation/recall-quality-report.md`
 - `docs/evaluation/recall-quality-results.json`
 
 The command never scans the configured production session directory or starts the full backfill. It exits with status 2 when no measured configuration passes every frozen quality and latency threshold. The Pi index command reads the committed result and refuses to scan production sessions unless the run is clean, the automated gate passes, and it selects chunk, candidate, and final-result counts. Invoking the unblocked index command remains the human approval step.
 
-Only clean version-4 evidence can unblock production indexing. The gate binds the result to the current default project scope, repository-identity and lineage policies, lineage digest, hybrid rank-fusion constants, 512/64 chunk geometry, per-channel candidate limits, and final-result count. `/pi-session-recall-index` rejects missing, pre-scope, stale-policy, dirty, failed, or unapproved-policy evidence.
+Only clean version-5 evidence can unblock production indexing. The gate binds the result to conversation schema 9, zvec schema 8, manifest version 6, the incremental eligibility policy, the current project scope and identity policies, lineage digest, hybrid rank-fusion constants, 512/64 chunk geometry, per-channel candidate limits, and final-result count. `/pi-session-recall-index` rejects missing, stale-schema, pre-scope, stale-policy, dirty, failed, or unapproved-policy evidence.
+
+Production rollout is manual. Follow [`docs/operations/incremental-recall-rollout.md`](docs/operations/incremental-recall-rollout.md) for preflight, backup, optional legacy adoption, replacement build, pointer verification, worker recovery and marker drain, smoke searches, rollback proof, and bounded cleanup.
 
 ## Develop
 

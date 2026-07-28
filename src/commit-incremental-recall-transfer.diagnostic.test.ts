@@ -4,7 +4,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
+import { assertRecallTestDataRoot } from './assert-recall-test-data-root.js';
 import { commitIncrementalRecallTransfer } from './commit-incremental-recall-transfer.js';
+import { createRecallDiagnosticHostIdentity } from './create-recall-diagnostic-host-identity.js';
 import type { RecallMarkerReplayWorkPlan } from './coordinate-recall-marker-replay.js';
 import {
   RecallProjectionEncodingStatus,
@@ -109,6 +111,7 @@ void test(
   async (t) => {
     const directory = await mkdtemp(join(tmpdir(), 'recall-write-window-diagnostic-'));
     t.after(() => rm(directory, { recursive: true, force: true }));
+    await assertRecallTestDataRoot({ testDataRoot: directory, repositoryRoot: process.cwd() });
     const markerSpoolDirectory = join(directory, 'markers');
     await mkdir(markerSpoolDirectory, { recursive: true });
     const prepared = createDiagnosticTransfer(markerSpoolDirectory);
@@ -139,6 +142,8 @@ void test(
       });
     }
     const report = {
+      hostIdentity: createRecallDiagnosticHostIdentity(),
+      samples,
       sampleCount: samples.length,
       p95: {
         lockWaitMilliseconds: percentile95(

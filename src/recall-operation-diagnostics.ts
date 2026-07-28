@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { appendFile, mkdir, rename, rm, stat } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, rename, rm, stat } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
 import {
@@ -10,6 +10,7 @@ import {
   RecallManualMaintenanceTrigger,
   type RecallSearchScope,
 } from './enums.js';
+import { isUnknownRecord } from './is-unknown-record.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
 
 const RECALL_DIAGNOSTIC_RECORD_VERSION = 3;
@@ -86,6 +87,51 @@ export interface RecallIndexDiagnosticCompletion {
   errorCategory?: RecallDiagnosticErrorCategory;
 }
 
+/** Privacy-safe scalar costs and state for incremental worker, generation, and safeguard work. */
+export interface RecallIncrementalDiagnosticMetrics {
+  elapsedMilliseconds: number;
+  markerAgeMilliseconds: number | null;
+  metadataSweepScannedFileCount: number;
+  metadataSweepObservedSessionCount: number;
+  metadataSweepElapsedMilliseconds: number;
+  appendedByteCount: number;
+  parsedEntryCount: number;
+  eligibleDocumentCount: number;
+  tokenizerMilliseconds: number;
+  embeddingCacheHitCount: number;
+  embeddingCacheMissCount: number;
+  embeddingRequestCount: number;
+  lockWaitMilliseconds: number;
+  evidenceOpenMilliseconds: number;
+  evidenceWriteMilliseconds: number;
+  projectionOpenMilliseconds: number;
+  projectionCommitMilliseconds: number;
+  closeMilliseconds: number;
+  checkpointObservationMilliseconds: number;
+  markerAcknowledgementMilliseconds: number;
+  generationId: string | null;
+  generationState: string | null;
+  recoveryCategory: string | null;
+  deletionSafeguardCategory: string | null;
+  backlogPendingEligibleSessionCount: number;
+  backlogOldestEligibleMarkerAgeMilliseconds: number | null;
+  backlogFailureCategory: string | null;
+}
+
+/** One completed incremental diagnostic operation written without conversation text or source paths. */
+export interface RecallIncrementalDiagnosticCompletion {
+  operationKind:
+    | RecallDiagnosticOperationKind.INCREMENTAL_WORKER
+    | RecallDiagnosticOperationKind.WRITE_WINDOW
+    | RecallDiagnosticOperationKind.GENERATION_CUTOVER
+    | RecallDiagnosticOperationKind.RECOVERY
+    | RecallDiagnosticOperationKind.DELETION_RECONCILIATION
+    | RecallDiagnosticOperationKind.BACKLOG;
+  status: RecallDiagnosticStatus;
+  metrics: RecallIncrementalDiagnosticMetrics;
+  errorCategory?: RecallDiagnosticErrorCategory;
+}
+
 /** Exclusive phase totals and bounded state for one public recall search. */
 export interface RecallSearchDiagnosticMetrics {
   embeddingModelVerificationMilliseconds: number;
@@ -158,6 +204,31 @@ export interface RecallOperationDiagnosticRecord {
   cacheHitCount: number | null;
   newEmbeddingCount: number | null;
   embeddingRequestCount: number | null;
+  markerAgeMilliseconds: number | null;
+  lockWaitMilliseconds: number | null;
+  metadataSweepScannedFileCount: number | null;
+  metadataSweepObservedSessionCount: number | null;
+  metadataSweepElapsedMilliseconds: number | null;
+  appendedByteCount: number | null;
+  parsedEntryCount: number | null;
+  eligibleDocumentCount: number | null;
+  tokenizerMilliseconds: number | null;
+  embeddingCacheHitCount: number | null;
+  embeddingCacheMissCount: number | null;
+  evidenceOpenMilliseconds: number | null;
+  evidenceWriteMilliseconds: number | null;
+  projectionOpenMilliseconds: number | null;
+  projectionCommitMilliseconds: number | null;
+  closeMilliseconds: number | null;
+  checkpointObservationMilliseconds: number | null;
+  markerAcknowledgementMilliseconds: number | null;
+  generationId: string | null;
+  generationState: string | null;
+  recoveryCategory: string | null;
+  deletionSafeguardCategory: string | null;
+  backlogPendingEligibleSessionCount: number | null;
+  backlogOldestEligibleMarkerAgeMilliseconds: number | null;
+  backlogFailureCategory: string | null;
 }
 
 /** Handle that completes one already-started search diagnostic without awaiting persistence. */
@@ -189,6 +260,7 @@ export interface RecallOperationDiagnostics {
   startManualIndexMaintenance(input: {
     manualMaintenanceTrigger: RecallManualMaintenanceTrigger;
   }): RecallManualIndexDiagnostic;
+  recordIncrementalOperation(completion: RecallIncrementalDiagnosticCompletion): void;
   flush(): Promise<void>;
 }
 
@@ -232,6 +304,39 @@ export function accumulateRecallIndexMetrics(
   aggregateMetrics.embeddingRequestCount += physicalSessionMetrics.embeddingRequestCount;
   aggregateMetrics.upsertedDocumentCount += physicalSessionMetrics.upsertedDocumentCount;
   aggregateMetrics.deletedDocumentCount += physicalSessionMetrics.deletedDocumentCount;
+}
+
+/** Creates zeroed scalar measurements for one incremental recall diagnostic operation. */
+export function createRecallIncrementalDiagnosticMetrics(): RecallIncrementalDiagnosticMetrics {
+  return {
+    elapsedMilliseconds: 0,
+    markerAgeMilliseconds: null,
+    metadataSweepScannedFileCount: 0,
+    metadataSweepObservedSessionCount: 0,
+    metadataSweepElapsedMilliseconds: 0,
+    appendedByteCount: 0,
+    parsedEntryCount: 0,
+    eligibleDocumentCount: 0,
+    tokenizerMilliseconds: 0,
+    embeddingCacheHitCount: 0,
+    embeddingCacheMissCount: 0,
+    embeddingRequestCount: 0,
+    lockWaitMilliseconds: 0,
+    evidenceOpenMilliseconds: 0,
+    evidenceWriteMilliseconds: 0,
+    projectionOpenMilliseconds: 0,
+    projectionCommitMilliseconds: 0,
+    closeMilliseconds: 0,
+    checkpointObservationMilliseconds: 0,
+    markerAcknowledgementMilliseconds: 0,
+    generationId: null,
+    generationState: null,
+    recoveryCategory: null,
+    deletionSafeguardCategory: null,
+    backlogPendingEligibleSessionCount: 0,
+    backlogOldestEligibleMarkerAgeMilliseconds: null,
+    backlogFailureCategory: null,
+  };
 }
 
 /** Creates zeroed search measurements whose phase totals remain non-overlapping. */
@@ -326,6 +431,31 @@ function createRecallDiagnosticStartRecord(input: {
     cacheHitCount: null,
     newEmbeddingCount: null,
     embeddingRequestCount: null,
+    markerAgeMilliseconds: null,
+    lockWaitMilliseconds: null,
+    metadataSweepScannedFileCount: null,
+    metadataSweepObservedSessionCount: null,
+    metadataSweepElapsedMilliseconds: null,
+    appendedByteCount: null,
+    parsedEntryCount: null,
+    eligibleDocumentCount: null,
+    tokenizerMilliseconds: null,
+    embeddingCacheHitCount: null,
+    embeddingCacheMissCount: null,
+    evidenceOpenMilliseconds: null,
+    evidenceWriteMilliseconds: null,
+    projectionOpenMilliseconds: null,
+    projectionCommitMilliseconds: null,
+    closeMilliseconds: null,
+    checkpointObservationMilliseconds: null,
+    markerAcknowledgementMilliseconds: null,
+    generationId: null,
+    generationState: null,
+    recoveryCategory: null,
+    deletionSafeguardCategory: null,
+    backlogPendingEligibleSessionCount: null,
+    backlogOldestEligibleMarkerAgeMilliseconds: null,
+    backlogFailureCategory: null,
   };
 }
 
@@ -487,6 +617,85 @@ function createRecallSearchDiagnosticCompletionRecord(input: {
     unattributedMilliseconds: Math.max(elapsedMilliseconds - attributedMilliseconds, 0),
     totalDocumentCount: input.completion.totalDocumentCount,
   };
+}
+
+function createRecallIncrementalDiagnosticRecord(input: {
+  clock: RecallDiagnosticsClock;
+  completion: RecallIncrementalDiagnosticCompletion;
+}): RecallOperationDiagnosticRecord {
+  const metrics = input.completion.metrics;
+  const attributedMilliseconds =
+    metrics.metadataSweepElapsedMilliseconds +
+    metrics.tokenizerMilliseconds +
+    metrics.lockWaitMilliseconds +
+    metrics.evidenceOpenMilliseconds +
+    metrics.evidenceWriteMilliseconds +
+    metrics.projectionOpenMilliseconds +
+    metrics.projectionCommitMilliseconds +
+    metrics.closeMilliseconds +
+    metrics.checkpointObservationMilliseconds +
+    metrics.markerAcknowledgementMilliseconds;
+  return {
+    ...createRecallDiagnosticStartRecord({
+      clock: input.clock,
+      operationId: createRecallDiagnosticOperationId(),
+      parentOperationId: null,
+      operationKind: input.completion.operationKind,
+      manualMaintenanceTrigger: null,
+      sessionPath: null,
+      searchMode: null,
+      recallScope: null,
+    }),
+    status: input.completion.status,
+    errorCategory: input.completion.errorCategory ?? null,
+    elapsedMilliseconds: metrics.elapsedMilliseconds,
+    unattributedMilliseconds: Math.max(metrics.elapsedMilliseconds - attributedMilliseconds, 0),
+    markerAgeMilliseconds: metrics.markerAgeMilliseconds,
+    metadataSweepScannedFileCount: metrics.metadataSweepScannedFileCount,
+    metadataSweepObservedSessionCount: metrics.metadataSweepObservedSessionCount,
+    metadataSweepElapsedMilliseconds: metrics.metadataSweepElapsedMilliseconds,
+    appendedByteCount: metrics.appendedByteCount,
+    parsedEntryCount: metrics.parsedEntryCount,
+    eligibleDocumentCount: metrics.eligibleDocumentCount,
+    tokenizerMilliseconds: metrics.tokenizerMilliseconds,
+    embeddingCacheHitCount: metrics.embeddingCacheHitCount,
+    embeddingCacheMissCount: metrics.embeddingCacheMissCount,
+    embeddingRequestCount: metrics.embeddingRequestCount,
+    lockWaitMilliseconds: metrics.lockWaitMilliseconds,
+    writerLockWaitMilliseconds: metrics.lockWaitMilliseconds,
+    evidenceOpenMilliseconds: metrics.evidenceOpenMilliseconds,
+    evidenceWriteMilliseconds: metrics.evidenceWriteMilliseconds,
+    projectionOpenMilliseconds: metrics.projectionOpenMilliseconds,
+    projectionCommitMilliseconds: metrics.projectionCommitMilliseconds,
+    closeMilliseconds: metrics.closeMilliseconds,
+    checkpointObservationMilliseconds: metrics.checkpointObservationMilliseconds,
+    markerAcknowledgementMilliseconds: metrics.markerAcknowledgementMilliseconds,
+    generationId: metrics.generationId,
+    generationState: metrics.generationState,
+    recoveryCategory: metrics.recoveryCategory,
+    deletionSafeguardCategory: metrics.deletionSafeguardCategory,
+    backlogPendingEligibleSessionCount: metrics.backlogPendingEligibleSessionCount,
+    backlogOldestEligibleMarkerAgeMilliseconds: metrics.backlogOldestEligibleMarkerAgeMilliseconds,
+    backlogFailureCategory: metrics.backlogFailureCategory,
+  };
+}
+
+/** Reads append-only version-2 and version-3 diagnostic JSONL for local analysis. */
+export async function readRecallOperationDiagnosticRecords(
+  path: string,
+): Promise<Array<Record<string, unknown>>> {
+  const records: Array<Record<string, unknown>> = [];
+  for (const [lineIndex, line] of (await readFile(path, 'utf8')).split('\n').entries()) {
+    if (line.trim().length === 0) {
+      continue;
+    }
+    const value: unknown = JSON.parse(line);
+    if (!isUnknownRecord(value) || (value.version !== 2 && value.version !== 3)) {
+      throw new Error(`Recall diagnostic JSONL line ${lineIndex + 1} has unsupported version`);
+    }
+    records.push(value);
+  }
+  return records;
 }
 
 /** Creates asynchronous local JSONL diagnostics that never propagate persistence failures. */
@@ -688,6 +897,9 @@ export function createRecallOperationDiagnostics(
           );
         },
       };
+    },
+    recordIncrementalOperation(completion) {
+      queueDiagnosticRecord(createRecallIncrementalDiagnosticRecord({ clock, completion }));
     },
     async flush() {
       await pendingWrite;

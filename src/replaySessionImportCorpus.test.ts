@@ -244,7 +244,7 @@ void test(
 void test('session import replay refuses the production recall data directory', async () => {
   await assert.rejects(
     () => replaySessionImportCorpus(join(process.env.HOME ?? '', '.pi/agent/recall')),
-    /refuses the production recall index directory/u,
+    /Recall test data root overlaps protected path/u,
   );
 });
 
@@ -259,7 +259,7 @@ void test('session import replay refuses the environment-configured recall data 
   try {
     await assert.rejects(
       () => replaySessionImportCorpus(dataDirectory),
-      /refuses the production recall index directory/u,
+      /Recall test data root overlaps protected path/u,
     );
   } finally {
     if (previousConfigPath === undefined) {
@@ -282,23 +282,16 @@ void test('session import replay refuses the recall.json-configured data directo
   await mkdir(agentDirectory, { recursive: true });
   await mkdir(dataDirectory);
   await writeFile(join(agentDirectory, 'recall.json'), JSON.stringify({ dataDirectory }));
-  const previousHomeDirectory = process.env.HOME;
   const previousConfigPath = process.env.PI_RECALL_CONFIG;
   const previousDataDirectory = process.env.PI_RECALL_DATA_DIRECTORY;
-  process.env.HOME = homeDirectory;
-  delete process.env.PI_RECALL_CONFIG;
+  process.env.PI_RECALL_CONFIG = join(agentDirectory, 'recall.json');
   delete process.env.PI_RECALL_DATA_DIRECTORY;
   try {
     await assert.rejects(
       () => replaySessionImportCorpus(dataDirectory),
-      /refuses the production recall index directory/u,
+      /Recall test data root overlaps protected path/u,
     );
   } finally {
-    if (previousHomeDirectory === undefined) {
-      delete process.env.HOME;
-    } else {
-      process.env.HOME = previousHomeDirectory;
-    }
     if (previousConfigPath === undefined) {
       delete process.env.PI_RECALL_CONFIG;
     } else {

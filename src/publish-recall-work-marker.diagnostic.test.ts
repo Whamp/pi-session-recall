@@ -6,6 +6,8 @@ import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import test from 'node:test';
 
+import { assertRecallTestDataRoot } from './assert-recall-test-data-root.js';
+import { createRecallDiagnosticHostIdentity } from './create-recall-diagnostic-host-identity.js';
 import { RecallWorkMarkerTrigger } from './enums.js';
 import { publishRecallWorkMarker } from './publish-recall-work-marker.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
@@ -19,6 +21,12 @@ const DIAGNOSTIC_SAMPLE_COUNT = 50;
 const MAX_COMBINED_P95_MILLISECONDS = 25;
 
 interface RecallMarkerPublicationDiagnosticReport {
+  hostIdentity: ReturnType<typeof createRecallDiagnosticHostIdentity>;
+  samples: Array<{
+    publicationMilliseconds: number;
+    detachedSpawnMilliseconds: number;
+    combinedMilliseconds: number;
+  }>;
   sampleCount: number;
   publicationP95Milliseconds: number;
   detachedSpawnP95Milliseconds: number;
@@ -35,6 +43,7 @@ function percentile95(values: readonly number[]): number {
 
 async function measureRecallMarkerPublication(): Promise<RecallMarkerPublicationDiagnosticReport> {
   const directory = await mkdtemp(join(tmpdir(), 'recall-marker-diagnostic-'));
+  await assertRecallTestDataRoot({ testDataRoot: directory, repositoryRoot: process.cwd() });
   const sessionsDirectory = join(directory, 'sessions');
   const markerSpoolDirectory = join(directory, 'recall', 'markers', 'pending');
   const physicalSessionPath = join(sessionsDirectory, 'diagnostic-session.jsonl');
@@ -90,6 +99,12 @@ async function measureRecallMarkerPublication(): Promise<RecallMarkerPublication
   }
   const combinedP95Milliseconds = percentile95(combinedMilliseconds);
   return {
+    hostIdentity: createRecallDiagnosticHostIdentity(),
+    samples: combinedMilliseconds.map((combinedMilliseconds, index) => ({
+      publicationMilliseconds: publicationMilliseconds[index] ?? 0,
+      detachedSpawnMilliseconds: detachedSpawnMilliseconds[index] ?? 0,
+      combinedMilliseconds,
+    })),
     sampleCount: DIAGNOSTIC_SAMPLE_COUNT,
     publicationP95Milliseconds: percentile95(publicationMilliseconds),
     detachedSpawnP95Milliseconds: percentile95(detachedSpawnMilliseconds),

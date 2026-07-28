@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import test from 'node:test';
 
+import { assertRecallTestDataRoot } from './assert-recall-test-data-root.js';
+import { createRecallDiagnosticHostIdentity } from './create-recall-diagnostic-host-identity.js';
 import {
   RECALL_METADATA_SWEEP_MAX_ELAPSED_MILLISECONDS,
   scanRecallSessionMetadata,
@@ -14,6 +19,8 @@ const DIAGNOSTIC_SAMPLE_COUNT = 25;
 const DIAGNOSTIC_FILE_COUNT = 10_000;
 
 interface RecallMetadataSweepDiagnosticReport {
+  hostIdentity: ReturnType<typeof createRecallDiagnosticHostIdentity>;
+  sampleMilliseconds: number[];
   sampleCount: number;
   fileCount: number;
   p95Milliseconds: number;
@@ -65,28 +72,36 @@ function createDiagnosticContinuationStore(): RecallMetadataSweepContinuationSto
 }
 
 async function measureRecallMetadataSweep(): Promise<RecallMetadataSweepDiagnosticReport> {
-  const filesystem = createGeneratedMetadataFilesystem();
-  const samples: number[] = [];
-  for (let sample = 0; sample < DIAGNOSTIC_SAMPLE_COUNT; sample += 1) {
-    const startedAt = performance.now();
-    await scanRecallSessionMetadata({
-      sessionRootDirectory: '/generated/session-metadata',
-      controlDirectory: '/generated/control',
-      filesystem,
-      continuationStore: createDiagnosticContinuationStore(),
-      monotonicNowMilliseconds: performance.now.bind(performance),
-    });
-    samples.push(performance.now() - startedAt);
+  const directory = await mkdtemp(join(tmpdir(), 'recall-metadata-diagnostic-'));
+  try {
+    await assertRecallTestDataRoot({ testDataRoot: directory, repositoryRoot: process.cwd() });
+    const filesystem = createGeneratedMetadataFilesystem();
+    const samples: number[] = [];
+    for (let sample = 0; sample < DIAGNOSTIC_SAMPLE_COUNT; sample += 1) {
+      const startedAt = performance.now();
+      await scanRecallSessionMetadata({
+        sessionRootDirectory: join(directory, 'session-metadata'),
+        controlDirectory: join(directory, 'control'),
+        filesystem,
+        continuationStore: createDiagnosticContinuationStore(),
+        monotonicNowMilliseconds: performance.now.bind(performance),
+      });
+      samples.push(performance.now() - startedAt);
+    }
+    const p95Milliseconds = percentile95(samples);
+    return {
+      hostIdentity: createRecallDiagnosticHostIdentity(),
+      sampleMilliseconds: samples,
+      sampleCount: DIAGNOSTIC_SAMPLE_COUNT,
+      fileCount: DIAGNOSTIC_FILE_COUNT,
+      p95Milliseconds,
+      maximumMilliseconds: Math.max(...samples),
+      acceptanceBoundMilliseconds: RECALL_METADATA_SWEEP_MAX_ELAPSED_MILLISECONDS,
+      accepted: p95Milliseconds <= RECALL_METADATA_SWEEP_MAX_ELAPSED_MILLISECONDS,
+    };
+  } finally {
+    await rm(directory, { recursive: true, force: true });
   }
-  const p95Milliseconds = percentile95(samples);
-  return {
-    sampleCount: DIAGNOSTIC_SAMPLE_COUNT,
-    fileCount: DIAGNOSTIC_FILE_COUNT,
-    p95Milliseconds,
-    maximumMilliseconds: Math.max(...samples),
-    acceptanceBoundMilliseconds: RECALL_METADATA_SWEEP_MAX_ELAPSED_MILLISECONDS,
-    accepted: p95Milliseconds <= RECALL_METADATA_SWEEP_MAX_ELAPSED_MILLISECONDS,
-  };
 }
 
 void test(

@@ -5,6 +5,12 @@ export enum RecallDiagnosticOperationKind {
   REBUILD = 'rebuild',
   PHYSICAL_SESSION_CHECK = 'physical_session_check',
   OPTIMIZATION = 'optimization',
+  INCREMENTAL_WORKER = 'incremental_worker',
+  WRITE_WINDOW = 'write_window',
+  GENERATION_CUTOVER = 'generation_cutover',
+  RECOVERY = 'recovery',
+  DELETION_RECONCILIATION = 'deletion_reconciliation',
+  BACKLOG = 'backlog',
 }
 
 /** Lifecycle state recorded for one recall diagnostic operation. */

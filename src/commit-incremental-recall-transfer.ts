@@ -4,12 +4,20 @@ import {
   coordinateRecallWriteWindow,
   type RecallWriteWindow,
 } from './coordinate-recall-write-window.js';
-import { RecallGenerationCutoverState } from './enums.js';
+import {
+  RecallDiagnosticOperationKind,
+  RecallDiagnosticStatus,
+  RecallGenerationCutoverState,
+} from './enums.js';
 import type { PreparedIncrementalRecallTransfer } from './prepare-incremental-recall-transfer.js';
 import {
   readRecallActiveGenerationPointer,
   readRecallGenerationRegistry,
 } from './recall-generation-state.js';
+import {
+  createRecallIncrementalDiagnosticMetrics,
+  type RecallOperationDiagnostics,
+} from './recall-operation-diagnostics.js';
 import type {
   RecallMarkerCheckpoint,
   RecallSessionProjection,
@@ -79,6 +87,7 @@ export interface CommitIncrementalRecallTransferOptions {
   ) => Promise<number>;
   monotonicMilliseconds?: () => number;
   onWriteWindowDiagnostic?: (diagnostic: IncrementalRecallWriteWindowDiagnostic) => void;
+  operationDiagnostics?: Pick<RecallOperationDiagnostics, 'recordIncrementalOperation'>;
 }
 
 interface MutableWriteWindowDiagnostic {
@@ -402,6 +411,32 @@ export async function commitIncrementalRecallTransfer(
     );
   } else {
     await observeAcknowledgeAndComplete();
+  }
+  for (const [index, diagnostic] of diagnostics.entries()) {
+    const metrics = createRecallIncrementalDiagnosticMetrics();
+    metrics.elapsedMilliseconds =
+      diagnostic.lockWaitMilliseconds + diagnostic.writeWindowMilliseconds;
+    metrics.eligibleDocumentCount = diagnostic.documentCount;
+    metrics.embeddingCacheHitCount = index === 0 ? options.prepared.cacheHits : 0;
+    metrics.embeddingCacheMissCount = index === 0 ? options.prepared.newlyEmbeddedChunks : 0;
+    metrics.embeddingRequestCount = index === 0 ? options.prepared.embeddingRequestCount : 0;
+    metrics.lockWaitMilliseconds = diagnostic.lockWaitMilliseconds;
+    metrics.evidenceOpenMilliseconds = diagnostic.evidenceOpenMilliseconds;
+    metrics.evidenceWriteMilliseconds = diagnostic.evidenceWriteMilliseconds;
+    metrics.projectionOpenMilliseconds = diagnostic.projectionOpenMilliseconds;
+    metrics.projectionCommitMilliseconds = diagnostic.projectionWriteMilliseconds;
+    metrics.closeMilliseconds = diagnostic.closeMilliseconds;
+    metrics.checkpointObservationMilliseconds =
+      index === diagnostics.length - 1 ? checkpointObservationMilliseconds : 0;
+    metrics.markerAcknowledgementMilliseconds =
+      index === diagnostics.length - 1 ? markerAcknowledgementMilliseconds : 0;
+    metrics.generationId = options.prepared.targetGenerationId;
+    metrics.recoveryCategory = diagnostic.recovering ? 'write_capable_reopen' : null;
+    options.operationDiagnostics?.recordIncrementalOperation({
+      operationKind: RecallDiagnosticOperationKind.WRITE_WINDOW,
+      status: RecallDiagnosticStatus.SUCCEEDED,
+      metrics,
+    });
   }
   return Object.freeze({
     committedDocumentCount: options.prepared.documents.length,

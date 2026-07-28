@@ -14,9 +14,11 @@ import {
 } from './enums.js';
 import { isUnknownRecord } from './is-unknown-record.js';
 import {
+  createRecallIncrementalDiagnosticMetrics,
   createRecallIndexMetrics,
   createRecallOperationDiagnostics,
   createRecallSearchDiagnosticMetrics,
+  readRecallOperationDiagnosticRecords,
   type RecallIndexDiagnosticCompletion,
 } from './recall-operation-diagnostics.js';
 
@@ -40,6 +42,72 @@ function completeTestDiagnosticOperation(
     ...(errorCategory ? { errorCategory } : {}),
   });
 }
+
+void test('incremental diagnostics persist versioned scalar worker and write-window evidence', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-incremental-diagnostics-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const activeLogPath = join(directory, 'diagnostics.jsonl');
+  const diagnostics = createRecallOperationDiagnostics({
+    mode: RecallDiagnosticsMode.ALL,
+    activeLogPath,
+    retainedLogPath: join(directory, 'diagnostics.previous.jsonl'),
+    notifyWarning() {
+      assert.fail('successful incremental diagnostics must not warn');
+    },
+  });
+  const metrics = createRecallIncrementalDiagnosticMetrics();
+  Object.assign(metrics, {
+    markerAgeMilliseconds: 7,
+    metadataSweepScannedFileCount: 10_000,
+    metadataSweepObservedSessionCount: 9_000,
+    metadataSweepElapsedMilliseconds: 450,
+    appendedByteCount: 4_096,
+    parsedEntryCount: 12,
+    eligibleDocumentCount: 8,
+    tokenizerMilliseconds: 5,
+    embeddingCacheHitCount: 6,
+    embeddingCacheMissCount: 2,
+    embeddingRequestCount: 1,
+    lockWaitMilliseconds: 3,
+    evidenceOpenMilliseconds: 4,
+    evidenceWriteMilliseconds: 5,
+    projectionOpenMilliseconds: 6,
+    projectionCommitMilliseconds: 7,
+    closeMilliseconds: 8,
+    checkpointObservationMilliseconds: 9,
+    markerAcknowledgementMilliseconds: 10,
+    generationId: 'generation_acceptance',
+    generationState: 'active',
+    recoveryCategory: 'writer_reopen',
+    deletionSafeguardCategory: 'mass_loss_suppressed',
+    backlogPendingEligibleSessionCount: 11,
+    backlogOldestEligibleMarkerAgeMilliseconds: 12,
+    backlogFailureCategory: 'write_failed',
+  });
+  diagnostics.recordIncrementalOperation({
+    operationKind: RecallDiagnosticOperationKind.INCREMENTAL_WORKER,
+    status: RecallDiagnosticStatus.SUCCEEDED,
+    metrics,
+  });
+  await diagnostics.flush();
+
+  const records = await readRecallOperationDiagnosticRecords(activeLogPath);
+  assert.equal(records.length, 1);
+  assert.deepEqual(
+    Object.fromEntries(
+      Object.keys(metrics).map((field) => [field, Reflect.get(records[0] ?? {}, field)]),
+    ),
+    metrics,
+  );
+  assert.equal(records[0]?.version, 3);
+
+  await writeFile(
+    activeLogPath,
+    `${JSON.stringify({ version: 2, operationKind: 'search', status: 'succeeded' })}\n`,
+  );
+  const legacyRecords = await readRecallOperationDiagnosticRecords(activeLogPath);
+  assert.equal(legacyRecords[0]?.version, 2);
+});
 
 void test('slow diagnostics omit fast cancelled physical session checks', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'recall-slow-cancelled-physical-'));

@@ -14,6 +14,9 @@ import type {
 } from './recall-session-projection.js';
 import type { RecallWorkMarker } from './recall-work-marker.js';
 
+/** Version of monotonic compaction, branch-exit, departure, and quiescence eligibility rules. */
+export const INCREMENTAL_RECALL_ELIGIBILITY_POLICY_VERSION = 1;
+
 /** Ordered lifecycle facts applied to one logical projection without I/O or global runtime authority. */
 export interface ReduceRecallEligibilityInput {
   physicalProjection: PhysicalSessionProjection;

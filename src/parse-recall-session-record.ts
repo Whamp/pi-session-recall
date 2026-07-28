@@ -573,6 +573,40 @@ export function readProjectedRecallSessionEntryPath(
   return null;
 }
 
+/**
+ * Reads the active-context path for one effective leaf after the latest compaction checkpoint.
+ * Empty when the leaf is null. Null when the leaf path or compaction boundary is malformed.
+ */
+export function readProjectedActiveContextPath(
+  effectiveLeafEntryId: string | null,
+  entriesById: ReadonlyMap<string, RecallProjectedEntryDescriptor>,
+): RecallProjectedEntryDescriptor[] | null {
+  const path =
+    effectiveLeafEntryId === null
+      ? []
+      : readProjectedRecallSessionEntryPath(effectiveLeafEntryId, entriesById);
+  if (path === null) {
+    return null;
+  }
+  const latestCompactionIndex = path.findLastIndex(({ entryType }) => entryType === 'compaction');
+  if (latestCompactionIndex < 0) {
+    return path;
+  }
+  const compaction = path[latestCompactionIndex];
+  if (compaction === undefined) {
+    return null;
+  }
+  if (compaction.hasRetainedTail) {
+    return path.slice(latestCompactionIndex);
+  }
+  const firstKeptIndex = path.findIndex(({ entryId }) => entryId === compaction.firstKeptEntryId);
+  // firstKept must precede the compaction on the leaf path (validated projected links enforce this).
+  if (firstKeptIndex < 0 || firstKeptIndex >= latestCompactionIndex) {
+    return null;
+  }
+  return path.slice(firstKeptIndex);
+}
+
 /** Validates persisted scalar parent, compaction, and tool links without conversation payloads. */
 export function validateProjectedRecallSessionEntryLinks(
   entryDescriptors: readonly RecallProjectedEntryDescriptor[],

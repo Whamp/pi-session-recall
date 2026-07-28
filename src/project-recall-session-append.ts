@@ -8,7 +8,7 @@ import {
 } from './enums.js';
 import { isUnknownRecord } from './is-unknown-record.js';
 import {
-  readProjectedRecallSessionEntryPath,
+  readProjectedActiveContextPath,
   validateProjectedRecallSessionEntryLinks,
   type ParsedRecallSessionRecord,
 } from './parse-recall-session-record.js';
@@ -218,34 +218,15 @@ function createProjectedEntryDescriptor(
 function updateLogicalActiveContext(
   projection: LogicalSessionProjection,
 ): LogicalSessionProjection | null {
-  if (projection.effectiveLeafEntryId === null) {
-    return { ...projection, activeContextBoundary: null };
-  }
   const entriesById = new Map(
     projection.entryDescriptors.map((descriptor) => [descriptor.entryId, descriptor]),
   );
-  const path = readProjectedRecallSessionEntryPath(projection.effectiveLeafEntryId, entriesById);
-  if (path === null) {
+  const activePath = readProjectedActiveContextPath(projection.effectiveLeafEntryId, entriesById);
+  if (activePath === null) {
     return null;
   }
-  const latestCompactionIndex = path.findLastIndex(({ entryType }) => entryType === 'compaction');
-  let activePath = path;
-  if (latestCompactionIndex >= 0) {
-    const compaction = path[latestCompactionIndex];
-    if (compaction === undefined) {
-      return null;
-    }
-    if (compaction.hasRetainedTail) {
-      activePath = path.slice(latestCompactionIndex);
-    } else {
-      const firstKeptIndex = path.findIndex(
-        ({ entryId }) => entryId === compaction.firstKeptEntryId,
-      );
-      if (firstKeptIndex < 0) {
-        return null;
-      }
-      activePath = path.slice(firstKeptIndex);
-    }
+  if (activePath.length === 0) {
+    return { ...projection, activeContextBoundary: null };
   }
   const first = activePath[0];
   const last = activePath.at(-1);

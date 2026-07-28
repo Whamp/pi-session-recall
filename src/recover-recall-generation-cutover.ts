@@ -7,6 +7,7 @@ import {
 } from './coordinate-recall-write-window.js';
 import { RecallBacklogFailureCategory, RecallGenerationCutoverState } from './enums.js';
 import {
+  activateRecallReplacementInRegistry,
   createRecallActiveGenerationPointer,
   decodeRecallBacklogSummary,
   readRecallActiveGenerationPointer,
@@ -16,8 +17,6 @@ import {
   writeRecallBacklogSummary,
   writeRecallGenerationRegistry,
   RECALL_BACKLOG_SUMMARY_VERSION,
-  type RecallGenerationRegistry,
-  type RecallGenerationRegistryEntry,
 } from './recall-generation-state.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
 import {
@@ -128,44 +127,6 @@ async function recoverActiveRecallGenerationStores(
   if (closeErrors.length > 0) {
     throw new AggregateError(closeErrors, 'Recall generation recovery close failed');
   }
-}
-
-function finalizeRecoveredRecallRegistry(
-  registry: RecallGenerationRegistry,
-  replacement: RecallGenerationRegistryEntry,
-  pointerChecksum: string,
-  recoveredAt: number,
-  rollbackRetentionMilliseconds: number,
-): RecallGenerationRegistry {
-  const previousGenerationId = registry.activeGenerationId;
-  return {
-    ...registry,
-    activeGenerationId: replacement.generationId,
-    buildingGenerationId: null,
-    rollbackGenerationId: previousGenerationId,
-    activePointerChecksum: pointerChecksum,
-    generations: registry.generations.map((entry): RecallGenerationRegistryEntry => {
-      if (entry.generationId === replacement.generationId) {
-        return {
-          ...replacement,
-          state: RecallGenerationCutoverState.REPLAY_PENDING,
-          stateChangedAtEpochMilliseconds: recoveredAt,
-        };
-      }
-      if (entry.generationId === previousGenerationId) {
-        return {
-          ...entry,
-          state: RecallGenerationCutoverState.ROLLBACK,
-          stateChangedAtEpochMilliseconds: recoveredAt,
-          retireAfterEpochMilliseconds: recoveredAt + rollbackRetentionMilliseconds,
-        };
-      }
-      if (entry.state === RecallGenerationCutoverState.ROLLBACK) {
-        return { ...entry, state: RecallGenerationCutoverState.RETIRED };
-      }
-      return entry;
-    }),
-  };
 }
 
 async function readRecallRecoveryBacklogSummary(
@@ -318,7 +279,7 @@ export async function recoverRecallGenerationCutover(
         const replacementPointer = createRecallActiveGenerationPointer(
           buildingGenerationEntry.generationId,
         );
-        const recoveredRegistry = finalizeRecoveredRecallRegistry(
+        const recoveredRegistry = activateRecallReplacementInRegistry(
           registry,
           buildingGenerationEntry,
           replacementPointer.checksum,
@@ -332,8 +293,7 @@ export async function recoverRecallGenerationCutover(
         await writeRecallGenerationRegistry(options.generationRegistryPath, recoveredRegistry);
         await writeRecallBacklogSummary(options.backlogSummaryPath, {
           version: RECALL_BACKLOG_SUMMARY_VERSION,
-          pendingEligibleSessionCount:
-            buildingGenerationEntry.rebuildMarkerWatermark?.length ?? 0,
+          pendingEligibleSessionCount: buildingGenerationEntry.rebuildMarkerWatermark?.length ?? 0,
           oldestEligibleMarkerAgeMilliseconds: null,
           activeGenerationId: buildingGenerationEntry.generationId,
           buildingGenerationId: null,
@@ -402,7 +362,7 @@ export async function recoverRecallGenerationCutover(
         );
       }
       const recoveredAt = options.nowEpochMilliseconds?.() ?? Date.now();
-      const recoveredRegistry = finalizeRecoveredRecallRegistry(
+      const recoveredRegistry = activateRecallReplacementInRegistry(
         registry,
         replacement,
         replacementPointer.checksum,

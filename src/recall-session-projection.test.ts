@@ -13,6 +13,7 @@ import {
   createPhysicalSessionProjectionId,
   decodeRecallSessionProjection,
   encodeRecallSessionProjection,
+  mergeRecallMarkerCheckpoint,
   RECALL_SESSION_PROJECTION_MAX_BYTES,
   RECALL_SESSION_PROJECTION_SCHEMA_VERSION,
   type LogicalSessionProjection,
@@ -285,6 +286,35 @@ void test('projection serialization excludes conversation payloads and arbitrary
     () => encodeRecallSessionProjection(unsafeRepairProjection),
     /projection|invalid/iu,
   );
+});
+
+void test('mergeRecallMarkerCheckpoint unions covered IDs and keeps max runtime sequences', () => {
+  const merged = mergeRecallMarkerCheckpoint({
+    generationId: 'generation_next',
+    current: {
+      generationId: 'generation_prior',
+      coveredMarkerIds: ['marker_b', 'marker_a'],
+      runtimeSequences: [
+        { runtimeInstanceId: 'runtime-2', sequence: 3 },
+        { runtimeInstanceId: 'runtime-1', sequence: 7 },
+      ],
+    },
+    coveredMarkerIds: ['marker_a', 'marker_c'],
+    runtimeSequences: [
+      { runtimeInstanceId: 'runtime-1', sequence: 4 },
+      { runtimeInstanceId: 'runtime-1', sequence: 9 },
+      { runtimeInstanceId: 'runtime-3', sequence: 1 },
+    ],
+  });
+  assert.deepEqual(merged, {
+    generationId: 'generation_next',
+    coveredMarkerIds: ['marker_a', 'marker_b', 'marker_c'],
+    runtimeSequences: [
+      { runtimeInstanceId: 'runtime-1', sequence: 9 },
+      { runtimeInstanceId: 'runtime-2', sequence: 3 },
+      { runtimeInstanceId: 'runtime-3', sequence: 1 },
+    ],
+  });
 });
 
 void test('projection serialization accepts exactly 1 MiB and classifies 1 MiB plus one byte', () => {

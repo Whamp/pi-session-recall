@@ -5,6 +5,7 @@ import type { IncrementalRecallEligibleGraphView } from './materialize-increment
 import type { RecallChunkPolicy } from './recall-chunk-policy.js';
 import {
   encodeRecallSessionProjection,
+  mergeRecallMarkerCheckpoint,
   type LogicalSessionProjection,
   type PhysicalSessionProjection,
   type RecallEligibleSourceSpan,
@@ -71,29 +72,15 @@ function createTransferMarkerCheckpoint(
   physicalProjection: PhysicalSessionProjection,
   workPlan: RecallMarkerReplayWorkPlan,
 ): RecallMarkerCheckpoint {
-  const coveredMarkerIds = new Set(physicalProjection.markerCheckpoint.coveredMarkerIds);
-  for (const markerId of workPlan.sourceMarkerIds) {
-    coveredMarkerIds.add(markerId);
-  }
-  const runtimeSequences = new Map(
-    physicalProjection.markerCheckpoint.runtimeSequences.map(({ runtimeInstanceId, sequence }) => [
-      runtimeInstanceId,
-      sequence,
-    ]),
-  );
-  for (const { marker } of workPlan.workItems) {
-    runtimeSequences.set(
-      marker.runtimeInstanceId,
-      Math.max(runtimeSequences.get(marker.runtimeInstanceId) ?? 0, marker.runtimeSequence),
-    );
-  }
-  return {
+  return mergeRecallMarkerCheckpoint({
     generationId: workPlan.targetGenerationId,
-    coveredMarkerIds: [...coveredMarkerIds].toSorted(),
-    runtimeSequences: [...runtimeSequences.entries()]
-      .map(([runtimeInstanceId, sequence]) => ({ runtimeInstanceId, sequence }))
-      .toSorted((left, right) => left.runtimeInstanceId.localeCompare(right.runtimeInstanceId)),
-  };
+    current: physicalProjection.markerCheckpoint,
+    coveredMarkerIds: workPlan.sourceMarkerIds,
+    runtimeSequences: workPlan.workItems.map(({ marker }) => ({
+      runtimeInstanceId: marker.runtimeInstanceId,
+      sequence: marker.runtimeSequence,
+    })),
+  });
 }
 
 function createCheckpointIntent(

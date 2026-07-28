@@ -17,10 +17,10 @@ import {
   createLogicalSessionProjectionId,
   createPhysicalSessionProjectionId,
   encodeRecallSessionProjection,
+  mergeRecallMarkerCheckpoint,
   type LogicalSessionProjection,
   type PhysicalSessionProjection,
   type RecallEligibleSourceSpan,
-  type RecallMarkerRuntimeCheckpoint,
   type RecallProjectedEntryDescriptor,
   type RecallProjectedToolCall,
 } from './recall-session-projection.js';
@@ -432,28 +432,15 @@ function updatePhysicalMarkerCheckpoint(
   projection: PhysicalSessionProjection,
   markers: readonly RecallWorkMarker[],
 ): PhysicalSessionProjection['markerCheckpoint'] {
-  const coveredMarkerIds = new Set(projection.markerCheckpoint.coveredMarkerIds);
-  const runtimeSequences = new Map(
-    projection.markerCheckpoint.runtimeSequences.map(({ runtimeInstanceId, sequence }) => [
-      runtimeInstanceId,
-      sequence,
-    ]),
-  );
-  for (const marker of markers) {
-    coveredMarkerIds.add(marker.markerId);
-    runtimeSequences.set(
-      marker.runtimeInstanceId,
-      Math.max(runtimeSequences.get(marker.runtimeInstanceId) ?? 0, marker.runtimeSequence),
-    );
-  }
-  const orderedRuntimeSequences: RecallMarkerRuntimeCheckpoint[] = [...runtimeSequences.entries()]
-    .map(([runtimeInstanceId, sequence]) => ({ runtimeInstanceId, sequence }))
-    .toSorted((left, right) => left.runtimeInstanceId.localeCompare(right.runtimeInstanceId));
-  return {
+  return mergeRecallMarkerCheckpoint({
     generationId: projection.generationId,
-    coveredMarkerIds: [...coveredMarkerIds].toSorted(),
-    runtimeSequences: orderedRuntimeSequences,
-  };
+    current: projection.markerCheckpoint,
+    coveredMarkerIds: markers.map(({ markerId }) => markerId),
+    runtimeSequences: markers.map(({ runtimeInstanceId, runtimeSequence }) => ({
+      runtimeInstanceId,
+      sequence: runtimeSequence,
+    })),
+  });
 }
 
 function projectionPayloadOverflows(

@@ -12,6 +12,7 @@ import {
 import {
   activateRecallReplacementInRegistry,
   createRecallActiveGenerationPointer,
+  createReplayPendingActivationBacklogSummary,
   encodeRecallGenerationRegistry,
   readRecallActiveGenerationPointer,
   readRecallGenerationRegistry,
@@ -578,18 +579,10 @@ async function rebuildRecallGenerationUnderOwnership<Result, BuildSnapshot = und
     throw error;
   }
   const [backlogWrite] = await Promise.allSettled([
-    writeRecallBacklogSummary(options.backlogSummaryPath, {
-      version: RECALL_BACKLOG_SUMMARY_VERSION,
-      pendingEligibleSessionCount: readyWatermark.length,
-      oldestEligibleMarkerAgeMilliseconds: null,
-      activeGenerationId: generationId,
-      buildingGenerationId: null,
-      generationState: RecallGenerationCutoverState.REPLAY_PENDING,
-      activeGenerationAgeMilliseconds: 0,
-      rebuildAgeMilliseconds: Math.max(0, activatedAt - now),
-      lastFailureCategory: null,
-      observedAtEpochMilliseconds: activatedAt,
-    }),
+    writeRecallBacklogSummary(
+      options.backlogSummaryPath,
+      createReplayPendingActivationBacklogSummary(readyEntry, activatedAt),
+    ),
   ]);
   options.workerSignal.signalDetachedWorker();
   if (backlogWrite?.status === 'rejected') {

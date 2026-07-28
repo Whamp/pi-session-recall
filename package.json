@@ -11,6 +11,7 @@
   "type": "module",
   "scripts": {
     "test": "node --import tsx --test src/**/*.test.ts",
+    "diagnose:recall-marker-hook": "PI_RECALL_RUN_MARKER_DIAGNOSTIC=1 node --import tsx --test src/publish-recall-work-marker.diagnostic.test.ts",
     "evaluate:recall": "node --import tsx src/evaluate-recall-quality.ts",
     "replay:session-import": "node --import tsx src/replaySessionImportCorpus.ts",
     "typecheck": "tsc --noEmit",
@@ -19,7 +20,8 @@
   },
   "dependencies": {
     "@huggingface/tokenizers": "0.1.3",
-    "@zvec/zvec": "0.6.0"
+    "@zvec/zvec": "0.6.0",
+    "tsx": "^4.20.0"
   },
   "devDependencies": {
     "@earendil-works/pi-ai": "*",
@@ -28,7 +30,6 @@
     "oxfmt": "^0.27.0",
     "oxlint": "^1.48.0",
     "oxlint-tsgolint": "^7.0.2001",
-    "tsx": "^4.20.0",
     "typebox": "^1.0.55",
     "typescript": "^5.9.0"
   },

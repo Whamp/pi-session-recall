@@ -1,23 +1,38 @@
 import assert from 'node:assert/strict';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 
 import { RecallSearchScope } from './enums.js';
+import { loadRecallConversationConfig } from './recall-conversation-config.js';
 import recallExtension, { searchPiRecall } from './recall-extension.js';
 import type {
   RecallConversationSearchOptions,
   RecallConversationService,
 } from './recall-conversation-service.js';
 
-void test('Pi session recall registers collision-free tool guidance and index command', async () => {
+async function createExtensionTestConfig(t: test.TestContext) {
+  const homeDirectory = await mkdtemp(join(tmpdir(), 'recall-extension-'));
+  t.after(() => rm(homeDirectory, { recursive: true, force: true }));
+  return loadRecallConversationConfig({
+    homeDirectory,
+    configPath: join(homeDirectory, 'missing-recall.json'),
+    environment: {},
+  });
+}
+
+void test('Pi session recall registers collision-free tool guidance and index command', async (t) => {
   const toolNames: string[] = [];
   const toolDescriptions: string[] = [];
   const toolGuidelines: string[] = [];
   const commandNames: string[] = [];
   const commandDescriptions: string[] = [];
   const toolParameterSchemas: string[] = [];
-  const registrar: Pick<ExtensionAPI, 'registerTool' | 'registerCommand'> = {
+  const registrar: Pick<ExtensionAPI, 'on' | 'registerTool' | 'registerCommand'> = {
+    on() {},
     registerTool(definition) {
       toolNames.push(definition.name);
       toolDescriptions.push(definition.description);
@@ -30,7 +45,7 @@ void test('Pi session recall registers collision-free tool guidance and index co
     },
   };
 
-  await recallExtension(registrar);
+  await recallExtension(registrar, { config: await createExtensionTestConfig(t) });
 
   assert.deepEqual(toolNames, ['pi-session-recall']);
   assert.deepEqual(commandNames, ['pi-session-recall-index']);
@@ -62,7 +77,7 @@ void test('Pi session recall registers collision-free tool guidance and index co
   );
 });
 
-void test('Pi recall runtime never registers automatic whole-session maintenance', async () => {
+void test('Pi recall runtime registers exactly the five marker-only lifecycle events', async (t) => {
   const lifecycleEvents: string[] = [];
   const registrar: Pick<ExtensionAPI, 'on' | 'registerTool' | 'registerCommand'> = {
     on(event) {
@@ -72,9 +87,15 @@ void test('Pi recall runtime never registers automatic whole-session maintenance
     registerCommand() {},
   };
 
-  await recallExtension(registrar);
+  await recallExtension(registrar, { config: await createExtensionTestConfig(t) });
 
-  assert.deepEqual(lifecycleEvents, []);
+  assert.deepEqual(lifecycleEvents, [
+    'agent_settled',
+    'session_compact',
+    'session_tree',
+    'session_shutdown',
+    'session_start',
+  ]);
 });
 
 void test('Pi recall tool adapter propagates trusted cwd with project default and explicit global scope', async () => {

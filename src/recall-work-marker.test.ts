@@ -52,6 +52,11 @@ void test('recall work marker round-trips every strict trigger payload', async (
       newLeafEntryId: 'new-leaf-1',
       summaryEntryId: 'branch-summary-1',
     },
+    {
+      kind: RecallWorkMarkerTrigger.BRANCH_EXIT,
+      oldLeafEntryId: null,
+      newLeafEntryId: null,
+    },
     { kind: RecallWorkMarkerTrigger.DEPARTURE },
     { kind: RecallWorkMarkerTrigger.ARRIVAL },
   ];

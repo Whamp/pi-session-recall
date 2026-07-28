@@ -44,8 +44,8 @@ export interface RecallCompactionBoundary {
 
 /** One preserved old-leaf transition that cannot be reconstructed from JSONL alone. */
 export interface RecallPreservedBranchExit {
-  oldLeafEntryId: string;
-  newLeafEntryId: string;
+  oldLeafEntryId: string | null;
+  newLeafEntryId: string | null;
   summaryEntryId: string | null;
 }
 
@@ -207,8 +207,8 @@ const logicalSessionProjectionSchema = Type.Object(
     preservedBranchExits: Type.Array(
       Type.Object(
         {
-          oldLeafEntryId: nonemptyStringSchema,
-          newLeafEntryId: nonemptyStringSchema,
+          oldLeafEntryId: nullableIdentifierSchema,
+          newLeafEntryId: nullableIdentifierSchema,
           summaryEntryId: nullableIdentifierSchema,
         },
         { additionalProperties: false },

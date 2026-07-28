@@ -7,7 +7,6 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { promisify } from 'node:util';
 
-import { createRecallLiveSessionIngestion } from './create-recall-live-session-ingestion.js';
 import {
   RecallDiagnosticErrorCategory,
   RecallDiagnosticOperationKind,
@@ -1085,10 +1084,11 @@ void test('live session reconciliation records private-safe costs and keeps chan
   await writeFile(sessionPath, entries.map((entry) => JSON.stringify(entry)).join('\n') + '\n');
   const sourceBeforeReconciliation = await readFile(sessionPath);
   const sourceByteSize = (await stat(sessionPath)).size;
-  const warnings: string[] = [];
-  const ingestion = createRecallLiveSessionIngestion(service, (message) => warnings.push(message));
 
-  await ingestion.reconcileActiveSession(sessionPath);
+  await service.reconcileSession(sessionPath, {
+    lifecycleTrigger: RecallLifecycleTrigger.AGENT_SETTLED,
+    lockWaitMilliseconds: 250,
+  });
   await diagnostics.flush();
 
   const diagnosticJsonl = await readFile(config.diagnosticLogPath, 'utf8');
@@ -1134,10 +1134,12 @@ void test('live session reconciliation records private-safe costs and keeps chan
     assert.doesNotMatch(diagnosticJsonl, new RegExp(privateValue, 'u'));
   }
   assert.deepEqual(await readFile(sessionPath), sourceBeforeReconciliation);
-  assert.deepEqual(warnings, []);
 
   const embeddingCountBeforeShutdown = embeddedInputs.length;
-  await ingestion.shutdownActiveSession(sessionPath);
+  await service.reconcileSession(sessionPath, {
+    lifecycleTrigger: RecallLifecycleTrigger.SESSION_SHUTDOWN,
+    lockWaitMilliseconds: 250,
+  });
   await diagnostics.flush();
   const recordsAfterShutdown = (await readFile(config.diagnosticLogPath, 'utf8'))
     .trimEnd()
@@ -1580,11 +1582,11 @@ void test('slow diagnostics omit a fast unchanged live session reconciliation', 
   });
   await service.index();
   const embeddingCountBeforeReconciliation = contentEmbeddingCount;
-  const ingestion = createRecallLiveSessionIngestion(service, () =>
-    assert.fail('unchanged reconciliation must not warn'),
-  );
 
-  await ingestion.shutdownActiveSession(sessionPath);
+  await service.reconcileSession(sessionPath, {
+    lifecycleTrigger: RecallLifecycleTrigger.SESSION_SHUTDOWN,
+    lockWaitMilliseconds: 250,
+  });
   await diagnostics.flush();
 
   await assert.rejects(() => readFile(config.diagnosticLogPath), { code: 'ENOENT' });

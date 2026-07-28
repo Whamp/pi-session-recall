@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import { Type } from 'typebox';
 
 import { StringEnum } from '@earendil-works/pi-ai';
@@ -14,10 +16,19 @@ import { formatRecallSearchResults } from './format-recall-search-results.js';
 import { loadRecallConversationConfig } from './recall-conversation-config.js';
 import {
   createRecallConversationService,
+  type RecallConversationConfig,
   type RecallConversationSearch,
   type RecallConversationService,
   type RecallSearchMode,
 } from './recall-conversation-service.js';
+import {
+  publishRecallWorkMarker,
+  type RecallDetachedWorkerSignal,
+} from './publish-recall-work-marker.js';
+import {
+  registerRecallLifecycleMarkers,
+  type RecallLifecycleRuntimeFactory,
+} from './register-recall-lifecycle-markers.js';
 import { runRecallIndexCommand } from './recall-index-command.js';
 import {
   MAX_RECALL_FINAL_RESULT_COUNT,
@@ -35,6 +46,13 @@ export interface PiRecallParameters {
 
 interface PiRecallInvocationContext {
   cwd: ExtensionContext['cwd'];
+}
+
+/** Explicit startup seams used by tests to avoid production recall paths and worker processes. */
+export interface RecallExtensionStartupOptions {
+  config?: RecallConversationConfig;
+  workerSignal?: RecallDetachedWorkerSignal;
+  lifecycleRuntimeFactory?: RecallLifecycleRuntimeFactory;
 }
 
 /** Applies trusted Pi tool context and project-default scope to one recall service search. */
@@ -55,10 +73,11 @@ export async function searchPiRecall(
 
 /** Registers hybrid recall of past Pi conversations. Pi requires extension factories to be default exports. */
 export default async function recallExtension(
-  pi: Pick<ExtensionAPI, 'registerTool' | 'registerCommand'>,
+  pi: Pick<ExtensionAPI, 'on' | 'registerTool' | 'registerCommand'>,
+  startupOptions: RecallExtensionStartupOptions = {},
 ): Promise<void> {
   const qualityGateDecision = await readRecallQualityGateDecision(RECALL_QUALITY_RESULTS_PATH);
-  const configured = await loadRecallConversationConfig();
+  const configured = startupOptions.config ?? (await loadRecallConversationConfig());
   const selectedPolicy = qualityGateDecision.selectedPolicy;
   const config = selectedPolicy
     ? {
@@ -81,6 +100,24 @@ export default async function recallExtension(
       recallWarningHandler?.(message);
     },
   });
+  registerRecallLifecycleMarkers(
+    pi,
+    {
+      async publishRecallWorkMarker(marker) {
+        await publishRecallWorkMarker(marker, {
+          markerSpoolDirectory: config.markerSpoolDirectory,
+          trustedSessionRoots: [config.sessionsDirectory],
+          ...(startupOptions.workerSignal === undefined
+            ? {}
+            : { workerSignal: startupOptions.workerSignal }),
+        });
+      },
+    },
+    startupOptions.lifecycleRuntimeFactory ?? {
+      createRuntimeInstanceId: randomUUID,
+      nowEpochMilliseconds: Date.now,
+    },
+  );
   pi.registerTool({
     name: 'pi-session-recall',
     label: 'Pi Session Recall',

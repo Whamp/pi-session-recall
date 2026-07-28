@@ -74,6 +74,11 @@ function createLogicalProjection(): LogicalSessionProjection {
         newLeafEntryId: 'entry-new-leaf',
         summaryEntryId: 'entry-branch-summary',
       },
+      {
+        oldLeafEntryId: null,
+        newLeafEntryId: null,
+        summaryEntryId: null,
+      },
     ],
     eligibleSpans: [
       {

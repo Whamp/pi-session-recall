@@ -33,8 +33,8 @@ export interface RecallCompactionMarkerTrigger {
 /** Marker payload preserving one old-leaf to new-leaf context exit. */
 export interface RecallBranchExitMarkerTrigger {
   kind: RecallWorkMarkerTrigger.BRANCH_EXIT;
-  oldLeafEntryId: string;
-  newLeafEntryId: string;
+  oldLeafEntryId: string | null;
+  newLeafEntryId: string | null;
   summaryEntryId?: string;
 }
 
@@ -73,6 +73,7 @@ export interface RecallWorkMarker extends RecallWorkMarkerIdentity {
 }
 
 const nonemptyIdentifierSchema = Type.String({ minLength: 1 });
+const nullableIdentifierSchema = Type.Union([nonemptyIdentifierSchema, Type.Null()]);
 const markerTriggerSchema = Type.Union([
   Type.Object(
     { kind: Type.Literal(RecallWorkMarkerTrigger.ACTIVITY) },
@@ -88,8 +89,8 @@ const markerTriggerSchema = Type.Union([
   Type.Object(
     {
       kind: Type.Literal(RecallWorkMarkerTrigger.BRANCH_EXIT),
-      oldLeafEntryId: nonemptyIdentifierSchema,
-      newLeafEntryId: nonemptyIdentifierSchema,
+      oldLeafEntryId: nullableIdentifierSchema,
+      newLeafEntryId: nullableIdentifierSchema,
       summaryEntryId: Type.Optional(nonemptyIdentifierSchema),
     },
     { additionalProperties: false },

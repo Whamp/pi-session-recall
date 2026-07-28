@@ -8,6 +8,7 @@ import { SessionImportFormat } from './enums.js';
 import {
   readSessionConversationChunks,
   readSessionConversationImport,
+  SESSION_CONVERSATION_SCHEMA_VERSION,
   type ConversationTextTokenizer,
   type SessionConversationChunk,
 } from './session-conversation-index.js';
@@ -741,7 +742,9 @@ void test('session chunks expose branch, summary, sibling, and source geometry p
       },
     ],
   );
-  assert.ok(activeRuns.every((chunk) => chunk.schemaVersion === 8));
+  assert.ok(
+    activeRuns.every((chunk) => chunk.schemaVersion === SESSION_CONVERSATION_SCHEMA_VERSION),
+  );
   assert.ok(activeRuns.every((chunk) => chunk.contributingEntryIds[0]?.value === 'active'));
   assert.ok(activeRuns.every((chunk) => chunk.textRunId.length === 40));
   assert.ok(activeRuns.every((chunk) => chunk.chunkCount === 1));
@@ -1094,9 +1097,15 @@ void test('unversioned Pi v1 sessions convert deterministically through the stri
     '6d35bf551059e2664b2bbefc7b43d63d006b6158',
   );
   assert.deepEqual(repeated, imported);
+  const importedParity = summarizeSessionChunkParity(imported.chunks);
+  const canonicalParity = summarizeSessionChunkParity(canonicalEquivalent.chunks);
   assert.deepEqual(
-    summarizeSessionChunkParity(imported.chunks),
-    summarizeSessionChunkParity(canonicalEquivalent.chunks),
+    importedParity.map((chunk) => ({ ...chunk, id: 'physical-occurrence' })),
+    canonicalParity.map((chunk) => ({ ...chunk, id: 'physical-occurrence' })),
+  );
+  assert.notDeepEqual(
+    importedParity.map(({ id }) => id),
+    canonicalParity.map(({ id }) => id),
   );
   assert.deepEqual(await readFile(sessionPath), bytesBefore);
   const metadataAfter = await stat(sessionPath);

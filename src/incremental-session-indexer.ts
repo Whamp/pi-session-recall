@@ -228,14 +228,14 @@ function createConversationIndexSummary(): ConversationIndexSummary {
   };
 }
 
-function runTimedDatabaseWrite<T>(
-  operation: () => T,
+async function runTimedDatabaseWrite<T>(
+  operation: () => Promise<T>,
   diagnosticMetrics?: RecallIndexDiagnosticMetrics,
   diagnosticsClock?: RecallDiagnosticsClock,
-): T {
+): Promise<T> {
   const startedAtMilliseconds = diagnosticsClock?.monotonicMilliseconds();
   try {
-    return operation();
+    return await operation();
   } finally {
     if (diagnosticMetrics && diagnosticsClock && startedAtMilliseconds !== undefined) {
       diagnosticMetrics.databaseWriteMilliseconds += Math.max(
@@ -265,20 +265,24 @@ async function writeConversationIndexStateWithDiagnostics(
   }
 }
 
-function removeIndexedConversationSession(
+async function removeIndexedConversationSession(
   state: ConversationIndexState,
   sessionPath: string,
   store: ConversationChunkStore,
   summary: ConversationIndexSummary,
   diagnosticMetrics?: RecallIndexDiagnosticMetrics,
   diagnosticsClock?: RecallDiagnosticsClock,
-): boolean {
+): Promise<boolean> {
   const previous = state.sessions[sessionPath];
   if (!previous) {
     return false;
   }
   const staleIds = previous.chunks.map((chunk) => chunk.id);
-  runTimedDatabaseWrite(() => store.deleteChunks(staleIds), diagnosticMetrics, diagnosticsClock);
+  await runTimedDatabaseWrite(
+    () => store.deleteChunks(staleIds),
+    diagnosticMetrics,
+    diagnosticsClock,
+  );
   summary.deletedChunks += staleIds.length;
   if (diagnosticMetrics) {
     diagnosticMetrics.deletedDocumentCount += staleIds.length;
@@ -318,7 +322,7 @@ async function indexChangedConversationSessionFile(
       return { stateChanged: false, failed: true };
     }
     const staleIds = previous.chunks.map((chunk) => chunk.id);
-    runTimedDatabaseWrite(
+    await runTimedDatabaseWrite(
       () => options.store.deleteChunks(staleIds),
       options.diagnosticMetrics,
       options.diagnosticsClock,
@@ -367,7 +371,7 @@ async function indexChangedConversationSessionFile(
   const currentIds = new Set(attributedChunks.map((chunk) => chunk.id));
   const removedIds =
     previous?.chunks.filter((chunk) => !currentIds.has(chunk.id)).map((chunk) => chunk.id) ?? [];
-  runTimedDatabaseWrite(
+  await runTimedDatabaseWrite(
     () => options.store.deleteChunks(removedIds),
     options.diagnosticMetrics,
     options.diagnosticsClock,
@@ -436,7 +440,7 @@ async function indexChangedConversationSessionFile(
       }
       return { ...chunk, isDenseSearchable: true, embedding };
     });
-    runTimedDatabaseWrite(
+    await runTimedDatabaseWrite(
       () => options.store.upsertChunks(indexedChunks),
       options.diagnosticMetrics,
       options.diagnosticsClock,
@@ -496,7 +500,7 @@ export async function indexChangedConversationSession(
       options.diagnosticMetrics.skipped = previous === undefined;
     }
     if (
-      removeIndexedConversationSession(
+      await removeIndexedConversationSession(
         state,
         options.sessionPath,
         options.store,
@@ -653,13 +657,13 @@ export async function indexChangedConversationSessions(
     await runPhysicalSessionCheck({
       indexerOptions: options,
       sessionPath: stalePath,
-      performPhysicalSessionCheck(physicalSessionMetrics) {
+      async performPhysicalSessionCheck(physicalSessionMetrics) {
         if (physicalSessionMetrics) {
           physicalSessionMetrics.sourceByteSize = 0;
           physicalSessionMetrics.changed = true;
           physicalSessionMetrics.skipped = false;
         }
-        const removed = removeIndexedConversationSession(
+        const removed = await removeIndexedConversationSession(
           state,
           stalePath,
           options.store,

@@ -119,6 +119,7 @@ void test('recall quality runner indexes and searches only the bounded declared 
     sessionsDirectory: join(directory, 'must-not-scan-production-sessions'),
     dataDirectory: directory,
     databasePath: join(directory, 'unused-zvec'),
+    projectionDatabasePath: join(directory, 'unused-session-projections'),
     statePath: join(directory, 'unused-state.json'),
     manifestPath: join(directory, 'unused-manifest.json'),
     tokenizerCacheDirectory: join(directory, 'unused-tokenizers'),

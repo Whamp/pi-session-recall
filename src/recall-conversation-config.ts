@@ -154,6 +154,7 @@ export async function loadRecallConversationConfig(
     sessionsDirectory,
     dataDirectory,
     databasePath: join(dataDirectory, 'zvec'),
+    projectionDatabasePath: join(dataDirectory, 'session-projections'),
     statePath: join(dataDirectory, 'index-state.json'),
     manifestPath: join(dataDirectory, 'index-manifest.json'),
     tokenizerCacheDirectory: join(dataDirectory, 'tokenizers'),

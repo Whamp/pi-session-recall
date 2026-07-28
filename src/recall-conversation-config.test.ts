@@ -82,6 +82,7 @@ void test('recall config isolates incremental paths from sessions and marker I/O
 
   const dataPaths = [
     config.databasePath,
+    config.projectionDatabasePath,
     config.statePath,
     config.manifestPath,
     config.tokenizerCacheDirectory,

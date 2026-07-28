@@ -13,6 +13,7 @@
     "test": "node --import tsx --test src/**/*.test.ts",
     "diagnose:recall-marker-hook": "PI_RECALL_RUN_MARKER_DIAGNOSTIC=1 node --import tsx --test src/publish-recall-work-marker.diagnostic.test.ts",
     "diagnose:recall-metadata-sweep": "PI_RECALL_RUN_METADATA_DIAGNOSTIC=1 node --import tsx --test src/scan-recall-session-metadata.diagnostic.test.ts",
+    "diagnose:recall-write-window": "PI_RECALL_RUN_WRITE_WINDOW_DIAGNOSTIC=1 node --import tsx --test src/commit-incremental-recall-transfer.diagnostic.test.ts",
     "evaluate:recall": "node --import tsx src/evaluate-recall-quality.ts",
     "replay:session-import": "node --import tsx src/replaySessionImportCorpus.ts",
     "typecheck": "tsc --noEmit",

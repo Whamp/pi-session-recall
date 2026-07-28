@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
+import { ZVecCollectionSchema, ZVecCreateAndOpen, ZVecDataType } from '@zvec/zvec';
+
 import { createTestSessionConversationChunk } from './recall-test-utils.js';
 import type { SessionConversationChunk } from './session-conversation-index.js';
 import {
@@ -66,7 +68,7 @@ void test('zvec conversation search returns ranked text and exact session proven
     checksum: 'sum-a',
     embedding: [1, 0, 0],
   };
-  store.upsertChunks([
+  await store.upsertChunks([
     firstChunk,
     {
       ...baseChunk,
@@ -192,7 +194,7 @@ void test('zvec hybrid search returns atomic and turn-context document kinds', a
     embedding: [1, 0, 0],
   };
 
-  store.upsertChunks([atomicChunk, turnContextChunk]);
+  await store.upsertChunks([atomicChunk, turnContextChunk]);
 
   assert.deepEqual(
     store
@@ -242,7 +244,7 @@ void test('zvec round-trips lexical-only tool evidence and excludes it from dens
     content: 'TOOL_ONLY_EPERM /tmp/locked-file',
   };
 
-  store.upsertChunks([toolChunk]);
+  await store.upsertChunks([toolChunk]);
 
   assert.deepEqual(store.searchDenseCandidates([1, 0, 0], 10), []);
   const lexicalResult = store.searchIdentifierCandidates('TOOL_ONLY_EPERM', 10)[0];
@@ -250,6 +252,30 @@ void test('zvec round-trips lexical-only tool evidence and excludes it from dens
   const { fullTextScore, ...storedToolChunk } = lexicalResult;
   assert.ok(fullTextScore > 0);
   assert.deepEqual(storedToolChunk, toolChunk);
+});
+
+void test('zvec conversation store rejects an old scalar schema before a schema-9 write', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-zvec-old-schema-'));
+  const databasePath = join(directory, 'collection');
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const legacy = ZVecCreateAndOpen(
+    databasePath,
+    new ZVecCollectionSchema({
+      name: 'legacy_recall',
+      vectors: {
+        name: 'embedding',
+        dataType: ZVecDataType.VECTOR_FP32,
+        dimension: 3,
+      },
+      fields: [{ name: 'schemaVersion', dataType: ZVecDataType.INT32 }],
+    }),
+  );
+  legacy.closeSync();
+
+  assert.throws(
+    () => openZvecConversationStore({ databasePath, dimensions: 3 }),
+    /scalar schema mismatch.*reindex/u,
+  );
 });
 
 void test('zvec conversation store rejects an embedding dimension change that requires reindexing', async (t) => {
@@ -264,4 +290,88 @@ void test('zvec conversation store rejects an embedding dimension change that re
     () => openZvecConversationStore({ databasePath, dimensions: 2 }),
     /Recall zvec dimension mismatch.*reindex/,
   );
+});
+
+void test('fresh unoptimized 1, 8, and 32 document batches survive close and read-only reopen on every route', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-zvec-unoptimized-batches-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+
+  for (const batchSize of [1, 8, 32]) {
+    const databasePath = join(directory, `collection-${batchSize}`);
+    const writer = openZvecConversationStore({ databasePath, dimensions: 3 });
+    let optimizeCallCount = 0;
+    const checkedWriter = {
+      ...writer,
+      async optimize() {
+        optimizeCallCount += 1;
+        await writer.optimize();
+      },
+    };
+    const documents: EmbeddedSessionConversationChunk[] = Array.from(
+      { length: batchSize },
+      (_, index) => ({
+        ...baseChunk,
+        id: `fresh-${batchSize}-${index}`,
+        physicalSessionProjectionId: `physical-batch-${batchSize}`,
+        entryId: { value: `entry-${batchSize}-${index}` },
+        contributingEntryIds: [{ value: `entry-${batchSize}-${index}` }],
+        checksum: `checksum-${batchSize}-${index}`,
+        content:
+          index === 0
+            ? `ordinaryneedle fresh batch ${batchSize} BatchIdentifier${batchSize}`
+            : `background evidence ${batchSize} ${index}`,
+        embedding: index === 0 ? [1, 0, 0] : [0, 1, 0],
+      }),
+    );
+    await checkedWriter.upsertChunks(documents);
+    checkedWriter.close();
+    assert.equal(optimizeCallCount, 0);
+
+    const reader = openZvecConversationStore({
+      databasePath,
+      dimensions: 3,
+      createIfMissing: false,
+      readOnly: true,
+    });
+    const targetId = `fresh-${batchSize}-0`;
+    assert.equal(reader.searchDenseCandidates([1, 0, 0], 1)[0]?.id, targetId);
+    assert.equal(reader.searchLexicalCandidates('ordinaryneedle', 1)[0]?.id, targetId);
+    assert.equal(
+      reader.searchIdentifierCandidates(`BatchIdentifier${batchSize}`, 1)[0]?.id,
+      targetId,
+    );
+    assert.equal(reader.fetchConversationChunks([targetId]).get(targetId)?.id, targetId);
+    reader.close();
+  }
+});
+
+void test('physical session projection filter removes only one evidence occurrence source', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-zvec-physical-filter-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const store = openZvecConversationStore({
+    databasePath: join(directory, 'collection'),
+    dimensions: 3,
+  });
+  await store.upsertChunks([
+    {
+      ...baseChunk,
+      id: 'physical-a-evidence',
+      physicalSessionProjectionId: 'physical_A',
+      embedding: [1, 0, 0],
+    },
+    {
+      ...baseChunk,
+      id: 'physical-b-evidence',
+      physicalSessionProjectionId: 'physical_B',
+      embedding: [1, 0, 0],
+    },
+  ]);
+
+  await store.deleteChunksByPhysicalSessionProjectionId('physical_A');
+
+  assert.deepEqual(
+    [...store.fetchConversationChunks(['physical-a-evidence', 'physical-b-evidence']).keys()],
+    ['physical-b-evidence'],
+  );
+  store.close();
 });

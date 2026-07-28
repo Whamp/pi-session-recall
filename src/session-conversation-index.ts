@@ -13,7 +13,7 @@ import { assertRecallChunkPolicy } from './recall-chunk-policy.js';
 import { importSessionJsonl } from './import-session-jsonl.js';
 
 /** Version of the source and graph provenance stored on recall evidence documents. */
-export const SESSION_CONVERSATION_SCHEMA_VERSION = 8;
+export const SESSION_CONVERSATION_SCHEMA_VERSION = 9;
 
 /** A Pi session ID that cannot be passed where a session entry ID is required. */
 export interface PiSessionId {
@@ -46,6 +46,8 @@ export interface SessionConversationChunkOptions {
 export interface SessionConversationDocumentBuilderOptions extends SessionConversationChunkOptions {
   sessionPath: string;
   logicalSessionIdentity: string;
+  physicalSessionProjectionId?: string;
+  newlyEligibleContributorEntryIds?: ReadonlySet<string>;
 }
 
 /** Stable graph identities and physical boundaries for one validated logical session. */
@@ -83,6 +85,7 @@ export interface SessionConversationChunk {
   checksum: string;
   sessionId: PiSessionId;
   sessionPath: string;
+  physicalSessionProjectionId: string;
   parentSessionPath: string | null;
   cwd: string;
   projectPath: string;
@@ -187,6 +190,7 @@ interface PendingTurnContextPath {
 interface SessionConversationChunkContext {
   graph: ParsedRecallSessionGraph;
   sessionPath: string;
+  physicalSessionProjectionId: string;
   logicalSessionIdentity: string;
   tokenizer: ConversationTextTokenizer;
   maxTokens: number;
@@ -1219,7 +1223,7 @@ function createSessionConversationChunks(
   );
   const sourceLineIndexes = pending.contributingEntries.map((entry) => entry.lineIndex);
   const textRunId = hashConversationValue(
-    `${SESSION_CONVERSATION_SCHEMA_VERSION}\0${context.logicalSessionIdentity}\0${pending.entry.id}\0${contributingEntryIdentity}\0${pending.evidenceKind}\0${pending.evidencePart}\0${pending.textRun.textRunIndex}`,
+    `${SESSION_CONVERSATION_SCHEMA_VERSION}\0${context.physicalSessionProjectionId}\0${context.sessionPath}\0${context.logicalSessionIdentity}\0${pending.entry.id}\0${contributingEntryIdentity}\0${pending.evidenceKind}\0${pending.evidencePart}\0${pending.textRun.textRunIndex}`,
   ).slice(0, 40);
   const chunkSpans = pending.preserveVerbatim
     ? splitVerbatimToolEvidenceByTokens(pending.textRun.text, context.tokenizer, context.maxTokens)
@@ -1260,6 +1264,7 @@ function createSessionConversationChunks(
       checksum: hashConversationValue(span.content),
       sessionId: context.sessionId,
       sessionPath: context.sessionPath,
+      physicalSessionProjectionId: context.physicalSessionProjectionId,
       parentSessionPath: graph.header.parentSessionPath,
       cwd: graph.header.cwd,
       projectPath: graph.header.cwd,
@@ -1334,6 +1339,9 @@ export function buildSessionConversationDocuments(
   const context: SessionConversationChunkContext = {
     graph,
     sessionPath: options.sessionPath,
+    physicalSessionProjectionId:
+      options.physicalSessionProjectionId ??
+      `physical_${hashConversationValue(`${SESSION_CONVERSATION_SCHEMA_VERSION}\0${options.sessionPath}`)}`,
     logicalSessionIdentity: options.logicalSessionIdentity,
     tokenizer: options.tokenizer,
     maxTokens,
@@ -1344,6 +1352,13 @@ export function buildSessionConversationDocuments(
   return createPendingConversationDocuments(graph)
     .filter((pending) =>
       pending.contributingEntries.every(({ id }) => eligibleContributorEntryIds.has(id)),
+    )
+    .filter(
+      (pending) =>
+        options.newlyEligibleContributorEntryIds === undefined ||
+        pending.contributingEntries.some(({ id }) =>
+          options.newlyEligibleContributorEntryIds?.has(id),
+        ),
     )
     .flatMap((pending) =>
       createTokenBoundedTurnContextDocuments(pending, context.tokenizer, context.maxTokens),

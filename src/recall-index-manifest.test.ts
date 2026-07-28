@@ -59,8 +59,8 @@ void test('index manifest round-trips the complete reproducibility identity atom
     boundaryAlgorithm: 'markdown-structure-v1',
     normalization: 'unicode-nfc-v1',
   });
-  assert.equal(manifest.conversationSchemaVersion, 8);
-  assert.equal(manifest.provenanceSchemaVersion, 8);
+  assert.equal(manifest.conversationSchemaVersion, 9);
+  assert.equal(manifest.provenanceSchemaVersion, 9);
   assert.equal(PROJECT_IDENTITY_METADATA_SCHEMA_VERSION, 3);
   assert.deepEqual(manifest.projectIdentity, {
     policyVersion: 4,
@@ -68,7 +68,7 @@ void test('index manifest round-trips the complete reproducibility identity atom
     lineagePolicyVersion: 1,
     lineageDigest: '44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a',
   });
-  assert.equal(manifest.zvec.schemaVersion, 7);
+  assert.equal(manifest.zvec.schemaVersion, 8);
   assert.equal(manifest.zvec.ftsConfigurationVersion, 2);
 });
 

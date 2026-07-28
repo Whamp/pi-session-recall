@@ -27,12 +27,12 @@ class MemoryConversationStore implements ConversationChunkStore {
   readonly chunks = new Map<string, IndexedSessionConversationChunk>();
   readonly deleted: string[] = [];
 
-  upsertChunks(chunks: IndexedSessionConversationChunk[]): void {
+  async upsertChunks(chunks: readonly IndexedSessionConversationChunk[]): Promise<void> {
     for (const chunk of chunks) {
       this.chunks.set(chunk.id, chunk);
     }
   }
-  deleteChunks(ids: string[]): void {
+  async deleteChunks(ids: readonly string[]): Promise<void> {
     this.deleted.push(...ids);
     for (const id of ids) {
       this.chunks.delete(id);

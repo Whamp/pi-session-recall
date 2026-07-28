@@ -8,6 +8,11 @@ import test from 'node:test';
 import { promisify } from 'node:util';
 
 import {
+  coordinateRecallWriteWindow,
+  inspectRecallWriteWindow,
+  recallWriteWindowStatePaths,
+} from './coordinate-recall-write-window.js';
+import {
   RecallDiagnosticErrorCategory,
   RecallDiagnosticOperationKind,
   RecallDiagnosticStatus,
@@ -42,6 +47,13 @@ import type { ConversationTextTokenizer } from './session-conversation-index.js'
 
 const EXEC_FILE_ASYNC = promisify(execFile);
 
+async function assertRecallWriteWindowStateCleared(lockPath: string): Promise<void> {
+  assert.deepEqual(await inspectRecallWriteWindow(lockPath), {
+    currentWindow: false,
+    recoveryRequired: false,
+  });
+}
+
 const rawProjectLineageInput: Readonly<Record<string, readonly string[]>> = {};
 // @ts-expect-error Recall service configuration requires validated project lineage identities.
 const invalidServiceProjectLineages: RecallConversationConfig['projectLineages'] =
@@ -61,6 +73,7 @@ function createTestConfig(directory: string, sessionsDirectory: string) {
     sessionsDirectory,
     dataDirectory: directory,
     databasePath: join(directory, 'zvec'),
+    projectionDatabasePath: join(directory, 'session-projections'),
     statePath: join(directory, 'index-state.json'),
     manifestPath: join(directory, 'index-manifest.json'),
     tokenizerCacheDirectory: join(directory, 'tokenizers'),
@@ -667,7 +680,7 @@ void test('manual index diagnostics retain partial counts for fatal embedding fa
   );
   await diagnostics.flush();
 
-  await assert.rejects(() => stat(config.lockPath), { code: 'ENOENT' });
+  await assertRecallWriteWindowStateCleared(config.lockPath);
   const diagnosticJsonl = await readFile(config.diagnosticLogPath, 'utf8');
   assert.doesNotMatch(diagnosticJsonl, new RegExp(privateFailureSentinel, 'u'));
   assert.doesNotMatch(diagnosticJsonl, /private fatal embedding model response sentinel 26/u);
@@ -776,13 +789,14 @@ void test('manual rebuild diagnostics isolate final database optimization durati
       monotonicMilliseconds += 3;
       scanTimingEnabled = true;
       return {
-        upsertChunks(chunks) {
+        async upsertChunks(chunks) {
           monotonicMilliseconds += 17;
           storedDocumentCount += chunks.length;
         },
-        deleteChunks(ids) {
+        async deleteChunks(ids) {
           storedDocumentCount = Math.max(storedDocumentCount - ids.length, 0);
         },
+        async deleteChunksByPhysicalSessionProjectionId() {},
         searchDenseCandidates() {
           return [];
         },
@@ -907,12 +921,13 @@ void test('manual index diagnostics preserve optimization failure and release th
     loadTokenizer: async () => tokenizer,
     openStore() {
       return {
-        upsertChunks(chunks) {
+        async upsertChunks(chunks) {
           storedDocumentCount += chunks.length;
         },
-        deleteChunks(ids) {
+        async deleteChunks(ids) {
           storedDocumentCount = Math.max(storedDocumentCount - ids.length, 0);
         },
+        async deleteChunksByPhysicalSessionProjectionId() {},
         searchDenseCandidates() {
           return [];
         },
@@ -956,7 +971,7 @@ void test('manual index diagnostics preserve optimization failure and release th
   );
   await diagnostics.flush();
 
-  await assert.rejects(() => stat(config.lockPath), { code: 'ENOENT' });
+  await assertRecallWriteWindowStateCleared(config.lockPath);
   const diagnosticJsonl = await readFile(config.diagnosticLogPath, 'utf8');
   assert.doesNotMatch(diagnosticJsonl, /optimization failure source sentinel 26/u);
   assert.doesNotMatch(diagnosticJsonl, /private optimization model response sentinel 26/u);
@@ -1848,7 +1863,7 @@ void test('failed live diagnostics preserve the reconciliation error, lock clean
   assert.equal(records[1]?.skipped, false);
   assert.doesNotMatch(diagnosticJsonl, /private-missing-parent-id|missing-parent/u);
   assert.doesNotMatch(diagnosticJsonl, new RegExp(privateFailureSentinel, 'u'));
-  await assert.rejects(() => stat(config.lockPath), { code: 'ENOENT' });
+  await assertRecallWriteWindowStateCleared(config.lockPath);
   assert.deepEqual(await readFile(sessionPath), sourceBeforeReconciliation);
   const search = await service.search('stale evidence', 1, { scope: RecallSearchScope.GLOBAL });
   assert.deepEqual(search.results, []);
@@ -1893,7 +1908,7 @@ void test('failed live diagnostics preserve the reconciliation error, lock clean
   assert.equal(embeddingFailure?.embeddingRequestCount, 1);
   assert.ok(readTestDiagnosticNumber(embeddingFailure, 'embeddingServerRequestMilliseconds') > 0);
   assert.ok(readTestDiagnosticNumber(embeddingFailure, 'embeddingCacheResolutionMilliseconds') > 0);
-  await assert.rejects(() => stat(config.lockPath), { code: 'ENOENT' });
+  await assertRecallWriteWindowStateCleared(config.lockPath);
   assert.deepEqual(await readFile(sessionPath), sourceBeforeEmbeddingFailure);
 });
 
@@ -2014,7 +2029,7 @@ void test('slow diagnostics retain failed searches, omit fast cancellation, and 
   assert.doesNotMatch(diagnosticJsonl, /private reranker model response sentinel 25/u);
   assert.doesNotMatch(diagnosticJsonl, /private cancellation sentinel 25/u);
   assert.doesNotMatch(diagnosticJsonl, /private_manifest_sentinel_25/u);
-  await assert.rejects(() => stat(config.lockPath), { code: 'ENOENT' });
+  await assertRecallWriteWindowStateCleared(config.lockPath);
 });
 
 void test('diagnostic write failure cannot change manual or live indexing', async (t) => {
@@ -2073,7 +2088,7 @@ void test('diagnostic write failure cannot change manual or live indexing', asyn
   await diagnostics.flush();
   assert.equal(manualResult.indexSummary.indexedSessions, 1);
   assert.equal(manualResult.totalChunks, 1);
-  await assert.rejects(() => stat(config.lockPath), { code: 'ENOENT' });
+  await assertRecallWriteWindowStateCleared(config.lockPath);
   assert.ok(await readRecallIndexManifest(config.manifestPath));
   const searchDuringDiagnosticFailure = await service.search('initial evidence', 1, {
     scope: RecallSearchScope.GLOBAL,
@@ -2107,7 +2122,7 @@ void test('diagnostic write failure cannot change manual or live indexing', asyn
     'Recall diagnostics disabled after local log persistence failed; recall behavior is unchanged.',
   ]);
   assert.equal(await readFile(filesystemBlocker, 'utf8'), 'unchanged');
-  await assert.rejects(() => stat(config.lockPath), { code: 'ENOENT' });
+  await assertRecallWriteWindowStateCleared(config.lockPath);
   assert.deepEqual(await readFile(sessionPath), sourceBeforeReconciliation);
   const search = await service.search('despite diagnostic failure', 1, {
     scope: RecallSearchScope.GLOBAL,
@@ -2248,8 +2263,13 @@ void test('recall search keeps ordinary reads stable and refreshes resumed or fo
   assert.equal(forked.totalChunks, 4);
 
   const lockPath = join(directory, 'recall.lock');
-  await mkdir(lockPath);
-  await writeFile(join(lockPath, 'owner.json'), `${JSON.stringify({ pid: process.pid })}\n`);
+  const firstEntered = Promise.withResolvers<void>();
+  const releaseFirst = Promise.withResolvers<void>();
+  const heldWindow = coordinateRecallWriteWindow({ lockPath, allowRecovery: false }, async () => {
+    firstEntered.resolve();
+    await releaseFirst.promise;
+  });
+  await firstEntered.promise;
   await assert.rejects(
     () =>
       service.reconcileSession(sessionPath, {
@@ -2258,16 +2278,21 @@ void test('recall search keeps ordinary reads stable and refreshes resumed or fo
       }),
     /Recall conversation operation cancelled/,
   );
-  await rm(lockPath, { recursive: true });
+  releaseFirst.resolve();
+  await heldWindow;
 
-  const lockOwner = `${JSON.stringify({ pid: 999_999_999 })}\n`;
-  await mkdir(lockPath);
-  await writeFile(join(lockPath, 'owner.json'), lockOwner);
-  await assert.rejects(
-    () => service.search('must not clear a stale lock', 1, { scope: RecallSearchScope.GLOBAL }),
-    /stale lock from dead process 999999999.*\/pi-session-recall-index.*read-only search did not remove the lock/,
+  const statePaths = recallWriteWindowStatePaths(lockPath);
+  const recoveryState = `${JSON.stringify({ version: 1, state: 'recovery_required' })}\n`;
+  await writeFile(statePaths.recoveryRequiredPath, recoveryState);
+  await writeFile(
+    statePaths.currentWindowPath,
+    `${JSON.stringify({ version: 1, state: 'current_window' })}\n`,
   );
-  assert.equal(await readFile(join(directory, 'recall.lock', 'owner.json'), 'utf8'), lockOwner);
+  await assert.rejects(
+    () => service.search('must not clear recovery state', 1, { scope: RecallSearchScope.GLOBAL }),
+    /Recall write recovery required.*external write-capable worker/u,
+  );
+  assert.equal(await readFile(statePaths.recoveryRequiredPath, 'utf8'), recoveryState);
 });
 
 void test('explicit project scope filters dense, lexical, and identifier candidates before channel limits', async (t) => {

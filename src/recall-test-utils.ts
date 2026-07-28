@@ -1,7 +1,10 @@
 import { RecallEvidenceRelation } from './enums.js';
 import type { RecallSearchResult } from './fuse-recall-search-candidates.js';
 import type { RecallConversationSearchResult } from './recall-conversation-service.js';
-import type { SessionConversationChunk } from './session-conversation-index.js';
+import {
+  SESSION_CONVERSATION_SCHEMA_VERSION,
+  type SessionConversationChunk,
+} from './session-conversation-index.js';
 
 /** Test-only overrides for one complete recall evidence document fixture. */
 export interface TestSessionConversationChunkOptions extends Partial<SessionConversationChunk> {
@@ -14,7 +17,7 @@ export function createTestSessionConversationChunk(
 ): SessionConversationChunk {
   const content = options.content ?? `content ${options.id}`;
   return {
-    schemaVersion: 8,
+    schemaVersion: SESSION_CONVERSATION_SCHEMA_VERSION,
     documentKind: 'conversation',
     summaryKind: null,
     evidenceKind: 'conversation',
@@ -23,6 +26,7 @@ export function createTestSessionConversationChunk(
     checksum: `checksum-${options.id}`,
     sessionId: { value: `session-${options.id}` },
     sessionPath: `/sessions/${options.id}.jsonl`,
+    physicalSessionProjectionId: `physical-${options.id}`,
     parentSessionPath: null,
     cwd: '/project',
     projectPath: '/project',

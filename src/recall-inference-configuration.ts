@@ -739,6 +739,41 @@ export async function removeRecallInferenceCapability(
   });
 }
 
+/**
+ * Clears a pending embedding profile replacement after its staging generation is discarded.
+ * Returns true when a pending replacement was removed.
+ */
+export async function clearPendingRecallEmbeddingReplacement(
+  statePath: string,
+  options: {
+    generationRegistryPath?: string;
+    matchingEmbeddingProfileId?: string;
+  } = {},
+): Promise<boolean> {
+  return withRecallInferenceConfigurationLock(statePath, async () => {
+    const current = await readRecallInferenceConfiguration(statePath, {
+      ...(options.generationRegistryPath
+        ? { generationRegistryPath: options.generationRegistryPath }
+        : {}),
+    });
+    const pending = current.pendingEmbeddingReplacement;
+    if (!pending) {
+      return false;
+    }
+    if (
+      options.matchingEmbeddingProfileId !== undefined &&
+      pending.embeddingProfileId !== options.matchingEmbeddingProfileId
+    ) {
+      return false;
+    }
+    await writeRecallInferenceConfiguration(statePath, {
+      ...current,
+      pendingEmbeddingReplacement: null,
+    });
+    return true;
+  });
+}
+
 /** Inspects all configured capabilities and optionally reruns their exact conformance probes. */
 export async function inspectRecallInferenceConfiguration(
   statePath: string,

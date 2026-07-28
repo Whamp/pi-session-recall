@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { readFile, rm } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { adoptLegacyRecallGeneration } from './adopt-legacy-recall-generation.js';
 import { collectRetiredRecallGenerations } from './collect-retired-recall-generations.js';
@@ -108,6 +108,7 @@ import {
   type RecallRerankingExecutionIdentity,
   type RecallRerankingProvider,
 } from './recall-inference-capabilities.js';
+import { clearPendingRecallEmbeddingReplacement } from './recall-inference-configuration.js';
 import {
   measureRecallQueryPlanningProviderConformance,
   measureRecallRerankingProviderConformance,
@@ -2023,6 +2024,12 @@ export function createRecallConversationService(
                 });
               }
             }
+            await clearPendingRecallEmbeddingReplacement(
+              join(dirname(config.manifestPath), 'inference-configuration.json'),
+              {
+                generationRegistryPath: config.generationRegistryPath,
+              },
+            );
           },
         );
         const stagingGenerationDirectory = await resolveRecallGenerationDirectory(

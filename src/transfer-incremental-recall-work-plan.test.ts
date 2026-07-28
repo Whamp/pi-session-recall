@@ -15,11 +15,14 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import {
+  RecallDiagnosticOperationKind,
+  RecallDiagnosticStatus,
   RecallEligibilityThreshold,
   RecallIncrementalTransferOutcomeKind,
   RecallSessionProjectionKind,
   RecallWorkMarkerTrigger,
 } from './enums.js';
+import type { RecallIncrementalDiagnosticCompletion } from './recall-operation-diagnostics.js';
 import { createPhysicalSessionProjectionId } from './recall-session-projection.js';
 import { createRecallWorkMarkerId, type RecallWorkMarker } from './recall-work-marker.js';
 import { transferIncrementalRecallWorkPlan } from './transfer-incremental-recall-work-plan.js';
@@ -270,7 +273,7 @@ void test('nonzero durable append cursor commits new evidence without a whole-se
   await assert.rejects(() => access(secondMarkerPath), { code: 'ENOENT' });
 });
 
-void test('crash-only activity defers without checkpointing then commits the active tail at 30 minutes', async (t) => {
+void test('committed transfer forwards write-window phase diagnostics after crash-only quiescence', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'recall-crash-quiescence-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const sessionsDirectory = join(directory, 'sessions');
@@ -336,6 +339,7 @@ void test('crash-only activity defers without checkpointing then commits the act
   let nowEpochMilliseconds = growthAtEpochMilliseconds + 30 * 60_000 - 1;
   let tokenizerLoadCount = 0;
   const readRanges: Array<{ startByte: number; endByteExclusive: number }> = [];
+  const incrementalDiagnostics: RecallIncrementalDiagnosticCompletion[] = [];
   const transferDependencies = {
     workPlan,
     lockPath: join(directory, 'operation.lock'),
@@ -372,6 +376,11 @@ void test('crash-only activity defers without checkpointing then commits the act
         };
       },
     },
+    operationDiagnostics: {
+      recordIncrementalOperation(completion: RecallIncrementalDiagnosticCompletion) {
+        incrementalDiagnostics.push(completion);
+      },
+    },
     async *readRange(sourcePath: string, startByte: number, endByteExclusive: number) {
       readRanges.push({ startByte, endByteExclusive });
       const handle = await open(sourcePath, 'r');
@@ -393,6 +402,7 @@ void test('crash-only activity defers without checkpointing then commits the act
   });
   assert.equal(readRanges.length > 0, true);
   assert.equal(tokenizerLoadCount, 0);
+  assert.equal(incrementalDiagnostics.length, 0);
   await access(markerPath);
   const deferredProjectionStore = openZvecSessionProjectionStore({
     databasePath: projectionDatabasePath,
@@ -415,6 +425,25 @@ void test('crash-only activity defers without checkpointing then commits the act
   const committed = await transferIncrementalRecallWorkPlan(transferDependencies);
   assert.equal(committed.kind, RecallIncrementalTransferOutcomeKind.COMMITTED);
   assert.equal(tokenizerLoadCount, 1);
+  assert.equal(incrementalDiagnostics.length, 1);
+  const writeWindowDiagnostic = incrementalDiagnostics[0];
+  assert.ok(writeWindowDiagnostic);
+  assert.equal(writeWindowDiagnostic.operationKind, RecallDiagnosticOperationKind.WRITE_WINDOW);
+  assert.equal(writeWindowDiagnostic.status, RecallDiagnosticStatus.SUCCEEDED);
+  assert.equal(writeWindowDiagnostic.metrics.generationId, generationId);
+  assert.equal(
+    [
+      writeWindowDiagnostic.metrics.lockWaitMilliseconds,
+      writeWindowDiagnostic.metrics.evidenceOpenMilliseconds,
+      writeWindowDiagnostic.metrics.evidenceWriteMilliseconds,
+      writeWindowDiagnostic.metrics.projectionOpenMilliseconds,
+      writeWindowDiagnostic.metrics.projectionCommitMilliseconds,
+      writeWindowDiagnostic.metrics.closeMilliseconds,
+      writeWindowDiagnostic.metrics.checkpointObservationMilliseconds,
+      writeWindowDiagnostic.metrics.markerAcknowledgementMilliseconds,
+    ].every((phaseMilliseconds) => Number.isFinite(phaseMilliseconds)),
+    true,
+  );
   const evidenceStore = openZvecConversationStore({
     databasePath: evidenceDatabasePath,
     dimensions: 3,

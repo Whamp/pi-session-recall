@@ -676,6 +676,7 @@ async function runRecallIncrementalWorkerExecutable(): Promise<void> {
           loadTokenizer: dependencies.loadTokenizer,
           resolveProjectIdentity: resolveWorkerProjectIdentity,
           embeddingCache: dependencies.embeddingCache,
+          operationDiagnostics,
           nowEpochMilliseconds: Date.now,
         });
       },

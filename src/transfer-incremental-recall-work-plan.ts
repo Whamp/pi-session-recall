@@ -30,6 +30,7 @@ import {
   type RecallSessionSourceRangeReader,
 } from './read-recall-session-append-delta.js';
 import type { ResolvedProjectIdentity } from './resolve-project-identity.js';
+import type { RecallOperationDiagnostics } from './recall-operation-diagnostics.js';
 import { scheduleRecallWorkPlanEligibility } from './schedule-recall-work-plan-eligibility.js';
 import type { ConversationTextTokenizer } from './session-conversation-index.js';
 import { commitIncrementalRecallTransfer } from './commit-incremental-recall-transfer.js';
@@ -46,6 +47,7 @@ export interface TransferIncrementalRecallWorkPlanOptions {
   loadTokenizer(): Promise<ConversationTextTokenizer>;
   resolveProjectIdentity(sessionOrigin: string): Promise<ResolvedProjectIdentity | null>;
   embeddingCache: Pick<EmbeddingVectorCache, 'resolveEmbeddingVectors'>;
+  operationDiagnostics?: Pick<RecallOperationDiagnostics, 'recordIncrementalOperation'>;
   readRange?: RecallSessionSourceRangeReader;
   signal?: AbortSignal;
   nowEpochMilliseconds?: () => number;
@@ -295,6 +297,7 @@ export async function transferIncrementalRecallWorkPlan(
     evidenceDatabasePath: options.evidenceDatabasePath,
     projectionDatabasePath: options.projectionDatabasePath,
     embeddingDimensions: options.embeddingDimensions,
+    ...(options.operationDiagnostics ? { operationDiagnostics: options.operationDiagnostics } : {}),
     ...(options.signal ? { signal: options.signal } : {}),
   });
   return {

@@ -15,6 +15,11 @@ import {
   RecallInferenceBackend,
 } from './enums.js';
 import { isUnknownRecord } from './is-unknown-record.js';
+import {
+  runCheckpointedLiveProfileEvaluationMatrix,
+  type CheckpointedLiveProfileEvaluation,
+  type LiveProfileEvaluationCheckpointIdentity,
+} from './live-query-planned-profile-checkpoints.js';
 import { loadRecallConversationConfig } from './recall-conversation-config.js';
 import { writeAtomicRecallEvaluationFile } from './recall-evaluation-file-system.js';
 import {
@@ -53,6 +58,10 @@ corpus. It binds those runs to existing committed-corpus files:
 Publishes aggregate evidence to:
   docs/evaluation/query-planned-profile-acceptance.json
   docs/evaluation/query-planned-profile-acceptance.md
+
+Completed profiles are checkpointed under the private .recall-data evaluation area. A rerun resumes
+only checkpoints with the exact commit, corpus, profile, backend, device, and adapter configuration.
+The command reports profile and case progress to stderr.
 
 The command never downloads models, never scans production sessions, and never publishes private query, plan, or source text. Start exact model-bound llama.cpp HTTP planner and reranker servers before running it.
 `;
@@ -260,22 +269,47 @@ function createRerankerConformanceFixture() {
   };
 }
 
-async function runEmbeddedProfileEvaluation(
+function createLiveProfileCheckpointIdentity(
+  recordedAgainstCommit: string,
+  corpus: LoadedPrivateQueryPlannedRecallCorpus,
+  profileRun: LiveQueryPlannedProfileRunIdentity,
+  queryPlanningProfileId: string,
+  queryPlanningCacheIdentity: string,
+  rerankingProfileId: string,
+  rerankingCacheIdentity: string,
+  adapterConfiguration: object,
+): LiveProfileEvaluationCheckpointIdentity {
+  return {
+    version: 1,
+    recordedAgainstCommit,
+    privateManifestSha256: corpus.manifestSha256,
+    profileRun,
+    queryPlanningProfileId,
+    queryPlanningCacheIdentity,
+    rerankingProfileId,
+    rerankingCacheIdentity,
+    adapterConfigurationIdentity: createSha256(JSON.stringify(adapterConfiguration)),
+  };
+}
+
+function createEmbeddedProfileEvaluation(
   projectDirectory: string,
   corpus: LoadedPrivateQueryPlannedRecallCorpus,
+  recordedAgainstCommit: string,
   device: EmbeddedInferenceDevicePolicy,
   deviceClass: 'cpu' | 'accelerated',
-): Promise<LiveQueryPlannedProfileEvaluationResult> {
-  const baseConfig = await loadRecallConversationConfig();
+  reportProgress: (message: string) => void,
+): CheckpointedLiveProfileEvaluation {
   const queryPlanningProfile = createRecommendedQmdQueryPlanningModelProfile();
   const rerankingProfile = createRecommendedQwenRerankingModelProfile();
   const modelCacheDirectory =
     process.env.PI_RECALL_MODEL_CACHE_DIRECTORY ??
     join(homedir(), '.pi', 'agent', 'recall', 'models');
+  const requestTimeoutMilliseconds = 300_000;
   const queryPlanner = createEmbeddedQmdQueryPlanningProvider(queryPlanningProfile, {
     modelCacheDirectory,
     device,
-    requestTimeoutMilliseconds: 300_000,
+    requestTimeoutMilliseconds,
     onWarning(warning) {
       process.stderr.write(`${warning}\n`);
     },
@@ -283,55 +317,77 @@ async function runEmbeddedProfileEvaluation(
   const reranker = createEmbeddedQwenRerankingProvider(rerankingProfile, {
     modelCacheDirectory,
     device,
-    requestTimeoutMilliseconds: 300_000,
+    requestTimeoutMilliseconds,
     onWarning(warning) {
       process.stderr.write(`${warning}\n`);
     },
   });
-  try {
-    return await runLiveQueryPlannedProfileEvaluation({
+  const profileRun: LiveQueryPlannedProfileRunIdentity = {
+    id: `embedded-${device}`,
+    backend: RecallInferenceBackend.EMBEDDED,
+    deviceClass,
+    device,
+    backendVersion: 'node-llama-cpp@3.18.1 / llama.cpp b8390',
+  };
+  return {
+    checkpointIdentity: createLiveProfileCheckpointIdentity(
+      recordedAgainstCommit,
       corpus,
-      baseConfig,
-      workDirectory: join(
-        projectDirectory,
-        '.recall-data',
-        'query-planned-recall',
-        `live-profile-${device}`,
-      ),
-      profileRun: {
-        id: `embedded-${device}`,
+      profileRun,
+      queryPlanningProfile.profileId,
+      queryPlanner.executionIdentity.cacheIdentity,
+      rerankingProfile.profileId,
+      reranker.executionIdentity.cacheIdentity,
+      {
         backend: RecallInferenceBackend.EMBEDDED,
-        deviceClass,
         device,
-        backendVersion: 'node-llama-cpp@3.18.1 / llama.cpp b8390',
+        modelCacheDirectory,
+        requestTimeoutMilliseconds,
       },
-      queryPlanningProfile,
-      queryPlanner,
-      rerankingProfile,
-      reranker,
-      rerankerConformance: createRerankerConformanceFixture(),
-    });
-  } finally {
-    await queryPlanner.dispose();
-    await reranker.dispose();
-  }
+    ),
+    async evaluateProfile() {
+      const baseConfig = await loadRecallConversationConfig();
+      return runLiveQueryPlannedProfileEvaluation({
+        corpus,
+        baseConfig,
+        workDirectory: join(
+          projectDirectory,
+          '.recall-data',
+          'query-planned-recall',
+          `live-profile-${device}`,
+        ),
+        profileRun,
+        queryPlanningProfile,
+        queryPlanner,
+        rerankingProfile,
+        reranker,
+        rerankerConformance: createRerankerConformanceFixture(),
+        reportProgress,
+      });
+    },
+    async disposeProfile() {
+      await Promise.all([queryPlanner.dispose(), reranker.dispose()]);
+    },
+  };
 }
 
-async function runHttpProfileEvaluation(
+function createHttpProfileEvaluation(
   projectDirectory: string,
   corpus: LoadedPrivateQueryPlannedRecallCorpus,
+  recordedAgainstCommit: string,
   options: LiveProfileAcceptanceCliOptions,
-): Promise<LiveQueryPlannedProfileEvaluationResult> {
-  const baseConfig = await loadRecallConversationConfig();
+  reportProgress: (message: string) => void,
+): CheckpointedLiveProfileEvaluation {
   const queryPlanningProfile = createRecommendedQmdQueryPlanningModelProfile();
   const rerankingProfile = createRecommendedQwenRerankingModelProfile();
+  const requestTimeoutMilliseconds = 300_000;
   const queryPlanner = createQmdHttpQueryPlanningProvider(queryPlanningProfile, {
     baseUrl: options.httpPlannerUrl,
-    requestTimeoutMilliseconds: 300_000,
+    requestTimeoutMilliseconds,
   });
   const reranker = createQwenHttpRerankingProvider(rerankingProfile, {
     baseUrl: options.httpRerankerUrl,
-    requestTimeoutMilliseconds: 300_000,
+    requestTimeoutMilliseconds,
   });
   const profileRun: LiveQueryPlannedProfileRunIdentity = {
     id: `http-${options.httpDeviceClass}`,
@@ -340,22 +396,43 @@ async function runHttpProfileEvaluation(
     device: options.httpDevice,
     backendVersion: options.httpBackendVersion,
   };
-  return runLiveQueryPlannedProfileEvaluation({
-    corpus,
-    baseConfig,
-    workDirectory: join(
-      projectDirectory,
-      '.recall-data',
-      'query-planned-recall',
-      `live-profile-${profileRun.id}`,
+  return {
+    checkpointIdentity: createLiveProfileCheckpointIdentity(
+      recordedAgainstCommit,
+      corpus,
+      profileRun,
+      queryPlanningProfile.profileId,
+      queryPlanner.executionIdentity.cacheIdentity,
+      rerankingProfile.profileId,
+      reranker.executionIdentity.cacheIdentity,
+      {
+        backend: RecallInferenceBackend.LLAMA_CPP_HTTP,
+        httpPlannerUrl: options.httpPlannerUrl,
+        httpRerankerUrl: options.httpRerankerUrl,
+        requestTimeoutMilliseconds,
+      },
     ),
-    profileRun,
-    queryPlanningProfile,
-    queryPlanner,
-    rerankingProfile,
-    reranker,
-    rerankerConformance: createRerankerConformanceFixture(),
-  });
+    async evaluateProfile() {
+      const baseConfig = await loadRecallConversationConfig();
+      return runLiveQueryPlannedProfileEvaluation({
+        corpus,
+        baseConfig,
+        workDirectory: join(
+          projectDirectory,
+          '.recall-data',
+          'query-planned-recall',
+          `live-profile-${profileRun.id}`,
+        ),
+        profileRun,
+        queryPlanningProfile,
+        queryPlanner,
+        rerankingProfile,
+        reranker,
+        rerankerConformance: createRerankerConformanceFixture(),
+        reportProgress,
+      });
+    },
+  };
 }
 
 function verifyFocusedFailureAndToolSemantics(projectDirectory: string): void {
@@ -456,21 +533,42 @@ export async function evaluateQueryPlannedProfileAcceptance(
   ]);
 
   verifyFocusedFailureAndToolSemantics(resolvedProjectDirectory);
-  const profileRuns = [
-    await runEmbeddedProfileEvaluation(
-      resolvedProjectDirectory,
-      corpus,
-      EmbeddedInferenceDevicePolicy.CPU,
-      'cpu',
-    ),
-    await runEmbeddedProfileEvaluation(
-      resolvedProjectDirectory,
-      corpus,
-      options.acceleratedDevice,
-      'accelerated',
-    ),
-    await runHttpProfileEvaluation(resolvedProjectDirectory, corpus, options),
-  ];
+  const recordedAgainstCommit = execFileSync('git', ['rev-parse', 'HEAD'], {
+    cwd: resolvedProjectDirectory,
+    encoding: 'utf8',
+  }).trim();
+  const reportProgress = (message: string): void => {
+    process.stderr.write(`[${new Date().toISOString()}] ${message}\n`);
+  };
+  const profileRuns = await runCheckpointedLiveProfileEvaluationMatrix({
+    checkpointDirectory: join(privateDirectory, 'live-profile-checkpoints'),
+    profiles: [
+      createEmbeddedProfileEvaluation(
+        resolvedProjectDirectory,
+        corpus,
+        recordedAgainstCommit,
+        EmbeddedInferenceDevicePolicy.CPU,
+        'cpu',
+        reportProgress,
+      ),
+      createEmbeddedProfileEvaluation(
+        resolvedProjectDirectory,
+        corpus,
+        recordedAgainstCommit,
+        options.acceleratedDevice,
+        'accelerated',
+        reportProgress,
+      ),
+      createHttpProfileEvaluation(
+        resolvedProjectDirectory,
+        corpus,
+        recordedAgainstCommit,
+        options,
+        reportProgress,
+      ),
+    ],
+    reportProgress,
+  });
   const privacyAudit = assertNoPrivateValuesPublished(
     profileRuns,
     collectPrivateValuesForAudit(corpus, fixedPlanQueries),
@@ -479,10 +577,7 @@ export async function evaluateQueryPlannedProfileAcceptance(
     ({ controlKind }) => controlKind === QueryPlannedRecallControlKind.SUCCESSFUL_BASELINE_CONTROL,
   ).length;
   const evidence = createPublishableLiveQueryPlannedProfileAcceptance({
-    recordedAgainstCommit: execFileSync('git', ['rev-parse', 'HEAD'], {
-      cwd: resolvedProjectDirectory,
-      encoding: 'utf8',
-    }).trim(),
+    recordedAgainstCommit,
     defaultSearchMode: 'hybrid',
     committedCorpus,
     profileRuns,

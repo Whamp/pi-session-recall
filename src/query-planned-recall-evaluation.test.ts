@@ -314,6 +314,7 @@ void test('fixed private plans prove new source admission through deterministic 
   const queryPlanningProfile = createRecommendedQmdQueryPlanningModelProfile();
   const rerankingProfile = createRecommendedQwenRerankingModelProfile();
   let conformancePlannerRequestCount = 0;
+  const liveProgress: string[] = [];
   const liveEvaluation = await runLiveQueryPlannedProfileEvaluation({
     corpus,
     baseConfig,
@@ -375,6 +376,9 @@ void test('fixed private plans prove new source admission through deterministic 
       expectedScores: [0.9, 0.1],
       maximumAbsoluteDifference: 0,
     },
+    reportProgress(message) {
+      liveProgress.push(message);
+    },
     dependencies: {
       async loadTokenizer() {
         return {
@@ -397,6 +401,11 @@ void test('fixed private plans prove new source admission through deterministic 
     { type: 'vec', querySha256: createSha256(semanticPlanQuery) },
   ]);
   assert.equal(liveEvaluation.cases[0]?.queryPlanned.candidateAdmissionVerified, true);
+  assert.deepEqual(liveProgress, [
+    'Verifying live profile fixture-embedded-cpu capabilities',
+    'Indexing live profile fixture-embedded-cpu private corpus',
+    'Evaluating live profile fixture-embedded-cpu case 1/1',
+  ]);
   assert.equal(publishedLiveEvaluation.includes(lexicalPlanQuery), false);
   assert.equal(publishedLiveEvaluation.includes(semanticPlanQuery), false);
   assert.equal(publishedLiveEvaluation.includes('Private mechanism phrase'), false);

@@ -838,6 +838,7 @@ export interface RunLiveQueryPlannedProfileEvaluationOptions extends PrivateQuer
   rerankingProfile: RecallRerankingModelProfile;
   reranker: RecallIdentifiedRerankingProvider;
   rerankerConformance: LiveRerankerConformanceFixture;
+  reportProgress?(message: string): void;
 }
 
 /** Aggregate latency summary in milliseconds for complete live service searches. */
@@ -997,6 +998,7 @@ export async function runLiveQueryPlannedProfileEvaluation(
       warnings.push(warning);
     },
   };
+  options.reportProgress?.(`Verifying live profile ${options.profileRun.id} capabilities`);
   const conformanceService = createRecallConversationService(normalConfig, liveDependencies);
   const queryPlanningConformance = await conformanceService.verifyQueryPlanningCapability();
   const rerankingConformance = await conformanceService.verifyRerankingCapability({
@@ -1024,6 +1026,7 @@ export async function runLiveQueryPlannedProfileEvaluation(
   );
   const warmRerankingMilliseconds = Math.max(performance.now() - warmRerankingStartedAt, 0);
 
+  options.reportProgress?.(`Indexing live profile ${options.profileRun.id} private corpus`);
   const indexReranker = createControlledEvaluationReranker();
   const indexService = createRecallConversationService(
     normalConfig,
@@ -1042,7 +1045,10 @@ export async function runLiveQueryPlannedProfileEvaluation(
   );
   const cases: LiveQueryPlannedProfileEvaluationResult['cases'] = [];
   const totalSearchMeasurements: number[] = [];
-  for (const evaluationCase of options.corpus.manifest.cases) {
+  for (const [caseIndex, evaluationCase] of options.corpus.manifest.cases.entries()) {
+    options.reportProgress?.(
+      `Evaluating live profile ${options.profileRun.id} case ${caseIndex + 1}/${options.corpus.manifest.cases.length}`,
+    );
     const normalService = createRecallConversationService(
       normalConfig,
       createDeterministicQueryPlannedEvaluationDependencies(options, indexReranker.reranker),

@@ -9,6 +9,7 @@ import { RecallBacklogFailureCategory, RecallGenerationCutoverState } from './en
 import {
   activateRecallReplacementInRegistry,
   createRecallActiveGenerationPointer,
+  createReplayPendingActivationBacklogSummary,
   decodeRecallBacklogSummary,
   readRecallActiveGenerationPointer,
   readRecallGenerationRegistry,
@@ -291,21 +292,10 @@ export async function recoverRecallGenerationCutover(
           replacementPointer,
         );
         await writeRecallGenerationRegistry(options.generationRegistryPath, recoveredRegistry);
-        await writeRecallBacklogSummary(options.backlogSummaryPath, {
-          version: RECALL_BACKLOG_SUMMARY_VERSION,
-          pendingEligibleSessionCount: buildingGenerationEntry.rebuildMarkerWatermark?.length ?? 0,
-          oldestEligibleMarkerAgeMilliseconds: null,
-          activeGenerationId: buildingGenerationEntry.generationId,
-          buildingGenerationId: null,
-          generationState: RecallGenerationCutoverState.REPLAY_PENDING,
-          activeGenerationAgeMilliseconds: 0,
-          rebuildAgeMilliseconds: Math.max(
-            0,
-            recoveredAt - buildingGenerationEntry.rebuildStartedAtEpochMilliseconds,
-          ),
-          lastFailureCategory: null,
-          observedAtEpochMilliseconds: recoveredAt,
-        });
+        await writeRecallBacklogSummary(
+          options.backlogSummaryPath,
+          createReplayPendingActivationBacklogSummary(buildingGenerationEntry, recoveredAt),
+        );
         await attestRecoveredActiveStores(buildingGenerationEntry.generationId);
         return true;
       }
@@ -370,21 +360,10 @@ export async function recoverRecallGenerationCutover(
         options.rollbackRetentionMilliseconds ?? DEFAULT_ROLLBACK_RETENTION_MILLISECONDS,
       );
       await writeRecallGenerationRegistry(options.generationRegistryPath, recoveredRegistry);
-      await writeRecallBacklogSummary(options.backlogSummaryPath, {
-        version: RECALL_BACKLOG_SUMMARY_VERSION,
-        pendingEligibleSessionCount: replacement.rebuildMarkerWatermark?.length ?? 0,
-        oldestEligibleMarkerAgeMilliseconds: null,
-        activeGenerationId: replacement.generationId,
-        buildingGenerationId: null,
-        generationState: RecallGenerationCutoverState.REPLAY_PENDING,
-        activeGenerationAgeMilliseconds: 0,
-        rebuildAgeMilliseconds: Math.max(
-          0,
-          recoveredAt - replacement.rebuildStartedAtEpochMilliseconds,
-        ),
-        lastFailureCategory: null,
-        observedAtEpochMilliseconds: recoveredAt,
-      });
+      await writeRecallBacklogSummary(
+        options.backlogSummaryPath,
+        createReplayPendingActivationBacklogSummary(replacement, recoveredAt),
+      );
       await attestRecoveredActiveStores(replacement.generationId);
       return true;
     },

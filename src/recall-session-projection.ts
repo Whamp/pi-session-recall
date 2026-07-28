@@ -414,6 +414,41 @@ export function createLogicalSessionProjectionId(
   ])}`;
 }
 
+/**
+ * Unions additional covered marker IDs and runtime sequences into a checkpoint.
+ * Runtime sequences keep the highest observed sequence per runtime instance.
+ */
+export function mergeRecallMarkerCheckpoint(options: {
+  generationId: string;
+  current: RecallMarkerCheckpoint;
+  coveredMarkerIds: Iterable<string>;
+  runtimeSequences: Iterable<Pick<RecallMarkerRuntimeCheckpoint, 'runtimeInstanceId' | 'sequence'>>;
+}): RecallMarkerCheckpoint {
+  const coveredMarkerIds = new Set(options.current.coveredMarkerIds);
+  for (const markerId of options.coveredMarkerIds) {
+    coveredMarkerIds.add(markerId);
+  }
+  const runtimeSequences = new Map(
+    options.current.runtimeSequences.map(({ runtimeInstanceId, sequence }) => [
+      runtimeInstanceId,
+      sequence,
+    ]),
+  );
+  for (const { runtimeInstanceId, sequence } of options.runtimeSequences) {
+    runtimeSequences.set(
+      runtimeInstanceId,
+      Math.max(runtimeSequences.get(runtimeInstanceId) ?? 0, sequence),
+    );
+  }
+  return {
+    generationId: options.generationId,
+    coveredMarkerIds: [...coveredMarkerIds].toSorted(),
+    runtimeSequences: [...runtimeSequences.entries()]
+      .map(([runtimeInstanceId, sequence]) => ({ runtimeInstanceId, sequence }))
+      .toSorted((left, right) => left.runtimeInstanceId.localeCompare(right.runtimeInstanceId)),
+  };
+}
+
 function assertUniqueProjectionValues(values: readonly string[], fieldName: string): void {
   if (new Set(values).size !== values.length) {
     throw new Error(`Recall session projection invalid ${fieldName}: duplicate values`);

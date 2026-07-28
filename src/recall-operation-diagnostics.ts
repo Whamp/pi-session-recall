@@ -17,7 +17,7 @@ const RECALL_DIAGNOSTIC_RECORD_VERSION = 3;
 const DEFAULT_MAXIMUM_DIAGNOSTIC_LOG_BYTES = 10 * 1_024 * 1_024;
 const PROCESS_RECALL_DIAGNOSTIC_PERSISTENCE_STATE = {
   disabled: false,
-  warningEmitted: false,
+  persistenceFailureHandled: false,
 };
 const SLOW_RECALL_DIAGNOSTIC_THRESHOLD_MILLISECONDS = 1_000;
 const MAX_RECORDED_SESSION_PATH_CHARACTERS = 4_096;
@@ -261,6 +261,7 @@ export interface RecallOperationDiagnostics {
     manualMaintenanceTrigger: RecallManualMaintenanceTrigger;
   }): RecallManualIndexDiagnostic;
   recordIncrementalOperation(completion: RecallIncrementalDiagnosticCompletion): void;
+  recordDurableIncrementalFailure(completion: RecallIncrementalDiagnosticCompletion): void;
   flush(): Promise<void>;
 }
 
@@ -271,6 +272,7 @@ export interface RecallOperationDiagnosticsOptions {
   retainedLogPath: string;
   clock?: RecallDiagnosticsClock;
   notifyWarning: (message: string) => void;
+  onPersistenceFailure?: () => Promise<void>;
   maximumLogBytes?: number;
 }
 
@@ -738,14 +740,22 @@ export function createRecallOperationDiagnostics(
       await appendFile(options.activeLogPath, line, 'utf8');
     } catch {
       PROCESS_RECALL_DIAGNOSTIC_PERSISTENCE_STATE.disabled = true;
-      if (!PROCESS_RECALL_DIAGNOSTIC_PERSISTENCE_STATE.warningEmitted) {
-        PROCESS_RECALL_DIAGNOSTIC_PERSISTENCE_STATE.warningEmitted = true;
+      if (!PROCESS_RECALL_DIAGNOSTIC_PERSISTENCE_STATE.persistenceFailureHandled) {
+        PROCESS_RECALL_DIAGNOSTIC_PERSISTENCE_STATE.persistenceFailureHandled = true;
+        try {
+          await options.onPersistenceFailure?.();
+          if (options.onPersistenceFailure !== undefined) {
+            return;
+          }
+        } catch (persistenceFailure) {
+          void persistenceFailure;
+        }
         try {
           options.notifyWarning(
-            'Recall diagnostics disabled after local log persistence failed; recall behavior is unchanged.',
+            'Recall diagnostics disabled after local log and fallback persistence failed.',
           );
         } catch (warningError) {
-          // Warning delivery is non-critical for the same reason diagnostic persistence is.
+          // Warning delivery is the last fallback and must not recurse into durable reporting.
           void warningError;
         }
       }
@@ -780,9 +790,12 @@ export function createRecallOperationDiagnostics(
     );
   }
 
-  function queueDiagnosticRecord(record: RecallOperationDiagnosticRecord): void {
+  function queueDiagnosticRecord(
+    record: RecallOperationDiagnosticRecord,
+    persistenceRequired = false,
+  ): void {
     if (
-      !shouldPersistDiagnosticRecord(record) ||
+      (!persistenceRequired && !shouldPersistDiagnosticRecord(record)) ||
       PROCESS_RECALL_DIAGNOSTIC_PERSISTENCE_STATE.disabled
     ) {
       return;
@@ -900,6 +913,9 @@ export function createRecallOperationDiagnostics(
     },
     recordIncrementalOperation(completion) {
       queueDiagnosticRecord(createRecallIncrementalDiagnosticRecord({ clock, completion }));
+    },
+    recordDurableIncrementalFailure(completion) {
+      queueDiagnosticRecord(createRecallIncrementalDiagnosticRecord({ clock, completion }), true);
     },
     async flush() {
       await pendingWrite;

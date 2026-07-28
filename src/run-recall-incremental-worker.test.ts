@@ -50,6 +50,217 @@ import {
 import type { RecallIncrementalDiagnosticCompletion } from './recall-operation-diagnostics.js';
 import type { CommittedIncrementalRecallWorkPlan } from './transfer-incremental-recall-work-plan.js';
 
+async function writeFailureVisibilityRegistry(
+  generationRegistryPath: string,
+  generationId = 'generation-detached',
+): Promise<void> {
+  const pointer = createRecallActiveGenerationPointer(generationId);
+  await writeRecallGenerationRegistry(generationRegistryPath, {
+    version: RECALL_GENERATION_REGISTRY_VERSION,
+    activeGenerationId: generationId,
+    buildingGenerationId: null,
+    rollbackGenerationId: null,
+    activePointerChecksum: pointer.checksum,
+    generations: [
+      {
+        generationId,
+        state: RecallGenerationCutoverState.ACTIVE,
+        indexManifestVersion: 6,
+        markerSchemaVersion: 1,
+        sessionProjectionSchemaVersion: 3,
+        indexManifestFingerprint: 'd'.repeat(64),
+        rebuildStartedAtEpochMilliseconds: 10,
+        stateChangedAtEpochMilliseconds: 20,
+        rebuildStartMarkerId: null,
+      },
+    ],
+  });
+}
+
+async function waitForDetachedWorkerCompletion(completionPath: string): Promise<void> {
+  const deadline = performance.now() + 5_000;
+  while (performance.now() < deadline) {
+    try {
+      await access(completionPath);
+      return;
+    } catch (error) {
+      if (readNodeErrorCode(error) !== 'ENOENT') {
+        throw error;
+      }
+    }
+    await new Promise((resolve) => {
+      setTimeout(resolve, 10);
+    });
+  }
+  throw new Error('Detached incremental worker failure visibility probe timed out');
+}
+
+interface DetachedFailureVisibilityResult {
+  backlogSummaryPath: string;
+  diagnosticLogPath: string;
+  warningPath: string;
+}
+
+type DetachedFailureVisibilityScenario =
+  | 'both_sinks_fail'
+  | 'deletion_halt'
+  | 'diagnostics_fallback'
+  | 'successful_clear'
+  | 'top_level_failure';
+
+const PRIVATE_FAILURE_SENTINEL =
+  'private conversation; private query; private tool output; private embedding; /private/source/path';
+
+async function runDetachedFailureVisibilityProbe(
+  t: test.TestContext,
+  scenario: DetachedFailureVisibilityScenario,
+): Promise<DetachedFailureVisibilityResult> {
+  const directory = await mkdtemp(join(tmpdir(), `recall-detached-${scenario}-`));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const generationRegistryPath = join(directory, 'generation-registry.json');
+  const backlogSummaryPath = join(directory, 'backlog-summary.json');
+  const diagnosticLogPath = join(directory, 'incremental-diagnostics.jsonl');
+  const warningPath = join(directory, 'warnings.txt');
+  const completionPath = join(directory, 'complete');
+  const harnessPath = join(directory, 'detached-worker-harness.mts');
+  const generationId = 'generation-detached';
+  await writeFailureVisibilityRegistry(generationRegistryPath, generationId);
+
+  if (scenario === 'top_level_failure') {
+    await writeRecallIncrementalWorkerBacklog(
+      {
+        backlogSummaryPath,
+        generationRegistryPath,
+        targetGenerationId: generationId,
+        nowEpochMilliseconds: () => 100,
+      },
+      null,
+      {
+        workPlan: {
+          workItems: [
+            {
+              marker: {
+                physicalSessionId: 'physical-detached',
+                createdAtEpochMilliseconds: 50,
+              },
+            },
+          ],
+        },
+      },
+    );
+    await writeFile(generationRegistryPath, 'invalid registry recovery state');
+  }
+  if (scenario === 'diagnostics_fallback' || scenario === 'both_sinks_fail') {
+    await mkdir(diagnosticLogPath);
+  }
+  if (scenario === 'both_sinks_fail') {
+    await mkdir(backlogSummaryPath);
+  }
+
+  const workerModuleUrl = pathToFileURL(
+    fileURLToPath(new URL('./run-recall-incremental-worker.ts', import.meta.url)),
+  ).href;
+  const diagnosticsModuleUrl = pathToFileURL(
+    fileURLToPath(new URL('./recall-operation-diagnostics.ts', import.meta.url)),
+  ).href;
+  const enumsModuleUrl = pathToFileURL(fileURLToPath(new URL('./enums.ts', import.meta.url))).href;
+  const scenarioBody = {
+    both_sinks_fail: `for (let index = 0; index < 2; index += 1) { try { await runRecallIncrementalWorkerDiagnosticBoundary({ operationDiagnostics: diagnostics, persistFailure: () => writeRecallIncrementalWorkerFailureBacklog(paths, RecallBacklogFailureCategory.INCREMENTAL_WORKER_FAILED), async run() { throw new Error('private query ' + index); } }); } catch {} }\n`,
+    deletion_halt: `await reportRecallIncrementalWorkerDeletionHalt({ operationDiagnostics: diagnostics, generationId: ${JSON.stringify(generationId)}, generationState: RecallGenerationCutoverState.ACTIVE, haltResult: { halted: true, consideredPhysicalSessionCount: 1, sourceMissingRecordedCount: 0, sourceMissingClearedCount: 0, confirmedSourceDeletionCount: 0, removedEvidenceOccurrenceCount: 0, removedLogicalProjectionCount: 0, removedPhysicalProjectionCount: 0, acknowledgedCheckpointCount: 0, haltCategoryCounts: { [RecallConfirmedDeletionHaltCategory.ACTIVE_GENERATION_CHANGED]: 1 } }, workPlan, nowEpochMilliseconds: () => 100, persistFailure: () => writeRecallIncrementalWorkerFailureBacklog(paths, RecallBacklogFailureCategory.CONFIRMED_DELETION_HALTED, { workPlan }) });\n`,
+    diagnostics_fallback: `try { await runRecallIncrementalWorkerDiagnosticBoundary({ operationDiagnostics: diagnostics, persistFailure: () => writeRecallIncrementalWorkerFailureBacklog(paths, RecallBacklogFailureCategory.INCREMENTAL_WORKER_FAILED), async run() { throw new Error('private tool output must not persist'); } }); } catch {}\n`,
+    successful_clear: `await writeRecallIncrementalWorkerFailureBacklog(paths, RecallBacklogFailureCategory.INCREMENTAL_WORKER_FAILED, { workPlan });\nawait writeRecallIncrementalWorkerBacklog(paths, null, { workPlan });\n`,
+    top_level_failure: `try { await runRecallIncrementalWorkerDiagnosticBoundary({ operationDiagnostics: diagnostics, persistFailure: () => writeRecallIncrementalWorkerFailureBacklog(paths, RecallBacklogFailureCategory.INCREMENTAL_WORKER_FAILED), async run() { throw new Error(${JSON.stringify(PRIVATE_FAILURE_SENTINEL)}); } }); } catch {}\n`,
+  }[scenario];
+
+  await writeFile(
+    harnessPath,
+    `import { appendFileSync } from 'node:fs';\n` +
+      `import { writeFile } from 'node:fs/promises';\n` +
+      `import { RecallBacklogFailureCategory, RecallConfirmedDeletionHaltCategory, RecallDiagnosticsMode, RecallGenerationCutoverState } from ${JSON.stringify(enumsModuleUrl)};\n` +
+      `import { createRecallOperationDiagnostics } from ${JSON.stringify(diagnosticsModuleUrl)};\n` +
+      `import { reportRecallIncrementalWorkerDeletionHalt, runRecallIncrementalWorkerDiagnosticBoundary, writeRecallIncrementalWorkerBacklog, writeRecallIncrementalWorkerFailureBacklog } from ${JSON.stringify(workerModuleUrl)};\n` +
+      `const paths = { backlogSummaryPath: ${JSON.stringify(backlogSummaryPath)}, generationRegistryPath: ${JSON.stringify(generationRegistryPath)}, targetGenerationId: ${JSON.stringify(generationId)}, nowEpochMilliseconds: () => 100 };\n` +
+      `const notifyWarning = (message) => appendFileSync(${JSON.stringify(warningPath)}, message + '\\n');\n` +
+      `const diagnostics = createRecallOperationDiagnostics({ mode: RecallDiagnosticsMode.ALL, activeLogPath: ${JSON.stringify(diagnosticLogPath)}, retainedLogPath: ${JSON.stringify(join(directory, 'incremental-diagnostics.previous.jsonl'))}, notifyWarning, onPersistenceFailure: () => writeRecallIncrementalWorkerFailureBacklog(paths, RecallBacklogFailureCategory.DIAGNOSTICS_PERSISTENCE_FAILED) });\n` +
+      `const workPlan = { workItems: [{ marker: { physicalSessionId: 'physical-detached', createdAtEpochMilliseconds: 50 } }] };\n` +
+      scenarioBody +
+      `await writeFile(${JSON.stringify(completionPath)}, 'complete');\n`,
+  );
+  const child = spawn(process.execPath, ['--import', 'tsx', harnessPath], {
+    detached: true,
+    stdio: 'ignore',
+  });
+  child.unref();
+  await waitForDetachedWorkerCompletion(completionPath);
+  return { backlogSummaryPath, diagnosticLogPath, warningPath };
+}
+
+void test('detached ignored-stdio deletion halt persists its scalar safeguard state', async (t) => {
+  const result = await runDetachedFailureVisibilityProbe(t, 'deletion_halt');
+  const diagnosticSource = await readFile(result.diagnosticLogPath, 'utf8');
+  const backlogSource = await readFile(result.backlogSummaryPath, 'utf8');
+  assert.match(diagnosticSource, /"operationKind":"deletion_reconciliation"/u);
+  assert.match(diagnosticSource, /"deletionSafeguardCategory":"active_generation_changed"/u);
+  assert.match(diagnosticSource, /"backlogPendingEligibleSessionCount":1/u);
+  assert.match(diagnosticSource, /"backlogOldestEligibleMarkerAgeMilliseconds":50/u);
+  assert.equal(
+    decodeRecallBacklogSummary(backlogSource).lastFailureCategory,
+    RecallBacklogFailureCategory.CONFIRMED_DELETION_HALTED,
+  );
+  await assert.rejects(() => readFile(result.warningPath), { code: 'ENOENT' });
+});
+
+void test('detached diagnostics sink failure falls back to the atomic scalar backlog', async (t) => {
+  const result = await runDetachedFailureVisibilityProbe(t, 'diagnostics_fallback');
+  const backlogSource = await readFile(result.backlogSummaryPath, 'utf8');
+  assert.equal(
+    decodeRecallBacklogSummary(backlogSource).lastFailureCategory,
+    RecallBacklogFailureCategory.DIAGNOSTICS_PERSISTENCE_FAILED,
+  );
+  assert.doesNotMatch(backlogSource, /private tool output/u);
+  await assert.rejects(() => readFile(result.warningPath), { code: 'ENOENT' });
+});
+
+void test('detached failures warn once only when both durable scalar sinks fail', async (t) => {
+  const result = await runDetachedFailureVisibilityProbe(t, 'both_sinks_fail');
+  const warnings = (await readFile(result.warningPath, 'utf8')).trim().split('\n');
+  assert.equal(warnings.length, 1);
+  assert.equal(
+    warnings[0],
+    'Recall diagnostics disabled after local log and fallback persistence failed.',
+  );
+  assert.doesNotMatch(warnings[0] ?? '', /private query/u);
+});
+
+void test('detached successful backlog update clears failure and refreshes scalar count and age', async (t) => {
+  const result = await runDetachedFailureVisibilityProbe(t, 'successful_clear');
+  const summary = decodeRecallBacklogSummary(await readFile(result.backlogSummaryPath, 'utf8'));
+  assert.equal(summary.lastFailureCategory, null);
+  assert.equal(summary.pendingEligibleSessionCount, 1);
+  assert.equal(summary.oldestEligibleMarkerAgeMilliseconds, 50);
+  assert.equal(summary.observedAtEpochMilliseconds, 100);
+});
+
+void test('detached ignored-stdio top-level failure persists scalar diagnostics and backlog', async (t) => {
+  const result = await runDetachedFailureVisibilityProbe(t, 'top_level_failure');
+  const diagnosticSource = await readFile(result.diagnosticLogPath, 'utf8');
+  const backlogSource = await readFile(result.backlogSummaryPath, 'utf8');
+  assert.match(diagnosticSource, /"operationKind":"incremental_worker"/u);
+  assert.match(diagnosticSource, /"status":"failed"/u);
+  const backlogSummary = decodeRecallBacklogSummary(backlogSource);
+  assert.equal(
+    backlogSummary.lastFailureCategory,
+    RecallBacklogFailureCategory.INCREMENTAL_WORKER_FAILED,
+  );
+  assert.equal(backlogSummary.pendingEligibleSessionCount, 1);
+  assert.equal(backlogSummary.oldestEligibleMarkerAgeMilliseconds, 50);
+  assert.doesNotMatch(
+    `${diagnosticSource}${backlogSource}`,
+    new RegExp(PRIVATE_FAILURE_SENTINEL, 'u'),
+  );
+  await assert.rejects(() => readFile(result.warningPath), { code: 'ENOENT' });
+});
+
 void test('worker diagnostic boundary records and flushes an early executable failure', async () => {
   const diagnostics: RecallIncrementalDiagnosticCompletion[] = [];
   let flushed = false;
@@ -59,13 +270,14 @@ void test('worker diagnostic boundary records and flushes an early executable fa
     () =>
       runRecallIncrementalWorkerDiagnosticBoundary({
         operationDiagnostics: {
-          recordIncrementalOperation(completion) {
+          recordDurableIncrementalFailure(completion) {
             diagnostics.push(completion);
           },
           async flush() {
             flushed = true;
           },
         },
+        async persistFailure() {},
         monotonicMilliseconds() {
           monotonicMilliseconds += 5;
           return monotonicMilliseconds;

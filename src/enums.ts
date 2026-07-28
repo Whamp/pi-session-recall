@@ -197,6 +197,9 @@ export enum RecallBacklogFailureCategory {
   WRITE_FAILED = 'write_failed',
   RECOVERY_REQUIRED = 'recovery_required',
   REBUILD_FAILED = 'rebuild_failed',
+  INCREMENTAL_WORKER_FAILED = 'incremental_worker_failed',
+  DIAGNOSTICS_PERSISTENCE_FAILED = 'diagnostics_persistence_failed',
+  CONFIRMED_DELETION_HALTED = 'confirmed_deletion_halted',
 }
 
 /** Version of trusted-invocation exact project filtering before every retrieval-channel limit. */

@@ -239,6 +239,31 @@ void test('off diagnostics mode performs no diagnostic filesystem operations', a
   assert.equal(await readFile(filesystemBlocker, 'utf8'), 'unchanged');
 });
 
+void test('off diagnostics mode still persists mandatory detached-worker failures', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-off-durable-worker-failure-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const activeLogPath = join(directory, 'incremental-diagnostics.jsonl');
+  const diagnostics = createRecallOperationDiagnostics({
+    mode: RecallDiagnosticsMode.OFF,
+    activeLogPath,
+    retainedLogPath: join(directory, 'incremental-diagnostics.previous.jsonl'),
+    notifyWarning() {
+      assert.fail('successful mandatory failure persistence must not warn');
+    },
+  });
+  diagnostics.recordDurableIncrementalFailure({
+    operationKind: RecallDiagnosticOperationKind.INCREMENTAL_WORKER,
+    status: RecallDiagnosticStatus.FAILED,
+    metrics: createRecallIncrementalDiagnosticMetrics(),
+    errorCategory: RecallDiagnosticErrorCategory.OPERATION_FAILED,
+  });
+  await diagnostics.flush();
+
+  const [record] = await readRecallOperationDiagnosticRecords(activeLogPath);
+  assert.equal(record?.operationKind, RecallDiagnosticOperationKind.INCREMENTAL_WORKER);
+  assert.equal(record?.status, RecallDiagnosticStatus.FAILED);
+});
+
 void test('diagnostic persistence failure warns once and disables later writes', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'recall-failed-diagnostics-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -269,7 +294,7 @@ void test('diagnostic persistence failure warns once and disables later writes',
   }
 
   assert.deepEqual(warnings, [
-    'Recall diagnostics disabled after local log persistence failed; recall behavior is unchanged.',
+    'Recall diagnostics disabled after local log and fallback persistence failed.',
   ]);
   assert.equal(await readFile(filesystemBlocker, 'utf8'), 'unchanged');
 });

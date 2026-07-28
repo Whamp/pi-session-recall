@@ -1,4 +1,4 @@
-import { access, stat } from 'node:fs/promises';
+import { access, readFile, stat } from 'node:fs/promises';
 import { isAbsolute, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -21,6 +21,7 @@ import {
 } from './enums.js';
 import { loadRecallConversationConfig } from './recall-conversation-config.js';
 import {
+  decodeRecallBacklogSummary,
   readRecallActiveGenerationSelection,
   readRecallGenerationRegistry,
   writeRecallBacklogSummary,
@@ -33,6 +34,7 @@ import {
   RECALL_INCREMENTAL_WORKER_SCHEDULE_VERSION,
   type RecallLargeTransferDeferral,
 } from './recall-incremental-worker-schedule.js';
+import type { ConfirmedSessionDeletionReconciliationResult } from './reconcile-confirmed-session-deletion.js';
 import type { PhysicalSessionProjection } from './recall-session-projection.js';
 import type { RecallWorkMarkerCodecOptions } from './recall-work-marker.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
@@ -57,14 +59,18 @@ import type {
 import type { EmbeddingVectorCache } from './embedding-vector-cache.js';
 import type { ConversationTextTokenizer } from './session-conversation-index.js';
 
-/** Existing diagnostics sink and executable callback protected by the detached-worker failure boundary. */
+/** Existing scalar sinks and executable callback protected by the detached-worker failure boundary. */
 export interface RunRecallIncrementalWorkerDiagnosticBoundaryOptions {
-  operationDiagnostics: Pick<RecallOperationDiagnostics, 'recordIncrementalOperation' | 'flush'>;
+  operationDiagnostics: Pick<
+    RecallOperationDiagnostics,
+    'recordDurableIncrementalFailure' | 'flush'
+  >;
+  persistFailure(): Promise<void>;
   run(): Promise<void>;
   monotonicMilliseconds?: () => number;
 }
 
-/** Records and flushes failures that occur anywhere in the detached worker executable. */
+/** Records and atomically persists failures from anywhere in the detached worker executable. */
 export async function runRecallIncrementalWorkerDiagnosticBoundary(
   options: RunRecallIncrementalWorkerDiagnosticBoundaryOptions,
 ): Promise<void> {
@@ -75,16 +81,65 @@ export async function runRecallIncrementalWorkerDiagnosticBoundary(
   } catch (error) {
     const metrics = createRecallIncrementalDiagnosticMetrics();
     metrics.elapsedMilliseconds = Math.max(monotonicMilliseconds() - startedAtMilliseconds, 0);
-    options.operationDiagnostics.recordIncrementalOperation({
+    options.operationDiagnostics.recordDurableIncrementalFailure({
       operationKind: RecallDiagnosticOperationKind.INCREMENTAL_WORKER,
       status: RecallDiagnosticStatus.FAILED,
       metrics,
       errorCategory: RecallDiagnosticErrorCategory.OPERATION_FAILED,
     });
+    await Promise.allSettled([options.persistFailure()]);
     throw error;
   } finally {
     await options.operationDiagnostics.flush();
   }
+}
+
+/** Scalar sinks and generation state used to durably expose one confirmed deletion halt. */
+export interface ReportRecallIncrementalWorkerDeletionHaltOptions {
+  operationDiagnostics: Pick<
+    RecallOperationDiagnostics,
+    'recordDurableIncrementalFailure' | 'flush'
+  >;
+  generationId: string;
+  generationState: RecallGenerationCutoverState | null;
+  haltResult: ConfirmedSessionDeletionReconciliationResult;
+  workPlan: RecallIncrementalWorkerBacklogObservation['workPlan'];
+  nowEpochMilliseconds?: () => number;
+  persistFailure(): Promise<void>;
+}
+
+/** Persists a privacy-safe deletion halt through diagnostics and the atomic backlog summary. */
+export async function reportRecallIncrementalWorkerDeletionHalt(
+  options: ReportRecallIncrementalWorkerDeletionHaltOptions,
+): Promise<void> {
+  const [deletionSafeguardCategory] = Object.keys(options.haltResult.haltCategoryCounts);
+  const metrics = createRecallIncrementalDiagnosticMetrics();
+  metrics.generationId = options.generationId;
+  metrics.generationState = options.generationState;
+  metrics.deletionSafeguardCategory = deletionSafeguardCategory ?? null;
+  const pendingPhysicalSessionIds = new Set(
+    options.workPlan.workItems.map(({ marker }) => marker.physicalSessionId),
+  );
+  const oldestMarkerCreatedAtEpochMilliseconds = options.workPlan.workItems.reduce(
+    (oldest, { marker }) => Math.min(oldest, marker.createdAtEpochMilliseconds),
+    Number.POSITIVE_INFINITY,
+  );
+  metrics.backlogPendingEligibleSessionCount = pendingPhysicalSessionIds.size;
+  metrics.backlogOldestEligibleMarkerAgeMilliseconds = Number.isFinite(
+    oldestMarkerCreatedAtEpochMilliseconds,
+  )
+    ? Math.max(
+        0,
+        (options.nowEpochMilliseconds?.() ?? Date.now()) - oldestMarkerCreatedAtEpochMilliseconds,
+      )
+    : null;
+  options.operationDiagnostics.recordDurableIncrementalFailure({
+    operationKind: RecallDiagnosticOperationKind.DELETION_RECONCILIATION,
+    status: RecallDiagnosticStatus.FAILED,
+    metrics,
+    errorCategory: RecallDiagnosticErrorCategory.OPERATION_FAILED,
+  });
+  await Promise.allSettled([options.persistFailure(), options.operationDiagnostics.flush()]);
 }
 
 /** Explicit lightweight paths and lazy import boundary for one short-lived incremental worker. */
@@ -104,6 +159,7 @@ export interface RunRecallIncrementalWorkerOptions extends RecallWorkMarkerCodec
     metadataSweep: RecallSessionMetadataSweepResult,
     physicalProjections: readonly PhysicalSessionProjection[],
     missingSourceWorkPlans: readonly RecallMarkerReplayWorkPlan[],
+    workPlan: RecallMarkerReplayWorkPlan,
   ) => Promise<void>;
   persistedLargeTransferDeferrals?: readonly RecallLargeTransferDeferral[];
   loadHeavyDependencies?: () => Promise<void>;
@@ -394,6 +450,7 @@ export async function runRecallIncrementalWorker(
       metadataSweep,
       knownSourceInventory?.physicalProjections ?? [],
       missingSourceWorkPlans,
+      workPlan,
     );
   }
   const transferOutcomes: IncrementalRecallWorkPlanTransferOutcome[] = [];
@@ -535,11 +592,23 @@ export interface RecallIncrementalWorkerBacklogPaths {
   nowEpochMilliseconds?: () => number;
 }
 
+/** Minimal pending work observation used to refresh scalar backlog count and age. */
+export interface RecallIncrementalWorkerBacklogObservation {
+  workPlan: {
+    workItems: ReadonlyArray<{
+      marker: {
+        physicalSessionId: string;
+        createdAtEpochMilliseconds: number;
+      };
+    }>;
+  };
+}
+
 /** Atomically refreshes scalar backlog state after worker completion or executable failure. */
 export async function writeRecallIncrementalWorkerBacklog(
   paths: RecallIncrementalWorkerBacklogPaths,
   failureCategory: RecallBacklogFailureCategory | null,
-  result?: RecallIncrementalWorkerResult,
+  result?: RecallIncrementalWorkerBacklogObservation,
 ): Promise<void> {
   const registry = await readRecallGenerationRegistry(paths.generationRegistryPath);
   const activeEntry = registry?.generations.find(
@@ -581,6 +650,132 @@ export async function writeRecallIncrementalWorkerBacklog(
     lastFailureCategory: failureCategory,
     observedAtEpochMilliseconds: nowEpochMilliseconds,
   });
+}
+
+/** Registry and optional work observation used for one durable detached-worker failure update. */
+export interface RecallIncrementalWorkerFailureBacklogPaths {
+  backlogSummaryPath: string;
+  generationRegistryPath: string;
+  targetGenerationId?: string;
+  nowEpochMilliseconds?: () => number;
+}
+
+async function readPriorRecallIncrementalWorkerBacklog(
+  backlogSummaryPath: string,
+): Promise<ReturnType<typeof decodeRecallBacklogSummary> | null> {
+  try {
+    return decodeRecallBacklogSummary(await readFile(backlogSummaryPath, 'utf8'));
+  } catch (error) {
+    if (readNodeErrorCode(error) === 'ENOENT') {
+      return null;
+    }
+    throw error;
+  }
+}
+
+async function writeRecallIncrementalWorkerFailureFromRegistry(
+  paths: RecallIncrementalWorkerFailureBacklogPaths,
+  failureCategory: RecallBacklogFailureCategory,
+  nowEpochMilliseconds: number,
+  result?: RecallIncrementalWorkerBacklogObservation,
+): Promise<void> {
+  const registry = await readRecallGenerationRegistry(paths.generationRegistryPath);
+  const targetGenerationId = paths.targetGenerationId ?? registry?.activeGenerationId;
+  const targetGeneration = registry?.generations.find(
+    ({ generationId }) => generationId === targetGenerationId,
+  );
+  if (targetGenerationId === null || targetGenerationId === undefined) {
+    throw new Error('Recall incremental worker failure has no generation state');
+  }
+  if (targetGeneration === undefined) {
+    throw new Error('Recall incremental worker failure generation is absent from the registry');
+  }
+  const priorSummary =
+    result === undefined
+      ? await readPriorRecallIncrementalWorkerBacklog(paths.backlogSummaryPath)
+      : null;
+  if (priorSummary !== null) {
+    const buildingGeneration = registry?.generations.find(
+      ({ generationId }) => generationId === registry.buildingGenerationId,
+    );
+    await writeRecallBacklogSummary(paths.backlogSummaryPath, {
+      ...priorSummary,
+      activeGenerationId: targetGenerationId,
+      buildingGenerationId: registry?.buildingGenerationId ?? null,
+      generationState: buildingGeneration?.state ?? targetGeneration.state,
+      activeGenerationAgeMilliseconds: Math.max(
+        0,
+        nowEpochMilliseconds - targetGeneration.stateChangedAtEpochMilliseconds,
+      ),
+      rebuildAgeMilliseconds:
+        buildingGeneration === undefined
+          ? null
+          : Math.max(
+              0,
+              nowEpochMilliseconds - buildingGeneration.rebuildStartedAtEpochMilliseconds,
+            ),
+      lastFailureCategory: failureCategory,
+      observedAtEpochMilliseconds: nowEpochMilliseconds,
+    });
+    return;
+  }
+  await writeRecallIncrementalWorkerBacklog(
+    {
+      backlogSummaryPath: paths.backlogSummaryPath,
+      generationRegistryPath: paths.generationRegistryPath,
+      targetGenerationId,
+      nowEpochMilliseconds: () => nowEpochMilliseconds,
+    },
+    failureCategory,
+    result,
+  );
+}
+
+async function writePriorRecallIncrementalWorkerFailure(
+  backlogSummaryPath: string,
+  failureCategory: RecallBacklogFailureCategory,
+  nowEpochMilliseconds: number,
+): Promise<void> {
+  const summary = decodeRecallBacklogSummary(await readFile(backlogSummaryPath, 'utf8'));
+  await writeRecallBacklogSummary(backlogSummaryPath, {
+    ...summary,
+    lastFailureCategory: failureCategory,
+    observedAtEpochMilliseconds: nowEpochMilliseconds,
+  });
+}
+
+/** Atomically persists scalar worker failure state, preserving the prior summary if registry recovery fails. */
+export async function writeRecallIncrementalWorkerFailureBacklog(
+  paths: RecallIncrementalWorkerFailureBacklogPaths,
+  failureCategory: RecallBacklogFailureCategory,
+  result?: RecallIncrementalWorkerBacklogObservation,
+): Promise<void> {
+  const nowEpochMilliseconds = paths.nowEpochMilliseconds?.() ?? Date.now();
+  const [registryWrite] = await Promise.allSettled([
+    writeRecallIncrementalWorkerFailureFromRegistry(
+      paths,
+      failureCategory,
+      nowEpochMilliseconds,
+      result,
+    ),
+  ]);
+  if (registryWrite?.status === 'fulfilled') {
+    return;
+  }
+
+  const [priorSummaryWrite] = await Promise.allSettled([
+    writePriorRecallIncrementalWorkerFailure(
+      paths.backlogSummaryPath,
+      failureCategory,
+      nowEpochMilliseconds,
+    ),
+  ]);
+  if (priorSummaryWrite?.status === 'rejected') {
+    throw new AggregateError(
+      [registryWrite?.reason, priorSummaryWrite.reason],
+      'Recall incremental worker durable failure update failed',
+    );
+  }
 }
 
 async function runConfiguredRecallIncrementalWorkerExecutable(
@@ -667,129 +862,152 @@ async function runConfiguredRecallIncrementalWorkerExecutable(
     );
     return productionTransferDependencies;
   };
-  let result: RecallIncrementalWorkerResult;
-  try {
-    result = await runRecallIncrementalWorker({
-      markerSpoolDirectory: config.markerSpoolDirectory,
-      markerQuarantineDirectory: config.markerQuarantineDirectory,
-      controlDirectory: config.markerControlDirectory,
-      targetGenerationId: activeSelection.activeGenerationId,
+  let deletionReconciliationHalted = false;
+  const result = await runRecallIncrementalWorker({
+    markerSpoolDirectory: config.markerSpoolDirectory,
+    markerQuarantineDirectory: config.markerQuarantineDirectory,
+    controlDirectory: config.markerControlDirectory,
+    targetGenerationId: activeSelection.activeGenerationId,
+    generationRegistryPath: config.generationRegistryPath,
+    generationReplayCompletion: {
+      activeGenerationPointerPath: config.activeGenerationPointerPath,
       generationRegistryPath: config.generationRegistryPath,
-      generationReplayCompletion: {
-        activeGenerationPointerPath: config.activeGenerationPointerPath,
-        generationRegistryPath: config.generationRegistryPath,
-        backlogSummaryPath: config.backlogSummaryPath,
+      backlogSummaryPath: config.backlogSummaryPath,
+      lockPath: config.lockPath,
+    },
+    ...(registry?.rollbackGenerationId
+      ? { retainedMarkerDirectory: resolve(config.markerControlDirectory, 'rollback-retained') }
+      : {}),
+    trustedSessionRoots: [config.sessionsDirectory],
+    confirmedDeletionMaxMissingSourceCount: config.confirmedDeletionMaxMissingSourceCount,
+    confirmedDeletionMaxMissingSourceRatio: config.confirmedDeletionMaxMissingSourceRatio,
+    operationDiagnostics,
+    persistedLargeTransferDeferrals: persistedSchedule?.largeTransferDeferrals ?? [],
+    async transferWorkPlan(workPlan) {
+      const dependencies = await loadProductionTransferDependencies();
+      return dependencies.transferWorkPlan({
+        workPlan,
         lockPath: config.lockPath,
-      },
-      ...(registry?.rollbackGenerationId
-        ? { retainedMarkerDirectory: resolve(config.markerControlDirectory, 'rollback-retained') }
-        : {}),
-      trustedSessionRoots: [config.sessionsDirectory],
-      confirmedDeletionMaxMissingSourceCount: config.confirmedDeletionMaxMissingSourceCount,
-      confirmedDeletionMaxMissingSourceRatio: config.confirmedDeletionMaxMissingSourceRatio,
-      operationDiagnostics,
-      persistedLargeTransferDeferrals: persistedSchedule?.largeTransferDeferrals ?? [],
-      async transferWorkPlan(workPlan) {
-        const dependencies = await loadProductionTransferDependencies();
-        return dependencies.transferWorkPlan({
-          workPlan,
-          lockPath: config.lockPath,
-          evidenceDatabasePath: activeSelection.databasePath,
-          projectionDatabasePath: activeSelection.projectionDatabasePath,
-          embeddingDimensions: config.embeddingDimensions,
-          chunkPolicy: dependencies.chunkPolicy,
-          loadTokenizer: dependencies.loadTokenizer,
-          resolveProjectIdentity: resolveWorkerProjectIdentity,
-          embeddingCache: dependencies.embeddingCache,
-          operationDiagnostics,
-          nowEpochMilliseconds: Date.now,
-        });
-      },
-      loadKnownSourceInventory: () =>
-        loadRecallKnownSourceInventory(
-          activeSelection.projectionDatabasePath,
-          activeSelection.activeGenerationId,
-          config.sessionsDirectory,
-        ),
-      async reconcileDeletion(metadataSweep, physicalProjections, missingSourceWorkPlans) {
-        const { formatConfirmedSessionDeletionResult, reconcileConfirmedSessionDeletion } =
-          await import('./reconcile-confirmed-session-deletion.js');
-        const result = await reconcileConfirmedSessionDeletion({
-          metadataSweep,
-          physicalProjections,
-          activeGenerationPointerPath: config.activeGenerationPointerPath,
-          generationRootDirectory: config.generationRootDirectory,
-          lockPath: config.lockPath,
-          embeddingDimensions: config.embeddingDimensions,
-          markerWorkPlans: missingSourceWorkPlans,
-        });
-        if (result.halted || result.confirmedSourceDeletionCount > 0) {
-          process.emitWarning(
-            `Recall confirmed deletion: ${formatConfirmedSessionDeletionResult(result)}`,
-          );
-        }
-      },
-    });
-    const shouldSignalWake = await persistRecallIncrementalWorkerSchedule({
-      schedulePath,
-      nowEpochMilliseconds: Date.now(),
-      schedule: {
-        version: RECALL_INCREMENTAL_WORKER_SCHEDULE_VERSION,
-        nextWakeAtEpochMilliseconds: result.nextWakeAtEpochMilliseconds,
-        largeTransferDeferrals: [...result.largeTransferDeferrals],
-      },
-    });
-    if (shouldSignalWake && result.nextWakeAtEpochMilliseconds !== null) {
-      signalRecallIncrementalWorkerWake({
-        readyAtEpochMilliseconds: result.nextWakeAtEpochMilliseconds,
-        workerOwnershipLockPath: config.workerOwnershipLockPath,
-        workerExecutablePath: fileURLToPath(import.meta.url),
+        evidenceDatabasePath: activeSelection.databasePath,
+        projectionDatabasePath: activeSelection.projectionDatabasePath,
+        embeddingDimensions: config.embeddingDimensions,
+        chunkPolicy: dependencies.chunkPolicy,
+        loadTokenizer: dependencies.loadTokenizer,
+        resolveProjectIdentity: resolveWorkerProjectIdentity,
+        embeddingCache: dependencies.embeddingCache,
+        operationDiagnostics,
+        nowEpochMilliseconds: Date.now,
       });
-    }
-    await writeRecallIncrementalWorkerBacklog(
-      {
-        backlogSummaryPath: config.backlogSummaryPath,
-        generationRegistryPath: config.generationRegistryPath,
-        targetGenerationId: activeSelection.activeGenerationId,
-      },
-      null,
-      result,
-    );
-  } catch (error) {
-    const [backlogWriteResult] = await Promise.allSettled([
-      writeRecallIncrementalWorkerBacklog(
-        {
-          backlogSummaryPath: config.backlogSummaryPath,
-          generationRegistryPath: config.generationRegistryPath,
-          targetGenerationId: activeSelection.activeGenerationId,
-        },
-        RecallBacklogFailureCategory.WRITE_FAILED,
+    },
+    loadKnownSourceInventory: () =>
+      loadRecallKnownSourceInventory(
+        activeSelection.projectionDatabasePath,
+        activeSelection.activeGenerationId,
+        config.sessionsDirectory,
       ),
-    ]);
-    if (backlogWriteResult.status === 'rejected') {
-      throw new AggregateError(
-        [error, backlogWriteResult.reason],
-        'Recall incremental worker and backlog update failed',
+    async reconcileDeletion(metadataSweep, physicalProjections, missingSourceWorkPlans, workPlan) {
+      const { reconcileConfirmedSessionDeletion } =
+        await import('./reconcile-confirmed-session-deletion.js');
+      const deletionResult = await reconcileConfirmedSessionDeletion({
+        metadataSweep,
+        physicalProjections,
+        activeGenerationPointerPath: config.activeGenerationPointerPath,
+        generationRootDirectory: config.generationRootDirectory,
+        lockPath: config.lockPath,
+        embeddingDimensions: config.embeddingDimensions,
+        markerWorkPlans: missingSourceWorkPlans,
+      });
+      if (deletionResult.halted) {
+        deletionReconciliationHalted = true;
+        await reportRecallIncrementalWorkerDeletionHalt({
+          operationDiagnostics,
+          generationId: activeSelection.activeGenerationId,
+          generationState:
+            registry?.generations.find(
+              ({ generationId }) => generationId === activeSelection.activeGenerationId,
+            )?.state ?? null,
+          haltResult: deletionResult,
+          workPlan,
+          persistFailure: () =>
+            writeRecallIncrementalWorkerFailureBacklog(
+              {
+                backlogSummaryPath: config.backlogSummaryPath,
+                generationRegistryPath: config.generationRegistryPath,
+                targetGenerationId: activeSelection.activeGenerationId,
+              },
+              RecallBacklogFailureCategory.CONFIRMED_DELETION_HALTED,
+              { workPlan },
+            ),
+        });
+      }
+    },
+  });
+  const shouldSignalWake = await persistRecallIncrementalWorkerSchedule({
+    schedulePath,
+    nowEpochMilliseconds: Date.now(),
+    schedule: {
+      version: RECALL_INCREMENTAL_WORKER_SCHEDULE_VERSION,
+      nextWakeAtEpochMilliseconds: result.nextWakeAtEpochMilliseconds,
+      largeTransferDeferrals: [...result.largeTransferDeferrals],
+    },
+  });
+  if (shouldSignalWake && result.nextWakeAtEpochMilliseconds !== null) {
+    signalRecallIncrementalWorkerWake({
+      readyAtEpochMilliseconds: result.nextWakeAtEpochMilliseconds,
+      workerOwnershipLockPath: config.workerOwnershipLockPath,
+      workerExecutablePath: fileURLToPath(import.meta.url),
+    });
+  }
+  await writeRecallIncrementalWorkerBacklog(
+    {
+      backlogSummaryPath: config.backlogSummaryPath,
+      generationRegistryPath: config.generationRegistryPath,
+      targetGenerationId: activeSelection.activeGenerationId,
+    },
+    deletionReconciliationHalted ? RecallBacklogFailureCategory.CONFIRMED_DELETION_HALTED : null,
+    result,
+  );
+}
+
+async function runRecallIncrementalWorkerExecutable(): Promise<void> {
+  let failureVisibilityInitialized = false;
+  try {
+    const config = await loadRecallConversationConfig();
+    const failureBacklogPaths: RecallIncrementalWorkerFailureBacklogPaths = {
+      backlogSummaryPath: config.backlogSummaryPath,
+      generationRegistryPath: config.generationRegistryPath,
+    };
+    const operationDiagnostics = createRecallOperationDiagnostics({
+      mode: config.diagnosticsMode,
+      activeLogPath: config.incrementalDiagnosticLogPath,
+      retainedLogPath: config.incrementalDiagnosticLogPath.replace(/\.jsonl$/u, '.previous.jsonl'),
+      notifyWarning(message) {
+        process.emitWarning(message);
+      },
+      onPersistenceFailure: () =>
+        writeRecallIncrementalWorkerFailureBacklog(
+          failureBacklogPaths,
+          RecallBacklogFailureCategory.DIAGNOSTICS_PERSISTENCE_FAILED,
+        ),
+    });
+    failureVisibilityInitialized = true;
+    await runRecallIncrementalWorkerDiagnosticBoundary({
+      operationDiagnostics,
+      persistFailure: () =>
+        writeRecallIncrementalWorkerFailureBacklog(
+          failureBacklogPaths,
+          RecallBacklogFailureCategory.INCREMENTAL_WORKER_FAILED,
+        ),
+      run: () => runConfiguredRecallIncrementalWorkerExecutable(config, operationDiagnostics),
+    });
+  } catch (error) {
+    if (!failureVisibilityInitialized) {
+      process.emitWarning(
+        `Recall incremental worker failure sink initialization failed [${readNodeErrorCode(error) ?? 'UNKNOWN'}]`,
       );
     }
     throw error;
   }
-}
-
-async function runRecallIncrementalWorkerExecutable(): Promise<void> {
-  const config = await loadRecallConversationConfig();
-  const operationDiagnostics = createRecallOperationDiagnostics({
-    mode: config.diagnosticsMode,
-    activeLogPath: config.incrementalDiagnosticLogPath,
-    retainedLogPath: config.incrementalDiagnosticLogPath.replace(/\.jsonl$/u, '.previous.jsonl'),
-    notifyWarning(message) {
-      process.emitWarning(message);
-    },
-  });
-  await runRecallIncrementalWorkerDiagnosticBoundary({
-    operationDiagnostics,
-    run: () => runConfiguredRecallIncrementalWorkerExecutable(config, operationDiagnostics),
-  });
 }
 
 const executedModulePath = process.argv[1];
@@ -797,10 +1015,7 @@ if (
   executedModulePath !== undefined &&
   resolve(executedModulePath) === fileURLToPath(import.meta.url)
 ) {
-  runRecallIncrementalWorkerExecutable().catch((error: unknown) => {
-    process.emitWarning(
-      `Recall incremental worker failed [${readNodeErrorCode(error) ?? 'UNKNOWN'}]`,
-    );
+  runRecallIncrementalWorkerExecutable().catch(() => {
     process.exitCode = 1;
   });
 }

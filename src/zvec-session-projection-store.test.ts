@@ -42,6 +42,8 @@ function createPhysicalProjection(): PhysicalSessionProjection {
     sourceAvailability: RecallSourceAvailability.PRESENT,
     sourceMissingObservedAtEpochMilliseconds: null,
     sourceMissingObservationCount: 0,
+    sourceMissingSweepId: null,
+    deletionCheckpoint: null,
     markerCheckpoint: {
       generationId,
       coveredMarkerIds: ['marker_1'],
@@ -139,6 +141,7 @@ void test('scalar-only zvec projection store strictly round-trips physical and l
     reader.fetchProjections(projections.map(({ projectionId }) => projectionId)),
     new Map(projections.map((projection) => [projection.projectionId, projection])),
   );
+  assert.deepEqual(reader.listPhysicalProjections(), [createPhysicalProjection()]);
   reader.close();
 });
 

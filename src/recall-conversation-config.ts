@@ -18,6 +18,8 @@ const DEFAULT_RECALL_CHANNEL_CANDIDATE_LIMIT = 40;
 const MAX_RECALL_CHANNEL_CANDIDATE_LIMIT = 200;
 const DEFAULT_RECALL_SEARCH_WRITE_WINDOW_WAIT_MILLISECONDS = 500;
 const MAX_RECALL_SEARCH_WRITE_WINDOW_WAIT_MILLISECONDS = 500;
+const DEFAULT_CONFIRMED_DELETION_MAX_MISSING_SOURCE_COUNT = 1;
+const DEFAULT_CONFIRMED_DELETION_MAX_MISSING_SOURCE_RATIO = 0.1;
 
 const recallConfigFileSchema = Type.Object(
   {
@@ -45,6 +47,10 @@ const recallConfigFileSchema = Type.Object(
     ),
     searchWriteWindowWaitMilliseconds: Type.Optional(
       Type.Integer({ minimum: 1, maximum: MAX_RECALL_SEARCH_WRITE_WINDOW_WAIT_MILLISECONDS }),
+    ),
+    confirmedDeletionMaxMissingSourceCount: Type.Optional(Type.Integer({ minimum: 1 })),
+    confirmedDeletionMaxMissingSourceRatio: Type.Optional(
+      Type.Number({ exclusiveMinimum: 0, maximum: 1 }),
     ),
     projectLineages: Type.Optional(
       Type.Record(
@@ -76,6 +82,16 @@ function parseRecallCandidateLimit(value: string, settingName: string): number {
   if (parsed > MAX_RECALL_CHANNEL_CANDIDATE_LIMIT) {
     throw new Error(
       `Recall configuration candidate limit for ${settingName} exceeds ${MAX_RECALL_CHANNEL_CANDIDATE_LIMIT}: ${value}`,
+    );
+  }
+  return parsed;
+}
+
+function parseConfirmedDeletionMissingSourceRatio(value: string): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0 || parsed > 1) {
+    throw new Error(
+      `Recall configuration invalid ratio for PI_RECALL_CONFIRMED_DELETION_MAX_MISSING_SOURCE_RATIO: ${value}`,
     );
   }
   return parsed;
@@ -227,6 +243,21 @@ export async function loadRecallConversationConfig(
         )
       : (file.searchWriteWindowWaitMilliseconds ??
         DEFAULT_RECALL_SEARCH_WRITE_WINDOW_WAIT_MILLISECONDS),
+    confirmedDeletionMaxMissingSourceCount:
+      environment.PI_RECALL_CONFIRMED_DELETION_MAX_MISSING_SOURCE_COUNT === undefined
+        ? (file.confirmedDeletionMaxMissingSourceCount ??
+          DEFAULT_CONFIRMED_DELETION_MAX_MISSING_SOURCE_COUNT)
+        : parsePositiveInteger(
+            environment.PI_RECALL_CONFIRMED_DELETION_MAX_MISSING_SOURCE_COUNT,
+            'PI_RECALL_CONFIRMED_DELETION_MAX_MISSING_SOURCE_COUNT',
+          ),
+    confirmedDeletionMaxMissingSourceRatio:
+      environment.PI_RECALL_CONFIRMED_DELETION_MAX_MISSING_SOURCE_RATIO === undefined
+        ? (file.confirmedDeletionMaxMissingSourceRatio ??
+          DEFAULT_CONFIRMED_DELETION_MAX_MISSING_SOURCE_RATIO)
+        : parseConfirmedDeletionMissingSourceRatio(
+            environment.PI_RECALL_CONFIRMED_DELETION_MAX_MISSING_SOURCE_RATIO,
+          ),
     searchCandidateLimits: {
       dense: resolveRecallCandidateLimit(
         'PI_RECALL_DENSE_CANDIDATE_LIMIT',

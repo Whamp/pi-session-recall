@@ -128,6 +128,35 @@ export enum RecallSourceAvailability {
   DELETION_CONFIRMED = 'deletion_confirmed',
 }
 
+/** Public action selected by the confirmed source deletion policy. */
+export enum RecallConfirmedDeletionDecisionKind {
+  NO_CHANGE = 'no_change',
+  RECORD_SOURCE_MISSING = 'record_source_missing',
+  CLEAR_SOURCE_MISSING = 'clear_source_missing',
+  CONFIRM_SOURCE_DELETION = 'confirm_source_deletion',
+  RESUME_CONFIRMED_DELETION = 'resume_confirmed_deletion',
+  HALT = 'halt',
+}
+
+/** Privacy-safe reason confirmed source deletion cannot proceed. */
+export enum RecallConfirmedDeletionHaltCategory {
+  ROOT_UNAVAILABLE = 'root_unavailable',
+  PERMISSION_DENIED = 'permission_denied',
+  SUSPICIOUS_MASS_LOSS = 'suspicious_mass_loss',
+  INCOMPLETE_SWEEP = 'incomplete_sweep',
+  SOURCE_IDENTITY_CHANGED = 'source_identity_changed',
+  SOURCE_REAPPEARED_DURING_DELETION = 'source_reappeared_during_deletion',
+  PROJECTION_REQUIRES_RECONCILIATION = 'projection_requires_reconciliation',
+  ACTIVE_GENERATION_CHANGED = 'active_generation_changed',
+}
+
+/** Resumable destructive phase checkpointed in the physical session projection. */
+export enum RecallConfirmedDeletionPhase {
+  EVIDENCE = 'evidence',
+  LOGICAL_PROJECTIONS = 'logical_projections',
+  PHYSICAL_PROJECTION = 'physical_projection',
+}
+
 /** Outcome of encoding one bounded session projection candidate. */
 export enum RecallProjectionEncodingStatus {
   ENCODED = 'encoded',

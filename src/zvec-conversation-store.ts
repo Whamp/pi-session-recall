@@ -53,6 +53,9 @@ export const ZVEC_HNSW_EF_CONSTRUCTION = 500;
 /** Pinned HNSW query candidate count used by dense conversation search. */
 export const ZVEC_HNSW_EF_SEARCH = 300;
 
+/** Maximum exact evidence IDs returned for one confirmed deletion write window. */
+export const CONFIRMED_DELETION_BATCH_SIZE = 32;
+
 /** A dense-searchable recall document paired with its local embedding. */
 export interface EmbeddedSessionConversationChunk extends SessionConversationChunk {
   isDenseSearchable: true;
@@ -78,7 +81,10 @@ export interface ConversationChunkStore {
 
 /** Durable conversation operations plus zvec evolution and bounded-query capabilities. */
 export interface ZvecConversationStore extends ConversationChunkStore {
-  deleteChunksByPhysicalSessionProjectionId(physicalSessionProjectionId: string): Promise<void>;
+  listChunkIdsByPhysicalSessionProjectionId(
+    physicalSessionProjectionId: string,
+    limit: number,
+  ): Promise<string[]>;
   searchDenseCandidates(
     embedding: number[],
     limit: number,
@@ -526,6 +532,20 @@ function assertCheckedConversationStatuses(
   }
 }
 
+function assertPhysicalSessionProjectionId(physicalSessionProjectionId: string): void {
+  if (!/^[A-Za-z0-9_-]+$/u.test(physicalSessionProjectionId)) {
+    throw new Error('Recall physical session projection ID invalid for evidence deletion');
+  }
+}
+
+function assertConfirmedDeletionEvidenceLimit(limit: number): void {
+  if (!Number.isInteger(limit) || limit < 1 || limit > CONFIRMED_DELETION_BATCH_SIZE) {
+    throw new Error(
+      `Recall confirmed deletion evidence limit invalid: expected 1..${CONFIRMED_DELETION_BATCH_SIZE}`,
+    );
+  }
+}
+
 function assertRecallCandidateLimit(limit: number, channelName: string): void {
   if (!Number.isInteger(limit) || limit < 1 || limit > 200) {
     throw new Error(
@@ -677,18 +697,16 @@ export function openZvecConversationStore(config: {
         collection.deleteSync(copiedIds),
       );
     },
-    async deleteChunksByPhysicalSessionProjectionId(physicalSessionProjectionId) {
-      if (!/^[A-Za-z0-9_-]+$/u.test(physicalSessionProjectionId)) {
-        throw new Error('Recall physical session projection ID invalid for evidence deletion');
-      }
-      const status = collection.deleteByFilterSync(
-        `physicalSessionProjectionId = '${physicalSessionProjectionId}'`,
-      );
-      assertCheckedConversationStatuses(
-        'physical evidence delete',
-        [physicalSessionProjectionId],
-        [status],
-      );
+    async listChunkIdsByPhysicalSessionProjectionId(physicalSessionProjectionId, limit) {
+      assertPhysicalSessionProjectionId(physicalSessionProjectionId);
+      assertConfirmedDeletionEvidenceLimit(limit);
+      const documents = await collection.query({
+        filter: `physicalSessionProjectionId = '${physicalSessionProjectionId}'`,
+        topk: limit,
+        outputFields: [],
+        includeVector: false,
+      });
+      return documents.map(({ id }) => id).toSorted();
     },
     async searchDenseCandidates(embedding, limit, projectIdentity) {
       assertRecallCandidateLimit(limit, 'dense');

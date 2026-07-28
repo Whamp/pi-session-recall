@@ -118,6 +118,8 @@ function createTestConfig(directory: string, sessionsDirectory: string) {
     projectLineages: normalizeRecallProjectLineages({}),
     searchCandidateLimits: { dense: 1, lexical: 1, identifier: 1 },
     searchWriteWindowWaitMilliseconds: 500,
+    confirmedDeletionMaxMissingSourceCount: 1,
+    confirmedDeletionMaxMissingSourceRatio: 0.1,
   };
 }
 
@@ -818,7 +820,9 @@ void test('manual rebuild diagnostics isolate final database optimization durati
         async deleteChunks(ids) {
           storedDocumentCount = Math.max(storedDocumentCount - ids.length, 0);
         },
-        async deleteChunksByPhysicalSessionProjectionId() {},
+        async listChunkIdsByPhysicalSessionProjectionId() {
+          return [];
+        },
         async searchDenseCandidates() {
           return [];
         },
@@ -949,7 +953,9 @@ void test('manual index diagnostics preserve optimization failure and release th
         async deleteChunks(ids) {
           storedDocumentCount = Math.max(storedDocumentCount - ids.length, 0);
         },
-        async deleteChunksByPhysicalSessionProjectionId() {},
+        async listChunkIdsByPhysicalSessionProjectionId() {
+          return [];
+        },
         async searchDenseCandidates() {
           return [];
         },
@@ -1417,8 +1423,8 @@ void test('read-only search opens the pointer-selected store and awaits retrieva
         async deleteChunks() {
           assert.fail('search must not delete evidence');
         },
-        async deleteChunksByPhysicalSessionProjectionId() {
-          assert.fail('search must not mutate physical evidence');
+        async listChunkIdsByPhysicalSessionProjectionId() {
+          assert.fail('search must not enumerate physical evidence');
         },
         searchDenseCandidates() {
           return recordRoute('dense');

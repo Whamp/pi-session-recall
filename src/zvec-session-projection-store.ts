@@ -16,6 +16,7 @@ import {
   decodeRecallSessionProjection,
   encodeRecallSessionProjection,
   RECALL_SESSION_PROJECTION_SCHEMA_VERSION,
+  type PhysicalSessionProjection,
   type RecallSessionProjection,
 } from './recall-session-projection.js';
 
@@ -27,6 +28,7 @@ export interface ZvecSessionProjectionStore {
   upsertProjections(projections: readonly RecallSessionProjection[]): Promise<void>;
   deleteProjections(projectionIds: readonly string[]): Promise<void>;
   fetchProjections(projectionIds: readonly string[]): Map<string, RecallSessionProjection>;
+  listPhysicalProjections(): PhysicalSessionProjection[];
   close(): void;
 }
 
@@ -234,6 +236,24 @@ export function openZvecSessionProjectionStore(config: {
           deserializeSessionProjection(doc, config.generationId),
         ]),
       );
+    },
+    listPhysicalProjections() {
+      if (collection.stats.docCount === 0) {
+        return [];
+      }
+      return collection
+        .querySync({
+          filter: `projectionKind = '${RecallSessionProjectionKind.PHYSICAL_SESSION}'`,
+          topk: collection.stats.docCount,
+          outputFields: PROJECTION_OUTPUT_FIELDS,
+          includeVector: false,
+        })
+        .map((doc) => deserializeSessionProjection(doc, config.generationId))
+        .filter(
+          (projection): projection is PhysicalSessionProjection =>
+            projection.projectionKind === RecallSessionProjectionKind.PHYSICAL_SESSION,
+        )
+        .toSorted((left, right) => left.projectionId.localeCompare(right.projectionId));
     },
     close() {
       collection.closeSync();

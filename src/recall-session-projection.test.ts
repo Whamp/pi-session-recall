@@ -41,6 +41,8 @@ function createPhysicalProjection(): PhysicalSessionProjection {
     sourceAvailability: RecallSourceAvailability.PRESENT,
     sourceMissingObservedAtEpochMilliseconds: null,
     sourceMissingObservationCount: 0,
+    sourceMissingSweepId: null,
+    deletionCheckpoint: null,
     markerCheckpoint: {
       generationId,
       coveredMarkerIds: ['marker_abc'],
@@ -171,7 +173,7 @@ void test('projection codec rejects forward versions, extra fields, generation m
     );
 
   assert.throws(
-    () => decodeInner({ ...projection, schemaVersion: 2 }),
+    () => decodeInner({ ...projection, schemaVersion: 3 }),
     /projection|schema|invalid/iu,
   );
   assert.throws(() => decodeInner({ ...projection, unexpected: true }), /projection|invalid/iu);
@@ -232,6 +234,8 @@ void test('projection codec enforces repair-state consistency and does not accep
         sourceAvailability: RecallSourceAvailability.SOURCE_MISSING,
         sourceMissingObservedAtEpochMilliseconds: 1_753_315_200_000,
         sourceMissingObservationCount: 0,
+        sourceMissingSweepId: null,
+        deletionCheckpoint: null,
       }),
     /source state/iu,
   );

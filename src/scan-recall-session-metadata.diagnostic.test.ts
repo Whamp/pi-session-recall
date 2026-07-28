@@ -42,6 +42,8 @@ function createGeneratedMetadataFilesystem(): RecallSessionMetadataFilesystem {
         isFile: true,
         sizeBytes: 1_024,
         modifiedAtEpochMilliseconds: 1_753_315_200_000,
+        sourceDevice: '10',
+        sourceInode: '20',
       };
     },
   };

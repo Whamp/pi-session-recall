@@ -28,6 +28,7 @@ export interface RecallActiveGenerationSelection {
   activeGenerationId: string;
   generationDirectory: string;
   databasePath: string;
+  projectionDatabasePath: string;
   manifestPath: string;
 }
 
@@ -50,7 +51,7 @@ export interface RecallGenerationRegistryEntry {
   state: RecallGenerationCutoverState;
   indexManifestVersion: 6;
   markerSchemaVersion: 1;
-  sessionProjectionSchemaVersion: 1;
+  sessionProjectionSchemaVersion: 2;
   indexManifestFingerprint: string;
   rebuildStartedAtEpochMilliseconds: number;
   stateChangedAtEpochMilliseconds: number;
@@ -314,6 +315,7 @@ export async function readRecallActiveGenerationSelection(
       activeGenerationId: pointer.activeGenerationId,
       generationDirectory,
       databasePath: join(generationDirectory, 'zvec'),
+      projectionDatabasePath: join(generationDirectory, 'session-projections'),
       manifestPath: join(generationDirectory, 'index-manifest.json'),
     };
   } catch (error) {

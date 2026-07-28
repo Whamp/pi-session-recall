@@ -36,6 +36,8 @@ function createFlatMetadataFilesystem(entryCount: number): FakeMetadataFilesyste
         isFile: true,
         sizeBytes: 10,
         modifiedAtEpochMilliseconds: 20,
+        sourceDevice: '10',
+        sourceInode: path,
       };
     },
   };
@@ -141,9 +143,11 @@ void test('metadata sweep persists a strict scalar continuation outside session 
   assert.deepEqual(Object.keys(continuation).toSorted(), [
     'afterEntryName',
     'currentRelativeDirectory',
+    'observedKnownSourceIdentities',
     'observedPhysicalSessionIds',
     'observedSessionFileCount',
     'pendingRelativeDirectories',
+    'sweepId',
     'version',
   ]);
   assert.equal(JSON.stringify(continuation).includes('private session body'), false);
@@ -180,6 +184,26 @@ void test('metadata sweep classifies unavailable roots and suspicious broad loss
   assert.equal(unavailable.rootHealthy, false);
   assert.equal(unavailable.deletionConfirmationSuppressed, true);
 
+  const mountFailureFilesystem: RecallSessionMetadataFilesystem = {
+    async readDirectory() {
+      const error = new Error('stale mount');
+      Object.assign(error, { code: 'ESTALE' });
+      throw error;
+    },
+    async statPath() {
+      throw new Error('stat should not run');
+    },
+  };
+  const mountFailure = await scanRecallSessionMetadata({
+    sessionRootDirectory: '/isolated/stale-mount',
+    controlDirectory: '/isolated/control',
+    filesystem: mountFailureFilesystem,
+    continuationStore: createMemoryContinuationStore(),
+    monotonicNowMilliseconds: () => 0,
+  });
+  assert.equal(mountFailure.status, RecallMetadataSweepStatus.ROOT_UNAVAILABLE);
+  assert.equal(mountFailure.deletionConfirmationSuppressed, true);
+
   const permissionDeniedFilesystem: RecallSessionMetadataFilesystem = {
     async readDirectory() {
       const error = new Error('permission denied');
@@ -212,11 +236,90 @@ void test('metadata sweep classifies unavailable roots and suspicious broad loss
       { physicalSessionId: 'physical-2', relativePath: 'missing-1.jsonl' },
       { physicalSessionId: 'physical-3', relativePath: 'missing-2.jsonl' },
     ],
-    suspiciousMassLossMinimumMissingSources: 2,
+    confirmedDeletionMaxMissingSourceCount: 1,
+    confirmedDeletionMaxMissingSourceRatio: 1,
     monotonicNowMilliseconds: () => 0,
   });
   assert.equal(suspicious.status, RecallMetadataSweepStatus.SUSPICIOUS_MASS_LOSS);
   assert.equal(suspicious.rootHealthy, true);
   assert.equal(suspicious.deletionConfirmationSuppressed, true);
   assert.deepEqual(suspicious.missingPhysicalSessionIds, ['physical-2', 'physical-3']);
+});
+
+void test('metadata sweep keeps one sweep ID across continuation and reports stable source identity', async () => {
+  const filesystem = createFlatMetadataFilesystem(2);
+  const continuationStore = createMemoryContinuationStore();
+  let nextSweep = 0;
+  const createSweepId = () => `sweep-${++nextSweep}`;
+
+  const first = await scanRecallSessionMetadata({
+    sessionRootDirectory: '/isolated/sessions',
+    controlDirectory: '/isolated/control',
+    filesystem,
+    continuationStore,
+    maxFiles: 1,
+    monotonicNowMilliseconds: () => 0,
+    createSweepId,
+    knownSources: [{ physicalSessionId: 'physical-1', relativePath: 'session-00000.jsonl' }],
+  });
+  const second = await scanRecallSessionMetadata({
+    sessionRootDirectory: '/isolated/sessions',
+    controlDirectory: '/isolated/control',
+    filesystem,
+    continuationStore,
+    maxFiles: 10,
+    monotonicNowMilliseconds: () => 0,
+    createSweepId,
+    knownSources: [{ physicalSessionId: 'physical-1', relativePath: 'session-00000.jsonl' }],
+  });
+
+  assert.equal(first.sweepId, 'sweep-1');
+  assert.equal(second.sweepId, 'sweep-1');
+  assert.equal(nextSweep, 1);
+  assert.deepEqual(second.observedKnownSourceIdentities, [
+    {
+      physicalSessionId: 'physical-1',
+      sourceDevice: '10',
+      sourceInode: '/isolated/sessions/session-00000.jsonl',
+    },
+  ]);
+  assert.deepEqual(second.observedSessionMetadata[0], {
+    physicalSessionId: null,
+    relativePath: 'session-00001.jsonl',
+    sizeBytes: 10,
+    modifiedAtEpochMilliseconds: 20,
+    sourceDevice: '10',
+    sourceInode: '/isolated/sessions/session-00001.jsonl',
+  });
+});
+
+void test('metadata sweep halts above either configured mass-loss limit and permits the boundary', async () => {
+  const filesystem = createFlatMetadataFilesystem(8);
+  const knownSources = Array.from({ length: 10 }, (_, index) => ({
+    physicalSessionId: `physical-${index}`,
+    relativePath: `session-${String(index).padStart(5, '0')}.jsonl`,
+  }));
+  const atBoundary = await scanRecallSessionMetadata({
+    sessionRootDirectory: '/isolated/sessions',
+    controlDirectory: '/isolated/control',
+    filesystem,
+    continuationStore: createMemoryContinuationStore(),
+    knownSources,
+    confirmedDeletionMaxMissingSourceCount: 2,
+    confirmedDeletionMaxMissingSourceRatio: 0.2,
+    monotonicNowMilliseconds: () => 0,
+  });
+  assert.equal(atBoundary.status, RecallMetadataSweepStatus.COMPLETE);
+
+  const aboveRatio = await scanRecallSessionMetadata({
+    sessionRootDirectory: '/isolated/sessions',
+    controlDirectory: '/isolated/control',
+    filesystem,
+    continuationStore: createMemoryContinuationStore(),
+    knownSources,
+    confirmedDeletionMaxMissingSourceCount: 10,
+    confirmedDeletionMaxMissingSourceRatio: 0.1,
+    monotonicNowMilliseconds: () => 0,
+  });
+  assert.equal(aboveRatio.status, RecallMetadataSweepStatus.SUSPICIOUS_MASS_LOSS);
 });

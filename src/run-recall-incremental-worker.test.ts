@@ -6,7 +6,17 @@ import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import test from 'node:test';
 
-import { RecallWorkMarkerTrigger } from './enums.js';
+import {
+  RecallProjectionRepairState,
+  RecallSessionProjectionKind,
+  RecallSourceAvailability,
+  RecallWorkMarkerTrigger,
+} from './enums.js';
+import {
+  createPhysicalSessionProjectionId,
+  RECALL_SESSION_PROJECTION_SCHEMA_VERSION,
+  type PhysicalSessionProjection,
+} from './recall-session-projection.js';
 import {
   createRecallWorkMarkerId,
   encodeRecallWorkMarker,
@@ -26,7 +36,12 @@ interface WorkerFixture {
   publishMarker(): Promise<void>;
 }
 
-async function createWorkerFixture(t: test.TestContext): Promise<WorkerFixture> {
+async function createWorkerFixture(
+  t: test.TestContext,
+  trigger:
+    | RecallWorkMarkerTrigger.ACTIVITY
+    | RecallWorkMarkerTrigger.ARRIVAL = RecallWorkMarkerTrigger.ACTIVITY,
+): Promise<WorkerFixture> {
   const directory = await mkdtemp(join(tmpdir(), 'run-recall-incremental-worker-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const sessionsDirectory = join(directory, 'sessions');
@@ -45,7 +60,7 @@ async function createWorkerFixture(t: test.TestContext): Promise<WorkerFixture> 
     runtimeInstanceId: 'runtime-1',
     runtimeSequence: 1,
     createdAtEpochMilliseconds: 1_753_315_200_000,
-    trigger: { kind: RecallWorkMarkerTrigger.ACTIVITY },
+    trigger: { kind: trigger },
   } as const;
   const marker = { ...identity, markerId: createRecallWorkMarkerId(identity) };
   return {
@@ -105,6 +120,72 @@ void test('incremental worker exits empty before heavy imports and a later signa
     ).then((source) => source.length > 0),
     true,
   );
+});
+
+function createWorkerPhysicalProjection(fixture: WorkerFixture): PhysicalSessionProjection {
+  const generationId = 'generation-1';
+  const physicalSessionId = fixture.marker.physicalSessionId;
+  return {
+    schemaVersion: RECALL_SESSION_PROJECTION_SCHEMA_VERSION,
+    projectionKind: RecallSessionProjectionKind.PHYSICAL_SESSION,
+    projectionId: createPhysicalSessionProjectionId(physicalSessionId),
+    generationId,
+    physicalSessionId,
+    sourcePath: fixture.marker.physicalSessionPath,
+    sourceDevice: '10',
+    sourceInode: '20',
+    appendCursorBytes: 3,
+    appendCursorLines: 1,
+    boundaryFingerprint: 'a'.repeat(64),
+    lastEntryId: null,
+    logicalSessionIds: [],
+    sourceAvailability: RecallSourceAvailability.PRESENT,
+    sourceMissingObservedAtEpochMilliseconds: null,
+    sourceMissingObservationCount: 0,
+    sourceMissingSweepId: null,
+    deletionCheckpoint: null,
+    markerCheckpoint: { generationId, coveredMarkerIds: [], runtimeSequences: [] },
+    repairState: RecallProjectionRepairState.READY,
+    repairReason: null,
+  };
+}
+
+void test('arrival metadata sweep lazily loads active projections and invokes deletion reconciliation', async (t) => {
+  const fixture = await createWorkerFixture(t, RecallWorkMarkerTrigger.ARRIVAL);
+  await fixture.publishMarker();
+  const physicalProjection = createWorkerPhysicalProjection(fixture);
+  let inventoryLoadCount = 0;
+  let reconciliationCount = 0;
+
+  const result = await runRecallIncrementalWorker({
+    markerSpoolDirectory: fixture.markerSpoolDirectory,
+    markerQuarantineDirectory: fixture.markerQuarantineDirectory,
+    controlDirectory: fixture.controlDirectory,
+    targetGenerationId: 'generation-1',
+    trustedSessionRoots: [fixture.sessionsDirectory],
+    async loadKnownSourceInventory() {
+      inventoryLoadCount += 1;
+      return {
+        knownSources: [
+          {
+            physicalSessionId: physicalProjection.physicalSessionId,
+            relativePath: 'session.jsonl',
+          },
+        ],
+        physicalProjections: [physicalProjection],
+      };
+    },
+    async loadHeavyDependencies() {},
+    async reconcileDeletion(metadataSweep, physicalProjections) {
+      reconciliationCount += 1;
+      assert.equal(metadataSweep.status, 'complete');
+      assert.deepEqual(physicalProjections, [physicalProjection]);
+    },
+  });
+
+  assert.equal(result.heavyDependenciesLoaded, true);
+  assert.equal(inventoryLoadCount, 1);
+  assert.equal(reconciliationCount, 1);
 });
 
 async function waitForProbeLines(probePath: string, expectedLineCount: number): Promise<void> {

@@ -73,6 +73,8 @@ function createDiagnosticTransfer(markerSpoolDirectory: string): PreparedIncreme
     sourceAvailability: RecallSourceAvailability.PRESENT,
     sourceMissingObservedAtEpochMilliseconds: null,
     sourceMissingObservationCount: 0,
+    sourceMissingSweepId: null,
+    deletionCheckpoint: null,
     markerCheckpoint: {
       generationId,
       coveredMarkerIds: [marker.markerId],

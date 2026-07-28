@@ -46,6 +46,8 @@ void test('recall config uses local octen embeddings and supports file plus envi
   assert.equal(config.rerankerModel, 'file-reranker-model');
   assert.deepEqual(config.searchCandidateLimits, { dense: 7, lexical: 9, identifier: 40 });
   assert.equal(config.searchWriteWindowWaitMilliseconds, 500);
+  assert.equal(config.confirmedDeletionMaxMissingSourceCount, 1);
+  assert.equal(config.confirmedDeletionMaxMissingSourceRatio, 0.1);
   assert.equal(config.embeddingServedModelId, 'Octen/Octen-Embedding-4B');
   assert.equal(config.embeddingArtifact, 'Octen-Embedding-4B.Q8_0.gguf');
   assert.equal(config.embeddingQuantization, 'Q8_0');
@@ -321,6 +323,38 @@ void test('recall config rejects invalid diagnostics modes and additional proper
   );
 });
 
+void test('recall config loads strict confirmed deletion mass-loss limits from file and environment', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-config-deletion-limits-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const configPath = join(directory, 'recall.json');
+  await writeFile(
+    configPath,
+    JSON.stringify({
+      confirmedDeletionMaxMissingSourceCount: 4,
+      confirmedDeletionMaxMissingSourceRatio: 0.25,
+    }),
+  );
+
+  const fromFile = await loadRecallConversationConfig({
+    homeDirectory: directory,
+    configPath,
+    environment: {},
+  });
+  assert.equal(fromFile.confirmedDeletionMaxMissingSourceCount, 4);
+  assert.equal(fromFile.confirmedDeletionMaxMissingSourceRatio, 0.25);
+
+  const fromEnvironment = await loadRecallConversationConfig({
+    homeDirectory: directory,
+    configPath,
+    environment: {
+      PI_RECALL_CONFIRMED_DELETION_MAX_MISSING_SOURCE_COUNT: '2',
+      PI_RECALL_CONFIRMED_DELETION_MAX_MISSING_SOURCE_RATIO: '0.5',
+    },
+  });
+  assert.equal(fromEnvironment.confirmedDeletionMaxMissingSourceCount, 2);
+  assert.equal(fromEnvironment.confirmedDeletionMaxMissingSourceRatio, 0.5);
+});
+
 void test('recall config rejects invalid numeric environment settings', async () => {
   await assert.rejects(
     () =>
@@ -349,4 +383,26 @@ void test('recall config rejects invalid numeric environment settings', async ()
       }),
     /search write-window wait exceeds 500/u,
   );
+  await assert.rejects(
+    () =>
+      loadRecallConversationConfig({
+        homeDirectory: '/tmp',
+        configPath: '/missing',
+        environment: { PI_RECALL_CONFIRMED_DELETION_MAX_MISSING_SOURCE_COUNT: '0' },
+      }),
+    /invalid integer.*MAX_MISSING_SOURCE_COUNT/u,
+  );
+  for (const invalidRatio of ['0', '1.1', 'not-a-ratio']) {
+    await assert.rejects(
+      () =>
+        loadRecallConversationConfig({
+          homeDirectory: '/tmp',
+          configPath: '/missing',
+          environment: {
+            PI_RECALL_CONFIRMED_DELETION_MAX_MISSING_SOURCE_RATIO: invalidRatio,
+          },
+        }),
+      /invalid ratio.*MAX_MISSING_SOURCE_RATIO/u,
+    );
+  }
 });

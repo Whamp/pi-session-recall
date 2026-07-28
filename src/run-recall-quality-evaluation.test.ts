@@ -150,6 +150,8 @@ void test('recall quality runner indexes and searches only the bounded declared 
     projectLineages: normalizeRecallProjectLineages({}),
     searchCandidateLimits: { dense: 8, lexical: 8, identifier: 8 },
     searchWriteWindowWaitMilliseconds: 500,
+    confirmedDeletionMaxMissingSourceCount: 1,
+    confirmedDeletionMaxMissingSourceRatio: 0.1,
   };
   const embeddings: LocalEmbeddingClient = {
     async embedTexts(texts) {

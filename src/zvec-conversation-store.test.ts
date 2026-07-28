@@ -349,12 +349,15 @@ void test('fresh unoptimized 1, 8, and 32 document batches survive close and rea
   }
 });
 
-void test('physical session projection filter removes only one evidence occurrence source', async (t) => {
+void test('physical session projection enumeration returns exact bounded evidence occurrence IDs', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'recall-zvec-physical-filter-'));
-  t.after(() => rm(directory, { recursive: true, force: true }));
   const store = openZvecConversationStore({
     databasePath: join(directory, 'collection'),
     dimensions: 3,
+  });
+  t.after(async () => {
+    store.close();
+    await rm(directory, { recursive: true, force: true });
   });
   await store.upsertChunks([
     {
@@ -371,11 +374,15 @@ void test('physical session projection filter removes only one evidence occurren
     },
   ]);
 
-  await store.deleteChunksByPhysicalSessionProjectionId('physical_A');
+  const physicalEvidenceIds = await store.listChunkIdsByPhysicalSessionProjectionId(
+    'physical_A',
+    1,
+  );
+  assert.deepEqual(physicalEvidenceIds, ['physical-a-evidence']);
+  await store.deleteChunks(physicalEvidenceIds);
 
   assert.deepEqual(
     [...store.fetchConversationChunks(['physical-a-evidence', 'physical-b-evidence']).keys()],
     ['physical-b-evidence'],
   );
-  store.close();
 });

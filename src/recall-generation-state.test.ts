@@ -6,6 +6,7 @@ import test from 'node:test';
 
 import { RecallBacklogFailureCategory, RecallGenerationCutoverState } from './enums.js';
 import { RecallGenerationPointerError } from './errors.js';
+import { RECALL_SESSION_PROJECTION_SCHEMA_VERSION } from './recall-session-projection.js';
 import {
   calculateRecallActiveGenerationPointerChecksum,
   createRecallActiveGenerationPointer,
@@ -40,7 +41,7 @@ function createRegistry(): RecallGenerationRegistry {
         state: RecallGenerationCutoverState.ACTIVE,
         indexManifestVersion: 6,
         markerSchemaVersion: 1,
-        sessionProjectionSchemaVersion: 1,
+        sessionProjectionSchemaVersion: RECALL_SESSION_PROJECTION_SCHEMA_VERSION,
         indexManifestFingerprint: 'a'.repeat(64),
         rebuildStartedAtEpochMilliseconds: 1_753_315_200_000,
         stateChangedAtEpochMilliseconds: 1_753_318_800_000,
@@ -51,7 +52,7 @@ function createRegistry(): RecallGenerationRegistry {
         state: RecallGenerationCutoverState.BUILDING,
         indexManifestVersion: 6,
         markerSchemaVersion: 1,
-        sessionProjectionSchemaVersion: 1,
+        sessionProjectionSchemaVersion: RECALL_SESSION_PROJECTION_SCHEMA_VERSION,
         indexManifestFingerprint: 'b'.repeat(64),
         rebuildStartedAtEpochMilliseconds: 1_753_401_600_000,
         stateChangedAtEpochMilliseconds: 1_753_401_600_000,
@@ -62,7 +63,7 @@ function createRegistry(): RecallGenerationRegistry {
         state: RecallGenerationCutoverState.ROLLBACK,
         indexManifestVersion: 6,
         markerSchemaVersion: 1,
-        sessionProjectionSchemaVersion: 1,
+        sessionProjectionSchemaVersion: RECALL_SESSION_PROJECTION_SCHEMA_VERSION,
         indexManifestFingerprint: 'c'.repeat(64),
         rebuildStartedAtEpochMilliseconds: 1_753_228_800_000,
         stateChangedAtEpochMilliseconds: 1_753_318_800_000,
@@ -141,7 +142,7 @@ void test('generation registry round-trips cutover states and rejects inconsiste
         JSON.stringify({
           ...registry,
           generations: registry.generations.map((generation, index) =>
-            index === 0 ? { ...generation, sessionProjectionSchemaVersion: 2 } : generation,
+            index === 0 ? { ...generation, sessionProjectionSchemaVersion: 3 } : generation,
           ),
         }),
       ),
@@ -167,6 +168,7 @@ void test('search generation selection reads only one checksummed pointer direct
       activeGenerationId,
       generationDirectory,
       databasePath: join(generationDirectory, 'zvec'),
+      projectionDatabasePath: join(generationDirectory, 'session-projections'),
       manifestPath: join(generationDirectory, 'index-manifest.json'),
     },
   );

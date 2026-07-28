@@ -4,6 +4,7 @@ import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 
 import {
+  RecallConfirmedDeletionPhase,
   RecallProjectionEncodingStatus,
   RecallProjectionRepairReason,
   RecallProjectionRepairState,
@@ -12,7 +13,7 @@ import {
 } from './enums.js';
 
 /** Current strict schema version for physical and logical session projections. */
-export const RECALL_SESSION_PROJECTION_SCHEMA_VERSION = 1;
+export const RECALL_SESSION_PROJECTION_SCHEMA_VERSION = 2;
 
 /** Maximum encoded scalar projection candidate size accepted without reconciliation. */
 export const RECALL_SESSION_PROJECTION_MAX_BYTES = 1_048_576;
@@ -91,7 +92,7 @@ export interface RecallEligibleSourceSpan {
 }
 
 interface RecallSessionProjectionBase {
-  schemaVersion: 1;
+  schemaVersion: 2;
   projectionKind: RecallSessionProjectionKind;
   projectionId: string;
   generationId: string;
@@ -99,6 +100,16 @@ interface RecallSessionProjectionBase {
   markerCheckpoint: RecallMarkerCheckpoint;
   repairState: RecallProjectionRepairState;
   repairReason: RecallProjectionRepairReason | null;
+}
+
+/** Scalar progress that makes confirmed source deletion idempotently resumable. */
+export interface RecallConfirmedDeletionCheckpoint {
+  confirmedSweepId: string;
+  phase: RecallConfirmedDeletionPhase;
+  deletedEvidenceCount: number;
+  deletedLogicalProjectionCount: number;
+  pendingEvidenceIds: string[];
+  pendingLogicalProjectionIds: string[];
 }
 
 /** Mutable append, source-availability, and logical-membership state for one physical file. */
@@ -115,6 +126,8 @@ export interface PhysicalSessionProjection extends RecallSessionProjectionBase {
   sourceAvailability: RecallSourceAvailability;
   sourceMissingObservedAtEpochMilliseconds: number | null;
   sourceMissingObservationCount: number;
+  sourceMissingSweepId: string | null;
+  deletionCheckpoint: RecallConfirmedDeletionCheckpoint | null;
 }
 
 /** Mutable branch, context, compaction, eligibility, and label state for one logical session. */
@@ -138,7 +151,7 @@ export type RecallSessionProjection = PhysicalSessionProjection | LogicalSession
 
 /** Scalar-only zvec candidate containing one strict projection as canonical JSON. */
 export interface EncodedRecallSessionProjectionPayload {
-  schemaVersion: 1;
+  schemaVersion: 2;
   projectionKind: RecallSessionProjectionKind;
   projectionId: string;
   generationId: string;
@@ -201,6 +214,17 @@ const projectionBaseSchema = {
   repairState: Type.Enum(RecallProjectionRepairState),
   repairReason: repairReasonSchema,
 };
+const confirmedDeletionCheckpointSchema = Type.Object(
+  {
+    confirmedSweepId: nonemptyStringSchema,
+    phase: Type.Enum(RecallConfirmedDeletionPhase),
+    deletedEvidenceCount: Type.Integer({ minimum: 0 }),
+    deletedLogicalProjectionCount: Type.Integer({ minimum: 0 }),
+    pendingEvidenceIds: Type.Array(nonemptyStringSchema),
+    pendingLogicalProjectionIds: Type.Array(Type.String({ pattern: '^[A-Za-z0-9_-]+$' })),
+  },
+  { additionalProperties: false },
+);
 const physicalSessionProjectionSchema = Type.Object(
   {
     ...projectionBaseSchema,
@@ -219,6 +243,8 @@ const physicalSessionProjectionSchema = Type.Object(
       Type.Null(),
     ]),
     sourceMissingObservationCount: Type.Integer({ minimum: 0 }),
+    sourceMissingSweepId: Type.Union([nonemptyStringSchema, Type.Null()]),
+    deletionCheckpoint: Type.Union([confirmedDeletionCheckpointSchema, Type.Null()]),
   },
   { additionalProperties: false },
 );
@@ -382,7 +408,9 @@ function assertRecallPhysicalSourceState(projection: PhysicalSessionProjection):
   if (projection.sourceAvailability === RecallSourceAvailability.PRESENT) {
     if (
       projection.sourceMissingObservedAtEpochMilliseconds !== null ||
-      projection.sourceMissingObservationCount !== 0
+      projection.sourceMissingObservationCount !== 0 ||
+      projection.sourceMissingSweepId !== null ||
+      projection.deletionCheckpoint !== null
     ) {
       throw new Error(
         'Recall physical session projection source state invalid: present sources cannot retain missing-source observations',
@@ -392,20 +420,39 @@ function assertRecallPhysicalSourceState(projection: PhysicalSessionProjection):
   }
   if (
     projection.sourceMissingObservedAtEpochMilliseconds === null ||
-    projection.sourceMissingObservationCount < 1
+    projection.sourceMissingObservationCount < 1 ||
+    projection.sourceMissingSweepId === null
   ) {
     throw new Error(
-      'Recall physical session projection source state invalid: missing sources require an observation time and count',
+      'Recall physical session projection source state invalid: missing sources require an observation time, count, and sweep ID',
     );
   }
-  if (
-    projection.sourceAvailability === RecallSourceAvailability.DELETION_CONFIRMED &&
-    projection.sourceMissingObservationCount < 2
-  ) {
+  if (projection.sourceAvailability === RecallSourceAvailability.SOURCE_MISSING) {
+    if (projection.deletionCheckpoint !== null) {
+      throw new Error(
+        'Recall physical session projection source state invalid: one missing observation cannot retain a deletion checkpoint',
+      );
+    }
+    return;
+  }
+  if (projection.sourceMissingObservationCount < 2 || projection.deletionCheckpoint === null) {
     throw new Error(
-      'Recall physical session projection source state invalid: confirmed deletion requires two missing-source observations',
+      'Recall physical session projection source state invalid: confirmed deletion requires two observations and a deletion checkpoint',
     );
   }
+  if (projection.deletionCheckpoint.confirmedSweepId !== projection.sourceMissingSweepId) {
+    throw new Error(
+      'Recall physical session projection source state invalid: deletion checkpoint must name the confirming sweep',
+    );
+  }
+  assertUniqueProjectionValues(
+    projection.deletionCheckpoint.pendingEvidenceIds,
+    'pending evidence IDs',
+  );
+  assertUniqueProjectionValues(
+    projection.deletionCheckpoint.pendingLogicalProjectionIds,
+    'pending logical projection IDs',
+  );
 }
 
 function assertRecallSessionProjectionInvariants(projection: RecallSessionProjection): void {

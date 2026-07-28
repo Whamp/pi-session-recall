@@ -4,6 +4,7 @@ import test from 'node:test';
 import fc from 'fast-check';
 
 import {
+  RecallConfirmedDeletionPhase,
   RecallProjectionRepairState,
   RecallSessionProjectionKind,
   RecallSourceAvailability,
@@ -66,7 +67,24 @@ function physical(
     sourceMissingObservedAtEpochMilliseconds:
       sourceAvailability === RecallSourceAvailability.PRESENT ? null : 1,
     sourceMissingObservationCount:
-      sourceAvailability === RecallSourceAvailability.DELETION_CONFIRMED ? 2 : 0,
+      sourceAvailability === RecallSourceAvailability.PRESENT
+        ? 0
+        : sourceAvailability === RecallSourceAvailability.SOURCE_MISSING
+          ? 1
+          : 2,
+    sourceMissingSweepId:
+      sourceAvailability === RecallSourceAvailability.PRESENT ? null : 'sweep-1',
+    deletionCheckpoint:
+      sourceAvailability === RecallSourceAvailability.DELETION_CONFIRMED
+        ? {
+            confirmedSweepId: 'sweep-1',
+            phase: RecallConfirmedDeletionPhase.EVIDENCE,
+            deletedEvidenceCount: 0,
+            deletedLogicalProjectionCount: 0,
+            pendingEvidenceIds: [],
+            pendingLogicalProjectionIds: [],
+          }
+        : null,
     markerCheckpoint: { generationId, coveredMarkerIds: [], runtimeSequences: [] },
     repairState: RecallProjectionRepairState.READY,
     repairReason: null,

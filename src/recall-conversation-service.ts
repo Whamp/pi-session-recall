@@ -115,6 +115,8 @@ export interface RecallConversationConfig {
   projectLineages: RecallProjectLineages;
   searchCandidateLimits: RecallSearchCandidateLimits;
   searchWriteWindowWaitMilliseconds: number;
+  confirmedDeletionMaxMissingSourceCount: number;
+  confirmedDeletionMaxMissingSourceRatio: number;
   chunkPolicy?: RecallChunkPolicy;
 }
 

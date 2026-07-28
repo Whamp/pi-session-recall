@@ -237,13 +237,23 @@ void test('successful empty-spool cutover wakes the ordinary worker after lock r
   );
 });
 
-void test('build failure leaves the old generation active and records failed replacement state', async (t) => {
+void test('build failure leaves the old generation active and wakes its accumulated marker work', async (t) => {
   const fixture = await createRebuildFixture(t);
+  const statePaths = recallWriteWindowStatePaths(fixture.lockPath);
+  let workerSignalCalls = 0;
+  await writeFile(join(fixture.markerSpoolDirectory, 'marker_during_failure.json'), '{}\n');
   await assert.rejects(
     () =>
       rebuildRecallGeneration({
         ...fixture,
         generationId: 'generation_failed',
+        workerSignal: {
+          signalDetachedWorker() {
+            workerSignalCalls += 1;
+            assert.equal(existsSync(statePaths.currentWindowPath), false);
+            assert.equal(existsSync(statePaths.recoveryRequiredPath), false);
+          },
+        },
         async buildGeneration() {
           throw new Error('replacement build failed');
         },
@@ -254,6 +264,7 @@ void test('build failure leaves the old generation active and records failed rep
     /replacement build failed/,
   );
 
+  assert.equal(workerSignalCalls, 1);
   assert.equal(
     (await readRecallActiveGenerationPointer(fixture.activeGenerationPointerPath))
       ?.activeGenerationId,

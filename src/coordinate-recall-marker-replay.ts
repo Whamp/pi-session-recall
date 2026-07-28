@@ -30,6 +30,7 @@ export interface RecallGenerationReplayCompletionPaths {
   activeGenerationPointerPath: string;
   generationRegistryPath: string;
   backlogSummaryPath: string;
+  markerQuarantineDirectory: string;
   lockPath: string;
 }
 

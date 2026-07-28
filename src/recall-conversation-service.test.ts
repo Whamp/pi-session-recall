@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -21,7 +21,10 @@ import {
   RecallGenerationCutoverState,
   RecallManualMaintenanceTrigger,
   RecallProjectIdentitySource,
+  RecallProjectionRepairState,
   RecallSearchScope,
+  RecallSessionProjectionKind,
+  RecallSourceAvailability,
 } from './enums.js';
 import {
   RecallGenerationPointerError,
@@ -52,10 +55,18 @@ import {
 } from './recall-conversation-service.js';
 import { createRecallOperationDiagnostics } from './recall-operation-diagnostics.js';
 import {
+  createLogicalSessionProjectionId,
+  createPhysicalSessionProjectionId,
+  RECALL_SESSION_PROJECTION_SCHEMA_VERSION,
+  type LogicalSessionProjection,
+  type PhysicalSessionProjection,
+} from './recall-session-projection.js';
+import {
   normalizeRecallProjectLineages,
   parseRepositoryIdentity,
 } from './resolve-project-identity.js';
 import type { ConversationTextTokenizer } from './session-conversation-index.js';
+import { openZvecSessionProjectionStore } from './zvec-session-projection-store.js';
 
 const EXEC_FILE_ASYNC = promisify(execFile);
 const TEST_ACTIVE_GENERATION_ID = 'generation_test_active';
@@ -902,6 +913,180 @@ void test('manual rebuild diagnostics isolate final database optimization durati
   assert.equal(records[1]?.optimizationMilliseconds, 37);
   assert.equal(records[1]?.elapsedMilliseconds, 131);
   assert.equal(records[1]?.unattributedMilliseconds, 18);
+});
+
+void test('rebuild preserves the active generation when an approved physical source disappears', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-service-rebuild-source-disappears-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionsDirectory = join(directory, 'sessions');
+  const sessionPath = join(sessionsDirectory, 'approved-session.jsonl');
+  await mkdir(sessionsDirectory);
+  await writeFile(
+    sessionPath,
+    `${JSON.stringify({
+      type: 'session',
+      version: 3,
+      id: 'approved-session',
+      timestamp: '2026-07-27T10:00:00.000Z',
+      cwd: '/workspace/approved',
+    })}\n${JSON.stringify({
+      type: 'message',
+      id: 'approved-entry',
+      parentId: null,
+      timestamp: '2026-07-27T10:00:01.000Z',
+      message: { role: 'user', content: 'approved searchable evidence' },
+    })}\n`,
+  );
+  const config = createTestConfig(directory, sessionsDirectory);
+  await mkdir(join(config.generationRootDirectory, TEST_ACTIVE_GENERATION_ID), {
+    recursive: true,
+  });
+  await writeRecallIndexManifest(
+    config.manifestPath,
+    createRecallIndexManifest({
+      embeddingIdentity: {
+        requestModel: config.embeddingModel,
+        servedModelId: config.embeddingServedModelId,
+        artifact: config.embeddingArtifact,
+        dimensions: config.embeddingDimensions,
+        quantization: config.embeddingQuantization,
+        pooling: config.embeddingPooling,
+      },
+      canaryEmbedding: [1, 0, 0],
+    }),
+  );
+  const physicalSessionId = 'approved-physical-session';
+  const physicalProjectionId = createPhysicalSessionProjectionId(physicalSessionId);
+  const physicalProjection: PhysicalSessionProjection = {
+    schemaVersion: RECALL_SESSION_PROJECTION_SCHEMA_VERSION,
+    projectionKind: RecallSessionProjectionKind.PHYSICAL_SESSION,
+    projectionId: physicalProjectionId,
+    generationId: TEST_ACTIVE_GENERATION_ID,
+    physicalSessionId,
+    sourcePath: sessionPath,
+    sourceDevice: '1',
+    sourceInode: '2',
+    appendCursorBytes: 1,
+    appendCursorLines: 2,
+    boundaryFingerprint: 'a'.repeat(64),
+    lastEntryId: 'approved-entry',
+    logicalSessionIds: ['approved-session'],
+    sourceAvailability: RecallSourceAvailability.PRESENT,
+    sourceMissingObservedAtEpochMilliseconds: null,
+    sourceMissingObservationCount: 0,
+    sourceMissingSweepId: null,
+    deletionCheckpoint: null,
+    markerCheckpoint: {
+      generationId: TEST_ACTIVE_GENERATION_ID,
+      coveredMarkerIds: [],
+      runtimeSequences: [],
+    },
+    repairState: RecallProjectionRepairState.READY,
+    repairReason: null,
+  };
+  const logicalProjection: LogicalSessionProjection = {
+    schemaVersion: RECALL_SESSION_PROJECTION_SCHEMA_VERSION,
+    projectionKind: RecallSessionProjectionKind.LOGICAL_SESSION,
+    projectionId: createLogicalSessionProjectionId(physicalSessionId, 'approved-session'),
+    generationId: TEST_ACTIVE_GENERATION_ID,
+    physicalSessionId,
+    physicalProjectionId,
+    logicalSessionId: 'approved-session',
+    effectiveLeafEntryId: 'approved-entry',
+    activeContextBoundary: { firstEntryId: 'approved-entry', lastEntryId: 'approved-entry' },
+    compactionBoundary: null,
+    runtimeLeafObservations: [],
+    preservedBranchExits: [],
+    headerDescriptor: {
+      sourceLine: 1,
+      startByte: 0,
+      endByte: 1,
+      sourceFingerprint: 'b'.repeat(64),
+      cwd: '/workspace/approved',
+      parentSessionPath: null,
+    },
+    entryDescriptors: [],
+    eligibleContributorEntryIds: ['approved-entry'],
+    eligibleSpans: [],
+    labels: [],
+    markerCheckpoint: {
+      generationId: TEST_ACTIVE_GENERATION_ID,
+      coveredMarkerIds: [],
+      runtimeSequences: [],
+    },
+    repairState: RecallProjectionRepairState.READY,
+    repairReason: null,
+  };
+  const projectionStore = openZvecSessionProjectionStore({
+    databasePath: config.projectionDatabasePath,
+    generationId: TEST_ACTIVE_GENERATION_ID,
+  });
+  await projectionStore.upsertProjections([physicalProjection, logicalProjection]);
+  projectionStore.close();
+  let removedApprovedSource = false;
+  const service = createRecallConversationService(config, {
+    embeddings: {
+      async embedTexts(texts) {
+        return texts.map(() => [1, 0, 0]);
+      },
+    },
+    async loadTokenizer() {
+      return tokenizer;
+    },
+    openStore(mode, databasePath) {
+      if (mode === 'write' && databasePath !== config.databasePath && !removedApprovedSource) {
+        rmSync(sessionPath);
+        removedApprovedSource = true;
+      }
+      return {
+        async upsertChunks() {},
+        async deleteChunks() {},
+        async listChunkIdsByPhysicalSessionProjectionId() {
+          return [];
+        },
+        async searchDenseCandidates() {
+          return [];
+        },
+        async searchLexicalCandidates() {
+          return [];
+        },
+        async searchIdentifierCandidates() {
+          return [];
+        },
+        fetchConversationChunks() {
+          return new Map();
+        },
+        fetchVectors() {
+          return new Map();
+        },
+        groupDenseCandidates() {
+          return [];
+        },
+        addColumn() {},
+        alterColumn() {},
+        createIndex() {},
+        async optimize() {},
+        close() {},
+        count() {
+          return 0;
+        },
+      };
+    },
+  });
+
+  await assert.rejects(
+    () => service.index({ rebuild: true }),
+    /Recall rebuild approved physical source was not reproduced.*approved-session\.jsonl/u,
+  );
+  assert.equal(
+    (
+      await readRecallActiveGenerationSelection(
+        config.activeGenerationPointerPath,
+        config.generationRootDirectory,
+      )
+    ).activeGenerationId,
+    TEST_ACTIVE_GENERATION_ID,
+  );
 });
 
 void test('manual index diagnostics preserve optimization failure and release the writer lock', async (t) => {

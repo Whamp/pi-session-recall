@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
+import { recallWriteWindowStatePaths } from './coordinate-recall-write-window.js';
 import { RecallGenerationCutoverState } from './enums.js';
 import {
   createRecallActiveGenerationPointer,
@@ -68,6 +70,8 @@ void test('explicit rollback atomically restores the retained generation and arc
     ],
   });
 
+  const lockPath = join(directory, 'operation.lock');
+  let workerSignalCount = 0;
   const result = await rollbackRecallGeneration({
     activeGenerationPointerPath,
     generationRegistryPath,
@@ -75,11 +79,25 @@ void test('explicit rollback atomically restores the retained generation and arc
     backlogSummaryPath: join(directory, 'backlog-summary.json'),
     markerSpoolDirectory,
     retainedMarkerDirectory,
-    lockPath: join(directory, 'operation.lock'),
+    lockPath,
+    workerSignal: {
+      signalDetachedWorker() {
+        workerSignalCount += 1;
+        assert.deepEqual(readFileSyncState(), { currentWindow: false, recoveryRequired: false });
+      },
+    },
     rollbackRetentionMilliseconds: 1_000,
     nowEpochMilliseconds: () => 10_000,
   });
 
+  function readFileSyncState(): { currentWindow: boolean; recoveryRequired: boolean } {
+    const statePaths = recallWriteWindowStatePaths(lockPath);
+    const currentWindow = existsSync(statePaths.currentWindowPath);
+    const recoveryRequired = existsSync(statePaths.recoveryRequiredPath);
+    return { currentWindow, recoveryRequired };
+  }
+
+  assert.equal(workerSignalCount, 1);
   assert.deepEqual(result, {
     activeGenerationId: 'generation_old',
     rollbackGenerationId: 'generation_new',

@@ -1399,6 +1399,10 @@ export async function readSessionConversationImport(
   const imported = await importSessionJsonl(sessionPath);
   const logicalSessions: SessionConversationLogicalSession[] = [];
   const chunks: SessionConversationChunk[] = [];
+  const remainingApprovedContributorIdsByLogicalSessionId =
+    options.eligibleContributorEntryIdsByLogicalSessionId === undefined
+      ? null
+      : new Map(options.eligibleContributorEntryIdsByLogicalSessionId);
   let physicalSessionProjectionId: string | undefined;
   for (const session of imported.sessions) {
     const graph = parseRecallSessionGraph(session);
@@ -1409,10 +1413,21 @@ export async function readSessionConversationImport(
         ? createLogicalSessionOccurrenceId(graph.header.id, graph.header.lineIndex)
         : graph.header.id;
     const approvedContributorEntryIds =
-      options.eligibleContributorEntryIdsByLogicalSessionId === undefined
+      remainingApprovedContributorIdsByLogicalSessionId === null
         ? new Set(graph.entries.map(({ id }) => id))
-        : (options.eligibleContributorEntryIdsByLogicalSessionId.get(logicalSessionIdentity) ??
+        : (remainingApprovedContributorIdsByLogicalSessionId.get(logicalSessionIdentity) ??
           new Set<string>());
+    if (remainingApprovedContributorIdsByLogicalSessionId !== null) {
+      const sourceEntryIds = new Set(graph.entries.map(({ id }) => id));
+      for (const approvedContributorEntryId of approvedContributorEntryIds) {
+        if (!sourceEntryIds.has(approvedContributorEntryId)) {
+          throw new Error(
+            `Recall rebuild approved contributor missing from ${logicalSessionIdentity}: ${approvedContributorEntryId}`,
+          );
+        }
+      }
+      remainingApprovedContributorIdsByLogicalSessionId.delete(logicalSessionIdentity);
+    }
     chunks.push(
       ...buildSessionConversationDocuments(graph, approvedContributorEntryIds, {
         sessionPath,
@@ -1422,6 +1437,14 @@ export async function readSessionConversationImport(
         maxTokens,
         overlapTokens,
       }),
+    );
+  }
+  const missingApprovedLogicalSessionId = [
+    ...(remainingApprovedContributorIdsByLogicalSessionId?.keys() ?? []),
+  ].toSorted()[0];
+  if (missingApprovedLogicalSessionId !== undefined) {
+    throw new Error(
+      `Recall rebuild approved logical session missing from source: ${missingApprovedLogicalSessionId}`,
     );
   }
   return { format: imported.format, logicalSessions, chunks };

@@ -4,6 +4,7 @@ import { access, copyFile, mkdir, open, readdir, rename, rm } from 'node:fs/prom
 import { join } from 'node:path';
 
 import { coordinateRecallWriteWindow } from './coordinate-recall-write-window.js';
+import type { RecallDetachedWorkerSignal } from './create-recall-detached-worker-signal.js';
 import { RecallGenerationCutoverState } from './enums.js';
 import {
   createRecallActiveGenerationPointer,
@@ -28,6 +29,7 @@ export interface RollbackRecallGenerationOptions {
   markerSpoolDirectory: string;
   retainedMarkerDirectory: string;
   lockPath: string;
+  workerSignal: RecallDetachedWorkerSignal;
   rollbackRetentionMilliseconds?: number;
   signal?: AbortSignal;
   nowEpochMilliseconds?: () => number;
@@ -108,7 +110,7 @@ async function restoreRetainedRecallMarkers(
 export async function rollbackRecallGeneration(
   options: RollbackRecallGenerationOptions,
 ): Promise<RollbackRecallGenerationResult> {
-  return coordinateRecallWriteWindow(
+  const rollback = await coordinateRecallWriteWindow(
     {
       lockPath: options.lockPath,
       allowRecovery: false,
@@ -218,10 +220,17 @@ export async function rollbackRecallGeneration(
         throw error;
       }
       return {
-        activeGenerationId: rollbackEntry.generationId,
-        rollbackGenerationId: activeEntry.generationId,
-        restoredMarkerCount,
+        result: {
+          activeGenerationId: rollbackEntry.generationId,
+          rollbackGenerationId: activeEntry.generationId,
+          restoredMarkerCount,
+        },
+        replayRequired: targetState === RecallGenerationCutoverState.REPLAY_PENDING,
       };
     },
   );
+  if (rollback.replayRequired) {
+    options.workerSignal.signalDetachedWorker();
+  }
+  return rollback.result;
 }

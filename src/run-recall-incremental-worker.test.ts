@@ -14,6 +14,7 @@ import {
   RecallEligibilityThreshold,
   RecallGenerationCutoverState,
   RecallIncrementalTransferOutcomeKind,
+  RecallMetadataSweepStatus,
   RecallProjectionRepairState,
   RecallSessionProjectionKind,
   RecallSourceAvailability,
@@ -375,6 +376,10 @@ void test('incremental worker launch uses kernel flock without PID or lease infe
     new URL('./publish-recall-work-marker.ts', import.meta.url),
     'utf8',
   );
+  const signalSource = await readFile(
+    new URL('./create-recall-detached-worker-signal.ts', import.meta.url),
+    'utf8',
+  );
   const workerSource = await readFile(
     new URL('./run-recall-incremental-worker.ts', import.meta.url),
     'utf8',
@@ -383,8 +388,9 @@ void test('incremental worker launch uses kernel flock without PID or lease infe
     new URL('./recall-incremental-worker-schedule.ts', import.meta.url),
     'utf8',
   );
-  assert.match(publicationSource, /spawn\(\s*'\/usr\/bin\/flock'/u);
-  assert.match(publicationSource, /'--nonblock'/u);
+  assert.match(publicationSource, /createRecallDetachedWorkerSignal/u);
+  assert.match(signalSource, /spawn\(\s*'\/bin\/sh'/u);
+  assert.match(signalSource, /\/usr\/bin\/flock --nonblock/u);
   assert.match(scheduleSource, /sleep .*exec \/usr\/bin\/flock/u);
   assert.doesNotMatch(workerSource, /from '\.\/octen-conversation-tokenizer\.js'/u);
   assert.doesNotMatch(
@@ -392,7 +398,7 @@ void test('incremental worker launch uses kernel flock without PID or lease infe
     /import \{\s*transferIncrementalRecallWorkPlan[^;]*from '\.\/transfer-incremental-recall-work-plan\.js'/u,
   );
   assert.doesNotMatch(
-    `${publicationSource}\n${scheduleSource}`,
+    `${publicationSource}\n${signalSource}\n${scheduleSource}`,
     /pid.?file|process.?alive|stale.?time|kill\([^)]*,\s*0\)/iu,
   );
 });
@@ -797,7 +803,7 @@ void test('building generation freezes incremental commits while retaining publi
   assert.equal(backlog.lastFailureCategory, 'write_failed');
 });
 
-void test('empty ordinary worker pass completes replay-pending generation backlog', async (t) => {
+void test('ordinary worker exposes quarantine failure until replay can complete', async (t) => {
   const fixture = await createWorkerFixture(t);
   const generationRegistryPath = join(fixture.controlDirectory, 'generation-registry.json');
   const activeGenerationPointerPath = join(fixture.controlDirectory, 'active-generation.json');
@@ -829,7 +835,8 @@ void test('empty ordinary worker pass completes replay-pending generation backlo
     ],
   });
 
-  const result = await runRecallIncrementalWorker({
+  await writeFile(join(fixture.markerSpoolDirectory, 'corrupt-marker.json'), 'not-json\n');
+  const workerOptions = {
     markerSpoolDirectory: fixture.markerSpoolDirectory,
     markerQuarantineDirectory: fixture.markerQuarantineDirectory,
     controlDirectory: fixture.controlDirectory,
@@ -839,12 +846,24 @@ void test('empty ordinary worker pass completes replay-pending generation backlo
       activeGenerationPointerPath,
       generationRegistryPath,
       backlogSummaryPath,
+      markerQuarantineDirectory: fixture.markerQuarantineDirectory,
       lockPath,
     },
     trustedSessionRoots: [fixture.sessionsDirectory],
-  });
+  };
+  const quarantined = await runRecallIncrementalWorker(workerOptions);
 
-  assert.equal(result.generationReplayCompleted, true);
+  assert.equal(quarantined.generationReplayCompleted, false);
+  assert.equal(quarantined.failureCategory, RecallBacklogFailureCategory.MARKER_DECODE_FAILED);
+  assert.equal(
+    (await readRecallGenerationRegistry(generationRegistryPath))?.generations[0]?.state,
+    RecallGenerationCutoverState.REPLAY_PENDING,
+  );
+
+  await rm(fixture.markerQuarantineDirectory, { recursive: true, force: true });
+  const completed = await runRecallIncrementalWorker(workerOptions);
+  assert.equal(completed.generationReplayCompleted, true);
+  assert.equal(completed.failureCategory, null);
   assert.equal(
     (await readRecallGenerationRegistry(generationRegistryPath))?.generations[0]?.state,
     RecallGenerationCutoverState.ACTIVE,
@@ -888,6 +907,40 @@ void test('missing marker-backed source reaches deletion reconciliation before t
 
   assert.equal(reconciliationCount, 1);
   assert.equal(result.heavyDependenciesLoaded, false);
+});
+
+void test('metadata sweep continuation schedules another worker pass without unrelated activity', async (t) => {
+  const fixture = await createWorkerFixture(t, { kind: RecallWorkMarkerTrigger.ARRIVAL });
+  await fixture.publishMarker();
+  await rm(fixture.physicalSessionPath);
+  const nowEpochMilliseconds = fixture.marker.createdAtEpochMilliseconds + 1;
+
+  const result = await runRecallIncrementalWorker({
+    markerSpoolDirectory: fixture.markerSpoolDirectory,
+    markerQuarantineDirectory: fixture.markerQuarantineDirectory,
+    controlDirectory: fixture.controlDirectory,
+    targetGenerationId: 'generation-1',
+    trustedSessionRoots: [fixture.sessionsDirectory],
+    nowEpochMilliseconds: () => nowEpochMilliseconds,
+    async scanSessionMetadata() {
+      return {
+        sweepId: 'bounded-sweep',
+        status: RecallMetadataSweepStatus.CONTINUATION_REQUIRED,
+        rootHealthy: true,
+        deletionConfirmationSuppressed: true,
+        scannedFileCount: 10_000,
+        observedSessionFileCount: 0,
+        observedSessionMetadata: [],
+        observedKnownSourceIdentities: [],
+        missingPhysicalSessionIds: [],
+        continuationPersisted: true,
+        elapsedMilliseconds: 500,
+      };
+    },
+  });
+
+  assert.equal(result.metadataSweep?.status, RecallMetadataSweepStatus.CONTINUATION_REQUIRED);
+  assert.equal(result.nextWakeAtEpochMilliseconds, nowEpochMilliseconds);
 });
 
 void test('arrival metadata sweep lazily loads active projections and invokes deletion reconciliation', async (t) => {

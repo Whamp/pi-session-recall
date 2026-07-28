@@ -89,6 +89,26 @@ void test('rebuild import emits only documents whose contributors are already el
     imported.chunks.some(({ content }) => content.includes('unapproved active')),
     false,
   );
+  await assert.rejects(
+    () =>
+      readSessionConversationImport(sessionPath, {
+        tokenizer: createWhitespaceConversationTokenizer(),
+        eligibleContributorEntryIdsByLogicalSessionId: new Map([
+          ['session-approved', new Set(['deleted-approved-entry'])],
+        ]),
+      }),
+    /Recall rebuild approved contributor missing.*deleted-approved-entry/u,
+  );
+  await assert.rejects(
+    () =>
+      readSessionConversationImport(sessionPath, {
+        tokenizer: createWhitespaceConversationTokenizer(),
+        eligibleContributorEntryIdsByLogicalSessionId: new Map([
+          ['deleted-logical-session', new Set(['eligible-entry'])],
+        ]),
+      }),
+    /Recall rebuild approved logical session missing.*deleted-logical-session/u,
+  );
 });
 
 void test('session JSONL becomes searchable conversation chunks with provenance', async () => {

@@ -169,6 +169,7 @@ export interface RunRecallIncrementalWorkerOptions extends RecallWorkMarkerCodec
   operationDiagnostics?: Pick<RecallOperationDiagnostics, 'recordIncrementalOperation'>;
   nowEpochMilliseconds?: () => number;
   monotonicMilliseconds?: () => number;
+  scanSessionMetadata?: typeof scanRecallSessionMetadata;
 }
 
 /** Known active-generation source projections loaded only when a metadata sweep is requested. */
@@ -187,11 +188,12 @@ export interface RecallIncrementalWorkerResult {
   transferOutcomes: readonly IncrementalRecallWorkPlanTransferOutcome[];
   largeTransferDeferrals: readonly RecallLargeTransferDeferral[];
   nextWakeAtEpochMilliseconds: number | null;
+  failureCategory: RecallBacklogFailureCategory | null;
 }
 
 type RecallIncrementalWorkerResultInput = Omit<
   RecallIncrementalWorkerResult,
-  'nextWakeAtEpochMilliseconds'
+  'failureCategory' | 'nextWakeAtEpochMilliseconds'
 >;
 
 async function loadRecallIncrementalWorkerDependencies(): Promise<void> {
@@ -353,10 +355,18 @@ export async function runRecallIncrementalWorker(
         ? [outcome.readyAtEpochMilliseconds]
         : [],
     );
+    const continuationDeadlines =
+      result.metadataSweep?.status === RecallMetadataSweepStatus.CONTINUATION_REQUIRED
+        ? [nowEpochMilliseconds()]
+        : [];
+    const wakeDeadlines = [...deferredDeadlines, ...continuationDeadlines];
     return {
       ...result,
-      nextWakeAtEpochMilliseconds:
-        deferredDeadlines.length === 0 ? null : Math.min(...deferredDeadlines),
+      nextWakeAtEpochMilliseconds: wakeDeadlines.length === 0 ? null : Math.min(...wakeDeadlines),
+      failureCategory:
+        workPlan.quarantineDiagnostics.length === 0
+          ? null
+          : RecallBacklogFailureCategory.MARKER_DECODE_FAILED,
     };
   }
   if (commitsFrozen) {
@@ -391,7 +401,7 @@ export async function runRecallIncrementalWorker(
         }))
     : null;
   const metadataSweep = shouldSweepMetadata
-    ? await scanRecallSessionMetadata({
+    ? await (options.scanSessionMetadata ?? scanRecallSessionMetadata)({
         sessionRootDirectory: options.trustedSessionRoots[0] ?? '',
         controlDirectory: options.controlDirectory,
         knownSources: knownSourceInventory?.knownSources ?? [],
@@ -419,6 +429,7 @@ export async function runRecallIncrementalWorker(
         ? await completeRecallGenerationReplay({
             ...options.generationReplayCompletion,
             markerSpoolDirectory: options.markerSpoolDirectory,
+            markerQuarantineDirectory: options.markerQuarantineDirectory,
           })
         : null;
     return finishWorkerResult({
@@ -873,6 +884,7 @@ async function runConfiguredRecallIncrementalWorkerExecutable(
       activeGenerationPointerPath: config.activeGenerationPointerPath,
       generationRegistryPath: config.generationRegistryPath,
       backlogSummaryPath: config.backlogSummaryPath,
+      markerQuarantineDirectory: config.markerQuarantineDirectory,
       lockPath: config.lockPath,
     },
     ...(registry?.rollbackGenerationId
@@ -964,7 +976,9 @@ async function runConfiguredRecallIncrementalWorkerExecutable(
       generationRegistryPath: config.generationRegistryPath,
       targetGenerationId: activeSelection.activeGenerationId,
     },
-    deletionReconciliationHalted ? RecallBacklogFailureCategory.CONFIRMED_DELETION_HALTED : null,
+    deletionReconciliationHalted
+      ? RecallBacklogFailureCategory.CONFIRMED_DELETION_HALTED
+      : result.failureCategory,
     result,
   );
 }

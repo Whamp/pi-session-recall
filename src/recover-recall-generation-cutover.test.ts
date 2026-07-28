@@ -155,6 +155,7 @@ void test('consistent replay-pending cutover recovers empty stores before empty-
       generationRegistryPath,
       backlogSummaryPath,
       markerSpoolDirectory,
+      markerQuarantineDirectory: join(directory, 'markers', 'quarantine'),
       lockPath,
     }),
     true,

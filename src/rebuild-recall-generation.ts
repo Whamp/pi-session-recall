@@ -3,6 +3,7 @@ import { mkdir, readFile, readdir, stat } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 
 import { coordinateRecallWriteWindow } from './coordinate-recall-write-window.js';
+import type { RecallDetachedWorkerSignal } from './create-recall-detached-worker-signal.js';
 import {
   RecallBacklogFailureCategory,
   RecallGenerationCutoverState,
@@ -23,7 +24,6 @@ import {
   type RecallGenerationRegistry,
   type RecallGenerationRegistryEntry,
 } from './recall-generation-state.js';
-import type { RecallDetachedWorkerSignal } from './publish-recall-work-marker.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
 import { RECALL_SESSION_PROJECTION_SCHEMA_VERSION } from './recall-session-projection.js';
 import { RECALL_WORK_MARKER_VERSION } from './recall-work-marker.js';
@@ -367,18 +367,33 @@ export async function rebuildRecallGeneration<Result, BuildSnapshot = undefined>
       generations: replaceGenerationEntry(registry, failedEntry),
     });
     if (registry.activeGenerationId !== null) {
-      await writeRecallBacklogSummary(options.backlogSummaryPath, {
-        version: RECALL_BACKLOG_SUMMARY_VERSION,
-        pendingEligibleSessionCount: rebuildMarkerWatermark.length,
-        oldestEligibleMarkerAgeMilliseconds: null,
-        activeGenerationId: registry.activeGenerationId,
-        buildingGenerationId: null,
-        generationState: RecallGenerationCutoverState.FAILED,
-        activeGenerationAgeMilliseconds: 0,
-        rebuildAgeMilliseconds: Math.max(0, failedAt - now),
-        lastFailureCategory: RecallBacklogFailureCategory.REBUILD_FAILED,
-        observedAtEpochMilliseconds: failedAt,
-      });
+      try {
+        await writeRecallBacklogSummary(options.backlogSummaryPath, {
+          version: RECALL_BACKLOG_SUMMARY_VERSION,
+          pendingEligibleSessionCount: rebuildMarkerWatermark.length,
+          oldestEligibleMarkerAgeMilliseconds: null,
+          activeGenerationId: registry.activeGenerationId,
+          buildingGenerationId: null,
+          generationState: RecallGenerationCutoverState.FAILED,
+          activeGenerationAgeMilliseconds: 0,
+          rebuildAgeMilliseconds: Math.max(0, failedAt - now),
+          lastFailureCategory: RecallBacklogFailureCategory.REBUILD_FAILED,
+          observedAtEpochMilliseconds: failedAt,
+        });
+      } catch (backlogError) {
+        rebuildError = new AggregateError(
+          [rebuildError, backlogError],
+          'Recall replacement build and failure backlog update failed',
+        );
+      }
+      try {
+        options.workerSignal.signalDetachedWorker();
+      } catch (signalError) {
+        rebuildError = new AggregateError(
+          [rebuildError, signalError],
+          'Recall replacement build and worker restart failed',
+        );
+      }
     }
     throw rebuildError;
   }

@@ -274,7 +274,9 @@ Default data paths:
 ~/.pi/agent/recall/incremental-diagnostics.jsonl scalar worker diagnostics
 ```
 
-A nonblocking kernel flock admits one short-lived worker. The operation lock serializes zvec write windows, rebuild cutover, rollback, and recovery. Search waits at most 500 ms for a current write window, never for marker replay or source freshness, and never clears another process's lock. Interrupted writer state requires a write-capable recovery open before read-only search resumes.
+A nonblocking kernel flock admits one short-lived worker. If publication races with an occupied worker interval, one coalesced detached successor waits for ownership while duplicate signals exit. Bounded metadata sweep continuations schedule their next slice directly. The operation lock serializes zvec write windows, rebuild cutover, rollback, and recovery. Failed rebuilds and explicit rollback wake retained marker work after incremental commits resume. Search waits at most 500 ms for a current write window, never for marker replay or source freshness, and never clears another process's lock. Interrupted writer state requires a write-capable recovery open before read-only search resumes.
+
+A rebuild cuts over only after every approved physical source, logical session, and eligible contributor is reproduced in the replacement. Missing, unreadable, or structurally incomplete approved sources fail the replacement while the old generation remains searchable. Pending or quarantined markers keep a replacement replay-pending until an operator resolves the work.
 
 The target-host policy is p95 ≤25 ms for marker publication and detached spawn, ≤500 ms per 10,000-file metadata sweep slice, batches ≤32 documents, write-window p95 ≤300 ms, projection payloads ≤1 MiB, and search wait ≤500 ms. These are measured host candidates. A miss returns to design review with version-3 scalar diagnostic records.
 

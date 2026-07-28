@@ -1,15 +1,22 @@
 import { randomUUID } from 'node:crypto';
-import { spawn } from 'node:child_process';
 import { mkdir, open, rename, rm } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
 
+import {
+  createRecallDetachedWorkerSignal,
+  type RecallDetachedWorkerSignal,
+} from './create-recall-detached-worker-signal.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
 import {
   encodeRecallWorkMarker,
   type RecallWorkMarker,
   type RecallWorkMarkerCodecOptions,
 } from './recall-work-marker.js';
+
+export {
+  createRecallDetachedWorkerSignal,
+  type RecallDetachedWorkerSignal,
+} from './create-recall-detached-worker-signal.js';
 
 /** Minimal durable file capabilities used to publish one recall work marker atomically. */
 export interface RecallMarkerPublicationFile {
@@ -25,11 +32,6 @@ export interface RecallMarkerPublicationFilesystem {
   renameFile(temporaryPath: string, markerPath: string): Promise<void>;
   openDirectory(path: string): Promise<RecallMarkerPublicationFile>;
   removeFile(path: string): Promise<void>;
-}
-
-/** Fire-and-forget signal that starts a detached incremental recall worker. */
-export interface RecallDetachedWorkerSignal {
-  signalDetachedWorker(): void;
 }
 
 /** Explicit spool, trust, and test boundaries for durable marker publication. */
@@ -159,34 +161,6 @@ async function syncRecallMarkerSpoolDirectory(
   } finally {
     await closeRecallMarkerPublicationFile(directory, 'directory close');
   }
-}
-
-/** Creates the ordinary nonblocking signal for one short-lived incremental recall worker. */
-export function createRecallDetachedWorkerSignal(
-  workerOwnershipLockPath: string,
-): RecallDetachedWorkerSignal {
-  return {
-    signalDetachedWorker() {
-      const workerPath = fileURLToPath(
-        new URL('./run-recall-incremental-worker.ts', import.meta.url),
-      );
-      const child = spawn(
-        '/usr/bin/flock',
-        ['--nonblock', workerOwnershipLockPath, process.execPath, '--import', 'tsx', workerPath],
-        {
-          cwd: dirname(workerPath),
-          detached: true,
-          stdio: 'ignore',
-        },
-      );
-      child.once('error', (error) => {
-        process.emitWarning(
-          `Recall marker worker signal failed [${readNodeErrorCode(error) ?? 'UNKNOWN'}]`,
-        );
-      });
-      child.unref();
-    },
-  };
 }
 
 function resolveRecallDetachedWorkerSignal(

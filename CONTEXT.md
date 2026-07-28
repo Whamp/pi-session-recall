@@ -137,7 +137,7 @@ The checksummed atomic selection of the sole recall generation served by search 
 _Avoid_: Latest directory, generation scan, fallback generation
 
 **Replay-pending generation**:
-A newly active generation whose retained generation-independent work markers have not all been covered by durable session projection checkpoints. Search may serve it while the ordinary incremental worker completes replay.
+A newly active generation whose retained generation-independent work markers have not all been covered by durable session projection checkpoints. Search may serve it while the ordinary incremental worker completes replay. It cannot become active while any marker remains pending or quarantined.
 _Avoid_: Building generation, dual-write generation, failed generation
 
 **Rollback generation**:
@@ -149,7 +149,7 @@ One immutable, atomically published event file telling an external worker that a
 _Avoid_: Index job, mutable session marker, session lock
 
 **Recall marker quarantine**:
-The retained holding area for a corrupt or unsupported recall work marker removed from replay. Its diagnostics expose only a failure category, count, and age; the original marker remains available for inspection.
+The retained holding area for a corrupt or unsupported recall work marker removed from ordinary replay. Its diagnostics expose only a failure category, count, and age; the original marker remains available for inspection, and unresolved quarantine blocks replay completion.
 _Avoid_: Failed marker deletion, retry queue, marker contents diagnostic
 
 **Metadata recovery sweep**:

@@ -23,6 +23,7 @@ void test('replay failure retains backlog and successful empty-spool replay acti
   const generationRegistryPath = join(directory, 'generation-registry.json');
   const backlogSummaryPath = join(directory, 'backlog-summary.json');
   const markerSpoolDirectory = join(directory, 'markers', 'pending');
+  const markerQuarantineDirectory = join(directory, 'markers', 'quarantine');
   const lockPath = join(directory, 'operation.lock');
   await mkdir(join(oldGenerationDirectory, 'zvec'), { recursive: true });
   await mkdir(markerSpoolDirectory, { recursive: true });
@@ -56,6 +57,7 @@ void test('replay failure retains backlog and successful empty-spool replay acti
     generationRegistryPath,
     backlogSummaryPath,
     markerSpoolDirectory,
+    markerQuarantineDirectory,
     lockPath,
   });
   assert.equal(incomplete, false);
@@ -67,11 +69,34 @@ void test('replay failure retains backlog and successful empty-spool replay acti
   );
 
   await rm(join(markerSpoolDirectory, 'marker_replay.json'));
+  await mkdir(join(markerQuarantineDirectory, 'corrupt'), { recursive: true });
+  await writeFile(
+    join(markerQuarantineDirectory, 'corrupt', 'marker_replay.json.quarantined'),
+    '{}\n',
+  );
+  const quarantined = await completeRecallGenerationReplay({
+    activeGenerationPointerPath,
+    generationRegistryPath,
+    backlogSummaryPath,
+    markerSpoolDirectory,
+    markerQuarantineDirectory,
+    lockPath,
+  });
+  assert.equal(quarantined, false);
+  assert.equal(
+    (await readRecallGenerationRegistry(generationRegistryPath))?.generations.find(
+      ({ generationId }) => generationId === 'generation_new',
+    )?.state,
+    RecallGenerationCutoverState.REPLAY_PENDING,
+  );
+
+  await rm(markerQuarantineDirectory, { recursive: true, force: true });
   const completed = await completeRecallGenerationReplay({
     activeGenerationPointerPath,
     generationRegistryPath,
     backlogSummaryPath,
     markerSpoolDirectory,
+    markerQuarantineDirectory,
     lockPath,
     nowEpochMilliseconds: () => 20_000,
   });

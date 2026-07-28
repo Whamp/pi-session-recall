@@ -391,6 +391,7 @@ void test('ordinary commit clears replay backlog only after checkpoint observati
     activeGenerationPointerPath,
     generationRegistryPath,
     backlogSummaryPath,
+    markerQuarantineDirectory: join(directory, 'markers', 'quarantine'),
     lockPath: join(directory, 'operation.lock'),
   };
 

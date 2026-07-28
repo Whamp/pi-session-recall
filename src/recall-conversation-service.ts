@@ -12,6 +12,10 @@ import {
   type RecallWriteWindow,
 } from './coordinate-recall-write-window.js';
 import {
+  createRecallDetachedWorkerSignal,
+  type RecallDetachedWorkerSignal,
+} from './create-recall-detached-worker-signal.js';
+import {
   createEmbeddingVectorCache,
   createEmbeddingVectorCacheIdentity,
 } from './embedding-vector-cache.js';
@@ -58,10 +62,6 @@ import {
   readRecallMaterialBacklogWarning,
 } from './recall-generation-state.js';
 import type { RecallChunkPolicy } from './recall-chunk-policy.js';
-import {
-  createRecallDetachedWorkerSignal,
-  type RecallDetachedWorkerSignal,
-} from './publish-recall-work-marker.js';
 import { rebuildRecallGeneration } from './rebuild-recall-generation.js';
 import {
   createLogicalSessionProjectionId,
@@ -1061,6 +1061,18 @@ export function createRecallConversationService(
                 }
               }
               try {
+                const reproducedApprovedSourcePaths = new Set<string>();
+                const recordPhysicalSessionCheck = (
+                  completion: RecallPhysicalSessionDiagnostic,
+                ): void => {
+                  if (
+                    completion.status === RecallDiagnosticStatus.SUCCEEDED &&
+                    completion.failedSessionCount === 0
+                  ) {
+                    reproducedApprovedSourcePaths.add(completion.sessionPath);
+                  }
+                  onPhysicalSessionCheck?.(completion);
+                };
                 const indexSummary = await updateConversationIndex(
                   store,
                   preparedIndex.tokenizer,
@@ -1070,9 +1082,17 @@ export function createRecallConversationService(
                   options.signal,
                   options.onProgress,
                   diagnosticMetrics,
-                  onPhysicalSessionCheck,
+                  recordPhysicalSessionCheck,
                   approvedRebuildSnapshot?.eligibleContributorEntryIdsBySessionPath,
                 );
+                for (const approvedSourcePath of approvedRebuildSnapshot?.eligibleContributorEntryIdsBySessionPath.keys() ??
+                  []) {
+                  if (!reproducedApprovedSourcePaths.has(approvedSourcePath)) {
+                    throw new Error(
+                      `Recall rebuild approved physical source was not reproduced: ${approvedSourcePath}`,
+                    );
+                  }
+                }
                 const result = { indexSummary, totalChunks: store.count() };
                 const storeToClose = store;
                 store = undefined;
@@ -1271,6 +1291,7 @@ export function createRecallConversationService(
         markerSpoolDirectory: config.markerSpoolDirectory,
         retainedMarkerDirectory: join(config.markerControlDirectory, 'rollback-retained'),
         lockPath: config.lockPath,
+        workerSignal,
       });
     },
     async adoptLegacy() {

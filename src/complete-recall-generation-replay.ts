@@ -1,4 +1,6 @@
+import type { Dirent } from 'node:fs';
 import { readdir } from 'node:fs/promises';
+import { join } from 'node:path';
 
 import { coordinateRecallWriteWindow } from './coordinate-recall-write-window.js';
 import { RecallGenerationCutoverState } from './enums.js';
@@ -18,6 +20,7 @@ export interface CompleteRecallGenerationReplayOptions {
   generationRegistryPath: string;
   backlogSummaryPath: string;
   markerSpoolDirectory: string;
+  markerQuarantineDirectory: string;
   lockPath: string;
   nowEpochMilliseconds?: () => number;
 }
@@ -33,6 +36,30 @@ async function hasPendingRecallMarkers(markerSpoolDirectory: string): Promise<bo
     }
     throw error;
   }
+}
+
+async function hasQuarantinedRecallMarkers(markerQuarantineDirectory: string): Promise<boolean> {
+  let categoryEntries: Dirent[];
+  try {
+    categoryEntries = await readdir(markerQuarantineDirectory, { withFileTypes: true });
+  } catch (error) {
+    if (readNodeErrorCode(error) === 'ENOENT') {
+      return false;
+    }
+    throw error;
+  }
+  for (const categoryEntry of categoryEntries) {
+    if (!categoryEntry.isDirectory()) {
+      continue;
+    }
+    const quarantinedEntries = await readdir(join(markerQuarantineDirectory, categoryEntry.name), {
+      withFileTypes: true,
+    });
+    if (quarantinedEntries.some((entry) => entry.isFile())) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /** Clears replay state only after the lock-held caller proves pointer agreement and empty spool. */
@@ -79,7 +106,10 @@ export async function completeRecallGenerationReplayWithinWriteWindow(
   if (activeEntry.state !== RecallGenerationCutoverState.REPLAY_PENDING) {
     return false;
   }
-  if (await hasPendingRecallMarkers(options.markerSpoolDirectory)) {
+  if (
+    (await hasPendingRecallMarkers(options.markerSpoolDirectory)) ||
+    (await hasQuarantinedRecallMarkers(options.markerQuarantineDirectory))
+  ) {
     return false;
   }
   const activeReplacement: RecallGenerationRegistryEntry = {

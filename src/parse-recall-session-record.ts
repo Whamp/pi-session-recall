@@ -73,7 +73,7 @@ export function isSupportedRecallSessionHeader(record: Record<string, unknown>):
   );
 }
 
-/** Validated logical-session identity and source origin used by recall document construction. */
+/** Carries a parsed recall session header's logical identity and physical source origin. */
 export interface ParsedRecallSessionHeader {
   id: string;
   cwd: string;
@@ -81,7 +81,7 @@ export interface ParsedRecallSessionHeader {
   lineIndex: number;
 }
 
-/** Validated session-graph entry retaining its complete record and physical source line. */
+/** Carries a parsed recall session graph entry's complete record and physical source line. */
 export interface ParsedRecallSessionEntry {
   id: string;
   parentId: string | null;
@@ -91,7 +91,7 @@ export interface ParsedRecallSessionEntry {
   record: Record<string, unknown>;
 }
 
-/** Strict logical-session graph with validated topology, lifecycle state, and tool relationships. */
+/** Provides a parsed recall session graph with validated topology, lifecycle state, and tool links. */
 export interface ParsedRecallSessionGraph {
   header: ParsedRecallSessionHeader;
   entries: ParsedRecallSessionEntry[];

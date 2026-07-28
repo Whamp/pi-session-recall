@@ -878,6 +878,7 @@ void test('missing marker-backed source reaches deletion reconciliation before t
   const physicalProjection = createWorkerPhysicalProjection(fixture);
   await rm(fixture.physicalSessionPath);
   let reconciliationCount = 0;
+  const nowEpochMilliseconds = fixture.marker.createdAtEpochMilliseconds + 1;
 
   const result = await runRecallIncrementalWorker({
     markerSpoolDirectory: fixture.markerSpoolDirectory,
@@ -885,6 +886,7 @@ void test('missing marker-backed source reaches deletion reconciliation before t
     controlDirectory: fixture.controlDirectory,
     targetGenerationId: 'generation-1',
     trustedSessionRoots: [fixture.sessionsDirectory],
+    nowEpochMilliseconds: () => nowEpochMilliseconds,
     async loadKnownSourceInventory() {
       return {
         knownSources: [
@@ -904,11 +906,13 @@ void test('missing marker-backed source reaches deletion reconciliation before t
       assert.deepEqual(metadataSweep.missingPhysicalSessionIds, [fixture.marker.physicalSessionId]);
       assert.deepEqual(physicalProjections, [physicalProjection]);
       assert.deepEqual(missingSourceWorkPlans?.[0]?.sourceMarkerIds, [fixture.marker.markerId]);
+      return { sourceMissingRecordedCount: 1 };
     },
   });
 
   assert.equal(reconciliationCount, 1);
   assert.equal(result.heavyDependenciesLoaded, false);
+  assert.equal(result.nextWakeAtEpochMilliseconds, nowEpochMilliseconds);
 });
 
 void test('metadata sweep continuation schedules another worker pass without unrelated activity', async (t) => {
@@ -943,6 +947,43 @@ void test('metadata sweep continuation schedules another worker pass without unr
 
   assert.equal(result.metadataSweep?.status, RecallMetadataSweepStatus.CONTINUATION_REQUIRED);
   assert.equal(result.nextWakeAtEpochMilliseconds, nowEpochMilliseconds);
+});
+
+void test('persisted metadata sweep request runs without a remaining lifecycle marker', async (t) => {
+  const fixture = await createWorkerFixture(t, { kind: RecallWorkMarkerTrigger.ARRIVAL });
+  let metadataSweepCount = 0;
+
+  const result = await runRecallIncrementalWorker({
+    markerSpoolDirectory: fixture.markerSpoolDirectory,
+    markerQuarantineDirectory: fixture.markerQuarantineDirectory,
+    controlDirectory: fixture.controlDirectory,
+    targetGenerationId: 'generation-1',
+    trustedSessionRoots: [fixture.sessionsDirectory],
+    metadataSweepRequested: true,
+    async loadKnownSourceInventory() {
+      return { knownSources: [], physicalProjections: [] };
+    },
+    async scanSessionMetadata() {
+      metadataSweepCount += 1;
+      return {
+        sweepId: 'requested-sweep',
+        status: RecallMetadataSweepStatus.COMPLETE,
+        rootHealthy: true,
+        deletionConfirmationSuppressed: false,
+        scannedFileCount: 1,
+        observedSessionFileCount: 1,
+        observedSessionMetadata: [],
+        observedKnownSourceIdentities: [],
+        missingPhysicalSessionIds: [],
+        continuationPersisted: false,
+        elapsedMilliseconds: 1,
+      };
+    },
+  });
+
+  assert.equal(metadataSweepCount, 1);
+  assert.equal(result.metadataSweep?.sweepId, 'requested-sweep');
+  assert.equal(result.metadataSweepFollowUpRequired, false);
 });
 
 void test('arrival metadata sweep lazily loads active projections and invokes deletion reconciliation', async (t) => {

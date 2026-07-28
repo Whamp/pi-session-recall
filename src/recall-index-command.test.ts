@@ -76,6 +76,7 @@ void test('recall index command attributes explicit incremental maintenance', as
     },
   });
 
+  assert.equal(receivedOptions?.optimize, true);
   assert.equal(
     receivedOptions?.manualMaintenanceTrigger,
     RecallManualMaintenanceTrigger.MANUAL_INCREMENTAL_INDEX,

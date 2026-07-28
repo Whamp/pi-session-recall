@@ -24,6 +24,7 @@ export interface RecallLargeTransferDeferral {
 export interface RecallIncrementalWorkerSchedule {
   version: 1;
   nextWakeAtEpochMilliseconds: number | null;
+  metadataSweepRequested?: boolean;
   largeTransferDeferrals: RecallLargeTransferDeferral[];
 }
 
@@ -88,6 +89,8 @@ function parseRecallIncrementalWorkerSchedule(value: unknown): RecallIncremental
   if (
     !isUnknownRecord(value) ||
     value.version !== RECALL_INCREMENTAL_WORKER_SCHEDULE_VERSION ||
+    (value.metadataSweepRequested !== undefined &&
+      typeof value.metadataSweepRequested !== 'boolean') ||
     !Array.isArray(value.largeTransferDeferrals)
   ) {
     throw new Error('Recall incremental worker schedule invalid');
@@ -106,6 +109,7 @@ function parseRecallIncrementalWorkerSchedule(value: unknown): RecallIncremental
   return {
     version: RECALL_INCREMENTAL_WORKER_SCHEDULE_VERSION,
     nextWakeAtEpochMilliseconds,
+    metadataSweepRequested: value.metadataSweepRequested ?? false,
     largeTransferDeferrals: largeTransferDeferrals.toSorted((left, right) =>
       left.physicalSessionId.localeCompare(right.physicalSessionId),
     ),

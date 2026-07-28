@@ -15,6 +15,7 @@ import {
   createRecallDetachedWorkerSignal,
   type RecallDetachedWorkerSignal,
 } from './create-recall-detached-worker-signal.js';
+import { createRecallSessionProjectionBaseline } from './create-recall-session-projection-baseline.js';
 import {
   createEmbeddingVectorCache,
   createEmbeddingVectorCacheIdentity,
@@ -193,6 +194,7 @@ interface RecallConversationIndexBaseOptions {
 interface RecallAutomaticIndexOptions extends RecallConversationIndexBaseOptions {
   rebuild?: false;
   manualMaintenanceTrigger?: never;
+  optimize?: never;
 }
 
 interface RecallAutomaticRebuildIndexOptions extends RecallConversationIndexBaseOptions {
@@ -204,6 +206,7 @@ interface RecallAutomaticRebuildIndexOptions extends RecallConversationIndexBase
 interface RecallManualIncrementalIndexOptions extends RecallConversationIndexBaseOptions {
   rebuild?: false;
   manualMaintenanceTrigger: RecallManualMaintenanceTrigger.MANUAL_INCREMENTAL_INDEX;
+  optimize?: boolean;
 }
 
 interface RecallManualRebuildIndexOptions extends RecallConversationIndexBaseOptions {
@@ -313,6 +316,36 @@ function throwIfRecallSearchCancelled(signal?: AbortSignal): void {
     throw signal.reason;
   }
   throw new Error('Recall conversation operation cancelled', { cause: signal.reason });
+}
+
+interface RunRecallStoreOptimizationOptions {
+  optimize(): Promise<void>;
+  diagnosticsClock: RecallDiagnosticsClock;
+  diagnosticMetrics?: RecallIndexDiagnosticMetrics;
+  runOptimizationWithDiagnostics?: (optimize: () => Promise<void>) => Promise<void>;
+}
+
+async function runRecallStoreOptimization(
+  options: RunRecallStoreOptimizationOptions,
+): Promise<void> {
+  const optimizationStartedAtMilliseconds = options.diagnosticsClock.monotonicMilliseconds();
+  if (options.diagnosticMetrics) {
+    options.diagnosticMetrics.optimizationRan = true;
+  }
+  try {
+    if (options.runOptimizationWithDiagnostics) {
+      await options.runOptimizationWithDiagnostics(() => options.optimize());
+    } else {
+      await options.optimize();
+    }
+  } finally {
+    if (options.diagnosticMetrics) {
+      options.diagnosticMetrics.optimizationMilliseconds += Math.max(
+        options.diagnosticsClock.monotonicMilliseconds() - optimizationStartedAtMilliseconds,
+        0,
+      );
+    }
+  }
 }
 
 async function runManualIndexWithDiagnostics(
@@ -1004,6 +1037,8 @@ export function createRecallConversationService(
               )
             : null;
           const activeManifestPath = startingGeneration?.manifestPath ?? null;
+          let rebuiltProjectionIds: string[] = [];
+          let rebuiltPhysicalProjectionCount = 0;
           const rebuilt = await rebuildRecallGeneration({
             generationRootDirectory: config.generationRootDirectory,
             activeGenerationPointerPath: config.activeGenerationPointerPath,
@@ -1062,6 +1097,7 @@ export function createRecallConversationService(
               }
               try {
                 const reproducedApprovedSourcePaths = new Set<string>();
+                const indexedSourceByteSizes = new Map<string, number>();
                 const recordPhysicalSessionCheck = (
                   completion: RecallPhysicalSessionDiagnostic,
                 ): void => {
@@ -1069,7 +1105,14 @@ export function createRecallConversationService(
                     completion.status === RecallDiagnosticStatus.SUCCEEDED &&
                     completion.failedSessionCount === 0
                   ) {
+                    const sourceByteSize = completion.metrics.sourceByteSize;
+                    if (sourceByteSize === null) {
+                      throw new Error(
+                        `Recall rebuild indexed source size missing: ${completion.sessionPath}`,
+                      );
+                    }
                     reproducedApprovedSourcePaths.add(completion.sessionPath);
+                    indexedSourceByteSizes.set(completion.sessionPath, sourceByteSize);
                   }
                   onPhysicalSessionCheck?.(completion);
                 };
@@ -1094,6 +1137,37 @@ export function createRecallConversationService(
                   }
                 }
                 const result = { indexSummary, totalChunks: store.count() };
+                const replacementProjections: RecallSessionProjection[] =
+                  approvedRebuildSnapshot == null
+                    ? (
+                        await Promise.all(
+                          [...reproducedApprovedSourcePaths].toSorted().map((sessionPath) => {
+                            const expectedSourceByteSize = indexedSourceByteSizes.get(sessionPath);
+                            if (expectedSourceByteSize === undefined) {
+                              throw new Error(
+                                `Recall rebuild indexed source size unavailable: ${sessionPath}`,
+                              );
+                            }
+                            return createRecallSessionProjectionBaseline({
+                              physicalSessionPath: sessionPath,
+                              generationId: paths.generationId,
+                              tokenizer: preparedIndex.tokenizer,
+                              expectedSourceByteSize,
+                              ...(config.chunkPolicy ? { chunkPolicy: config.chunkPolicy } : {}),
+                            });
+                          }),
+                        )
+                      ).flat()
+                    : approvedRebuildSnapshot.projections.map((projection) =>
+                        retargetRecallRebuildProjection(projection, paths.generationId),
+                      );
+                rebuiltProjectionIds = replacementProjections.map(
+                  ({ projectionId }) => projectionId,
+                );
+                rebuiltPhysicalProjectionCount = replacementProjections.filter(
+                  ({ projectionKind }) =>
+                    projectionKind === RecallSessionProjectionKind.PHYSICAL_SESSION,
+                ).length;
                 const storeToClose = store;
                 store = undefined;
                 const shouldOptimize =
@@ -1106,27 +1180,14 @@ export function createRecallConversationService(
                   ...(shouldOptimize
                     ? {
                         async optimize() {
-                          const optimizationStartedAtMilliseconds =
-                            diagnosticsClock.monotonicMilliseconds();
-                          if (diagnosticMetrics) {
-                            diagnosticMetrics.optimizationRan = true;
-                          }
-                          try {
-                            const optimizeStore = () => storeToClose.optimize();
-                            if (runOptimizationWithDiagnostics) {
-                              await runOptimizationWithDiagnostics(optimizeStore);
-                            } else {
-                              await optimizeStore();
-                            }
-                          } finally {
-                            if (diagnosticMetrics) {
-                              diagnosticMetrics.optimizationMilliseconds += Math.max(
-                                diagnosticsClock.monotonicMilliseconds() -
-                                  optimizationStartedAtMilliseconds,
-                                0,
-                              );
-                            }
-                          }
+                          await runRecallStoreOptimization({
+                            optimize: () => storeToClose.optimize(),
+                            diagnosticsClock,
+                            ...(diagnosticMetrics ? { diagnosticMetrics } : {}),
+                            ...(runOptimizationWithDiagnostics
+                              ? { runOptimizationWithDiagnostics }
+                              : {}),
+                          });
                         },
                       }
                     : {}),
@@ -1139,11 +1200,7 @@ export function createRecallConversationService(
                       readOnly: false,
                     });
                     try {
-                      await projectionStore.upsertProjections(
-                        approvedRebuildSnapshot?.projections.map((projection) =>
-                          retargetRecallRebuildProjection(projection, paths.generationId),
-                        ) ?? [],
-                      );
+                      await projectionStore.upsertProjections(replacementProjections);
                     } finally {
                       projectionStore.close();
                     }
@@ -1176,7 +1233,8 @@ export function createRecallConversationService(
               try {
                 const physicalProjections = projectionValidationStore.listPhysicalProjections();
                 const expectedPhysicalProjectionCount =
-                  approvedRebuildSnapshot?.eligibleContributorEntryIdsBySessionPath.size ?? 0;
+                  approvedRebuildSnapshot?.eligibleContributorEntryIdsBySessionPath.size ??
+                  rebuiltPhysicalProjectionCount;
                 if (physicalProjections.length !== expectedPhysicalProjectionCount) {
                   throw new Error(
                     'Recall replacement generation projection snapshot changed during validation',
@@ -1184,7 +1242,7 @@ export function createRecallConversationService(
                 }
                 const expectedProjectionIds =
                   approvedRebuildSnapshot?.projections.map(({ projectionId }) => projectionId) ??
-                  [];
+                  rebuiltProjectionIds;
                 if (
                   projectionValidationStore.fetchProjections(expectedProjectionIds).size !==
                   expectedProjectionIds.length
@@ -1265,6 +1323,14 @@ export function createRecallConversationService(
                   diagnosticMetrics,
                   onPhysicalSessionCheck,
                 );
+                if (options.optimize === true) {
+                  await runRecallStoreOptimization({
+                    optimize: () => store?.optimize() ?? Promise.resolve(),
+                    diagnosticsClock,
+                    ...(diagnosticMetrics ? { diagnosticMetrics } : {}),
+                    ...(runOptimizationWithDiagnostics ? { runOptimizationWithDiagnostics } : {}),
+                  });
+                }
                 return { indexSummary, totalChunks: store.count() };
               } finally {
                 closeRecallWriteStore(writeWindow, 'Recall maintenance store close failed', store);

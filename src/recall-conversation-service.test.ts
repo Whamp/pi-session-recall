@@ -233,6 +233,11 @@ void test('slow diagnostics retain fast manual incremental index start and compl
 
   const result = await service.index({
     manualMaintenanceTrigger: RecallManualMaintenanceTrigger.MANUAL_INCREMENTAL_INDEX,
+    optimize: true,
+  });
+  const unchangedResult = await service.index({
+    manualMaintenanceTrigger: RecallManualMaintenanceTrigger.MANUAL_INCREMENTAL_INDEX,
+    optimize: true,
   });
   await diagnostics.flush();
 
@@ -264,6 +269,18 @@ void test('slow diagnostics retain fast manual incremental index start and compl
         status: RecallDiagnosticStatus.SUCCEEDED,
         elapsedMilliseconds: 20,
       },
+      {
+        operationKind: 'full_index',
+        manualMaintenanceTrigger: RecallManualMaintenanceTrigger.MANUAL_INCREMENTAL_INDEX,
+        status: RecallDiagnosticStatus.STARTED,
+        elapsedMilliseconds: null,
+      },
+      {
+        operationKind: 'full_index',
+        manualMaintenanceTrigger: RecallManualMaintenanceTrigger.MANUAL_INCREMENTAL_INDEX,
+        status: RecallDiagnosticStatus.SUCCEEDED,
+        elapsedMilliseconds: 0,
+      },
     ],
   );
   assert.equal(records[1]?.manifestStorePreparationMilliseconds, 0);
@@ -271,6 +288,9 @@ void test('slow diagnostics retain fast manual incremental index start and compl
   assert.equal(records[1]?.scannedSessionCount, 1);
   assert.equal(records[1]?.indexedSessionCount, 1);
   assert.equal(records[1]?.totalDocumentCount, 1);
+  assert.equal(records[1]?.optimizationRan, true);
+  assert.equal(unchangedResult.indexSummary.indexedSessions, 0);
+  assert.equal(records[3]?.optimizationRan, true);
   await assert.rejects(
     () =>
       service.index({
@@ -882,15 +902,31 @@ void test('manual rebuild diagnostics isolate final database optimization durati
   assert.equal(result.totalChunks, 1);
   assert.equal(rebuildWriteStorePaths.length, 1);
   assert.notEqual(rebuildWriteStorePaths[0], config.databasePath);
-  assert.equal(
-    rebuildWriteStorePaths[0],
-    (
-      await readRecallActiveGenerationSelection(
-        config.activeGenerationPointerPath,
-        config.generationRootDirectory,
-      )
-    ).databasePath,
+  const activeGeneration = await readRecallActiveGenerationSelection(
+    config.activeGenerationPointerPath,
+    config.generationRootDirectory,
   );
+  assert.equal(rebuildWriteStorePaths[0], activeGeneration.databasePath);
+  const projectionStore = openZvecSessionProjectionStore({
+    databasePath: activeGeneration.projectionDatabasePath,
+    generationId: activeGeneration.activeGenerationId,
+    createIfMissing: false,
+    readOnly: true,
+  });
+  const physicalProjections = projectionStore.listPhysicalProjections();
+  const physicalProjection = physicalProjections[0];
+  assert.ok(physicalProjection);
+  const logicalProjectionId = createLogicalSessionProjectionId(
+    physicalProjection.physicalSessionId,
+    physicalProjection.logicalSessionIds[0] ?? '',
+  );
+  const logicalProjection = projectionStore
+    .fetchProjections([logicalProjectionId])
+    .get(logicalProjectionId);
+  projectionStore.close();
+  assert.equal(physicalProjections.length, 1);
+  assert.equal(logicalProjection?.projectionKind, RecallSessionProjectionKind.LOGICAL_SESSION);
+  assert.deepEqual(logicalProjection?.eligibleContributorEntryIds, ['manual-rebuild-entry']);
   assert.equal(result.indexSummary.indexedSessions, 1);
   const records = (await readFile(config.diagnosticLogPath, 'utf8'))
     .trimEnd()

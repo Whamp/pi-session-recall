@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { stat } from 'node:fs/promises';
 
 import type { RecallMarkerReplayWorkPlan } from './coordinate-recall-marker-replay.js';
@@ -11,10 +10,9 @@ import {
   RecallEligibilityThreshold,
   RecallIncrementalTransferOutcomeKind,
   RecallProjectionEncodingStatus,
-  RecallProjectionRepairState,
   RecallSessionProjectionKind,
-  RecallSourceAvailability,
 } from './enums.js';
+import { createInitialRecallPhysicalProjection } from './create-recall-session-projection-baseline.js';
 import { materializeIncrementalRecallEligibleGraphView } from './materialize-incremental-recall-eligible-graph-view.js';
 import { prepareIncrementalRecallTransfer } from './prepare-incremental-recall-transfer.js';
 import { projectRecallSessionAppend } from './project-recall-session-append.js';
@@ -22,7 +20,6 @@ import type { RecallChunkPolicy } from './recall-chunk-policy.js';
 import {
   createLogicalSessionProjectionId,
   createPhysicalSessionProjectionId,
-  RECALL_SESSION_PROJECTION_SCHEMA_VERSION,
   type LogicalSessionProjection,
   type PhysicalSessionProjection,
   type RecallEligibleSourceSpan,
@@ -76,43 +73,6 @@ export interface DeferredIncrementalRecallWorkPlan {
 export type IncrementalRecallWorkPlanTransferOutcome =
   | CommittedIncrementalRecallWorkPlan
   | DeferredIncrementalRecallWorkPlan;
-
-async function createInitialPhysicalProjection(
-  workPlan: RecallMarkerReplayWorkPlan,
-): Promise<PhysicalSessionProjection> {
-  const firstMarker = workPlan.workItems[0]?.marker;
-  if (firstMarker === undefined) {
-    throw new Error('Recall incremental transfer requires at least one marker work item');
-  }
-  const metadata = await stat(firstMarker.physicalSessionPath, { bigint: true });
-  return {
-    schemaVersion: RECALL_SESSION_PROJECTION_SCHEMA_VERSION,
-    projectionKind: RecallSessionProjectionKind.PHYSICAL_SESSION,
-    projectionId: createPhysicalSessionProjectionId(firstMarker.physicalSessionId),
-    generationId: workPlan.targetGenerationId,
-    physicalSessionId: firstMarker.physicalSessionId,
-    sourcePath: firstMarker.physicalSessionPath,
-    sourceDevice: metadata.dev.toString(),
-    sourceInode: metadata.ino.toString(),
-    appendCursorBytes: 0,
-    appendCursorLines: 0,
-    boundaryFingerprint: createHash('sha256').update('').digest('hex'),
-    lastEntryId: null,
-    logicalSessionIds: [],
-    sourceAvailability: RecallSourceAvailability.PRESENT,
-    sourceMissingObservedAtEpochMilliseconds: null,
-    sourceMissingObservationCount: 0,
-    sourceMissingSweepId: null,
-    deletionCheckpoint: null,
-    markerCheckpoint: {
-      generationId: workPlan.targetGenerationId,
-      coveredMarkerIds: [],
-      runtimeSequences: [],
-    },
-    repairState: RecallProjectionRepairState.READY,
-    repairReason: null,
-  };
-}
 
 function assertSinglePhysicalSessionWorkPlan(workPlan: RecallMarkerReplayWorkPlan): void {
   const firstMarker = workPlan.workItems[0]?.marker;
@@ -214,7 +174,12 @@ export async function transferIncrementalRecallWorkPlan(
   const physicalProjectionId = createPhysicalSessionProjectionId(firstMarker.physicalSessionId);
   const current = readCurrentSessionProjections(options, physicalProjectionId);
   const physicalProjection =
-    current.physicalProjection ?? (await createInitialPhysicalProjection(options.workPlan));
+    current.physicalProjection ??
+    (await createInitialRecallPhysicalProjection({
+      physicalSessionId: firstMarker.physicalSessionId,
+      physicalSessionPath: firstMarker.physicalSessionPath,
+      generationId: options.workPlan.targetGenerationId,
+    }));
   const appendDelta = await readRecallSessionAppendDelta(
     firstMarker.physicalSessionPath,
     physicalProjection,

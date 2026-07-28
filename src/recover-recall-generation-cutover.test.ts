@@ -22,6 +22,10 @@ import {
   RECALL_GENERATION_REGISTRY_VERSION,
 } from './recall-generation-state.js';
 import { recoverRecallGenerationCutover } from './recover-recall-generation-cutover.js';
+import {
+  recallRebuildOwnershipLockPath,
+  tryAcquireRecallRebuildOwnershipLock,
+} from './recall-rebuild-ownership-lock.js';
 
 void test('consistent active pointer requires no generation cutover recovery', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'recover-recall-generation-cutover-'));
@@ -150,6 +154,111 @@ void test('failed rebuild backlog recovers a building registry to failed and unf
     registry?.generations.find(({ generationId }) => generationId === 'generation_failed_build')
       ?.state,
     RecallGenerationCutoverState.FAILED,
+  );
+
+  const activeEntry = registry?.generations.find(
+    ({ generationId }) => generationId === pointer.activeGenerationId,
+  );
+  assert.ok(registry);
+  assert.ok(activeEntry);
+  const abandonedGenerationId = 'generation_abandoned_build';
+  await writeRecallGenerationRegistry(generationRegistryPath, {
+    ...registry,
+    buildingGenerationId: abandonedGenerationId,
+    generations: [
+      ...registry.generations,
+      {
+        ...activeEntry,
+        generationId: abandonedGenerationId,
+        state: RecallGenerationCutoverState.BUILDING,
+        indexManifestFingerprint: '0'.repeat(64),
+        rebuildStartedAtEpochMilliseconds: 6,
+        stateChangedAtEpochMilliseconds: 6,
+        validatedAtEpochMilliseconds: null,
+      },
+    ],
+  });
+  await writeRecallBacklogSummary(backlogSummaryPath, {
+    version: RECALL_BACKLOG_SUMMARY_VERSION,
+    pendingEligibleSessionCount: 1,
+    oldestEligibleMarkerAgeMilliseconds: null,
+    activeGenerationId: pointer.activeGenerationId,
+    buildingGenerationId: abandonedGenerationId,
+    generationState: RecallGenerationCutoverState.BUILDING,
+    activeGenerationAgeMilliseconds: 0,
+    rebuildAgeMilliseconds: 1,
+    lastFailureCategory: null,
+    observedAtEpochMilliseconds: 7,
+  });
+
+  assert.equal(
+    await recoverRecallGenerationCutover({
+      activeGenerationPointerPath,
+      generationRegistryPath,
+      generationRootDirectory,
+      backlogSummaryPath,
+      lockPath: join(directory, 'operation.lock'),
+      embeddingDimensions: 3,
+      nowEpochMilliseconds: () => 8,
+      openWriteEvidenceStore() {
+        return { close() {} };
+      },
+      openWriteProjectionStore() {
+        return { close() {} };
+      },
+    }),
+    true,
+  );
+  const recoveredAbandonedRegistry = await readRecallGenerationRegistry(generationRegistryPath);
+  assert.equal(recoveredAbandonedRegistry?.buildingGenerationId, null);
+  assert.equal(
+    recoveredAbandonedRegistry?.generations.find(
+      ({ generationId }) => generationId === abandonedGenerationId,
+    )?.state,
+    RecallGenerationCutoverState.FAILED,
+  );
+
+  assert.ok(recoveredAbandonedRegistry);
+  const liveGenerationId = 'generation_live_build';
+  await writeRecallGenerationRegistry(generationRegistryPath, {
+    ...recoveredAbandonedRegistry,
+    buildingGenerationId: liveGenerationId,
+    generations: [
+      ...recoveredAbandonedRegistry.generations,
+      {
+        ...activeEntry,
+        generationId: liveGenerationId,
+        state: RecallGenerationCutoverState.BUILDING,
+        indexManifestFingerprint: '0'.repeat(64),
+        rebuildStartedAtEpochMilliseconds: 9,
+        stateChangedAtEpochMilliseconds: 9,
+        validatedAtEpochMilliseconds: null,
+      },
+    ],
+  });
+  const writeWindowLockPath = join(directory, 'operation.lock');
+  const liveOwnership = await tryAcquireRecallRebuildOwnershipLock(
+    recallRebuildOwnershipLockPath(writeWindowLockPath),
+  );
+  assert.ok(liveOwnership);
+  try {
+    assert.equal(
+      await recoverRecallGenerationCutover({
+        activeGenerationPointerPath,
+        generationRegistryPath,
+        generationRootDirectory,
+        backlogSummaryPath,
+        lockPath: writeWindowLockPath,
+        embeddingDimensions: 3,
+      }),
+      false,
+    );
+  } finally {
+    await liveOwnership.release();
+  }
+  assert.equal(
+    (await readRecallGenerationRegistry(generationRegistryPath))?.buildingGenerationId,
+    liveGenerationId,
   );
 });
 

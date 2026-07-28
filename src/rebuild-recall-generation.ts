@@ -25,6 +25,10 @@ import {
   type RecallGenerationRegistryEntry,
 } from './recall-generation-state.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
+import {
+  recallRebuildOwnershipLockPath,
+  tryAcquireRecallRebuildOwnershipLock,
+} from './recall-rebuild-ownership-lock.js';
 import { RECALL_SESSION_PROJECTION_SCHEMA_VERSION } from './recall-session-projection.js';
 import { RECALL_WORK_MARKER_VERSION } from './recall-work-marker.js';
 
@@ -237,7 +241,7 @@ function throwIfRebuildCancelled(signal?: AbortSignal): void {
 }
 
 /** Builds and validates a replacement beside the active generation, then atomically cuts over. */
-export async function rebuildRecallGeneration<Result, BuildSnapshot = undefined>(
+async function rebuildRecallGenerationUnderOwnership<Result, BuildSnapshot = undefined>(
   options: RebuildRecallGenerationOptions<Result, BuildSnapshot>,
 ): Promise<RebuildRecallGenerationResult<Result>> {
   const now = options.nowEpochMilliseconds?.() ?? Date.now();
@@ -578,4 +582,21 @@ export async function rebuildRecallGeneration<Result, BuildSnapshot = undefined>
     activeGenerationId: generationId,
     replayMarkerWatermark: readyWatermark,
   };
+}
+
+/** Builds one replacement while holding crash-released ownership across its full lifecycle. */
+export async function rebuildRecallGeneration<Result, BuildSnapshot = undefined>(
+  options: RebuildRecallGenerationOptions<Result, BuildSnapshot>,
+): Promise<RebuildRecallGenerationResult<Result>> {
+  const ownershipLock = await tryAcquireRecallRebuildOwnershipLock(
+    recallRebuildOwnershipLockPath(options.lockPath),
+  );
+  if (ownershipLock === null) {
+    throw new Error('Recall replacement generation build already in progress');
+  }
+  try {
+    return await rebuildRecallGenerationUnderOwnership(options);
+  } finally {
+    await ownershipLock.release();
+  }
 }

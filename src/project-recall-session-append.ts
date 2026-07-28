@@ -26,7 +26,10 @@ import {
 } from './recall-session-projection.js';
 import type { RecallSessionAppendDelta } from './read-recall-session-append-delta.js';
 import { reduceRecallEligibility } from './reduce-recall-eligibility.js';
-import type { RecallWorkMarker } from './recall-work-marker.js';
+import {
+  isBoundedRecallDepartureMarkerTrigger,
+  type RecallWorkMarker,
+} from './recall-work-marker.js';
 
 /** Inputs required to apply one validated physical append and its ordered lifecycle facts. */
 export interface ProjectRecallSessionAppendInput {
@@ -379,6 +382,16 @@ function contextExitMarkerMatchesLogicalProjection(
       ].filter((entryId): entryId is string => typeof entryId === 'string');
       return markerEntryIds.length > 0 && markerEntryIds.every((entryId) => entryIds.has(entryId));
     }
+    case RecallWorkMarkerTrigger.DEPARTURE: {
+      if (!isBoundedRecallDepartureMarkerTrigger(marker.trigger)) {
+        return false;
+      }
+      const { leafEntryId, logicalSessionId } = marker.trigger;
+      return (
+        logicalSessionId === rawSessionId &&
+        projection.entryDescriptors.some(({ entryId }) => entryId === leafEntryId)
+      );
+    }
     default:
       return false;
   }
@@ -392,7 +405,9 @@ function resolveContextExitMarkerOccurrences(
   for (const marker of markers) {
     if (
       marker.trigger.kind !== RecallWorkMarkerTrigger.COMPACTION &&
-      marker.trigger.kind !== RecallWorkMarkerTrigger.BRANCH_EXIT
+      marker.trigger.kind !== RecallWorkMarkerTrigger.BRANCH_EXIT &&
+      (marker.trigger.kind !== RecallWorkMarkerTrigger.DEPARTURE ||
+        !isBoundedRecallDepartureMarkerTrigger(marker.trigger))
     ) {
       continue;
     }
@@ -420,9 +435,12 @@ function markerAppliesToLogicalProjection(
     case RecallWorkMarkerTrigger.COMPACTION:
     case RecallWorkMarkerTrigger.BRANCH_EXIT:
       return contextExitMarkerOccurrences.get(marker) === projection.logicalSessionId;
+    case RecallWorkMarkerTrigger.DEPARTURE:
+      return isBoundedRecallDepartureMarkerTrigger(marker.trigger)
+        ? contextExitMarkerOccurrences.get(marker) === projection.logicalSessionId
+        : true;
     case RecallWorkMarkerTrigger.ACTIVITY:
     case RecallWorkMarkerTrigger.ARRIVAL:
-    case RecallWorkMarkerTrigger.DEPARTURE:
       return true;
     default:
       return false;

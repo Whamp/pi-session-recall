@@ -40,9 +40,28 @@ export interface RecallBranchExitMarkerTrigger {
   summaryEntryId?: string;
 }
 
-/** Marker payload for a clean runtime departure from one physical session file. */
-export interface RecallDepartureMarkerTrigger {
+/** Legacy marker payload for a clean runtime departure without an event-time leaf boundary. */
+export interface RecallLegacyDepartureMarkerTrigger {
   kind: RecallWorkMarkerTrigger.DEPARTURE;
+}
+
+/** Marker payload bounding a clean runtime departure to its event-time logical-session leaf. */
+export interface RecallBoundedDepartureMarkerTrigger {
+  kind: RecallWorkMarkerTrigger.DEPARTURE;
+  logicalSessionId: string;
+  leafEntryId: string;
+}
+
+/** Decodable departure payload; new publishers always emit the bounded form. */
+export type RecallDepartureMarkerTrigger =
+  | RecallLegacyDepartureMarkerTrigger
+  | RecallBoundedDepartureMarkerTrigger;
+
+/** Narrows a decodable departure payload to the event-time bounded form. */
+export function isBoundedRecallDepartureMarkerTrigger(
+  trigger: RecallDepartureMarkerTrigger,
+): trigger is RecallBoundedDepartureMarkerTrigger {
+  return 'leafEntryId' in trigger;
 }
 
 /** Marker payload for a runtime arriving at one physical session file. */
@@ -99,10 +118,20 @@ const markerTriggerSchema = Type.Union([
     },
     { additionalProperties: false },
   ),
-  Type.Object(
-    { kind: Type.Literal(RecallWorkMarkerTrigger.DEPARTURE) },
-    { additionalProperties: false },
-  ),
+  Type.Union([
+    Type.Object(
+      { kind: Type.Literal(RecallWorkMarkerTrigger.DEPARTURE) },
+      { additionalProperties: false },
+    ),
+    Type.Object(
+      {
+        kind: Type.Literal(RecallWorkMarkerTrigger.DEPARTURE),
+        logicalSessionId: nonemptyIdentifierSchema,
+        leafEntryId: nonemptyIdentifierSchema,
+      },
+      { additionalProperties: false },
+    ),
+  ]),
   Type.Object(
     { kind: Type.Literal(RecallWorkMarkerTrigger.ARRIVAL) },
     { additionalProperties: false },
@@ -149,7 +178,13 @@ function canonicalizeRecallMarkerTrigger(trigger: RecallWorkMarkerTriggerPayload
             summaryEntryId: trigger.summaryEntryId,
           };
     case RecallWorkMarkerTrigger.DEPARTURE:
-      return { kind: RecallWorkMarkerTrigger.DEPARTURE };
+      return isBoundedRecallDepartureMarkerTrigger(trigger)
+        ? {
+            kind: RecallWorkMarkerTrigger.DEPARTURE,
+            logicalSessionId: trigger.logicalSessionId,
+            leafEntryId: trigger.leafEntryId,
+          }
+        : { kind: RecallWorkMarkerTrigger.DEPARTURE };
     case RecallWorkMarkerTrigger.ARRIVAL:
       return { kind: RecallWorkMarkerTrigger.ARRIVAL };
     default:

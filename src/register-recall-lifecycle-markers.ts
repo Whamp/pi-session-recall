@@ -20,6 +20,7 @@ export interface RecallLifecycleMarkerContext {
   sessionManager: {
     getSessionFile(): string | undefined;
     getSessionId(): string;
+    getLeafId(): string | null;
   };
 }
 
@@ -117,6 +118,9 @@ export function registerRecallLifecycleMarkers(
     });
   });
   pi.on('session_tree', async (event, context) => {
+    if (event.oldLeafId === null && event.newLeafId === null) {
+      return;
+    }
     await publishLifecycleMarker(context, {
       kind: RecallWorkMarkerTrigger.BRANCH_EXIT,
       logicalSessionId: context.sessionManager.getSessionId(),
@@ -129,7 +133,15 @@ export function registerRecallLifecycleMarkers(
     if (event.reason === 'reload') {
       return;
     }
-    await publishLifecycleMarker(context, { kind: RecallWorkMarkerTrigger.DEPARTURE });
+    const leafEntryId = context.sessionManager.getLeafId();
+    if (leafEntryId === null) {
+      return;
+    }
+    await publishLifecycleMarker(context, {
+      kind: RecallWorkMarkerTrigger.DEPARTURE,
+      logicalSessionId: context.sessionManager.getSessionId(),
+      leafEntryId,
+    });
   });
   pi.on('session_start', async (event, context) => {
     await publishLifecycleMarker(context, { kind: RecallWorkMarkerTrigger.ARRIVAL });

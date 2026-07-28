@@ -237,7 +237,25 @@ const scenarios: ReducerScenario[] = [
   {
     name: 'departure switch and clean quit admit the remaining active tail',
     projection: logical(linear),
-    markers: [marker('departure', { kind: RecallWorkMarkerTrigger.DEPARTURE })],
+    markers: [
+      marker('departure', {
+        kind: RecallWorkMarkerTrigger.DEPARTURE,
+        logicalSessionId: 'logical',
+        leafEntryId: 'e3',
+      }),
+    ],
+    expected: ['e1', 'e2', 'e3'],
+  },
+  {
+    name: 'departure admits only the event-time tail when the source grows later',
+    projection: logical([...linear, descriptor('e4', 'e3')], 'e4'),
+    markers: [
+      marker('departure-before-later-append', {
+        kind: RecallWorkMarkerTrigger.DEPARTURE,
+        logicalSessionId: 'logical',
+        leafEntryId: 'e3',
+      }),
+    ],
     expected: ['e1', 'e2', 'e3'],
   },
   {

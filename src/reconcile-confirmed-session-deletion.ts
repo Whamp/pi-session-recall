@@ -12,7 +12,9 @@ import {
   type RecallWriteWindow,
 } from './coordinate-recall-write-window.js';
 import {
+  readRecallActiveGenerationPointer,
   readRecallActiveGenerationSelection,
+  readRecallGenerationRegistry,
   type RecallActiveGenerationSelection,
 } from './recall-generation-state.js';
 import {
@@ -238,6 +240,7 @@ export interface ReconcileConfirmedSessionDeletionOptions {
   metadataSweep: RecallSessionMetadataSweepResult;
   physicalProjections: readonly PhysicalSessionProjection[];
   activeGenerationPointerPath: string;
+  generationRegistryPath: string;
   generationRootDirectory: string;
   lockPath: string;
   embeddingDimensions: number;
@@ -430,14 +433,29 @@ async function runConfirmedDeletionWriteWindow(
       ...(options.signal ? { signal: options.signal } : {}),
     },
     async (writeWindow) => {
-      const selection = await readRecallActiveGenerationSelection(
-        options.activeGenerationPointerPath,
-        options.generationRootDirectory,
-      );
-      if (selection.activeGenerationId !== targetGenerationId) {
+      const [selection, pointer, registry] = await Promise.all([
+        readRecallActiveGenerationSelection(
+          options.activeGenerationPointerPath,
+          options.generationRootDirectory,
+        ),
+        readRecallActiveGenerationPointer(options.activeGenerationPointerPath),
+        readRecallGenerationRegistry(options.generationRegistryPath),
+      ]);
+      if (
+        selection.activeGenerationId !== targetGenerationId ||
+        pointer === null ||
+        registry?.activeGenerationId !== targetGenerationId ||
+        registry.activePointerChecksum !== pointer.checksum
+      ) {
         return {
           action: 'halted',
           haltCategory: RecallConfirmedDeletionHaltCategory.ACTIVE_GENERATION_CHANGED,
+        };
+      }
+      if (registry.buildingGenerationId !== null) {
+        return {
+          action: 'halted',
+          haltCategory: RecallConfirmedDeletionHaltCategory.REBUILD_IN_PROGRESS,
         };
       }
       const evidenceStore = defaultConfirmedDeletionEvidenceStore(

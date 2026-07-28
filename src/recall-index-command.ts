@@ -128,6 +128,7 @@ export async function runRecallIndexCommand(options: RecallIndexCommandOptions):
           rebuild: false,
           manualMaintenanceTrigger: RecallManualMaintenanceTrigger.MANUAL_INCREMENTAL_INDEX,
           onProgress,
+          optimize: true,
         };
     const result = await options.service.index(indexOptions);
     const failures = result.indexSummary.failedSessions.length;

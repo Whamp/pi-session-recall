@@ -163,6 +163,7 @@ export enum RecallConfirmedDeletionHaltCategory {
   SOURCE_REAPPEARED_DURING_DELETION = 'source_reappeared_during_deletion',
   PROJECTION_REQUIRES_RECONCILIATION = 'projection_requires_reconciliation',
   ACTIVE_GENERATION_CHANGED = 'active_generation_changed',
+  REBUILD_IN_PROGRESS = 'rebuild_in_progress',
 }
 
 /** Resumable destructive phase checkpointed in the physical session projection. */

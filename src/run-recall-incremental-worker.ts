@@ -163,8 +163,12 @@ export interface RunRecallIncrementalWorkerOptions extends RecallWorkMarkerCodec
     physicalProjections: readonly PhysicalSessionProjection[],
     missingSourceWorkPlans: readonly RecallMarkerReplayWorkPlan[],
     workPlan: RecallMarkerReplayWorkPlan,
-  ) => Promise<void>;
+  ) => Promise<Pick<
+    ConfirmedSessionDeletionReconciliationResult,
+    'sourceMissingRecordedCount'
+  > | void>;
   persistedLargeTransferDeferrals?: readonly RecallLargeTransferDeferral[];
+  metadataSweepRequested?: boolean;
   loadHeavyDependencies?: () => Promise<void>;
   transferWorkPlan?: (
     workPlan: RecallMarkerReplayWorkPlan,
@@ -190,13 +194,14 @@ export interface RecallIncrementalWorkerResult {
   generationReplayCompleted: boolean | null;
   transferOutcomes: readonly IncrementalRecallWorkPlanTransferOutcome[];
   largeTransferDeferrals: readonly RecallLargeTransferDeferral[];
+  metadataSweepFollowUpRequired: boolean;
   nextWakeAtEpochMilliseconds: number | null;
   replayBlockingFailureCategory: RecallBacklogFailureCategory | null;
 }
 
 type RecallIncrementalWorkerResultInput = Omit<
   RecallIncrementalWorkerResult,
-  'nextWakeAtEpochMilliseconds' | 'replayBlockingFailureCategory'
+  'metadataSweepFollowUpRequired' | 'nextWakeAtEpochMilliseconds' | 'replayBlockingFailureCategory'
 >;
 
 async function loadRecallIncrementalWorkerDependencies(): Promise<void> {
@@ -311,6 +316,7 @@ export async function runRecallIncrementalWorker(
     registry?.generations.find(({ generationId }) => generationId === registry.activeGenerationId)
       ?.state === RecallGenerationCutoverState.LEGACY_READ_ONLY;
   const commitsFrozen = buildingInProgress || activeGenerationIsLegacy;
+  let metadataSweepFollowUpRequired = options.metadataSweepRequested ?? false;
   const workPlan = await coordinateRecallMarkerReplay({
     markerSpoolDirectory: options.markerSpoolDirectory,
     markerQuarantineDirectory: options.markerQuarantineDirectory,
@@ -364,12 +370,14 @@ export async function runRecallIncrementalWorker(
         : [],
     );
     const continuationDeadlines =
-      result.metadataSweep?.status === RecallMetadataSweepStatus.CONTINUATION_REQUIRED
+      result.metadataSweep?.status === RecallMetadataSweepStatus.CONTINUATION_REQUIRED ||
+      metadataSweepFollowUpRequired
         ? [nowEpochMilliseconds()]
         : [];
     const wakeDeadlines = [...deferredDeadlines, ...continuationDeadlines];
     return {
       ...result,
+      metadataSweepFollowUpRequired,
       nextWakeAtEpochMilliseconds: wakeDeadlines.length === 0 ? null : Math.min(...wakeDeadlines),
       replayBlockingFailureCategory:
         workPlan.quarantineDiagnostics.length === 0
@@ -397,6 +405,7 @@ export async function runRecallIncrementalWorker(
   );
   const shouldSweepMetadata =
     workPlanRequestsRecallMetadataSweep(workPlan) ||
+    metadataSweepFollowUpRequired ||
     physicalSourceStates.some(
       ({ sourceModifiedAtEpochMilliseconds }) => sourceModifiedAtEpochMilliseconds === null,
     ) ||
@@ -427,6 +436,9 @@ export async function runRecallIncrementalWorker(
             }),
       })
     : null;
+  if (metadataSweep !== null) {
+    metadataSweepFollowUpRequired = false;
+  }
   if (workPlan.workItems.length === 0 && !hasRecallMetadataReconciliationWork(metadataSweep)) {
     const activeEntry = registry?.generations.find(
       ({ generationId }) => generationId === options.targetGenerationId,
@@ -465,12 +477,13 @@ export async function runRecallIncrementalWorker(
     metadataSweep.status !== RecallMetadataSweepStatus.CONTINUATION_REQUIRED &&
     (knownSourceInventory?.physicalProjections.length ?? 0) > 0
   ) {
-    await options.reconcileDeletion?.(
+    const deletionResult = await options.reconcileDeletion?.(
       metadataSweep,
       knownSourceInventory?.physicalProjections ?? [],
       missingSourceWorkPlans,
       workPlan,
     );
+    metadataSweepFollowUpRequired = (deletionResult?.sourceMissingRecordedCount ?? 0) > 0;
   }
   const transferOutcomes: IncrementalRecallWorkPlanTransferOutcome[] = [];
   const largeTransferDeferrals: RecallLargeTransferDeferral[] = [];
@@ -902,6 +915,7 @@ async function runConfiguredRecallIncrementalWorkerExecutable(
     confirmedDeletionMaxMissingSourceRatio: config.confirmedDeletionMaxMissingSourceRatio,
     operationDiagnostics,
     persistedLargeTransferDeferrals: persistedSchedule?.largeTransferDeferrals ?? [],
+    metadataSweepRequested: persistedSchedule?.metadataSweepRequested ?? false,
     async transferWorkPlan(workPlan) {
       const dependencies = await loadProductionTransferDependencies();
       return dependencies.transferWorkPlan({
@@ -931,6 +945,7 @@ async function runConfiguredRecallIncrementalWorkerExecutable(
         metadataSweep,
         physicalProjections,
         activeGenerationPointerPath: config.activeGenerationPointerPath,
+        generationRegistryPath: config.generationRegistryPath,
         generationRootDirectory: config.generationRootDirectory,
         lockPath: config.lockPath,
         embeddingDimensions: config.embeddingDimensions,
@@ -959,6 +974,7 @@ async function runConfiguredRecallIncrementalWorkerExecutable(
             ),
         });
       }
+      return deletionResult;
     },
   });
   const shouldSignalWake = await persistRecallIncrementalWorkerSchedule({
@@ -967,6 +983,7 @@ async function runConfiguredRecallIncrementalWorkerExecutable(
     schedule: {
       version: RECALL_INCREMENTAL_WORKER_SCHEDULE_VERSION,
       nextWakeAtEpochMilliseconds: result.nextWakeAtEpochMilliseconds,
+      metadataSweepRequested: result.metadataSweepFollowUpRequired,
       largeTransferDeferrals: [...result.largeTransferDeferrals],
     },
   });

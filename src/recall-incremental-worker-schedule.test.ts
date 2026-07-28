@@ -30,6 +30,7 @@ void test('incremental worker schedule persists the earliest future wake and lar
       schedule: {
         version: 1,
         nextWakeAtEpochMilliseconds: 5_000,
+        metadataSweepRequested: true,
         largeTransferDeferrals: [largeTransferDeferral],
       },
     }),
@@ -42,6 +43,7 @@ void test('incremental worker schedule persists the earliest future wake and lar
       schedule: {
         version: 1,
         nextWakeAtEpochMilliseconds: 8_000,
+        metadataSweepRequested: true,
         largeTransferDeferrals: [largeTransferDeferral],
       },
     }),
@@ -51,6 +53,7 @@ void test('incremental worker schedule persists the earliest future wake and lar
   assert.deepEqual(await readRecallIncrementalWorkerSchedule(schedulePath), {
     version: 1,
     nextWakeAtEpochMilliseconds: 5_000,
+    metadataSweepRequested: true,
     largeTransferDeferrals: [largeTransferDeferral],
   });
   assert.match(await readFile(schedulePath, 'utf8'), /^\{"version":1,/u);
@@ -61,6 +64,7 @@ void test('incremental worker schedule persists the earliest future wake and lar
       schedule: {
         version: 1,
         nextWakeAtEpochMilliseconds: null,
+        metadataSweepRequested: false,
         largeTransferDeferrals: [],
       },
     }),

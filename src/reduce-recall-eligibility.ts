@@ -12,7 +12,10 @@ import type {
   RecallMarkerRuntimeCheckpoint,
   RecallProjectedEntryDescriptor,
 } from './recall-session-projection.js';
-import type { RecallWorkMarker } from './recall-work-marker.js';
+import {
+  isBoundedRecallDepartureMarkerTrigger,
+  type RecallWorkMarker,
+} from './recall-work-marker.js';
 
 /** Version of monotonic compaction, branch-exit, departure, and quiescence eligibility rules. */
 export const INCREMENTAL_RECALL_ELIGIBILITY_POLICY_VERSION = 1;
@@ -255,9 +258,11 @@ export function reduceRecallEligibility(
         }
         break;
       case RecallWorkMarkerTrigger.DEPARTURE: {
-        const departureLeafEntryId = runtimeLeafEntryIds.has(marker.runtimeInstanceId)
-          ? (runtimeLeafEntryIds.get(marker.runtimeInstanceId) ?? null)
-          : projection.effectiveLeafEntryId;
+        const departureLeafEntryId = isBoundedRecallDepartureMarkerTrigger(marker.trigger)
+          ? marker.trigger.leafEntryId
+          : runtimeLeafEntryIds.has(marker.runtimeInstanceId)
+            ? (runtimeLeafEntryIds.get(marker.runtimeInstanceId) ?? null)
+            : projection.effectiveLeafEntryId;
         const activeContext = readActiveContextDescriptors(departureLeafEntryId, entriesById);
         if (activeContext === null) {
           malformed = true;

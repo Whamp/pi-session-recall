@@ -16,6 +16,7 @@ import {
   RecallConfirmedDeletionDecisionKind,
   RecallConfirmedDeletionHaltCategory,
   RecallConfirmedDeletionPhase,
+  RecallGenerationCutoverState,
   RecallAppendDeltaStatus,
   RecallAppendProjectionStatus,
   RecallMetadataSweepStatus,
@@ -38,6 +39,9 @@ import {
   createRecallActiveGenerationPointer,
   encodeRecallActiveGenerationPointer,
   readRecallActiveGenerationSelection,
+  readRecallGenerationRegistry,
+  writeRecallGenerationRegistry,
+  RECALL_GENERATION_REGISTRY_VERSION,
 } from './recall-generation-state.js';
 import {
   createLogicalSessionProjectionId,
@@ -290,11 +294,40 @@ function createMetadataSweep(
   };
 }
 
+async function writeScratchActiveGenerationState(
+  activeGenerationPointerPath: string,
+  generationRegistryPath: string,
+): Promise<void> {
+  const activePointer = createRecallActiveGenerationPointer(generationId);
+  await writeFile(activeGenerationPointerPath, encodeRecallActiveGenerationPointer(activePointer));
+  await writeRecallGenerationRegistry(generationRegistryPath, {
+    version: RECALL_GENERATION_REGISTRY_VERSION,
+    activeGenerationId: generationId,
+    buildingGenerationId: null,
+    rollbackGenerationId: null,
+    activePointerChecksum: activePointer.checksum,
+    generations: [
+      {
+        generationId,
+        state: RecallGenerationCutoverState.ACTIVE,
+        indexManifestVersion: 6,
+        markerSchemaVersion: 1,
+        sessionProjectionSchemaVersion: RECALL_SESSION_PROJECTION_SCHEMA_VERSION,
+        indexManifestFingerprint: 'd'.repeat(64),
+        rebuildStartedAtEpochMilliseconds: 1,
+        stateChangedAtEpochMilliseconds: 1,
+        rebuildStartMarkerId: null,
+      },
+    ],
+  });
+}
+
 interface ScratchConfirmedDeletionFixture {
   directory: string;
   generationRootDirectory: string;
   generationDirectory: string;
   activeGenerationPointerPath: string;
+  generationRegistryPath: string;
   lockPath: string;
   physicalProjection: PhysicalSessionProjection;
   logicalProjections: LogicalSessionProjection[];
@@ -307,10 +340,8 @@ async function createScratchConfirmedDeletionFixture(): Promise<ScratchConfirmed
   const generationDirectory = join(generationRootDirectory, generationId);
   await mkdir(generationDirectory, { recursive: true });
   const activeGenerationPointerPath = join(directory, 'active-generation.json');
-  await writeFile(
-    activeGenerationPointerPath,
-    encodeRecallActiveGenerationPointer(createRecallActiveGenerationPointer(generationId)),
-  );
+  const generationRegistryPath = join(directory, 'generation-registry.json');
+  await writeScratchActiveGenerationState(activeGenerationPointerPath, generationRegistryPath);
   const physicalProjection = createPhysicalProjection({
     sourcePath: '/isolated/private-path-sentinel/session.jsonl',
     logicalSessionIds: ['logical-session-1', 'logical-session-2'],
@@ -364,6 +395,7 @@ async function createScratchConfirmedDeletionFixture(): Promise<ScratchConfirmed
     generationRootDirectory,
     generationDirectory,
     activeGenerationPointerPath,
+    generationRegistryPath,
     lockPath: join(directory, 'recall.lock'),
     physicalProjection,
     logicalProjections,
@@ -380,6 +412,7 @@ function createScratchReconciliationOptions(
     metadataSweep,
     physicalProjections: [physicalProjection],
     activeGenerationPointerPath: fixture.activeGenerationPointerPath,
+    generationRegistryPath: fixture.generationRegistryPath,
     generationRootDirectory: fixture.generationRootDirectory,
     lockPath: fixture.lockPath,
     embeddingDimensions: 3,
@@ -516,10 +549,8 @@ void test('incremental repeated-header commits reopen without an orphan and conf
   const generationDirectory = join(generationRootDirectory, generationId);
   await mkdir(generationDirectory, { recursive: true });
   const activeGenerationPointerPath = join(directory, 'active-generation.json');
-  await writeFile(
-    activeGenerationPointerPath,
-    encodeRecallActiveGenerationPointer(createRecallActiveGenerationPointer(generationId)),
-  );
+  const generationRegistryPath = join(directory, 'generation-registry.json');
+  await writeScratchActiveGenerationState(activeGenerationPointerPath, generationRegistryPath);
   const sessionPath = join(directory, 'reused-session.jsonl');
   await writeFile(sessionPath, '');
   const metadata = await stat(sessionPath, { bigint: true });
@@ -701,6 +732,7 @@ void test('incremental repeated-header commits reopen without an orphan and conf
   const deletionOptions = {
     physicalProjections: [secondProjection.physicalProjection],
     activeGenerationPointerPath,
+    generationRegistryPath,
     generationRootDirectory,
     lockPath: join(directory, 'recall.lock'),
     embeddingDimensions: 3,
@@ -829,6 +861,43 @@ void test('scratch zvec confirmed deletion resumes idempotently after every dest
     );
     evidenceStore.close();
   }
+});
+
+void test('confirmed deletion rechecks the rebuild freeze under the write lock', async (t) => {
+  const fixture = await createScratchConfirmedDeletionFixture();
+  t.after(() => rm(fixture.directory, { recursive: true, force: true }));
+  await reconcileConfirmedSessionDeletion(
+    createScratchReconciliationOptions(fixture, createMetadataSweep('sweep-1', false)),
+  );
+  const registry = await readRecallGenerationRegistry(fixture.generationRegistryPath);
+  assert.ok(registry);
+  const activeEntry = registry.generations[0];
+  assert.ok(activeEntry);
+  await writeRecallGenerationRegistry(fixture.generationRegistryPath, {
+    ...registry,
+    buildingGenerationId: 'generation-building',
+    generations: [
+      activeEntry,
+      {
+        ...activeEntry,
+        generationId: 'generation-building',
+        state: RecallGenerationCutoverState.BUILDING,
+        indexManifestFingerprint: 'e'.repeat(64),
+        rebuildStartedAtEpochMilliseconds: 2,
+        stateChangedAtEpochMilliseconds: 2,
+      },
+    ],
+  });
+
+  const result = await reconcileConfirmedSessionDeletion(
+    createScratchReconciliationOptions(fixture, createMetadataSweep('sweep-2', false)),
+  );
+
+  assert.equal(result.halted, true);
+  assert.deepEqual(result.haltCategoryCounts, {
+    [RecallConfirmedDeletionHaltCategory.REBUILD_IN_PROGRESS]: 1,
+  });
+  assert.equal(readScratchPhysicalProjection(fixture).sourceMissingObservationCount, 1);
 });
 
 void test('confirmed deletion halts before mutating a generation that replaces the active pointer', async (t) => {

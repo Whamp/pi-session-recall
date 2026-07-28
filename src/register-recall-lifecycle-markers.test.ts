@@ -78,10 +78,15 @@ function createLifecycleTestHarness(): RecallLifecycleTestHarness {
 }
 
 function createScalarOnlyContext(
-  options: { physicalSessionPath?: string; physicalSessionId?: string } = {},
+  options: {
+    physicalSessionPath?: string;
+    physicalSessionId?: string;
+    leafEntryId?: string | null;
+  } = {},
 ): RecallLifecycleMarkerContext {
   const physicalSessionPath = options.physicalSessionPath;
   const physicalSessionId = options.physicalSessionId ?? 'physical-session-1';
+  const leafEntryId = options.leafEntryId ?? 'shutdown-leaf-1';
   const forbidden = (): never => {
     throw new Error('Recall lifecycle marker hook requested forbidden session body work');
   };
@@ -89,6 +94,7 @@ function createScalarOnlyContext(
     {
       getSessionFile: () => physicalSessionPath,
       getSessionId: () => physicalSessionId,
+      getLeafId: () => leafEntryId,
     },
     {
       get(target, property) {
@@ -97,6 +103,9 @@ function createScalarOnlyContext(
         }
         if (property === 'getSessionId') {
           return target.getSessionId;
+        }
+        if (property === 'getLeafId') {
+          return target.getLeafId;
         }
         return forbidden;
       },
@@ -247,19 +256,10 @@ void test('recall lifecycle markers map every documented Pi trigger with one run
         runtimeSequence: 6,
         createdAtEpochMilliseconds: 1_753_315_200_005,
         trigger: {
-          kind: RecallWorkMarkerTrigger.BRANCH_EXIT,
+          kind: RecallWorkMarkerTrigger.DEPARTURE,
           logicalSessionId: 'physical-session-1',
-          oldLeafEntryId: null,
-          newLeafEntryId: null,
+          leafEntryId: 'shutdown-leaf-1',
         },
-      },
-      {
-        physicalSessionId: 'physical-session-1',
-        physicalSessionPath: '/trusted/sessions/session-1.jsonl',
-        runtimeInstanceId: 'runtime-instance-1',
-        runtimeSequence: 7,
-        createdAtEpochMilliseconds: 1_753_315_200_006,
-        trigger: { kind: RecallWorkMarkerTrigger.DEPARTURE },
       },
     ],
   );

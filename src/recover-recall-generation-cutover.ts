@@ -20,6 +20,10 @@ import {
   type RecallGenerationRegistryEntry,
 } from './recall-generation-state.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
+import {
+  recallRebuildOwnershipLockPath,
+  tryAcquireRecallRebuildOwnershipLock,
+} from './recall-rebuild-ownership-lock.js';
 
 /** Paths, store recovery capabilities, and retention for repairing generation cutover state. */
 export interface RecoverRecallGenerationCutoverOptions {
@@ -191,23 +195,35 @@ export async function recoverRecallGenerationCutover(
     initialPointer !== null &&
     initialRegistry?.activeGenerationId === initialPointer.activeGenerationId &&
     initialRegistry.activePointerChecksum === initialPointer.checksum;
-  const initialReadyBuildingGeneration = initialRegistry?.generations.find(
+  const initialBuildingGenerationEntry = initialRegistry?.generations.find(
     ({ generationId }) =>
       generationId === initialRegistry.buildingGenerationId &&
       initialRegistry.buildingGenerationId !== null,
   );
+  const buildingGenerationPresent =
+    initialBuildingGenerationEntry?.state === RecallGenerationCutoverState.BUILDING;
+  const rebuildOwnershipLock = buildingGenerationPresent
+    ? await tryAcquireRecallRebuildOwnershipLock(recallRebuildOwnershipLockPath(options.lockPath))
+    : null;
+  if (buildingGenerationPresent && rebuildOwnershipLock === null) {
+    return false;
+  }
   const failedBuildingGenerationRequiresRecovery =
-    initialReadyBuildingGeneration?.state === RecallGenerationCutoverState.BUILDING &&
-    initialBacklog?.buildingGenerationId === initialReadyBuildingGeneration.generationId &&
+    buildingGenerationPresent &&
+    initialBacklog?.buildingGenerationId === initialBuildingGenerationEntry.generationId &&
     initialBacklog.lastFailureCategory === RecallBacklogFailureCategory.REBUILD_FAILED;
+  const abandonedBuildingGenerationRequiresRecovery =
+    buildingGenerationPresent && rebuildOwnershipLock !== null;
   if (
     ((initiallyConsistent &&
-      initialReadyBuildingGeneration?.state !== RecallGenerationCutoverState.READY &&
-      !failedBuildingGenerationRequiresRecovery) ||
+      initialBuildingGenerationEntry?.state !== RecallGenerationCutoverState.READY &&
+      !failedBuildingGenerationRequiresRecovery &&
+      !abandonedBuildingGenerationRequiresRecovery) ||
       (initialPointer === null && initialRegistry === null)) &&
     !writeWindowState.currentWindow &&
     !writeWindowState.recoveryRequired
   ) {
+    await rebuildOwnershipLock?.release();
     return false;
   }
 
@@ -219,7 +235,7 @@ export async function recoverRecallGenerationCutover(
         readRecallGenerationRegistry(options.generationRegistryPath),
         readRecallRecoveryBacklogSummary(options.backlogSummaryPath),
       ]);
-      const readyBuildingGeneration = registry?.generations.find(
+      const buildingGenerationEntry = registry?.generations.find(
         ({ generationId }) =>
           generationId === registry.buildingGenerationId && registry.buildingGenerationId !== null,
       );
@@ -239,9 +255,10 @@ export async function recoverRecallGenerationCutover(
         pointerAndRegistrySelectSameGeneration &&
         pointer !== null &&
         registry !== null &&
-        readyBuildingGeneration?.state === RecallGenerationCutoverState.BUILDING &&
-        backlog?.buildingGenerationId === readyBuildingGeneration.generationId &&
-        backlog.lastFailureCategory === RecallBacklogFailureCategory.REBUILD_FAILED
+        buildingGenerationEntry?.state === RecallGenerationCutoverState.BUILDING &&
+        ((backlog?.buildingGenerationId === buildingGenerationEntry.generationId &&
+          backlog.lastFailureCategory === RecallBacklogFailureCategory.REBUILD_FAILED) ||
+          rebuildOwnershipLock !== null)
       ) {
         const recoveredAt = options.nowEpochMilliseconds?.() ?? Date.now();
         const activeEntry = registry.generations.find(
@@ -255,7 +272,7 @@ export async function recoverRecallGenerationCutover(
           ...registry,
           buildingGenerationId: null,
           generations: registry.generations.map((entry) =>
-            entry.generationId === readyBuildingGeneration.generationId
+            entry.generationId === buildingGenerationEntry.generationId
               ? {
                   ...entry,
                   state: RecallGenerationCutoverState.FAILED,
@@ -266,8 +283,8 @@ export async function recoverRecallGenerationCutover(
         });
         await writeRecallBacklogSummary(options.backlogSummaryPath, {
           version: RECALL_BACKLOG_SUMMARY_VERSION,
-          pendingEligibleSessionCount: backlog.pendingEligibleSessionCount,
-          oldestEligibleMarkerAgeMilliseconds: backlog.oldestEligibleMarkerAgeMilliseconds,
+          pendingEligibleSessionCount: backlog?.pendingEligibleSessionCount ?? 0,
+          oldestEligibleMarkerAgeMilliseconds: backlog?.oldestEligibleMarkerAgeMilliseconds ?? null,
           activeGenerationId: pointer.activeGenerationId,
           buildingGenerationId: null,
           generationState: activeEntry.state,
@@ -282,14 +299,14 @@ export async function recoverRecallGenerationCutover(
       if (
         pointerAndRegistrySelectSameGeneration &&
         pointer !== null &&
-        readyBuildingGeneration?.state !== RecallGenerationCutoverState.READY
+        buildingGenerationEntry?.state !== RecallGenerationCutoverState.READY
       ) {
         return attestRecoveredActiveStores(pointer.activeGenerationId);
       }
       if (
         pointerAndRegistrySelectSameGeneration &&
         registry !== null &&
-        readyBuildingGeneration?.state === RecallGenerationCutoverState.READY
+        buildingGenerationEntry?.state === RecallGenerationCutoverState.READY
       ) {
         const recoveredAt = options.nowEpochMilliseconds?.() ?? Date.now();
         const activeEntry = registry.generations.find(
@@ -303,7 +320,7 @@ export async function recoverRecallGenerationCutover(
           ...registry,
           buildingGenerationId: null,
           generations: registry.generations.map((entry) =>
-            entry.generationId === readyBuildingGeneration.generationId
+            entry.generationId === buildingGenerationEntry.generationId
               ? {
                   ...entry,
                   state: RecallGenerationCutoverState.RETIRED,
@@ -406,5 +423,7 @@ export async function recoverRecallGenerationCutover(
       await attestRecoveredActiveStores(replacement.generationId);
       return true;
     },
-  );
+  ).finally(async () => {
+    await rebuildOwnershipLock?.release();
+  });
 }

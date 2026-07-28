@@ -192,7 +192,7 @@ export default async function recallExtension(
     name: 'pi-session-recall',
     label: 'Pi Session Recall',
     description:
-      'Search past Pi conversations with dense, lexical, and case-preserving identifier retrieval. It defaults to project scope; choose global explicitly for cross-project evidence. Search defaults to deterministic hybrid ranking; choose deep-rerank only when ambiguous evidence warrants slower local Qwen scoring, or query-planned to route an agent-supplied lex/vec/hyde plan through bounded QMD fusion and reranking. Excludes hidden reasoning and derived recall output, keeps other raw tool evidence lexical-only, labels active and abandoned branches, and expands only valid same-run atomic neighbors with exact provenance. Use /pi-session-recall-index for explicit catch-up or repair; interactive Pi lifecycle and search operations never perform whole-session maintenance. Output is truncated to 2000 lines or 50KB.',
+      'Search past Pi conversations with dense, lexical, and case-preserving identifier retrieval. It defaults to project scope; choose global explicitly for cross-project evidence. Search defaults to deterministic hybrid ranking; choose deep-rerank only when ambiguous evidence warrants slower local Qwen scoring, or query-planned to route an agent-supplied plan or invoke the configured query planner before bounded QMD fusion and reranking. Excludes hidden reasoning and derived recall output, keeps other raw tool evidence lexical-only, labels active and abandoned branches, and expands only valid same-run atomic neighbors with exact provenance. Use /pi-session-recall-index for explicit catch-up or repair; interactive Pi lifecycle and search operations never perform whole-session maintenance. Output is truncated to 2000 lines or 50KB.',
     promptSnippet:
       'Search past Pi conversations by meaning or exact text and recover remembered details',
     promptGuidelines: [
@@ -217,7 +217,7 @@ export default async function recallExtension(
           [Type.Literal('hybrid'), Type.Literal('deep-rerank'), Type.Literal('query-planned')],
           {
             description:
-              'Ranking depth: hybrid is the fast default; deep-rerank adds local Qwen scoring; query-planned requires an agent-supplied plan and applies QMD fusion plus position-aware reranking',
+              'Ranking depth: hybrid is the fast default; deep-rerank adds local Qwen scoring; query-planned uses an agent plan or the configured query planner, then applies QMD fusion plus position-aware reranking',
           },
         ),
       ),
@@ -238,7 +238,7 @@ export default async function recallExtension(
             minItems: 1,
             maxItems: MAX_AGENT_RECALL_PLANNED_QUERY_COUNT,
             description:
-              'Agent-supplied retrieval plan required by query-planned mode; lex routes only to ordinary lexical retrieval, while vec and hyde route only to dense retrieval',
+              'Optional agent-supplied retrieval plan for query-planned mode; omit it to invoke the configured query planner. lex routes only to ordinary lexical retrieval, while vec and hyde route only to dense retrieval',
           },
         ),
       ),

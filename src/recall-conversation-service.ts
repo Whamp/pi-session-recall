@@ -74,6 +74,7 @@ import {
   type RecallRerankingExecutionIdentity,
   type RecallRerankingProvider,
 } from './recall-inference-capabilities.js';
+import { validateQmdQueryPlanningPlan } from './recall-query-planning-policy.js';
 import {
   measureRecallQueryPlanningProviderConformance,
   measureRecallRerankingProviderConformance,
@@ -159,7 +160,7 @@ export const QUERY_PLANNED_RECALL_GROUP_LIMIT = 40;
 /** Final result cap applied before query-planned neighbor context expansion. */
 export const QUERY_PLANNED_RECALL_FINAL_RESULT_LIMIT = 5;
 
-/** User-selected ranking depth for hybrid-only, local Qwen, or agent-planned recall search. */
+/** User-selected ranking depth for hybrid-only, local Qwen, or query-planned recall search. */
 export type RecallSearchMode = 'hybrid' | 'deep-rerank' | 'query-planned';
 
 /** One project-eligible ranked-list admission trace from query-planned retrieval. */
@@ -171,7 +172,7 @@ export interface RecallRankedListTrace {
   admittedCandidateCount: number;
 }
 
-/** QMD fusion constants used for one agent-supplied query plan. */
+/** QMD fusion constants used for one agent-supplied or model-generated query plan. */
 export interface RecallQueryPlannedFusionPolicy {
   reciprocalRankConstant: number;
   submittedQueryListWeight: number;
@@ -187,9 +188,21 @@ export interface RecallQueryPlannedRerankerProfile {
   fusedRankBlend: readonly RecallFusedRankBlendBand[];
 }
 
-/** Agent plan, intent, ranked-list traces, fusion constants, and reranker profile. */
+/** Profile, adapter policy, and request-complete cache identity for configured planning. */
+export interface RecallSearchPlannerIdentity {
+  profileId: string;
+  model: string;
+  adapterId: string;
+  backend: RecallQueryPlanningExecutionIdentity['backend'];
+  promptPolicy: string;
+  grammarVersion: string;
+  cacheIdentity: string;
+}
+
+/** Actual plan source, planner identity, intent, traces, fusion constants, and reranker profile. */
 export interface RecallQueryPlanEvidence {
-  source: 'agent';
+  source: 'agent' | 'planner' | 'fallback';
+  plannerIdentity: RecallSearchPlannerIdentity | null;
   intent: string | null;
   plannedQueries: readonly RecallPlannedRetrievalQuery[];
   rankedLists: readonly RecallRankedListTrace[];
@@ -409,7 +422,7 @@ export interface RecallConversationDependencies {
   rerankerExecutionIdentity?: RecallRerankingExecutionIdentity | null;
   /** Optional query planner semantics verified independently and excluded from vector identity. */
   queryPlanningProfile?: RecallQueryPlanningModelProfile;
-  /** Optional identified planner adapter; query-planned retrieval remains outside this ticket. */
+  /** Optional identified planner invoked when query-planned search receives no agent plan. */
   queryPlanner?: RecallIdentifiedQueryPlanningProvider;
   /** Profile-owned tokenizer identity recorded with chunk geometry in the index manifest. */
   tokenizerIdentity?: RecallTokenizerManifestIdentity;
@@ -424,7 +437,7 @@ export interface RecallConversationDependencies {
 }
 
 interface ValidatedRecallQueryPlanningOptions {
-  plannedQueries: RecallPlannedRetrievalQuery[];
+  plannedQueries: RecallPlannedRetrievalQuery[] | null;
   intent: string | null;
 }
 
@@ -454,6 +467,9 @@ function validateRecallQueryPlanningOptions(
   }
   if (mode !== 'query-planned') {
     return { plannedQueries: [], intent: normalizedIntent };
+  }
+  if (plan === undefined) {
+    return { plannedQueries: null, intent: normalizedIntent };
   }
   if (!Array.isArray(plan)) {
     throw new Error(
@@ -501,6 +517,38 @@ function validateRecallQueryPlanningOptions(
 
 function createRecallRerankerQuery(query: string, intent: string | null): string {
   return intent ? `${intent}\n\n${query}` : query;
+}
+
+function createRecallQueryPlanningCacheIdentity(
+  submittedQuery: string,
+  recallIntent: string | null,
+  profile: RecallQueryPlanningModelProfile,
+  executionIdentity: RecallQueryPlanningExecutionIdentity,
+): string {
+  const identityInput = JSON.stringify({
+    submittedQuery,
+    recallIntent,
+    modelProfile: {
+      profileId: profile.profileId,
+      model: profile.model,
+      promptPolicy: profile.promptPolicy,
+      grammarVersion: profile.grammarVersion,
+      grammar: profile.grammar,
+      planBounds: profile.planBounds,
+      generationPolicy: profile.generationPolicy,
+      conformanceCanary: profile.conformanceCanary,
+    },
+    adapterPolicy: {
+      adapterId: executionIdentity.adapterId,
+      backend: executionIdentity.backend,
+      cacheIdentity: executionIdentity.cacheIdentity,
+      modelProfileId: executionIdentity.modelProfileId,
+      promptPolicy: executionIdentity.promptPolicy,
+      grammarVersion: executionIdentity.grammarVersion,
+      requestTimeoutMilliseconds: executionIdentity.requestTimeoutMilliseconds,
+    },
+  });
+  return `query-plan-v1:${createHash('sha256').update(identityInput).digest('hex')}`;
 }
 
 interface LiveSessionReconciliationDiagnosticRunOptions {
@@ -1585,6 +1633,17 @@ export function createRecallConversationService(
       } catch (error) {
         return Promise.reject(error);
       }
+      if (
+        mode === 'query-planned' &&
+        queryPlanning.plannedQueries === null &&
+        (!queryPlanningProfile || !queryPlanner)
+      ) {
+        return Promise.reject(
+          new Error(
+            'Recall query planner is not configured: select and verify a query-planning capability before query-planned search without an agent plan',
+          ),
+        );
+      }
       if (mode !== 'hybrid' && (!rerankingProfile || !reranker || !rerankerExecutionIdentity)) {
         throw new Error(
           `Recall reranking is not configured: select and verify a reranking capability before ${mode} search`,
@@ -1600,6 +1659,56 @@ export function createRecallConversationService(
             const searchQuery = query.trim();
             if (!searchQuery) {
               throw new Error('Recall query must not be blank');
+            }
+            let planSource: RecallQueryPlanEvidence['source'] = 'agent';
+            let plannerIdentity: RecallSearchPlannerIdentity | null = null;
+            if (queryPlanning.plannedQueries === null) {
+              if (!queryPlanningProfile || !queryPlanner) {
+                throw new Error(
+                  'Recall query planner became unavailable before query-planned search',
+                );
+              }
+              const executionIdentity = queryPlanner.executionIdentity;
+              plannerIdentity = {
+                profileId: queryPlanningProfile.profileId,
+                model: queryPlanningProfile.model,
+                adapterId: executionIdentity.adapterId,
+                backend: executionIdentity.backend,
+                promptPolicy: queryPlanningProfile.promptPolicy,
+                grammarVersion: queryPlanningProfile.grammarVersion,
+                cacheIdentity: createRecallQueryPlanningCacheIdentity(
+                  searchQuery,
+                  queryPlanning.intent,
+                  queryPlanningProfile,
+                  executionIdentity,
+                ),
+              };
+              try {
+                const generatedPlan = await queryPlanner.planRecallQuery(
+                  {
+                    query: searchQuery,
+                    ...(queryPlanning.intent === null
+                      ? {}
+                      : { recallIntent: queryPlanning.intent }),
+                  },
+                  signal,
+                );
+                queryPlanning = {
+                  plannedQueries: validateQmdQueryPlanningPlan(generatedPlan, queryPlanningProfile),
+                  intent: queryPlanning.intent,
+                };
+                planSource = 'planner';
+              } catch (error: unknown) {
+                if (isRecallOperationCancelled(error, signal)) {
+                  throw error;
+                }
+                const reason = error instanceof Error ? error.message : String(error);
+                dependencies.notifyWarning?.(
+                  `Recall query planner failed; using submitted-query deep reranking without changing the configured planner or reranker: ${reason}`,
+                );
+                queryPlanning = { plannedQueries: [], intent: queryPlanning.intent };
+                planSource = 'fallback';
+              }
             }
             const activeGeneration = await resolveActiveRecallIndexGeneration(
               generationCoordinatorConfig,
@@ -1676,9 +1785,10 @@ export function createRecallConversationService(
               scope === RecallSearchScope.PROJECT ? invocationProject?.projectIdentity : undefined;
             const store = openStore('read', generationPaths.databasePath);
             try {
+              const plannedQueries = queryPlanning.plannedQueries ?? [];
               const semanticQueryTexts = [
                 searchQuery,
-                ...queryPlanning.plannedQueries
+                ...plannedQueries
                   .filter(
                     (plannedQuery) => plannedQuery.type === 'vec' || plannedQuery.type === 'hyde',
                   )
@@ -1710,25 +1820,26 @@ export function createRecallConversationService(
               const retrievalStartedAtMilliseconds = diagnosticsClock.monotonicMilliseconds();
               const deepRerankStartedWithMilliseconds = diagnosticMetrics.deepRerankMilliseconds;
               try {
-                const isQueryPlanned = mode === 'query-planned';
-                const submittedQueryCandidateLimits = isQueryPlanned
+                const usesQueryPlannedRanking =
+                  mode === 'query-planned' && planSource !== 'fallback';
+                const submittedQueryCandidateLimits = usesQueryPlannedRanking
                   ? {
                       dense: QUERY_PLANNED_RECALL_LIST_CANDIDATE_LIMIT,
                       lexical: QUERY_PLANNED_RECALL_LIST_CANDIDATE_LIMIT,
                       identifier: QUERY_PLANNED_RECALL_LIST_CANDIDATE_LIMIT,
                     }
                   : config.searchCandidateLimits;
-                const submittedQueryListWeight = isQueryPlanned
+                const submittedQueryListWeight = usesQueryPlannedRanking
                   ? QUERY_PLANNED_RECALL_SUBMITTED_QUERY_LIST_WEIGHT
                   : 1;
                 const maximumCurrentCandidateCount =
                   config.searchCandidateLimits.dense +
                   config.searchCandidateLimits.lexical +
                   config.searchCandidateLimits.identifier;
-                const fusedPoolLimit = isQueryPlanned
+                const fusedPoolLimit = usesQueryPlannedRanking
                   ? QUERY_PLANNED_RECALL_GROUP_LIMIT
                   : (config.fusedPoolLimit ?? maximumCurrentCandidateCount);
-                const rerankPoolLimit = isQueryPlanned
+                const rerankPoolLimit = usesQueryPlannedRanking
                   ? QUERY_PLANNED_RECALL_GROUP_LIMIT
                   : (config.rerankPoolLimit ?? fusedPoolLimit);
                 if (
@@ -1798,7 +1909,7 @@ export function createRecallConversationService(
                   admittedCandidateCount: list.candidates.length,
                 }));
                 let semanticEmbeddingIndex = 1;
-                for (const plannedQuery of queryPlanning.plannedQueries) {
+                for (const plannedQuery of plannedQueries) {
                   if (plannedQuery.type === 'lex') {
                     const plannedCandidates = store.searchLexicalCandidates(
                       plannedQuery.query,
@@ -1860,13 +1971,13 @@ export function createRecallConversationService(
                     admittedCandidateCount: plannedCandidates.length,
                   });
                 }
-                const preGroupingDocumentLimit = isQueryPlanned
+                const preGroupingDocumentLimit = usesQueryPlannedRanking
                   ? rankedLists.length * QUERY_PLANNED_RECALL_LIST_CANDIDATE_LIMIT
                   : fusedPoolLimit;
                 const fusedCandidates = fuseRecallRankedLists(
                   rankedLists,
                   preGroupingDocumentLimit,
-                  isQueryPlanned
+                  usesQueryPlannedRanking
                     ? {
                         rankOne: QUERY_PLANNED_RECALL_RANK_ONE_BONUS,
                         rankTwoOrThree: QUERY_PLANNED_RECALL_RANK_TWO_OR_THREE_BONUS,
@@ -1896,7 +2007,7 @@ export function createRecallConversationService(
                     }
                   },
                 };
-                const finalResultLimit = isQueryPlanned
+                const finalResultLimit = usesQueryPlannedRanking
                   ? Math.min(limit, QUERY_PLANNED_RECALL_FINAL_RESULT_LIMIT)
                   : limit;
                 let rankedResults: RankedRecallSearchResult[];
@@ -1915,11 +2026,11 @@ export function createRecallConversationService(
                       resultLimit: finalResultLimit,
                       reranker: diagnosticReranker,
                       fetchConversationChunks: store.fetchConversationChunks,
-                      ...(isQueryPlanned ? { useQueryPlannedPositionBlend: true } : {}),
+                      ...(usesQueryPlannedRanking ? { useQueryPlannedPositionBlend: true } : {}),
                       ...(signal ? { signal } : {}),
                     });
                   } catch (error: unknown) {
-                    if (!isQueryPlanned || isRecallOperationCancelled(error, signal)) {
+                    if (!usesQueryPlannedRanking || isRecallOperationCancelled(error, signal)) {
                       throw error;
                     }
                     const reason = error instanceof Error ? error.message : String(error);
@@ -1954,12 +2065,11 @@ export function createRecallConversationService(
                     rankingMode: mode,
                     rankFusionVersion: RECALL_RANK_FUSION_VERSION,
                     reciprocalRankConstant: RECALL_RRF_RANK_CONSTANT,
-                    rerankPolicyVersion:
-                      mode === 'query-planned'
-                        ? QUERY_PLANNED_RECALL_RERANK_POLICY_VERSION
-                        : mode === 'deep-rerank'
-                          ? RECALL_RERANK_POLICY_VERSION
-                          : null,
+                    rerankPolicyVersion: usesQueryPlannedRanking
+                      ? QUERY_PLANNED_RECALL_RERANK_POLICY_VERSION
+                      : mode !== 'hybrid'
+                        ? RECALL_RERANK_POLICY_VERSION
+                        : null,
                     rerankerModel:
                       mode !== 'hybrid' && rerankingProfile ? rerankingProfile.model : null,
                     rerankerIdentity:
@@ -1975,26 +2085,34 @@ export function createRecallConversationService(
                     fusedPoolLimit,
                     rerankPoolLimit,
                     finalResultLimit,
-                    ...(isQueryPlanned
+                    ...(mode === 'query-planned'
                       ? {
                           queryPlan: {
-                            source: 'agent',
+                            source: planSource,
+                            plannerIdentity,
                             intent: queryPlanning.intent,
-                            plannedQueries: queryPlanning.plannedQueries,
+                            plannedQueries,
                             rankedLists: rankedListTraces,
                             fusionPolicy: {
                               reciprocalRankConstant: RECALL_RRF_RANK_CONSTANT,
-                              submittedQueryListWeight:
-                                QUERY_PLANNED_RECALL_SUBMITTED_QUERY_LIST_WEIGHT,
+                              submittedQueryListWeight,
                               plannedQueryListWeight:
                                 QUERY_PLANNED_RECALL_PLANNED_QUERY_LIST_WEIGHT,
-                              rankOneBonus: QUERY_PLANNED_RECALL_RANK_ONE_BONUS,
-                              rankTwoOrThreeBonus: QUERY_PLANNED_RECALL_RANK_TWO_OR_THREE_BONUS,
+                              rankOneBonus: usesQueryPlannedRanking
+                                ? QUERY_PLANNED_RECALL_RANK_ONE_BONUS
+                                : 0,
+                              rankTwoOrThreeBonus: usesQueryPlannedRanking
+                                ? QUERY_PLANNED_RECALL_RANK_TWO_OR_THREE_BONUS
+                                : 0,
                             },
                             rerankerProfile: {
                               model: rerankingProfile?.model ?? config.rerankerModel,
-                              policyVersion: QUERY_PLANNED_RECALL_RERANK_POLICY_VERSION,
-                              fusedRankBlend: QUERY_PLANNED_RECALL_FUSED_RANK_BLEND,
+                              policyVersion: usesQueryPlannedRanking
+                                ? QUERY_PLANNED_RECALL_RERANK_POLICY_VERSION
+                                : RECALL_RERANK_POLICY_VERSION,
+                              fusedRankBlend: usesQueryPlannedRanking
+                                ? QUERY_PLANNED_RECALL_FUSED_RANK_BLEND
+                                : [],
                             },
                           },
                         }

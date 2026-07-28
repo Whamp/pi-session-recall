@@ -46,7 +46,7 @@ void test('Pi session recall registers collision-free tool guidance and index co
   assert.match(toolDescriptions[0] ?? '', /defaults to project scope/);
   assert.match(toolDescriptions[0] ?? '', /defaults to deterministic hybrid ranking/);
   assert.match(toolDescriptions[0] ?? '', /deep-rerank.*Qwen/);
-  assert.match(toolDescriptions[0] ?? '', /query-planned.*agent-supplied/);
+  assert.match(toolDescriptions[0] ?? '', /query-planned.*configured query planner/);
   assert.match(toolDescriptions[0] ?? '', /labels active and abandoned branches/);
   assert.match(toolDescriptions[0] ?? '', /valid same-run atomic neighbors/);
   assert.match(toolParameterSchemas[0] ?? '', /project/);
@@ -56,6 +56,7 @@ void test('Pi session recall registers collision-free tool guidance and index co
   assert.match(toolParameterSchemas[0] ?? '', /vec/);
   assert.match(toolParameterSchemas[0] ?? '', /hyde/);
   assert.match(toolParameterSchemas[0] ?? '', /"maxItems":10/);
+  assert.match(toolParameterSchemas[0] ?? '', /omit.*configured query planner/);
   assert.match(toolParameterSchemas[0] ?? '', /intent/);
   assert.ok(!(toolParameterSchemas[0] ?? '').includes('projectPath'));
   assert.ok(!(toolParameterSchemas[0] ?? '').includes('invocationDirectory'));
@@ -141,6 +142,7 @@ void test('Pi recall tool details retain ranked-list evidence and every explicit
 void test('Pi recall tool details expose query-plan and position-aware ranking evidence', () => {
   const queryPlan = {
     source: 'agent' as const,
+    plannerIdentity: null,
     intent: 'recover the accepted decision',
     plannedQueries: [{ type: 'vec' as const, query: 'Which design was accepted?' }],
     rankedLists: [
@@ -346,6 +348,16 @@ void test('Pi recall tool adapter propagates trusted cwd with project default an
     context,
     5,
   );
+  await searchPiRecall(
+    service,
+    {
+      query: 'planner-generated query',
+      mode: 'query-planned',
+      intent: 'recover a model-generated plan',
+    },
+    context,
+    5,
+  );
 
   assert.deepEqual(calls, [
     {
@@ -375,6 +387,16 @@ void test('Pi recall tool adapter propagates trusted cwd with project default an
         invocationDirectory: '/trusted/invocation',
         plan,
         intent: 'recover the accepted decision',
+      },
+    },
+    {
+      query: 'planner-generated query',
+      limit: 5,
+      options: {
+        mode: 'query-planned',
+        scope: RecallSearchScope.PROJECT,
+        invocationDirectory: '/trusted/invocation',
+        intent: 'recover a model-generated plan',
       },
     },
   ]);

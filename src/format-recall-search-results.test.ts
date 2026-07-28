@@ -246,6 +246,7 @@ void test('query-planned output explains the agent plan, routed lists, QMD fusio
       finalResultLimit: 5,
       queryPlan: {
         source: 'agent',
+        plannerIdentity: null,
         intent: 'recover the accepted queue decision',
         plannedQueries: [
           { type: 'lex', query: 'durable queue' },

@@ -238,6 +238,7 @@ export async function createConfiguredRecallInferenceRuntime(
     embeddingProvider,
     tokenizerIdentity: createEmbeddingGemmaTokenizerManifestIdentity(embeddingProfile),
     loadTokenizer: () => tokenizerProvider.loadConversationTokenizer(),
+    ...(options.onWarning ? { notifyWarning: options.onWarning } : {}),
     backgroundIndexServiceFactory: {
       moduleUrl: import.meta.url,
       exportName: 'createConfiguredRecallBackgroundService',

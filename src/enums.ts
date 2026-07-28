@@ -103,10 +103,30 @@ export enum RecallProjectionRepairState {
 export enum RecallProjectionRepairReason {
   APPEND_CURSOR_MISSING = 'append_cursor_missing',
   SOURCE_SHRANK = 'source_shrank',
+  SOURCE_IDENTITY_MISMATCH = 'source_identity_mismatch',
   BOUNDARY_MISMATCH = 'boundary_mismatch',
   UNSUPPORTED_LAYOUT = 'unsupported_layout',
   MALFORMED_GRAPH = 'malformed_graph',
   PROJECTION_OVERFLOW = 'projection_overflow',
+}
+
+/** Outcome of validating and framing one physical-session append delta. */
+export enum RecallAppendDeltaStatus {
+  APPENDED = 'appended',
+  REQUIRES_RECONCILIATION = 'requires_reconciliation',
+}
+
+/** Outcome of applying one append delta to physical and logical session projections. */
+export enum RecallAppendProjectionStatus {
+  PROJECTED = 'projected',
+  REQUIRES_RECONCILIATION = 'requires_reconciliation',
+}
+
+/** Measured quiet-period candidate selected for one incremental eligibility transfer. */
+export enum RecallEligibilityThreshold {
+  EXPLICIT_EXIT_QUIET = 'explicit_exit_quiet',
+  LARGE_PREPARED_TRANSFER = 'large_prepared_transfer',
+  CRASH_ONLY_QUIESCENCE = 'crash_only_quiescence',
 }
 
 /** Durable observation state for one physical session source. */

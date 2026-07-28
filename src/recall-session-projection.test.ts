@@ -31,7 +31,10 @@ function createPhysicalProjection(): PhysicalSessionProjection {
     generationId,
     physicalSessionId,
     sourcePath: '/isolated/sessions/2026-07-24/session.jsonl',
+    sourceDevice: '2049',
+    sourceInode: '123456',
     appendCursorBytes: 4_096,
+    appendCursorLines: 17,
     boundaryFingerprint: 'a'.repeat(64),
     lastEntryId: 'entry-last-1',
     logicalSessionIds: ['logical-session-1'],
@@ -68,6 +71,7 @@ function createLogicalProjection(): LogicalSessionProjection {
       compactionEntryId: 'entry-compaction-1',
       firstRetainedEntryId: 'entry-active-first',
     },
+    runtimeLeafObservations: [{ runtimeInstanceId: 'runtime-1', leafEntryId: 'entry-leaf-1' }],
     preservedBranchExits: [
       {
         oldLeafEntryId: 'entry-old-leaf',
@@ -80,12 +84,28 @@ function createLogicalProjection(): LogicalSessionProjection {
         summaryEntryId: null,
       },
     ],
+    entryDescriptors: [
+      {
+        entryId: 'entry-span-first',
+        parentEntryId: null,
+        entryType: 'message',
+        sourceLine: 2,
+        startByte: 128,
+        endByte: 512,
+        firstKeptEntryId: null,
+        hasRetainedTail: false,
+        toolCalls: [],
+        toolResult: null,
+      },
+    ],
+    eligibleContributorEntryIds: ['entry-span-first'],
     eligibleSpans: [
       {
         startByte: 128,
         endByte: 512,
         startEntryId: 'entry-span-first',
-        endEntryId: 'entry-span-last',
+        endEntryId: 'entry-span-first',
+        contributorEntryIds: ['entry-span-first'],
       },
     ],
     labels: ['feature/incremental-recall'],

@@ -3,25 +3,14 @@ import { createReadStream } from 'node:fs';
 
 import { SessionImportFormat } from './enums.js';
 import { isUnknownRecord } from './is-unknown-record.js';
+import {
+  parseRecallSessionRecord,
+  type CanonicalSessionRepresentation,
+  type PhysicalSessionJsonlRecord,
+} from './parse-recall-session-record.js';
 
 /** Versioned identity of exact session framing, detection, and virtual conversion policy. */
 export const SESSION_IMPORT_POLICY_VERSION = 3;
-
-/** One parsed physical JSONL record with its trustworthy one-based source line. */
-export interface PhysicalSessionJsonlRecord {
-  sourceLine: number;
-  value: Record<string, unknown>;
-}
-
-/** One canonical logical session produced without mutating its physical source file. */
-export interface CanonicalSessionRepresentation {
-  format: SessionImportFormat;
-  physicalPath: string;
-  logicalSessionId: string;
-  sourceLineStart: number;
-  sourceLineEnd: number;
-  records: PhysicalSessionJsonlRecord[];
-}
 
 /** Detected physical format and canonical logical sessions ready for strict graph validation. */
 export interface SessionJsonlImport {
@@ -86,22 +75,19 @@ async function readPhysicalSessionJsonlRecords(
     if (!framed.text.trim()) {
       continue;
     }
-    let parsed: unknown;
+    let value: Record<string, unknown>;
     try {
-      parsed = JSON.parse(framed.text);
+      value = parseRecallSessionRecord(framed.text, sessionPath, framed.sourceLine, 0, 0).value;
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      throw new Error(
-        `Recall session JSON invalid at ${sessionPath}:${framed.sourceLine}: ${message}`,
-        { cause: error },
-      );
+      if (error instanceof Error && error.message.startsWith('Recall session graph invalid')) {
+        throw new Error(
+          `Recall session import unsupported or ambiguous at ${sessionPath}:${framed.sourceLine}: each record must be an object with a type`,
+          { cause: error },
+        );
+      }
+      throw error;
     }
-    if (!isUnknownRecord(parsed) || typeof parsed.type !== 'string') {
-      throw new Error(
-        `Recall session import unsupported or ambiguous at ${sessionPath}:${framed.sourceLine}: each record must be an object with a type`,
-      );
-    }
-    records.push({ sourceLine: framed.sourceLine, value: parsed });
+    records.push({ sourceLine: framed.sourceLine, value });
   }
   return records;
 }

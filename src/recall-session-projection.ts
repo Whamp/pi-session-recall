@@ -42,6 +42,12 @@ export interface RecallCompactionBoundary {
   firstRetainedEntryId: string;
 }
 
+/** Latest leaf observed for one runtime without claiming global leaf authority. */
+export interface RecallRuntimeLeafObservation {
+  runtimeInstanceId: string;
+  leafEntryId: string | null;
+}
+
 /** One preserved old-leaf transition that cannot be reconstructed from JSONL alone. */
 export interface RecallPreservedBranchExit {
   oldLeafEntryId: string | null;
@@ -49,12 +55,39 @@ export interface RecallPreservedBranchExit {
   summaryEntryId: string | null;
 }
 
-/** One immutable recall-eligible byte span and its bounding source entries. */
+/** Scalar tool-call identity retained for strict links without retaining arguments. */
+export interface RecallProjectedToolCall {
+  toolCallId: string;
+  toolName: string;
+}
+
+/** Scalar tool-result identity retained for strict links without retaining result text. */
+export interface RecallProjectedToolResult {
+  toolCallId: string;
+  toolName: string;
+}
+
+/** Scalar source geometry and graph links retained for one canonical session entry. */
+export interface RecallProjectedEntryDescriptor {
+  entryId: string;
+  parentEntryId: string | null;
+  entryType: string;
+  sourceLine: number;
+  startByte: number;
+  endByte: number;
+  firstKeptEntryId: string | null;
+  hasRetainedTail: boolean;
+  toolCalls: RecallProjectedToolCall[];
+  toolResult: RecallProjectedToolResult | null;
+}
+
+/** One immutable recall-eligible byte span and the source contributors it can materialize. */
 export interface RecallEligibleSourceSpan {
   startByte: number;
   endByte: number;
   startEntryId: string;
   endEntryId: string;
+  contributorEntryIds: string[];
 }
 
 interface RecallSessionProjectionBase {
@@ -72,7 +105,10 @@ interface RecallSessionProjectionBase {
 export interface PhysicalSessionProjection extends RecallSessionProjectionBase {
   projectionKind: RecallSessionProjectionKind.PHYSICAL_SESSION;
   sourcePath: string;
+  sourceDevice: string;
+  sourceInode: string;
   appendCursorBytes: number;
+  appendCursorLines: number;
   boundaryFingerprint: string;
   lastEntryId: string | null;
   logicalSessionIds: string[];
@@ -89,7 +125,10 @@ export interface LogicalSessionProjection extends RecallSessionProjectionBase {
   effectiveLeafEntryId: string | null;
   activeContextBoundary: RecallActiveContextBoundary | null;
   compactionBoundary: RecallCompactionBoundary | null;
+  runtimeLeafObservations: RecallRuntimeLeafObservation[];
   preservedBranchExits: RecallPreservedBranchExit[];
+  entryDescriptors: RecallProjectedEntryDescriptor[];
+  eligibleContributorEntryIds: string[];
   eligibleSpans: RecallEligibleSourceSpan[];
   labels: string[];
 }
@@ -167,7 +206,10 @@ const physicalSessionProjectionSchema = Type.Object(
     ...projectionBaseSchema,
     projectionKind: Type.Literal(RecallSessionProjectionKind.PHYSICAL_SESSION),
     sourcePath: nonemptyStringSchema,
+    sourceDevice: nonemptyStringSchema,
+    sourceInode: nonemptyStringSchema,
     appendCursorBytes: Type.Integer({ minimum: 0 }),
+    appendCursorLines: Type.Integer({ minimum: 0 }),
     boundaryFingerprint: Type.String({ pattern: '^[a-f0-9]{64}$' }),
     lastEntryId: nullableIdentifierSchema,
     logicalSessionIds: Type.Array(nonemptyStringSchema),
@@ -204,6 +246,15 @@ const logicalSessionProjectionSchema = Type.Object(
       ),
       Type.Null(),
     ]),
+    runtimeLeafObservations: Type.Array(
+      Type.Object(
+        {
+          runtimeInstanceId: nonemptyStringSchema,
+          leafEntryId: nullableIdentifierSchema,
+        },
+        { additionalProperties: false },
+      ),
+    ),
     preservedBranchExits: Type.Array(
       Type.Object(
         {
@@ -214,6 +265,35 @@ const logicalSessionProjectionSchema = Type.Object(
         { additionalProperties: false },
       ),
     ),
+    entryDescriptors: Type.Array(
+      Type.Object(
+        {
+          entryId: nonemptyStringSchema,
+          parentEntryId: nullableIdentifierSchema,
+          entryType: nonemptyStringSchema,
+          sourceLine: Type.Integer({ minimum: 1 }),
+          startByte: Type.Integer({ minimum: 0 }),
+          endByte: Type.Integer({ minimum: 1 }),
+          firstKeptEntryId: nullableIdentifierSchema,
+          hasRetainedTail: Type.Boolean(),
+          toolCalls: Type.Array(
+            Type.Object(
+              { toolCallId: nonemptyStringSchema, toolName: nonemptyStringSchema },
+              { additionalProperties: false },
+            ),
+          ),
+          toolResult: Type.Union([
+            Type.Object(
+              { toolCallId: nonemptyStringSchema, toolName: nonemptyStringSchema },
+              { additionalProperties: false },
+            ),
+            Type.Null(),
+          ]),
+        },
+        { additionalProperties: false },
+      ),
+    ),
+    eligibleContributorEntryIds: Type.Array(nonemptyStringSchema),
     eligibleSpans: Type.Array(
       Type.Object(
         {
@@ -221,6 +301,7 @@ const logicalSessionProjectionSchema = Type.Object(
           endByte: Type.Integer({ minimum: 0 }),
           startEntryId: nonemptyStringSchema,
           endEntryId: nonemptyStringSchema,
+          contributorEntryIds: Type.Array(nonemptyStringSchema),
         },
         { additionalProperties: false },
       ),
@@ -351,6 +432,25 @@ function assertRecallSessionProjectionInvariants(projection: RecallSessionProjec
     throw new Error(
       `Recall logical session projection physical ID mismatch: expected ${expectedPhysicalProjectionId}, received ${projection.physicalProjectionId}`,
     );
+  }
+  assertUniqueProjectionValues(
+    projection.runtimeLeafObservations.map(({ runtimeInstanceId }) => runtimeInstanceId),
+    'runtime leaf observation instance IDs',
+  );
+  assertUniqueProjectionValues(
+    projection.entryDescriptors.map(({ entryId }) => entryId),
+    'entry descriptor IDs',
+  );
+  assertUniqueProjectionValues(
+    projection.eligibleContributorEntryIds,
+    'eligible contributor entry IDs',
+  );
+  for (const descriptor of projection.entryDescriptors) {
+    if (descriptor.endByte <= descriptor.startByte) {
+      throw new Error(
+        `Recall logical session projection entry descriptor invalid: ${descriptor.startByte}-${descriptor.endByte}`,
+      );
+    }
   }
   for (const span of projection.eligibleSpans) {
     if (span.endByte <= span.startByte) {

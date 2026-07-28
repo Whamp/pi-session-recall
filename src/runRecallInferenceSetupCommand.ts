@@ -14,6 +14,7 @@ const RECALL_INFERENCE_SETUP_USAGE =
 /** Candidate catalog, state location, clock, and machine-readable output for inference setup. */
 export interface RecallInferenceSetupCommandOptions {
   statePath: string;
+  activeGenerationPath?: string;
   candidates: readonly RecallInferenceConfigurationCandidate[];
   nowIsoTimestamp?: () => string;
   writeOutput?: (value: string) => void;
@@ -129,7 +130,12 @@ export async function runRecallInferenceSetupCommand(
     const status = await inspectRecallInferenceConfiguration(
       options.statePath,
       options.candidates,
-      { verifyConformance: parsedAction.action === 'doctor' },
+      {
+        verifyConformance: parsedAction.action === 'doctor',
+        ...(options.activeGenerationPath
+          ? { activeGenerationPath: options.activeGenerationPath }
+          : {}),
+      },
     );
     writeOutput(JSON.stringify({ action: parsedAction.action, ...status }));
     return;
@@ -143,6 +149,9 @@ export async function runRecallInferenceSetupCommand(
     const configuration = await configureRecallInferenceCapability(options.statePath, candidate, {
       approvedArtifactChange: parsedAction.approvedArtifactChange,
       approvedEmbeddingReplacement: parsedAction.approvedEmbeddingReplacement,
+      ...(options.activeGenerationPath
+        ? { activeGenerationPath: options.activeGenerationPath }
+        : {}),
       ...(options.nowIsoTimestamp ? { nowIsoTimestamp: options.nowIsoTimestamp } : {}),
     });
     writeOutput(
@@ -160,7 +169,11 @@ export async function runRecallInferenceSetupCommand(
     return;
   }
   if (parsedAction.action === 'repair') {
-    const configuration = await readRecallInferenceConfiguration(options.statePath);
+    const configuration = await readRecallInferenceConfiguration(options.statePath, {
+      ...(options.activeGenerationPath
+        ? { activeGenerationPath: options.activeGenerationPath }
+        : {}),
+    });
     const selection =
       parsedAction.capability === RecallInferenceCapability.EMBEDDING
         ? configuration.embedding
@@ -183,6 +196,9 @@ export async function runRecallInferenceSetupCommand(
       candidate,
       {
         approvedArtifactRepair: parsedAction.approvedArtifactRepair,
+        ...(options.activeGenerationPath
+          ? { activeGenerationPath: options.activeGenerationPath }
+          : {}),
         ...(options.nowIsoTimestamp ? { nowIsoTimestamp: options.nowIsoTimestamp } : {}),
       },
     );

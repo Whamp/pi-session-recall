@@ -43,6 +43,7 @@ export async function runRecallFirstIndexSetupCli(
     );
     await runRecallInferenceSetupCommand(argumentsList.slice(1), {
       statePath: resolveRecallInferenceConfigurationPath(config),
+      ...(config.activeGenerationPath ? { activeGenerationPath: config.activeGenerationPath } : {}),
       candidates: inferenceCandidates ?? [
         createRecommendedEmbeddingGemmaInferenceCandidate(config),
         createRecommendedEmbeddingGemmaHttpInferenceCandidate(config),
@@ -57,6 +58,11 @@ export async function runRecallFirstIndexSetupCli(
     async createConfiguredServiceRuntime() {
       const inferenceConfiguration = await readRecallInferenceConfiguration(
         resolveRecallInferenceConfigurationPath(config),
+        {
+          ...(config.activeGenerationPath
+            ? { activeGenerationPath: config.activeGenerationPath }
+            : {}),
+        },
       );
       return inferenceConfiguration.embedding
         ? createConfiguredRecallInferenceRuntime(config, { adapterRegistries })

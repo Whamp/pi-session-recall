@@ -360,12 +360,13 @@ void test('first-index measurement accepts an independently configured HTTP embe
   const config = createSetupCommandTestConfig(root);
   const inferenceConfigurationPath = join(root, 'data', 'inference-configuration.json');
   const profile = createRecommendedEmbeddingGemmaModelProfile();
+  const configuredProfileId = 'independent-http-embedding-profile-v1';
   const httpCandidate: RecallInferenceConfigurationCandidate = {
     capability: RecallInferenceCapability.EMBEDDING,
-    candidateId: 'recommended-embeddinggemma-http',
-    profileId: profile.profileId,
+    candidateId: 'independent-http-embedding',
+    profileId: configuredProfileId,
     backend: RecallInferenceBackend.LLAMA_CPP_HTTP,
-    adapterId: 'llama-cpp-http-embedding-v1',
+    adapterId: 'independent-http-embedding-v1',
     endpoint: 'http://embedding.test/v1',
     device: null,
     artifact: null,
@@ -374,10 +375,11 @@ void test('first-index measurement accepts an independently configured HTTP embe
     },
     async verifyCapabilityConformance() {
       return {
-        profileId: profile.profileId,
-        adapterId: 'llama-cpp-http-embedding-v1',
+        profileId: configuredProfileId,
+        adapterId: 'independent-http-embedding-v1',
         backend: RecallInferenceBackend.LLAMA_CPP_HTTP,
-        cacheIdentity: profile.profileId,
+        cacheIdentity: `${configuredProfileId}:independent-http-embedding-v1`,
+        embeddingProfileId: configuredProfileId,
         measurement: { fixtureOperations: 1 },
       };
     },
@@ -420,37 +422,52 @@ void test('first-index measurement accepts an independently configured HTTP embe
     },
   };
   const artifactPath = join(root, 'models', profile.source.artifact);
+  let artifactDownloadCount = 0;
+  const artifactCache = {
+    async inspectArtifact() {
+      return {
+        profile,
+        status: {
+          state: 'missing' as const,
+          artifactPath,
+          partialPaths: [],
+          repair: 'not required for this HTTP setup fixture',
+        },
+      };
+    },
+    async verifyArtifact() {
+      throw new Error('HTTP setup fixture does not verify a local artifact');
+    },
+    async diagnoseArtifact() {
+      throw new Error('HTTP setup fixture does not diagnose a local artifact');
+    },
+    async downloadArtifact() {
+      artifactDownloadCount += 1;
+      throw new Error('HTTP setup fixture does not download a local artifact');
+    },
+    async repairArtifact() {
+      throw new Error('HTTP setup fixture does not repair a local artifact');
+    },
+    async removeArtifact() {
+      throw new Error('HTTP setup fixture does not remove a local artifact');
+    },
+  };
+  await assert.rejects(
+    () =>
+      runRecallFirstIndexSetupCommand(['select-embeddinggemma', '--approve-download'], {
+        config,
+        inferenceConfigurationPath,
+        artifactCache,
+        writeOutput() {},
+      }),
+    /different embedding profile.*inference configure/u,
+  );
+  assert.equal(artifactDownloadCount, 0);
+
   await runRecallFirstIndexSetupCommand(['estimate', '--measure'], {
     config,
     inferenceConfigurationPath,
-    artifactCache: {
-      async inspectArtifact() {
-        return {
-          profile,
-          status: {
-            state: 'missing',
-            artifactPath,
-            partialPaths: [],
-            repair: 'not required for this HTTP setup fixture',
-          },
-        };
-      },
-      async verifyArtifact() {
-        throw new Error('HTTP setup fixture does not verify a local artifact');
-      },
-      async diagnoseArtifact() {
-        throw new Error('HTTP setup fixture does not diagnose a local artifact');
-      },
-      async downloadArtifact() {
-        throw new Error('HTTP setup fixture does not download a local artifact');
-      },
-      async repairArtifact() {
-        throw new Error('HTTP setup fixture does not repair a local artifact');
-      },
-      async removeArtifact() {
-        throw new Error('HTTP setup fixture does not remove a local artifact');
-      },
-    },
+    artifactCache,
     metadataService: service,
     createConfiguredServiceRuntime() {
       return { service, async dispose() {} };

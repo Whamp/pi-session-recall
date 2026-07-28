@@ -13,3 +13,5 @@ One atomically replaced `background-index-status.json` record reports the build 
 Search still resolves only the active index generation. A background writer cannot acquire or remove the active generation's lock. Parsing, embedding, store-write, optimization, and pre-activation interruption therefore leave active recall unchanged and staging recoverable.
 
 A child process cannot inherit injected JavaScript functions. The default worker can reconstruct the built-in configuration. A caller that injects an embedding profile, provider, tokenizer, store, or project resolver must provide a named service-factory module for the worker. Starting background work fails before launch when those dependencies cannot be reconstructed; the service never switches profiles or adapters silently.
+
+Embedding replacement setup validates and persists a pending embedding selection before starting this worker. The named factory reconstructs that pending selection for staging, while ordinary configured runtimes retain the active selection until the matching generation activates.

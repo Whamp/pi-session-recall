@@ -167,7 +167,10 @@ export async function createConfiguredRecallInferenceRuntime(
 ): Promise<ConfiguredRecallInferenceRuntime> {
   const configurationPath =
     options.inferenceConfigurationPath ?? resolveRecallInferenceConfigurationPath(config);
-  const configuration = await readRecallInferenceConfiguration(configurationPath);
+  const configuration = await readRecallInferenceConfiguration(configurationPath, {
+    activeGenerationPath:
+      config.activeGenerationPath ?? join(dirname(config.manifestPath), 'active-generation.json'),
+  });
   const embeddingSelection = configuration.embedding;
   if (!embeddingSelection) {
     throw new Error(

@@ -330,7 +330,14 @@ export async function runRecallFirstIndexSetupCommand(
   const state = await readRecallFirstIndexSetupState(statePath);
   const inferenceConfigurationPath =
     options.inferenceConfigurationPath ?? join(dataDirectory, 'inference-configuration.json');
-  const inferenceConfiguration = await readRecallInferenceConfiguration(inferenceConfigurationPath);
+  const inferenceConfiguration = await readRecallInferenceConfiguration(
+    inferenceConfigurationPath,
+    {
+      ...(options.config.activeGenerationPath
+        ? { activeGenerationPath: options.config.activeGenerationPath }
+        : {}),
+    },
+  );
   const configuredEmbedding = inferenceConfiguration.embedding ?? state.embedding;
   const inspection = await artifactCache.inspectArtifact();
   const recommendation = {
@@ -366,6 +373,19 @@ export async function runRecallFirstIndexSetupCommand(
   }
 
   if (parsedAction.action === 'select-embeddinggemma') {
+    if (inferenceConfiguration.pendingEmbeddingReplacement) {
+      throw new Error(
+        'Recall first-index setup cannot replace embeddings while another embedding replacement is pending; inspect or resume the existing staging generation',
+      );
+    }
+    if (
+      inferenceConfiguration.embedding &&
+      inferenceConfiguration.embedding.profileId !== profile.profileId
+    ) {
+      throw new Error(
+        `Recall first-index setup cannot replace different embedding profile ${inferenceConfiguration.embedding.profileId}; use inference configure with explicit replacement approval`,
+      );
+    }
     if (!parsedAction.approvedDownload) {
       throw new Error(
         'Recall first-index setup selection requires explicit --approve-download after reviewing model purpose, source, license, exact size, cache path, and device policy',
@@ -420,6 +440,7 @@ export async function runRecallFirstIndexSetupCommand(
         conformance: {
           verifiedAt,
           cacheIdentity: selection.verification.embeddingProfileId,
+          embeddingProfileId: selection.verification.embeddingProfileId,
           measurement: { verificationOperations: 1 },
         },
       },

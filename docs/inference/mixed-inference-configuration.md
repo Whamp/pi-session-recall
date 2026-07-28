@@ -38,7 +38,7 @@ inference remove CAPABILITY
 
 The command receives an explicit candidate catalog. The default CLI catalog contains embedded and llama.cpp HTTP EmbeddingGemma plus the recommended embedded/HTTP reranker and planner candidates. Project-specific custom adapters register a candidate catalog and a `RecallInferenceAdapterRegistry` runtime factory; there is no arbitrary URL/field mapper.
 
-A candidate is accepted only after `verifyCapabilityConformance()` succeeds and returns the exact candidate profile, backend, adapter, and cache identity. Built-in candidate implementations call the public `RecallConversationService` verification operations. Custom candidates must call the relevant shared harness:
+A candidate is accepted only after `verifyCapabilityConformance()` succeeds and returns the exact candidate profile, backend, adapter, and cache identity. Embedding candidates also return the semantic `embeddingProfileId` used by index-generation manifests and selectors; this identity may differ from the adapter-specific cache identity. Built-in candidate implementations call the public `RecallConversationService` verification operations. Custom candidates must call the relevant shared harness:
 
 - `measureRecallEmbeddingProviderConformance()` with independent query/document vectors;
 - `measureRecallRerankingProviderConformance()` with independent ordered scores; or
@@ -50,7 +50,11 @@ Failed preparation, artifact validation, identity matching, conformance, or stag
 
 Changing only the embedding backend or adapter while retaining the same model profile updates configuration without calling an index-generation operation. The active vectors remain compatible. If the first generation has not activated yet, guided measurement and launch also reconstruct this updated selection instead of reusing the initial embedded setup runtime.
 
-Changing the embedding profile requires `--approve-replacement`. Setup calls the candidate's public generation service and starts a detached staging build, or resumes staging only when its embedding semantic identity is exact. A staging generation for another profile is never discarded or reused automatically. The active generation remains selected until the replacement validates and activates through the existing atomic-generation boundary.
+Changing the embedding profile requires `--approve-replacement`. Setup validates the complete selection, persists it as a pending embedding replacement, then calls the candidate's public generation service. It starts a detached staging build or resumes staging only when `embeddingProfileId` matches exactly. A staging generation for another profile is never discarded or reused automatically. Configuration mutations serialize through launch and rollback, so one failed launch cannot erase a later replacement. A configuration-write failure starts no worker, and a launch failure restores the previous state.
+
+The pending replacement remains inactive while staging builds, so configured runtimes continue to use the embedding selection that matches the active generation. Once the matching generation activates, configuration reads resolve the pending selection as active. Setup and runtime reconstruction both honor a configured nondefault active-generation selector path. This selector-based resolution is crash-safe on either side of activation. Version 1 configuration files migrate in memory; their embedding cache identity becomes the explicit generation identity because version 1 required those values to be equal.
+
+The first-index `select-embeddinggemma` action can select a fresh installation or move execution for the same embedding profile. It refuses to replace a different profile or overwrite a pending replacement; use `inference configure ... --approve-replacement` for that transition.
 
 Reranker and planner selections carry capability-specific cache identity. Replacing either changes only that capability's cache/search-policy identity. It neither opens zvec nor starts a vector rebuild. Removing either optional capability preserves embeddings and the other optional capability. An embedding-only runtime continues to serve hybrid recall and rejects `deep-rerank` with an explicit configuration error.
 
@@ -62,7 +66,7 @@ Repair requires the exact selected candidate. Artifact mutation requires separat
 
 A custom integration registers its setup candidates and one `RecallInferenceAdapterRegistry`. Persisted candidate, profile, backend, adapter, and endpoint identities select that registry after restart. An unavailable registry fails explicitly. The registry creates the complete mixed runtime, so it also owns any custom detached-worker factory required for background indexing.
 
-Detached built-in embedding replacement uses a candidate-specific named background service factory. The child therefore receives the selected embedding semantics even when the new configuration is committed only after launch succeeds.
+Detached built-in embedding replacement uses a candidate-specific named background service factory. The child therefore receives the pending embedding semantics without making that selection active before its generation activates.
 
 ## Deterministic evidence
 
@@ -72,7 +76,10 @@ The committed tests prove:
 - all three capabilities can independently record embedded, llama.cpp HTTP, or conforming custom execution;
 - failed custom conformance cannot replace an accepted selection;
 - backend-only embedding movement starts no staging build;
-- an approved embedding profile change starts staging and leaves the old selection on launch failure;
+- an approved embedding profile change durably records pending semantics before launch, keeps the old selection active while staging, and restores the prior state on launch failure;
+- matching staging work resumes by embedding semantic identity even when cache identity is richer;
+- concurrent replacement attempts serialize through launch and rollback;
+- first-index selection cannot bypass staging for a different embedding profile;
 - optional profile/cache identity changes do not rebuild vectors;
 - repair changes only the selected capability;
 - status and doctor expose every configured identity, artifact, device, conformance result, and repair;

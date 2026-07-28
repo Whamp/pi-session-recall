@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 
 import { Type } from 'typebox';
 import { Value } from 'typebox/value';
@@ -10,9 +11,12 @@ import {
   RecallInferenceBackend,
   RecallInferenceCapability,
 } from './enums.js';
+import { isUnknownRecord } from './is-unknown-record.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
 
-const RECALL_INFERENCE_CONFIGURATION_VERSION = 1;
+const RECALL_INFERENCE_CONFIGURATION_VERSION = 2;
+const RECALL_INFERENCE_CONFIGURATION_LOCK_RETRY_MILLISECONDS = 25;
+const RECALL_INFERENCE_CONFIGURATION_LOCK_MISSING_OWNER_LIMIT = 4;
 
 const RECALL_INFERENCE_CAPABILITY_SCHEMA = Type.Enum(RecallInferenceCapability);
 const RECALL_INFERENCE_BACKEND_SCHEMA = Type.Enum(RecallInferenceBackend);
@@ -36,11 +40,34 @@ const RECALL_INFERENCE_DEVICE_SCHEMA = Type.Object(
   },
   { additionalProperties: false },
 );
-const RECALL_INFERENCE_CONFORMANCE_SCHEMA = Type.Object(
+const RECALL_INFERENCE_CONFORMANCE_V1_SCHEMA = Type.Object(
   {
     verifiedAt: Type.String({ format: 'date-time' }),
     cacheIdentity: Type.String({ minLength: 1 }),
     measurement: Type.Record(Type.String({ minLength: 1 }), Type.Number({ minimum: 0 })),
+  },
+  { additionalProperties: false },
+);
+const RECALL_INFERENCE_CONFORMANCE_SCHEMA = Type.Object(
+  {
+    verifiedAt: Type.String({ format: 'date-time' }),
+    cacheIdentity: Type.String({ minLength: 1 }),
+    embeddingProfileId: Type.Union([Type.Null(), Type.String({ minLength: 1 })]),
+    measurement: Type.Record(Type.String({ minLength: 1 }), Type.Number({ minimum: 0 })),
+  },
+  { additionalProperties: false },
+);
+const RECALL_CONFIGURED_INFERENCE_CAPABILITY_V1_SCHEMA = Type.Object(
+  {
+    capability: RECALL_INFERENCE_CAPABILITY_SCHEMA,
+    candidateId: Type.String({ minLength: 1 }),
+    profileId: Type.String({ minLength: 1 }),
+    backend: RECALL_INFERENCE_BACKEND_SCHEMA,
+    adapterId: Type.String({ minLength: 1 }),
+    endpoint: Type.Union([Type.Null(), Type.String({ minLength: 1 })]),
+    device: Type.Union([Type.Null(), RECALL_INFERENCE_DEVICE_SCHEMA]),
+    artifact: Type.Union([Type.Null(), RECALL_INFERENCE_ARTIFACT_SCHEMA]),
+    conformance: RECALL_INFERENCE_CONFORMANCE_V1_SCHEMA,
   },
   { additionalProperties: false },
 );
@@ -58,12 +85,41 @@ const RECALL_CONFIGURED_INFERENCE_CAPABILITY_SCHEMA = Type.Object(
   },
   { additionalProperties: false },
 );
+const RECALL_INFERENCE_CONFIGURATION_V1_SCHEMA = Type.Object(
+  {
+    version: Type.Literal(1),
+    embedding: Type.Union([Type.Null(), RECALL_CONFIGURED_INFERENCE_CAPABILITY_V1_SCHEMA]),
+    reranking: Type.Union([Type.Null(), RECALL_CONFIGURED_INFERENCE_CAPABILITY_V1_SCHEMA]),
+    queryPlanning: Type.Union([Type.Null(), RECALL_CONFIGURED_INFERENCE_CAPABILITY_V1_SCHEMA]),
+  },
+  { additionalProperties: false },
+);
+const RECALL_PENDING_EMBEDDING_REPLACEMENT_SCHEMA = Type.Object(
+  {
+    embeddingProfileId: Type.String({ minLength: 1 }),
+    selection: RECALL_CONFIGURED_INFERENCE_CAPABILITY_SCHEMA,
+  },
+  { additionalProperties: false },
+);
 const RECALL_INFERENCE_CONFIGURATION_SCHEMA = Type.Object(
   {
     version: Type.Literal(RECALL_INFERENCE_CONFIGURATION_VERSION),
     embedding: Type.Union([Type.Null(), RECALL_CONFIGURED_INFERENCE_CAPABILITY_SCHEMA]),
     reranking: Type.Union([Type.Null(), RECALL_CONFIGURED_INFERENCE_CAPABILITY_SCHEMA]),
     queryPlanning: Type.Union([Type.Null(), RECALL_CONFIGURED_INFERENCE_CAPABILITY_SCHEMA]),
+    pendingEmbeddingReplacement: Type.Union([
+      Type.Null(),
+      RECALL_PENDING_EMBEDDING_REPLACEMENT_SCHEMA,
+    ]),
+  },
+  { additionalProperties: false },
+);
+const ACTIVE_RECALL_INDEX_GENERATION_SCHEMA = Type.Object(
+  {
+    version: Type.Literal(1),
+    generationId: Type.String({ minLength: 1 }),
+    embeddingProfileId: Type.String({ minLength: 1 }),
+    activatedAt: Type.String({ format: 'date-time' }),
   },
   { additionalProperties: false },
 );
@@ -96,6 +152,7 @@ export interface RecallInferenceCandidateConformance {
   adapterId: string;
   backend: RecallInferenceBackend;
   cacheIdentity: string;
+  embeddingProfileId: string | null;
   measurement: Readonly<Record<string, number>>;
 }
 
@@ -135,6 +192,7 @@ export type RecallInferenceConfiguration = ReturnType<
 export interface ConfigureRecallInferenceCapabilityOptions {
   approvedArtifactChange?: boolean;
   approvedEmbeddingReplacement?: boolean;
+  activeGenerationPath?: string;
   nowIsoTimestamp?: () => string;
 }
 
@@ -155,9 +213,97 @@ export interface RecallInferenceConfigurationStatus {
   capabilities: readonly RecallInferenceCapabilityStatus[];
 }
 
+/** Optional active-generation selector used to resolve an activated pending embedding replacement. */
+export interface ReadRecallInferenceConfigurationOptions {
+  activeGenerationPath?: string;
+}
+
 /** Controls whether doctor reruns model semantics instead of reading stored conformance. */
 export interface InspectRecallInferenceConfigurationOptions {
   verifyConformance: boolean;
+  activeGenerationPath?: string;
+}
+
+function isRecallInferenceConfigurationLockOwnerAlive(processId: number): boolean {
+  try {
+    process.kill(processId, 0);
+    return true;
+  } catch (error) {
+    return readNodeErrorCode(error) === 'EPERM';
+  }
+}
+
+async function readRecallInferenceConfigurationLockOwner(
+  ownerPath: string,
+): Promise<number | undefined> {
+  try {
+    const parsed: unknown = JSON.parse(await readFile(ownerPath, 'utf8'));
+    if (!isUnknownRecord(parsed)) {
+      return undefined;
+    }
+    const processId = parsed.processId;
+    return typeof processId === 'number' && Number.isInteger(processId) && processId > 0
+      ? processId
+      : undefined;
+  } catch (error) {
+    if (readNodeErrorCode(error) === 'ENOENT' || error instanceof SyntaxError) {
+      return undefined;
+    }
+    throw error;
+  }
+}
+
+async function acquireRecallInferenceConfigurationLock(
+  statePath: string,
+): Promise<() => Promise<void>> {
+  const lockPath = `${statePath}.configuration-lock`;
+  const ownerPath = join(lockPath, 'owner.json');
+  await mkdir(dirname(lockPath), { recursive: true });
+  let missingOwnerCount = 0;
+  while (true) {
+    try {
+      await mkdir(lockPath);
+      try {
+        await writeFile(ownerPath, `${JSON.stringify({ processId: process.pid })}\n`, 'utf8');
+      } catch (error) {
+        await rm(lockPath, { recursive: true, force: true });
+        throw error;
+      }
+      return () => rm(lockPath, { recursive: true, force: true });
+    } catch (error) {
+      if (readNodeErrorCode(error) !== 'EEXIST') {
+        throw error;
+      }
+      const ownerProcessId = await readRecallInferenceConfigurationLockOwner(ownerPath);
+      if (ownerProcessId === undefined) {
+        missingOwnerCount += 1;
+        if (missingOwnerCount >= RECALL_INFERENCE_CONFIGURATION_LOCK_MISSING_OWNER_LIMIT) {
+          await rm(lockPath, { recursive: true, force: true });
+          missingOwnerCount = 0;
+          continue;
+        }
+      } else if (!isRecallInferenceConfigurationLockOwnerAlive(ownerProcessId)) {
+        await rm(lockPath, { recursive: true, force: true });
+        missingOwnerCount = 0;
+        continue;
+      } else {
+        missingOwnerCount = 0;
+      }
+      await sleep(RECALL_INFERENCE_CONFIGURATION_LOCK_RETRY_MILLISECONDS);
+    }
+  }
+}
+
+async function withRecallInferenceConfigurationLock<T>(
+  statePath: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const releaseLock = await acquireRecallInferenceConfigurationLock(statePath);
+  try {
+    return await operation();
+  } finally {
+    await releaseLock();
+  }
 }
 
 function createEmptyRecallInferenceConfiguration(): RecallInferenceConfiguration {
@@ -166,6 +312,7 @@ function createEmptyRecallInferenceConfiguration(): RecallInferenceConfiguration
     embedding: null,
     reranking: null,
     queryPlanning: null,
+    pendingEmbeddingReplacement: null,
   };
 }
 
@@ -242,18 +389,138 @@ function assertCandidateConformanceMatchesSelection(
       `Recall ${candidate.capability} conformance cache identity invalid for ${candidate.candidateId}`,
     );
   }
+  if (
+    candidate.capability === RecallInferenceCapability.EMBEDDING &&
+    !conformance.embeddingProfileId?.trim()
+  ) {
+    throw new Error(
+      `Recall embedding conformance generation identity invalid for ${candidate.candidateId}`,
+    );
+  }
+  if (
+    candidate.capability !== RecallInferenceCapability.EMBEDDING &&
+    conformance.embeddingProfileId !== null
+  ) {
+    throw new Error(
+      `Recall ${candidate.capability} conformance unexpectedly returned embedding generation identity for ${candidate.candidateId}`,
+    );
+  }
 }
 
-/** Reads atomic inference configuration; a missing file is an unconfigured installation. */
+function migrateRecallInferenceConfigurationV1(
+  configuration: ReturnType<typeof Value.Parse<typeof RECALL_INFERENCE_CONFIGURATION_V1_SCHEMA>>,
+): RecallInferenceConfiguration {
+  function migrateSelection(
+    selection: typeof configuration.embedding,
+  ): RecallInferenceConfiguration['embedding'] {
+    if (!selection) {
+      return null;
+    }
+    return Value.Parse(RECALL_CONFIGURED_INFERENCE_CAPABILITY_SCHEMA, {
+      ...selection,
+      conformance: {
+        ...selection.conformance,
+        embeddingProfileId:
+          selection.capability === RecallInferenceCapability.EMBEDDING
+            ? selection.conformance.cacheIdentity
+            : null,
+      },
+    });
+  }
+  return {
+    version: RECALL_INFERENCE_CONFIGURATION_VERSION,
+    embedding: migrateSelection(configuration.embedding),
+    reranking: migrateSelection(configuration.reranking),
+    queryPlanning: migrateSelection(configuration.queryPlanning),
+    pendingEmbeddingReplacement: null,
+  };
+}
+
+function parseRecallInferenceConfiguration(parsed: unknown): RecallInferenceConfiguration {
+  if (Value.Check(RECALL_INFERENCE_CONFIGURATION_SCHEMA, parsed)) {
+    return Value.Parse(RECALL_INFERENCE_CONFIGURATION_SCHEMA, parsed);
+  }
+  if (Value.Check(RECALL_INFERENCE_CONFIGURATION_V1_SCHEMA, parsed)) {
+    return migrateRecallInferenceConfigurationV1(
+      Value.Parse(RECALL_INFERENCE_CONFIGURATION_V1_SCHEMA, parsed),
+    );
+  }
+  return Value.Parse(RECALL_INFERENCE_CONFIGURATION_SCHEMA, parsed);
+}
+
+class RecallActiveGenerationSelectionError extends Error {}
+
+async function readActiveRecallIndexGenerationSelection(
+  activeGenerationPath: string,
+): Promise<ReturnType<typeof Value.Parse<typeof ACTIVE_RECALL_INDEX_GENERATION_SCHEMA>> | null> {
+  let text: string;
+  try {
+    text = await readFile(activeGenerationPath, 'utf8');
+  } catch (error) {
+    if (readNodeErrorCode(error) === 'ENOENT') {
+      return null;
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    throw new RecallActiveGenerationSelectionError(
+      `Recall active generation selection invalid at ${activeGenerationPath}: ${message}`,
+      { cause: error },
+    );
+  }
+  try {
+    const parsed: unknown = JSON.parse(text);
+    return Value.Parse(ACTIVE_RECALL_INDEX_GENERATION_SCHEMA, parsed);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new RecallActiveGenerationSelectionError(
+      `Recall active generation selection invalid at ${activeGenerationPath}: ${message}`,
+      { cause: error },
+    );
+  }
+}
+
+async function resolveActivatedPendingEmbeddingReplacement(
+  configuration: RecallInferenceConfiguration,
+  activeGenerationPath: string,
+): Promise<RecallInferenceConfiguration> {
+  const pending = configuration.pendingEmbeddingReplacement;
+  if (!pending) {
+    return configuration;
+  }
+  if (
+    pending.selection.capability !== RecallInferenceCapability.EMBEDDING ||
+    pending.selection.conformance.embeddingProfileId !== pending.embeddingProfileId
+  ) {
+    throw new Error('Recall pending embedding replacement identity is internally inconsistent');
+  }
+  const active = await readActiveRecallIndexGenerationSelection(activeGenerationPath);
+  if (!active || active.embeddingProfileId !== pending.embeddingProfileId) {
+    return configuration;
+  }
+  return {
+    ...configuration,
+    embedding: pending.selection,
+    pendingEmbeddingReplacement: null,
+  };
+}
+
+/** Reads inference configuration and resolves a pending replacement only after generation activation. */
 export async function readRecallInferenceConfiguration(
   statePath: string,
+  options: ReadRecallInferenceConfigurationOptions = {},
 ): Promise<RecallInferenceConfiguration> {
   try {
     const parsed: unknown = JSON.parse(await readFile(statePath, 'utf8'));
-    return Value.Parse(RECALL_INFERENCE_CONFIGURATION_SCHEMA, parsed);
+    const configuration = parseRecallInferenceConfiguration(parsed);
+    return resolveActivatedPendingEmbeddingReplacement(
+      configuration,
+      options.activeGenerationPath ?? join(dirname(statePath), 'active-generation.json'),
+    );
   } catch (error) {
     if (readNodeErrorCode(error) === 'ENOENT') {
       return createEmptyRecallInferenceConfiguration();
+    }
+    if (error instanceof RecallActiveGenerationSelectionError) {
+      throw error;
     }
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`Recall inference configuration invalid at ${statePath}: ${message}`, {
@@ -297,39 +564,6 @@ export async function configureRecallInferenceCapability(
   assertCandidateHealthAcceptable(candidate, health);
   const conformance = await candidate.verifyCapabilityConformance();
   assertCandidateConformanceMatchesSelection(candidate, conformance);
-  const current = await readRecallInferenceConfiguration(statePath);
-  const previousSelection = readConfiguredCapability(current, candidate.capability);
-  if (
-    candidate.capability === RecallInferenceCapability.EMBEDDING &&
-    previousSelection &&
-    previousSelection.profileId !== candidate.profileId
-  ) {
-    if (!options.approvedEmbeddingReplacement) {
-      throw new Error(
-        `Recall embedding profile change from ${previousSelection.profileId} to ${candidate.profileId} requires explicit embedding replacement approval`,
-      );
-    }
-    const generationService = candidate.generationService;
-    if (!generationService) {
-      throw new Error(
-        `Recall embedding profile change to ${candidate.profileId} cannot start staging: replacement generation service is unavailable`,
-      );
-    }
-    const generations = await generationService.readIndexGenerationStatus();
-    if (
-      generations.staging &&
-      generations.staging.embeddingProfileId !== conformance.cacheIdentity
-    ) {
-      throw new Error(
-        `Recall embedding profile change cannot reuse staging profile ${generations.staging.embeddingProfileId}; explicitly discard it before selecting ${candidate.profileId}`,
-      );
-    }
-    if (generations.staging) {
-      await generationService.resumeBackgroundIndexGeneration();
-    } else {
-      await generationService.startBackgroundIndexGeneration();
-    }
-  }
   const selectedAt = options.nowIsoTimestamp?.() ?? new Date().toISOString();
   const selection = Value.Parse(RECALL_CONFIGURED_INFERENCE_CAPABILITY_SCHEMA, {
     capability: candidate.capability,
@@ -349,17 +583,75 @@ export async function configureRecallInferenceCapability(
     conformance: {
       verifiedAt: selectedAt,
       cacheIdentity: conformance.cacheIdentity,
+      embeddingProfileId: conformance.embeddingProfileId,
       measurement: { ...conformance.measurement },
     },
   });
-  const updated = replaceConfiguredCapability(current, candidate.capability, selection);
-  await writeRecallInferenceConfiguration(statePath, updated);
-  return updated;
+  return withRecallInferenceConfigurationLock(statePath, async () => {
+    const current = await readRecallInferenceConfiguration(statePath, {
+      ...(options.activeGenerationPath
+        ? { activeGenerationPath: options.activeGenerationPath }
+        : {}),
+    });
+    const previousSelection = readConfiguredCapability(current, candidate.capability);
+    if (
+      candidate.capability === RecallInferenceCapability.EMBEDDING &&
+      previousSelection &&
+      previousSelection.profileId !== candidate.profileId
+    ) {
+      if (!options.approvedEmbeddingReplacement) {
+        throw new Error(
+          `Recall embedding profile change from ${previousSelection.profileId} to ${candidate.profileId} requires explicit embedding replacement approval`,
+        );
+      }
+      const generationService = candidate.generationService;
+      if (!generationService) {
+        throw new Error(
+          `Recall embedding profile change to ${candidate.profileId} cannot start staging: replacement generation service is unavailable`,
+        );
+      }
+      const embeddingProfileId = conformance.embeddingProfileId;
+      if (!embeddingProfileId) {
+        throw new Error(
+          `Recall embedding profile change to ${candidate.profileId} lacks a verified generation identity`,
+        );
+      }
+      const generations = await generationService.readIndexGenerationStatus();
+      if (generations.staging && generations.staging.embeddingProfileId !== embeddingProfileId) {
+        throw new Error(
+          `Recall embedding profile change cannot reuse staging profile ${generations.staging.embeddingProfileId}; explicitly discard it before selecting ${candidate.profileId}`,
+        );
+      }
+      const pendingConfiguration: RecallInferenceConfiguration = {
+        ...current,
+        pendingEmbeddingReplacement: {
+          embeddingProfileId,
+          selection,
+        },
+      };
+      await writeRecallInferenceConfiguration(statePath, pendingConfiguration);
+      try {
+        if (generations.staging) {
+          await generationService.resumeBackgroundIndexGeneration();
+        } else {
+          await generationService.startBackgroundIndexGeneration();
+        }
+      } catch (error) {
+        await writeRecallInferenceConfiguration(statePath, current);
+        throw error;
+      }
+      return pendingConfiguration;
+    }
+    const updated = replaceConfiguredCapability(current, candidate.capability, selection);
+    await writeRecallInferenceConfiguration(statePath, updated);
+    return updated;
+  });
 }
 
 /** Consent and clock used to repair exactly one already selected capability. */
 export interface RepairRecallInferenceCapabilityOptions {
   approvedArtifactRepair?: boolean;
+  activeGenerationPath?: string;
   nowIsoTimestamp?: () => string;
 }
 
@@ -370,7 +662,9 @@ export async function repairRecallInferenceCapability(
   candidate: RecallInferenceConfigurationCandidate,
   options: RepairRecallInferenceCapabilityOptions = {},
 ): Promise<RecallInferenceConfiguration> {
-  const current = await readRecallInferenceConfiguration(statePath);
+  const current = await readRecallInferenceConfiguration(statePath, {
+    ...(options.activeGenerationPath ? { activeGenerationPath: options.activeGenerationPath } : {}),
+  });
   const selection = readConfiguredCapability(current, capability);
   if (!selection) {
     throw new Error(`Recall ${capability} repair unavailable: capability is not configured`);
@@ -410,12 +704,33 @@ export async function repairRecallInferenceCapability(
     conformance: {
       verifiedAt: options.nowIsoTimestamp?.() ?? new Date().toISOString(),
       cacheIdentity: conformance.cacheIdentity,
+      embeddingProfileId: conformance.embeddingProfileId,
       measurement: { ...conformance.measurement },
     },
   });
-  const updated = replaceConfiguredCapability(current, capability, repairedSelection);
-  await writeRecallInferenceConfiguration(statePath, updated);
-  return updated;
+  return withRecallInferenceConfigurationLock(statePath, async () => {
+    const latest = await readRecallInferenceConfiguration(statePath, {
+      ...(options.activeGenerationPath
+        ? { activeGenerationPath: options.activeGenerationPath }
+        : {}),
+    });
+    const latestSelection = readConfiguredCapability(latest, capability);
+    if (!latestSelection || !findSelectedCandidate(latestSelection, [candidate])) {
+      throw new Error(
+        `Recall ${capability} repair selection changed while conformance was running; retry the exact selected adapter`,
+      );
+    }
+    const updated = replaceConfiguredCapability(latest, capability, {
+      ...repairedSelection,
+      candidateId: latestSelection.candidateId,
+      profileId: latestSelection.profileId,
+      backend: latestSelection.backend,
+      adapterId: latestSelection.adapterId,
+      endpoint: latestSelection.endpoint,
+    });
+    await writeRecallInferenceConfiguration(statePath, updated);
+    return updated;
+  });
 }
 
 /** Removes an optional capability while preserving embeddings and every sibling selection. */
@@ -428,10 +743,12 @@ export async function removeRecallInferenceCapability(
       'Recall inference configuration cannot remove the required embedding capability',
     );
   }
-  const current = await readRecallInferenceConfiguration(statePath);
-  const updated = replaceConfiguredCapability(current, capability, null);
-  await writeRecallInferenceConfiguration(statePath, updated);
-  return updated;
+  return withRecallInferenceConfigurationLock(statePath, async () => {
+    const current = await readRecallInferenceConfiguration(statePath);
+    const updated = replaceConfiguredCapability(current, capability, null);
+    await writeRecallInferenceConfiguration(statePath, updated);
+    return updated;
+  });
 }
 
 /** Inspects all configured capabilities and optionally reruns their exact conformance probes. */
@@ -440,7 +757,9 @@ export async function inspectRecallInferenceConfiguration(
   candidates: readonly RecallInferenceConfigurationCandidate[],
   options: InspectRecallInferenceConfigurationOptions,
 ): Promise<RecallInferenceConfigurationStatus> {
-  const configuration = await readRecallInferenceConfiguration(statePath);
+  const configuration = await readRecallInferenceConfiguration(statePath, {
+    ...(options.activeGenerationPath ? { activeGenerationPath: options.activeGenerationPath } : {}),
+  });
   const capabilities: RecallInferenceCapability[] = [
     RecallInferenceCapability.EMBEDDING,
     RecallInferenceCapability.RERANKING,

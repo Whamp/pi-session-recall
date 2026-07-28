@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { setTimeout as sleep } from 'node:timers/promises';
 
 import { createConfiguredRecallInferenceRuntime } from './configured-recall-inference-runtime.js';
 import {
@@ -76,10 +77,8 @@ function createConformingCandidate(
         profileId,
         adapterId,
         backend,
-        cacheIdentity:
-          capability === RecallInferenceCapability.EMBEDDING
-            ? profileId
-            : `${profileId}:${adapterId}:fixture-policy-v1`,
+        cacheIdentity: `${profileId}:${adapterId}:fixture-policy-v1`,
+        embeddingProfileId: capability === RecallInferenceCapability.EMBEDDING ? profileId : null,
         measurement: { fixtureOperations: 1 },
       };
     },
@@ -144,7 +143,11 @@ void test('mixed inference configuration requires only embeddings and verifies e
   assert.equal(configuration.embedding?.backend, RecallInferenceBackend.EMBEDDED);
   assert.equal(configuration.reranking?.backend, RecallInferenceBackend.LLAMA_CPP_HTTP);
   assert.equal(configuration.queryPlanning?.backend, RecallInferenceBackend.CUSTOM);
-  assert.equal(configuration.embedding?.conformance.cacheIdentity, 'embedding-profile-v1');
+  assert.equal(
+    configuration.embedding?.conformance.cacheIdentity,
+    'embedding-profile-v1:embedding-adapter-v1:fixture-policy-v1',
+  );
+  assert.equal(configuration.embedding?.conformance.embeddingProfileId, 'embedding-profile-v1');
   assert.equal(
     configuration.reranking?.conformance.cacheIdentity,
     'reranking-profile-v1:reranking-http-v1:fixture-policy-v1',
@@ -157,11 +160,51 @@ void test('mixed inference configuration requires only embeddings and verifies e
   assert.deepEqual(configuration.embedding?.device?.names, ['Fixture CPU']);
 });
 
+void test('version 1 inference configuration migrates embedding semantic identity without changing selection', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-inference-v1-migration-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const statePath = join(root, 'inference-configuration.json');
+  await writeFile(
+    statePath,
+    `${JSON.stringify({
+      version: 1,
+      embedding: {
+        capability: RecallInferenceCapability.EMBEDDING,
+        candidateId: 'legacy-embedding',
+        profileId: 'legacy-model-profile',
+        backend: RecallInferenceBackend.CUSTOM,
+        adapterId: 'legacy-adapter',
+        endpoint: null,
+        device: null,
+        artifact: null,
+        conformance: {
+          verifiedAt: '2026-08-02T10:00:00.000Z',
+          cacheIdentity: 'legacy-embedding-semantic-identity',
+          measurement: { fixtureOperations: 1 },
+        },
+      },
+      reranking: null,
+      queryPlanning: null,
+    })}\n`,
+    'utf8',
+  );
+
+  const migrated = await readRecallInferenceConfiguration(statePath);
+  assert.equal(migrated.version, 2);
+  assert.equal(migrated.embedding?.candidateId, 'legacy-embedding');
+  assert.equal(
+    migrated.embedding?.conformance.embeddingProfileId,
+    'legacy-embedding-semantic-identity',
+  );
+  assert.equal(migrated.pendingEmbeddingReplacement, null);
+});
+
 void test('embedding backend changes reuse vectors while profile changes launch approved staging work', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'recall-inference-replacement-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const statePath = join(root, 'inference-configuration.json');
   let backgroundStartCount = 0;
+  let backgroundResumeCount = 0;
   const embedded = createConformingCandidate(
     RecallInferenceCapability.EMBEDDING,
     'embedding-embedded',
@@ -190,6 +233,16 @@ void test('embedding backend changes reuse vectors while profile changes launch 
       },
       async startBackgroundIndexGeneration() {
         backgroundStartCount += 1;
+        const persisted: unknown = JSON.parse(await readFile(statePath, 'utf8'));
+        assert.ok(persisted && typeof persisted === 'object');
+        const persistedEmbedding: unknown = Reflect.get(persisted, 'embedding');
+        assert.ok(persistedEmbedding && typeof persistedEmbedding === 'object');
+        assert.equal(Reflect.get(persistedEmbedding, 'profileId'), 'embedding-profile-v1');
+        const pending: unknown = Reflect.get(persisted, 'pendingEmbeddingReplacement');
+        assert.ok(pending && typeof pending === 'object');
+        const pendingSelection: unknown = Reflect.get(pending, 'selection');
+        assert.ok(pendingSelection && typeof pendingSelection === 'object');
+        assert.equal(Reflect.get(pendingSelection, 'profileId'), 'embedding-profile-v2');
         return { generationId: null };
       },
       async resumeBackgroundIndexGeneration() {
@@ -216,11 +269,53 @@ void test('embedding backend changes reuse vectors while profile changes launch 
     approvedEmbeddingReplacement: true,
   });
   assert.equal(backgroundStartCount, 1);
+  const pendingConfiguration = await readRecallInferenceConfiguration(statePath);
+  assert.equal(pendingConfiguration.embedding?.profileId, 'embedding-profile-v1');
   assert.equal(
-    (await readRecallInferenceConfiguration(statePath)).embedding?.profileId,
+    pendingConfiguration.pendingEmbeddingReplacement?.selection.profileId,
     'embedding-profile-v2',
   );
 
+  const activeGenerationPath = join(root, 'active-generation.json');
+  await writeFile(
+    activeGenerationPath,
+    `${JSON.stringify({
+      version: 1,
+      generationId: 'generation-fixture',
+      embeddingProfileId: 'embedding-profile-v2',
+      activatedAt: '2026-08-02T11:00:00.000Z',
+    })}\n`,
+    'utf8',
+  );
+  const activatedConfiguration = await readRecallInferenceConfiguration(statePath);
+  assert.equal(activatedConfiguration.embedding?.profileId, 'embedding-profile-v2');
+  assert.equal(activatedConfiguration.pendingEmbeddingReplacement, null);
+
+  await rm(activeGenerationPath);
+  const resumedReplacement = {
+    ...replacement,
+    generationService: {
+      async readIndexGenerationStatus() {
+        return {
+          active: null,
+          staging: { embeddingProfileId: 'embedding-profile-v2' },
+        };
+      },
+      async startBackgroundIndexGeneration() {
+        throw new Error('existing semantic-compatible staging should resume');
+      },
+      async resumeBackgroundIndexGeneration() {
+        backgroundResumeCount += 1;
+        return { generationId: null };
+      },
+    },
+  } satisfies RecallInferenceConfigurationCandidate;
+  await configureRecallInferenceCapability(statePath, resumedReplacement, {
+    approvedEmbeddingReplacement: true,
+  });
+  assert.equal(backgroundResumeCount, 1);
+
+  const beforeFailedLaunch = await readRecallInferenceConfiguration(statePath);
   const failedReplacement = {
     ...createConformingCandidate(
       RecallInferenceCapability.EMBEDDING,
@@ -248,15 +343,160 @@ void test('embedding backend changes reuse vectors while profile changes launch 
       }),
     /fixture worker launch failed/u,
   );
-  assert.equal(
-    (await readRecallInferenceConfiguration(statePath)).embedding?.profileId,
-    'embedding-profile-v2',
-  );
+  assert.deepEqual(await readRecallInferenceConfiguration(statePath), beforeFailedLaunch);
 
   await assert.rejects(
     () => removeRecallInferenceCapability(statePath, RecallInferenceCapability.EMBEDDING),
     /required embedding capability/u,
   );
+});
+
+void test('embedding replacement validates and persists pending selection before worker launch', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-inference-pending-write-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const statePath = join(root, 'inference-configuration.json');
+  const current = createConformingCandidate(
+    RecallInferenceCapability.EMBEDDING,
+    'embedding-current',
+    'embedding-profile-v1',
+    RecallInferenceBackend.CUSTOM,
+    'embedding-current-v1',
+  );
+  await configureRecallInferenceCapability(statePath, current);
+
+  let backgroundStartCount = 0;
+  const invalidReplacement = {
+    ...createConformingCandidate(
+      RecallInferenceCapability.EMBEDDING,
+      'embedding-invalid',
+      'embedding-profile-v2',
+      RecallInferenceBackend.CUSTOM,
+      'embedding-invalid-v2',
+    ),
+    endpoint: '',
+    generationService: {
+      async readIndexGenerationStatus() {
+        return { active: null, staging: null };
+      },
+      async startBackgroundIndexGeneration() {
+        backgroundStartCount += 1;
+      },
+      async resumeBackgroundIndexGeneration() {
+        throw new Error('invalid replacement should not resume');
+      },
+    },
+  } satisfies RecallInferenceConfigurationCandidate;
+  await assert.rejects(
+    () =>
+      configureRecallInferenceCapability(statePath, invalidReplacement, {
+        approvedEmbeddingReplacement: true,
+      }),
+    /Parse/u,
+  );
+  assert.equal(backgroundStartCount, 0);
+
+  const validReplacement = {
+    ...createConformingCandidate(
+      RecallInferenceCapability.EMBEDDING,
+      'embedding-valid',
+      'embedding-profile-v2',
+      RecallInferenceBackend.CUSTOM,
+      'embedding-valid-v2',
+    ),
+    generationService: invalidReplacement.generationService,
+  } satisfies RecallInferenceConfigurationCandidate;
+  await chmod(root, 0o500);
+  try {
+    await assert.rejects(
+      () =>
+        configureRecallInferenceCapability(statePath, validReplacement, {
+          approvedEmbeddingReplacement: true,
+        }),
+      /EACCES|permission denied/u,
+    );
+  } finally {
+    await chmod(root, 0o700);
+  }
+  assert.equal(backgroundStartCount, 0);
+});
+
+void test('concurrent embedding replacements cannot roll back a later successful launch', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-inference-concurrent-replacement-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const statePath = join(root, 'inference-configuration.json');
+  await configureRecallInferenceCapability(
+    statePath,
+    createConformingCandidate(
+      RecallInferenceCapability.EMBEDDING,
+      'embedding-current',
+      'embedding-profile-v1',
+      RecallInferenceBackend.CUSTOM,
+      'embedding-current-v1',
+    ),
+  );
+
+  const firstLaunchStarted = Promise.withResolvers<void>();
+  const releaseFirstLaunch = Promise.withResolvers<void>();
+  const secondLaunchStarted = Promise.withResolvers<void>();
+  function createReplacementCandidate(
+    candidateId: string,
+    profileId: string,
+    startBackgroundIndexGeneration: () => Promise<void>,
+  ): RecallInferenceConfigurationCandidate {
+    return {
+      ...createConformingCandidate(
+        RecallInferenceCapability.EMBEDDING,
+        candidateId,
+        profileId,
+        RecallInferenceBackend.CUSTOM,
+        `${candidateId}-adapter`,
+      ),
+      generationService: {
+        async readIndexGenerationStatus() {
+          return { active: null, staging: null };
+        },
+        startBackgroundIndexGeneration,
+        async resumeBackgroundIndexGeneration() {
+          throw new Error('concurrent fixture has no staging generation');
+        },
+      },
+    };
+  }
+  const firstReplacement = createReplacementCandidate(
+    'embedding-first',
+    'embedding-profile-v2',
+    async () => {
+      firstLaunchStarted.resolve();
+      await releaseFirstLaunch.promise;
+      throw new Error('first fixture launch failed');
+    },
+  );
+  const secondReplacement = createReplacementCandidate(
+    'embedding-second',
+    'embedding-profile-v3',
+    async () => {
+      secondLaunchStarted.resolve();
+    },
+  );
+
+  const firstConfiguration = configureRecallInferenceCapability(statePath, firstReplacement, {
+    approvedEmbeddingReplacement: true,
+  });
+  await firstLaunchStarted.promise;
+  const secondConfiguration = configureRecallInferenceCapability(statePath, secondReplacement, {
+    approvedEmbeddingReplacement: true,
+  });
+  const secondStartedBeforeFirstSettled = await Promise.race([
+    secondLaunchStarted.promise.then(() => true),
+    sleep(25).then(() => false),
+  ]);
+  assert.equal(secondStartedBeforeFirstSettled, false);
+
+  releaseFirstLaunch.resolve();
+  await assert.rejects(firstConfiguration, /first fixture launch failed/u);
+  await secondConfiguration;
+  const configured = await readRecallInferenceConfiguration(statePath);
+  assert.equal(configured.pendingEmbeddingReplacement?.selection.profileId, 'embedding-profile-v3');
 });
 
 void test('repair and doctor preserve valid sibling capabilities and never accept failed custom conformance', async (t) => {

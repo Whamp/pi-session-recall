@@ -97,8 +97,12 @@ One exact capability profile, backend, adapter, artifact/device description, and
 _Avoid_: Provider default, generic endpoint
 
 **Capability conformance record**:
-The accepted profile, backend, adapter, cache identity, verification time, and bounded measurement persisted after one capability-specific conformance operation passes.
+The accepted profile, backend, adapter, cache identity, verification time, and bounded measurement persisted after one capability-specific conformance operation passes. Embedding records also carry the semantic identity that determines index-generation compatibility.
 _Avoid_: Health check, model availability
+
+**Pending embedding replacement**:
+One verified embedding selection waiting for a matching staging index generation to activate. It does not replace the active embedding selection while staging work is incomplete.
+_Avoid_: Configured embedding, active embedding
 
 **Evidence occurrence**:
 One exact source location for recalled evidence, including its session, graph position, and source geometry. Copied evidence can have several occurrences.

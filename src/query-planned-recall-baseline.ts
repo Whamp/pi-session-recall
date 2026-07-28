@@ -521,7 +521,7 @@ function createPrivateBaselineConfig(
 }
 
 function createPrivateBaselineDependencies(
-  dependencies: PrivateQueryPlannedRecallBaselineDependencies | undefined,
+  dependencies?: PrivateQueryPlannedRecallBaselineDependencies,
 ): RecallConversationDependencies {
   return {
     ...dependencies,

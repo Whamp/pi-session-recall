@@ -448,8 +448,8 @@ const QUERY_PLANNED_RECALL_RANK_TWO_OR_THREE_BONUS = 0.02;
 
 function validateRecallQueryPlanningOptions(
   mode: RecallSearchMode,
-  plan: readonly RecallPlannedRetrievalQuery[] | undefined,
-  intent: string | undefined,
+  plan?: readonly RecallPlannedRetrievalQuery[],
+  intent?: string,
 ): ValidatedRecallQueryPlanningOptions {
   if (mode === 'hybrid' && intent !== undefined) {
     throw new Error(

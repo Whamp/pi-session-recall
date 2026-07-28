@@ -127,6 +127,12 @@ export enum RecallEligibilityThreshold {
   CRASH_ONLY_QUIESCENCE = 'crash_only_quiescence',
 }
 
+/** Commit or durable deferral result from one incremental physical-session transfer. */
+export enum RecallIncrementalTransferOutcomeKind {
+  COMMITTED = 'committed',
+  DEFERRED = 'deferred',
+}
+
 /** Durable observation state for one physical session source. */
 export enum RecallSourceAvailability {
   PRESENT = 'present',

@@ -13,6 +13,13 @@ const cases = [
     thresholdMilliseconds: 60_000,
   },
   {
+    name: '32 prepared documents retain the 60-second explicit-exit threshold',
+    explicitExitObserved: true,
+    preparedDocumentCount: 32,
+    expectedThreshold: RecallEligibilityThreshold.EXPLICIT_EXIT_QUIET,
+    thresholdMilliseconds: 60_000,
+  },
+  {
     name: 'prepared work over 32 documents waits for 5 minutes without growth',
     explicitExitObserved: true,
     preparedDocumentCount: 33,

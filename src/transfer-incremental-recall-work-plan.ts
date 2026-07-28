@@ -6,6 +6,8 @@ import type { EmbeddingVectorCache } from './embedding-vector-cache.js';
 import {
   RecallAppendDeltaStatus,
   RecallAppendProjectionStatus,
+  RecallEligibilityThreshold,
+  RecallIncrementalTransferOutcomeKind,
   RecallProjectionEncodingStatus,
   RecallProjectionRepairState,
   RecallSessionProjectionKind,
@@ -28,6 +30,7 @@ import {
   type RecallSessionSourceRangeReader,
 } from './read-recall-session-append-delta.js';
 import type { ResolvedProjectIdentity } from './resolve-project-identity.js';
+import { scheduleRecallWorkPlanEligibility } from './schedule-recall-work-plan-eligibility.js';
 import type { ConversationTextTokenizer } from './session-conversation-index.js';
 import { commitIncrementalRecallTransfer } from './commit-incremental-recall-transfer.js';
 import { openZvecSessionProjectionStore } from './zvec-session-projection-store.js';
@@ -45,7 +48,26 @@ export interface TransferIncrementalRecallWorkPlanOptions {
   embeddingCache: Pick<EmbeddingVectorCache, 'resolveEmbeddingVectors'>;
   readRange?: RecallSessionSourceRangeReader;
   signal?: AbortSignal;
+  nowEpochMilliseconds?: () => number;
 }
+
+/** Successful incremental transfer with the exact number of immutable documents committed. */
+export interface CommittedIncrementalRecallWorkPlan {
+  readonly kind: RecallIncrementalTransferOutcomeKind.COMMITTED;
+  readonly committedDocumentCount: number;
+}
+
+/** Marker-backed work retained until one reconstructed quiet-period deadline. */
+export interface DeferredIncrementalRecallWorkPlan {
+  readonly kind: RecallIncrementalTransferOutcomeKind.DEFERRED;
+  readonly threshold: RecallEligibilityThreshold;
+  readonly readyAtEpochMilliseconds: number;
+}
+
+/** Durable outcome from one incremental transfer attempt. */
+export type IncrementalRecallWorkPlanTransferOutcome =
+  | CommittedIncrementalRecallWorkPlan
+  | DeferredIncrementalRecallWorkPlan;
 
 async function createInitialPhysicalProjection(
   workPlan: RecallMarkerReplayWorkPlan,
@@ -152,10 +174,30 @@ function spansForLogicalProjection(
   return spans.filter(({ startByte, endByte }) => sourceBoundaries.has(`${startByte}:${endByte}`));
 }
 
+function createDeferredIncrementalRecallWorkPlan(
+  threshold: RecallEligibilityThreshold,
+  readyAtEpochMilliseconds: number,
+): DeferredIncrementalRecallWorkPlan {
+  return {
+    kind: RecallIncrementalTransferOutcomeKind.DEFERRED,
+    threshold,
+    readyAtEpochMilliseconds,
+  };
+}
+
+async function readSourceModifiedAtEpochMilliseconds(sourcePath: string): Promise<number> {
+  const metadata = await stat(sourcePath, { bigint: true });
+  const modifiedAtEpochMilliseconds = Number(metadata.mtimeNs / 1_000_000n);
+  if (!Number.isSafeInteger(modifiedAtEpochMilliseconds) || modifiedAtEpochMilliseconds < 0) {
+    throw new Error('Recall incremental source modified time invalid');
+  }
+  return modifiedAtEpochMilliseconds;
+}
+
 /** Transfers one physical session from durable marker work through observed checkpoint acknowledgement. */
 export async function transferIncrementalRecallWorkPlan(
   options: TransferIncrementalRecallWorkPlanOptions,
-): Promise<void> {
+): Promise<IncrementalRecallWorkPlanTransferOutcome> {
   assertSinglePhysicalSessionWorkPlan(options.workPlan);
   const firstMarker = options.workPlan.workItems[0]?.marker;
   if (firstMarker === undefined) {
@@ -175,12 +217,29 @@ export async function transferIncrementalRecallWorkPlan(
       `Recall incremental append requires reconciliation: ${appendDelta.repairReason}`,
     );
   }
+  const sourceModifiedAtEpochMilliseconds = await readSourceModifiedAtEpochMilliseconds(
+    firstMarker.physicalSessionPath,
+  );
+  const nowEpochMilliseconds = options.nowEpochMilliseconds ?? Date.now;
+  const initialSchedule = scheduleRecallWorkPlanEligibility({
+    workPlan: options.workPlan,
+    sourceModifiedAtEpochMilliseconds,
+    preparedDocumentCount: 0,
+    nowEpochMilliseconds,
+  });
+  if (!initialSchedule.ready) {
+    return createDeferredIncrementalRecallWorkPlan(
+      initialSchedule.threshold,
+      initialSchedule.readyAtEpochMilliseconds,
+    );
+  }
   const projected = projectRecallSessionAppend({
     physicalProjection,
     logicalProjections: current.logicalProjections,
     appendDelta,
     markers: options.workPlan.workItems.map(({ marker }) => marker),
-    quiescenceObserved: false,
+    quiescenceObserved:
+      initialSchedule.threshold === RecallEligibilityThreshold.CRASH_ONLY_QUIESCENCE,
   });
   if (projected.status !== RecallAppendProjectionStatus.PROJECTED) {
     throw new Error(
@@ -218,7 +277,19 @@ export async function transferIncrementalRecallWorkPlan(
       `Recall incremental transfer requires reconciliation: ${prepared.repairReason}`,
     );
   }
-  await commitIncrementalRecallTransfer({
+  const preparedSchedule = scheduleRecallWorkPlanEligibility({
+    workPlan: options.workPlan,
+    sourceModifiedAtEpochMilliseconds,
+    preparedDocumentCount: prepared.documents.length,
+    nowEpochMilliseconds,
+  });
+  if (!preparedSchedule.ready) {
+    return createDeferredIncrementalRecallWorkPlan(
+      preparedSchedule.threshold,
+      preparedSchedule.readyAtEpochMilliseconds,
+    );
+  }
+  const committed = await commitIncrementalRecallTransfer({
     prepared,
     lockPath: options.lockPath,
     evidenceDatabasePath: options.evidenceDatabasePath,
@@ -226,4 +297,8 @@ export async function transferIncrementalRecallWorkPlan(
     embeddingDimensions: options.embeddingDimensions,
     ...(options.signal ? { signal: options.signal } : {}),
   });
+  return {
+    kind: RecallIncrementalTransferOutcomeKind.COMMITTED,
+    committedDocumentCount: committed.committedDocumentCount,
+  };
 }

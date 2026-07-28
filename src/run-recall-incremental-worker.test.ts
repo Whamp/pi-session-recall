@@ -1,13 +1,15 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import test from 'node:test';
 
 import {
+  RecallEligibilityThreshold,
   RecallGenerationCutoverState,
+  RecallIncrementalTransferOutcomeKind,
   RecallProjectionRepairState,
   RecallSessionProjectionKind,
   RecallSourceAvailability,
@@ -30,25 +32,27 @@ import {
   encodeRecallWorkMarker,
   RECALL_WORK_MARKER_VERSION,
   type RecallWorkMarker,
+  type RecallWorkMarkerIdentity,
+  type RecallWorkMarkerTriggerPayload,
 } from './recall-work-marker.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
 import { runRecallIncrementalWorker } from './run-recall-incremental-worker.js';
+import type { CommittedIncrementalRecallWorkPlan } from './transfer-incremental-recall-work-plan.js';
 
 interface WorkerFixture {
   controlDirectory: string;
   markerQuarantineDirectory: string;
   markerSpoolDirectory: string;
   sessionsDirectory: string;
+  physicalSessionPath: string;
   workerOwnershipLockPath: string;
   marker: RecallWorkMarker;
-  publishMarker(): Promise<void>;
+  publishMarker(marker?: RecallWorkMarker): Promise<void>;
 }
 
 async function createWorkerFixture(
   t: test.TestContext,
-  trigger:
-    | RecallWorkMarkerTrigger.ACTIVITY
-    | RecallWorkMarkerTrigger.ARRIVAL = RecallWorkMarkerTrigger.ACTIVITY,
+  trigger: RecallWorkMarkerTriggerPayload = { kind: RecallWorkMarkerTrigger.ACTIVITY },
 ): Promise<WorkerFixture> {
   const directory = await mkdtemp(join(tmpdir(), 'run-recall-incremental-worker-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -61,29 +65,50 @@ async function createWorkerFixture(
   await mkdir(markerSpoolDirectory, { recursive: true });
   await mkdir(sessionsDirectory, { recursive: true });
   await writeFile(physicalSessionPath, '{}\n');
-  const identity = {
+  const createdAtEpochMilliseconds = 1_753_315_200_000;
+  await utimes(
+    physicalSessionPath,
+    createdAtEpochMilliseconds / 1_000,
+    createdAtEpochMilliseconds / 1_000,
+  );
+  const identity: RecallWorkMarkerIdentity = {
     version: RECALL_WORK_MARKER_VERSION,
     physicalSessionId: 'physical-session-1',
     physicalSessionPath,
     runtimeInstanceId: 'runtime-1',
     runtimeSequence: 1,
-    createdAtEpochMilliseconds: 1_753_315_200_000,
-    trigger: { kind: trigger },
-  } as const;
-  const marker = { ...identity, markerId: createRecallWorkMarkerId(identity) };
+    createdAtEpochMilliseconds,
+    trigger,
+  };
+  const marker: RecallWorkMarker = {
+    ...identity,
+    markerId: createRecallWorkMarkerId(identity),
+  };
   return {
     controlDirectory,
     markerQuarantineDirectory,
     markerSpoolDirectory,
     sessionsDirectory,
+    physicalSessionPath,
     workerOwnershipLockPath,
     marker,
-    async publishMarker() {
+    async publishMarker(markerToPublish = marker) {
       await writeFile(
-        join(markerSpoolDirectory, `${marker.markerId}.json`),
-        await encodeRecallWorkMarker(marker, { trustedSessionRoots: [sessionsDirectory] }),
+        join(markerSpoolDirectory, `${markerToPublish.markerId}.json`),
+        await encodeRecallWorkMarker(markerToPublish, {
+          trustedSessionRoots: [sessionsDirectory],
+        }),
       );
     },
+  };
+}
+
+function committedTransferOutcome(
+  committedDocumentCount: number,
+): CommittedIncrementalRecallWorkPlan {
+  return {
+    kind: RecallIncrementalTransferOutcomeKind.COMMITTED,
+    committedDocumentCount,
   };
 }
 
@@ -113,6 +138,7 @@ void test('incremental worker exits empty before heavy imports and a later signa
     async transferWorkPlan(workPlan: { workItems: readonly unknown[] }) {
       transferCount += 1;
       assert.equal(workPlan.workItems.length, 1);
+      return committedTransferOutcome(0);
     },
   };
 
@@ -163,6 +189,233 @@ function createWorkerPhysicalProjection(fixture: WorkerFixture): PhysicalSession
     repairReason: null,
   };
 }
+
+const explicitEligibilityScenarios: Array<{
+  name: string;
+  trigger: RecallWorkMarkerTriggerPayload;
+}> = [
+  {
+    name: 'compaction',
+    trigger: {
+      kind: RecallWorkMarkerTrigger.COMPACTION,
+      compactionEntryId: 'compaction-1',
+    },
+  },
+  {
+    name: 'branch exit',
+    trigger: {
+      kind: RecallWorkMarkerTrigger.BRANCH_EXIT,
+      oldLeafEntryId: 'old-leaf',
+      newLeafEntryId: 'new-leaf',
+    },
+  },
+  { name: 'departure', trigger: { kind: RecallWorkMarkerTrigger.DEPARTURE } },
+];
+
+for (const scenario of explicitEligibilityScenarios) {
+  void test(`incremental worker persists ${scenario.name} until 60 seconds without growth`, async (t) => {
+    const fixture = await createWorkerFixture(t, scenario.trigger);
+    await fixture.publishMarker();
+    let heavyImportCount = 0;
+    let transferCount = 0;
+    const baseEpochMilliseconds = fixture.marker.createdAtEpochMilliseconds;
+    const options = {
+      markerSpoolDirectory: fixture.markerSpoolDirectory,
+      markerQuarantineDirectory: fixture.markerQuarantineDirectory,
+      controlDirectory: fixture.controlDirectory,
+      targetGenerationId: 'generation-1',
+      trustedSessionRoots: [fixture.sessionsDirectory],
+      async loadHeavyDependencies() {
+        heavyImportCount += 1;
+      },
+      async transferWorkPlan() {
+        transferCount += 1;
+        return committedTransferOutcome(1);
+      },
+    };
+
+    const deferred = await runRecallIncrementalWorker({
+      ...options,
+      nowEpochMilliseconds: () => baseEpochMilliseconds + 59_999,
+    });
+    assert.deepEqual(deferred.transferOutcomes, [
+      {
+        kind: RecallIncrementalTransferOutcomeKind.DEFERRED,
+        threshold: RecallEligibilityThreshold.EXPLICIT_EXIT_QUIET,
+        readyAtEpochMilliseconds: baseEpochMilliseconds + 60_000,
+      },
+    ]);
+    assert.equal(deferred.heavyDependenciesLoaded, false);
+    assert.equal(heavyImportCount, 0);
+    assert.equal(transferCount, 0);
+    await access(join(fixture.markerSpoolDirectory, `${fixture.marker.markerId}.json`));
+
+    const committed = await runRecallIncrementalWorker({
+      ...options,
+      nowEpochMilliseconds: () => baseEpochMilliseconds + 60_000,
+    });
+    assert.deepEqual(committed.transferOutcomes, [
+      {
+        kind: RecallIncrementalTransferOutcomeKind.COMMITTED,
+        committedDocumentCount: 1,
+      },
+    ]);
+    assert.equal(committed.heavyDependenciesLoaded, true);
+    assert.equal(heavyImportCount, 1);
+    assert.equal(transferCount, 1);
+  });
+}
+
+void test('incremental worker persists crash-only activity across restarts until 30 minutes', async (t) => {
+  const fixture = await createWorkerFixture(t);
+  await fixture.publishMarker();
+  let heavyImportCount = 0;
+  let transferCount = 0;
+  const baseEpochMilliseconds = fixture.marker.createdAtEpochMilliseconds;
+  const options = {
+    markerSpoolDirectory: fixture.markerSpoolDirectory,
+    markerQuarantineDirectory: fixture.markerQuarantineDirectory,
+    controlDirectory: fixture.controlDirectory,
+    targetGenerationId: 'generation-1',
+    trustedSessionRoots: [fixture.sessionsDirectory],
+    async loadHeavyDependencies() {
+      heavyImportCount += 1;
+    },
+    async transferWorkPlan() {
+      transferCount += 1;
+      return committedTransferOutcome(1);
+    },
+  };
+
+  for (let restart = 0; restart < 2; restart += 1) {
+    const deferred = await runRecallIncrementalWorker({
+      ...options,
+      nowEpochMilliseconds: () => baseEpochMilliseconds + 30 * 60_000 - 1,
+    });
+    assert.deepEqual(deferred.transferOutcomes, [
+      {
+        kind: RecallIncrementalTransferOutcomeKind.DEFERRED,
+        threshold: RecallEligibilityThreshold.CRASH_ONLY_QUIESCENCE,
+        readyAtEpochMilliseconds: baseEpochMilliseconds + 30 * 60_000,
+      },
+    ]);
+  }
+  assert.equal(heavyImportCount, 0);
+  assert.equal(transferCount, 0);
+  await access(join(fixture.markerSpoolDirectory, `${fixture.marker.markerId}.json`));
+
+  const committed = await runRecallIncrementalWorker({
+    ...options,
+    nowEpochMilliseconds: () => baseEpochMilliseconds + 30 * 60_000,
+  });
+  assert.equal(committed.transferOutcomes[0]?.kind, RecallIncrementalTransferOutcomeKind.COMMITTED);
+  assert.equal(heavyImportCount, 1);
+  assert.equal(transferCount, 1);
+});
+
+void test('incremental worker resets persisted eligibility when the source grows', async (t) => {
+  const fixture = await createWorkerFixture(t, { kind: RecallWorkMarkerTrigger.DEPARTURE });
+  await fixture.publishMarker();
+  const baseEpochMilliseconds = fixture.marker.createdAtEpochMilliseconds;
+  await utimes(
+    fixture.physicalSessionPath,
+    (baseEpochMilliseconds + 50_000) / 1_000,
+    (baseEpochMilliseconds + 50_000) / 1_000,
+  );
+  let heavyImportCount = 0;
+  const result = await runRecallIncrementalWorker({
+    markerSpoolDirectory: fixture.markerSpoolDirectory,
+    markerQuarantineDirectory: fixture.markerQuarantineDirectory,
+    controlDirectory: fixture.controlDirectory,
+    targetGenerationId: 'generation-1',
+    trustedSessionRoots: [fixture.sessionsDirectory],
+    nowEpochMilliseconds: () => baseEpochMilliseconds + 60_000,
+    async loadHeavyDependencies() {
+      heavyImportCount += 1;
+    },
+    async transferWorkPlan() {
+      throw new Error('Recall transfer must not run before the reset quiet deadline');
+    },
+  });
+
+  assert.deepEqual(result.transferOutcomes, [
+    {
+      kind: RecallIncrementalTransferOutcomeKind.DEFERRED,
+      threshold: RecallEligibilityThreshold.EXPLICIT_EXIT_QUIET,
+      readyAtEpochMilliseconds: baseEpochMilliseconds + 110_000,
+    },
+  ]);
+  assert.equal(heavyImportCount, 0);
+});
+
+void test('arrival does not revoke an already established explicit-exit deadline', async (t) => {
+  const fixture = await createWorkerFixture(t, { kind: RecallWorkMarkerTrigger.DEPARTURE });
+  await fixture.publishMarker();
+  const arrivalIdentity: RecallWorkMarkerIdentity = {
+    version: RECALL_WORK_MARKER_VERSION,
+    physicalSessionId: fixture.marker.physicalSessionId,
+    physicalSessionPath: fixture.marker.physicalSessionPath,
+    runtimeInstanceId: fixture.marker.runtimeInstanceId,
+    runtimeSequence: 2,
+    createdAtEpochMilliseconds: fixture.marker.createdAtEpochMilliseconds + 50_000,
+    trigger: { kind: RecallWorkMarkerTrigger.ARRIVAL },
+  };
+  const arrivalMarker: RecallWorkMarker = {
+    ...arrivalIdentity,
+    markerId: createRecallWorkMarkerId(arrivalIdentity),
+  };
+  await fixture.publishMarker(arrivalMarker);
+  let transferCount = 0;
+
+  const result = await runRecallIncrementalWorker({
+    markerSpoolDirectory: fixture.markerSpoolDirectory,
+    markerQuarantineDirectory: fixture.markerQuarantineDirectory,
+    controlDirectory: fixture.controlDirectory,
+    targetGenerationId: 'generation-1',
+    trustedSessionRoots: [fixture.sessionsDirectory],
+    nowEpochMilliseconds: () => fixture.marker.createdAtEpochMilliseconds + 60_000,
+    async loadHeavyDependencies() {},
+    async transferWorkPlan() {
+      transferCount += 1;
+      return committedTransferOutcome(1);
+    },
+  });
+
+  assert.equal(transferCount, 1);
+  assert.equal(result.transferOutcomes[0]?.kind, RecallIncrementalTransferOutcomeKind.COMMITTED);
+});
+
+void test('incremental worker retains a prepared transfer deferred to five minutes', async (t) => {
+  const fixture = await createWorkerFixture(t, { kind: RecallWorkMarkerTrigger.DEPARTURE });
+  await fixture.publishMarker();
+  const readyAtEpochMilliseconds = fixture.marker.createdAtEpochMilliseconds + 5 * 60_000;
+
+  const result = await runRecallIncrementalWorker({
+    markerSpoolDirectory: fixture.markerSpoolDirectory,
+    markerQuarantineDirectory: fixture.markerQuarantineDirectory,
+    controlDirectory: fixture.controlDirectory,
+    targetGenerationId: 'generation-1',
+    trustedSessionRoots: [fixture.sessionsDirectory],
+    nowEpochMilliseconds: () => fixture.marker.createdAtEpochMilliseconds + 60_000,
+    async loadHeavyDependencies() {},
+    async transferWorkPlan() {
+      return {
+        kind: RecallIncrementalTransferOutcomeKind.DEFERRED,
+        threshold: RecallEligibilityThreshold.LARGE_PREPARED_TRANSFER,
+        readyAtEpochMilliseconds,
+      };
+    },
+  });
+
+  assert.deepEqual(result.transferOutcomes, [
+    {
+      kind: RecallIncrementalTransferOutcomeKind.DEFERRED,
+      threshold: RecallEligibilityThreshold.LARGE_PREPARED_TRANSFER,
+      readyAtEpochMilliseconds,
+    },
+  ]);
+  await access(join(fixture.markerSpoolDirectory, `${fixture.marker.markerId}.json`));
+});
 
 void test('building generation freezes incremental commits while retaining published markers', async (t) => {
   const fixture = await createWorkerFixture(t);
@@ -282,7 +535,7 @@ void test('empty ordinary worker pass completes replay-pending generation backlo
 });
 
 void test('arrival metadata sweep lazily loads active projections and invokes deletion reconciliation', async (t) => {
-  const fixture = await createWorkerFixture(t, RecallWorkMarkerTrigger.ARRIVAL);
+  const fixture = await createWorkerFixture(t, { kind: RecallWorkMarkerTrigger.ARRIVAL });
   await fixture.publishMarker();
   const physicalProjection = createWorkerPhysicalProjection(fixture);
   let inventoryLoadCount = 0;

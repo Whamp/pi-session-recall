@@ -9,6 +9,7 @@ import {
   RecallEligibilityThreshold,
   RecallEvidenceRelation,
   RecallGenerationCutoverState,
+  RecallIncrementalTransferOutcomeKind,
   RecallProjectionEncodingStatus,
   RecallProjectionRepairReason,
   RecallProjectionRepairState,
@@ -80,6 +81,7 @@ void test('incremental recall contract values keep their persisted wire spelling
     'large_prepared_transfer',
     'crash_only_quiescence',
   ]);
+  assert.deepEqual(Object.values(RecallIncrementalTransferOutcomeKind), ['committed', 'deferred']);
   assert.deepEqual(Object.values(RecallGenerationCutoverState), [
     'building',
     'ready',

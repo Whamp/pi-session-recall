@@ -1,4 +1,4 @@
-import { access } from 'node:fs/promises';
+import { access, stat } from 'node:fs/promises';
 import { isAbsolute, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -16,6 +16,7 @@ import {
   RecallDiagnosticOperationKind,
   RecallDiagnosticStatus,
   RecallGenerationCutoverState,
+  RecallIncrementalTransferOutcomeKind,
   RecallMetadataSweepStatus,
   RecallWorkMarkerTrigger,
 } from './enums.js';
@@ -43,7 +44,11 @@ import {
   type KnownRecallSessionMetadataSource,
   type RecallSessionMetadataSweepResult,
 } from './scan-recall-session-metadata.js';
-import { transferIncrementalRecallWorkPlan } from './transfer-incremental-recall-work-plan.js';
+import { scheduleRecallWorkPlanEligibility } from './schedule-recall-work-plan-eligibility.js';
+import {
+  transferIncrementalRecallWorkPlan,
+  type IncrementalRecallWorkPlanTransferOutcome,
+} from './transfer-incremental-recall-work-plan.js';
 
 /** Explicit lightweight paths and lazy import boundary for one short-lived incremental worker. */
 export interface RunRecallIncrementalWorkerOptions extends RecallWorkMarkerCodecOptions {
@@ -63,7 +68,9 @@ export interface RunRecallIncrementalWorkerOptions extends RecallWorkMarkerCodec
     physicalProjections: readonly PhysicalSessionProjection[],
   ) => Promise<void>;
   loadHeavyDependencies?: () => Promise<void>;
-  transferWorkPlan?: (workPlan: RecallMarkerReplayWorkPlan) => Promise<void>;
+  transferWorkPlan?: (
+    workPlan: RecallMarkerReplayWorkPlan,
+  ) => Promise<IncrementalRecallWorkPlanTransferOutcome>;
   operationDiagnostics?: Pick<RecallOperationDiagnostics, 'recordIncrementalOperation'>;
   nowEpochMilliseconds?: () => number;
   monotonicMilliseconds?: () => number;
@@ -82,6 +89,7 @@ export interface RecallIncrementalWorkerResult {
   heavyDependenciesLoaded: boolean;
   commitsFrozen: boolean;
   generationReplayCompleted: boolean | null;
+  transferOutcomes: readonly IncrementalRecallWorkPlanTransferOutcome[];
 }
 
 async function loadRecallIncrementalWorkerDependencies(): Promise<void> {
@@ -139,18 +147,31 @@ function splitRecallWorkPlanByPhysicalSession(
   });
 }
 
-function hasRecallIncrementalTransferWork(
-  workPlan: RecallMarkerReplayWorkPlan,
+function hasRecallMetadataReconciliationWork(
   metadataSweep: RecallSessionMetadataSweepResult | null,
 ): boolean {
   return (
-    workPlan.workItems.length > 0 ||
-    (metadataSweep !== null &&
-      (metadataSweep.status !== RecallMetadataSweepStatus.CONTINUATION_REQUIRED ||
-        metadataSweep.observedSessionMetadata.length > 0 ||
-        metadataSweep.observedKnownSourceIdentities.length > 0 ||
-        metadataSweep.missingPhysicalSessionIds.length > 0))
+    metadataSweep !== null &&
+    (metadataSweep.status !== RecallMetadataSweepStatus.CONTINUATION_REQUIRED ||
+      metadataSweep.observedSessionMetadata.length > 0 ||
+      metadataSweep.observedKnownSourceIdentities.length > 0 ||
+      metadataSweep.missingPhysicalSessionIds.length > 0)
   );
+}
+
+async function readWorkerSourceModifiedAtEpochMilliseconds(
+  workPlan: RecallMarkerReplayWorkPlan,
+): Promise<number> {
+  const sourcePath = workPlan.workItems[0]?.marker.physicalSessionPath;
+  if (sourcePath === undefined) {
+    throw new Error('Recall worker source metadata requires one marker work item');
+  }
+  const metadata = await stat(sourcePath, { bigint: true });
+  const modifiedAtEpochMilliseconds = Number(metadata.mtimeNs / 1_000_000n);
+  if (!Number.isSafeInteger(modifiedAtEpochMilliseconds) || modifiedAtEpochMilliseconds < 0) {
+    throw new Error('Recall worker source modified time invalid');
+  }
+  return modifiedAtEpochMilliseconds;
 }
 
 /** Coordinates one bounded worker pass and loads tokenizer/zvec only after eligible work exists. */
@@ -226,6 +247,7 @@ export async function runRecallIncrementalWorker(
       heavyDependenciesLoaded: false,
       commitsFrozen: true,
       generationReplayCompleted: null,
+      transferOutcomes: [],
     });
   }
   const shouldSweepMetadata =
@@ -257,7 +279,7 @@ export async function runRecallIncrementalWorker(
             }),
       })
     : null;
-  if (!hasRecallIncrementalTransferWork(workPlan, metadataSweep)) {
+  if (workPlan.workItems.length === 0 && !hasRecallMetadataReconciliationWork(metadataSweep)) {
     const activeEntry = registry?.generations.find(
       ({ generationId }) => generationId === options.targetGenerationId,
     );
@@ -275,11 +297,46 @@ export async function runRecallIncrementalWorker(
       heavyDependenciesLoaded: false,
       commitsFrozen: false,
       generationReplayCompleted,
+      transferOutcomes: [],
+    });
+  }
+  const transferOutcomes: IncrementalRecallWorkPlanTransferOutcome[] = [];
+  const readyPhysicalWorkPlans: RecallMarkerReplayWorkPlan[] = [];
+  for (const physicalWorkPlan of splitRecallWorkPlanByPhysicalSession(workPlan)) {
+    const sourceModifiedAtEpochMilliseconds =
+      await readWorkerSourceModifiedAtEpochMilliseconds(physicalWorkPlan);
+    const schedule = scheduleRecallWorkPlanEligibility({
+      workPlan: physicalWorkPlan,
+      sourceModifiedAtEpochMilliseconds,
+      preparedDocumentCount: 0,
+      nowEpochMilliseconds,
+    });
+    if (schedule.ready) {
+      readyPhysicalWorkPlans.push(physicalWorkPlan);
+    } else {
+      transferOutcomes.push({
+        kind: RecallIncrementalTransferOutcomeKind.DEFERRED,
+        threshold: schedule.threshold,
+        readyAtEpochMilliseconds: schedule.readyAtEpochMilliseconds,
+      });
+    }
+  }
+  if (readyPhysicalWorkPlans.length === 0 && !hasRecallMetadataReconciliationWork(metadataSweep)) {
+    return finishWorkerResult({
+      workPlan,
+      metadataSweep,
+      heavyDependenciesLoaded: false,
+      commitsFrozen: false,
+      generationReplayCompleted: null,
+      transferOutcomes,
     });
   }
   await (options.loadHeavyDependencies ?? loadRecallIncrementalWorkerDependencies)();
-  for (const physicalWorkPlan of splitRecallWorkPlanByPhysicalSession(workPlan)) {
-    await options.transferWorkPlan?.(physicalWorkPlan);
+  for (const physicalWorkPlan of readyPhysicalWorkPlans) {
+    const outcome = await options.transferWorkPlan?.(physicalWorkPlan);
+    if (outcome !== undefined) {
+      transferOutcomes.push(outcome);
+    }
   }
   if (
     metadataSweep !== null &&
@@ -297,6 +354,7 @@ export async function runRecallIncrementalWorker(
     heavyDependenciesLoaded: true,
     commitsFrozen: false,
     generationReplayCompleted: null,
+    transferOutcomes,
   });
 }
 
@@ -408,6 +466,7 @@ async function runRecallIncrementalWorkerExecutable(): Promise<void> {
         loadTokenizer,
         resolveProjectIdentity: resolveWorkerProjectIdentity,
         embeddingCache,
+        nowEpochMilliseconds: Date.now,
       }),
     loadKnownSourceInventory: () =>
       loadRecallKnownSourceInventory(

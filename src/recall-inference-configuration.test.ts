@@ -21,6 +21,13 @@ import {
   repairRecallInferenceCapability,
   type RecallInferenceConfigurationCandidate,
 } from './recall-inference-configuration.js';
+import type { ConversationTextTokenizer } from './session-conversation-index.js';
+
+const FIXED_CONVERSATION_TOKENIZER: ConversationTextTokenizer = {
+  encodeConversationText(text) {
+    return { ids: Array.from(text.split(/\s+/u).filter(Boolean).keys()) };
+  },
+};
 
 function createConformingCandidate(
   capability: RecallInferenceCapability,
@@ -435,6 +442,7 @@ void test('configured runtime reconstructs registered custom adapters and reject
   );
 
   let customEmbeddingOperationCount = 0;
+  let customTokenizerOperationCount = 0;
   const runtime = await createConfiguredRecallInferenceRuntime(config, {
     inferenceConfigurationPath: statePath,
     adapterRegistries: [
@@ -456,6 +464,10 @@ void test('configured runtime reconstructs registered custom adapters and reject
                   );
                 },
               },
+              async loadTokenizer() {
+                customTokenizerOperationCount += 1;
+                return FIXED_CONVERSATION_TOKENIZER;
+              },
             }),
             async dispose() {},
           };
@@ -467,4 +479,5 @@ void test('configured runtime reconstructs registered custom adapters and reject
   await runtime.dispose();
 
   assert.equal(customEmbeddingOperationCount, 1);
+  assert.equal(customTokenizerOperationCount, 1);
 });

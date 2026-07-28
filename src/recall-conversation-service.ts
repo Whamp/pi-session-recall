@@ -58,6 +58,10 @@ import {
   readRecallMaterialBacklogWarning,
 } from './recall-generation-state.js';
 import type { RecallChunkPolicy } from './recall-chunk-policy.js';
+import {
+  createRecallDetachedWorkerSignal,
+  type RecallDetachedWorkerSignal,
+} from './publish-recall-work-marker.js';
 import { rebuildRecallGeneration } from './rebuild-recall-generation.js';
 import {
   createLogicalSessionProjectionId,
@@ -254,6 +258,7 @@ export interface RecallConversationDependencies {
   diagnostics?: RecallOperationDiagnostics;
   diagnosticsClock?: RecallDiagnosticsClock;
   notifyWarning?: (message: string) => void;
+  workerSignal?: RecallDetachedWorkerSignal;
 }
 
 interface RecallSearchDiagnosticRunOptions {
@@ -537,6 +542,8 @@ export function createRecallConversationService(
     monotonicMilliseconds: () => performance.now(),
     wallClockIsoTimestamp: () => new Date().toISOString(),
   };
+  const workerSignal =
+    dependencies.workerSignal ?? createRecallDetachedWorkerSignal(config.workerOwnershipLockPath);
   const diagnostics =
     dependencies.diagnostics ??
     createRecallOperationDiagnostics({
@@ -1004,6 +1011,7 @@ export function createRecallConversationService(
             backlogSummaryPath: config.backlogSummaryPath,
             markerSpoolDirectory: config.markerSpoolDirectory,
             lockPath: config.lockPath,
+            workerSignal,
             ...(options.signal ? { signal: options.signal } : {}),
             async captureBuildSnapshot() {
               return startingGeneration && existsSync(startingGeneration.projectionDatabasePath)

@@ -40,6 +40,7 @@ void test('replay failure retains backlog and successful empty-spool replay acti
     markerSpoolDirectory,
     lockPath,
     generationId: 'generation_new',
+    workerSignal: { signalDetachedWorker() {} },
     async buildGeneration(paths) {
       await mkdir(paths.databasePath, { recursive: true });
       await writeFile(paths.manifestPath, '{"manifestVersion":6}\n');

@@ -1,10 +1,14 @@
 import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { inspectRecallWriteWindow } from './coordinate-recall-write-window.js';
+import {
+  inspectRecallWriteWindow,
+  recallWriteWindowStatePaths,
+} from './coordinate-recall-write-window.js';
 import { RecallGenerationCutoverState } from './enums.js';
 import {
   createRecallActiveGenerationPointer,
@@ -31,6 +35,7 @@ interface RebuildFixture {
   lockPath: string;
   oldGenerationId: string;
   oldGenerationDirectory: string;
+  workerSignal: { signalDetachedWorker(): void };
 }
 
 async function createRebuildFixture(t: test.TestContext): Promise<RebuildFixture> {
@@ -58,6 +63,7 @@ async function createRebuildFixture(t: test.TestContext): Promise<RebuildFixture
     lockPath: join(directory, 'operation.lock'),
     oldGenerationId,
     oldGenerationDirectory,
+    workerSignal: { signalDetachedWorker() {} },
   };
 }
 
@@ -193,6 +199,39 @@ void test('side-by-side rebuild keeps old search selected through build and opti
   });
 });
 
+void test('successful empty-spool cutover wakes the ordinary worker after lock release', async (t) => {
+  const fixture = await createRebuildFixture(t);
+  const statePaths = recallWriteWindowStatePaths(fixture.lockPath);
+  let workerSignalCalls = 0;
+
+  await rebuildRecallGeneration({
+    ...fixture,
+    generationId: 'generation_idle_cutover',
+    workerSignal: {
+      signalDetachedWorker() {
+        workerSignalCalls += 1;
+        assert.equal(existsSync(statePaths.currentWindowPath), false);
+        assert.equal(existsSync(statePaths.recoveryRequiredPath), false);
+      },
+    },
+    async buildGeneration(paths) {
+      await createBuiltGeneration(paths);
+      return { result: null, async close() {} };
+    },
+    async validateGeneration() {
+      return { indexManifestFingerprint: 'c'.repeat(64) };
+    },
+  });
+
+  assert.equal(workerSignalCalls, 1);
+  assert.equal(
+    (await readRecallGenerationRegistry(fixture.generationRegistryPath))?.generations.find(
+      ({ generationId }) => generationId === 'generation_idle_cutover',
+    )?.state,
+    RecallGenerationCutoverState.REPLAY_PENDING,
+  );
+});
+
 void test('build failure leaves the old generation active and records failed replacement state', async (t) => {
   const fixture = await createRebuildFixture(t);
   await assert.rejects(
@@ -302,9 +341,17 @@ for (const faultStage of [
       await recoverRecallGenerationCutover({
         activeGenerationPointerPath: fixture.activeGenerationPointerPath,
         generationRegistryPath: fixture.generationRegistryPath,
+        generationRootDirectory: fixture.generationRootDirectory,
         backlogSummaryPath: fixture.backlogSummaryPath,
         lockPath: fixture.lockPath,
+        embeddingDimensions: 3,
         nowEpochMilliseconds: () => 20_000,
+        openWriteEvidenceStore() {
+          return { close() {} };
+        },
+        openWriteProjectionStore() {
+          return { close() {} };
+        },
       }),
       true,
     );
@@ -323,8 +370,8 @@ for (const faultStage of [
       recoveredActiveGenerationId,
     );
     assert.deepEqual(await inspectRecallWriteWindow(fixture.lockPath), {
-      currentWindow: faultStage === RecallGenerationCutoverStage.AFTER_POINTER_SWAP,
-      recoveryRequired: faultStage === RecallGenerationCutoverStage.AFTER_POINTER_SWAP,
+      currentWindow: false,
+      recoveryRequired: false,
     });
   });
 }

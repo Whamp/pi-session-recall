@@ -142,6 +142,7 @@ void test('explicit adoption relocates exact version-5 layout read-only then ret
     markerSpoolDirectory,
     lockPath: join(dataDirectory, 'operation.lock'),
     generationId: 'generation_schema_6',
+    workerSignal: { signalDetachedWorker() {} },
     async buildGeneration(paths) {
       await mkdir(paths.databasePath, { recursive: true });
       await writeFile(paths.manifestPath, `${JSON.stringify(currentManifest)}\n`);

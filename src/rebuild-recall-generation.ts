@@ -23,6 +23,7 @@ import {
   type RecallGenerationRegistry,
   type RecallGenerationRegistryEntry,
 } from './recall-generation-state.js';
+import type { RecallDetachedWorkerSignal } from './publish-recall-work-marker.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
 import { RECALL_SESSION_PROJECTION_SCHEMA_VERSION } from './recall-session-projection.js';
 import { RECALL_WORK_MARKER_VERSION } from './recall-work-marker.js';
@@ -65,6 +66,7 @@ export interface RebuildRecallGenerationOptions<Result, BuildSnapshot = undefine
   lockPath: string;
   generationId?: string;
   rollbackRetentionMilliseconds?: number;
+  workerSignal: RecallDetachedWorkerSignal;
   signal?: AbortSignal;
   nowEpochMilliseconds?: () => number;
   captureBuildSnapshot?: () => Promise<BuildSnapshot>;
@@ -462,6 +464,7 @@ export async function rebuildRecallGeneration<Result, BuildSnapshot = undefined>
       }
     },
   );
+  options.workerSignal.signalDetachedWorker();
   await writeRecallBacklogSummary(options.backlogSummaryPath, {
     version: RECALL_BACKLOG_SUMMARY_VERSION,
     pendingEligibleSessionCount: readyWatermark.length,

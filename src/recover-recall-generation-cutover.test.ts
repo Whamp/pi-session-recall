@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
+import { completeRecallGenerationReplay } from './complete-recall-generation-replay.js';
 import {
+  assertRecallWriteWindowAvailableForRead,
   inspectRecallWriteWindow,
   recallWriteWindowStatePaths,
 } from './coordinate-recall-write-window.js';
@@ -52,14 +54,16 @@ void test('consistent active pointer requires no generation cutover recovery', a
     await recoverRecallGenerationCutover({
       activeGenerationPointerPath,
       generationRegistryPath,
+      generationRootDirectory: join(directory, 'generations'),
       backlogSummaryPath: join(directory, 'backlog-summary.json'),
       lockPath: join(directory, 'operation.lock'),
+      embeddingDimensions: 3,
     }),
     false,
   );
 });
 
-void test('consistent cutover no-op does not clear stale write recovery state', async (t) => {
+void test('consistent replay-pending cutover recovers empty stores before empty-spool replay', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'recover-recall-cutover-stale-window-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const activeGenerationPointerPath = join(directory, 'active-generation.json');
@@ -76,7 +80,7 @@ void test('consistent cutover no-op does not clear stale write recovery state', 
     generations: [
       {
         generationId: pointer.activeGenerationId,
-        state: RecallGenerationCutoverState.ACTIVE,
+        state: RecallGenerationCutoverState.REPLAY_PENDING,
         indexManifestVersion: 6,
         markerSchemaVersion: 1,
         sessionProjectionSchemaVersion: 3,
@@ -84,30 +88,78 @@ void test('consistent cutover no-op does not clear stale write recovery state', 
         rebuildStartedAtEpochMilliseconds: 1,
         stateChangedAtEpochMilliseconds: 2,
         rebuildStartMarkerId: null,
+        rebuildMarkerWatermark: [],
         validatedAtEpochMilliseconds: 2,
         retireAfterEpochMilliseconds: null,
       },
     ],
   });
   const statePaths = recallWriteWindowStatePaths(lockPath);
-  await writeFile(
-    statePaths.recoveryRequiredPath,
-    `${JSON.stringify({ version: 1, state: 'recovery_required' })}\n`,
-  );
+  await Promise.all([
+    writeFile(
+      statePaths.currentWindowPath,
+      `${JSON.stringify({ version: 1, state: 'current_window' })}\n`,
+    ),
+    writeFile(
+      statePaths.recoveryRequiredPath,
+      `${JSON.stringify({ version: 1, state: 'recovery_required' })}\n`,
+    ),
+  ]);
+  const recoveredStores: string[] = [];
+  await mkdir(join(directory, 'generations', pointer.activeGenerationId), { recursive: true });
+  const backlogSummaryPath = join(directory, 'backlog-summary.json');
+  const markerSpoolDirectory = join(directory, 'markers', 'pending');
 
   assert.equal(
     await recoverRecallGenerationCutover({
       activeGenerationPointerPath,
       generationRegistryPath,
-      backlogSummaryPath: join(directory, 'backlog-summary.json'),
+      backlogSummaryPath,
+      lockPath,
+      generationRootDirectory: join(directory, 'generations'),
+      embeddingDimensions: 3,
+      openWriteEvidenceStore(databasePath, embeddingDimensions) {
+        assert.equal(
+          databasePath,
+          join(directory, 'generations', pointer.activeGenerationId, 'zvec'),
+        );
+        assert.equal(embeddingDimensions, 3);
+        recoveredStores.push('evidence-open');
+        return { close: () => recoveredStores.push('evidence-close') };
+      },
+      openWriteProjectionStore(databasePath, generationId) {
+        assert.equal(
+          databasePath,
+          join(directory, 'generations', pointer.activeGenerationId, 'session-projections'),
+        );
+        assert.equal(generationId, pointer.activeGenerationId);
+        recoveredStores.push('projection-open');
+        return { close: () => recoveredStores.push('projection-close') };
+      },
+    }),
+    true,
+  );
+  assert.deepEqual(recoveredStores, [
+    'evidence-open',
+    'projection-open',
+    'projection-close',
+    'evidence-close',
+  ]);
+  assert.deepEqual(await inspectRecallWriteWindow(lockPath), {
+    currentWindow: false,
+    recoveryRequired: false,
+  });
+  assert.equal(
+    await completeRecallGenerationReplay({
+      activeGenerationPointerPath,
+      generationRegistryPath,
+      backlogSummaryPath,
+      markerSpoolDirectory,
       lockPath,
     }),
-    false,
+    true,
   );
-  assert.deepEqual(await inspectRecallWriteWindow(lockPath), {
-    currentWindow: true,
-    recoveryRequired: true,
-  });
+  await assertRecallWriteWindowAvailableForRead(lockPath);
 });
 
 void test('registry-first rollback cutover recovery publishes the retained target pointer', async (t) => {
@@ -158,8 +210,10 @@ void test('registry-first rollback cutover recovery publishes the retained targe
     await recoverRecallGenerationCutover({
       activeGenerationPointerPath,
       generationRegistryPath,
+      generationRootDirectory: join(directory, 'generations'),
       backlogSummaryPath: join(directory, 'backlog-summary.json'),
       lockPath: join(directory, 'operation.lock'),
+      embeddingDimensions: 3,
     }),
     true,
   );
@@ -202,8 +256,10 @@ void test('registry-first legacy adoption recovery creates a missing active poin
     await recoverRecallGenerationCutover({
       activeGenerationPointerPath,
       generationRegistryPath,
+      generationRootDirectory: join(directory, 'generations'),
       backlogSummaryPath: join(directory, 'backlog-summary.json'),
       lockPath: join(directory, 'operation.lock'),
+      embeddingDimensions: 3,
     }),
     true,
   );

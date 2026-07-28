@@ -1,3 +1,5 @@
+import { join } from 'node:path';
+
 import {
   coordinateRecallWriteWindow,
   inspectRecallWriteWindow,
@@ -7,6 +9,7 @@ import {
   createRecallActiveGenerationPointer,
   readRecallActiveGenerationPointer,
   readRecallGenerationRegistry,
+  resolveRecallGenerationDirectory,
   writeRecallActiveGenerationPointer,
   writeRecallBacklogSummary,
   writeRecallGenerationRegistry,
@@ -15,17 +18,110 @@ import {
   type RecallGenerationRegistryEntry,
 } from './recall-generation-state.js';
 
-/** Paths and bounded retention used to recover a pointer-swapped READY generation. */
+/** Paths, store recovery capabilities, and retention for repairing generation cutover state. */
 export interface RecoverRecallGenerationCutoverOptions {
   activeGenerationPointerPath: string;
   generationRegistryPath: string;
+  generationRootDirectory: string;
   backlogSummaryPath: string;
   lockPath: string;
+  embeddingDimensions: number;
   rollbackRetentionMilliseconds?: number;
   nowEpochMilliseconds?: () => number;
+  openWriteEvidenceStore?: (
+    databasePath: string,
+    embeddingDimensions: number,
+  ) => RecallGenerationRecoveryStore;
+  openWriteProjectionStore?: (
+    databasePath: string,
+    generationId: string,
+  ) => RecallGenerationRecoveryStore;
+}
+
+/** Minimal close evidence required from a write-capable recovery store open. */
+export interface RecallGenerationRecoveryStore {
+  close(): void;
 }
 
 const DEFAULT_ROLLBACK_RETENTION_MILLISECONDS = 7 * 24 * 60 * 60_000;
+
+function normalizeRecoveryStoreError(error: unknown, message: string): Error {
+  return error instanceof Error ? error : new Error(message, { cause: error });
+}
+
+async function recoverActiveRecallGenerationStores(
+  options: RecoverRecallGenerationCutoverOptions,
+  generationId: string,
+): Promise<void> {
+  const generationDirectory = await resolveRecallGenerationDirectory(
+    options.generationRootDirectory,
+    generationId,
+  );
+  let openWriteEvidenceStore = options.openWriteEvidenceStore;
+  if (openWriteEvidenceStore === undefined) {
+    const { openZvecConversationStore } = await import('./zvec-conversation-store.js');
+    openWriteEvidenceStore = (databasePath: string, embeddingDimensions: number) =>
+      openZvecConversationStore({
+        databasePath,
+        dimensions: embeddingDimensions,
+        createIfMissing: false,
+        readOnly: false,
+      });
+  }
+  let openWriteProjectionStore = options.openWriteProjectionStore;
+  if (openWriteProjectionStore === undefined) {
+    const { openZvecSessionProjectionStore } = await import('./zvec-session-projection-store.js');
+    openWriteProjectionStore = (databasePath: string, targetGenerationId: string) =>
+      openZvecSessionProjectionStore({
+        databasePath,
+        generationId: targetGenerationId,
+        createIfMissing: false,
+        readOnly: false,
+      });
+  }
+  let evidenceStore: RecallGenerationRecoveryStore | undefined;
+  let projectionStore: RecallGenerationRecoveryStore | undefined;
+  let openError: Error | null = null;
+  try {
+    evidenceStore = openWriteEvidenceStore(
+      join(generationDirectory, 'zvec'),
+      options.embeddingDimensions,
+    );
+    projectionStore = openWriteProjectionStore(
+      join(generationDirectory, 'session-projections'),
+      generationId,
+    );
+  } catch (error) {
+    openError = normalizeRecoveryStoreError(error, 'Recall generation recovery store open failed');
+  }
+  const closeErrors: Error[] = [];
+  try {
+    projectionStore?.close();
+  } catch (error) {
+    closeErrors.push(
+      normalizeRecoveryStoreError(error, 'Recall generation recovery projection close failed'),
+    );
+  }
+  try {
+    evidenceStore?.close();
+  } catch (error) {
+    closeErrors.push(
+      normalizeRecoveryStoreError(error, 'Recall generation recovery evidence close failed'),
+    );
+  }
+  if (openError !== null && closeErrors.length > 0) {
+    throw new AggregateError(
+      [openError, ...closeErrors],
+      'Recall generation recovery open and close failed',
+    );
+  }
+  if (openError !== null) {
+    throw openError;
+  }
+  if (closeErrors.length > 0) {
+    throw new AggregateError(closeErrors, 'Recall generation recovery close failed');
+  }
+}
 
 function finalizeRecoveredRecallRegistry(
   registry: RecallGenerationRegistry,
@@ -108,11 +204,20 @@ export async function recoverRecallGenerationCutover(
         pointer !== null &&
         registry?.activeGenerationId === pointer.activeGenerationId &&
         registry.activePointerChecksum === pointer.checksum;
+      const attestRecoveredActiveStores = async (generationId: string): Promise<boolean> => {
+        if (!writeWindow.recovering) {
+          return false;
+        }
+        await recoverActiveRecallGenerationStores(options, generationId);
+        writeWindow.attestRecoveryCompleted();
+        return true;
+      };
       if (
         pointerAndRegistrySelectSameGeneration &&
+        pointer !== null &&
         readyBuildingGeneration?.state !== RecallGenerationCutoverState.READY
       ) {
-        return false;
+        return attestRecoveredActiveStores(pointer.activeGenerationId);
       }
       if (
         pointerAndRegistrySelectSameGeneration &&
@@ -152,6 +257,7 @@ export async function recoverRecallGenerationCutover(
           lastFailureCategory: null,
           observedAtEpochMilliseconds: recoveredAt,
         });
+        await attestRecoveredActiveStores(pointer.activeGenerationId);
         return true;
       }
       const registrySelectedEntry = registry?.generations.find(
@@ -186,6 +292,7 @@ export async function recoverRecallGenerationCutover(
           lastFailureCategory: null,
           observedAtEpochMilliseconds: options.nowEpochMilliseconds?.() ?? Date.now(),
         });
+        await attestRecoveredActiveStores(registrySelectedEntry.generationId);
         return true;
       }
       const replacement = registry?.generations.find(
@@ -229,6 +336,7 @@ export async function recoverRecallGenerationCutover(
         lastFailureCategory: null,
         observedAtEpochMilliseconds: recoveredAt,
       });
+      await attestRecoveredActiveStores(replacement.generationId);
       return true;
     },
   );

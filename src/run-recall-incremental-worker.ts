@@ -557,8 +557,10 @@ async function runRecallIncrementalWorkerExecutable(): Promise<void> {
   await recoverRecallGenerationCutover({
     activeGenerationPointerPath: config.activeGenerationPointerPath,
     generationRegistryPath: config.generationRegistryPath,
+    generationRootDirectory: config.generationRootDirectory,
     backlogSummaryPath: config.backlogSummaryPath,
     lockPath: config.lockPath,
+    embeddingDimensions: config.embeddingDimensions,
   });
   try {
     await access(config.activeGenerationPointerPath);

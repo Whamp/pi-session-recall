@@ -148,6 +148,7 @@ function createRecallConversationService(
   );
   return createProductionRecallConversationService(config, {
     reranker: PRESERVE_FUSION_ORDER_RERANKER,
+    workerSignal: { signalDetachedWorker() {} },
     ...dependencies,
   });
 }
@@ -2862,6 +2863,7 @@ void test('schema migration keeps canonical cache identity across tolerated cana
   );
   let useJitteredCanary = false;
   let canaryRequests = 0;
+  let workerSignalCalls = 0;
   const config = createTestConfig(directory, sessionsDirectory);
   const service = createRecallConversationService(config, {
     embeddings: {
@@ -2877,6 +2879,11 @@ void test('schema migration keeps canonical cache identity across tolerated cana
     },
     async loadTokenizer() {
       return tokenizer;
+    },
+    workerSignal: {
+      signalDetachedWorker() {
+        workerSignalCalls += 1;
+      },
     },
   });
 
@@ -2900,6 +2907,7 @@ void test('schema migration keeps canonical cache identity across tolerated cana
     firstManifest?.embedding.canaryFingerprint,
   );
   assert.equal(canaryRequests, 2);
+  assert.equal(workerSignalCalls, 1);
 });
 
 void test('explicit indexing retries a transient embedding-canary failure in the same process', async (t) => {

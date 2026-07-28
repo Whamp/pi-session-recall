@@ -99,6 +99,9 @@ export default async function recallExtension(
     notifyWarning(message) {
       recallWarningHandler?.(message);
     },
+    ...(startupOptions.workerSignal === undefined
+      ? {}
+      : { workerSignal: startupOptions.workerSignal }),
   });
   registerRecallLifecycleMarkers(
     pi,

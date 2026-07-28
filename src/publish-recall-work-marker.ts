@@ -161,23 +161,32 @@ async function syncRecallMarkerSpoolDirectory(
   }
 }
 
-function signalIncrementalRecallWorker(workerOwnershipLockPath: string): void {
-  const workerPath = fileURLToPath(new URL('./run-recall-incremental-worker.ts', import.meta.url));
-  const child = spawn(
-    '/usr/bin/flock',
-    ['--nonblock', workerOwnershipLockPath, process.execPath, '--import', 'tsx', workerPath],
-    {
-      cwd: dirname(workerPath),
-      detached: true,
-      stdio: 'ignore',
+/** Creates the ordinary nonblocking signal for one short-lived incremental recall worker. */
+export function createRecallDetachedWorkerSignal(
+  workerOwnershipLockPath: string,
+): RecallDetachedWorkerSignal {
+  return {
+    signalDetachedWorker() {
+      const workerPath = fileURLToPath(
+        new URL('./run-recall-incremental-worker.ts', import.meta.url),
+      );
+      const child = spawn(
+        '/usr/bin/flock',
+        ['--nonblock', workerOwnershipLockPath, process.execPath, '--import', 'tsx', workerPath],
+        {
+          cwd: dirname(workerPath),
+          detached: true,
+          stdio: 'ignore',
+        },
+      );
+      child.once('error', (error) => {
+        process.emitWarning(
+          `Recall marker worker signal failed [${readNodeErrorCode(error) ?? 'UNKNOWN'}]`,
+        );
+      });
+      child.unref();
     },
-  );
-  child.once('error', (error) => {
-    process.emitWarning(
-      `Recall marker worker signal failed [${readNodeErrorCode(error) ?? 'UNKNOWN'}]`,
-    );
-  });
-  child.unref();
+  };
 }
 
 function resolveRecallDetachedWorkerSignal(
@@ -186,15 +195,10 @@ function resolveRecallDetachedWorkerSignal(
   if (options.workerSignal !== undefined) {
     return options.workerSignal;
   }
-  const workerOwnershipLockPath = options.workerOwnershipLockPath;
-  if (workerOwnershipLockPath === undefined) {
+  if (options.workerOwnershipLockPath === undefined) {
     throw new Error('Recall marker publication requires a worker ownership lock path');
   }
-  return {
-    signalDetachedWorker() {
-      signalIncrementalRecallWorker(workerOwnershipLockPath);
-    },
-  };
+  return createRecallDetachedWorkerSignal(options.workerOwnershipLockPath);
 }
 
 /** Durably publishes one complete immutable marker before signaling a detached worker. */

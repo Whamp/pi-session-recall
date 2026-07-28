@@ -240,8 +240,11 @@ export interface RecallSearchPolicy {
   rerankerIdentity: RecallSearchRerankerIdentity | null;
   activeBranchPrior: number;
   candidateLimits: RecallSearchCandidateLimits;
+  /** Maximum fused documents retained before duplicate evidence grouping. */
   fusedPoolLimit: number;
+  /** Maximum duplicate evidence groups admitted to reranking. */
   rerankPoolLimit: number;
+  /** Maximum ranked results retained before neighbor context expansion. */
   finalResultLimit: number;
   queryPlan?: RecallQueryPlanEvidence;
 }
@@ -482,6 +485,7 @@ function validateRecallQueryPlanningOptions(
     );
   }
   const plannedQueries: RecallPlannedRetrievalQuery[] = [];
+  const plannedQueryEntryByIdentity = new Map<string, number>();
   for (const [index, plannedQuery] of plan.entries()) {
     if (!isUnknownRecord(plannedQuery)) {
       throw new Error(
@@ -510,7 +514,16 @@ function validateRecallQueryPlanningOptions(
     if (/\r|\n/u.test(plannedQuery.query)) {
       throw new Error(`Recall query plan invalid at entry ${index + 1}: query must be single-line`);
     }
-    plannedQueries.push({ type: queryType, query: plannedQuery.query.trim() });
+    const normalizedQuery = plannedQuery.query.trim();
+    const plannedQueryIdentity = `${queryType}:${normalizedQuery}`;
+    const matchingEntry = plannedQueryEntryByIdentity.get(plannedQueryIdentity);
+    if (matchingEntry !== undefined) {
+      throw new Error(
+        `Recall query plan invalid at entry ${index + 1}: duplicate ${queryType} query matches entry ${matchingEntry}; remove one duplicate entry`,
+      );
+    }
+    plannedQueryEntryByIdentity.set(plannedQueryIdentity, index + 1);
+    plannedQueries.push({ type: queryType, query: normalizedQuery });
   }
   return { plannedQueries, intent: normalizedIntent };
 }
@@ -1837,7 +1850,7 @@ export function createRecallConversationService(
                   config.searchCandidateLimits.lexical +
                   config.searchCandidateLimits.identifier;
                 const fusedPoolLimit = usesQueryPlannedRanking
-                  ? QUERY_PLANNED_RECALL_GROUP_LIMIT
+                  ? (3 + plannedQueries.length) * QUERY_PLANNED_RECALL_LIST_CANDIDATE_LIMIT
                   : (config.fusedPoolLimit ?? maximumCurrentCandidateCount);
                 const rerankPoolLimit = usesQueryPlannedRanking
                   ? QUERY_PLANNED_RECALL_GROUP_LIMIT
@@ -1971,12 +1984,9 @@ export function createRecallConversationService(
                     admittedCandidateCount: plannedCandidates.length,
                   });
                 }
-                const preGroupingDocumentLimit = usesQueryPlannedRanking
-                  ? rankedLists.length * QUERY_PLANNED_RECALL_LIST_CANDIDATE_LIMIT
-                  : fusedPoolLimit;
                 const fusedCandidates = fuseRecallRankedLists(
                   rankedLists,
-                  preGroupingDocumentLimit,
+                  fusedPoolLimit,
                   usesQueryPlannedRanking
                     ? {
                         rankOne: QUERY_PLANNED_RECALL_RANK_ONE_BONUS,

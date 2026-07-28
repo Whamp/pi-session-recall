@@ -3497,7 +3497,7 @@ void test('query-planned recall routes agent lists through capability-specific e
     },
   });
   assert.equal(search.searchPolicy.rankingMode, 'query-planned');
-  assert.equal(search.searchPolicy.fusedPoolLimit, 40);
+  assert.equal(search.searchPolicy.fusedPoolLimit, 120);
   assert.equal(search.searchPolicy.rerankPoolLimit, 40);
   assert.equal(search.searchPolicy.finalResultLimit, 5);
   assert.deepEqual(
@@ -3744,6 +3744,18 @@ void test('recall service rejects a missing planner, invalid agent plans, and hy
         plan: unsupportedPlan,
       }),
     /entry 1: unsupported type sql; use lex, vec, or hyde/,
+  );
+  await assert.rejects(
+    () =>
+      service.search('duplicate plan', 5, {
+        mode: 'query-planned',
+        scope: RecallSearchScope.GLOBAL,
+        plan: [
+          { type: 'vec', query: ' repeated semantic query ' },
+          { type: 'vec', query: 'repeated semantic query' },
+        ],
+      }),
+    /entry 2: duplicate vec query matches entry 1; remove one duplicate entry/,
   );
   const oversizedPlan: RecallPlannedRetrievalQuery[] = Array.from({ length: 11 }, (_, index) => ({
     type: 'lex',

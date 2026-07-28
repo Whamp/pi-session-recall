@@ -27,7 +27,8 @@ A planned search receives source-admission credit only when its admission probe 
 ## Ranking policy
 
 - Per-list work: dense 20, lexical 20, identifier 20, planned_lex 20, planned_vec 20
-- Fused pool / rerank pool / final results: 40 / 40 / 5
+- Fused-document limits before duplicate grouping: 100
+- Duplicate-group rerank limit / final results: 40 / 5
 - Fusion: RRF v2, k=60, submitted weight 2, planned weight 1, bonuses 0.05 / 0.02
 - QMD reranker policy: v2, active-branch prior 0.01, blend bands 1-3 0.75/0.25, 4-10 0.6/0.4, 11-end 0.4/0.6
 

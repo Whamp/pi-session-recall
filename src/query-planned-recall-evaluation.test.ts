@@ -62,11 +62,11 @@ void test('committed query-planned recall evidence is deterministic and records 
 
   assert.equal(
     createSha256(evidenceContent),
-    '367bad22570ccc5badd26093cc4d2c912e0be08950a6bc3a67f9b557961c863d',
+    '1c7300c0d975fbab62a0b9cfe5eeb2a976eeeaa1a22dcbb3880514e4e480e6f1',
   );
   assert.equal(
     createSha256(reportContent),
-    'dcbc12e33f5dee8d4c7b1b984030397062935d72a79189348103b4ceecdbb9ce',
+    'ff54709d367ada9db38e72dc3452d62917281f7c769fc5cf961e49c9fa8728d5',
   );
   assert.equal(Reflect.get(evaluation, 'executedSearchRequests'), 32);
   assert.deepEqual(Reflect.get(evaluation, 'contributionCounts'), {
@@ -262,6 +262,8 @@ void test('fixed private plans prove new source admission through deterministic 
   );
   assert.equal(measuredCase?.queryPlanned.outcome, QueryPlannedRecallBaselineOutcome.SUCCESS);
   assert.equal(measuredCase?.queryPlanned.candidateAdmissionVerified, true);
+  assert.equal(measuredCase?.queryPlanned.fusedPoolLimit, 100);
+  assert.equal(measuredCase?.queryPlanned.rerankPoolLimit, 40);
   assert.deepEqual(measuredCase?.queryPlanned.rerankerPolicy, {
     version: 2,
     activeBranchPrior: 0.01,
@@ -293,6 +295,8 @@ void test('fixed private plans prove new source admission through deterministic 
   assert.match(report, /normal hybrid/u);
   assert.match(report, /retrieval-work-matched original query/u);
   assert.match(report, /neutral-fused-order-v1/u);
+  assert.match(report, /Fused-document limits before duplicate grouping: 100/u);
+  assert.match(report, /Duplicate-group rerank limit \/ final results: 40 \/ 5/u);
   assert.equal(JSON.stringify(evidence).includes(lexicalPlanQuery), false);
   assert.equal(report.includes('Private mechanism phrase'), false);
   assert.throws(
@@ -401,6 +405,8 @@ void test('fixed private plans prove new source admission through deterministic 
     { type: 'vec', querySha256: createSha256(semanticPlanQuery) },
   ]);
   assert.equal(liveEvaluation.cases[0]?.queryPlanned.candidateAdmissionVerified, true);
+  assert.equal(liveEvaluation.cases[0]?.queryPlanned.fusedPoolLimit, 100);
+  assert.equal(liveEvaluation.cases[0]?.queryPlanned.rerankPoolLimit, 40);
   assert.deepEqual(liveProgress, [
     'Verifying live profile fixture-embedded-cpu capabilities',
     'Indexing live profile fixture-embedded-cpu private corpus',
@@ -528,6 +534,10 @@ void test('fixed private plans prove new source admission through deterministic 
   const acceptanceReport = formatPublishableLiveQueryPlannedProfileAcceptanceReport(acceptance);
   assert.match(acceptanceReport, /Approved as an explicit fallback after hybrid misses/u);
   assert.match(acceptanceReport, /Hybrid remains the default/u);
+  assert.match(
+    acceptanceReport,
+    /fused-document limits 100; duplicate-group rerank\/final limits 40\/5/u,
+  );
   assert.match(acceptanceReport, /embedded-cpu/u);
   assert.match(acceptanceReport, /Cold planning/u);
   assert.match(acceptanceReport, /Candidate work/u);

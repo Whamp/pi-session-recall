@@ -13,7 +13,7 @@ This evidence measures live query planning and reranking with fixed test embeddi
 - Planner profile: `qmd-query-expansion-1.7b-q4-k-m-v1` / `qmd-query-expansion-1.7B-q4_k_m`
 - Prompt / grammar: `qmd-query-expansion-no-think-v1` / `qmd-bounded-query-plan-v2`
 - Reranker profile / score policy: `qwen3-reranker-0.6b-q8-0-v1` / `llama-cpp-qwen3-rank-probability-v1`
-- Search policy: RRF v2, k=60, fused/rerank/final limits 40/40/5
+- Search policy: RRF v2, k=60, fused-document limits 120, 160; duplicate-group rerank/final limits 40/5
 
 ## Committed-corpus EmbeddingGemma evidence
 

@@ -1369,11 +1369,15 @@ function assertLiveProfileExecutionIdentity(run: LiveQueryPlannedProfileEvaluati
     );
   }
   for (const measuredCase of run.cases) {
+    const fusedDocumentLimit = measuredCase.queryPlanned.listWork.reduce(
+      (total, list) => total + list.candidateLimit,
+      0,
+    );
     if (
       measuredCase.queryPlanned.rankingProviderPolicy !== 'live-profile-v1' ||
       measuredCase.queryPlanned.rankFusionVersion !== 2 ||
       measuredCase.queryPlanned.reciprocalRankConstant !== 60 ||
-      measuredCase.queryPlanned.fusedPoolLimit !== 40 ||
+      measuredCase.queryPlanned.fusedPoolLimit !== fusedDocumentLimit ||
       measuredCase.queryPlanned.rerankPoolLimit !== 40 ||
       measuredCase.queryPlanned.finalResultLimit !== 5
     ) {
@@ -1541,6 +1545,14 @@ export function formatPublishableLiveQueryPlannedProfileAcceptanceReport(
   }
   const decision =
     '**Decision: Approved as an explicit fallback after hybrid misses.** Hybrid remains the default.';
+  const fusedDocumentLimits = [
+    ...new Set(
+      evidence.profileRuns.flatMap((run) =>
+        run.cases.map((measuredCase) => measuredCase.queryPlanned.fusedPoolLimit),
+      ),
+    ),
+  ].toSorted((left, right) => left - right);
+  const firstQueryPlannedMeasurement = firstRun.cases[0]?.queryPlanned;
   const lines = [
     '# Query-Planned Recall: Live Profile Acceptance',
     '',
@@ -1557,7 +1569,7 @@ export function formatPublishableLiveQueryPlannedProfileAcceptanceReport(
     `- Planner profile: \`${firstRun.profileIdentity.queryPlanning.profileId}\` / \`${firstRun.profileIdentity.queryPlanning.model}\``,
     `- Prompt / grammar: \`${firstRun.profileIdentity.queryPlanning.promptPolicy}\` / \`${firstRun.profileIdentity.queryPlanning.grammarVersion}\``,
     `- Reranker profile / score policy: \`${firstRun.profileIdentity.reranking.profileId}\` / \`${firstRun.profileIdentity.reranking.scorePolicy}\``,
-    `- Search policy: RRF v${firstRun.cases[0]?.queryPlanned.rankFusionVersion ?? 'unknown'}, k=${firstRun.cases[0]?.queryPlanned.reciprocalRankConstant ?? 'unknown'}, fused/rerank/final limits ${firstRun.cases[0]?.queryPlanned.fusedPoolLimit ?? 'unknown'}/${firstRun.cases[0]?.queryPlanned.rerankPoolLimit ?? 'unknown'}/${firstRun.cases[0]?.queryPlanned.finalResultLimit ?? 'unknown'}`,
+    `- Search policy: RRF v${firstQueryPlannedMeasurement?.rankFusionVersion ?? 'unknown'}, k=${firstQueryPlannedMeasurement?.reciprocalRankConstant ?? 'unknown'}, fused-document limits ${fusedDocumentLimits.join(', ') || 'unknown'}; duplicate-group rerank/final limits ${firstQueryPlannedMeasurement?.rerankPoolLimit ?? 'unknown'}/${firstQueryPlannedMeasurement?.finalResultLimit ?? 'unknown'}`,
     '',
     '## Committed-corpus EmbeddingGemma evidence',
     '',
@@ -1736,7 +1748,7 @@ function assertQueryPlannedRecallEvaluationGate(
       );
     }
     if (
-      queryPlanned.fusedPoolLimit !== 40 ||
+      queryPlanned.fusedPoolLimit !== plannedCandidateAllowance ||
       queryPlanned.rerankPoolLimit !== 40 ||
       queryPlanned.finalResultLimit !== controls.policy.finalResultLimit
     ) {
@@ -1829,6 +1841,9 @@ export function formatPublishableQueryPlannedRecallEvaluationReport(
   if (!firstCase) {
     throw new Error('Query-planned recall evaluation report requires at least one case');
   }
+  const fusedDocumentLimits = [
+    ...new Set(evaluation.cases.map((measurement) => measurement.queryPlanned.fusedPoolLimit)),
+  ].toSorted((left, right) => left - right);
   const lines = [
     '# Query-Planned Recall: Deterministic Source-Admission Quality',
     '',
@@ -1859,7 +1874,8 @@ export function formatPublishableQueryPlannedRecallEvaluationReport(
     '## Ranking policy',
     '',
     `- Per-list work: ${firstCase.queryPlanned.listWork.map((list) => `${list.source} ${list.candidateLimit}`).join(', ')}`,
-    `- Fused pool / rerank pool / final results: ${firstCase.queryPlanned.fusedPoolLimit} / ${firstCase.queryPlanned.rerankPoolLimit} / ${firstCase.queryPlanned.finalResultLimit}`,
+    `- Fused-document limits before duplicate grouping: ${fusedDocumentLimits.join(', ')}`,
+    `- Duplicate-group rerank limit / final results: ${firstCase.queryPlanned.rerankPoolLimit} / ${firstCase.queryPlanned.finalResultLimit}`,
     `- Fusion: RRF v${firstCase.queryPlanned.rankFusionVersion}, k=${firstCase.queryPlanned.reciprocalRankConstant}, submitted weight ${firstCase.queryPlanned.fusionPolicy.submittedQueryListWeight}, planned weight ${firstCase.queryPlanned.fusionPolicy.plannedQueryListWeight}, bonuses ${firstCase.queryPlanned.fusionPolicy.rankOneBonus} / ${firstCase.queryPlanned.fusionPolicy.rankTwoOrThreeBonus}`,
     `- QMD reranker policy: v${firstCase.queryPlanned.rerankerPolicy.version}, active-branch prior ${firstCase.queryPlanned.rerankerPolicy.activeBranchPrior}, blend bands ${firstCase.queryPlanned.rerankerPolicy.fusedRankBlend.map((band) => `${band.firstRank}-${band.lastRank ?? 'end'} ${band.retrievalWeight}/${band.rerankerWeight}`).join(', ')}`,
     '',

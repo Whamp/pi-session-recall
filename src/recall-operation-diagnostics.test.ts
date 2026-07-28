@@ -1,5 +1,16 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import {
+  appendFile,
+  mkdir,
+  mkdtemp,
+  open,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -20,6 +31,7 @@ import {
   createRecallSearchDiagnosticMetrics,
   readRecallOperationDiagnosticRecords,
   type RecallIndexDiagnosticCompletion,
+  type RecallOperationDiagnosticsFilesystem,
 } from './recall-operation-diagnostics.js';
 
 function completeTestDiagnosticOperation(
@@ -40,6 +52,109 @@ function completeTestDiagnosticOperation(
     deletedDocumentCount: 0,
     totalDocumentCount: null,
     ...(errorCategory ? { errorCategory } : {}),
+  });
+}
+
+type RecallDiagnosticFilesystemFault =
+  | 'file-open'
+  | 'file-write'
+  | 'file-sync'
+  | 'file-close'
+  | 'directory-sync';
+
+interface FaultingRecallDiagnosticFilesystemOptions {
+  events: string[];
+  fault?: RecallDiagnosticFilesystemFault;
+  reportCreated?: boolean;
+}
+
+function createFaultingRecallDiagnosticFilesystem(
+  options: FaultingRecallDiagnosticFilesystemOptions,
+): RecallOperationDiagnosticsFilesystem {
+  return {
+    async createDirectory(path) {
+      await mkdir(path, { recursive: true });
+    },
+    async getFileSize(path) {
+      return (await stat(path)).size;
+    },
+    async removeFile(path) {
+      options.events.push('remove-file');
+      await rm(path, { force: true });
+    },
+    async renameFile(sourcePath, destinationPath) {
+      options.events.push('rename-file');
+      await rename(sourcePath, destinationPath);
+    },
+    async appendFile(path, content) {
+      options.events.push('ordinary-append');
+      await appendFile(path, content, 'utf8');
+    },
+    async openAppendFile(path) {
+      options.events.push('file-open');
+      if (options.fault === 'file-open') {
+        throw new Error('injected diagnostic file open failure');
+      }
+      const openedFile = await (async () => {
+        try {
+          return { file: await open(path, 'ax', 0o600), created: true };
+        } catch (error) {
+          if (!isUnknownRecord(error) || error.code !== 'EEXIST') {
+            throw error;
+          }
+          return { file: await open(path, 'a', 0o600), created: false };
+        }
+      })();
+      return {
+        created: options.reportCreated ?? openedFile.created,
+        file: {
+          async appendFile(content) {
+            options.events.push('file-write');
+            if (options.fault === 'file-write') {
+              throw new Error('injected diagnostic file write failure');
+            }
+            await openedFile.file.appendFile(content, 'utf8');
+          },
+          async sync() {
+            options.events.push('file-sync');
+            if (options.fault === 'file-sync') {
+              throw new Error('injected diagnostic file sync failure');
+            }
+            await openedFile.file.sync();
+          },
+          async close() {
+            options.events.push('file-close');
+            await openedFile.file.close();
+            if (options.fault === 'file-close') {
+              throw new Error('injected diagnostic file close failure');
+            }
+          },
+        },
+      };
+    },
+    async syncDirectory(path) {
+      options.events.push('directory-sync');
+      if (options.fault === 'directory-sync') {
+        throw new Error('injected diagnostic directory sync failure');
+      }
+      const directory = await open(path, 'r');
+      try {
+        await directory.sync();
+      } finally {
+        await directory.close();
+      }
+    },
+  };
+}
+
+function recordTestDurableIncrementalFailure(
+  diagnostics: ReturnType<typeof createRecallOperationDiagnostics>,
+): void {
+  diagnostics.recordDurableIncrementalFailure({
+    operationKind: RecallDiagnosticOperationKind.INCREMENTAL_WORKER,
+    status: RecallDiagnosticStatus.FAILED,
+    metrics: createRecallIncrementalDiagnosticMetrics(),
+    errorCategory: RecallDiagnosticErrorCategory.OPERATION_FAILED,
   });
 }
 
@@ -237,6 +352,212 @@ void test('off diagnostics mode performs no diagnostic filesystem operations', a
   await diagnostics.flush();
 
   assert.equal(await readFile(filesystemBlocker, 'utf8'), 'unchanged');
+});
+
+void test('durable diagnostic file sync failure uses the scalar backlog fallback', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-diagnostic-file-sync-failure-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const activeLogPath = join(directory, 'incremental-diagnostics.jsonl');
+  const events: string[] = [];
+  const diagnostics = createRecallOperationDiagnostics({
+    mode: RecallDiagnosticsMode.OFF,
+    activeLogPath,
+    retainedLogPath: join(directory, 'incremental-diagnostics.previous.jsonl'),
+    persistenceState: { disabled: false, persistenceFailureHandled: false },
+    filesystem: createFaultingRecallDiagnosticFilesystem({
+      events,
+      fault: 'file-sync',
+    }),
+    async onPersistenceFailure() {
+      events.push('backlog-fallback');
+    },
+    notifyWarning() {
+      assert.fail('successful scalar backlog fallback must suppress warning');
+    },
+  });
+  recordTestDurableIncrementalFailure(diagnostics);
+  await diagnostics.flush();
+
+  assert.deepEqual(events, [
+    'file-open',
+    'file-write',
+    'file-sync',
+    'file-close',
+    'backlog-fallback',
+  ]);
+});
+
+void test('durable diagnostic open, write, and close failures use the scalar backlog fallback', async (t) => {
+  for (const fault of ['file-open', 'file-write', 'file-close'] as const) {
+    const directory = await mkdtemp(join(tmpdir(), `recall-diagnostic-${fault}-failure-`));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const events: string[] = [];
+    const diagnostics = createRecallOperationDiagnostics({
+      mode: RecallDiagnosticsMode.OFF,
+      activeLogPath: join(directory, 'incremental-diagnostics.jsonl'),
+      retainedLogPath: join(directory, 'incremental-diagnostics.previous.jsonl'),
+      persistenceState: { disabled: false, persistenceFailureHandled: false },
+      filesystem: createFaultingRecallDiagnosticFilesystem({ events, fault }),
+      async onPersistenceFailure() {
+        events.push('backlog-fallback');
+      },
+      notifyWarning() {
+        assert.fail('successful scalar backlog fallback must suppress warning');
+      },
+    });
+    recordTestDurableIncrementalFailure(diagnostics);
+    await diagnostics.flush();
+
+    const expectedEvents =
+      fault === 'file-open'
+        ? ['file-open', 'backlog-fallback']
+        : fault === 'file-write'
+          ? ['file-open', 'file-write', 'file-close', 'backlog-fallback']
+          : ['file-open', 'file-write', 'file-sync', 'file-close', 'backlog-fallback'];
+    assert.deepEqual(events, expectedEvents);
+  }
+});
+
+void test('durable diagnostic creation sync failure uses the scalar backlog fallback', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-diagnostic-create-sync-failure-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const events: string[] = [];
+  const diagnostics = createRecallOperationDiagnostics({
+    mode: RecallDiagnosticsMode.OFF,
+    activeLogPath: join(directory, 'incremental-diagnostics.jsonl'),
+    retainedLogPath: join(directory, 'incremental-diagnostics.previous.jsonl'),
+    persistenceState: { disabled: false, persistenceFailureHandled: false },
+    filesystem: createFaultingRecallDiagnosticFilesystem({
+      events,
+      fault: 'directory-sync',
+    }),
+    async onPersistenceFailure() {
+      events.push('backlog-fallback');
+    },
+    notifyWarning() {
+      assert.fail('successful scalar backlog fallback must suppress warning');
+    },
+  });
+  recordTestDurableIncrementalFailure(diagnostics);
+  await diagnostics.flush();
+
+  assert.deepEqual(events, [
+    'file-open',
+    'file-write',
+    'file-sync',
+    'file-close',
+    'directory-sync',
+    'backlog-fallback',
+  ]);
+});
+
+void test('durable diagnostic rotation sync failure uses the scalar backlog fallback', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-diagnostic-rotation-sync-failure-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const activeLogPath = join(directory, 'incremental-diagnostics.jsonl');
+  const retainedLogPath = join(directory, 'incremental-diagnostics.previous.jsonl');
+  await writeFile(activeLogPath, 'retained predecessor');
+  const events: string[] = [];
+  const diagnostics = createRecallOperationDiagnostics({
+    mode: RecallDiagnosticsMode.OFF,
+    activeLogPath,
+    retainedLogPath,
+    maximumLogBytes: 1,
+    persistenceState: { disabled: false, persistenceFailureHandled: false },
+    filesystem: createFaultingRecallDiagnosticFilesystem({
+      events,
+      fault: 'directory-sync',
+      reportCreated: false,
+    }),
+    async onPersistenceFailure() {
+      events.push('backlog-fallback');
+    },
+    notifyWarning() {
+      assert.fail('successful scalar backlog fallback must suppress warning');
+    },
+  });
+  recordTestDurableIncrementalFailure(diagnostics);
+  await diagnostics.flush();
+
+  assert.deepEqual(events, [
+    'remove-file',
+    'rename-file',
+    'file-open',
+    'file-write',
+    'file-sync',
+    'file-close',
+    'directory-sync',
+    'backlog-fallback',
+  ]);
+  assert.equal(await readFile(retainedLogPath, 'utf8'), 'retained predecessor');
+});
+
+void test('durable diagnostics warn once when local and scalar backlog persistence both fail', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-diagnostic-dual-sink-failure-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const events: string[] = [];
+  const persistenceState = { disabled: false, persistenceFailureHandled: false };
+  const diagnostics = createRecallOperationDiagnostics({
+    mode: RecallDiagnosticsMode.OFF,
+    activeLogPath: join(directory, 'incremental-diagnostics.jsonl'),
+    retainedLogPath: join(directory, 'incremental-diagnostics.previous.jsonl'),
+    persistenceState,
+    filesystem: createFaultingRecallDiagnosticFilesystem({
+      events,
+      fault: 'file-sync',
+    }),
+    async onPersistenceFailure() {
+      events.push('backlog-fallback');
+      throw new Error('injected scalar backlog fallback failure');
+    },
+    notifyWarning(message) {
+      events.push(message);
+      throw new Error('injected warning delivery failure');
+    },
+  });
+  recordTestDurableIncrementalFailure(diagnostics);
+  recordTestDurableIncrementalFailure(diagnostics);
+  await diagnostics.flush();
+
+  assert.deepEqual(events, [
+    'file-open',
+    'file-write',
+    'file-sync',
+    'file-close',
+    'backlog-fallback',
+    'Recall diagnostics disabled after local log and fallback persistence failed.',
+  ]);
+  assert.deepEqual(persistenceState, { disabled: true, persistenceFailureHandled: true });
+});
+
+void test('ordinary diagnostic timing records retain the unsynced append path', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-diagnostic-ordinary-append-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const activeLogPath = join(directory, 'incremental-diagnostics.jsonl');
+  const events: string[] = [];
+  const diagnostics = createRecallOperationDiagnostics({
+    mode: RecallDiagnosticsMode.ALL,
+    activeLogPath,
+    retainedLogPath: join(directory, 'incremental-diagnostics.previous.jsonl'),
+    persistenceState: { disabled: false, persistenceFailureHandled: false },
+    filesystem: createFaultingRecallDiagnosticFilesystem({
+      events,
+      fault: 'file-sync',
+    }),
+    notifyWarning() {
+      assert.fail('ordinary append must not reach durable file sync');
+    },
+  });
+  diagnostics.recordIncrementalOperation({
+    operationKind: RecallDiagnosticOperationKind.INCREMENTAL_WORKER,
+    status: RecallDiagnosticStatus.SUCCEEDED,
+    metrics: createRecallIncrementalDiagnosticMetrics(),
+  });
+  await diagnostics.flush();
+
+  assert.deepEqual(events, ['ordinary-append']);
+  const [record] = await readRecallOperationDiagnosticRecords(activeLogPath);
+  assert.equal(record?.status, RecallDiagnosticStatus.SUCCEEDED);
 });
 
 void test('off diagnostics mode still persists mandatory detached-worker failures', async (t) => {

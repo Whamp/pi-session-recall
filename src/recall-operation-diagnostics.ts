@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { appendFile, mkdir, readFile, rename, rm, stat } from 'node:fs/promises';
+import { appendFile, mkdir, open, readFile, rename, rm, stat } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
 import {
@@ -12,6 +12,7 @@ import {
 } from './enums.js';
 import { isUnknownRecord } from './is-unknown-record.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
+import { syncRecallDirectory } from './sync-recall-directory.js';
 
 const RECALL_DIAGNOSTIC_RECORD_VERSION = 3;
 const DEFAULT_MAXIMUM_DIAGNOSTIC_LOG_BYTES = 10 * 1_024 * 1_024;
@@ -265,6 +266,36 @@ export interface RecallOperationDiagnostics {
   flush(): Promise<void>;
 }
 
+/** Append-only file handle used to make mandatory diagnostic failures durable. */
+export interface RecallOperationDiagnosticFile {
+  appendFile(content: string): Promise<void>;
+  sync(): Promise<void>;
+  close(): Promise<void>;
+}
+
+/** Result of opening a diagnostic log for append, including whether the directory entry is new. */
+export interface OpenRecallOperationDiagnosticFile {
+  file: RecallOperationDiagnosticFile;
+  created: boolean;
+}
+
+/** Filesystem boundary for bounded diagnostic rotation, durability, and fault injection. */
+export interface RecallOperationDiagnosticsFilesystem {
+  createDirectory(path: string): Promise<void>;
+  getFileSize(path: string): Promise<number>;
+  removeFile(path: string): Promise<void>;
+  renameFile(sourcePath: string, destinationPath: string): Promise<void>;
+  appendFile(path: string, content: string): Promise<void>;
+  openAppendFile(path: string): Promise<OpenRecallOperationDiagnosticFile>;
+  syncDirectory(path: string): Promise<void>;
+}
+
+/** Process-level diagnostic failure state, replaceable only to isolate fault-injection tests. */
+export interface RecallDiagnosticPersistenceState {
+  disabled: boolean;
+  persistenceFailureHandled: boolean;
+}
+
 /** Configuration for bounded local recall diagnostic persistence. */
 export interface RecallOperationDiagnosticsOptions {
   mode: RecallDiagnosticsMode;
@@ -274,7 +305,36 @@ export interface RecallOperationDiagnosticsOptions {
   notifyWarning: (message: string) => void;
   onPersistenceFailure?: () => Promise<void>;
   maximumLogBytes?: number;
+  filesystem?: RecallOperationDiagnosticsFilesystem;
+  persistenceState?: RecallDiagnosticPersistenceState;
 }
+
+const NODE_RECALL_OPERATION_DIAGNOSTICS_FILESYSTEM: RecallOperationDiagnosticsFilesystem = {
+  async createDirectory(path) {
+    await mkdir(path, { recursive: true });
+  },
+  async getFileSize(path) {
+    return (await stat(path)).size;
+  },
+  async removeFile(path) {
+    await rm(path, { force: true });
+  },
+  renameFile: rename,
+  async appendFile(path, content) {
+    await appendFile(path, content, 'utf8');
+  },
+  async openAppendFile(path) {
+    try {
+      return { file: await open(path, 'ax', 0o600), created: true };
+    } catch (error) {
+      if (readNodeErrorCode(error) !== 'EEXIST') {
+        throw error;
+      }
+      return { file: await open(path, 'a', 0o600), created: false };
+    }
+  },
+  syncDirectory: syncRecallDirectory,
+};
 
 const SYSTEM_RECALL_DIAGNOSTICS_CLOCK: RecallDiagnosticsClock = {
   monotonicMilliseconds: () => performance.now(),
@@ -706,42 +766,66 @@ export function createRecallOperationDiagnostics(
 ): RecallOperationDiagnostics {
   const clock = options.clock ?? SYSTEM_RECALL_DIAGNOSTICS_CLOCK;
   const maximumLogBytes = options.maximumLogBytes ?? DEFAULT_MAXIMUM_DIAGNOSTIC_LOG_BYTES;
+  const filesystem = options.filesystem ?? NODE_RECALL_OPERATION_DIAGNOSTICS_FILESYSTEM;
+  const persistenceState = options.persistenceState ?? PROCESS_RECALL_DIAGNOSTIC_PERSISTENCE_STATE;
   let pendingWrite = Promise.resolve();
 
-  async function rotateDiagnosticLogIfNeeded(recordByteLength: number): Promise<void> {
+  async function rotateDiagnosticLogIfNeeded(recordByteLength: number): Promise<boolean> {
     let activeLogBytes: number;
     try {
-      activeLogBytes = (await stat(options.activeLogPath)).size;
+      activeLogBytes = await filesystem.getFileSize(options.activeLogPath);
     } catch (error) {
       if (readNodeErrorCode(error) === 'ENOENT') {
-        return;
+        return false;
       }
       throw error;
     }
     if (activeLogBytes === 0 || activeLogBytes + recordByteLength <= maximumLogBytes) {
-      return;
+      return false;
     }
-    await rm(options.retainedLogPath, { force: true });
-    await rename(options.activeLogPath, options.retainedLogPath);
+    await filesystem.removeFile(options.retainedLogPath);
+    await filesystem.renameFile(options.activeLogPath, options.retainedLogPath);
+    return true;
+  }
+
+  async function appendDurableDiagnosticRecord(
+    line: string,
+    directoryEntryChanged: boolean,
+  ): Promise<void> {
+    const openedFile = await filesystem.openAppendFile(options.activeLogPath);
+    try {
+      await openedFile.file.appendFile(line);
+      await openedFile.file.sync();
+    } finally {
+      await openedFile.file.close();
+    }
+    if (directoryEntryChanged || openedFile.created) {
+      await filesystem.syncDirectory(dirname(options.activeLogPath));
+    }
   }
 
   async function appendDiagnosticRecordAfter(
     previousWrite: Promise<void>,
     record: RecallOperationDiagnosticRecord,
+    persistenceRequired: boolean,
   ): Promise<void> {
     await previousWrite;
-    if (PROCESS_RECALL_DIAGNOSTIC_PERSISTENCE_STATE.disabled) {
+    if (persistenceState.disabled) {
       return;
     }
     try {
       const line = `${JSON.stringify(record)}\n`;
-      await mkdir(dirname(options.activeLogPath), { recursive: true });
-      await rotateDiagnosticLogIfNeeded(Buffer.byteLength(line));
-      await appendFile(options.activeLogPath, line, 'utf8');
+      await filesystem.createDirectory(dirname(options.activeLogPath));
+      const directoryEntryChanged = await rotateDiagnosticLogIfNeeded(Buffer.byteLength(line));
+      if (persistenceRequired) {
+        await appendDurableDiagnosticRecord(line, directoryEntryChanged);
+      } else {
+        await filesystem.appendFile(options.activeLogPath, line);
+      }
     } catch {
-      PROCESS_RECALL_DIAGNOSTIC_PERSISTENCE_STATE.disabled = true;
-      if (!PROCESS_RECALL_DIAGNOSTIC_PERSISTENCE_STATE.persistenceFailureHandled) {
-        PROCESS_RECALL_DIAGNOSTIC_PERSISTENCE_STATE.persistenceFailureHandled = true;
+      persistenceState.disabled = true;
+      if (!persistenceState.persistenceFailureHandled) {
+        persistenceState.persistenceFailureHandled = true;
         try {
           await options.onPersistenceFailure?.();
           if (options.onPersistenceFailure !== undefined) {
@@ -800,7 +884,7 @@ export function createRecallOperationDiagnostics(
     ) {
       return;
     }
-    pendingWrite = appendDiagnosticRecordAfter(pendingWrite, record);
+    pendingWrite = appendDiagnosticRecordAfter(pendingWrite, record, persistenceRequired);
   }
 
   return {

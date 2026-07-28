@@ -221,6 +221,7 @@ const explicitEligibilityScenarios: Array<{
     name: 'compaction',
     trigger: {
       kind: RecallWorkMarkerTrigger.COMPACTION,
+      logicalSessionId: 'logical-session-1',
       compactionEntryId: 'compaction-1',
     },
   },
@@ -228,6 +229,7 @@ const explicitEligibilityScenarios: Array<{
     name: 'branch exit',
     trigger: {
       kind: RecallWorkMarkerTrigger.BRANCH_EXIT,
+      logicalSessionId: 'logical-session-1',
       oldLeafEntryId: 'old-leaf',
       newLeafEntryId: 'new-leaf',
     },

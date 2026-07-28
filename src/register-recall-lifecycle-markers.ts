@@ -112,12 +112,14 @@ export function registerRecallLifecycleMarkers(
   pi.on('session_compact', async (event, context) => {
     await publishLifecycleMarker(context, {
       kind: RecallWorkMarkerTrigger.COMPACTION,
+      logicalSessionId: context.sessionManager.getSessionId(),
       compactionEntryId: event.compactionEntry.id,
     });
   });
   pi.on('session_tree', async (event, context) => {
     await publishLifecycleMarker(context, {
       kind: RecallWorkMarkerTrigger.BRANCH_EXIT,
+      logicalSessionId: context.sessionManager.getSessionId(),
       oldLeafEntryId: event.oldLeafId,
       newLeafEntryId: event.newLeafId,
       ...(event.summaryEntry === undefined ? {} : { summaryEntryId: event.summaryEntry.id }),

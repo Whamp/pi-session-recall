@@ -24,15 +24,17 @@ export interface RecallActivityMarkerTrigger {
   kind: RecallWorkMarkerTrigger.ACTIVITY;
 }
 
-/** Marker payload identifying the durable compaction entry that creates an eligibility boundary. */
+/** Marker payload identifying one logical session's durable compaction eligibility boundary. */
 export interface RecallCompactionMarkerTrigger {
   kind: RecallWorkMarkerTrigger.COMPACTION;
+  logicalSessionId: string;
   compactionEntryId: string;
 }
 
-/** Marker payload preserving one old-leaf to new-leaf context exit. */
+/** Marker payload preserving one logical session's old-leaf to new-leaf context exit. */
 export interface RecallBranchExitMarkerTrigger {
   kind: RecallWorkMarkerTrigger.BRANCH_EXIT;
+  logicalSessionId: string;
   oldLeafEntryId: string | null;
   newLeafEntryId: string | null;
   summaryEntryId?: string;
@@ -82,6 +84,7 @@ const markerTriggerSchema = Type.Union([
   Type.Object(
     {
       kind: Type.Literal(RecallWorkMarkerTrigger.COMPACTION),
+      logicalSessionId: nonemptyIdentifierSchema,
       compactionEntryId: nonemptyIdentifierSchema,
     },
     { additionalProperties: false },
@@ -89,6 +92,7 @@ const markerTriggerSchema = Type.Union([
   Type.Object(
     {
       kind: Type.Literal(RecallWorkMarkerTrigger.BRANCH_EXIT),
+      logicalSessionId: nonemptyIdentifierSchema,
       oldLeafEntryId: nullableIdentifierSchema,
       newLeafEntryId: nullableIdentifierSchema,
       summaryEntryId: Type.Optional(nonemptyIdentifierSchema),
@@ -126,17 +130,20 @@ function canonicalizeRecallMarkerTrigger(trigger: RecallWorkMarkerTriggerPayload
     case RecallWorkMarkerTrigger.COMPACTION:
       return {
         kind: RecallWorkMarkerTrigger.COMPACTION,
+        logicalSessionId: trigger.logicalSessionId,
         compactionEntryId: trigger.compactionEntryId,
       };
     case RecallWorkMarkerTrigger.BRANCH_EXIT:
       return trigger.summaryEntryId === undefined
         ? {
             kind: RecallWorkMarkerTrigger.BRANCH_EXIT,
+            logicalSessionId: trigger.logicalSessionId,
             oldLeafEntryId: trigger.oldLeafEntryId,
             newLeafEntryId: trigger.newLeafEntryId,
           }
         : {
             kind: RecallWorkMarkerTrigger.BRANCH_EXIT,
+            logicalSessionId: trigger.logicalSessionId,
             oldLeafEntryId: trigger.oldLeafEntryId,
             newLeafEntryId: trigger.newLeafEntryId,
             summaryEntryId: trigger.summaryEntryId,

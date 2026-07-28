@@ -352,16 +352,25 @@ function markerAppliesToLogicalProjection(
   marker: RecallWorkMarker,
   projection: LogicalSessionProjection,
 ): boolean {
-  const entryIds = new Set(projection.entryDescriptors.map(({ entryId }) => entryId));
   switch (marker.trigger.kind) {
-    case RecallWorkMarkerTrigger.COMPACTION:
-      return entryIds.has(marker.trigger.compactionEntryId);
-    case RecallWorkMarkerTrigger.BRANCH_EXIT:
+    case RecallWorkMarkerTrigger.COMPACTION: {
+      if (marker.trigger.logicalSessionId !== projection.logicalSessionId) {
+        return false;
+      }
+      const compactionEntryId = marker.trigger.compactionEntryId;
+      return projection.entryDescriptors.some(({ entryId }) => entryId === compactionEntryId);
+    }
+    case RecallWorkMarkerTrigger.BRANCH_EXIT: {
+      if (marker.trigger.logicalSessionId !== projection.logicalSessionId) {
+        return false;
+      }
+      const entryIds = new Set(projection.entryDescriptors.map(({ entryId }) => entryId));
       return (
         (marker.trigger.oldLeafEntryId !== null && entryIds.has(marker.trigger.oldLeafEntryId)) ||
         (marker.trigger.newLeafEntryId !== null && entryIds.has(marker.trigger.newLeafEntryId)) ||
         (marker.trigger.summaryEntryId !== undefined && entryIds.has(marker.trigger.summaryEntryId))
       );
+    }
     case RecallWorkMarkerTrigger.ACTIVITY:
     case RecallWorkMarkerTrigger.ARRIVAL:
     case RecallWorkMarkerTrigger.DEPARTURE:

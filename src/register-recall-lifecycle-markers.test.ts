@@ -209,6 +209,7 @@ void test('recall lifecycle markers map every documented Pi trigger with one run
         createdAtEpochMilliseconds: 1_753_315_200_002,
         trigger: {
           kind: RecallWorkMarkerTrigger.COMPACTION,
+          logicalSessionId: 'physical-session-1',
           compactionEntryId: 'compaction-entry-1',
         },
       },
@@ -220,6 +221,7 @@ void test('recall lifecycle markers map every documented Pi trigger with one run
         createdAtEpochMilliseconds: 1_753_315_200_003,
         trigger: {
           kind: RecallWorkMarkerTrigger.BRANCH_EXIT,
+          logicalSessionId: 'physical-session-1',
           oldLeafEntryId: 'old-leaf-1',
           newLeafEntryId: 'new-leaf-1',
           summaryEntryId: 'summary-entry-1',
@@ -233,6 +235,7 @@ void test('recall lifecycle markers map every documented Pi trigger with one run
         createdAtEpochMilliseconds: 1_753_315_200_004,
         trigger: {
           kind: RecallWorkMarkerTrigger.BRANCH_EXIT,
+          logicalSessionId: 'physical-session-1',
           oldLeafEntryId: 'old-leaf-1',
           newLeafEntryId: null,
         },
@@ -245,6 +248,7 @@ void test('recall lifecycle markers map every documented Pi trigger with one run
         createdAtEpochMilliseconds: 1_753_315_200_005,
         trigger: {
           kind: RecallWorkMarkerTrigger.BRANCH_EXIT,
+          logicalSessionId: 'physical-session-1',
           oldLeafEntryId: null,
           newLeafEntryId: null,
         },

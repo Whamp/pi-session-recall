@@ -172,6 +172,7 @@ const scenarios: ReducerScenario[] = [
     markers: [
       marker('compact', {
         kind: RecallWorkMarkerTrigger.COMPACTION,
+        logicalSessionId: 'logical',
         compactionEntryId: 'c4',
       }),
     ],
@@ -183,6 +184,7 @@ const scenarios: ReducerScenario[] = [
     markers: [
       marker('compact', {
         kind: RecallWorkMarkerTrigger.COMPACTION,
+        logicalSessionId: 'logical',
         compactionEntryId: 'c4',
       }),
     ],
@@ -202,6 +204,7 @@ const scenarios: ReducerScenario[] = [
     markers: [
       marker('branch', {
         kind: RecallWorkMarkerTrigger.BRANCH_EXIT,
+        logicalSessionId: 'logical',
         oldLeafEntryId: 'e3',
         newLeafEntryId: 'e4',
       }),
@@ -223,6 +226,7 @@ const scenarios: ReducerScenario[] = [
     markers: [
       marker('branch', {
         kind: RecallWorkMarkerTrigger.BRANCH_EXIT,
+        logicalSessionId: 'logical',
         oldLeafEntryId: 'e3',
         newLeafEntryId: 'e4',
         summaryEntryId: 's5',
@@ -280,13 +284,21 @@ void test('repeated overlapping and split-turn compaction is monotonic and repla
   const markers = [
     marker(
       'c4-marker',
-      { kind: RecallWorkMarkerTrigger.COMPACTION, compactionEntryId: 'c4' },
+      {
+        kind: RecallWorkMarkerTrigger.COMPACTION,
+        logicalSessionId: 'logical',
+        compactionEntryId: 'c4',
+      },
       'a',
       1,
     ),
     marker(
       'c5-marker',
-      { kind: RecallWorkMarkerTrigger.COMPACTION, compactionEntryId: 'c5' },
+      {
+        kind: RecallWorkMarkerTrigger.COMPACTION,
+        logicalSessionId: 'logical',
+        compactionEntryId: 'c5',
+      },
       'b',
       1,
     ),
@@ -343,6 +355,7 @@ void test('uncovered late branch exit remains eligible below the runtime sequenc
     'late-branch-exit',
     {
       kind: RecallWorkMarkerTrigger.BRANCH_EXIT,
+      logicalSessionId: 'logical',
       oldLeafEntryId: 'e3',
       newLeafEntryId: 'e4',
     },
@@ -377,13 +390,23 @@ void test('concurrent runtimes union eligibility without choosing one authoritat
   ]);
   const branchA = marker(
     'a',
-    { kind: RecallWorkMarkerTrigger.BRANCH_EXIT, oldLeafEntryId: 'e3', newLeafEntryId: 'e5' },
+    {
+      kind: RecallWorkMarkerTrigger.BRANCH_EXIT,
+      logicalSessionId: 'logical',
+      oldLeafEntryId: 'e3',
+      newLeafEntryId: 'e5',
+    },
     'runtime-a',
     2,
   );
   const branchB = marker(
     'b',
-    { kind: RecallWorkMarkerTrigger.BRANCH_EXIT, oldLeafEntryId: 'e5', newLeafEntryId: 'e3' },
+    {
+      kind: RecallWorkMarkerTrigger.BRANCH_EXIT,
+      logicalSessionId: 'logical',
+      oldLeafEntryId: 'e5',
+      newLeafEntryId: 'e3',
+    },
     'runtime-b',
     4,
   );
@@ -442,6 +465,7 @@ void test('eligibility unions only grow and reducer replay is idempotent for arb
             case 'branch':
               trigger = {
                 kind: RecallWorkMarkerTrigger.BRANCH_EXIT,
+                logicalSessionId: 'logical',
                 oldLeafEntryId: 'e3',
                 newLeafEntryId: 'e5',
               };
@@ -449,6 +473,7 @@ void test('eligibility unions only grow and reducer replay is idempotent for arb
             case 'compaction':
               trigger = {
                 kind: RecallWorkMarkerTrigger.COMPACTION,
+                logicalSessionId: 'logical',
                 compactionEntryId: 'c6',
               };
               break;
@@ -500,7 +525,12 @@ void test('marker interleavings preserving each runtime sequence produce the sam
   const runtimeA = [
     marker(
       'a1',
-      { kind: RecallWorkMarkerTrigger.BRANCH_EXIT, oldLeafEntryId: 'e3', newLeafEntryId: 'e5' },
+      {
+        kind: RecallWorkMarkerTrigger.BRANCH_EXIT,
+        logicalSessionId: 'logical',
+        oldLeafEntryId: 'e3',
+        newLeafEntryId: 'e5',
+      },
       'runtime-a',
       1,
     ),
@@ -509,7 +539,12 @@ void test('marker interleavings preserving each runtime sequence produce the sam
   const runtimeB = [
     marker(
       'b1',
-      { kind: RecallWorkMarkerTrigger.BRANCH_EXIT, oldLeafEntryId: 'e5', newLeafEntryId: 'e3' },
+      {
+        kind: RecallWorkMarkerTrigger.BRANCH_EXIT,
+        logicalSessionId: 'logical',
+        oldLeafEntryId: 'e5',
+        newLeafEntryId: 'e3',
+      },
       'runtime-b',
       1,
     ),

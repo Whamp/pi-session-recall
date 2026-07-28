@@ -45,15 +45,21 @@ void test('recall work marker round-trips every strict trigger payload', async (
   const { marker, sessionsDirectory } = await createMarkerFixture(t);
   const triggers: RecallWorkMarker['trigger'][] = [
     { kind: RecallWorkMarkerTrigger.ACTIVITY },
-    { kind: RecallWorkMarkerTrigger.COMPACTION, compactionEntryId: 'compaction-entry-1' },
+    {
+      kind: RecallWorkMarkerTrigger.COMPACTION,
+      logicalSessionId: 'logical-session-1',
+      compactionEntryId: 'compaction-entry-1',
+    },
     {
       kind: RecallWorkMarkerTrigger.BRANCH_EXIT,
+      logicalSessionId: 'logical-session-1',
       oldLeafEntryId: 'old-leaf-1',
       newLeafEntryId: 'new-leaf-1',
       summaryEntryId: 'branch-summary-1',
     },
     {
       kind: RecallWorkMarkerTrigger.BRANCH_EXIT,
+      logicalSessionId: 'logical-session-1',
       oldLeafEntryId: null,
       newLeafEntryId: null,
     },
@@ -94,10 +100,11 @@ void test('recall work marker ID has a deterministic golden wire value', async (
       createdAtEpochMilliseconds: 1_753_315_200_000,
       trigger: {
         kind: RecallWorkMarkerTrigger.COMPACTION,
+        logicalSessionId: 'logical-session-golden',
         compactionEntryId: 'compaction-golden',
       },
     }),
-    'marker_-8Pep7mmpgob7WlIh9kTX7ixxDILcMQkjKtYM2EmD4w',
+    'marker_buhPcnk_L-omkI7gcXicdgLbozUsQuW83TO9JUjogCQ',
   );
 });
 
@@ -112,8 +119,15 @@ void test('recall work marker rejects malformed and forward-incompatible values'
     /marker|trigger|invalid/iu,
   );
   await assert.rejects(
-    () => decode({ ...marker, trigger: { kind: RecallWorkMarkerTrigger.COMPACTION } }),
-    /marker|compactionEntryId|invalid/iu,
+    () =>
+      decode({
+        ...marker,
+        trigger: {
+          kind: RecallWorkMarkerTrigger.COMPACTION,
+          compactionEntryId: 'compaction-entry-1',
+        },
+      }),
+    /marker|logicalSessionId|invalid/iu,
   );
   await assert.rejects(
     () =>
@@ -121,10 +135,11 @@ void test('recall work marker rejects malformed and forward-incompatible values'
         ...marker,
         trigger: {
           kind: RecallWorkMarkerTrigger.BRANCH_EXIT,
+          oldLeafEntryId: 'old-leaf-1',
           newLeafEntryId: 'new-leaf-1',
         },
       }),
-    /marker|oldLeafEntryId|invalid/iu,
+    /marker|logicalSessionId|invalid/iu,
   );
   for (const runtimeSequence of [0, -1, 1.5]) {
     await assert.rejects(

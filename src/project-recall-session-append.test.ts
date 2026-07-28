@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { appendFile, mkdtemp, stat, writeFile } from 'node:fs/promises';
+import { appendFile, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -143,6 +143,202 @@ void test('projector creates multiple logical sessions from one current canonica
   );
 });
 
+void test('projector scopes colliding context exits to their logical sessions with durable provenance', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-project-reused-session-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionPath = join(directory, 'session.jsonl');
+  const records = [
+    {
+      type: 'session',
+      version: 3,
+      id: 'logical-1',
+      timestamp: '2026-01-01T00:00:00Z',
+      cwd: '/one',
+    },
+    {
+      type: 'message',
+      id: 'shared-root',
+      parentId: null,
+      timestamp: '2026-01-01T00:00:01Z',
+      message: { role: 'user', content: 'first root' },
+    },
+    {
+      type: 'message',
+      id: 'shared-old',
+      parentId: 'shared-root',
+      timestamp: '2026-01-01T00:00:02Z',
+      message: { role: 'assistant', content: 'first old branch' },
+    },
+    {
+      type: 'message',
+      id: 'shared-new',
+      parentId: 'shared-root',
+      timestamp: '2026-01-01T00:00:03Z',
+      message: { role: 'assistant', content: 'first new branch' },
+    },
+    {
+      type: 'branch_summary',
+      id: 'shared-summary',
+      parentId: 'shared-new',
+      timestamp: '2026-01-01T00:00:04Z',
+      fromId: 'shared-old',
+      summary: 'first branch summary',
+    },
+    {
+      type: 'compaction',
+      id: 'shared-compaction',
+      parentId: 'shared-summary',
+      timestamp: '2026-01-01T00:00:05Z',
+      summary: 'first compaction',
+      firstKeptEntryId: 'shared-new',
+      tokensBefore: 100,
+    },
+    {
+      type: 'message',
+      id: 'shared-tail',
+      parentId: 'shared-compaction',
+      timestamp: '2026-01-01T00:00:06Z',
+      message: { role: 'user', content: 'first active tail' },
+    },
+    {
+      type: 'session',
+      version: 3,
+      id: 'logical-2',
+      timestamp: '2026-01-02T00:00:00Z',
+      cwd: '/two',
+    },
+    {
+      type: 'message',
+      id: 'shared-root',
+      parentId: null,
+      timestamp: '2026-01-02T00:00:01Z',
+      message: { role: 'user', content: 'second root' },
+    },
+    {
+      type: 'message',
+      id: 'shared-old',
+      parentId: 'shared-root',
+      timestamp: '2026-01-02T00:00:02Z',
+      message: { role: 'assistant', content: 'second old branch' },
+    },
+    {
+      type: 'message',
+      id: 'shared-new',
+      parentId: 'shared-root',
+      timestamp: '2026-01-02T00:00:03Z',
+      message: { role: 'assistant', content: 'second new branch' },
+    },
+    {
+      type: 'branch_summary',
+      id: 'shared-summary',
+      parentId: 'shared-new',
+      timestamp: '2026-01-02T00:00:04Z',
+      fromId: 'shared-old',
+      summary: 'second branch summary',
+    },
+    {
+      type: 'compaction',
+      id: 'shared-compaction',
+      parentId: 'shared-summary',
+      timestamp: '2026-01-02T00:00:05Z',
+      summary: 'second compaction',
+      firstKeptEntryId: 'shared-new',
+      tokensBefore: 100,
+    },
+    {
+      type: 'message',
+      id: 'shared-tail',
+      parentId: 'shared-compaction',
+      timestamp: '2026-01-02T00:00:06Z',
+      message: { role: 'user', content: 'second active tail' },
+    },
+  ];
+  await writeFile(sessionPath, jsonl(records));
+  const physicalProjection = await emptyPhysicalProjection(sessionPath);
+  const appendDelta = await readRecallSessionAppendDelta(sessionPath, physicalProjection);
+  assert.equal(appendDelta.status, RecallAppendDeltaStatus.APPENDED);
+  if (appendDelta.status !== RecallAppendDeltaStatus.APPENDED) {
+    return;
+  }
+  const branchExitTrigger = {
+    kind: RecallWorkMarkerTrigger.BRANCH_EXIT,
+    logicalSessionId: 'logical-1',
+    oldLeafEntryId: 'shared-old',
+    newLeafEntryId: 'shared-new',
+    summaryEntryId: 'shared-summary',
+  } as const;
+  const compactionTrigger = {
+    kind: RecallWorkMarkerTrigger.COMPACTION,
+    logicalSessionId: 'logical-2',
+    compactionEntryId: 'shared-compaction',
+  } as const;
+  const branchMarker = marker('branch-logical-1', branchExitTrigger);
+  const compactionMarker = marker('compaction-logical-2', compactionTrigger, 2);
+
+  const projected = projectRecallSessionAppend({
+    physicalProjection,
+    logicalProjections: [],
+    appendDelta,
+    markers: [branchMarker, compactionMarker],
+    quiescenceObserved: false,
+  });
+
+  assert.equal(projected.status, RecallAppendProjectionStatus.PROJECTED);
+  if (projected.status !== RecallAppendProjectionStatus.PROJECTED) {
+    return;
+  }
+  assert.deepEqual(
+    projected.logicalProjections.map((projection) => ({
+      logicalSessionId: projection.logicalSessionId,
+      eligibleEntryIds: projection.eligibleContributorEntryIds,
+      coveredMarkerIds: projection.markerCheckpoint.coveredMarkerIds,
+    })),
+    [
+      {
+        logicalSessionId: 'logical-1',
+        eligibleEntryIds: ['shared-old', 'shared-summary'],
+        coveredMarkerIds: [branchMarker.markerId],
+      },
+      {
+        logicalSessionId: 'logical-2',
+        eligibleEntryIds: ['shared-root', 'shared-compaction'],
+        coveredMarkerIds: [compactionMarker.markerId],
+      },
+    ],
+  );
+  assert.deepEqual(projected.physicalProjection.markerCheckpoint.coveredMarkerIds, [
+    branchMarker.markerId,
+    compactionMarker.markerId,
+  ]);
+  const expectedSourceRecords = [3, 5, 9, 13].map((sourceLine) => {
+    const record = appendDelta.records.find((candidate) => candidate.sourceLine === sourceLine);
+    assert.ok(record);
+    return {
+      startByte: record.startByte,
+      endByte: record.endByte,
+    };
+  });
+  assert.deepEqual(
+    projected.newlyEligibleSpans.map(({ startByte, endByte }) => ({ startByte, endByte })),
+    expectedSourceRecords,
+  );
+
+  const replayed = projectRecallSessionAppend({
+    physicalProjection: projected.physicalProjection,
+    logicalProjections: projected.logicalProjections,
+    appendDelta: { ...appendDelta, records: [] },
+    markers: [branchMarker, compactionMarker],
+    quiescenceObserved: false,
+  });
+  assert.equal(replayed.status, RecallAppendProjectionStatus.PROJECTED);
+  if (replayed.status !== RecallAppendProjectionStatus.PROJECTED) {
+    return;
+  }
+  assert.deepEqual(replayed.newlyEligibleSpans, []);
+  assert.deepEqual(replayed.physicalProjection, projected.physicalProjection);
+  assert.deepEqual(replayed.logicalProjections, projected.logicalProjections);
+});
+
 void test('projector applies label metadata and explicit leaf records without making content eligible', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'recall-project-label-leaf-'));
   const sessionPath = join(directory, 'session.jsonl');
@@ -274,13 +470,18 @@ void test('projector emits immediate compaction and branch-exit spans while excl
     markers: [
       marker('branch', {
         kind: RecallWorkMarkerTrigger.BRANCH_EXIT,
+        logicalSessionId: 'logical',
         oldLeafEntryId: 'old',
         newLeafEntryId: 'new',
         summaryEntryId: 'summary',
       }),
       marker(
         'compact',
-        { kind: RecallWorkMarkerTrigger.COMPACTION, compactionEntryId: 'compact' },
+        {
+          kind: RecallWorkMarkerTrigger.COMPACTION,
+          logicalSessionId: 'logical',
+          compactionEntryId: 'compact',
+        },
         2,
       ),
     ],

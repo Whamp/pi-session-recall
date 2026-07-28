@@ -117,7 +117,7 @@ function coalesceRecallWorkMarkers(
     }
     const key =
       marker.trigger.kind === RecallWorkMarkerTrigger.COMPACTION
-        ? `${marker.physicalSessionId}:compaction`
+        ? `${marker.physicalSessionId}:compaction:${marker.trigger.logicalSessionId}:${marker.trigger.compactionEntryId}`
         : `${marker.physicalSessionId}:${marker.runtimeInstanceId}:${marker.trigger.kind}`;
     addLatestRecallMarker(workItemsByKey, key, marker);
   }

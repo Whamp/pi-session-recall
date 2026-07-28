@@ -68,7 +68,7 @@ async function createCoordinatorFixture(t: test.TestContext): Promise<Coordinato
   };
 }
 
-void test('recall marker replay orders runtimes deterministically and coalesces without losing branch exits', async (t) => {
+void test('recall marker replay coalesces activity while preserving divergent compactions and branch exits', async (t) => {
   const fixture = await createCoordinatorFixture(t);
   const markers = [
     fixture.createMarker('runtime-b', 2, { kind: RecallWorkMarkerTrigger.ACTIVITY }),
@@ -78,11 +78,13 @@ void test('recall marker replay orders runtimes deterministically and coalesces 
     fixture.createMarker('runtime-a', 6, { kind: RecallWorkMarkerTrigger.ARRIVAL }),
     fixture.createMarker('runtime-a', 3, {
       kind: RecallWorkMarkerTrigger.BRANCH_EXIT,
+      logicalSessionId: 'logical-session-1',
       oldLeafEntryId: 'old-1',
       newLeafEntryId: 'new-1',
     }),
     fixture.createMarker('runtime-a', 4, {
       kind: RecallWorkMarkerTrigger.BRANCH_EXIT,
+      logicalSessionId: 'logical-session-1',
       oldLeafEntryId: 'old-2',
       newLeafEntryId: 'new-2',
     }),
@@ -90,10 +92,12 @@ void test('recall marker replay orders runtimes deterministically and coalesces 
     fixture.createMarker('runtime-a', 8, { kind: RecallWorkMarkerTrigger.DEPARTURE }),
     fixture.createMarker('runtime-a', 9, {
       kind: RecallWorkMarkerTrigger.COMPACTION,
+      logicalSessionId: 'logical-session-1',
       compactionEntryId: 'compaction-1',
     }),
     fixture.createMarker('runtime-b', 1, {
       kind: RecallWorkMarkerTrigger.COMPACTION,
+      logicalSessionId: 'logical-session-2',
       compactionEntryId: 'compaction-2',
     }),
   ];
@@ -120,19 +124,38 @@ void test('recall marker replay orders runtimes deterministically and coalesces 
       ['runtime-a', 5, RecallWorkMarkerTrigger.ACTIVITY],
       ['runtime-a', 6, RecallWorkMarkerTrigger.ARRIVAL],
       ['runtime-a', 8, RecallWorkMarkerTrigger.DEPARTURE],
+      ['runtime-a', 9, RecallWorkMarkerTrigger.COMPACTION],
       ['runtime-b', 1, RecallWorkMarkerTrigger.COMPACTION],
       ['runtime-b', 2, RecallWorkMarkerTrigger.ACTIVITY],
     ],
   );
-  const compactionItem = workPlan.workItems.find(
+  const compactionItems = workPlan.workItems.filter(
     ({ marker }) => marker.trigger.kind === RecallWorkMarkerTrigger.COMPACTION,
   );
   assert.deepEqual(
-    compactionItem?.coveredMarkerIds.toSorted(),
+    compactionItems.map(({ marker, coveredMarkerIds }) => ({
+      logicalSessionId:
+        marker.trigger.kind === RecallWorkMarkerTrigger.COMPACTION
+          ? marker.trigger.logicalSessionId
+          : null,
+      compactionEntryId:
+        marker.trigger.kind === RecallWorkMarkerTrigger.COMPACTION
+          ? marker.trigger.compactionEntryId
+          : null,
+      coveredMarkerIds,
+    })),
     markers
       .filter(({ trigger }) => trigger.kind === RecallWorkMarkerTrigger.COMPACTION)
-      .map(({ markerId }) => markerId)
-      .toSorted(),
+      .map(({ markerId, trigger }) => ({
+        logicalSessionId:
+          trigger.kind === RecallWorkMarkerTrigger.COMPACTION ? trigger.logicalSessionId : null,
+        compactionEntryId:
+          trigger.kind === RecallWorkMarkerTrigger.COMPACTION ? trigger.compactionEntryId : null,
+        coveredMarkerIds: [markerId],
+      }))
+      .toSorted(
+        (left, right) => left.compactionEntryId?.localeCompare(right.compactionEntryId ?? '') ?? 0,
+      ),
   );
   assert.deepEqual(workPlan.quarantineDiagnostics, []);
 });
@@ -211,11 +234,13 @@ void test('recall marker replay deduplicates repeated delivery and breaks equal 
   await fixture.publishMarker(duplicate);
   const firstTie = fixture.createMarker('runtime-a', 2, {
     kind: RecallWorkMarkerTrigger.BRANCH_EXIT,
+    logicalSessionId: 'logical-session-1',
     oldLeafEntryId: 'old-a',
     newLeafEntryId: 'new-a',
   });
   const secondTieTrigger: RecallWorkMarkerTriggerPayload = {
     kind: RecallWorkMarkerTrigger.BRANCH_EXIT,
+    logicalSessionId: 'logical-session-1',
     oldLeafEntryId: 'old-b',
     newLeafEntryId: 'new-b',
   };

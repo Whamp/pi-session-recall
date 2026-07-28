@@ -185,11 +185,16 @@ const lifecycleAcceptanceScenarios: readonly LifecycleAcceptanceScenario[] = [
     markers: [
       createAcceptanceMarker('compaction-1', {
         kind: RecallWorkMarkerTrigger.COMPACTION,
+        logicalSessionId: 'logical_acceptance',
         compactionEntryId: 'c4',
       }),
       createAcceptanceMarker(
         'compaction-2',
-        { kind: RecallWorkMarkerTrigger.COMPACTION, compactionEntryId: 'c5' },
+        {
+          kind: RecallWorkMarkerTrigger.COMPACTION,
+          logicalSessionId: 'logical_acceptance',
+          compactionEntryId: 'c5',
+        },
         'runtime-1',
         2,
       ),
@@ -203,6 +208,7 @@ const lifecycleAcceptanceScenarios: readonly LifecycleAcceptanceScenario[] = [
     markers: [
       createAcceptanceMarker('split-compaction', {
         kind: RecallWorkMarkerTrigger.COMPACTION,
+        logicalSessionId: 'logical_acceptance',
         compactionEntryId: 'c4',
       }),
     ],
@@ -216,6 +222,7 @@ const lifecycleAcceptanceScenarios: readonly LifecycleAcceptanceScenario[] = [
     markers: [
       createAcceptanceMarker('branch-without-summary', {
         kind: RecallWorkMarkerTrigger.BRANCH_EXIT,
+        logicalSessionId: 'logical_acceptance',
         oldLeafEntryId: 'e3',
         newLeafEntryId: 'e4',
       }),
@@ -230,6 +237,7 @@ const lifecycleAcceptanceScenarios: readonly LifecycleAcceptanceScenario[] = [
     markers: [
       createAcceptanceMarker('branch-with-summary', {
         kind: RecallWorkMarkerTrigger.BRANCH_EXIT,
+        logicalSessionId: 'logical_acceptance',
         oldLeafEntryId: 'e3',
         newLeafEntryId: 's5',
         summaryEntryId: 's5',
@@ -268,6 +276,7 @@ const lifecycleAcceptanceScenarios: readonly LifecycleAcceptanceScenario[] = [
         'runtime-a-exit',
         {
           kind: RecallWorkMarkerTrigger.BRANCH_EXIT,
+          logicalSessionId: 'logical_acceptance',
           oldLeafEntryId: 'e3',
           newLeafEntryId: 'e4',
         },
@@ -277,6 +286,7 @@ const lifecycleAcceptanceScenarios: readonly LifecycleAcceptanceScenario[] = [
         'runtime-b-exit',
         {
           kind: RecallWorkMarkerTrigger.BRANCH_EXIT,
+          logicalSessionId: 'logical_acceptance',
           oldLeafEntryId: 'e4',
           newLeafEntryId: 'e3',
         },

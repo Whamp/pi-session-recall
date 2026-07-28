@@ -198,6 +198,7 @@ export function reduceRecallEligibility(
   );
   const coveredMarkerIds = new Set(projection.markerCheckpoint.coveredMarkerIds);
   const unprocessedMarkers = input.markers.filter((marker) =>
+    marker.trigger.kind === RecallWorkMarkerTrigger.COMPACTION ||
     marker.trigger.kind === RecallWorkMarkerTrigger.BRANCH_EXIT
       ? !coveredMarkerIds.has(marker.markerId)
       : marker.runtimeSequence > (runtimeSequences.get(marker.runtimeInstanceId) ?? 0),

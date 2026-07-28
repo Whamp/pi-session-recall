@@ -243,7 +243,8 @@ async function materializeProjectedHeader(
   if (
     record.sourceFingerprint !== descriptor.sourceFingerprint ||
     !isSupportedRecallSessionHeader(record.value) ||
-    record.value.id !== options.logicalProjection.logicalSessionId ||
+    record.value.id !==
+      (options.logicalProjection.rawSessionId ?? options.logicalProjection.logicalSessionId) ||
     record.value.cwd !== descriptor.cwd ||
     (typeof record.value.parentSession === 'string' ? record.value.parentSession : null) !==
       descriptor.parentSessionPath
@@ -319,7 +320,8 @@ export async function materializeIncrementalRecallEligibleGraphView(
   const canonicalSession: CanonicalSessionRepresentation = {
     format: SessionImportFormat.CANONICAL_JSONL,
     physicalPath: sourcePath,
-    logicalSessionId: options.logicalProjection.logicalSessionId,
+    logicalSessionId:
+      options.logicalProjection.rawSessionId ?? options.logicalProjection.logicalSessionId,
     sourceLineStart: header.sourceLine,
     sourceLineEnd: finalSourceLine,
     records: canonicalRecords,

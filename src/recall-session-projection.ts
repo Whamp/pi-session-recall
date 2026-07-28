@@ -149,6 +149,8 @@ export interface LogicalSessionProjection extends RecallSessionProjectionBase {
   projectionKind: RecallSessionProjectionKind.LOGICAL_SESSION;
   physicalProjectionId: string;
   logicalSessionId: string;
+  /** Raw header ID retained separately when reuse history requires an occurrence identity. */
+  rawSessionId?: string;
   effectiveLeafEntryId: string | null;
   activeContextBoundary: RecallActiveContextBoundary | null;
   compactionBoundary: RecallCompactionBoundary | null;
@@ -269,6 +271,7 @@ const logicalSessionProjectionSchema = Type.Object(
     projectionKind: Type.Literal(RecallSessionProjectionKind.LOGICAL_SESSION),
     physicalProjectionId: Type.String({ pattern: '^[A-Za-z0-9_-]+$' }),
     logicalSessionId: nonemptyStringSchema,
+    rawSessionId: Type.Optional(nonemptyStringSchema),
     effectiveLeafEntryId: nullableIdentifierSchema,
     activeContextBoundary: Type.Union([
       Type.Object(

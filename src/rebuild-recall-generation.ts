@@ -464,7 +464,6 @@ export async function rebuildRecallGeneration<Result, BuildSnapshot = undefined>
       }
     },
   );
-  options.workerSignal.signalDetachedWorker();
   await writeRecallBacklogSummary(options.backlogSummaryPath, {
     version: RECALL_BACKLOG_SUMMARY_VERSION,
     pendingEligibleSessionCount: readyWatermark.length,
@@ -477,6 +476,7 @@ export async function rebuildRecallGeneration<Result, BuildSnapshot = undefined>
     lastFailureCategory: null,
     observedAtEpochMilliseconds: activatedAt,
   });
+  options.workerSignal.signalDetachedWorker();
   return {
     result: buildResult,
     previousGenerationId,

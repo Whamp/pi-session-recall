@@ -445,6 +445,7 @@ async function runConfirmedDeletionWriteWindow(
         options.embeddingDimensions,
       );
       const projectionStore = defaultConfirmedDeletionProjectionStore(selection, false);
+      let operationFailed = false;
       try {
         const projection = projectionStore
           .fetchProjections([physicalProjectionId])
@@ -618,8 +619,14 @@ async function runConfirmedDeletionWriteWindow(
           default:
             return { action: 'no_change' };
         }
+      } catch (error) {
+        operationFailed = true;
+        throw error;
       } finally {
         closeConfirmedDeletionStores(evidenceStore, projectionStore, writeWindow);
+        if (!operationFailed) {
+          writeWindow.attestRecoveryCompleted();
+        }
       }
     },
   );

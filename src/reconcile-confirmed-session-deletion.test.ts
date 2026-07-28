@@ -4,7 +4,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { coordinateRecallReadWindow } from './coordinate-recall-write-window.js';
+import {
+  coordinateRecallReadWindow,
+  inspectRecallWriteWindow,
+  recallWriteWindowStatePaths,
+} from './coordinate-recall-write-window.js';
 import {
   RecallConfirmedDeletionDecisionKind,
   RecallConfirmedDeletionHaltCategory,
@@ -660,6 +664,23 @@ function readScratchPhysicalProjection(
     store.close();
   }
 }
+
+void test('successful recovering deletion attests normal closure and clears recovery state', async (t) => {
+  const fixture = await createScratchConfirmedDeletionFixture();
+  t.after(() => rm(fixture.directory, { recursive: true, force: true }));
+  const statePaths = recallWriteWindowStatePaths(fixture.lockPath);
+  await writeFile(statePaths.recoveryRequiredPath, 'recovery required\n');
+
+  const result = await reconcileConfirmedSessionDeletion(
+    createScratchReconciliationOptions(fixture, createMetadataSweep('sweep-1', false)),
+  );
+
+  assert.equal(result.sourceMissingRecordedCount, 1);
+  assert.deepEqual(await inspectRecallWriteWindow(fixture.lockPath), {
+    currentWindow: false,
+    recoveryRequired: false,
+  });
+});
 
 void test('confirmed deletion resumes when a crash leaves checkpointed IDs already deleted', async (t) => {
   for (const crashPhase of [

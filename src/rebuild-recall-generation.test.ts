@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -212,6 +212,11 @@ void test('successful empty-spool cutover wakes the ordinary worker after lock r
         workerSignalCalls += 1;
         assert.equal(existsSync(statePaths.currentWindowPath), false);
         assert.equal(existsSync(statePaths.recoveryRequiredPath), false);
+        assert.equal(
+          decodeRecallBacklogSummary(readFileSync(fixture.backlogSummaryPath, 'utf8'))
+            .generationState,
+          RecallGenerationCutoverState.REPLAY_PENDING,
+        );
       },
     },
     async buildGeneration(paths) {

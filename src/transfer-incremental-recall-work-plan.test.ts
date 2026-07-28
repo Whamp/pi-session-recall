@@ -337,6 +337,7 @@ void test('committed transfer forwards write-window phase diagnostics after cras
     quarantineDiagnostics: [],
   };
   let nowEpochMilliseconds = growthAtEpochMilliseconds + 30 * 60_000 - 1;
+  let monotonicMilliseconds = 0;
   let tokenizerLoadCount = 0;
   const readRanges: Array<{ startByte: number; endByteExclusive: number }> = [];
   const incrementalDiagnostics: RecallIncrementalDiagnosticCompletion[] = [];
@@ -348,6 +349,10 @@ void test('committed transfer forwards write-window phase diagnostics after cras
     embeddingDimensions: 3,
     chunkPolicy: { maxTokens: 64, overlapTokens: 8 },
     nowEpochMilliseconds: () => nowEpochMilliseconds,
+    monotonicMilliseconds: () => {
+      monotonicMilliseconds += 1;
+      return monotonicMilliseconds;
+    },
     async loadTokenizer() {
       tokenizerLoadCount += 1;
       return {
@@ -425,8 +430,19 @@ void test('committed transfer forwards write-window phase diagnostics after cras
   const committed = await transferIncrementalRecallWorkPlan(transferDependencies);
   assert.equal(committed.kind, RecallIncrementalTransferOutcomeKind.COMMITTED);
   assert.equal(tokenizerLoadCount, 1);
-  assert.equal(incrementalDiagnostics.length, 1);
-  const writeWindowDiagnostic = incrementalDiagnostics[0];
+  assert.equal(incrementalDiagnostics.length, 2);
+  const preparationDiagnostic = incrementalDiagnostics.find(
+    ({ operationKind }) => operationKind === RecallDiagnosticOperationKind.INCREMENTAL_WORKER,
+  );
+  assert.ok(preparationDiagnostic);
+  assert.equal(preparationDiagnostic.status, RecallDiagnosticStatus.SUCCEEDED);
+  assert.equal(preparationDiagnostic.metrics.appendedByteCount > 0, true);
+  assert.equal(preparationDiagnostic.metrics.parsedEntryCount, 2);
+  assert.equal(preparationDiagnostic.metrics.tokenizerMilliseconds > 0, true);
+  assert.equal(preparationDiagnostic.metrics.generationId, generationId);
+  const writeWindowDiagnostic = incrementalDiagnostics.find(
+    ({ operationKind }) => operationKind === RecallDiagnosticOperationKind.WRITE_WINDOW,
+  );
   assert.ok(writeWindowDiagnostic);
   assert.equal(writeWindowDiagnostic.operationKind, RecallDiagnosticOperationKind.WRITE_WINDOW);
   assert.equal(writeWindowDiagnostic.status, RecallDiagnosticStatus.SUCCEEDED);

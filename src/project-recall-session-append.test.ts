@@ -127,7 +127,7 @@ void test('projector creates multiple logical sessions from one current canonica
   if (projected.status !== RecallAppendProjectionStatus.PROJECTED) {
     return;
   }
-  assert.deepEqual(projected.physicalProjection.logicalSessionIds, ['logical-1', 'logical-2']);
+  assert.deepEqual(projected.physicalProjection.logicalSessionIds, ['logical-1@1', 'logical-2@3']);
   assert.equal(projected.physicalProjection.appendCursorBytes, source.length);
   assert.deepEqual(
     projected.logicalProjections.map((projection) => ({
@@ -137,8 +137,80 @@ void test('projector creates multiple logical sessions from one current canonica
       eligible: projection.eligibleContributorEntryIds,
     })),
     [
-      { id: 'logical-1', leaf: 'e1', entries: ['e1'], eligible: [] },
-      { id: 'logical-2', leaf: 'e2', entries: ['e2'], eligible: [] },
+      { id: 'logical-1@1', leaf: 'e1', entries: ['e1'], eligible: [] },
+      { id: 'logical-2@3', leaf: 'e2', entries: ['e2'], eligible: [] },
+    ],
+  );
+});
+
+void test('projector gives repeated raw header IDs distinct occurrence identities', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-project-repeated-header-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionPath = join(directory, 'session.jsonl');
+  await writeFile(
+    sessionPath,
+    jsonl([
+      {
+        type: 'session',
+        version: 3,
+        id: 'reused-logical',
+        timestamp: '2026-01-01T00:00:00Z',
+        cwd: '/one',
+      },
+      {
+        type: 'message',
+        id: 'first-entry',
+        parentId: null,
+        timestamp: '2026-01-01T00:00:01Z',
+        message: { role: 'user', content: 'one' },
+      },
+      {
+        type: 'session',
+        version: 3,
+        id: 'reused-logical',
+        timestamp: '2026-01-02T00:00:00Z',
+        cwd: '/two',
+      },
+      {
+        type: 'message',
+        id: 'second-entry',
+        parentId: null,
+        timestamp: '2026-01-02T00:00:01Z',
+        message: { role: 'user', content: 'two' },
+      },
+    ]),
+  );
+  const physicalProjection = await emptyPhysicalProjection(sessionPath);
+  const appendDelta = await readRecallSessionAppendDelta(sessionPath, physicalProjection);
+  assert.equal(appendDelta.status, RecallAppendDeltaStatus.APPENDED);
+  if (appendDelta.status !== RecallAppendDeltaStatus.APPENDED) {
+    return;
+  }
+
+  const projected = projectRecallSessionAppend({
+    physicalProjection,
+    logicalProjections: [],
+    appendDelta,
+    markers: [],
+    quiescenceObserved: false,
+  });
+
+  assert.equal(projected.status, RecallAppendProjectionStatus.PROJECTED);
+  if (projected.status !== RecallAppendProjectionStatus.PROJECTED) {
+    return;
+  }
+  assert.deepEqual(projected.physicalProjection.logicalSessionIds, [
+    'reused-logical@1',
+    'reused-logical@3',
+  ]);
+  assert.deepEqual(
+    projected.logicalProjections.map(({ logicalSessionId, rawSessionId }) => ({
+      logicalSessionId,
+      rawSessionId,
+    })),
+    [
+      { logicalSessionId: 'reused-logical@1', rawSessionId: 'reused-logical' },
+      { logicalSessionId: 'reused-logical@3', rawSessionId: 'reused-logical' },
     ],
   );
 });
@@ -295,12 +367,12 @@ void test('projector scopes colliding context exits to their logical sessions wi
     })),
     [
       {
-        logicalSessionId: 'logical-1',
+        logicalSessionId: 'logical-1@1',
         eligibleEntryIds: ['shared-old', 'shared-summary'],
         coveredMarkerIds: [branchMarker.markerId],
       },
       {
-        logicalSessionId: 'logical-2',
+        logicalSessionId: 'logical-2@8',
         eligibleEntryIds: ['shared-root', 'shared-compaction'],
         coveredMarkerIds: [compactionMarker.markerId],
       },

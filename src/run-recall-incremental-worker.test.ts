@@ -8,6 +8,9 @@ import test from 'node:test';
 
 import {
   RecallBacklogFailureCategory,
+  RecallDiagnosticErrorCategory,
+  RecallDiagnosticOperationKind,
+  RecallDiagnosticStatus,
   RecallEligibilityThreshold,
   RecallGenerationCutoverState,
   RecallIncrementalTransferOutcomeKind,
@@ -40,10 +43,47 @@ import {
 import { readNodeErrorCode } from './read-node-error-code.js';
 import {
   runRecallIncrementalWorker,
+  runRecallIncrementalWorkerDiagnosticBoundary,
   writeRecallIncrementalWorkerBacklog,
   type RunRecallIncrementalWorkerOptions,
 } from './run-recall-incremental-worker.js';
+import type { RecallIncrementalDiagnosticCompletion } from './recall-operation-diagnostics.js';
 import type { CommittedIncrementalRecallWorkPlan } from './transfer-incremental-recall-work-plan.js';
+
+void test('worker diagnostic boundary records and flushes an early executable failure', async () => {
+  const diagnostics: RecallIncrementalDiagnosticCompletion[] = [];
+  let flushed = false;
+  let monotonicMilliseconds = 0;
+
+  await assert.rejects(
+    () =>
+      runRecallIncrementalWorkerDiagnosticBoundary({
+        operationDiagnostics: {
+          recordIncrementalOperation(completion) {
+            diagnostics.push(completion);
+          },
+          async flush() {
+            flushed = true;
+          },
+        },
+        monotonicMilliseconds() {
+          monotonicMilliseconds += 5;
+          return monotonicMilliseconds;
+        },
+        async run() {
+          throw new Error('early recovery failed');
+        },
+      }),
+    /early recovery failed/u,
+  );
+
+  assert.equal(flushed, true);
+  assert.equal(diagnostics.length, 1);
+  assert.equal(diagnostics[0]?.operationKind, RecallDiagnosticOperationKind.INCREMENTAL_WORKER);
+  assert.equal(diagnostics[0]?.status, RecallDiagnosticStatus.FAILED);
+  assert.equal(diagnostics[0]?.errorCategory, RecallDiagnosticErrorCategory.OPERATION_FAILED);
+  assert.equal(diagnostics[0]?.metrics.elapsedMilliseconds, 5);
+});
 
 interface WorkerFixture {
   controlDirectory: string;

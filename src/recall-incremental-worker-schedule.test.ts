@@ -45,7 +45,7 @@ void test('incremental worker schedule persists the earliest future wake and lar
         largeTransferDeferrals: [largeTransferDeferral],
       },
     }),
-    false,
+    true,
   );
 
   assert.deepEqual(await readRecallIncrementalWorkerSchedule(schedulePath), {
@@ -69,6 +69,34 @@ void test('incremental worker schedule persists the earliest future wake and lar
   assert.equal(
     (await readRecallIncrementalWorkerSchedule(schedulePath))?.nextWakeAtEpochMilliseconds,
     null,
+  );
+});
+
+void test('incremental worker schedule re-arms an equal future wake after a sleeper crash gap', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-worker-schedule-rearm-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const schedulePath = join(directory, 'worker-schedule.json');
+  const schedule = {
+    version: 1 as const,
+    nextWakeAtEpochMilliseconds: 5_000,
+    largeTransferDeferrals: [],
+  };
+
+  assert.equal(
+    await persistRecallIncrementalWorkerSchedule({
+      schedulePath,
+      nowEpochMilliseconds: 1_000,
+      schedule,
+    }),
+    true,
+  );
+  assert.equal(
+    await persistRecallIncrementalWorkerSchedule({
+      schedulePath,
+      nowEpochMilliseconds: 1_000,
+      schedule,
+    }),
+    true,
   );
 });
 

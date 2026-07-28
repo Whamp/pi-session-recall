@@ -65,6 +65,7 @@ function reconciliation(
 function createLogicalProjection(
   physicalProjection: PhysicalSessionProjection,
   logicalSessionId: string,
+  rawSessionId: string,
   headerRecord: ParsedRecallSessionRecord,
 ): LogicalSessionProjection {
   return {
@@ -78,6 +79,7 @@ function createLogicalProjection(
     physicalSessionId: physicalProjection.physicalSessionId,
     physicalProjectionId: createPhysicalSessionProjectionId(physicalProjection.physicalSessionId),
     logicalSessionId,
+    rawSessionId,
     effectiveLeafEntryId: null,
     activeContextBoundary: null,
     compactionBoundary: null,
@@ -255,24 +257,45 @@ function updateLogicalActiveContext(
 function projectAppendRecords(
   input: ProjectRecallSessionAppendInput,
 ): LogicalSessionProjection[] | null {
-  const projectionsById = new Map(
-    input.logicalProjections.map((projection) => [projection.logicalSessionId, projection]),
+  const appendedHeaderCount = input.appendDelta.records.filter(
+    ({ value }) => value.type === 'session',
+  ).length;
+  const hasReuseHistory = input.logicalProjections.length + appendedHeaderCount > 1;
+  const normalizedLogicalProjections = input.logicalProjections.map((projection) => {
+    const rawSessionId = projection.rawSessionId ?? projection.logicalSessionId;
+    const logicalSessionId = hasReuseHistory
+      ? `${rawSessionId}@${projection.headerDescriptor.sourceLine}`
+      : rawSessionId;
+    return {
+      ...projection,
+      projectionId: createLogicalSessionProjectionId(
+        projection.physicalSessionId,
+        logicalSessionId,
+      ),
+      logicalSessionId,
+      rawSessionId,
+    };
+  });
+  const projectionsById = new Map<string, LogicalSessionProjection>(
+    normalizedLogicalProjections.map((projection) => [projection.logicalSessionId, projection]),
   );
-  let currentLogicalSessionId = input.physicalProjection.logicalSessionIds.at(-1) ?? null;
+  let currentLogicalSessionId = normalizedLogicalProjections.at(-1)?.logicalSessionId ?? null;
   for (const record of input.appendDelta.records) {
     const value = record.value;
     if (value.type === 'session') {
-      const logicalSessionId = readRequiredEntryString(value.id);
-      if (
-        logicalSessionId === null ||
-        (value.version !== 2 && value.version !== 3) ||
-        projectionsById.has(logicalSessionId)
-      ) {
+      const rawSessionId = readRequiredEntryString(value.id);
+      if (rawSessionId === null || (value.version !== 2 && value.version !== 3)) {
+        return null;
+      }
+      const logicalSessionId = hasReuseHistory
+        ? `${rawSessionId}@${record.sourceLine}`
+        : rawSessionId;
+      if (projectionsById.has(logicalSessionId)) {
         return null;
       }
       projectionsById.set(
         logicalSessionId,
-        createLogicalProjection(input.physicalProjection, logicalSessionId, record),
+        createLogicalProjection(input.physicalProjection, logicalSessionId, rawSessionId, record),
       );
       currentLogicalSessionId = logicalSessionId;
       continue;
@@ -324,10 +347,13 @@ function projectAppendRecords(
       labels,
     });
   }
+  const existingLogicalSessionIds = normalizedLogicalProjections.map(
+    ({ logicalSessionId }) => logicalSessionId,
+  );
   const orderedIds = [
-    ...input.physicalProjection.logicalSessionIds,
+    ...existingLogicalSessionIds,
     ...[...projectionsById.keys()].filter(
-      (logicalSessionId) => !input.physicalProjection.logicalSessionIds.includes(logicalSessionId),
+      (logicalSessionId) => !existingLogicalSessionIds.includes(logicalSessionId),
     ),
   ];
   const projected: LogicalSessionProjection[] = [];
@@ -354,14 +380,18 @@ function markerAppliesToLogicalProjection(
 ): boolean {
   switch (marker.trigger.kind) {
     case RecallWorkMarkerTrigger.COMPACTION: {
-      if (marker.trigger.logicalSessionId !== projection.logicalSessionId) {
+      if (
+        marker.trigger.logicalSessionId !== (projection.rawSessionId ?? projection.logicalSessionId)
+      ) {
         return false;
       }
       const compactionEntryId = marker.trigger.compactionEntryId;
       return projection.entryDescriptors.some(({ entryId }) => entryId === compactionEntryId);
     }
     case RecallWorkMarkerTrigger.BRANCH_EXIT: {
-      if (marker.trigger.logicalSessionId !== projection.logicalSessionId) {
+      if (
+        marker.trigger.logicalSessionId !== (projection.rawSessionId ?? projection.logicalSessionId)
+      ) {
         return false;
       }
       const entryIds = new Set(projection.entryDescriptors.map(({ entryId }) => entryId));

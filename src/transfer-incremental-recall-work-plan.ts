@@ -6,6 +6,8 @@ import type { EmbeddingVectorCache } from './embedding-vector-cache.js';
 import {
   RecallAppendDeltaStatus,
   RecallAppendProjectionStatus,
+  RecallDiagnosticOperationKind,
+  RecallDiagnosticStatus,
   RecallEligibilityThreshold,
   RecallIncrementalTransferOutcomeKind,
   RecallProjectionEncodingStatus,
@@ -30,7 +32,10 @@ import {
   type RecallSessionSourceRangeReader,
 } from './read-recall-session-append-delta.js';
 import type { ResolvedProjectIdentity } from './resolve-project-identity.js';
-import type { RecallOperationDiagnostics } from './recall-operation-diagnostics.js';
+import {
+  createRecallIncrementalDiagnosticMetrics,
+  type RecallOperationDiagnostics,
+} from './recall-operation-diagnostics.js';
 import { scheduleRecallWorkPlanEligibility } from './schedule-recall-work-plan-eligibility.js';
 import type { ConversationTextTokenizer } from './session-conversation-index.js';
 import { commitIncrementalRecallTransfer } from './commit-incremental-recall-transfer.js';
@@ -51,6 +56,7 @@ export interface TransferIncrementalRecallWorkPlanOptions {
   readRange?: RecallSessionSourceRangeReader;
   signal?: AbortSignal;
   nowEpochMilliseconds?: () => number;
+  monotonicMilliseconds?: () => number;
 }
 
 /** Successful incremental transfer with the exact number of immutable documents committed. */
@@ -264,12 +270,32 @@ export async function transferIncrementalRecallWorkPlan(
       return { graphView, logicalProjection, newlyEligibleSpans };
     }),
   );
+  const monotonicMilliseconds = options.monotonicMilliseconds ?? (() => performance.now());
+  const preparationStartedAtMilliseconds = monotonicMilliseconds();
+  let tokenizerMilliseconds = 0;
   const prepared = await prepareIncrementalRecallTransfer({
     physicalProjection: projected.physicalProjection,
     eligibleSessions,
     workPlan: options.workPlan,
     chunkPolicy: options.chunkPolicy,
-    loadTokenizer: () => options.loadTokenizer(),
+    async loadTokenizer() {
+      const loadStartedAtMilliseconds = monotonicMilliseconds();
+      const tokenizer = await options.loadTokenizer();
+      tokenizerMilliseconds += Math.max(monotonicMilliseconds() - loadStartedAtMilliseconds, 0);
+      return {
+        encodeConversationText(text: string) {
+          const encodeStartedAtMilliseconds = monotonicMilliseconds();
+          try {
+            return tokenizer.encodeConversationText(text);
+          } finally {
+            tokenizerMilliseconds += Math.max(
+              monotonicMilliseconds() - encodeStartedAtMilliseconds,
+              0,
+            );
+          }
+        },
+      };
+    },
     resolveProjectIdentity: (sessionOrigin) => options.resolveProjectIdentity(sessionOrigin),
     embeddingCache: options.embeddingCache,
     ...(options.signal ? { signal: options.signal } : {}),
@@ -279,6 +305,24 @@ export async function transferIncrementalRecallWorkPlan(
       `Recall incremental transfer requires reconciliation: ${prepared.repairReason}`,
     );
   }
+  const preparationMetrics = createRecallIncrementalDiagnosticMetrics();
+  preparationMetrics.elapsedMilliseconds = Math.max(
+    monotonicMilliseconds() - preparationStartedAtMilliseconds,
+    0,
+  );
+  preparationMetrics.appendedByteCount = Math.max(
+    appendDelta.appendCursorBytes - physicalProjection.appendCursorBytes,
+    0,
+  );
+  preparationMetrics.parsedEntryCount = appendDelta.records.length;
+  preparationMetrics.eligibleDocumentCount = prepared.documents.length;
+  preparationMetrics.tokenizerMilliseconds = tokenizerMilliseconds;
+  preparationMetrics.generationId = options.workPlan.targetGenerationId;
+  options.operationDiagnostics?.recordIncrementalOperation({
+    operationKind: RecallDiagnosticOperationKind.INCREMENTAL_WORKER,
+    status: RecallDiagnosticStatus.SUCCEEDED,
+    metrics: preparationMetrics,
+  });
   const preparedSchedule = scheduleRecallWorkPlanEligibility({
     workPlan: options.workPlan,
     sourceModifiedAtEpochMilliseconds,

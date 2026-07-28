@@ -336,6 +336,48 @@ void test('repeated overlapping and split-turn compaction is monotonic and repla
   ]);
 });
 
+void test('uncovered late compaction remains eligible below the runtime sequence checkpoint', () => {
+  const projection = logical(
+    [
+      descriptor('e1', null),
+      descriptor('e2', 'e1'),
+      descriptor('compaction-late', 'e2', 'compaction', 'e2'),
+    ],
+    'compaction-late',
+  );
+  projection.markerCheckpoint = {
+    generationId,
+    coveredMarkerIds: ['sequence-2'],
+    runtimeSequences: [{ runtimeInstanceId: 'runtime-1', sequence: 2 }],
+  };
+  const lateCompaction = marker(
+    'late-compaction',
+    {
+      kind: RecallWorkMarkerTrigger.COMPACTION,
+      logicalSessionId: 'logical',
+      compactionEntryId: 'compaction-late',
+    },
+    'runtime-1',
+    1,
+  );
+
+  const result = reduceRecallEligibility({
+    physicalProjection: physical(),
+    logicalProjection: projection,
+    markers: [lateCompaction],
+    quiescenceObserved: false,
+  });
+
+  assert.deepEqual(result.newlyEligibleContributorEntryIds, ['e1', 'compaction-late']);
+  assert.deepEqual(result.logicalProjection?.markerCheckpoint.coveredMarkerIds, [
+    'late-compaction',
+    'sequence-2',
+  ]);
+  assert.deepEqual(result.logicalProjection?.markerCheckpoint.runtimeSequences, [
+    { runtimeInstanceId: 'runtime-1', sequence: 2 },
+  ]);
+});
+
 void test('uncovered late branch exit remains eligible below the runtime sequence checkpoint', () => {
   const projection = logical(
     [

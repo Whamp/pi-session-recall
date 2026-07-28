@@ -150,7 +150,7 @@ async function writeRecallIncrementalWorkerSchedule(
   }
 }
 
-/** Atomically persists the earliest future wake and returns whether a new signal is needed. */
+/** Atomically persists the earliest future wake and requests a sleeper whenever deferred work remains. */
 export async function persistRecallIncrementalWorkerSchedule(
   options: PersistRecallIncrementalWorkerScheduleOptions,
 ): Promise<boolean> {
@@ -172,7 +172,7 @@ export async function persistRecallIncrementalWorkerSchedule(
     ...options.schedule,
     nextWakeAtEpochMilliseconds,
   });
-  return nextWakeAtEpochMilliseconds !== null && nextWakeAtEpochMilliseconds !== currentFutureWake;
+  return nextWakeAtEpochMilliseconds !== null;
 }
 
 /** Starts one detached sleep followed by a blocking kernel-lock worker wake. */

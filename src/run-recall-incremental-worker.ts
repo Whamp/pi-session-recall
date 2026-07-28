@@ -10,6 +10,7 @@ import {
 } from './coordinate-recall-marker-replay.js';
 import {
   RecallBacklogFailureCategory,
+  RecallDiagnosticErrorCategory,
   RecallDiagnosticOperationKind,
   RecallDiagnosticStatus,
   RecallEligibilityThreshold,
@@ -55,6 +56,36 @@ import type {
 } from './transfer-incremental-recall-work-plan.js';
 import type { EmbeddingVectorCache } from './embedding-vector-cache.js';
 import type { ConversationTextTokenizer } from './session-conversation-index.js';
+
+/** Existing diagnostics sink and executable callback protected by the detached-worker failure boundary. */
+export interface RunRecallIncrementalWorkerDiagnosticBoundaryOptions {
+  operationDiagnostics: Pick<RecallOperationDiagnostics, 'recordIncrementalOperation' | 'flush'>;
+  run(): Promise<void>;
+  monotonicMilliseconds?: () => number;
+}
+
+/** Records and flushes failures that occur anywhere in the detached worker executable. */
+export async function runRecallIncrementalWorkerDiagnosticBoundary(
+  options: RunRecallIncrementalWorkerDiagnosticBoundaryOptions,
+): Promise<void> {
+  const monotonicMilliseconds = options.monotonicMilliseconds ?? (() => performance.now());
+  const startedAtMilliseconds = monotonicMilliseconds();
+  try {
+    await options.run();
+  } catch (error) {
+    const metrics = createRecallIncrementalDiagnosticMetrics();
+    metrics.elapsedMilliseconds = Math.max(monotonicMilliseconds() - startedAtMilliseconds, 0);
+    options.operationDiagnostics.recordIncrementalOperation({
+      operationKind: RecallDiagnosticOperationKind.INCREMENTAL_WORKER,
+      status: RecallDiagnosticStatus.FAILED,
+      metrics,
+      errorCategory: RecallDiagnosticErrorCategory.OPERATION_FAILED,
+    });
+    throw error;
+  } finally {
+    await options.operationDiagnostics.flush();
+  }
+}
 
 /** Explicit lightweight paths and lazy import boundary for one short-lived incremental worker. */
 export interface RunRecallIncrementalWorkerOptions extends RecallWorkMarkerCodecOptions {
@@ -552,8 +583,10 @@ export async function writeRecallIncrementalWorkerBacklog(
   });
 }
 
-async function runRecallIncrementalWorkerExecutable(): Promise<void> {
-  const config = await loadRecallConversationConfig();
+async function runConfiguredRecallIncrementalWorkerExecutable(
+  config: Awaited<ReturnType<typeof loadRecallConversationConfig>>,
+  operationDiagnostics: RecallOperationDiagnostics,
+): Promise<void> {
   await recoverRecallGenerationCutover({
     activeGenerationPointerPath: config.activeGenerationPointerPath,
     generationRegistryPath: config.generationRegistryPath,
@@ -575,14 +608,6 @@ async function runRecallIncrementalWorkerExecutable(): Promise<void> {
     config.generationRootDirectory,
   );
   const registry = await readRecallGenerationRegistry(config.generationRegistryPath);
-  const operationDiagnostics = createRecallOperationDiagnostics({
-    mode: config.diagnosticsMode,
-    activeLogPath: config.incrementalDiagnosticLogPath,
-    retainedLogPath: config.incrementalDiagnosticLogPath.replace(/\.jsonl$/u, '.previous.jsonl'),
-    notifyWarning(message) {
-      process.emitWarning(message);
-    },
-  });
   const schedulePath = resolve(config.markerControlDirectory, 'incremental-worker-schedule.json');
   const persistedSchedule = await readRecallIncrementalWorkerSchedule(schedulePath);
   const resolveWorkerProjectIdentity = createLineageResolver(
@@ -748,9 +773,23 @@ async function runRecallIncrementalWorkerExecutable(): Promise<void> {
       );
     }
     throw error;
-  } finally {
-    await operationDiagnostics.flush();
   }
+}
+
+async function runRecallIncrementalWorkerExecutable(): Promise<void> {
+  const config = await loadRecallConversationConfig();
+  const operationDiagnostics = createRecallOperationDiagnostics({
+    mode: config.diagnosticsMode,
+    activeLogPath: config.incrementalDiagnosticLogPath,
+    retainedLogPath: config.incrementalDiagnosticLogPath.replace(/\.jsonl$/u, '.previous.jsonl'),
+    notifyWarning(message) {
+      process.emitWarning(message);
+    },
+  });
+  await runRecallIncrementalWorkerDiagnosticBoundary({
+    operationDiagnostics,
+    run: () => runConfiguredRecallIncrementalWorkerExecutable(config, operationDiagnostics),
+  });
 }
 
 const executedModulePath = process.argv[1];

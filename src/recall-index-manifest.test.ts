@@ -74,6 +74,27 @@ void test('index manifest round-trips the complete reproducibility identity atom
   assert.equal(manifest.zvec.ftsConfigurationVersion, 2);
 });
 
+void test('index manifest round-trips a profile-specific canary threshold', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-manifest-profile-canary-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const manifestPath = join(directory, 'index-manifest.json');
+  const manifest = createRecallIndexManifest({
+    embeddingIdentity,
+    canaryEmbedding: [0.25, -0.5, 1],
+    embeddingCanary: {
+      operation: 'query',
+      query: 'profile-specific canary',
+      minimumRepeatCosineSimilarity: 0.998,
+    },
+  });
+
+  await writeRecallIndexManifest(manifestPath, manifest);
+
+  const roundTrippedManifest = await readRecallIndexManifest(manifestPath);
+  assert.ok(roundTrippedManifest);
+  assert.equal(roundTrippedManifest.embedding.canaryMinimumCosineSimilarity, 0.998);
+});
+
 void test('index manifest records complete EmbeddingGemma semantics in the incremental manifest', () => {
   const profile = createRecommendedEmbeddingGemmaModelProfile();
   const manifest = createRecallIndexManifest({

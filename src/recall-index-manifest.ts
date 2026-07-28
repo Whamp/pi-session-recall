@@ -204,9 +204,7 @@ const recallIndexManifestSchema = Type.Object(
         canaryProbe: Type.String({ minLength: 1 }),
         canaryFingerprint: Type.String({ pattern: '^[a-f0-9]{64}$' }),
         canaryVector: Type.Array(Type.Number(), { minItems: 1 }),
-        canaryMinimumCosineSimilarity: Type.Literal(
-          RECALL_EMBEDDING_CANARY_MINIMUM_COSINE_SIMILARITY,
-        ),
+        canaryMinimumCosineSimilarity: Type.Number({ minimum: 0, maximum: 1 }),
       },
       { additionalProperties: false },
     ),

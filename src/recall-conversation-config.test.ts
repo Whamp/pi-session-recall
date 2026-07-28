@@ -91,6 +91,7 @@ void test('recall config isolates incremental paths from sessions and marker I/O
     config.retainedDiagnosticLogPath,
     config.markerSpoolDirectory,
     config.markerQuarantineDirectory,
+    config.markerControlDirectory,
     config.workerOwnershipLockPath,
     config.generationRootDirectory,
     config.activeGenerationPointerPath,

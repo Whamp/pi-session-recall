@@ -106,6 +106,7 @@ export default async function recallExtension(
       async publishRecallWorkMarker(marker) {
         await publishRecallWorkMarker(marker, {
           markerSpoolDirectory: config.markerSpoolDirectory,
+          workerOwnershipLockPath: config.workerOwnershipLockPath,
           trustedSessionRoots: [config.sessionsDirectory],
           ...(startupOptions.workerSignal === undefined
             ? {}

@@ -35,6 +35,7 @@ export interface RecallDetachedWorkerSignal {
 /** Explicit spool, trust, and test boundaries for durable marker publication. */
 export interface PublishRecallWorkMarkerOptions extends RecallWorkMarkerCodecOptions {
   markerSpoolDirectory: string;
+  workerOwnershipLockPath?: string;
   filesystem?: RecallMarkerPublicationFilesystem;
   workerSignal?: RecallDetachedWorkerSignal;
 }
@@ -160,13 +161,17 @@ async function syncRecallMarkerSpoolDirectory(
   }
 }
 
-function signalIncrementalRecallWorker(): void {
-  const workerPath = fileURLToPath(new URL('./run-incremental-recall-worker.ts', import.meta.url));
-  const child = spawn(process.execPath, ['--import', 'tsx', workerPath], {
-    cwd: dirname(workerPath),
-    detached: true,
-    stdio: 'ignore',
-  });
+function signalIncrementalRecallWorker(workerOwnershipLockPath: string): void {
+  const workerPath = fileURLToPath(new URL('./run-recall-incremental-worker.ts', import.meta.url));
+  const child = spawn(
+    '/usr/bin/flock',
+    ['--nonblock', workerOwnershipLockPath, process.execPath, '--import', 'tsx', workerPath],
+    {
+      cwd: dirname(workerPath),
+      detached: true,
+      stdio: 'ignore',
+    },
+  );
   child.once('error', (error) => {
     process.emitWarning(
       `Recall marker worker signal failed [${readNodeErrorCode(error) ?? 'UNKNOWN'}]`,
@@ -175,9 +180,22 @@ function signalIncrementalRecallWorker(): void {
   child.unref();
 }
 
-const defaultRecallDetachedWorkerSignal: RecallDetachedWorkerSignal = {
-  signalDetachedWorker: signalIncrementalRecallWorker,
-};
+function resolveRecallDetachedWorkerSignal(
+  options: PublishRecallWorkMarkerOptions,
+): RecallDetachedWorkerSignal {
+  if (options.workerSignal !== undefined) {
+    return options.workerSignal;
+  }
+  const workerOwnershipLockPath = options.workerOwnershipLockPath;
+  if (workerOwnershipLockPath === undefined) {
+    throw new Error('Recall marker publication requires a worker ownership lock path');
+  }
+  return {
+    signalDetachedWorker() {
+      signalIncrementalRecallWorker(workerOwnershipLockPath);
+    },
+  };
+}
 
 /** Durably publishes one complete immutable marker before signaling a detached worker. */
 export async function publishRecallWorkMarker(
@@ -185,7 +203,7 @@ export async function publishRecallWorkMarker(
   options: PublishRecallWorkMarkerOptions,
 ): Promise<void> {
   const filesystem = options.filesystem ?? nodeMarkerPublicationFilesystem;
-  const workerSignal = options.workerSignal ?? defaultRecallDetachedWorkerSignal;
+  const workerSignal = resolveRecallDetachedWorkerSignal(options);
   let content: string;
   try {
     content = await encodeRecallWorkMarker(marker, options);

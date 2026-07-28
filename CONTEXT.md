@@ -136,6 +136,14 @@ _Avoid_: Incremental active-session ingestion, append-only indexing, session wat
 One immutable, atomically published event file telling an external worker that a physical session may contain newly eligible evidence. The worker orders and coalesces markers; Pi processes never overwrite them.
 _Avoid_: Index job, mutable session marker, session lock
 
+**Recall marker quarantine**:
+The retained holding area for a corrupt or unsupported recall work marker removed from replay. Its diagnostics expose only a failure category, count, and age; the original marker remains available for inspection.
+_Avoid_: Failed marker deletion, retry queue, marker contents diagnostic
+
+**Metadata recovery sweep**:
+One bounded, resumable inspection of physical session file names and metadata used to observe crash-missed source arrivals or absences without reading session content.
+_Avoid_: Full session scan, session parsing, deletion confirmation
+
 **Incremental recall worker**:
 The sole writer for deferred incremental transfer. This short-lived process runs outside Pi, drains recall work markers, processes eligible append deltas, and exits when no work remains.
 _Avoid_: Daemon, Pi lifecycle handler, full indexer

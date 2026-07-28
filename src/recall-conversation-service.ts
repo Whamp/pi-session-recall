@@ -89,6 +89,7 @@ export interface RecallConversationConfig {
   retainedDiagnosticLogPath: string;
   markerSpoolDirectory: string;
   markerQuarantineDirectory: string;
+  markerControlDirectory: string;
   workerOwnershipLockPath: string;
   generationRootDirectory: string;
   activeGenerationPointerPath: string;

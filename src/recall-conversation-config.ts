@@ -164,6 +164,7 @@ export async function loadRecallConversationConfig(
     retainedDiagnosticLogPath: join(dataDirectory, 'diagnostics.previous.jsonl'),
     markerSpoolDirectory: join(dataDirectory, 'markers', 'pending'),
     markerQuarantineDirectory: join(dataDirectory, 'markers', 'quarantine'),
+    markerControlDirectory: join(dataDirectory, 'markers', 'control'),
     workerOwnershipLockPath: join(dataDirectory, 'incremental-worker.lock'),
     generationRootDirectory: join(dataDirectory, 'generations'),
     activeGenerationPointerPath: join(dataDirectory, 'active-generation.json'),

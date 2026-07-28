@@ -72,6 +72,21 @@ export enum RecallWorkMarkerTrigger {
   ARRIVAL = 'arrival',
 }
 
+/** Privacy-safe reason an immutable recall work marker left the pending spool. */
+export enum RecallMarkerQuarantineCategory {
+  CORRUPT = 'corrupt',
+  UNSUPPORTED = 'unsupported',
+}
+
+/** Bounded outcome of one metadata-only session recovery sweep slice. */
+export enum RecallMetadataSweepStatus {
+  COMPLETE = 'complete',
+  CONTINUATION_REQUIRED = 'continuation_required',
+  ROOT_UNAVAILABLE = 'root_unavailable',
+  PERMISSION_DENIED = 'permission_denied',
+  SUSPICIOUS_MASS_LOSS = 'suspicious_mass_loss',
+}
+
 /** Record kind persisted in the scalar-only session projection collection. */
 export enum RecallSessionProjectionKind {
   PHYSICAL_SESSION = 'physical_session',

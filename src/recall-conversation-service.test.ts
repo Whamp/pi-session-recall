@@ -71,6 +71,7 @@ function createTestConfig(directory: string, sessionsDirectory: string) {
     retainedDiagnosticLogPath: join(directory, 'diagnostics.previous.jsonl'),
     markerSpoolDirectory: join(directory, 'markers', 'pending'),
     markerQuarantineDirectory: join(directory, 'markers', 'quarantine'),
+    markerControlDirectory: join(directory, 'markers', 'control'),
     workerOwnershipLockPath: join(directory, 'incremental-worker.lock'),
     generationRootDirectory: join(directory, 'generations'),
     activeGenerationPointerPath: join(directory, 'active-generation.json'),

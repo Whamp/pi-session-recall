@@ -129,6 +129,7 @@ void test('recall quality runner indexes and searches only the bounded declared 
     retainedDiagnosticLogPath: join(directory, 'unused-diagnostics.previous.jsonl'),
     markerSpoolDirectory: join(directory, 'unused-markers', 'pending'),
     markerQuarantineDirectory: join(directory, 'unused-markers', 'quarantine'),
+    markerControlDirectory: join(directory, 'unused-markers', 'control'),
     workerOwnershipLockPath: join(directory, 'unused-incremental-worker.lock'),
     generationRootDirectory: join(directory, 'unused-generations'),
     activeGenerationPointerPath: join(directory, 'unused-active-generation.json'),

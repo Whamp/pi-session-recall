@@ -90,20 +90,6 @@ export interface IncrementalSessionIndexerOptions {
   onPhysicalSessionCheck?: (completion: RecallPhysicalSessionDiagnostic) => void;
 }
 
-/** Dependencies for reconciling one active Pi session without scanning sibling files. */
-export interface IncrementalConversationSessionIndexerOptions {
-  sessionPath: string;
-  statePath: string;
-  store: ConversationChunkStore;
-  embeddingCache: EmbeddingVectorCache;
-  tokenizer: ConversationTextTokenizer;
-  chunkPolicy?: RecallChunkPolicy;
-  resolveProjectIdentity?: (sessionOrigin: string) => Promise<ResolvedProjectIdentity | null>;
-  signal?: AbortSignal;
-  diagnosticMetrics?: RecallIndexDiagnosticMetrics;
-  diagnosticsClock?: RecallDiagnosticsClock;
-}
-
 async function listSessionFiles(directory: string): Promise<string[]> {
   const files: string[] = [];
   async function visit(current: string): Promise<void> {
@@ -477,63 +463,6 @@ function createSessionProjectIdentityResolver(
     projectIdentityBySessionOrigin.set(sessionOrigin, resolution);
     return resolution;
   };
-}
-
-/** Reconciles one active Pi session while embedding only new dense-searchable evidence. */
-export async function indexChangedConversationSession(
-  options: IncrementalConversationSessionIndexerOptions,
-): Promise<ConversationIndexSummary> {
-  const state = await readConversationIndexState(options.statePath);
-  const summary = createConversationIndexSummary();
-  throwIfIndexingAborted(options.signal);
-  summary.scannedSessions = 1;
-  try {
-    await stat(options.sessionPath);
-  } catch (error) {
-    if (readNodeErrorCode(error) !== 'ENOENT') {
-      throw error;
-    }
-    const previous = state.sessions[options.sessionPath];
-    if (options.diagnosticMetrics) {
-      options.diagnosticMetrics.sourceByteSize = 0;
-      options.diagnosticMetrics.changed = previous !== undefined;
-      options.diagnosticMetrics.skipped = previous === undefined;
-    }
-    if (
-      await removeIndexedConversationSession(
-        state,
-        options.sessionPath,
-        options.store,
-        summary,
-        options.diagnosticMetrics,
-        options.diagnosticsClock,
-      )
-    ) {
-      await writeConversationIndexStateWithDiagnostics(
-        options.statePath,
-        state,
-        options.diagnosticMetrics,
-        options.diagnosticsClock,
-      );
-    }
-    return summary;
-  }
-  const outcome = await indexChangedConversationSessionFile(
-    options,
-    state,
-    options.sessionPath,
-    summary,
-    createSessionProjectIdentityResolver(options.resolveProjectIdentity),
-  );
-  if (outcome.stateChanged) {
-    await writeConversationIndexStateWithDiagnostics(
-      options.statePath,
-      state,
-      options.diagnosticMetrics,
-      options.diagnosticsClock,
-    );
-  }
-  return summary;
 }
 
 interface PhysicalSessionDiagnosticOutcome {

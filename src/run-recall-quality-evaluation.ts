@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdir, rm } from 'node:fs/promises';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { promisify } from 'node:util';
@@ -31,6 +31,10 @@ import {
   type RecallConversationSearchOptions,
 } from './recall-conversation-service.js';
 import {
+  createRecallActiveGenerationPointer,
+  encodeRecallActiveGenerationPointer,
+} from './recall-generation-state.js';
+import {
   selectRecallQualityPolicy,
   type RecallQualityConfigurationMeasurement,
   type RecallQualityPolicySelection,
@@ -51,6 +55,7 @@ import type { ConversationTextTokenizer } from './session-conversation-index.js'
 const EXEC_FILE_ASYNC = promisify(execFile);
 const RECALL_QUALITY_FULL_POOL_LIMIT = 200;
 const RECALL_QUALITY_WORK_DIRECTORY_NAME = 'recall-quality-evaluation';
+const RECALL_QUALITY_GENERATION_ID = 'generation_quality_active';
 
 /** Local model and tokenizer boundaries that make the bounded runner integration-testable. */
 export interface RecallQualityEvaluationDependencies {
@@ -185,14 +190,20 @@ function createChunkPolicyConfig(
   candidateCount: number,
 ): RecallConversationConfig {
   const policyDirectory = join(workDirectory, chunkPolicy.id);
+  const generationRootDirectory = join(policyDirectory, 'generations');
+  const generationDirectory = join(generationRootDirectory, RECALL_QUALITY_GENERATION_ID);
   return {
     ...baseConfig,
     sessionsDirectory: corpus.sessionDirectory,
-    databasePath: join(policyDirectory, 'zvec'),
-    statePath: join(policyDirectory, 'index-state.json'),
-    manifestPath: join(policyDirectory, 'index-manifest.json'),
+    databasePath: join(generationDirectory, 'zvec'),
+    projectionDatabasePath: join(generationDirectory, 'session-projections'),
+    statePath: join(generationDirectory, 'index-state.json'),
+    manifestPath: join(generationDirectory, 'index-manifest.json'),
     embeddingCacheDirectory: join(policyDirectory, 'embedding-cache'),
     lockPath: join(policyDirectory, 'operation.lock'),
+    generationRootDirectory,
+    activeGenerationPointerPath: join(policyDirectory, 'active-generation.json'),
+    backlogSummaryPath: join(policyDirectory, 'backlog-summary.json'),
     projectLineages: normalizeRecallProjectLineages(corpus.specification.projectLineages),
     chunkPolicy: {
       maxTokens: chunkPolicy.maxTokens,
@@ -204,6 +215,18 @@ function createChunkPolicyConfig(
       identifier: candidateCount,
     },
   };
+}
+
+async function prepareRecallQualityGeneration(config: RecallConversationConfig): Promise<void> {
+  await mkdir(join(config.generationRootDirectory, RECALL_QUALITY_GENERATION_ID), {
+    recursive: true,
+  });
+  await writeFile(
+    config.activeGenerationPointerPath,
+    encodeRecallActiveGenerationPointer(
+      createRecallActiveGenerationPointer(RECALL_QUALITY_GENERATION_ID),
+    ),
+  );
 }
 
 interface EvaluationProjectResolver {
@@ -368,6 +391,7 @@ export async function runRecallQualityEvaluation(
       chunkPolicy,
       firstCandidateCount,
     );
+    await prepareRecallQualityGeneration(indexConfig);
     const indexService = createRecallConversationService(
       indexConfig,
       createServiceDependencies(

@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 
 import {
-  assertRecallWriteWindowAvailableForRead,
+  coordinateRecallReadWindow,
   coordinateRecallWriteWindow,
   createRecallWriteWindowAcquisitionSignal,
   type RecallWriteWindow,
@@ -16,7 +16,6 @@ import {
   RecallDiagnosticStatus,
   type RecallDiagnosticsMode,
   RecallEvidenceRelation,
-  RecallLifecycleTrigger,
   RecallManualMaintenanceTrigger,
   RecallProjectIdentitySource,
   RecallSearchScope,
@@ -27,7 +26,6 @@ import {
   RECALL_RRF_RANK_CONSTANT,
 } from './fuse-recall-search-candidates.js';
 import {
-  indexChangedConversationSession,
   indexChangedConversationSessions,
   type ConversationIndexProgress,
   type ConversationIndexSummary,
@@ -46,6 +44,10 @@ import {
   type RecallEmbeddingModelIdentity,
   type RecallIndexManifest,
 } from './recall-index-manifest.js';
+import {
+  readRecallActiveGenerationSelection,
+  readRecallMaterialBacklogWarning,
+} from './recall-generation-state.js';
 import type { RecallChunkPolicy } from './recall-chunk-policy.js';
 import {
   createRecallIndexMetrics,
@@ -112,6 +114,7 @@ export interface RecallConversationConfig {
   rerankerModel: string;
   projectLineages: RecallProjectLineages;
   searchCandidateLimits: RecallSearchCandidateLimits;
+  searchWriteWindowWaitMilliseconds: number;
   chunkPolicy?: RecallChunkPolicy;
 }
 
@@ -130,7 +133,6 @@ export interface RecallConversationSearchOptions {
   mode?: RecallSearchMode;
   scope?: RecallSearchScope;
   invocationDirectory?: string;
-  activeSessionPath?: string;
   signal?: AbortSignal;
 }
 
@@ -188,20 +190,13 @@ export type RecallConversationIndexOptions =
   | RecallManualIncrementalIndexOptions
   | RecallManualRebuildIndexOptions;
 
-/** Cancellation, lock wait, and Pi lifecycle attribution for one targeted reconciliation. */
-export interface RecallConversationReconcileOptions {
-  lifecycleTrigger: RecallLifecycleTrigger;
-  signal?: AbortSignal;
-  lockWaitMilliseconds?: number;
-}
-
 /** Counts from one completed full or targeted conversation index update. */
 export interface RecallConversationIndexResult {
   indexSummary: ConversationIndexSummary;
   totalChunks: number;
 }
 
-/** Search plus full and targeted index-maintenance operations exposed by the extension. */
+/** Read-only search plus explicit full index maintenance exposed by the extension. */
 export interface RecallConversationService {
   search(
     query: string,
@@ -209,10 +204,6 @@ export interface RecallConversationService {
     options?: RecallConversationSearchOptions,
   ): Promise<RecallConversationSearch>;
   index(options?: RecallConversationIndexOptions): Promise<RecallConversationIndexResult>;
-  reconcileSession(
-    sessionPath: string,
-    options: RecallConversationReconcileOptions,
-  ): Promise<RecallConversationIndexResult>;
 }
 
 /** Injectable local model, tokenizer, and zvec boundaries used by tests and bounded evaluation. */
@@ -220,21 +211,11 @@ export interface RecallConversationDependencies {
   embeddings?: LocalEmbeddingClient;
   reranker?: LocalRerankerClient;
   loadTokenizer?: () => Promise<ConversationTextTokenizer>;
-  openStore?: (mode: 'read' | 'write') => ZvecConversationStore;
+  openStore?: (mode: 'read' | 'write', databasePath?: string) => ZvecConversationStore;
   resolveProjectIdentity?: (workingDirectory: string) => Promise<ResolvedProjectIdentity | null>;
   diagnostics?: RecallOperationDiagnostics;
   diagnosticsClock?: RecallDiagnosticsClock;
   notifyWarning?: (message: string) => void;
-}
-
-interface LiveSessionReconciliationDiagnosticRunOptions {
-  diagnostics: RecallOperationDiagnostics;
-  lifecycleTrigger: RecallLifecycleTrigger;
-  sessionPath: string;
-  signal?: AbortSignal;
-  reconcile: (
-    diagnosticMetrics: RecallIndexDiagnosticMetrics,
-  ) => Promise<RecallConversationIndexResult>;
 }
 
 interface RecallSearchDiagnosticRunOptions {
@@ -281,50 +262,14 @@ function isRecallOperationCancelled(error: unknown, signal?: AbortSignal): boole
   );
 }
 
-async function runLiveSessionReconciliationWithDiagnostics(
-  options: LiveSessionReconciliationDiagnosticRunOptions,
-): Promise<RecallConversationIndexResult> {
-  const diagnosticOperation = options.diagnostics.startLiveSessionReconciliation({
-    lifecycleTrigger: options.lifecycleTrigger,
-    sessionPath: options.sessionPath,
-  });
-  const diagnosticMetrics = createRecallIndexMetrics();
-  try {
-    const result = await options.reconcile(diagnosticMetrics);
-    diagnosticOperation.complete({
-      status: RecallDiagnosticStatus.SUCCEEDED,
-      metrics: diagnosticMetrics,
-      scannedSessionCount: result.indexSummary.scannedSessions,
-      indexedSessionCount: result.indexSummary.indexedSessions,
-      removedSessionCount: result.indexSummary.removedSessions,
-      failedSessionCount: result.indexSummary.failedSessions.length,
-      cacheHitCount: result.indexSummary.cacheHits,
-      newEmbeddingCount: result.indexSummary.newlyEmbeddedChunks,
-      embeddingRequestCount: result.indexSummary.embeddingRequestCount,
-      deletedDocumentCount: result.indexSummary.deletedChunks,
-      totalDocumentCount: result.totalChunks,
-    });
-    return result;
-  } catch (error) {
-    const cancelled = isRecallOperationCancelled(error, options.signal);
-    diagnosticOperation.complete({
-      status: cancelled ? RecallDiagnosticStatus.CANCELLED : RecallDiagnosticStatus.FAILED,
-      errorCategory: cancelled
-        ? RecallDiagnosticErrorCategory.OPERATION_CANCELLED
-        : RecallDiagnosticErrorCategory.OPERATION_FAILED,
-      metrics: diagnosticMetrics,
-      scannedSessionCount: diagnosticMetrics.sourceByteSize === null ? 0 : 1,
-      indexedSessionCount: 0,
-      removedSessionCount: 0,
-      failedSessionCount: cancelled ? 0 : 1,
-      cacheHitCount: diagnosticMetrics.cacheHitCount,
-      newEmbeddingCount: diagnosticMetrics.newEmbeddingCount,
-      embeddingRequestCount: diagnosticMetrics.embeddingRequestCount,
-      deletedDocumentCount: diagnosticMetrics.deletedDocumentCount,
-      totalDocumentCount: null,
-    });
-    throw error;
+function throwIfRecallSearchCancelled(signal?: AbortSignal): void {
+  if (!signal?.aborted) {
+    return;
   }
+  if (signal.reason instanceof Error) {
+    throw signal.reason;
+  }
+  throw new Error('Recall conversation operation cancelled', { cause: signal.reason });
 }
 
 async function runManualIndexWithDiagnostics(
@@ -482,9 +427,9 @@ export function createRecallConversationService(
   );
   const openStore =
     dependencies.openStore ??
-    ((mode) =>
+    ((mode, databasePath = config.databasePath) =>
       openZvecConversationStore({
-        databasePath: config.databasePath,
+        databasePath,
         dimensions: config.embeddingDimensions,
         createIfMissing: mode === 'write',
         readOnly: mode === 'read',
@@ -603,11 +548,11 @@ export function createRecallConversationService(
       : currentCanary;
   }
 
-  async function readRequiredManifest(): Promise<RecallIndexManifest> {
-    const actual = await readRecallIndexManifest(config.manifestPath);
+  async function readRequiredManifest(manifestPath: string): Promise<RecallIndexManifest> {
+    const actual = await readRecallIndexManifest(manifestPath);
     if (!actual) {
       throw new Error(
-        `Recall index manifest missing at ${config.manifestPath}; reindex with /pi-session-recall-index --rebuild`,
+        `Recall index manifest missing at ${manifestPath}; reindex with /pi-session-recall-index --rebuild`,
       );
     }
     return actual;
@@ -660,7 +605,6 @@ export function createRecallConversationService(
     embeddingModelPreflighted: boolean,
     signal?: AbortSignal,
     onProgress?: (progress: ConversationIndexProgress) => void,
-    sessionPath?: string,
     diagnosticMetrics?: RecallIndexDiagnosticMetrics,
     onPhysicalSessionCheck?: (completion: RecallPhysicalSessionDiagnostic) => void,
   ): Promise<ConversationIndexSummary> {
@@ -700,87 +644,11 @@ export function createRecallConversationService(
       ...(diagnosticMetrics ? { diagnosticMetrics, diagnosticsClock } : {}),
       ...(onPhysicalSessionCheck ? { onPhysicalSessionCheck } : {}),
     };
-    return sessionPath
-      ? indexChangedConversationSession({ ...indexerOptions, sessionPath })
-      : indexChangedConversationSessions({
-          ...indexerOptions,
-          sessionsDirectory: config.sessionsDirectory,
-          ...(onProgress ? { onProgress } : {}),
-        });
-  }
-
-  async function reconcileActiveConversationSession(
-    sessionPath: string,
-    signal?: AbortSignal,
-    lockWaitMilliseconds?: number,
-    diagnosticMetrics?: RecallIndexDiagnosticMetrics,
-  ): Promise<RecallConversationIndexResult> {
-    const lockSignal = createRecallWriteWindowAcquisitionSignal(signal, lockWaitMilliseconds);
-    const lockStartedAtMilliseconds = diagnosticsClock.monotonicMilliseconds();
-    let lockWaitRecorded = false;
-    try {
-      return await coordinateRecallWriteWindow(
-        {
-          lockPath: config.lockPath,
-          allowRecovery: false,
-          ...(lockSignal ? { signal: lockSignal } : {}),
-        },
-        async (writeWindow) => {
-          if (diagnosticMetrics) {
-            diagnosticMetrics.writerLockWaitMilliseconds += Math.max(
-              diagnosticsClock.monotonicMilliseconds() - lockStartedAtMilliseconds,
-              0,
-            );
-          }
-          lockWaitRecorded = true;
-          let store: ZvecConversationStore | undefined;
-          try {
-            const preparationStartedAtMilliseconds = diagnosticsClock.monotonicMilliseconds();
-            let preparedIndex: Awaited<ReturnType<typeof prepareIndexForWrite>>;
-            try {
-              preparedIndex = await prepareIndexForWrite(signal, undefined, true);
-              store = openStore('write');
-            } finally {
-              if (diagnosticMetrics) {
-                diagnosticMetrics.manifestStorePreparationMilliseconds += Math.max(
-                  diagnosticsClock.monotonicMilliseconds() - preparationStartedAtMilliseconds,
-                  0,
-                );
-              }
-            }
-            const summary = await updateConversationIndex(
-              store,
-              preparedIndex.tokenizer,
-              preparedIndex.manifest,
-              preparedIndex.embeddingModelPreflighted,
-              signal,
-              undefined,
-              sessionPath,
-              diagnosticMetrics,
-            );
-            if (summary.failedSessions.length > 0) {
-              throw new Error(
-                `Recall active session reconciliation failed for ${sessionPath}: ${summary.failedSessions[0]?.error ?? 'unknown session parsing failure'}`,
-              );
-            }
-            return { indexSummary: summary, totalChunks: store.count() };
-          } finally {
-            closeRecallWriteStore(
-              store,
-              writeWindow,
-              'Recall session reconciliation store close failed',
-            );
-          }
-        },
-      );
-    } finally {
-      if (diagnosticMetrics && !lockWaitRecorded) {
-        diagnosticMetrics.writerLockWaitMilliseconds += Math.max(
-          diagnosticsClock.monotonicMilliseconds() - lockStartedAtMilliseconds,
-          0,
-        );
-      }
-    }
+    return indexChangedConversationSessions({
+      ...indexerOptions,
+      sessionsDirectory: config.sessionsDirectory,
+      ...(onProgress ? { onProgress } : {}),
+    });
   }
 
   return {
@@ -789,7 +657,6 @@ export function createRecallConversationService(
         mode = 'hybrid',
         scope = RecallSearchScope.PROJECT,
         invocationDirectory,
-        activeSessionPath,
         signal,
       } = options;
       return runRecallSearchWithDiagnostics({
@@ -803,59 +670,6 @@ export function createRecallConversationService(
             if (!searchQuery) {
               throw new Error('Recall query must not be blank');
             }
-            let actualManifest: RecallIndexManifest;
-            const manifestReadStartedAtMilliseconds = diagnosticsClock.monotonicMilliseconds();
-            try {
-              actualManifest = await readRequiredManifest();
-            } finally {
-              diagnosticMetrics.embeddingModelVerificationMilliseconds += Math.max(
-                diagnosticsClock.monotonicMilliseconds() - manifestReadStartedAtMilliseconds,
-                0,
-              );
-            }
-            await assertRecallWriteWindowAvailableForRead(config.lockPath);
-            const canaryVerificationStartedAtMilliseconds =
-              diagnosticsClock.monotonicMilliseconds();
-            try {
-              const expectedManifest = createExpectedManifest(
-                await readCurrentEmbeddingCanary(signal),
-              );
-              assertRecallIndexManifestCompatible(
-                actualManifest,
-                expectedManifest,
-                config.manifestPath,
-              );
-            } finally {
-              diagnosticMetrics.embeddingModelVerificationMilliseconds += Math.max(
-                diagnosticsClock.monotonicMilliseconds() - canaryVerificationStartedAtMilliseconds,
-                0,
-              );
-            }
-            if (activeSessionPath) {
-              diagnosticMetrics.freshnessBarrierRan = true;
-              const freshnessStartedAtMilliseconds = diagnosticsClock.monotonicMilliseconds();
-              try {
-                await runLiveSessionReconciliationWithDiagnostics({
-                  diagnostics,
-                  lifecycleTrigger: RecallLifecycleTrigger.ACTIVE_SESSION_FRESHNESS,
-                  sessionPath: activeSessionPath,
-                  ...(signal ? { signal } : {}),
-                  reconcile: (liveSessionDiagnosticMetrics) =>
-                    reconcileActiveConversationSession(
-                      activeSessionPath,
-                      signal,
-                      undefined,
-                      liveSessionDiagnosticMetrics,
-                    ),
-                });
-              } finally {
-                diagnosticMetrics.activeSessionFreshnessMilliseconds += Math.max(
-                  diagnosticsClock.monotonicMilliseconds() - freshnessStartedAtMilliseconds,
-                  0,
-                );
-              }
-            }
-            await assertRecallWriteWindowAvailableForRead(config.lockPath);
             if (scope === RecallSearchScope.PROJECT && !invocationDirectory) {
               throw new Error(
                 'Project-scoped recall requires Pi trusted invocation directory context',
@@ -871,128 +685,192 @@ export function createRecallConversationService(
             }
             const projectIdentityPredicate =
               scope === RecallSearchScope.PROJECT ? invocationProject?.projectIdentity : undefined;
-            const store = openStore('read');
+
+            const canaryVerificationStartedAtMilliseconds =
+              diagnosticsClock.monotonicMilliseconds();
+            let expectedManifest: RecallIndexManifest;
             try {
-              const queryEmbeddingStartedAtMilliseconds = diagnosticsClock.monotonicMilliseconds();
-              let queryEmbedding: number[] | undefined;
-              try {
-                queryEmbedding = (await embeddings.embedTexts([searchQuery], signal))[0];
-              } finally {
-                diagnosticMetrics.queryEmbeddingMilliseconds += Math.max(
-                  diagnosticsClock.monotonicMilliseconds() - queryEmbeddingStartedAtMilliseconds,
-                  0,
+              expectedManifest = createExpectedManifest(await readCurrentEmbeddingCanary(signal));
+            } finally {
+              diagnosticMetrics.embeddingModelVerificationMilliseconds += Math.max(
+                diagnosticsClock.monotonicMilliseconds() - canaryVerificationStartedAtMilliseconds,
+                0,
+              );
+            }
+            const queryEmbeddingStartedAtMilliseconds = diagnosticsClock.monotonicMilliseconds();
+            let queryEmbedding: number[] | undefined;
+            try {
+              queryEmbedding = (await embeddings.embedTexts([searchQuery], signal))[0];
+            } finally {
+              diagnosticMetrics.queryEmbeddingMilliseconds += Math.max(
+                diagnosticsClock.monotonicMilliseconds() - queryEmbeddingStartedAtMilliseconds,
+                0,
+              );
+            }
+            if (!queryEmbedding) {
+              throw new Error('Recall embedding response missing query vector');
+            }
+
+            return coordinateRecallReadWindow(
+              {
+                lockPath: config.lockPath,
+                waitMilliseconds: config.searchWriteWindowWaitMilliseconds,
+                ...(signal ? { signal } : {}),
+              },
+              async () => {
+                const manifestReadStartedAtMilliseconds = diagnosticsClock.monotonicMilliseconds();
+                const activeGeneration = await readRecallActiveGenerationSelection(
+                  config.activeGenerationPointerPath,
+                  config.generationRootDirectory,
                 );
-              }
-              if (!queryEmbedding) {
-                throw new Error('Recall embedding response missing query vector');
-              }
-              const retrievalStartedAtMilliseconds = diagnosticsClock.monotonicMilliseconds();
-              const deepRerankStartedWithMilliseconds = diagnosticMetrics.deepRerankMilliseconds;
-              try {
-                const fusedCandidates = fuseRecallSearchCandidates(
-                  {
-                    denseCandidates: store.searchDenseCandidates(
+                try {
+                  const actualManifest = await readRequiredManifest(activeGeneration.manifestPath);
+                  assertRecallIndexManifestCompatible(
+                    actualManifest,
+                    expectedManifest,
+                    activeGeneration.manifestPath,
+                  );
+                } finally {
+                  diagnosticMetrics.embeddingModelVerificationMilliseconds += Math.max(
+                    diagnosticsClock.monotonicMilliseconds() - manifestReadStartedAtMilliseconds,
+                    0,
+                  );
+                }
+                try {
+                  const warning = await readRecallMaterialBacklogWarning(
+                    config.backlogSummaryPath,
+                    activeGeneration.activeGenerationId,
+                  );
+                  if (warning) {
+                    try {
+                      dependencies.notifyWarning?.(warning);
+                    } catch (warningError) {
+                      void warningError;
+                    }
+                  }
+                } catch (backlogError) {
+                  void backlogError;
+                }
+
+                const store = openStore('read', activeGeneration.databasePath);
+                try {
+                  const retrievalStartedAtMilliseconds = diagnosticsClock.monotonicMilliseconds();
+                  const deepRerankStartedWithMilliseconds =
+                    diagnosticMetrics.deepRerankMilliseconds;
+                  try {
+                    throwIfRecallSearchCancelled(signal);
+                    const denseCandidates = await store.searchDenseCandidates(
                       queryEmbedding,
                       config.searchCandidateLimits.dense,
                       projectIdentityPredicate,
-                    ),
-                    lexicalCandidates: store.searchLexicalCandidates(
+                    );
+                    throwIfRecallSearchCancelled(signal);
+                    const lexicalCandidates = await store.searchLexicalCandidates(
                       searchQuery,
                       config.searchCandidateLimits.lexical,
                       projectIdentityPredicate,
-                    ),
-                    identifierCandidates: store.searchIdentifierCandidates(
+                    );
+                    throwIfRecallSearchCancelled(signal);
+                    const identifierCandidates = await store.searchIdentifierCandidates(
                       searchQuery,
                       config.searchCandidateLimits.identifier,
                       projectIdentityPredicate,
-                    ),
-                  },
-                  config.searchCandidateLimits.dense +
-                    config.searchCandidateLimits.lexical +
-                    config.searchCandidateLimits.identifier,
-                );
-                const diagnosticReranker: LocalRerankerClient = {
-                  async rerankDocuments(rerankerQuery, documents, rerankerSignal) {
-                    const deepRerankStartedAtMilliseconds =
-                      diagnosticsClock.monotonicMilliseconds();
-                    try {
-                      return await reranker.rerankDocuments(
-                        rerankerQuery,
-                        documents,
-                        rerankerSignal,
-                      );
-                    } finally {
-                      diagnosticMetrics.deepRerankMilliseconds += Math.max(
-                        diagnosticsClock.monotonicMilliseconds() - deepRerankStartedAtMilliseconds,
-                        0,
-                      );
-                    }
-                  },
-                };
-                const rankedResults =
-                  mode === 'deep-rerank'
-                    ? await rerankRecallSearchResults({
-                        query: searchQuery,
-                        candidates: fusedCandidates,
-                        resultLimit: limit,
-                        reranker: diagnosticReranker,
-                        fetchConversationChunks: store.fetchConversationChunks,
-                        ...(signal ? { signal } : {}),
-                      })
-                    : rankFusedRecallSearchResults(
-                        fusedCandidates,
-                        limit,
-                        store.fetchConversationChunks,
-                      );
-                const results: RecallConversationSearchResult[] = rankedResults.map((result) => ({
-                  ...result,
-                  evidenceRelation:
-                    !invocationProject ||
-                    invocationProject.projectIdentity !== result.projectAttribution?.projectIdentity
-                      ? RecallEvidenceRelation.UNRESTRICTED_GLOBAL
-                      : result.projectAttribution.identitySource ===
-                            RecallProjectIdentitySource.CONFIGURED_PROJECT_LINEAGE ||
-                          invocationProject.identitySource ===
-                            RecallProjectIdentitySource.CONFIGURED_PROJECT_LINEAGE
-                        ? RecallEvidenceRelation.CONFIGURED_PROJECT_LINEAGE
-                        : invocationProject.identitySource ===
-                            RecallProjectIdentitySource.NON_GIT_SESSION_ORIGIN
-                          ? RecallEvidenceRelation.SAME_SESSION_ORIGIN
-                          : RecallEvidenceRelation.SAME_REPOSITORY,
-                }));
-                return {
-                  results,
-                  totalChunks: store.count(),
-                  searchPolicy: {
-                    scope,
-                    invocationProjectIdentity: invocationProject?.projectIdentity ?? null,
-                    rankingMode: mode,
-                    rankFusionVersion: RECALL_RANK_FUSION_VERSION,
-                    reciprocalRankConstant: RECALL_RRF_RANK_CONSTANT,
-                    rerankPolicyVersion:
-                      mode === 'deep-rerank' ? RECALL_RERANK_POLICY_VERSION : null,
-                    rerankerModel: mode === 'deep-rerank' ? config.rerankerModel : null,
-                    activeBranchPrior: RECALL_ACTIVE_BRANCH_PRIOR,
-                    candidateLimits: { ...config.searchCandidateLimits },
-                  },
-                };
-              } finally {
-                const retrievalElapsedMilliseconds = Math.max(
-                  diagnosticsClock.monotonicMilliseconds() - retrievalStartedAtMilliseconds,
-                  0,
-                );
-                const deepRerankElapsedMilliseconds = Math.max(
-                  diagnosticMetrics.deepRerankMilliseconds - deepRerankStartedWithMilliseconds,
-                  0,
-                );
-                diagnosticMetrics.retrievalRankingMilliseconds += Math.max(
-                  retrievalElapsedMilliseconds - deepRerankElapsedMilliseconds,
-                  0,
-                );
-              }
-            } finally {
-              store.close();
-            }
+                    );
+                    throwIfRecallSearchCancelled(signal);
+                    const fusedCandidates = fuseRecallSearchCandidates(
+                      { denseCandidates, lexicalCandidates, identifierCandidates },
+                      config.searchCandidateLimits.dense +
+                        config.searchCandidateLimits.lexical +
+                        config.searchCandidateLimits.identifier,
+                    );
+                    const diagnosticReranker: LocalRerankerClient = {
+                      async rerankDocuments(rerankerQuery, documents, rerankerSignal) {
+                        const deepRerankStartedAtMilliseconds =
+                          diagnosticsClock.monotonicMilliseconds();
+                        try {
+                          return await reranker.rerankDocuments(
+                            rerankerQuery,
+                            documents,
+                            rerankerSignal,
+                          );
+                        } finally {
+                          diagnosticMetrics.deepRerankMilliseconds += Math.max(
+                            diagnosticsClock.monotonicMilliseconds() -
+                              deepRerankStartedAtMilliseconds,
+                            0,
+                          );
+                        }
+                      },
+                    };
+                    const rankedResults =
+                      mode === 'deep-rerank'
+                        ? await rerankRecallSearchResults({
+                            query: searchQuery,
+                            candidates: fusedCandidates,
+                            resultLimit: limit,
+                            reranker: diagnosticReranker,
+                            fetchConversationChunks: store.fetchConversationChunks,
+                            ...(signal ? { signal } : {}),
+                          })
+                        : rankFusedRecallSearchResults(
+                            fusedCandidates,
+                            limit,
+                            store.fetchConversationChunks,
+                          );
+                    const results: RecallConversationSearchResult[] = rankedResults.map(
+                      (result) => ({
+                        ...result,
+                        evidenceRelation:
+                          !invocationProject ||
+                          invocationProject.projectIdentity !==
+                            result.projectAttribution?.projectIdentity
+                            ? RecallEvidenceRelation.UNRESTRICTED_GLOBAL
+                            : result.projectAttribution.identitySource ===
+                                  RecallProjectIdentitySource.CONFIGURED_PROJECT_LINEAGE ||
+                                invocationProject.identitySource ===
+                                  RecallProjectIdentitySource.CONFIGURED_PROJECT_LINEAGE
+                              ? RecallEvidenceRelation.CONFIGURED_PROJECT_LINEAGE
+                              : invocationProject.identitySource ===
+                                  RecallProjectIdentitySource.NON_GIT_SESSION_ORIGIN
+                                ? RecallEvidenceRelation.SAME_SESSION_ORIGIN
+                                : RecallEvidenceRelation.SAME_REPOSITORY,
+                      }),
+                    );
+                    return {
+                      results,
+                      totalChunks: store.count(),
+                      searchPolicy: {
+                        scope,
+                        invocationProjectIdentity: invocationProject?.projectIdentity ?? null,
+                        rankingMode: mode,
+                        rankFusionVersion: RECALL_RANK_FUSION_VERSION,
+                        reciprocalRankConstant: RECALL_RRF_RANK_CONSTANT,
+                        rerankPolicyVersion:
+                          mode === 'deep-rerank' ? RECALL_RERANK_POLICY_VERSION : null,
+                        rerankerModel: mode === 'deep-rerank' ? config.rerankerModel : null,
+                        activeBranchPrior: RECALL_ACTIVE_BRANCH_PRIOR,
+                        candidateLimits: { ...config.searchCandidateLimits },
+                      },
+                    };
+                  } finally {
+                    const retrievalElapsedMilliseconds = Math.max(
+                      diagnosticsClock.monotonicMilliseconds() - retrievalStartedAtMilliseconds,
+                      0,
+                    );
+                    const deepRerankElapsedMilliseconds = Math.max(
+                      diagnosticMetrics.deepRerankMilliseconds - deepRerankStartedWithMilliseconds,
+                      0,
+                    );
+                    diagnosticMetrics.retrievalRankingMilliseconds += Math.max(
+                      retrievalElapsedMilliseconds - deepRerankElapsedMilliseconds,
+                      0,
+                    );
+                  }
+                } finally {
+                  store.close();
+                }
+              },
+            );
           }),
       });
     },
@@ -1073,7 +951,6 @@ export function createRecallConversationService(
                     preparedIndex.embeddingModelPreflighted,
                     options.signal,
                     options.onProgress,
-                    undefined,
                     diagnosticMetrics,
                     onPhysicalSessionCheck,
                   );
@@ -1133,23 +1010,6 @@ export function createRecallConversationService(
             runIndexMaintenance: runConversationIndexMaintenance,
           })
         : runConversationIndexMaintenance();
-    },
-    reconcileSession(sessionPath, options) {
-      return runLiveSessionReconciliationWithDiagnostics({
-        diagnostics,
-        lifecycleTrigger: options.lifecycleTrigger,
-        sessionPath,
-        ...(options.signal ? { signal: options.signal } : {}),
-        reconcile: (diagnosticMetrics) =>
-          runSerialized(() =>
-            reconcileActiveConversationSession(
-              sessionPath,
-              options.signal,
-              options.lockWaitMilliseconds,
-              diagnosticMetrics,
-            ),
-          ),
-      });
     },
   };
 }

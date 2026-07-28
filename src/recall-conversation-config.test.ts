@@ -45,6 +45,7 @@ void test('recall config uses local octen embeddings and supports file plus envi
   assert.equal(config.rerankerBaseUrl, 'http://reranker.test/v1');
   assert.equal(config.rerankerModel, 'file-reranker-model');
   assert.deepEqual(config.searchCandidateLimits, { dense: 7, lexical: 9, identifier: 40 });
+  assert.equal(config.searchWriteWindowWaitMilliseconds, 500);
   assert.equal(config.embeddingServedModelId, 'Octen/Octen-Embedding-4B');
   assert.equal(config.embeddingArtifact, 'Octen-Embedding-4B.Q8_0.gguf');
   assert.equal(config.embeddingQuantization, 'Q8_0');
@@ -338,5 +339,14 @@ void test('recall config rejects invalid numeric environment settings', async ()
         environment: { PI_RECALL_IDENTIFIER_CANDIDATE_LIMIT: '201' },
       }),
     /candidate limit.*PI_RECALL_IDENTIFIER_CANDIDATE_LIMIT.*200/,
+  );
+  await assert.rejects(
+    () =>
+      loadRecallConversationConfig({
+        homeDirectory: '/tmp',
+        configPath: '/missing',
+        environment: { PI_RECALL_SEARCH_WRITE_WINDOW_WAIT_MILLISECONDS: '501' },
+      }),
+    /search write-window wait exceeds 500/u,
   );
 });

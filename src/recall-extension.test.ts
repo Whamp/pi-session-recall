@@ -141,21 +141,6 @@ void test('Pi recall tool adapter propagates trusted cwd with project default an
         },
       };
     },
-    async reconcileSession() {
-      return {
-        totalChunks: 0,
-        indexSummary: {
-          scannedSessions: 1,
-          indexedSessions: 0,
-          removedSessions: 0,
-          cacheHits: 0,
-          newlyEmbeddedChunks: 0,
-          embeddingRequestCount: 0,
-          deletedChunks: 0,
-          failedSessions: [],
-        },
-      };
-    },
   };
   const context = {
     cwd: '/trusted/invocation',

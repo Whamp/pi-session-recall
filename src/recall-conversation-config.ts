@@ -16,6 +16,8 @@ import {
 
 const DEFAULT_RECALL_CHANNEL_CANDIDATE_LIMIT = 40;
 const MAX_RECALL_CHANNEL_CANDIDATE_LIMIT = 200;
+const DEFAULT_RECALL_SEARCH_WRITE_WINDOW_WAIT_MILLISECONDS = 500;
+const MAX_RECALL_SEARCH_WRITE_WINDOW_WAIT_MILLISECONDS = 500;
 
 const recallConfigFileSchema = Type.Object(
   {
@@ -40,6 +42,9 @@ const recallConfigFileSchema = Type.Object(
     ),
     identifierCandidateLimit: Type.Optional(
       Type.Integer({ minimum: 1, maximum: MAX_RECALL_CHANNEL_CANDIDATE_LIMIT }),
+    ),
+    searchWriteWindowWaitMilliseconds: Type.Optional(
+      Type.Integer({ minimum: 1, maximum: MAX_RECALL_SEARCH_WRITE_WINDOW_WAIT_MILLISECONDS }),
     ),
     projectLineages: Type.Optional(
       Type.Record(
@@ -71,6 +76,16 @@ function parseRecallCandidateLimit(value: string, settingName: string): number {
   if (parsed > MAX_RECALL_CHANNEL_CANDIDATE_LIMIT) {
     throw new Error(
       `Recall configuration candidate limit for ${settingName} exceeds ${MAX_RECALL_CHANNEL_CANDIDATE_LIMIT}: ${value}`,
+    );
+  }
+  return parsed;
+}
+
+function parseRecallSearchWriteWindowWait(value: string): number {
+  const parsed = parsePositiveInteger(value, 'PI_RECALL_SEARCH_WRITE_WINDOW_WAIT_MILLISECONDS');
+  if (parsed > MAX_RECALL_SEARCH_WRITE_WINDOW_WAIT_MILLISECONDS) {
+    throw new Error(
+      `Recall configuration search write-window wait exceeds ${MAX_RECALL_SEARCH_WRITE_WINDOW_WAIT_MILLISECONDS}: ${value}`,
     );
   }
   return parsed;
@@ -206,6 +221,12 @@ export async function loadRecallConversationConfig(
       'http://192.168.0.67:8091/v1',
     rerankerModel: environment.PI_RECALL_RERANKER_MODEL ?? file.rerankerModel ?? 'qwen3-rerank',
     projectLineages,
+    searchWriteWindowWaitMilliseconds: environment.PI_RECALL_SEARCH_WRITE_WINDOW_WAIT_MILLISECONDS
+      ? parseRecallSearchWriteWindowWait(
+          environment.PI_RECALL_SEARCH_WRITE_WINDOW_WAIT_MILLISECONDS,
+        )
+      : (file.searchWriteWindowWaitMilliseconds ??
+        DEFAULT_RECALL_SEARCH_WRITE_WINDOW_WAIT_MILLISECONDS),
     searchCandidateLimits: {
       dense: resolveRecallCandidateLimit(
         'PI_RECALL_DENSE_CANDIDATE_LIMIT',

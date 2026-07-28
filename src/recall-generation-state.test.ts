@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 
 import { RecallBacklogFailureCategory, RecallGenerationCutoverState } from './enums.js';
+import { RecallGenerationPointerError } from './errors.js';
 import {
   calculateRecallActiveGenerationPointerChecksum,
   createRecallActiveGenerationPointer,
@@ -11,6 +15,8 @@ import {
   encodeRecallActiveGenerationPointer,
   encodeRecallBacklogSummary,
   encodeRecallGenerationRegistry,
+  readRecallActiveGenerationSelection,
+  readRecallMaterialBacklogWarning,
   RECALL_ACTIVE_GENERATION_POINTER_VERSION,
   RECALL_BACKLOG_SUMMARY_VERSION,
   RECALL_GENERATION_REGISTRY_VERSION,
@@ -141,6 +147,103 @@ void test('generation registry round-trips cutover states and rejects inconsiste
       ),
     /generation registry|invalid/iu,
   );
+});
+
+void test('search generation selection reads only one checksummed pointer directory', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-generation-selection-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const generationRootDirectory = join(directory, 'generations');
+  const generationDirectory = join(generationRootDirectory, activeGenerationId);
+  const pointerPath = join(directory, 'active-generation.json');
+  await mkdir(generationDirectory, { recursive: true });
+  await writeFile(
+    pointerPath,
+    encodeRecallActiveGenerationPointer(createRecallActiveGenerationPointer(activeGenerationId)),
+  );
+
+  assert.deepEqual(
+    await readRecallActiveGenerationSelection(pointerPath, generationRootDirectory),
+    {
+      activeGenerationId,
+      generationDirectory,
+      databasePath: join(generationDirectory, 'zvec'),
+      manifestPath: join(generationDirectory, 'index-manifest.json'),
+    },
+  );
+
+  await writeFile(pointerPath, '{"version":1,"activeGenerationId":"other","checksum":"bad"}\n');
+  await assert.rejects(
+    () => readRecallActiveGenerationSelection(pointerPath, generationRootDirectory),
+    RecallGenerationPointerError,
+  );
+  await rm(pointerPath);
+  await assert.rejects(
+    () => readRecallActiveGenerationSelection(pointerPath, generationRootDirectory),
+    RecallGenerationPointerError,
+  );
+});
+
+void test('material backlog warning is scalar-only and silent for ordinary pending work', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-backlog-warning-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const backlogPath = join(directory, 'backlog-summary.json');
+  const summary: RecallBacklogSummary = {
+    version: RECALL_BACKLOG_SUMMARY_VERSION,
+    pendingEligibleSessionCount: 2,
+    oldestEligibleMarkerAgeMilliseconds: 60_000,
+    activeGenerationId,
+    buildingGenerationId: null,
+    generationState: RecallGenerationCutoverState.ACTIVE,
+    activeGenerationAgeMilliseconds: 86_400_000,
+    rebuildAgeMilliseconds: null,
+    lastFailureCategory: null,
+    observedAtEpochMilliseconds: 1_753_401_700_000,
+  };
+  await writeFile(backlogPath, encodeRecallBacklogSummary(summary));
+  assert.equal(await readRecallMaterialBacklogWarning(backlogPath, activeGenerationId), null);
+  await writeFile(
+    backlogPath,
+    encodeRecallBacklogSummary({
+      ...summary,
+      oldestEligibleMarkerAgeMilliseconds: 30 * 60_000,
+    }),
+  );
+  assert.equal(await readRecallMaterialBacklogWarning(backlogPath, activeGenerationId), null);
+
+  const cases: Array<{
+    name: string;
+    summary: RecallBacklogSummary;
+    expected: RegExp;
+  }> = [
+    {
+      name: 'materially stale',
+      summary: { ...summary, oldestEligibleMarkerAgeMilliseconds: 1_800_001 },
+      expected: /oldestEligibleAgeMilliseconds=1800001/u,
+    },
+    {
+      name: 'failed',
+      summary: { ...summary, lastFailureCategory: RecallBacklogFailureCategory.WRITE_FAILED },
+      expected: /lastFailureCategory=write_failed/u,
+    },
+    {
+      name: 'rebuilding on older generation',
+      summary: {
+        ...summary,
+        buildingGenerationId: 'generation_2026_07_25',
+        generationState: RecallGenerationCutoverState.BUILDING,
+      },
+      expected: /generationState=building/u,
+    },
+  ];
+  const serializedWarnings: string[] = [];
+  for (const backlogCase of cases) {
+    await writeFile(backlogPath, encodeRecallBacklogSummary(backlogCase.summary));
+    const warning = await readRecallMaterialBacklogWarning(backlogPath, activeGenerationId);
+    assert.match(warning ?? '', backlogCase.expected, backlogCase.name);
+    serializedWarnings.push(warning ?? '');
+  }
+  const serialized = JSON.stringify(serializedWarnings);
+  assert.doesNotMatch(serialized, /PRIVATE_CONVERSATION_SENTINEL|\/sessions\/private\.jsonl/u);
 });
 
 void test('backlog summary is scalar-only, versioned, strict, and contains no source details', () => {

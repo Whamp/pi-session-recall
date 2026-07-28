@@ -3,6 +3,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { access, mkdir, open, rename, rm } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
+import { RecallRecoveryRequiredError, RecallSearchBusyError } from './errors.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
 import { syncRecallDirectory } from './sync-recall-directory.js';
 
@@ -22,6 +23,13 @@ export interface RecallWriteWindow {
 export interface CoordinateRecallWriteWindowOptions {
   lockPath: string;
   allowRecovery: boolean;
+  signal?: AbortSignal;
+}
+
+/** Kernel lock and bounded wait inputs for one read-only recall operation. */
+export interface CoordinateRecallReadWindowOptions {
+  lockPath: string;
+  waitMilliseconds: number;
   signal?: AbortSignal;
 }
 
@@ -81,12 +89,10 @@ export async function inspectRecallWriteWindow(lockPath: string): Promise<Recall
 export async function assertRecallWriteWindowAvailableForRead(lockPath: string): Promise<void> {
   const state = await inspectRecallWriteWindow(lockPath);
   if (state.recoveryRequired) {
-    throw new Error(
-      'Recall write recovery required; an external write-capable worker must replay and close normally',
-    );
+    throw new RecallRecoveryRequiredError();
   }
   if (state.currentWindow) {
-    throw new Error('Recall index is busy with a current write window');
+    throw new RecallSearchBusyError();
   }
 }
 
@@ -108,6 +114,8 @@ function waitForRecallKernelLock(
   child: ChildProcessWithoutNullStreams,
   token: string,
   signal?: AbortSignal,
+  createAbortError: () => Error = () =>
+    new Error('Recall conversation operation cancelled', { cause: signal?.reason }),
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     let output = '';
@@ -144,7 +152,7 @@ function waitForRecallKernelLock(
     };
     const onAbort = (): void => {
       child.kill('SIGTERM');
-      finish(new Error('Recall conversation operation cancelled', { cause: signal?.reason }));
+      finish(createAbortError());
     };
     child.stdout.on('data', onData);
     child.once('error', onError);
@@ -158,15 +166,17 @@ function waitForRecallKernelLock(
 
 async function acquireRecallKernelLock(
   lockPath: string,
+  mode: 'exclusive' | 'shared',
   signal?: AbortSignal,
+  createAbortError?: () => Error,
 ): Promise<HeldRecallKernelLock> {
   await mkdir(dirname(lockPath), { recursive: true });
-  const token = `recall-write-window-${randomUUID()}`;
-  const child = spawn('/usr/bin/flock', ['--exclusive', lockPath, '/bin/cat'], {
+  const token = `recall-${mode}-window-${randomUUID()}`;
+  const child = spawn('/usr/bin/flock', [`--${mode}`, lockPath, '/bin/cat'], {
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   child.stdin.write(`${token}\n`);
-  await waitForRecallKernelLock(child, token, signal);
+  await waitForRecallKernelLock(child, token, signal, createAbortError);
   return {
     async release() {
       if (child.exitCode !== null || child.signalCode !== null) {
@@ -218,7 +228,7 @@ export async function coordinateRecallWriteWindow<T>(
   options: CoordinateRecallWriteWindowOptions,
   operation: (window: RecallWriteWindow) => Promise<T>,
 ): Promise<T> {
-  const kernelLock = await acquireRecallKernelLock(options.lockPath, options.signal);
+  const kernelLock = await acquireRecallKernelLock(options.lockPath, 'exclusive', options.signal);
   const paths = recallWriteWindowStatePaths(options.lockPath);
   try {
     const priorState = await inspectRecallWriteWindow(options.lockPath);
@@ -240,6 +250,41 @@ export async function coordinateRecallWriteWindow<T>(
         await clearRecallWriteWindow(paths);
       }
     }
+  } finally {
+    await kernelLock.release();
+  }
+}
+
+/**
+ * Holds a shared kernel lock around one read-only recall operation.
+ * It waits only for the current writer and never creates or removes coordination markers.
+ */
+export async function coordinateRecallReadWindow<T>(
+  options: CoordinateRecallReadWindowOptions,
+  operation: () => Promise<T>,
+): Promise<T> {
+  if (!Number.isFinite(options.waitMilliseconds) || options.waitMilliseconds < 0) {
+    throw new Error('Recall search write-window wait must be a nonnegative number');
+  }
+  const timeoutSignal = AbortSignal.timeout(options.waitMilliseconds);
+  const acquisitionSignal = options.signal
+    ? AbortSignal.any([options.signal, timeoutSignal])
+    : timeoutSignal;
+  const kernelLock = await acquireRecallKernelLock(
+    options.lockPath,
+    'shared',
+    acquisitionSignal,
+    () =>
+      options.signal?.aborted
+        ? new Error('Recall conversation operation cancelled', { cause: options.signal.reason })
+        : new RecallSearchBusyError(),
+  );
+  try {
+    const state = await inspectRecallWriteWindow(options.lockPath);
+    if (state.recoveryRequired || state.currentWindow) {
+      throw new RecallRecoveryRequiredError();
+    }
+    return await operation();
   } finally {
     await kernelLock.release();
   }

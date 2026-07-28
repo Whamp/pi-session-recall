@@ -1,9 +1,12 @@
 import { createHash } from 'node:crypto';
+import { readFile, stat } from 'node:fs/promises';
+import { join } from 'node:path';
 
 import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 
 import { RecallBacklogFailureCategory, RecallGenerationCutoverState } from './enums.js';
+import { RecallGenerationPointerError } from './errors.js';
 import { RECALL_INDEX_MANIFEST_VERSION } from './recall-index-manifest.js';
 import { RECALL_SESSION_PROJECTION_SCHEMA_VERSION } from './recall-session-projection.js';
 import { RECALL_WORK_MARKER_VERSION } from './recall-work-marker.js';
@@ -16,6 +19,17 @@ export const RECALL_GENERATION_REGISTRY_VERSION = 1;
 
 /** Current strict version for the scalar material recall backlog summary. */
 export const RECALL_BACKLOG_SUMMARY_VERSION = 1;
+
+/** Service objective starts after the longest expected 30-minute quiescence window. */
+export const RECALL_MATERIAL_BACKLOG_SERVICE_OBJECTIVE_MILLISECONDS = 30 * 60_000;
+
+/** Pointer-selected immutable paths used by one read-only recall search. */
+export interface RecallActiveGenerationSelection {
+  activeGenerationId: string;
+  generationDirectory: string;
+  databasePath: string;
+  manifestPath: string;
+}
 
 /** Minimal atomic pointer selecting the only generation available to search. */
 export interface RecallActiveGenerationPointer {
@@ -68,11 +82,12 @@ export interface RecallBacklogSummary {
 }
 
 const nonemptyStringSchema = Type.String({ minLength: 1 });
+const generationIdentifierSchema = Type.String({ pattern: '^[A-Za-z0-9_-]+$' });
 const nullableIdentifierSchema = Type.Union([nonemptyStringSchema, Type.Null()]);
 const recallActiveGenerationPointerSchema = Type.Object(
   {
     version: Type.Literal(RECALL_ACTIVE_GENERATION_POINTER_VERSION),
-    activeGenerationId: nonemptyStringSchema,
+    activeGenerationId: generationIdentifierSchema,
     checksum: Type.String({ pattern: '^[a-f0-9]{64}$' }),
   },
   { additionalProperties: false },
@@ -279,4 +294,78 @@ export function encodeRecallBacklogSummary(summary: RecallBacklogSummary): strin
 /** Strictly parses one scalar-only material backlog summary. */
 export function decodeRecallBacklogSummary(source: string): RecallBacklogSummary {
   return parseRecallBacklogSummary(parseJsonContract(source, 'Recall backlog summary'));
+}
+
+/** Reads and validates the only pointer-selected generation directory available to search. */
+export async function readRecallActiveGenerationSelection(
+  activeGenerationPointerPath: string,
+  generationRootDirectory: string,
+): Promise<RecallActiveGenerationSelection> {
+  try {
+    const pointer = decodeRecallActiveGenerationPointer(
+      await readFile(activeGenerationPointerPath, 'utf8'),
+    );
+    const generationDirectory = join(generationRootDirectory, pointer.activeGenerationId);
+    const generationStats = await stat(generationDirectory);
+    if (!generationStats.isDirectory()) {
+      throw new Error('selected generation is not a directory');
+    }
+    return {
+      activeGenerationId: pointer.activeGenerationId,
+      generationDirectory,
+      databasePath: join(generationDirectory, 'zvec'),
+      manifestPath: join(generationDirectory, 'index-manifest.json'),
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new RecallGenerationPointerError(message, { cause: error });
+  }
+}
+
+/** Reads one scalar summary and returns a warning only for material recall backlog states. */
+export async function readRecallMaterialBacklogWarning(
+  backlogSummaryPath: string,
+  activeGenerationId: string,
+): Promise<string | null> {
+  let summary: RecallBacklogSummary;
+  try {
+    summary = decodeRecallBacklogSummary(await readFile(backlogSummaryPath, 'utf8'));
+  } catch (error) {
+    const errorCode =
+      typeof error === 'object' && error !== null && 'code' in error ? error.code : undefined;
+    if (errorCode === 'ENOENT') {
+      return null;
+    }
+    throw error;
+  }
+  if (summary.activeGenerationId !== activeGenerationId) {
+    return null;
+  }
+  const materiallyStale =
+    summary.oldestEligibleMarkerAgeMilliseconds !== null &&
+    summary.oldestEligibleMarkerAgeMilliseconds >
+      RECALL_MATERIAL_BACKLOG_SERVICE_OBJECTIVE_MILLISECONDS;
+  const failed =
+    summary.lastFailureCategory !== null ||
+    summary.generationState === RecallGenerationCutoverState.FAILED;
+  const rebuildingOnOlderGeneration =
+    summary.buildingGenerationId !== null &&
+    (summary.generationState === RecallGenerationCutoverState.BUILDING ||
+      summary.generationState === RecallGenerationCutoverState.READY);
+  if (!materiallyStale && !failed && !rebuildingOnOlderGeneration) {
+    return null;
+  }
+  const scalarFields = [
+    `pendingEligibleSessionCount=${summary.pendingEligibleSessionCount}`,
+    `oldestEligibleAgeMilliseconds=${summary.oldestEligibleMarkerAgeMilliseconds ?? 'none'}`,
+    `activeGenerationAgeMilliseconds=${summary.activeGenerationAgeMilliseconds}`,
+    `generationState=${summary.generationState}`,
+  ];
+  if (rebuildingOnOlderGeneration) {
+    scalarFields.push(`rebuildAgeMilliseconds=${summary.rebuildAgeMilliseconds ?? 'none'}`);
+  }
+  if (summary.lastFailureCategory !== null) {
+    scalarFields.push(`lastFailureCategory=${summary.lastFailureCategory}`);
+  }
+  return `Recall material backlog: ${scalarFields.join(' ')}`;
 }

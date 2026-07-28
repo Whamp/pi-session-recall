@@ -5,10 +5,12 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import {
+  coordinateRecallReadWindow,
   coordinateRecallWriteWindow,
   inspectRecallWriteWindow,
   recallWriteWindowStatePaths,
 } from './coordinate-recall-write-window.js';
+import { RecallRecoveryRequiredError, RecallSearchBusyError } from './errors.js';
 
 void test('recall write window leaves no coordination state after a normal close path', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'recall-write-window-'));
@@ -56,6 +58,65 @@ void test('only a recovery-capable writer clears explicit interrupted-window sta
     currentWindow: false,
     recoveryRequired: false,
   });
+});
+
+void test('read-only recall coordination waits for one brief write window without writing state', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-read-window-wait-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const lockPath = join(directory, 'operation.lock');
+  const firstEntered = Promise.withResolvers<void>();
+  const releaseFirst = Promise.withResolvers<void>();
+  const writer = coordinateRecallWriteWindow({ lockPath, allowRecovery: false }, async () => {
+    firstEntered.resolve();
+    await releaseFirst.promise;
+  });
+  await firstEntered.promise;
+
+  let readerEntered = false;
+  const reader = coordinateRecallReadWindow({ lockPath, waitMilliseconds: 500 }, async () => {
+    readerEntered = true;
+    assert.deepEqual(await inspectRecallWriteWindow(lockPath), {
+      currentWindow: false,
+      recoveryRequired: false,
+    });
+  });
+  await new Promise((resolve) => {
+    setTimeout(resolve, 20);
+  });
+  assert.equal(readerEntered, false);
+  releaseFirst.resolve();
+  await Promise.all([writer, reader]);
+  assert.equal(readerEntered, true);
+});
+
+void test('read-only recall coordination returns distinct busy and recovery errors', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-read-window-errors-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const lockPath = join(directory, 'operation.lock');
+  const firstEntered = Promise.withResolvers<void>();
+  const releaseFirst = Promise.withResolvers<void>();
+  const writer = coordinateRecallWriteWindow({ lockPath, allowRecovery: false }, async () => {
+    firstEntered.resolve();
+    await releaseFirst.promise;
+  });
+  await firstEntered.promise;
+
+  await assert.rejects(
+    () => coordinateRecallReadWindow({ lockPath, waitMilliseconds: 20 }, async () => undefined),
+    RecallSearchBusyError,
+  );
+  releaseFirst.resolve();
+  await writer;
+
+  const paths = recallWriteWindowStatePaths(lockPath);
+  await writeFile(
+    paths.recoveryRequiredPath,
+    `${JSON.stringify({ version: 1, state: 'recovery_required' })}\n`,
+  );
+  await assert.rejects(
+    () => coordinateRecallReadWindow({ lockPath, waitMilliseconds: 20 }, async () => undefined),
+    RecallRecoveryRequiredError,
+  );
 });
 
 void test('kernel-backed write window waits cancellably without deleting another writer state', async (t) => {

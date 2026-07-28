@@ -99,7 +99,9 @@ void test('zvec conversation search returns ranked text and exact session proven
     },
   ]);
 
-  const results = store.searchDenseCandidates([1, 0, 0], 1);
+  const pendingResults = store.searchDenseCandidates([1, 0, 0], 1);
+  assert.ok(pendingResults instanceof Promise);
+  const results = await pendingResults;
 
   assert.equal(results.length, 1);
   const result = results[0];
@@ -114,26 +116,29 @@ void test('zvec conversation search returns ranked text and exact session proven
     store.fetchConversationChunks(['chunk-a', 'missing-chunk']),
     new Map([['chunk-a', expectedChunk]]),
   );
-  const lexicalResults = store.searchLexicalCandidates('readnodeerrorcode', 2);
+  const lexicalResults = await store.searchLexicalCandidates('readnodeerrorcode', 2);
   assert.equal(lexicalResults[0]?.id, 'chunk-a');
   assert.ok((lexicalResults[0]?.fullTextScore ?? 0) > 0);
-  const identifierResults = store.searchIdentifierCandidates('readNodeErrorCode EPERM', 2);
+  const identifierResults = await store.searchIdentifierCandidates('readNodeErrorCode EPERM', 2);
   assert.equal(identifierResults[0]?.id, 'chunk-a');
   assert.ok((identifierResults[0]?.fullTextScore ?? 0) > 0);
-  assert.deepEqual(store.searchIdentifierCandidates('readnodeerrorcode', 2), []);
-  assert.deepEqual(store.searchIdentifierCandidates('readNodeErrorCode missingIdentifier', 2), []);
+  assert.deepEqual(await store.searchIdentifierCandidates('readnodeerrorcode', 2), []);
   assert.deepEqual(
-    store.searchLexicalCandidates('"alpha beta"', 10).map((candidate) => candidate.id),
+    await store.searchIdentifierCandidates('readNodeErrorCode missingIdentifier', 2),
+    [],
+  );
+  assert.deepEqual(
+    (await store.searchLexicalCandidates('"alpha beta"', 10)).map((candidate) => candidate.id),
     ['chunk-c'],
   );
   assert.deepEqual(
-    store.searchIdentifierCandidates('"alpha beta"', 10).map((candidate) => candidate.id),
+    (await store.searchIdentifierCandidates('"alpha beta"', 10)).map((candidate) => candidate.id),
     ['chunk-c'],
   );
   assert.deepEqual(
-    store
-      .searchLexicalCandidates('find "alpha beta" in the marker', 10)
-      .map((candidate) => candidate.id),
+    (await store.searchLexicalCandidates('find "alpha beta" in the marker', 10)).map(
+      (candidate) => candidate.id,
+    ),
     ['chunk-c'],
   );
   const groups = store.groupDenseCandidates([1, 0, 0], 'entryId', 2, 1);
@@ -143,15 +148,15 @@ void test('zvec conversation search returns ranked text and exact session proven
     () => store.groupDenseCandidates([1, 0, 0], 'entryId', 201, 1),
     /dense grouping limits invalid/,
   );
-  assert.throws(
+  await assert.rejects(
     () => store.searchDenseCandidates([1, 0, 0], 201),
     /candidate limit invalid \(dense\)/,
   );
-  assert.throws(
+  await assert.rejects(
     () => store.searchLexicalCandidates('queue', 201),
     /candidate limit invalid \(lexical\)/,
   );
-  assert.throws(
+  await assert.rejects(
     () => store.searchIdentifierCandidates('EPERM', 201),
     /candidate limit invalid \(identifier\)/,
   );
@@ -197,13 +202,12 @@ void test('zvec hybrid search returns atomic and turn-context document kinds', a
   await store.upsertChunks([atomicChunk, turnContextChunk]);
 
   assert.deepEqual(
-    store
-      .searchDenseCandidates([1, 0, 0], 2)
+    (await store.searchDenseCandidates([1, 0, 0], 2))
       .map((candidate) => candidate.documentKind)
       .toSorted(),
     ['conversation', 'turn_context'],
   );
-  const lexicalTurn = store.searchLexicalCandidates('Atlas', 2)[0];
+  const lexicalTurn = (await store.searchLexicalCandidates('Atlas', 2))[0];
   assert.equal(lexicalTurn?.id, 'turn-context-reply');
   assert.equal(lexicalTurn?.documentKind, 'turn_context');
   assert.equal(lexicalTurn?.evidenceKind, 'turn_context');
@@ -246,8 +250,8 @@ void test('zvec round-trips lexical-only tool evidence and excludes it from dens
 
   await store.upsertChunks([toolChunk]);
 
-  assert.deepEqual(store.searchDenseCandidates([1, 0, 0], 10), []);
-  const lexicalResult = store.searchIdentifierCandidates('TOOL_ONLY_EPERM', 10)[0];
+  assert.deepEqual(await store.searchDenseCandidates([1, 0, 0], 10), []);
+  const lexicalResult = (await store.searchIdentifierCandidates('TOOL_ONLY_EPERM', 10))[0];
   assert.ok(lexicalResult);
   const { fullTextScore, ...storedToolChunk } = lexicalResult;
   assert.ok(fullTextScore > 0);
@@ -334,10 +338,10 @@ void test('fresh unoptimized 1, 8, and 32 document batches survive close and rea
       readOnly: true,
     });
     const targetId = `fresh-${batchSize}-0`;
-    assert.equal(reader.searchDenseCandidates([1, 0, 0], 1)[0]?.id, targetId);
-    assert.equal(reader.searchLexicalCandidates('ordinaryneedle', 1)[0]?.id, targetId);
+    assert.equal((await reader.searchDenseCandidates([1, 0, 0], 1))[0]?.id, targetId);
+    assert.equal((await reader.searchLexicalCandidates('ordinaryneedle', 1))[0]?.id, targetId);
     assert.equal(
-      reader.searchIdentifierCandidates(`BatchIdentifier${batchSize}`, 1)[0]?.id,
+      (await reader.searchIdentifierCandidates(`BatchIdentifier${batchSize}`, 1))[0]?.id,
       targetId,
     );
     assert.equal(reader.fetchConversationChunks([targetId]).get(targetId)?.id, targetId);

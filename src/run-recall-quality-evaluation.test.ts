@@ -149,6 +149,7 @@ void test('recall quality runner indexes and searches only the bounded declared 
     rerankerModel: 'test-reranker',
     projectLineages: normalizeRecallProjectLineages({}),
     searchCandidateLimits: { dense: 8, lexical: 8, identifier: 8 },
+    searchWriteWindowWaitMilliseconds: 500,
   };
   const embeddings: LocalEmbeddingClient = {
     async embedTexts(texts) {

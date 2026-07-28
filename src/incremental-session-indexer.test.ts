@@ -9,10 +9,7 @@ import {
   createEmbeddingVectorCacheIdentity,
   type EmbeddingVectorCache,
 } from './embedding-vector-cache.js';
-import {
-  indexChangedConversationSession,
-  indexChangedConversationSessions,
-} from './incremental-session-indexer.js';
+import { indexChangedConversationSessions } from './incremental-session-indexer.js';
 import type { LocalEmbeddingClient } from './local-embedding-client.js';
 import { RecallProjectIdentitySource } from './enums.js';
 import { createRecallIndexManifest } from './recall-index-manifest.js';
@@ -224,78 +221,6 @@ void test('incremental index embeds only new content and removes deleted session
   assert.equal(store.deleted.length, 4);
 });
 
-void test('targeted incremental index reconciles one active session without scanning siblings', async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), 'recall-targeted-indexer-'));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const sessionsDirectory = join(directory, 'sessions');
-  await mkdir(sessionsDirectory);
-  const activeSessionPath = join(sessionsDirectory, 'active.jsonl');
-  const unrelatedSessionPath = join(sessionsDirectory, 'unrelated.jsonl');
-  const createSession = (sessionId: string, entryId: string, content: string): object[] => [
-    {
-      type: 'session',
-      version: 3,
-      id: sessionId,
-      timestamp: '2026-07-24T10:00:00Z',
-      cwd: '/project',
-    },
-    {
-      type: 'message',
-      id: entryId,
-      parentId: null,
-      timestamp: '2026-07-24T10:01:00Z',
-      message: { role: 'user', content },
-    },
-  ];
-  const activeEntries = createSession('active-session', 'active-entry', 'active marker');
-  await Promise.all([
-    writeFile(activeSessionPath, sessionLines(activeEntries)),
-    writeFile(
-      unrelatedSessionPath,
-      sessionLines(createSession('unrelated-session', 'unrelated-entry', 'unrelated marker')),
-    ),
-  ]);
-  const store = new MemoryConversationStore();
-  const options = {
-    sessionPath: activeSessionPath,
-    statePath: join(directory, 'state.json'),
-    store,
-    embeddingCache: createTestEmbeddingCache(directory, {
-      async embedTexts(texts) {
-        return texts.map((text) => [text.length, 1, 0]);
-      },
-    }),
-    tokenizer,
-  };
-
-  const first = await indexChangedConversationSession(options);
-  assert.equal(first.scannedSessions, 1);
-  assert.equal(first.indexedSessions, 1);
-  assert.deepEqual(
-    [...store.chunks.values()].map((chunk) => chunk.content),
-    ['active marker'],
-  );
-
-  activeEntries.push({
-    type: 'message',
-    id: 'active-response',
-    parentId: 'active-entry',
-    timestamp: '2026-07-24T10:02:00Z',
-    message: { role: 'assistant', content: 'fresh active response' },
-  });
-  await writeFile(activeSessionPath, sessionLines(activeEntries));
-  const second = await indexChangedConversationSession(options);
-  assert.equal(second.scannedSessions, 1);
-  assert.equal(second.indexedSessions, 1);
-  assert.ok([...store.chunks.values()].some((chunk) => chunk.content === 'fresh active response'));
-  assert.ok([...store.chunks.values()].every((chunk) => !chunk.content.includes('unrelated')));
-
-  await rm(activeSessionPath);
-  const third = await indexChangedConversationSession(options);
-  assert.equal(third.removedSessions, 1);
-  assert.equal(store.count(), 0);
-});
-
 void test('incremental index reconciles every logical session in one physical reuse container', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'recall-indexer-reuse-history-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -337,7 +262,7 @@ void test('incremental index reconciles every logical session in one physical re
   const store = new MemoryConversationStore();
   const resolvedOrigins: string[] = [];
   const options = {
-    sessionPath,
+    sessionsDirectory: directory,
     statePath,
     store,
     embeddingCache: createTestEmbeddingCache(directory, {
@@ -355,7 +280,7 @@ void test('incremental index reconciles every logical session in one physical re
     },
   };
 
-  const first = await indexChangedConversationSession(options);
+  const first = await indexChangedConversationSessions(options);
   assert.equal(first.indexedSessions, 1);
   assert.deepEqual(resolvedOrigins, ['/logical/one', '/logical/two']);
   assert.deepEqual(
@@ -383,7 +308,7 @@ void test('incremental index reconciles every logical session in one physical re
   }
 
   await writeFile(sessionPath, sessionLines(firstSegment));
-  const second = await indexChangedConversationSession(options);
+  const second = await indexChangedConversationSessions(options);
   assert.equal(second.indexedSessions, 1);
   assert.equal(store.count(), 1);
   assert.equal([...store.chunks.values()][0]?.sessionId.value, 'logical-one');
@@ -398,8 +323,8 @@ void test('incremental index rejects state from an older session import policy',
 
   await assert.rejects(
     () =>
-      indexChangedConversationSession({
-        sessionPath: join(directory, 'absent.jsonl'),
+      indexChangedConversationSessions({
+        sessionsDirectory: directory,
         statePath,
         store: new MemoryConversationStore(),
         embeddingCache: createTestEmbeddingCache(directory, {
@@ -440,7 +365,7 @@ void test('incremental index removes stale documents when a changed session grap
   );
   const store = new MemoryConversationStore();
   const options = {
-    sessionPath,
+    sessionsDirectory: directory,
     statePath,
     store,
     embeddingCache: createTestEmbeddingCache(directory, {
@@ -450,7 +375,7 @@ void test('incremental index removes stale documents when a changed session grap
     }),
     tokenizer,
   };
-  await indexChangedConversationSession(options);
+  await indexChangedConversationSessions(options);
   assert.equal(store.count(), 1);
 
   await writeFile(
@@ -466,7 +391,7 @@ void test('incremental index removes stale documents when a changed session grap
       },
     ]),
   );
-  const failed = await indexChangedConversationSession(options);
+  const failed = await indexChangedConversationSessions(options);
 
   assert.equal(failed.failedSessions.length, 1);
   assert.match(failed.failedSessions[0]?.error ?? '', /missing parent missing-entry/u);

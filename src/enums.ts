@@ -1,6 +1,5 @@
 /** Kind of bounded local recall operation diagnostic. */
 export enum RecallDiagnosticOperationKind {
-  LIVE_SESSION_RECONCILIATION = 'live_session_reconciliation',
   SEARCH = 'search',
   FULL_INDEX = 'full_index',
   REBUILD = 'rebuild',
@@ -27,13 +26,6 @@ export enum RecallDiagnosticsMode {
   SLOW = 'slow',
   ALL = 'all',
   OFF = 'off',
-}
-
-/** Pi lifecycle event that requested one live session reconciliation. */
-export enum RecallLifecycleTrigger {
-  AGENT_SETTLED = 'agent_settled',
-  SESSION_SHUTDOWN = 'session_shutdown',
-  ACTIVE_SESSION_FRESHNESS = 'active_session_freshness',
 }
 
 /** Manual maintenance trigger distinguishing explicit incremental indexing from rebuilding. */

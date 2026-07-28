@@ -83,17 +83,17 @@ export interface ZvecConversationStore extends ConversationChunkStore {
     embedding: number[],
     limit: number,
     projectIdentity?: ProjectIdentity,
-  ): RecallDenseCandidate[];
+  ): Promise<RecallDenseCandidate[]>;
   searchLexicalCandidates(
     query: string,
     limit: number,
     projectIdentity?: ProjectIdentity,
-  ): RecallFullTextCandidate[];
+  ): Promise<RecallFullTextCandidate[]>;
   searchIdentifierCandidates(
     query: string,
     limit: number,
     projectIdentity?: ProjectIdentity,
-  ): RecallFullTextCandidate[];
+  ): Promise<RecallFullTextCandidate[]>;
   fetchConversationChunks(this: void, ids: string[]): Map<string, SessionConversationChunk>;
   fetchVectors(ids: string[]): Map<string, number[]>;
   groupDenseCandidates(
@@ -609,30 +609,29 @@ export function openZvecConversationStore(config: {
       : new Error('Recall zvec scalar schema validation failed', { cause: error });
   }
 
-  const searchFullTextCandidates = (
+  const searchFullTextCandidates = async (
     fieldName: string,
     query: string,
     limit: number,
     channelName: string,
     defaultOperator: 'AND' | 'OR',
     projectIdentity?: ProjectIdentity,
-  ): RecallFullTextCandidate[] => {
+  ): Promise<RecallFullTextCandidate[]> => {
     assertRecallCandidateLimit(limit, channelName);
     const projectFilter = createRecallProjectIdentityFilter(projectIdentity);
-    return collection
-      .querySync({
-        fieldName,
-        fts: createRecallFullTextQuery(query),
-        topk: limit,
-        outputFields: RECALL_OUTPUT_FIELDS,
-        includeVector: false,
-        ...(projectFilter ? { filter: projectFilter } : {}),
-        params: { indexType: ZVecIndexType.FTS, defaultOperator },
-      })
-      .map((doc) => ({
-        ...deserializeConversationChunk(doc),
-        fullTextScore: doc.score,
-      }));
+    const documents = await collection.query({
+      fieldName,
+      fts: createRecallFullTextQuery(query),
+      topk: limit,
+      outputFields: RECALL_OUTPUT_FIELDS,
+      includeVector: false,
+      ...(projectFilter ? { filter: projectFilter } : {}),
+      params: { indexType: ZVecIndexType.FTS, defaultOperator },
+    });
+    return documents.map((doc) => ({
+      ...deserializeConversationChunk(doc),
+      fullTextScore: doc.score,
+    }));
   };
 
   return {
@@ -691,25 +690,24 @@ export function openZvecConversationStore(config: {
         [status],
       );
     },
-    searchDenseCandidates(embedding, limit, projectIdentity) {
+    async searchDenseCandidates(embedding, limit, projectIdentity) {
       assertRecallCandidateLimit(limit, 'dense');
       const projectFilter = createRecallProjectIdentityFilter(projectIdentity);
-      return collection
-        .querySync({
-          fieldName: 'embedding',
-          vector: embedding,
-          topk: limit,
-          outputFields: RECALL_OUTPUT_FIELDS,
-          includeVector: false,
-          filter: projectFilter
-            ? `isDenseSearchable = true AND ${projectFilter}`
-            : 'isDenseSearchable = true',
-          params: { indexType: ZVecIndexType.HNSW, ef: ZVEC_HNSW_EF_SEARCH },
-        })
-        .map((doc) => ({
-          ...deserializeConversationChunk(doc),
-          cosineDistance: doc.score,
-        }));
+      const documents = await collection.query({
+        fieldName: 'embedding',
+        vector: embedding,
+        topk: limit,
+        outputFields: RECALL_OUTPUT_FIELDS,
+        includeVector: false,
+        filter: projectFilter
+          ? `isDenseSearchable = true AND ${projectFilter}`
+          : 'isDenseSearchable = true',
+        params: { indexType: ZVecIndexType.HNSW, ef: ZVEC_HNSW_EF_SEARCH },
+      });
+      return documents.map((doc) => ({
+        ...deserializeConversationChunk(doc),
+        cosineDistance: doc.score,
+      }));
     },
     searchLexicalCandidates(query, limit, projectIdentity) {
       return searchFullTextCandidates('content', query, limit, 'lexical', 'OR', projectIdentity);

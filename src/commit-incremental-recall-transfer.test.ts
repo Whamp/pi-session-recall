@@ -390,7 +390,7 @@ void test('writer crash after evidence upsert requires write-capable replay befo
     readOnly: true,
   });
   assert.equal(
-    reader.searchLexicalCandidates('commit evidence', 1)[0]?.id,
+    (await reader.searchLexicalCandidates('commit evidence', 1))[0]?.id,
     prepared.documents[0]?.id,
   );
   reader.close();

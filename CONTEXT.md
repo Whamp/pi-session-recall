@@ -128,10 +128,6 @@ _Avoid_: Expanded transcript, joined messages
 The versioned identity of the model, tokenizer, chunk policy, provenance schema, and zvec schema used by one index generation.
 _Avoid_: Index state, configuration
 
-**Live session reconciliation**:
-A lower-level targeted update that reprocesses one session file without scanning sibling sessions. Interactive Pi operations do not invoke it because it still rebuilds the whole changed session.
-_Avoid_: Incremental active-session ingestion, append-only indexing, session watcher
-
 **Recall work marker**:
 One immutable, atomically published event file telling an external worker that a physical session may contain newly eligible evidence. The worker orders and coalesces markers; Pi processes never overwrite them.
 _Avoid_: Index job, mutable session marker, session lock
@@ -163,10 +159,6 @@ _Avoid_: Trace, span, telemetry
 **Diagnostics mode**:
 The persistence policy for recall diagnostic operations: `slow`, `all`, or `off`.
 _Avoid_: Verbosity level, tracing mode
-
-**Lifecycle trigger**:
-The historical reason recorded for live session reconciliation diagnostics. Interactive Pi no longer starts reconciliation from lifecycle or search events.
-_Avoid_: Current runtime maintenance policy, session watcher event, polling reason
 
 **Manual maintenance trigger**:
 The explicit index command mode that requested a full corpus catch-up: incremental indexing or rebuilding.

@@ -1,5 +1,5 @@
-import { mkdir, readdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
+import { dirname } from 'node:path';
 
 import { Type } from 'typebox';
 import { Value } from 'typebox/value';
@@ -7,6 +7,7 @@ import { Value } from 'typebox/value';
 import type { EmbeddingVectorCache } from './embedding-vector-cache.js';
 import { RecallDiagnosticErrorCategory, RecallDiagnosticStatus } from './enums.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
+import { listRecallConversationSessionFiles } from './recall-conversation-corpus.js';
 import type { RecallChunkPolicy } from './recall-chunk-policy.js';
 import {
   accumulateRecallIndexMetrics,
@@ -55,9 +56,39 @@ interface ConversationIndexState {
   sessions: Record<string, IndexedSessionState>;
 }
 
+/** Validated session and document identity counts persisted by one index generation. */
+export interface RecallConversationIndexStateSummary {
+  sessionCount: number;
+  documentIds: string[];
+}
+
+/** Reads validated session state for pre-activation generation conformance checks. */
+export async function readRecallConversationIndexStateSummary(
+  statePath: string,
+): Promise<RecallConversationIndexStateSummary> {
+  const state = await readConversationIndexState(statePath);
+  const documentIds = Object.values(state.sessions).flatMap((session) =>
+    session.chunks.map((chunk) => chunk.id),
+  );
+  if (new Set(documentIds).size !== documentIds.length) {
+    throw new Error(`Recall index state contains duplicate document IDs at ${statePath}`);
+  }
+  return {
+    sessionCount: Object.keys(state.sessions).length,
+    documentIds,
+  };
+}
+
 /** Progress from scanning session files before indexing changed recall evidence. */
 export interface ConversationIndexProgress {
   scannedSessions: number;
+  totalSessions: number;
+  sessionPath: string;
+}
+
+/** Latest physical session durably represented by one index-generation checkpoint. */
+export interface ConversationIndexCheckpoint {
+  checkpointedSessions: number;
   totalSessions: number;
   sessionPath: string;
 }
@@ -85,6 +116,7 @@ export interface IncrementalSessionIndexerOptions {
   resolveProjectIdentity?: (sessionOrigin: string) => Promise<ResolvedProjectIdentity | null>;
   signal?: AbortSignal;
   onProgress?: (progress: ConversationIndexProgress) => void;
+  onCheckpoint?: (checkpoint: ConversationIndexCheckpoint) => void;
   diagnosticMetrics?: RecallIndexDiagnosticMetrics;
   diagnosticsClock?: RecallDiagnosticsClock;
   onPhysicalSessionCheck?: (completion: RecallPhysicalSessionDiagnostic) => void;
@@ -92,31 +124,6 @@ export interface IncrementalSessionIndexerOptions {
     string,
     ReadonlyMap<string, ReadonlySet<string>>
   >;
-}
-
-async function listSessionFiles(directory: string): Promise<string[]> {
-  const files: string[] = [];
-  async function visit(current: string): Promise<void> {
-    let entries;
-    try {
-      entries = await readdir(current, { withFileTypes: true });
-    } catch (error) {
-      if (readNodeErrorCode(error) === 'ENOENT') {
-        return;
-      }
-      throw error;
-    }
-    for (const entry of entries) {
-      const path = join(current, entry.name);
-      if (entry.isDirectory()) {
-        await visit(path);
-      } else if (entry.isFile() && entry.name.endsWith('.jsonl')) {
-        files.push(path);
-      }
-    }
-  }
-  await visit(directory);
-  return files.sort();
 }
 
 async function readConversationIndexState(statePath: string): Promise<ConversationIndexState> {
@@ -564,7 +571,7 @@ async function scanPhysicalSessionFiles(options: IncrementalSessionIndexerOption
   try {
     return {
       state: await readConversationIndexState(options.statePath),
-      sessionFiles: await listSessionFiles(options.sessionsDirectory),
+      sessionFiles: await listRecallConversationSessionFiles(options.sessionsDirectory),
     };
   } finally {
     if (
@@ -629,7 +636,6 @@ export async function indexChangedConversationSessions(
   const resolveSessionProjectIdentity = createSessionProjectIdentityResolver(
     options.resolveProjectIdentity,
   );
-  let sessionsSinceCheckpoint = 0;
   for (const sessionPath of sessionFiles) {
     throwIfIndexingAborted(options.signal);
     summary.scannedSessions += 1;
@@ -638,6 +644,7 @@ export async function indexChangedConversationSessions(
       totalSessions: sessionFiles.length,
       sessionPath,
     });
+    throwIfIndexingAborted(options.signal);
     const outcome = await runPhysicalSessionCheck({
       indexerOptions: options,
       sessionPath,
@@ -664,26 +671,25 @@ export async function indexChangedConversationSessions(
       },
     });
     if (outcome.stateChanged) {
-      sessionsSinceCheckpoint += 1;
-      if (sessionsSinceCheckpoint >= 100) {
-        await writeConversationIndexStateWithDiagnostics(
-          options.statePath,
-          state,
-          options.diagnosticMetrics,
-          options.diagnosticsClock,
-        );
-        sessionsSinceCheckpoint = 0;
-      }
+      await writeConversationIndexStateWithDiagnostics(
+        options.statePath,
+        state,
+        options.diagnosticMetrics,
+        options.diagnosticsClock,
+      );
     }
+    options.onCheckpoint?.({
+      checkpointedSessions: summary.scannedSessions,
+      totalSessions: sessionFiles.length,
+      sessionPath,
+    });
   }
 
-  if (sessionsSinceCheckpoint > 0) {
-    await writeConversationIndexStateWithDiagnostics(
-      options.statePath,
-      state,
-      options.diagnosticMetrics,
-      options.diagnosticsClock,
-    );
-  }
+  await writeConversationIndexStateWithDiagnostics(
+    options.statePath,
+    state,
+    options.diagnosticMetrics,
+    options.diagnosticsClock,
+  );
   return summary;
 }

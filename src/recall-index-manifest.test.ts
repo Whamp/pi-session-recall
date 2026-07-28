@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import { createEmbeddingVectorCacheIdentity } from './embedding-vector-cache.js';
+import { createEmbeddingGemmaTokenizerManifestIdentity } from './embedded-embeddinggemma-provider.js';
 import {
   assertRecallIndexManifestCompatible,
   createRecallEmbeddingCanaryFingerprint,
@@ -14,6 +15,7 @@ import {
   recoverRecallEmbeddingCanaryFromManifest,
   writeRecallIndexManifest,
 } from './recall-index-manifest.js';
+import { createRecommendedEmbeddingGemmaModelProfile } from './recall-model-profiles.js';
 import {
   normalizeRecallProjectLineages,
   PROJECT_IDENTITY_METADATA_SCHEMA_VERSION,
@@ -70,6 +72,50 @@ void test('index manifest round-trips the complete reproducibility identity atom
   });
   assert.equal(manifest.zvec.schemaVersion, 8);
   assert.equal(manifest.zvec.ftsConfigurationVersion, 2);
+});
+
+void test('index manifest records complete EmbeddingGemma semantics in the incremental manifest', () => {
+  const profile = createRecommendedEmbeddingGemmaModelProfile();
+  const manifest = createRecallIndexManifest({
+    embeddingIdentity: profile.identity,
+    canaryEmbedding: [1, ...Array<number>(767).fill(0)],
+    embeddingCanary: profile.canary,
+    tokenizerIdentity: createEmbeddingGemmaTokenizerManifestIdentity(profile),
+  });
+
+  assert.equal(manifest.manifestVersion, 6);
+  assert.deepEqual(manifest.embedding, {
+    requestModel: 'embeddinggemma-300M-Q8_0',
+    servedModelId: 'google/embeddinggemma-300M',
+    artifact: 'embeddinggemma-300M-Q8_0.gguf',
+    artifactRepository: 'ggml-org/embeddinggemma-300M-GGUF',
+    artifactRevision: '0f741b5a6585bd53aeb15cd1372c56f2a0f65e12',
+    artifactSha256: 'b5ce9d77a3fc4b3b39ccb5643c36777911cc4eb46a66962eadfa3f5f60490d63',
+    dimensions: 768,
+    quantization: 'Q8_0',
+    pooling: 'mean',
+    normalization: 'l2',
+    canaryOperation: 'query',
+    canaryProbe: 'Which session evidence explains the retained implementation decision?',
+    canaryFingerprint: createRecallEmbeddingCanaryFingerprint(
+      [1, ...Array<number>(767).fill(0)],
+      768,
+    ),
+    canaryVector: [1, ...Array<number>(767).fill(0)],
+    canaryMinimumCosineSimilarity: 0.9995,
+  });
+  assert.deepEqual(manifest.tokenizer, {
+    model: 'google/embeddinggemma-300M',
+    revision: '0f741b5a6585bd53aeb15cd1372c56f2a0f65e12',
+    library: { name: 'node-llama-cpp', version: '3.18.1' },
+    encodeOptions: { addSpecialTokens: false, returnTokenTypeIds: false },
+    assets: [
+      {
+        fileName: 'embeddinggemma-300M-Q8_0.gguf',
+        sha256: 'b5ce9d77a3fc4b3b39ccb5643c36777911cc4eb46a66962eadfa3f5f60490d63',
+      },
+    ],
+  });
 });
 
 void test('index manifest canonically digests project lineage and rejects changed lineage policy', () => {

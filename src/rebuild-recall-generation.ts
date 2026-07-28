@@ -69,6 +69,10 @@ export interface RebuildRecallGenerationOptions<Result, BuildSnapshot = undefine
   markerSpoolDirectory: string;
   lockPath: string;
   generationId?: string;
+  /** Configured embedding semantics persisted with the replacement generation. */
+  embeddingProfileId?: string;
+  /** Reopens this generation's durable checkpoint after a stopped or crashed detached build. */
+  resumeExistingGeneration?: boolean;
   rollbackRetentionMilliseconds?: number;
   workerSignal: RecallDetachedWorkerSignal;
   signal?: AbortSignal;
@@ -245,6 +249,9 @@ async function rebuildRecallGenerationUnderOwnership<Result, BuildSnapshot = und
   options: RebuildRecallGenerationOptions<Result, BuildSnapshot>,
 ): Promise<RebuildRecallGenerationResult<Result>> {
   const now = options.nowEpochMilliseconds?.() ?? Date.now();
+  if (options.resumeExistingGeneration && options.generationId === undefined) {
+    throw new Error('Recall generation resume requires an existing generation ID');
+  }
   const generationId = options.generationId ?? createReplacementGenerationId(now);
   const paths = createGenerationBuildPaths(options.generationRootDirectory, generationId);
   await assertRecallCutoverFilesystem(
@@ -260,7 +267,23 @@ async function rebuildRecallGenerationUnderOwnership<Result, BuildSnapshot = und
   let registry =
     persistedStartingRegistry ??
     (await createInitialGenerationRegistry(startingPointer, options.generationRootDirectory, now));
-  if (registry.buildingGenerationId !== null) {
+  const resumableEntry = options.resumeExistingGeneration
+    ? registry.generations.find(({ generationId: candidateId }) => candidateId === generationId)
+    : undefined;
+  if (
+    options.resumeExistingGeneration &&
+    (!resumableEntry ||
+      (resumableEntry.state !== RecallGenerationCutoverState.FAILED &&
+        resumableEntry.state !== RecallGenerationCutoverState.BUILDING))
+  ) {
+    throw new Error(
+      `Recall generation resume requires failed or abandoned building state: ${generationId}`,
+    );
+  }
+  if (
+    registry.buildingGenerationId !== null &&
+    registry.buildingGenerationId !== resumableEntry?.generationId
+  ) {
     throw new Error(
       `Recall generation rebuild already in progress: ${registry.buildingGenerationId}`,
     );
@@ -271,7 +294,19 @@ async function rebuildRecallGenerationUnderOwnership<Result, BuildSnapshot = und
   ) {
     throw new Error('Recall generation registry and active pointer disagree before rebuild');
   }
-  await mkdir(paths.generationDirectory);
+  if (options.resumeExistingGeneration) {
+    const generationStats = await stat(paths.generationDirectory).catch((error: unknown) => {
+      if (readNodeErrorCode(error) === 'ENOENT') {
+        return null;
+      }
+      throw error;
+    });
+    if (!generationStats?.isDirectory()) {
+      throw new Error(`Recall resumable generation directory missing: ${generationId}`);
+    }
+  } else {
+    await mkdir(paths.generationDirectory);
+  }
   const frozenBuild = await coordinateRecallWriteWindow(
     {
       lockPath: options.lockPath,
@@ -297,13 +332,16 @@ async function rebuildRecallGenerationUnderOwnership<Result, BuildSnapshot = und
         options.captureBuildSnapshot?.(),
       ]);
       const buildingEntry: RecallGenerationRegistryEntry = {
-        generationId,
+        ...(resumableEntry ?? {
+          generationId,
+          indexManifestVersion: RECALL_INDEX_MANIFEST_VERSION,
+          markerSchemaVersion: RECALL_WORK_MARKER_VERSION,
+          sessionProjectionSchemaVersion: RECALL_SESSION_PROJECTION_SCHEMA_VERSION,
+          rebuildStartedAtEpochMilliseconds: now,
+        }),
         state: RecallGenerationCutoverState.BUILDING,
-        indexManifestVersion: RECALL_INDEX_MANIFEST_VERSION,
-        markerSchemaVersion: RECALL_WORK_MARKER_VERSION,
-        sessionProjectionSchemaVersion: RECALL_SESSION_PROJECTION_SCHEMA_VERSION,
+        ...(options.embeddingProfileId ? { embeddingProfileId: options.embeddingProfileId } : {}),
         indexManifestFingerprint: '0'.repeat(64),
-        rebuildStartedAtEpochMilliseconds: now,
         stateChangedAtEpochMilliseconds: now,
         rebuildStartMarkerId: rebuildMarkerWatermark[0] ?? null,
         rebuildMarkerWatermark,
@@ -313,7 +351,9 @@ async function rebuildRecallGenerationUnderOwnership<Result, BuildSnapshot = und
       const frozenRegistry: RecallGenerationRegistry = {
         ...registry,
         buildingGenerationId: generationId,
-        generations: [...registry.generations, buildingEntry],
+        generations: resumableEntry
+          ? replaceGenerationEntry(registry, buildingEntry)
+          : [...registry.generations, buildingEntry],
       };
       if (frozenRegistry.activeGenerationId !== null) {
         await writeRecallBacklogSummary(options.backlogSummaryPath, {

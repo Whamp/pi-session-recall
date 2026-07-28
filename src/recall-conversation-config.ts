@@ -5,10 +5,13 @@ import { isAbsolute, join } from 'node:path';
 import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 
-import type { RecallConversationConfig } from './recall-conversation-service.js';
+import type { RecallChunkPolicy } from './recall-chunk-policy.js';
 import { RecallDiagnosticsMode } from './enums.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
-import { normalizeRecallProjectLineages } from './resolve-project-identity.js';
+import {
+  normalizeRecallProjectLineages,
+  type RecallProjectLineages,
+} from './resolve-project-identity.js';
 import {
   isCanonicalPathWithinBoundary,
   resolveCanonicalPathBoundary,
@@ -36,6 +39,7 @@ const recallConfigFileSchema = Type.Object(
     embeddingBatchSize: Type.Optional(Type.Integer({ minimum: 1 })),
     rerankerBaseUrl: Type.Optional(Type.String({ minLength: 1 })),
     rerankerModel: Type.Optional(Type.String({ minLength: 1 })),
+    queryPlannerBaseUrl: Type.Optional(Type.String({ minLength: 1 })),
     denseCandidateLimit: Type.Optional(
       Type.Integer({ minimum: 1, maximum: MAX_RECALL_CHANNEL_CANDIDATE_LIMIT }),
     ),
@@ -61,6 +65,59 @@ const recallConfigFileSchema = Type.Object(
   },
   { additionalProperties: false },
 );
+
+/** Per-channel candidate caps applied before recall rank fusion. */
+export interface RecallSearchCandidateLimits {
+  dense: number;
+  lexical: number;
+  identifier: number;
+}
+
+/** Runtime paths, generation coordination, and configured local inference identity. */
+export interface RecallConversationConfig {
+  sessionsDirectory: string;
+  dataDirectory: string;
+  databasePath: string;
+  projectionDatabasePath: string;
+  statePath: string;
+  manifestPath: string;
+  tokenizerCacheDirectory: string;
+  embeddingCacheDirectory: string;
+  lockPath: string;
+  diagnosticsMode: RecallDiagnosticsMode;
+  diagnosticLogPath: string;
+  retainedDiagnosticLogPath: string;
+  markerSpoolDirectory: string;
+  markerQuarantineDirectory: string;
+  markerControlDirectory: string;
+  workerOwnershipLockPath: string;
+  generationRootDirectory: string;
+  activeGenerationPointerPath: string;
+  generationRegistryPath: string;
+  backlogSummaryPath: string;
+  incrementalDiagnosticLogPath: string;
+  /** One bounded detached-build status record outside any recall generation. */
+  backgroundIndexStatusPath?: string;
+  /** Ephemeral detached-worker request outside any recall generation. */
+  backgroundIndexRequestPath?: string;
+  embeddingBaseUrl: string;
+  embeddingModel: string;
+  embeddingServedModelId: string;
+  embeddingArtifact: string;
+  embeddingQuantization: string;
+  embeddingPooling: string;
+  embeddingDimensions: number;
+  embeddingBatchSize: number;
+  rerankerBaseUrl: string;
+  rerankerModel: string;
+  queryPlannerBaseUrl?: string;
+  projectLineages: RecallProjectLineages;
+  searchCandidateLimits: RecallSearchCandidateLimits;
+  searchWriteWindowWaitMilliseconds: number;
+  confirmedDeletionMaxMissingSourceCount: number;
+  confirmedDeletionMaxMissingSourceRatio: number;
+  chunkPolicy?: RecallChunkPolicy;
+}
 
 /** Inputs used to locate and override recall configuration, primarily for tests and embedding migrations. */
 export interface RecallConversationConfigLoadOptions {
@@ -191,6 +248,8 @@ export async function loadRecallConversationConfig(
     tokenizerCacheDirectory: join(dataDirectory, 'tokenizers'),
     embeddingCacheDirectory: join(dataDirectory, 'embedding-cache'),
     lockPath: join(dataDirectory, 'operation.lock'),
+    backgroundIndexStatusPath: join(dataDirectory, 'background-index-status.json'),
+    backgroundIndexRequestPath: join(dataDirectory, 'background-index-request.json'),
     diagnosticsMode: file.diagnostics ?? RecallDiagnosticsMode.SLOW,
     diagnosticLogPath: join(dataDirectory, 'diagnostics.jsonl'),
     retainedDiagnosticLogPath: join(dataDirectory, 'diagnostics.previous.jsonl'),
@@ -236,6 +295,10 @@ export async function loadRecallConversationConfig(
       file.rerankerBaseUrl ??
       'http://192.168.0.67:8091/v1',
     rerankerModel: environment.PI_RECALL_RERANKER_MODEL ?? file.rerankerModel ?? 'qwen3-rerank',
+    queryPlannerBaseUrl:
+      environment.PI_RECALL_QUERY_PLANNER_BASE_URL ??
+      file.queryPlannerBaseUrl ??
+      'http://192.168.0.67:8092/v1',
     projectLineages,
     searchWriteWindowWaitMilliseconds: environment.PI_RECALL_SEARCH_WRITE_WINDOW_WAIT_MILLISECONDS
       ? parseRecallSearchWriteWindowWait(

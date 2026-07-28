@@ -11,10 +11,19 @@ import {
   truncateHead,
 } from '@earendil-works/pi-coding-agent';
 
+import { applyRecallQualityPolicyToConversationConfig } from './applyRecallQualityPolicyToConversationConfig.js';
+import {
+  createConfiguredRecallInferenceRuntime,
+  resolveRecallInferenceConfigurationPath,
+} from './configured-recall-inference-runtime.js';
 import { RecallSearchScope } from './enums.js';
 import type { RecallDetachedWorkerSignal } from './create-recall-detached-worker-signal.js';
 import { formatRecallSearchResults } from './format-recall-search-results.js';
 import { loadRecallConversationConfig } from './recall-conversation-config.js';
+import {
+  readRecallFirstIndexSetupState,
+  resolveRecallFirstIndexSetupStatePath,
+} from './recall-first-index-setup-command.js';
 import {
   createRecallConversationService,
   type RecallConversationConfig,
@@ -28,6 +37,13 @@ import {
   type RecallLifecycleRuntimeFactory,
 } from './register-recall-lifecycle-markers.js';
 import { runRecallIndexCommand } from './recall-index-command.js';
+import { readRecallInferenceConfiguration } from './recall-inference-configuration.js';
+import { createRecommendedEmbeddingGemmaModelProfile } from './recall-model-profiles.js';
+import { createRecommendedEmbeddingGemmaConversationRuntime } from './recommended-embeddinggemma-conversation-service.js';
+import {
+  assertRecallInstallationConfigured,
+  resolveRecallInstallationMode,
+} from './resolveRecallInstallationMode.js';
 import {
   MAX_RECALL_FINAL_RESULT_COUNT,
   readRecallQualityGateDecision,
@@ -76,31 +92,49 @@ export default async function recallExtension(
 ): Promise<void> {
   const qualityGateDecision = await readRecallQualityGateDecision(RECALL_QUALITY_RESULTS_PATH);
   const configured = startupOptions.config ?? (await loadRecallConversationConfig());
-  const selectedPolicy = qualityGateDecision.selectedPolicy;
-  const config = selectedPolicy
-    ? {
-        ...configured,
-        chunkPolicy: {
-          maxTokens: selectedPolicy.chunkPolicy.maxTokens,
-          overlapTokens: selectedPolicy.chunkPolicy.overlapTokens,
-        },
-        searchCandidateLimits: {
-          dense: selectedPolicy.candidateCount,
-          lexical: selectedPolicy.candidateCount,
-          identifier: selectedPolicy.candidateCount,
-        },
-      }
-    : configured;
-  const defaultResultLimit = selectedPolicy?.finalCount ?? 5;
+  const config = applyRecallQualityPolicyToConversationConfig(configured, qualityGateDecision);
+  const defaultResultLimit = qualityGateDecision.selectedPolicy?.finalCount ?? 5;
   let recallWarningHandler: ((message: string) => void) | undefined;
-  const service = createRecallConversationService(config, {
-    notifyWarning(message) {
-      recallWarningHandler?.(message);
-    },
-    ...(startupOptions.workerSignal === undefined
-      ? {}
-      : { workerSignal: startupOptions.workerSignal }),
-  });
+  const firstIndexSetupState = await readRecallFirstIndexSetupState(
+    resolveRecallFirstIndexSetupStatePath(config),
+  );
+  const inferenceConfiguration = await readRecallInferenceConfiguration(
+    resolveRecallInferenceConfigurationPath(config),
+  );
+  const installationMode = await resolveRecallInstallationMode(config);
+  const selectedEmbeddingProfile = firstIndexSetupState.embedding?.profileId;
+  const recommendedEmbeddingProfile = createRecommendedEmbeddingGemmaModelProfile();
+  if (
+    !inferenceConfiguration.embedding &&
+    selectedEmbeddingProfile &&
+    selectedEmbeddingProfile !== recommendedEmbeddingProfile.profileId
+  ) {
+    throw new Error(
+      `Recall configured embedding profile unsupported: ${selectedEmbeddingProfile}; run setup:recall status instead of silently selecting another profile`,
+    );
+  }
+  const service = inferenceConfiguration.embedding
+    ? (
+        await createConfiguredRecallInferenceRuntime(config, {
+          onWarning(message) {
+            recallWarningHandler?.(message);
+          },
+        })
+      ).service
+    : selectedEmbeddingProfile
+      ? createRecommendedEmbeddingGemmaConversationRuntime(config, {
+          onWarning(message) {
+            recallWarningHandler?.(message);
+          },
+        }).service
+      : createRecallConversationService(config, {
+          notifyWarning(message) {
+            recallWarningHandler?.(message);
+          },
+          ...(startupOptions.workerSignal === undefined
+            ? {}
+            : { workerSignal: startupOptions.workerSignal }),
+        });
   registerRecallLifecycleMarkers(
     pi,
     {
@@ -162,6 +196,7 @@ export default async function recallExtension(
       void onUpdate;
       void toolCallId;
       recallWarningHandler = (message) => context.ui.notify(message, 'warning');
+      assertRecallInstallationConfigured(installationMode);
       const query = parameters.query.trim();
       if (!query) {
         throw new Error('Recall query must not be blank');
@@ -240,9 +275,10 @@ export default async function recallExtension(
 
   pi.registerCommand('pi-session-recall-index', {
     description:
-      'Index production sessions only after the committed quality gate passes; use --rebuild to replace an incompatible generation',
+      'Index production sessions after the quality gate; use --rebuild for detached replacement work and --status, --stop, --resume, or --discard to control it',
     async handler(argumentsText, context) {
       recallWarningHandler = (message) => context.ui.notify(message, 'warning');
+      assertRecallInstallationConfigured(installationMode);
       await runRecallIndexCommand({
         argumentsText,
         qualityGateDecision,

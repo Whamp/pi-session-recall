@@ -59,9 +59,29 @@ export interface RecallEmbeddingModelIdentity {
   requestModel: string;
   servedModelId: string;
   artifact: string;
+  artifactRepository?: string;
+  artifactRevision?: string;
+  artifactSha256?: string;
   dimensions: number;
   quantization: string;
   pooling: string;
+  normalization?: 'l2';
+}
+
+/** Tokenizer implementation and immutable assets that determine conversation chunk geometry. */
+export interface RecallTokenizerManifestIdentity {
+  model: string;
+  revision: string;
+  library: { name: string; version: string };
+  encodeOptions: { addSpecialTokens: boolean; returnTokenTypeIds: boolean };
+  assets: Array<{ fileName: string; sha256: string }>;
+}
+
+/** Profile-owned canary operation used to verify one embedding model generation. */
+export interface RecallIndexEmbeddingCanaryIdentity {
+  operation: 'query' | 'document';
+  query: string;
+  minimumRepeatCosineSimilarity: number;
 }
 
 /** Versioned identity required before one zvec index generation can be read or updated. */
@@ -76,21 +96,20 @@ export interface RecallIndexManifest {
     requestModel: string;
     servedModelId: string;
     artifact: string;
+    artifactRepository?: string;
+    artifactRevision?: string;
+    artifactSha256?: string;
     dimensions: number;
     quantization: string;
     pooling: string;
+    normalization?: 'l2';
+    canaryOperation?: 'query' | 'document';
     canaryProbe: string;
     canaryFingerprint: string;
     canaryVector: number[];
     canaryMinimumCosineSimilarity: number;
   };
-  tokenizer: {
-    model: string;
-    revision: string;
-    library: { name: string; version: string };
-    encodeOptions: { addSpecialTokens: boolean; returnTokenTypeIds: boolean };
-    assets: Array<{ fileName: string; sha256: string }>;
-  };
+  tokenizer: RecallTokenizerManifestIdentity;
   chunkPolicy: {
     version: number;
     maxTokens: number;
@@ -172,9 +191,16 @@ const recallIndexManifestSchema = Type.Object(
         requestModel: Type.String({ minLength: 1 }),
         servedModelId: Type.String({ minLength: 1 }),
         artifact: Type.String({ minLength: 1 }),
+        artifactRepository: Type.Optional(Type.String({ minLength: 1 })),
+        artifactRevision: Type.Optional(Type.String({ minLength: 1 })),
+        artifactSha256: Type.Optional(Type.String({ pattern: '^[a-f0-9]{64}$' })),
         dimensions: Type.Integer({ minimum: 1 }),
         quantization: Type.String({ minLength: 1 }),
         pooling: Type.String({ minLength: 1 }),
+        normalization: Type.Optional(Type.Literal('l2')),
+        canaryOperation: Type.Optional(
+          Type.Union([Type.Literal('query'), Type.Literal('document')]),
+        ),
         canaryProbe: Type.String({ minLength: 1 }),
         canaryFingerprint: Type.String({ pattern: '^[a-f0-9]{64}$' }),
         canaryVector: Type.Array(Type.Number(), { minItems: 1 }),
@@ -202,7 +228,7 @@ const recallIndexManifestSchema = Type.Object(
           },
           { additionalProperties: false },
         ),
-        assets: Type.Array(manifestAssetSchema, { minItems: 2, maxItems: 2 }),
+        assets: Type.Array(manifestAssetSchema, { minItems: 1, maxItems: 2 }),
       },
       { additionalProperties: false },
     ),
@@ -254,7 +280,7 @@ const legacyRecallIndexManifestV5Schema = Type.Object(
 
 function createTokenizerManifestIdentity(
   identity: ConversationTokenizerAssetIdentity,
-): RecallIndexManifest['tokenizer'] {
+): RecallTokenizerManifestIdentity {
   return {
     model: identity.model,
     revision: identity.revision,
@@ -352,6 +378,8 @@ export async function recoverRecallEmbeddingCanaryFromManifest(
 export function createRecallIndexManifest(options: {
   embeddingIdentity: RecallEmbeddingModelIdentity;
   canaryEmbedding: readonly number[];
+  embeddingCanary?: RecallIndexEmbeddingCanaryIdentity;
+  tokenizerIdentity?: RecallTokenizerManifestIdentity;
   chunkPolicy?: RecallChunkPolicy;
   projectLineages?: RecallProjectLineages;
 }): RecallIndexManifest {
@@ -370,15 +398,20 @@ export function createRecallIndexManifest(options: {
     sessionProjectionSchemaVersion: RECALL_SESSION_PROJECTION_SCHEMA_VERSION,
     embedding: {
       ...options.embeddingIdentity,
-      canaryProbe: RECALL_EMBEDDING_CANARY_TEXT,
+      ...(options.embeddingCanary ? { canaryOperation: options.embeddingCanary.operation } : {}),
+      canaryProbe: options.embeddingCanary?.query ?? RECALL_EMBEDDING_CANARY_TEXT,
       canaryFingerprint: createRecallEmbeddingCanaryFingerprint(
         canaryVector,
         options.embeddingIdentity.dimensions,
       ),
       canaryVector,
-      canaryMinimumCosineSimilarity: RECALL_EMBEDDING_CANARY_MINIMUM_COSINE_SIMILARITY,
+      canaryMinimumCosineSimilarity:
+        options.embeddingCanary?.minimumRepeatCosineSimilarity ??
+        RECALL_EMBEDDING_CANARY_MINIMUM_COSINE_SIMILARITY,
     },
-    tokenizer: createTokenizerManifestIdentity(OCTEN_TOKENIZER_IDENTITY),
+    tokenizer: structuredClone(
+      options.tokenizerIdentity ?? createTokenizerManifestIdentity(OCTEN_TOKENIZER_IDENTITY),
+    ),
     chunkPolicy: {
       version: 2,
       maxTokens: chunkPolicy.maxTokens,

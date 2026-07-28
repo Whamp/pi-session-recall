@@ -1412,21 +1412,29 @@ export async function readSessionConversationImport(
       imported.format === SessionImportFormat.PI_SESSION_REUSE_HISTORY
         ? createLogicalSessionOccurrenceId(graph.header.id, graph.header.lineIndex)
         : graph.header.id;
+    const projectionLogicalSessionIdentity = createLogicalSessionOccurrenceId(
+      graph.header.id,
+      graph.header.lineIndex,
+    );
+    const approvedLogicalSessionIdentity =
+      remainingApprovedContributorIdsByLogicalSessionId?.has(logicalSessionIdentity) === true
+        ? logicalSessionIdentity
+        : projectionLogicalSessionIdentity;
     const approvedContributorEntryIds =
       remainingApprovedContributorIdsByLogicalSessionId === null
         ? new Set(graph.entries.map(({ id }) => id))
-        : (remainingApprovedContributorIdsByLogicalSessionId.get(logicalSessionIdentity) ??
+        : (remainingApprovedContributorIdsByLogicalSessionId.get(approvedLogicalSessionIdentity) ??
           new Set<string>());
     if (remainingApprovedContributorIdsByLogicalSessionId !== null) {
       const sourceEntryIds = new Set(graph.entries.map(({ id }) => id));
       for (const approvedContributorEntryId of approvedContributorEntryIds) {
         if (!sourceEntryIds.has(approvedContributorEntryId)) {
           throw new Error(
-            `Recall rebuild approved contributor missing from ${logicalSessionIdentity}: ${approvedContributorEntryId}`,
+            `Recall rebuild approved contributor missing from ${approvedLogicalSessionIdentity}: ${approvedContributorEntryId}`,
           );
         }
       }
-      remainingApprovedContributorIdsByLogicalSessionId.delete(logicalSessionIdentity);
+      remainingApprovedContributorIdsByLogicalSessionId.delete(approvedLogicalSessionIdentity);
     }
     chunks.push(
       ...buildSessionConversationDocuments(graph, approvedContributorEntryIds, {

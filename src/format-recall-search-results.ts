@@ -101,6 +101,11 @@ export function formatRecallSearchResults(
   const lines = [
     `Recall searched ${scopeDescription} across ${search.totalChunks} indexed evidence documents with ${rankingDescription} (active prior +${search.searchPolicy.activeBranchPrior.toFixed(4)}).`,
   ];
+  if (search.searchPolicy.rerankerIdentity) {
+    lines.push(
+      `Reranker identity: reranker profile ${search.searchPolicy.rerankerIdentity.profileId} · adapter ${search.searchPolicy.rerankerIdentity.adapterId} · cache ${search.searchPolicy.rerankerIdentity.cacheIdentity}.`,
+    );
+  }
   if (search.results.length === 0) {
     lines.push('No matching past conversations found.');
     if (search.searchPolicy.scope === RecallSearchScope.PROJECT) {

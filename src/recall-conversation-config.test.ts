@@ -56,6 +56,23 @@ void test('recall config uses local octen embeddings and supports file plus envi
   assert.equal(config.manifestPath, join(directory, 'file-data', 'index-manifest.json'));
   assert.equal(config.tokenizerCacheDirectory, join(directory, 'file-data', 'tokenizers'));
   assert.equal(config.embeddingCacheDirectory, join(directory, 'file-data', 'embedding-cache'));
+  assert.equal(config.generationRootDirectory, join(directory, 'file-data', 'generations'));
+  assert.equal(
+    config.activeGenerationPointerPath,
+    join(directory, 'file-data', 'active-generation.json'),
+  );
+  assert.equal(
+    config.generationRegistryPath,
+    join(directory, 'file-data', 'generation-registry.json'),
+  );
+  assert.equal(
+    config.backgroundIndexStatusPath,
+    join(directory, 'file-data', 'background-index-status.json'),
+  );
+  assert.equal(
+    config.backgroundIndexRequestPath,
+    join(directory, 'file-data', 'background-index-request.json'),
+  );
   assert.equal(config.diagnosticsMode, RecallDiagnosticsMode.SLOW);
   assert.equal(config.diagnosticLogPath, join(directory, 'file-data', 'diagnostics.jsonl'));
   assert.equal(

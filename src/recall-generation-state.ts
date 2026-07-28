@@ -57,6 +57,8 @@ export interface RecallActiveGenerationPointerIdentity {
 export interface RecallGenerationRegistryEntry {
   generationId: string;
   state: RecallGenerationCutoverState;
+  /** Configured embedding semantics used to build this generation, when known. */
+  embeddingProfileId?: string;
   indexManifestVersion: 5 | 6;
   markerSchemaVersion: 1 | null;
   sessionProjectionSchemaVersion: 3 | null;
@@ -147,6 +149,7 @@ const recallGenerationRegistryEntrySchema = Type.Object(
   {
     generationId: generationIdentifierSchema,
     state: Type.Enum(RecallGenerationCutoverState),
+    embeddingProfileId: Type.Optional(nonemptyStringSchema),
     indexManifestVersion: Type.Union([
       Type.Literal(5),
       Type.Literal(RECALL_INDEX_MANIFEST_VERSION),

@@ -105,6 +105,21 @@ void test('Pi recall tool adapter propagates trusted cwd with project default an
     options: RecallConversationSearchOptions;
   }> = [];
   const service: RecallConversationService = {
+    async verifyEmbeddingCapability() {
+      throw new Error('Pi recall adapter test does not verify embeddings');
+    },
+    async inspectConversationCorpus() {
+      throw new Error('Pi recall adapter test does not inspect the corpus');
+    },
+    async measureFirstIndexSample() {
+      throw new Error('Pi recall adapter test does not measure indexing');
+    },
+    async verifyRerankingCapability() {
+      throw new Error('Pi recall adapter test does not configure reranking');
+    },
+    async verifyQueryPlanningCapability() {
+      throw new Error('Pi recall adapter test does not configure query planning');
+    },
     async search(query, limit, options) {
       if (!options) {
         throw new Error('Pi recall adapter test expected search options');
@@ -121,6 +136,7 @@ void test('Pi recall tool adapter propagates trusted cwd with project default an
           reciprocalRankConstant: 60,
           rerankPolicyVersion: null,
           rerankerModel: null,
+          rerankerIdentity: null,
           activeBranchPrior: 0.01,
           candidateLimits: { dense: 8, lexical: 8, identifier: 8 },
         },
@@ -141,6 +157,27 @@ void test('Pi recall tool adapter propagates trusted cwd with project default an
         },
       };
     },
+    async startBackgroundIndexGeneration() {
+      throw new Error('Pi recall adapter test does not start background indexing');
+    },
+    async resumeBackgroundIndexGeneration() {
+      throw new Error('Pi recall adapter test does not resume background indexing');
+    },
+    async readBackgroundIndexGenerationStatus() {
+      return null;
+    },
+    async stopBackgroundIndexGeneration() {
+      throw new Error('Pi recall adapter test does not stop background indexing');
+    },
+    async readIndexGenerationStatus() {
+      return { active: null, staging: null };
+    },
+    async discardStagingIndexGeneration() {
+      return false;
+    },
+    async rollback() {},
+    async adoptLegacy() {},
+    async collectRetired() {},
   };
   const context = {
     cwd: '/trusted/invocation',

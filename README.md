@@ -83,17 +83,22 @@ pi install /home/will/projects/pi-session-recall
 
 Reload a running Pi session with `/reload`.
 
-The committed quality report passes and selects 512/64 chunks, 8 candidates per channel, and 5 final results. Create the initial production index explicitly:
+The committed quality report passes and selects 512/64 chunks, 8 candidates per channel, and 5 final results. Fresh installations start without an embedding capability. Inspect, select, estimate, and launch the first generation explicitly:
 
-```text
-/pi-session-recall-index --rebuild
+```bash
+npm run --silent setup:recall -- status
+npm run --silent setup:recall -- select-embeddinggemma --approve-download
+npm run --silent setup:recall -- estimate
+npm run --silent setup:recall -- start --approve-build
 ```
+
+The model download and full build require separate approval. A proven legacy Octen installation can instead run `/pi-session-recall-index --rebuild`; it remains on Octen until an operator selects another profile.
 
 After an active generation exists, Pi hooks publish immutable lifecycle markers and signal a short-lived external worker. Hooks do not read session bodies, parse index state, tokenize, embed, or open zvec. Clean-departure markers capture the event-time logical session and leaf; empty tree transitions publish no marker. The worker reads bounded append deltas and transfers evidence only after compaction, branch exit, clean departure, or session quiescence moves it beyond the recall horizon. Context-exit summaries become eligible immediately. Search stays read-only and never starts or waits for ingestion.
 
 The worker prepares parsing, tokenization, project attribution, cache resolution, and embedding requests before taking the operation lock. It commits at most 32 evidence documents per write window, then commits session projections and acknowledges markers only after a later read observes checkpoint coverage. Metadata continuations and first missing-source observations schedule their own follow-up pass. It exits when no eligible work remains; it is not a daemon or filesystem watcher.
 
-Use `/pi-session-recall-index` for an explicit full catch-up. Use `--rebuild` for a side-by-side replacement generation, `--rollback` to restore the retained former generation, `--adopt-legacy` for exact version-5 read-only adoption, and `--collect-retired` after the rollback retention period. Automatic ingestion never optimizes or creates an incompatible generation.
+Use `/pi-session-recall-index` for an explicit incremental catch-up. `--rebuild` launches a detached replacement and returns immediately; use `--status`, `--stop`, `--resume`, and `--discard` to control it. Use `--rollback` to restore the retained former generation, `--adopt-legacy` for exact version-5 read-only adoption, and `--collect-retired` after the rollback retention period. Automatic ingestion never optimizes or creates an incompatible generation.
 
 ## Use
 
@@ -175,9 +180,25 @@ The extension validates the complete manifest before opening or updating zvec. M
 
 Embedding text is normalized to Unicode NFC under `unicode-nfc-v1`. Cache identity includes the normalized-text SHA-256; full served-model identity and dimensions; tokenizer revision, assets, library, and encode options; chunk-policy version; and normalization version. A model, text, tokenizer, policy, normalization, or dimension change therefore misses rather than reusing incompatible geometry.
 
-## Default local models
+## Configurable local inference
 
-The checked-in embedding defaults match `~/.pi/agent/LOCAL-AI.md`:
+Embedding is the only required inference capability. Reranking and query planning are optional and configured independently. Each capability can use an embedded provider, a llama.cpp HTTP endpoint, or a registered custom adapter. Backend and device changes preserve vector compatibility when the model profile stays the same; an embedding profile change launches a replacement generation.
+
+The recommended embedded setup uses pinned EmbeddingGemma, Qwen3 Reranker, and QMD query-planner artifacts. Setup verifies artifact size, SHA-256, GGUF structure, model semantics, tokenizer identity, and provider conformance before persisting a selection. Automatic accelerator failure may retry the same profile on CPU; explicit device selection fails instead of changing backends silently.
+
+Use the JSON setup CLI for first-index work and later mixed-capability changes:
+
+```bash
+npm run --silent setup:recall -- status
+npm run --silent setup:recall -- inference status
+npm run --silent setup:recall -- inference doctor
+```
+
+See [Guided setup for the first index](docs/inference/first-index-guided-setup.md), [mixed inference configuration](docs/inference/mixed-inference-configuration.md), and [provider conformance](docs/inference/provider-conformance.md).
+
+## Legacy Octen defaults
+
+Existing proven Octen installations retain these HTTP defaults:
 
 | Setting         | Default                        |
 | --------------- | ------------------------------ |
@@ -262,6 +283,10 @@ Default data paths:
 ~/.pi/agent/recall/active-generation.json       checksummed active-generation pointer
 ~/.pi/agent/recall/generation-registry.json     build, active, rollback, and retired state
 ~/.pi/agent/recall/backlog-summary.json         scalar material-backlog state
+~/.pi/agent/recall/background-index-status.json bounded detached-build status
+~/.pi/agent/recall/inference-configuration.json verified inference selections
+~/.pi/agent/recall/first-index-setup.json        guided setup and estimate state
+~/.pi/agent/recall/models/                       pinned verified GGUF artifacts
 ~/.pi/agent/recall/generations/<id>/zvec/       immutable recall evidence collection
 ~/.pi/agent/recall/generations/<id>/session-projections/  mutable scalar projections
 ~/.pi/agent/recall/generations/<id>/index-state.json      generation index state

@@ -28,12 +28,18 @@ async function snapshotSessionSource(sessionPath: string) {
 }
 
 void test('session JSONL importer preserves Unicode separators through the public document seam', async () => {
-  const imported = await readSessionConversationImport(
-    join(import.meta.dirname, 'fixtures/session-import/canonical-unicode-separators.jsonl'),
-    { tokenizer: TOKENIZER },
+  const sessionPath = join(
+    import.meta.dirname,
+    'fixtures/session-import/canonical-unicode-separators.jsonl',
   );
+  const imported = await readSessionConversationImport(sessionPath, { tokenizer: TOKENIZER });
+  const repeatedImport = await readSessionConversationImport(sessionPath, { tokenizer: TOKENIZER });
 
   assert.equal(imported.format, SessionImportFormat.CANONICAL_JSONL);
+  assert.deepEqual(
+    repeatedImport.chunks.map(({ id }) => id),
+    imported.chunks.map(({ id }) => id),
+  );
   assert.equal(imported.logicalSessions.length, 1);
   assert.deepEqual(
     imported.chunks.map((chunk) => chunk.content),
@@ -48,9 +54,9 @@ void test('session JSONL importer preserves Unicode separators through the publi
       parentEntryIds: [null],
     },
   ]);
+  assert.match(imported.chunks[0]?.id ?? '', /^[a-f0-9]{40}$/u);
   assert.deepEqual(
     imported.chunks.map((chunk) => ({
-      id: chunk.id,
       checksum: chunk.checksum,
       entryId: chunk.entryId.value,
       parentEntryId: chunk.parentEntryId?.value ?? null,
@@ -60,7 +66,6 @@ void test('session JSONL importer preserves Unicode separators through the publi
     })),
     [
       {
-        id: 'f64cf01af7127d72072018e4314cc4e3281eab05',
         checksum: 'c1fe6fe86a3c831881eb9b7a9aa6b2477ad60188b8eee7269af62f1020fba97b',
         entryId: 'unicode-entry',
         parentEntryId: null,

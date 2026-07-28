@@ -6,6 +6,8 @@ import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import test from 'node:test';
 
+import { resolveRecallFlockExecutable } from './resolve-recall-flock-executable.js';
+
 import {
   RecallBacklogFailureCategory,
   RecallDiagnosticErrorCategory,
@@ -390,8 +392,8 @@ void test('incremental worker launch uses kernel flock without PID or lease infe
   );
   assert.match(publicationSource, /createRecallDetachedWorkerSignal/u);
   assert.match(signalSource, /spawn\(\s*'\/bin\/sh'/u);
-  assert.match(signalSource, /\/usr\/bin\/flock --nonblock/u);
-  assert.match(scheduleSource, /sleep .*exec \/usr\/bin\/flock/u);
+  assert.match(signalSource, /flock_executable_path.*--nonblock/u);
+  assert.match(scheduleSource, /resolveRecallFlockExecutable/u);
   assert.doesNotMatch(workerSource, /from '\.\/octen-conversation-tokenizer\.js'/u);
   assert.doesNotMatch(
     workerSource,
@@ -400,6 +402,27 @@ void test('incremental worker launch uses kernel flock without PID or lease infe
   assert.doesNotMatch(
     `${publicationSource}\n${signalSource}\n${scheduleSource}`,
     /pid.?file|process.?alive|stale.?time|kill\([^)]*,\s*0\)/iu,
+  );
+});
+
+void test('incremental worker loader uses configured runtime when inference embedding is configured', async () => {
+  const workerSource = await readFile(
+    new URL('./run-recall-incremental-worker.ts', import.meta.url),
+    'utf8',
+  );
+  assert.match(workerSource, /createConfiguredRecallInferenceRuntime/u);
+  assert.match(workerSource, /resolveRecallInferenceConfigurationPath/u);
+  assert.match(workerSource, /readRecallInferenceConfiguration/u);
+  assert.match(workerSource, /manifest\.embedding\.dimensions/u);
+  assert.doesNotMatch(
+    workerSource,
+    /from '\.\/configured-recall-inference-runtime\.js'/u,
+    'configured-recall-inference-runtime must be dynamically imported to preserve lazy loading',
+  );
+  assert.doesNotMatch(
+    workerSource,
+    /from '\.\/recall-inference-configuration\.js'/u,
+    'recall-inference-configuration must be dynamically imported to preserve lazy loading',
   );
 });
 
@@ -1047,7 +1070,7 @@ async function waitForProbeLines(probePath: string, expectedLineCount: number): 
 function spawnLockedWorker(lockPath: string, harnessPath: string) {
   const startedAt = performance.now();
   const child = spawn(
-    '/usr/bin/flock',
+    resolveRecallFlockExecutable(),
     ['--nonblock', lockPath, process.execPath, '--import', 'tsx', harnessPath],
     { stdio: ['ignore', 'ignore', 'pipe'] },
   );

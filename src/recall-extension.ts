@@ -14,6 +14,7 @@ import {
 import { applyRecallQualityPolicyToConversationConfig } from './applyRecallQualityPolicyToConversationConfig.js';
 import {
   createConfiguredRecallInferenceRuntime,
+  type ConfiguredRecallInferenceRuntime,
   resolveRecallInferenceConfigurationPath,
 } from './configured-recall-inference-runtime.js';
 import { RecallSearchScope } from './enums.js';
@@ -95,46 +96,83 @@ export default async function recallExtension(
   const config = applyRecallQualityPolicyToConversationConfig(configured, qualityGateDecision);
   const defaultResultLimit = qualityGateDecision.selectedPolicy?.finalCount ?? 5;
   let recallWarningHandler: ((message: string) => void) | undefined;
-  const firstIndexSetupState = await readRecallFirstIndexSetupState(
-    resolveRecallFirstIndexSetupStatePath(config),
-  );
-  const inferenceConfiguration = await readRecallInferenceConfiguration(
-    resolveRecallInferenceConfigurationPath(config),
-  );
-  const installationMode = await resolveRecallInstallationMode(config);
-  const selectedEmbeddingProfile = firstIndexSetupState.embedding?.profileId;
+
   const recommendedEmbeddingProfile = createRecommendedEmbeddingGemmaModelProfile();
-  if (
-    !inferenceConfiguration.embedding &&
-    selectedEmbeddingProfile &&
-    selectedEmbeddingProfile !== recommendedEmbeddingProfile.profileId
-  ) {
-    throw new Error(
-      `Recall configured embedding profile unsupported: ${selectedEmbeddingProfile}; run setup:recall status instead of silently selecting another profile`,
-    );
+
+  // Lazy service resolution — recreated only when embedding selection changes.
+  let lastEmbeddingServiceKey: string | undefined;
+  let cachedService: RecallConversationService | undefined;
+  let cachedConfiguredRuntime: ConfiguredRecallInferenceRuntime | undefined;
+
+  async function resolveInstallationMode() {
+    return resolveRecallInstallationMode(config);
   }
-  const service = inferenceConfiguration.embedding
-    ? (
-        await createConfiguredRecallInferenceRuntime(config, {
-          onWarning(message) {
-            recallWarningHandler?.(message);
-          },
-        })
-      ).service
-    : selectedEmbeddingProfile
-      ? createRecommendedEmbeddingGemmaConversationRuntime(config, {
-          onWarning(message) {
-            recallWarningHandler?.(message);
-          },
-        }).service
-      : createRecallConversationService(config, {
-          notifyWarning(message) {
-            recallWarningHandler?.(message);
-          },
-          ...(startupOptions.workerSignal === undefined
-            ? {}
-            : { workerSignal: startupOptions.workerSignal }),
-        });
+
+  async function resolveService(): Promise<RecallConversationService> {
+    const [inferenceConfiguration, firstIndexSetupState] = await Promise.all([
+      readRecallInferenceConfiguration(resolveRecallInferenceConfigurationPath(config)),
+      readRecallFirstIndexSetupState(resolveRecallFirstIndexSetupStatePath(config)),
+    ]);
+
+    const selectedEmbeddingProfile = firstIndexSetupState.embedding?.profileId;
+
+    if (
+      !inferenceConfiguration.embedding &&
+      selectedEmbeddingProfile &&
+      selectedEmbeddingProfile !== recommendedEmbeddingProfile.profileId
+    ) {
+      throw new Error(
+        `Recall configured embedding profile unsupported: ${selectedEmbeddingProfile}; run setup:recall status instead of silently selecting another profile`,
+      );
+    }
+
+    const embeddingServiceKey = inferenceConfiguration.embedding
+      ? `configured:${inferenceConfiguration.embedding.candidateId}:${inferenceConfiguration.embedding.profileId}`
+      : (selectedEmbeddingProfile ?? 'basic');
+
+    if (embeddingServiceKey === lastEmbeddingServiceKey && cachedService !== undefined) {
+      return cachedService;
+    }
+
+    const previousRuntime = cachedConfiguredRuntime;
+    cachedConfiguredRuntime = undefined;
+    cachedService = undefined;
+    lastEmbeddingServiceKey = undefined;
+    if (previousRuntime) {
+      await previousRuntime.dispose();
+    }
+
+    let newService: RecallConversationService;
+    if (inferenceConfiguration.embedding) {
+      const runtime = await createConfiguredRecallInferenceRuntime(config, {
+        onWarning(message) {
+          recallWarningHandler?.(message);
+        },
+      });
+      cachedConfiguredRuntime = runtime;
+      newService = runtime.service;
+    } else if (selectedEmbeddingProfile) {
+      newService = createRecommendedEmbeddingGemmaConversationRuntime(config, {
+        onWarning(message) {
+          recallWarningHandler?.(message);
+        },
+      }).service;
+    } else {
+      newService = createRecallConversationService(config, {
+        notifyWarning(message) {
+          recallWarningHandler?.(message);
+        },
+        ...(startupOptions.workerSignal === undefined
+          ? {}
+          : { workerSignal: startupOptions.workerSignal }),
+      });
+    }
+
+    lastEmbeddingServiceKey = embeddingServiceKey;
+    cachedService = newService;
+    return newService;
+  }
+
   registerRecallLifecycleMarkers(
     pi,
     {
@@ -196,7 +234,8 @@ export default async function recallExtension(
       void onUpdate;
       void toolCallId;
       recallWarningHandler = (message) => context.ui.notify(message, 'warning');
-      assertRecallInstallationConfigured(installationMode);
+      assertRecallInstallationConfigured(await resolveInstallationMode());
+      const service = await resolveService();
       const query = parameters.query.trim();
       if (!query) {
         throw new Error('Recall query must not be blank');
@@ -278,7 +317,8 @@ export default async function recallExtension(
       'Index production sessions after the quality gate; use --rebuild for detached replacement work and --status, --stop, --resume, or --discard to control it',
     async handler(argumentsText, context) {
       recallWarningHandler = (message) => context.ui.notify(message, 'warning');
-      assertRecallInstallationConfigured(installationMode);
+      assertRecallInstallationConfigured(await resolveInstallationMode());
+      const service = await resolveService();
       await runRecallIndexCommand({
         argumentsText,
         qualityGateDecision,

@@ -712,25 +712,30 @@ void test('configured runtime reconstructs registered custom adapters and reject
         candidates: [customEmbedding],
         async createConfiguredRuntime(runtimeConfig, configuration) {
           assert.equal(configuration.embedding?.candidateId, 'project-custom-embedding');
+          const embeddingProvider = {
+            async embedQuery() {
+              customEmbeddingOperationCount += 1;
+              return Array<number>(runtimeConfig.embeddingDimensions).fill(0.02);
+            },
+            async embedDocuments(documents: readonly string[]) {
+              customEmbeddingOperationCount += documents.length;
+              return documents.map(() =>
+                Array<number>(runtimeConfig.embeddingDimensions).fill(0.02),
+              );
+            },
+          };
+          const loadTokenizer = async () => {
+            customTokenizerOperationCount += 1;
+            return FIXED_CONVERSATION_TOKENIZER;
+          };
           return {
             service: createRecallConversationService(runtimeConfig, {
-              embeddingProvider: {
-                async embedQuery() {
-                  customEmbeddingOperationCount += 1;
-                  return Array<number>(runtimeConfig.embeddingDimensions).fill(0.02);
-                },
-                async embedDocuments(documents) {
-                  customEmbeddingOperationCount += documents.length;
-                  return documents.map(() =>
-                    Array<number>(runtimeConfig.embeddingDimensions).fill(0.02),
-                  );
-                },
-              },
-              async loadTokenizer() {
-                customTokenizerOperationCount += 1;
-                return FIXED_CONVERSATION_TOKENIZER;
-              },
+              embeddingProvider,
+              loadTokenizer,
             }),
+            embeddingProvider,
+            loadTokenizer,
+            embeddingDimensions: runtimeConfig.embeddingDimensions,
             async dispose() {},
           };
         },

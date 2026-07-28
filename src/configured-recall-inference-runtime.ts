@@ -21,11 +21,13 @@ import {
   type RecallInferenceConfiguration,
   type RecallInferenceConfigurationCandidate,
 } from './recall-inference-configuration.js';
+import type { RecallEmbeddingProvider } from './recall-inference-capabilities.js';
 import {
   createRecommendedEmbeddingGemmaModelProfile,
   createRecommendedQmdQueryPlanningModelProfile,
   createRecommendedQwenRerankingModelProfile,
 } from './recall-model-profiles.js';
+import type { ConversationTextTokenizer } from './session-conversation-index.js';
 
 const EMBEDDED_EMBEDDING_CANDIDATE_ID = 'recommended-embeddinggemma-embedded';
 const HTTP_EMBEDDING_CANDIDATE_ID = 'recommended-embeddinggemma-http';
@@ -37,6 +39,9 @@ const HTTP_QUERY_PLANNING_CANDIDATE_ID = 'recommended-qmd-query-planner-http';
 /** Disposable conversation service reconstructed from exact verified inference selections. */
 export interface ConfiguredRecallInferenceRuntime {
   service: RecallConversationService;
+  embeddingProvider: RecallEmbeddingProvider;
+  loadTokenizer(): Promise<ConversationTextTokenizer>;
+  embeddingDimensions: number;
   dispose(): Promise<void>;
 }
 
@@ -262,6 +267,9 @@ export async function createConfiguredRecallInferenceRuntime(
   const service = createRecallConversationService(config, dependencies);
   return {
     service,
+    embeddingProvider,
+    loadTokenizer: () => tokenizerProvider.loadConversationTokenizer(),
+    embeddingDimensions: embeddingProfile.identity.dimensions,
     async dispose() {
       for (const provider of disposableProviders.reverse()) {
         await provider.dispose();

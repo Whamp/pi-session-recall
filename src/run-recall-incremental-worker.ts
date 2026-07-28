@@ -841,10 +841,12 @@ async function runConfiguredRecallIncrementalWorkerExecutable(
     config.projectLineages,
     resolveProjectIdentity,
   );
+  let configuredRuntime: { dispose(): Promise<void> } | undefined;
   let productionTransferDependencies:
     | Promise<{
         embeddingCache: EmbeddingVectorCache;
         chunkPolicy: TransferIncrementalRecallWorkPlanOptions['chunkPolicy'];
+        embeddingDimensions: number;
         loadTokenizer: () => Promise<ConversationTextTokenizer>;
         transferWorkPlan(
           options: TransferIncrementalRecallWorkPlanOptions,
@@ -854,15 +856,15 @@ async function runConfiguredRecallIncrementalWorkerExecutable(
   const loadProductionTransferDependencies = () => {
     productionTransferDependencies ??= Promise.all([
       import('./embedding-vector-cache.js'),
-      import('./local-embedding-client.js'),
-      import('./octen-conversation-tokenizer.js'),
+      import('./configured-recall-inference-runtime.js'),
+      import('./recall-inference-configuration.js'),
       import('./recall-index-manifest.js'),
       import('./transfer-incremental-recall-work-plan.js'),
     ]).then(
       async ([
         embeddingCacheModule,
-        embeddingClientModule,
-        tokenizerModule,
+        inferenceRuntimeModule,
+        inferenceConfigModule,
         manifestModule,
         transferModule,
       ]) => {
@@ -870,12 +872,40 @@ async function runConfiguredRecallIncrementalWorkerExecutable(
         if (manifest === null) {
           throw new Error('Recall incremental worker active generation manifest missing');
         }
-        const embeddings = embeddingClientModule.createLocalEmbeddingClient({
-          baseUrl: config.embeddingBaseUrl,
-          model: config.embeddingModel,
-          dimensions: config.embeddingDimensions,
-          batchSize: config.embeddingBatchSize,
-        });
+        const inferenceConfigPath =
+          inferenceRuntimeModule.resolveRecallInferenceConfigurationPath(config);
+        const inferenceConfig = await inferenceConfigModule.readRecallInferenceConfiguration(
+          inferenceConfigPath,
+          { generationRegistryPath: config.generationRegistryPath },
+        );
+        let loadTokenizer: () => Promise<ConversationTextTokenizer>;
+        let embeddings: { embedTexts(texts: string[], signal?: AbortSignal): Promise<number[][]> };
+        if (inferenceConfig.embedding !== null) {
+          const runtime = await inferenceRuntimeModule.createConfiguredRecallInferenceRuntime(
+            config,
+            { inferenceConfigurationPath: inferenceConfigPath },
+          );
+          configuredRuntime = runtime;
+          loadTokenizer = () => runtime.loadTokenizer();
+          embeddings = {
+            embedTexts: (texts, signal) => runtime.embeddingProvider.embedDocuments(texts, signal),
+          };
+        } else {
+          const [embeddingClientModule, tokenizerModule] = await Promise.all([
+            import('./local-embedding-client.js'),
+            import('./octen-conversation-tokenizer.js'),
+          ]);
+          embeddings = embeddingClientModule.createLocalEmbeddingClient({
+            baseUrl: config.embeddingBaseUrl,
+            model: config.embeddingModel,
+            dimensions: config.embeddingDimensions,
+            batchSize: config.embeddingBatchSize,
+          });
+          loadTokenizer = () =>
+            tokenizerModule.loadOctenConversationTokenizer({
+              cacheDirectory: config.tokenizerCacheDirectory,
+            });
+        }
         return {
           embeddingCache: embeddingCacheModule.createEmbeddingVectorCache({
             cacheDirectory: config.embeddingCacheDirectory,
@@ -884,10 +914,8 @@ async function runConfiguredRecallIncrementalWorkerExecutable(
             embeddings,
           }),
           chunkPolicy: manifest.chunkPolicy,
-          loadTokenizer: () =>
-            tokenizerModule.loadOctenConversationTokenizer({
-              cacheDirectory: config.tokenizerCacheDirectory,
-            }),
+          embeddingDimensions: manifest.embedding.dimensions,
+          loadTokenizer,
           transferWorkPlan: transferModule.transferIncrementalRecallWorkPlan,
         };
       },
@@ -895,6 +923,7 @@ async function runConfiguredRecallIncrementalWorkerExecutable(
     return productionTransferDependencies;
   };
   let deletionReconciliationHalted = false;
+  try {
   const result = await runRecallIncrementalWorker({
     markerSpoolDirectory: config.markerSpoolDirectory,
     markerQuarantineDirectory: config.markerQuarantineDirectory,
@@ -923,7 +952,7 @@ async function runConfiguredRecallIncrementalWorkerExecutable(
         lockPath: config.lockPath,
         evidenceDatabasePath: activeSelection.databasePath,
         projectionDatabasePath: activeSelection.projectionDatabasePath,
-        embeddingDimensions: config.embeddingDimensions,
+        embeddingDimensions: dependencies.embeddingDimensions,
         chunkPolicy: dependencies.chunkPolicy,
         loadTokenizer: dependencies.loadTokenizer,
         resolveProjectIdentity: resolveWorkerProjectIdentity,
@@ -1005,6 +1034,9 @@ async function runConfiguredRecallIncrementalWorkerExecutable(
       : result.replayBlockingFailureCategory,
     result,
   );
+  } finally {
+    await configuredRuntime?.dispose();
+  }
 }
 
 async function runRecallIncrementalWorkerExecutable(): Promise<void> {

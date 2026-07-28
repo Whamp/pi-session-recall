@@ -1,6 +1,9 @@
 import {
   acquireSharedEmbeddedLlamaRuntime,
-  mapNodeLlamaCppComputeBackend,
+  initializeEmbeddedInferenceWithAutoCpuFallback,
+  probeSupportedEmbeddedComputeBackends,
+  readEmbeddedInferenceDeviceNames,
+  resolveEmbeddedInferenceComputeBackend,
   writeEmbeddedLlamaLog,
   type NodeLlamaCppGpuBackend,
 } from './acquireSharedEmbeddedLlamaRuntime.js';
@@ -408,69 +411,42 @@ export function createEmbeddedQmdQueryPlanningProvider(
           `Recall embedded QMD query planner runtime version mismatch: expected ${EMBEDDED_NODE_LLAMA_CPP_VERSION}, received ${nodeLlamaCpp.version}`,
         );
       }
-      const probedComputeBackends =
-        devicePolicy === EmbeddedInferenceDevicePolicy.AUTO && nodeLlamaCpp.getLlamaGpuTypes
-          ? (await nodeLlamaCpp.getLlamaGpuTypes('supported'))
-              .filter(
-                (backend): backend is Exclude<NodeLlamaCppGpuBackend, false> => backend !== false,
-              )
-              .map(mapNodeLlamaCppComputeBackend)
-          : [];
-      const requestedComputeBackend: EmbeddedInferenceComputeBackend =
-        devicePolicy === EmbeddedInferenceDevicePolicy.AUTO
-          ? (probedComputeBackends[0] ?? EmbeddedInferenceComputeBackend.CPU)
-          : devicePolicy === EmbeddedInferenceDevicePolicy.CPU
-            ? EmbeddedInferenceComputeBackend.CPU
-            : devicePolicy === EmbeddedInferenceDevicePolicy.METAL
-              ? EmbeddedInferenceComputeBackend.METAL
-              : devicePolicy === EmbeddedInferenceDevicePolicy.CUDA
-                ? EmbeddedInferenceComputeBackend.CUDA
-                : EmbeddedInferenceComputeBackend.VULKAN;
-      let selectedComputeBackend = requestedComputeBackend;
-      let fallbackFromComputeBackend:
-        | EmbeddedInferenceComputeBackend.METAL
-        | EmbeddedInferenceComputeBackend.CUDA
-        | EmbeddedInferenceComputeBackend.VULKAN
-        | null = null;
-      try {
-        resources = await loadQmdQueryPlanningResourcesForBackend(
-          nodeLlamaCpp,
-          modelPath,
-          requestedComputeBackend,
-        );
-      } catch (error) {
-        if (
-          devicePolicy !== EmbeddedInferenceDevicePolicy.AUTO ||
-          requestedComputeBackend === EmbeddedInferenceComputeBackend.CPU
-        ) {
-          throw error;
-        }
-        fallbackFromComputeBackend = requestedComputeBackend;
-        selectedComputeBackend = EmbeddedInferenceComputeBackend.CPU;
-        if (!cpuFallbackWarningEmitted) {
-          cpuFallbackWarningEmitted = true;
+      const probedComputeBackends = await probeSupportedEmbeddedComputeBackends(
+        devicePolicy,
+        nodeLlamaCpp.getLlamaGpuTypes
+          ? (include) => nodeLlamaCpp.getLlamaGpuTypes!(include)
+          : undefined,
+      );
+      const requestedComputeBackend = resolveEmbeddedInferenceComputeBackend(
+        devicePolicy,
+        probedComputeBackends,
+      );
+      const initialized = await initializeEmbeddedInferenceWithAutoCpuFallback({
+        devicePolicy,
+        requestedComputeBackend,
+        fallbackWarningAlreadyEmitted: cpuFallbackWarningEmitted,
+        initialize: (computeBackend) =>
+          loadQmdQueryPlanningResourcesForBackend(nodeLlamaCpp, modelPath, computeBackend),
+        writeFallbackWarning: (fallbackFromComputeBackend, error) => {
           writeWarning(
-            `Recall embedded QMD query planner accelerator initialization failed for ${requestedComputeBackend}; retrying the same profile ${profile.profileId} on CPU: ${readQmdQueryPlanningErrorMessage(error)}`,
+            `Recall embedded QMD query planner accelerator initialization failed for ${fallbackFromComputeBackend}; retrying the same profile ${profile.profileId} on CPU: ${readQmdQueryPlanningErrorMessage(error)}`,
           );
-        }
-        resources = await loadQmdQueryPlanningResourcesForBackend(
-          nodeLlamaCpp,
-          modelPath,
-          EmbeddedInferenceComputeBackend.CPU,
-        );
-      }
-      const deviceNames =
-        selectedComputeBackend === EmbeddedInferenceComputeBackend.CPU
-          ? ['CPU']
-          : ((await resources.runtime.getGpuDeviceNames?.()) ?? [selectedComputeBackend]);
+        },
+      });
+      resources = initialized.resources;
+      cpuFallbackWarningEmitted = initialized.fallbackWarningEmitted;
+      const deviceNames = await readEmbeddedInferenceDeviceNames(
+        initialized.selectedComputeBackend,
+        resources.runtime,
+      );
       executionIdentity = Object.freeze({
         ...baseExecutionIdentity,
         adapterId: NODE_LLAMA_CPP_QUERY_PLANNING_ADAPTER_ID,
         backend: RecallInferenceBackend.EMBEDDED,
-        computeBackend: selectedComputeBackend,
+        computeBackend: initialized.selectedComputeBackend,
         deviceNames: Object.freeze([...deviceNames]),
         devicePolicy,
-        fallbackFromComputeBackend,
+        fallbackFromComputeBackend: initialized.fallbackFromComputeBackend,
         nodeLlamaCppVersion: EMBEDDED_NODE_LLAMA_CPP_VERSION,
         probedComputeBackends: Object.freeze([...probedComputeBackends]),
       });

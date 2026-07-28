@@ -10,6 +10,7 @@ import {
   RECALL_INDEX_MANIFEST_VERSION,
 } from './enums.js';
 import {
+  activateRecallReplacementInRegistry,
   createRecallActiveGenerationPointer,
   encodeRecallGenerationRegistry,
   readRecallActiveGenerationPointer,
@@ -522,35 +523,13 @@ async function rebuildRecallGenerationUnderOwnership<Result, BuildSnapshot = und
   const retentionMilliseconds =
     options.rollbackRetentionMilliseconds ?? DEFAULT_ROLLBACK_RETENTION_MILLISECONDS;
   const previousGenerationId = registry.activeGenerationId;
-  const finalizedEntries = registry.generations.map((entry): RecallGenerationRegistryEntry => {
-    if (entry.generationId === generationId) {
-      return {
-        ...readyEntry,
-        state: RecallGenerationCutoverState.REPLAY_PENDING,
-        stateChangedAtEpochMilliseconds: activatedAt,
-      };
-    }
-    if (entry.generationId === previousGenerationId) {
-      return {
-        ...entry,
-        state: RecallGenerationCutoverState.ROLLBACK,
-        stateChangedAtEpochMilliseconds: activatedAt,
-        retireAfterEpochMilliseconds: activatedAt + retentionMilliseconds,
-      };
-    }
-    if (entry.state === RecallGenerationCutoverState.ROLLBACK) {
-      return { ...entry, state: RecallGenerationCutoverState.RETIRED };
-    }
-    return entry;
-  });
-  const finalRegistry: RecallGenerationRegistry = {
-    ...registry,
-    activeGenerationId: generationId,
-    buildingGenerationId: null,
-    rollbackGenerationId: previousGenerationId,
-    activePointerChecksum: newPointer.checksum,
-    generations: finalizedEntries,
-  };
+  const finalRegistry = activateRecallReplacementInRegistry(
+    registry,
+    readyEntry,
+    newPointer.checksum,
+    activatedAt,
+    retentionMilliseconds,
+  );
 
   try {
     await coordinateRecallWriteWindow(

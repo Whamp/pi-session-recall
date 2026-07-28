@@ -4,7 +4,10 @@ import {
   RecallSourceAvailability,
   RecallWorkMarkerTrigger,
 } from './enums.js';
-import { readProjectedRecallSessionEntryPath } from './parse-recall-session-record.js';
+import {
+  readProjectedActiveContextPath,
+  readProjectedRecallSessionEntryPath,
+} from './parse-recall-session-record.js';
 import type {
   LogicalSessionProjection,
   PhysicalSessionProjection,
@@ -34,38 +37,6 @@ export interface ReduceRecallEligibilityResult {
   newlyEligibleContributorEntryIds: string[];
   newlyEligibleSpans: RecallEligibleSourceSpan[];
   deletionConfirmed: boolean;
-}
-
-function readActiveContextDescriptors(
-  effectiveLeafEntryId: string | null,
-  entriesById: ReadonlyMap<string, RecallProjectedEntryDescriptor>,
-): RecallProjectedEntryDescriptor[] | null {
-  const path =
-    effectiveLeafEntryId === null
-      ? []
-      : readProjectedRecallSessionEntryPath(effectiveLeafEntryId, entriesById);
-  if (path === null) {
-    return null;
-  }
-  const latestCompactionIndex = path.findLastIndex(({ entryType }) => entryType === 'compaction');
-  if (latestCompactionIndex < 0) {
-    return path;
-  }
-  const compaction = path[latestCompactionIndex];
-  if (compaction === undefined) {
-    return null;
-  }
-  if (compaction.hasRetainedTail) {
-    return path.slice(latestCompactionIndex);
-  }
-  const firstKeptIndex = path.findIndex(({ entryId }) => entryId === compaction.firstKeptEntryId);
-  if (firstKeptIndex < 0 || firstKeptIndex >= latestCompactionIndex) {
-    return null;
-  }
-  return [
-    ...path.slice(firstKeptIndex, latestCompactionIndex),
-    ...path.slice(latestCompactionIndex),
-  ];
 }
 
 function addCompactionEligibility(
@@ -263,7 +234,7 @@ export function reduceRecallEligibility(
           : runtimeLeafEntryIds.has(marker.runtimeInstanceId)
             ? (runtimeLeafEntryIds.get(marker.runtimeInstanceId) ?? null)
             : projection.effectiveLeafEntryId;
-        const activeContext = readActiveContextDescriptors(departureLeafEntryId, entriesById);
+        const activeContext = readProjectedActiveContextPath(departureLeafEntryId, entriesById);
         if (activeContext === null) {
           malformed = true;
         } else {
@@ -283,7 +254,7 @@ export function reduceRecallEligibility(
       ...runtimeLeafEntryIds.values(),
     ]);
     for (const observedLeaf of observedLeaves) {
-      const activeContext = readActiveContextDescriptors(observedLeaf, entriesById);
+      const activeContext = readProjectedActiveContextPath(observedLeaf, entriesById);
       if (activeContext === null) {
         malformed = true;
         break;

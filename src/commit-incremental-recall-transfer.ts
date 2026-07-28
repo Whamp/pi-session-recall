@@ -124,9 +124,9 @@ function createEvidenceBatches(
 }
 
 function closeIncrementalRecallStores(
-  evidenceStore: IncrementalRecallCommitEvidenceStore | undefined,
-  projectionStore: IncrementalRecallCommitProjectionStore | undefined,
   writeWindow: RecallWriteWindow,
+  evidenceStore?: IncrementalRecallCommitEvidenceStore,
+  projectionStore?: IncrementalRecallCommitProjectionStore,
 ): Error[] {
   const errors: Error[] = [];
   try {
@@ -286,7 +286,7 @@ async function commitOneIncrementalRecallWindow(
         operationError = normalizeCommitError(error, 'Recall incremental write failed');
       }
       const closeStartedAtMilliseconds = clock();
-      const closeErrors = closeIncrementalRecallStores(evidenceStore, projectionStore, writeWindow);
+      const closeErrors = closeIncrementalRecallStores(writeWindow, evidenceStore, projectionStore);
       diagnostic.closeMilliseconds = elapsedMilliseconds(clock, closeStartedAtMilliseconds);
       diagnostic.writeWindowMilliseconds = elapsedMilliseconds(
         clock,
@@ -303,7 +303,7 @@ async function commitOneIncrementalRecallWindow(
 
 function assertObservedTransferCheckpoint(
   options: CommitIncrementalRecallTransferOptions,
-  observedProjection: RecallSessionProjection | undefined,
+  observedProjection?: RecallSessionProjection,
 ): void {
   if (
     observedProjection === undefined ||

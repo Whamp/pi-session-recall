@@ -5,6 +5,7 @@ import { dirname } from 'node:path';
 import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 
+import { RECALL_INDEX_MANIFEST_VERSION } from './enums.js';
 import {
   EMBEDDING_TEXT_NORMALIZATION_VERSION,
   EMBEDDING_VECTOR_CACHE_VERSION,
@@ -36,8 +37,7 @@ import {
   ZVEC_HNSW_M,
 } from './zvec-conversation-store.js';
 
-/** Version of the index-manifest file format, independent from document and zvec schemas. */
-export const RECALL_INDEX_MANIFEST_VERSION = 6;
+export { RECALL_INDEX_MANIFEST_VERSION } from './enums.js';
 
 /** Lowest accepted cosine similarity across parallel slots serving the same embedding model. */
 export const RECALL_EMBEDDING_CANARY_MINIMUM_COSINE_SIMILARITY = 0.9995;

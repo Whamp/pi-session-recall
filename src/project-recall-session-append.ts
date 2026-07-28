@@ -402,7 +402,7 @@ function updatePhysicalMarkerCheckpoint(
 function projectionPayloadOverflows(
   physicalProjection: PhysicalSessionProjection,
   logicalProjections: readonly LogicalSessionProjection[],
-  maxPayloadBytes: number | undefined,
+  maxPayloadBytes?: number,
 ): boolean {
   const options = maxPayloadBytes === undefined ? {} : { maxPayloadBytes };
   return [physicalProjection, ...logicalProjections].some(

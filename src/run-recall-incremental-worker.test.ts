@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import test from 'node:test';
 
 import {
+  RecallBacklogFailureCategory,
   RecallEligibilityThreshold,
   RecallGenerationCutoverState,
   RecallIncrementalTransferOutcomeKind,
@@ -17,6 +18,7 @@ import {
 } from './enums.js';
 import {
   createRecallActiveGenerationPointer,
+  decodeRecallBacklogSummary,
   readRecallGenerationRegistry,
   writeRecallActiveGenerationPointer,
   writeRecallGenerationRegistry,
@@ -36,7 +38,11 @@ import {
   type RecallWorkMarkerTriggerPayload,
 } from './recall-work-marker.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
-import { runRecallIncrementalWorker } from './run-recall-incremental-worker.js';
+import {
+  runRecallIncrementalWorker,
+  writeRecallIncrementalWorkerBacklog,
+  type RunRecallIncrementalWorkerOptions,
+} from './run-recall-incremental-worker.js';
 import type { CommittedIncrementalRecallWorkPlan } from './transfer-incremental-recall-work-plan.js';
 
 interface WorkerFixture {
@@ -112,14 +118,31 @@ function committedTransferOutcome(
   };
 }
 
-void test('incremental worker launch uses nonblocking kernel flock without PID or lease inference', async () => {
-  const source = await readFile(
+void test('incremental worker launch uses kernel flock without PID or lease inference', async () => {
+  const publicationSource = await readFile(
     new URL('./publish-recall-work-marker.ts', import.meta.url),
     'utf8',
   );
-  assert.match(source, /spawn\(\s*'\/usr\/bin\/flock'/u);
-  assert.match(source, /'--nonblock'/u);
-  assert.doesNotMatch(source, /pid.?file|process.?alive|stale.?time|kill\([^)]*,\s*0\)/iu);
+  const workerSource = await readFile(
+    new URL('./run-recall-incremental-worker.ts', import.meta.url),
+    'utf8',
+  );
+  const scheduleSource = await readFile(
+    new URL('./recall-incremental-worker-schedule.ts', import.meta.url),
+    'utf8',
+  );
+  assert.match(publicationSource, /spawn\(\s*'\/usr\/bin\/flock'/u);
+  assert.match(publicationSource, /'--nonblock'/u);
+  assert.match(scheduleSource, /sleep .*exec \/usr\/bin\/flock/u);
+  assert.doesNotMatch(workerSource, /from '\.\/octen-conversation-tokenizer\.js'/u);
+  assert.doesNotMatch(
+    workerSource,
+    /import \{\s*transferIncrementalRecallWorkPlan[^;]*from '\.\/transfer-incremental-recall-work-plan\.js'/u,
+  );
+  assert.doesNotMatch(
+    `${publicationSource}\n${scheduleSource}`,
+    /pid.?file|process.?alive|stale.?time|kill\([^)]*,\s*0\)/iu,
+  );
 });
 
 void test('incremental worker exits empty before heavy imports and a later signal drains visible work', async (t) => {
@@ -385,26 +408,36 @@ void test('arrival does not revoke an already established explicit-exit deadline
   assert.equal(result.transferOutcomes[0]?.kind, RecallIncrementalTransferOutcomeKind.COMMITTED);
 });
 
-void test('incremental worker retains a prepared transfer deferred to five minutes', async (t) => {
+void test('incremental worker retains a prepared transfer deferred to five minutes without preparing twice', async (t) => {
   const fixture = await createWorkerFixture(t, { kind: RecallWorkMarkerTrigger.DEPARTURE });
   await fixture.publishMarker();
   const readyAtEpochMilliseconds = fixture.marker.createdAtEpochMilliseconds + 5 * 60_000;
-
-  const result = await runRecallIncrementalWorker({
+  let heavyImportCount = 0;
+  let transferCount = 0;
+  const workerOptions: RunRecallIncrementalWorkerOptions = {
     markerSpoolDirectory: fixture.markerSpoolDirectory,
     markerQuarantineDirectory: fixture.markerQuarantineDirectory,
     controlDirectory: fixture.controlDirectory,
     targetGenerationId: 'generation-1',
     trustedSessionRoots: [fixture.sessionsDirectory],
     nowEpochMilliseconds: () => fixture.marker.createdAtEpochMilliseconds + 60_000,
-    async loadHeavyDependencies() {},
+    async loadHeavyDependencies() {
+      heavyImportCount += 1;
+    },
     async transferWorkPlan() {
+      transferCount += 1;
       return {
         kind: RecallIncrementalTransferOutcomeKind.DEFERRED,
         threshold: RecallEligibilityThreshold.LARGE_PREPARED_TRANSFER,
         readyAtEpochMilliseconds,
       };
     },
+  };
+
+  const result = await runRecallIncrementalWorker(workerOptions);
+  const restarted = await runRecallIncrementalWorker({
+    ...workerOptions,
+    persistedLargeTransferDeferrals: result.largeTransferDeferrals,
   });
 
   assert.deepEqual(result.transferOutcomes, [
@@ -414,6 +447,10 @@ void test('incremental worker retains a prepared transfer deferred to five minut
       readyAtEpochMilliseconds,
     },
   ]);
+  assert.deepEqual(restarted.transferOutcomes, result.transferOutcomes);
+  assert.equal(heavyImportCount, 1);
+  assert.equal(transferCount, 1);
+  assert.equal(result.nextWakeAtEpochMilliseconds, readyAtEpochMilliseconds);
   await access(join(fixture.markerSpoolDirectory, `${fixture.marker.markerId}.json`));
 });
 
@@ -478,6 +515,32 @@ void test('building generation freezes incremental commits while retaining publi
     ).then((source) => source.length > 0),
     true,
   );
+
+  const backlogSummaryPath = join(fixture.controlDirectory, 'backlog-summary.json');
+  await writeRecallIncrementalWorkerBacklog(
+    {
+      backlogSummaryPath,
+      generationRegistryPath,
+      targetGenerationId: 'generation-1',
+      nowEpochMilliseconds: () => fixture.marker.createdAtEpochMilliseconds + 31 * 60_000,
+    },
+    null,
+    result,
+  );
+  let backlog = decodeRecallBacklogSummary(await readFile(backlogSummaryPath, 'utf8'));
+  assert.equal(backlog.pendingEligibleSessionCount, 1);
+  assert.equal(backlog.oldestEligibleMarkerAgeMilliseconds, 31 * 60_000);
+  await writeRecallIncrementalWorkerBacklog(
+    {
+      backlogSummaryPath,
+      generationRegistryPath,
+      targetGenerationId: 'generation-1',
+      nowEpochMilliseconds: () => fixture.marker.createdAtEpochMilliseconds + 31 * 60_000,
+    },
+    RecallBacklogFailureCategory.WRITE_FAILED,
+  );
+  backlog = decodeRecallBacklogSummary(await readFile(backlogSummaryPath, 'utf8'));
+  assert.equal(backlog.lastFailureCategory, 'write_failed');
 });
 
 void test('empty ordinary worker pass completes replay-pending generation backlog', async (t) => {
@@ -532,6 +595,45 @@ void test('empty ordinary worker pass completes replay-pending generation backlo
     (await readRecallGenerationRegistry(generationRegistryPath))?.generations[0]?.state,
     RecallGenerationCutoverState.ACTIVE,
   );
+});
+
+void test('missing marker-backed source reaches deletion reconciliation before transfer', async (t) => {
+  const fixture = await createWorkerFixture(t, { kind: RecallWorkMarkerTrigger.ARRIVAL });
+  await fixture.publishMarker();
+  const physicalProjection = createWorkerPhysicalProjection(fixture);
+  await rm(fixture.physicalSessionPath);
+  let reconciliationCount = 0;
+
+  const result = await runRecallIncrementalWorker({
+    markerSpoolDirectory: fixture.markerSpoolDirectory,
+    markerQuarantineDirectory: fixture.markerQuarantineDirectory,
+    controlDirectory: fixture.controlDirectory,
+    targetGenerationId: 'generation-1',
+    trustedSessionRoots: [fixture.sessionsDirectory],
+    async loadKnownSourceInventory() {
+      return {
+        knownSources: [
+          {
+            physicalSessionId: physicalProjection.physicalSessionId,
+            relativePath: 'session.jsonl',
+          },
+        ],
+        physicalProjections: [physicalProjection],
+      };
+    },
+    async loadHeavyDependencies() {
+      throw new Error('Recall missing-source reconciliation must not load heavy dependencies');
+    },
+    async reconcileDeletion(metadataSweep, physicalProjections, missingSourceWorkPlans) {
+      reconciliationCount += 1;
+      assert.deepEqual(metadataSweep.missingPhysicalSessionIds, [fixture.marker.physicalSessionId]);
+      assert.deepEqual(physicalProjections, [physicalProjection]);
+      assert.deepEqual(missingSourceWorkPlans?.[0]?.sourceMarkerIds, [fixture.marker.markerId]);
+    },
+  });
+
+  assert.equal(reconciliationCount, 1);
+  assert.equal(result.heavyDependenciesLoaded, false);
 });
 
 void test('arrival metadata sweep lazily loads active projections and invokes deletion reconciliation', async (t) => {

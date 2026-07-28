@@ -5,9 +5,12 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 
-import { RecallBacklogFailureCategory, RecallGenerationCutoverState } from './enums.js';
+import {
+  RecallBacklogFailureCategory,
+  RecallGenerationCutoverState,
+  RECALL_INDEX_MANIFEST_VERSION,
+} from './enums.js';
 import { RecallGenerationPointerError } from './errors.js';
-import { RECALL_INDEX_MANIFEST_VERSION } from './recall-index-manifest.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
 import { RECALL_SESSION_PROJECTION_SCHEMA_VERSION } from './recall-session-projection.js';
 import { syncRecallDirectory } from './sync-recall-directory.js';

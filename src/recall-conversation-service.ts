@@ -412,9 +412,9 @@ async function runRecallSearchWithDiagnostics(
 }
 
 function closeRecallWriteStore(
-  store: ZvecConversationStore | undefined,
   writeWindow: RecallWriteWindow,
   failureMessage: string,
+  store?: ZvecConversationStore,
 ): void {
   try {
     store?.close();
@@ -997,13 +997,6 @@ export function createRecallConversationService(
               )
             : null;
           const activeManifestPath = startingGeneration?.manifestPath ?? null;
-          const approvedRebuildSnapshot =
-            startingGeneration && existsSync(startingGeneration.projectionDatabasePath)
-              ? await readApprovedRecallRebuildSnapshot(
-                  startingGeneration.projectionDatabasePath,
-                  startingGeneration.activeGenerationId,
-                )
-              : null;
           const rebuilt = await rebuildRecallGeneration({
             generationRootDirectory: config.generationRootDirectory,
             activeGenerationPointerPath: config.activeGenerationPointerPath,
@@ -1012,7 +1005,15 @@ export function createRecallConversationService(
             markerSpoolDirectory: config.markerSpoolDirectory,
             lockPath: config.lockPath,
             ...(options.signal ? { signal: options.signal } : {}),
-            async buildGeneration(paths) {
+            async captureBuildSnapshot() {
+              return startingGeneration && existsSync(startingGeneration.projectionDatabasePath)
+                ? readApprovedRecallRebuildSnapshot(
+                    startingGeneration.projectionDatabasePath,
+                    startingGeneration.activeGenerationId,
+                  )
+                : null;
+            },
+            async buildGeneration(paths, approvedRebuildSnapshot) {
               const preparationStartedAtMilliseconds = diagnosticsClock.monotonicMilliseconds();
               const embeddingServerMillisecondsBeforePreparation =
                 diagnosticMetrics?.embeddingServerRequestMilliseconds ?? 0;
@@ -1125,7 +1126,7 @@ export function createRecallConversationService(
                 throw error;
               }
             },
-            async validateGeneration(paths, result) {
+            async validateGeneration(paths, result, approvedRebuildSnapshot) {
               const manifest = await readRecallIndexManifest(paths.manifestPath);
               if (!manifest) {
                 throw new Error('Recall replacement generation manifest missing during validation');
@@ -1238,7 +1239,7 @@ export function createRecallConversationService(
                 );
                 return { indexSummary, totalChunks: store.count() };
               } finally {
-                closeRecallWriteStore(store, writeWindow, 'Recall maintenance store close failed');
+                closeRecallWriteStore(writeWindow, 'Recall maintenance store close failed', store);
               }
             },
           );

@@ -19,6 +19,8 @@ import {
   createLogicalSessionProjectionId,
   type PhysicalSessionProjection,
 } from './recall-session-projection.js';
+import type { RecallMarkerReplayWorkPlan } from './coordinate-recall-marker-replay.js';
+import { acknowledgeCoveredRecallMarkers } from './recall-marker-spool.js';
 import type { RecallSessionMetadataSweepResult } from './scan-recall-session-metadata.js';
 import {
   CONFIRMED_DELETION_BATCH_SIZE,
@@ -239,6 +241,7 @@ export interface ReconcileConfirmedSessionDeletionOptions {
   generationRootDirectory: string;
   lockPath: string;
   embeddingDimensions: number;
+  markerWorkPlans?: readonly RecallMarkerReplayWorkPlan[];
   signal?: AbortSignal;
   acknowledgeCheckpoint?: (
     confirmedSweepId: string,
@@ -360,6 +363,53 @@ function defaultConfirmedDeletionProjectionStore(
   });
 }
 
+function findConfirmedDeletionMarkerWorkPlan(
+  options: ReconcileConfirmedSessionDeletionOptions,
+  physicalSessionId: string,
+): RecallMarkerReplayWorkPlan | undefined {
+  return options.markerWorkPlans?.find(
+    (workPlan) => workPlan.workItems[0]?.marker.physicalSessionId === physicalSessionId,
+  );
+}
+
+function coverConfirmedDeletionMarkers(
+  projection: PhysicalSessionProjection,
+  workPlan?: RecallMarkerReplayWorkPlan,
+): PhysicalSessionProjection {
+  if (workPlan === undefined) {
+    return projection;
+  }
+  const coveredMarkerIds = new Set(projection.markerCheckpoint.coveredMarkerIds);
+  const runtimeSequences = new Map(
+    projection.markerCheckpoint.runtimeSequences.map(({ runtimeInstanceId, sequence }) => [
+      runtimeInstanceId,
+      sequence,
+    ]),
+  );
+  for (const workItem of workPlan.workItems) {
+    for (const markerId of workItem.coveredMarkerIds) {
+      coveredMarkerIds.add(markerId);
+    }
+    runtimeSequences.set(
+      workItem.marker.runtimeInstanceId,
+      Math.max(
+        runtimeSequences.get(workItem.marker.runtimeInstanceId) ?? 0,
+        workItem.marker.runtimeSequence,
+      ),
+    );
+  }
+  return {
+    ...projection,
+    markerCheckpoint: {
+      generationId: projection.generationId,
+      coveredMarkerIds: [...coveredMarkerIds].toSorted(),
+      runtimeSequences: [...runtimeSequences.entries()]
+        .map(([runtimeInstanceId, sequence]) => ({ runtimeInstanceId, sequence }))
+        .toSorted((left, right) => left.runtimeInstanceId.localeCompare(right.runtimeInstanceId)),
+    },
+  };
+}
+
 function requireConfirmedDeletionCheckpoint(projection: PhysicalSessionProjection) {
   if (projection.deletionCheckpoint === null) {
     throw new Error('Recall confirmed deletion checkpoint missing from confirmed projection');
@@ -408,8 +458,12 @@ async function runConfirmedDeletionWriteWindow(
             haltCategory: RecallConfirmedDeletionHaltCategory.PROJECTION_REQUIRES_RECONCILIATION,
           };
         }
+        const markerWorkPlan = findConfirmedDeletionMarkerWorkPlan(
+          options,
+          projection.physicalSessionId,
+        );
         const decision = decideConfirmedSessionDeletion({
-          projection,
+          projection: coverConfirmedDeletionMarkers(projection, markerWorkPlan),
           sweepId: options.metadataSweep.sweepId,
           sweepStatus: options.metadataSweep.status,
           observedAtEpochMilliseconds: Date.now(),
@@ -571,6 +625,21 @@ async function runConfirmedDeletionWriteWindow(
   );
 }
 
+async function acknowledgeConfirmedDeletionMarkers(
+  options: ReconcileConfirmedSessionDeletionOptions,
+  projection: PhysicalSessionProjection,
+  confirmedSweepId: string,
+): Promise<void> {
+  await options.acknowledgeCheckpoint?.(confirmedSweepId, projection.projectionId);
+  const workPlan = findConfirmedDeletionMarkerWorkPlan(options, projection.physicalSessionId);
+  if (workPlan !== undefined) {
+    await acknowledgeCoveredRecallMarkers(
+      workPlan,
+      coverConfirmedDeletionMarkers(projection, workPlan).markerCheckpoint,
+    );
+  }
+}
+
 async function observeConfirmedPhysicalProjectionRemoved(
   options: ReconcileConfirmedSessionDeletionOptions,
   targetGenerationId: string,
@@ -698,16 +767,18 @@ export async function reconcileConfirmedSessionDeletion(
             options.onDiagnostic?.(result);
             return result;
           }
-          await options.acknowledgeCheckpoint?.(
+          await acknowledgeConfirmedDeletionMarkers(
+            options,
+            suppliedProjection,
             outcome.confirmedSweepId,
-            suppliedProjection.projectionId,
           );
           counts.acknowledgedCheckpointCount += 1;
           break;
         case 'already_removed':
-          await options.acknowledgeCheckpoint?.(
+          await acknowledgeConfirmedDeletionMarkers(
+            options,
+            suppliedProjection,
             outcome.confirmedSweepId,
-            suppliedProjection.projectionId,
           );
           counts.acknowledgedCheckpointCount += 1;
           break;

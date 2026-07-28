@@ -78,9 +78,10 @@ function createLifecycleTestHarness(): RecallLifecycleTestHarness {
 }
 
 function createScalarOnlyContext(
-  physicalSessionPath: string | undefined,
-  physicalSessionId = 'physical-session-1',
+  options: { physicalSessionPath?: string; physicalSessionId?: string } = {},
 ): RecallLifecycleMarkerContext {
+  const physicalSessionPath = options.physicalSessionPath;
+  const physicalSessionId = options.physicalSessionId ?? 'physical-session-1';
   const forbidden = (): never => {
     throw new Error('Recall lifecycle marker hook requested forbidden session body work');
   };
@@ -124,7 +125,9 @@ void test('recall lifecycle markers map every documented Pi trigger with one run
       },
     },
   );
-  const context = createScalarOnlyContext('/trusted/sessions/session-1.jsonl');
+  const context = createScalarOnlyContext({
+    physicalSessionPath: '/trusted/sessions/session-1.jsonl',
+  });
 
   await harness.emit.sessionStart({ type: 'session_start', reason: 'startup' }, context);
   await harness.emit.agentSettled({ type: 'agent_settled' }, context);
@@ -275,8 +278,14 @@ void test('reload emits only arrival while replacement and quit reasons preserve
     createRuntimeInstanceId: () => 'runtime-new',
     nowEpochMilliseconds: () => 20,
   });
-  const oldContext = createScalarOnlyContext('/trusted/sessions/old.jsonl', 'old-session');
-  const newContext = createScalarOnlyContext('/trusted/sessions/new.jsonl', 'new-session');
+  const oldContext = createScalarOnlyContext({
+    physicalSessionPath: '/trusted/sessions/old.jsonl',
+    physicalSessionId: 'old-session',
+  });
+  const newContext = createScalarOnlyContext({
+    physicalSessionPath: '/trusted/sessions/new.jsonl',
+    physicalSessionId: 'new-session',
+  });
 
   await oldHarness.emit.sessionShutdown({ type: 'session_shutdown', reason: 'reload' }, oldContext);
   await newHarness.emit.sessionStart({ type: 'session_start', reason: 'reload' }, oldContext);
@@ -342,7 +351,7 @@ void test('ephemeral sessions emit no marker and request no session body or heav
       nowEpochMilliseconds: () => 30,
     },
   );
-  const context = createScalarOnlyContext(undefined);
+  const context = createScalarOnlyContext();
 
   await harness.emit.sessionStart({ type: 'session_start', reason: 'startup' }, context);
   await harness.emit.agentSettled({ type: 'agent_settled' }, context);

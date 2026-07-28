@@ -3,7 +3,11 @@ import { mkdir, readFile, readdir, stat } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 
 import { coordinateRecallWriteWindow } from './coordinate-recall-write-window.js';
-import { RecallBacklogFailureCategory, RecallGenerationCutoverState } from './enums.js';
+import {
+  RecallBacklogFailureCategory,
+  RecallGenerationCutoverState,
+  RECALL_INDEX_MANIFEST_VERSION,
+} from './enums.js';
 import {
   createRecallActiveGenerationPointer,
   encodeRecallGenerationRegistry,
@@ -19,7 +23,6 @@ import {
   type RecallGenerationRegistry,
   type RecallGenerationRegistryEntry,
 } from './recall-generation-state.js';
-import { RECALL_INDEX_MANIFEST_VERSION } from './recall-index-manifest.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
 import { RECALL_SESSION_PROJECTION_SCHEMA_VERSION } from './recall-session-projection.js';
 import { RECALL_WORK_MARKER_VERSION } from './recall-work-marker.js';
@@ -53,7 +56,7 @@ export enum RecallGenerationCutoverStage {
 }
 
 /** Inputs for one side-by-side rebuild with a short pointer-only cutover window. */
-export interface RebuildRecallGenerationOptions<Result> {
+export interface RebuildRecallGenerationOptions<Result, BuildSnapshot = undefined> {
   generationRootDirectory: string;
   activeGenerationPointerPath: string;
   generationRegistryPath: string;
@@ -64,12 +67,15 @@ export interface RebuildRecallGenerationOptions<Result> {
   rollbackRetentionMilliseconds?: number;
   signal?: AbortSignal;
   nowEpochMilliseconds?: () => number;
+  captureBuildSnapshot?: () => Promise<BuildSnapshot>;
   buildGeneration(
     paths: RecallGenerationBuildPaths,
+    buildSnapshot?: BuildSnapshot,
   ): Promise<RecallReplacementGenerationBuild<Result>>;
   validateGeneration(
     paths: RecallGenerationBuildPaths,
     result: Result,
+    buildSnapshot?: BuildSnapshot,
   ): Promise<RecallGenerationValidation>;
   onCutoverStage?: (stage: RecallGenerationCutoverStage) => Promise<void>;
 }
@@ -225,8 +231,8 @@ function throwIfRebuildCancelled(signal?: AbortSignal): void {
 }
 
 /** Builds and validates a replacement beside the active generation, then atomically cuts over. */
-export async function rebuildRecallGeneration<Result>(
-  options: RebuildRecallGenerationOptions<Result>,
+export async function rebuildRecallGeneration<Result, BuildSnapshot = undefined>(
+  options: RebuildRecallGenerationOptions<Result, BuildSnapshot>,
 ): Promise<RebuildRecallGenerationResult<Result>> {
   const now = options.nowEpochMilliseconds?.() ?? Date.now();
   const generationId = options.generationId ?? createReplacementGenerationId(now);
@@ -255,28 +261,8 @@ export async function rebuildRecallGeneration<Result>(
   ) {
     throw new Error('Recall generation registry and active pointer disagree before rebuild');
   }
-  const rebuildMarkerWatermark = await listPendingRecallMarkerIds(options.markerSpoolDirectory);
-  const buildingEntry: RecallGenerationRegistryEntry = {
-    generationId,
-    state: RecallGenerationCutoverState.BUILDING,
-    indexManifestVersion: RECALL_INDEX_MANIFEST_VERSION,
-    markerSchemaVersion: RECALL_WORK_MARKER_VERSION,
-    sessionProjectionSchemaVersion: RECALL_SESSION_PROJECTION_SCHEMA_VERSION,
-    indexManifestFingerprint: '0'.repeat(64),
-    rebuildStartedAtEpochMilliseconds: now,
-    stateChangedAtEpochMilliseconds: now,
-    rebuildStartMarkerId: rebuildMarkerWatermark[0] ?? null,
-    rebuildMarkerWatermark,
-    validatedAtEpochMilliseconds: null,
-    retireAfterEpochMilliseconds: null,
-  };
   await mkdir(paths.generationDirectory);
-  registry = {
-    ...registry,
-    buildingGenerationId: generationId,
-    generations: [...registry.generations, buildingEntry],
-  };
-  await coordinateRecallWriteWindow(
+  const frozenBuild = await coordinateRecallWriteWindow(
     {
       lockPath: options.lockPath,
       allowRecovery: false,
@@ -296,13 +282,36 @@ export async function rebuildRecallGeneration<Result>(
       if (currentPointer?.checksum !== startingPointer?.checksum || registryChanged) {
         throw new Error('Recall generation state changed before rebuild freeze');
       }
-      await writeRecallGenerationRegistry(options.generationRegistryPath, registry);
-      if (registry.activeGenerationId !== null) {
+      const [rebuildMarkerWatermark, buildSnapshot] = await Promise.all([
+        listPendingRecallMarkerIds(options.markerSpoolDirectory),
+        options.captureBuildSnapshot?.(),
+      ]);
+      const buildingEntry: RecallGenerationRegistryEntry = {
+        generationId,
+        state: RecallGenerationCutoverState.BUILDING,
+        indexManifestVersion: RECALL_INDEX_MANIFEST_VERSION,
+        markerSchemaVersion: RECALL_WORK_MARKER_VERSION,
+        sessionProjectionSchemaVersion: RECALL_SESSION_PROJECTION_SCHEMA_VERSION,
+        indexManifestFingerprint: '0'.repeat(64),
+        rebuildStartedAtEpochMilliseconds: now,
+        stateChangedAtEpochMilliseconds: now,
+        rebuildStartMarkerId: rebuildMarkerWatermark[0] ?? null,
+        rebuildMarkerWatermark,
+        validatedAtEpochMilliseconds: null,
+        retireAfterEpochMilliseconds: null,
+      };
+      const frozenRegistry: RecallGenerationRegistry = {
+        ...registry,
+        buildingGenerationId: generationId,
+        generations: [...registry.generations, buildingEntry],
+      };
+      await writeRecallGenerationRegistry(options.generationRegistryPath, frozenRegistry);
+      if (frozenRegistry.activeGenerationId !== null) {
         await writeRecallBacklogSummary(options.backlogSummaryPath, {
           version: RECALL_BACKLOG_SUMMARY_VERSION,
           pendingEligibleSessionCount: rebuildMarkerWatermark.length,
           oldestEligibleMarkerAgeMilliseconds: null,
-          activeGenerationId: registry.activeGenerationId,
+          activeGenerationId: frozenRegistry.activeGenerationId,
           buildingGenerationId: generationId,
           generationState: RecallGenerationCutoverState.BUILDING,
           activeGenerationAgeMilliseconds: 0,
@@ -311,15 +320,18 @@ export async function rebuildRecallGeneration<Result>(
           observedAtEpochMilliseconds: now,
         });
       }
+      return { buildingEntry, buildSnapshot, rebuildMarkerWatermark, registry: frozenRegistry };
     },
   );
+  const { buildingEntry, buildSnapshot, rebuildMarkerWatermark } = frozenBuild;
+  registry = frozenBuild.registry;
 
   let build: RecallReplacementGenerationBuild<Result> | undefined;
   let buildResult: Result | undefined;
   let validation: RecallGenerationValidation | undefined;
   try {
     throwIfRebuildCancelled(options.signal);
-    build = await options.buildGeneration(paths);
+    build = await options.buildGeneration(paths, buildSnapshot);
     buildResult = build.result;
     if (build.optimize) {
       await build.optimize();
@@ -327,7 +339,7 @@ export async function rebuildRecallGeneration<Result>(
     throwIfRebuildCancelled(options.signal);
     await build.close();
     build = undefined;
-    validation = await options.validateGeneration(paths, buildResult);
+    validation = await options.validateGeneration(paths, buildResult, buildSnapshot);
     await resolveRecallGenerationDirectory(options.generationRootDirectory, generationId);
   } catch (error) {
     let rebuildError = error;

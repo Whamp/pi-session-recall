@@ -4,30 +4,34 @@ import { fileURLToPath } from 'node:url';
 
 import { completeRecallGenerationReplay } from './complete-recall-generation-replay.js';
 import {
-  createEmbeddingVectorCache,
-  createEmbeddingVectorCacheIdentity,
-} from './embedding-vector-cache.js';
-import {
   coordinateRecallMarkerReplay,
   type RecallGenerationReplayCompletionPaths,
   type RecallMarkerReplayWorkPlan,
 } from './coordinate-recall-marker-replay.js';
 import {
+  RecallBacklogFailureCategory,
   RecallDiagnosticOperationKind,
   RecallDiagnosticStatus,
+  RecallEligibilityThreshold,
   RecallGenerationCutoverState,
   RecallIncrementalTransferOutcomeKind,
   RecallMetadataSweepStatus,
   RecallWorkMarkerTrigger,
 } from './enums.js';
 import { loadRecallConversationConfig } from './recall-conversation-config.js';
-import { readRecallIndexManifest } from './recall-index-manifest.js';
-import { createLocalEmbeddingClient } from './local-embedding-client.js';
-import { loadOctenConversationTokenizer } from './octen-conversation-tokenizer.js';
 import {
   readRecallActiveGenerationSelection,
   readRecallGenerationRegistry,
+  writeRecallBacklogSummary,
+  RECALL_BACKLOG_SUMMARY_VERSION,
 } from './recall-generation-state.js';
+import {
+  persistRecallIncrementalWorkerSchedule,
+  readRecallIncrementalWorkerSchedule,
+  signalRecallIncrementalWorkerWake,
+  RECALL_INCREMENTAL_WORKER_SCHEDULE_VERSION,
+  type RecallLargeTransferDeferral,
+} from './recall-incremental-worker-schedule.js';
 import type { PhysicalSessionProjection } from './recall-session-projection.js';
 import type { RecallWorkMarkerCodecOptions } from './recall-work-marker.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
@@ -45,10 +49,12 @@ import {
   type RecallSessionMetadataSweepResult,
 } from './scan-recall-session-metadata.js';
 import { scheduleRecallWorkPlanEligibility } from './schedule-recall-work-plan-eligibility.js';
-import {
-  transferIncrementalRecallWorkPlan,
-  type IncrementalRecallWorkPlanTransferOutcome,
+import type {
+  IncrementalRecallWorkPlanTransferOutcome,
+  TransferIncrementalRecallWorkPlanOptions,
 } from './transfer-incremental-recall-work-plan.js';
+import type { EmbeddingVectorCache } from './embedding-vector-cache.js';
+import type { ConversationTextTokenizer } from './session-conversation-index.js';
 
 /** Explicit lightweight paths and lazy import boundary for one short-lived incremental worker. */
 export interface RunRecallIncrementalWorkerOptions extends RecallWorkMarkerCodecOptions {
@@ -66,7 +72,9 @@ export interface RunRecallIncrementalWorkerOptions extends RecallWorkMarkerCodec
   reconcileDeletion?: (
     metadataSweep: RecallSessionMetadataSweepResult,
     physicalProjections: readonly PhysicalSessionProjection[],
+    missingSourceWorkPlans: readonly RecallMarkerReplayWorkPlan[],
   ) => Promise<void>;
+  persistedLargeTransferDeferrals?: readonly RecallLargeTransferDeferral[];
   loadHeavyDependencies?: () => Promise<void>;
   transferWorkPlan?: (
     workPlan: RecallMarkerReplayWorkPlan,
@@ -90,7 +98,14 @@ export interface RecallIncrementalWorkerResult {
   commitsFrozen: boolean;
   generationReplayCompleted: boolean | null;
   transferOutcomes: readonly IncrementalRecallWorkPlanTransferOutcome[];
+  largeTransferDeferrals: readonly RecallLargeTransferDeferral[];
+  nextWakeAtEpochMilliseconds: number | null;
 }
+
+type RecallIncrementalWorkerResultInput = Omit<
+  RecallIncrementalWorkerResult,
+  'nextWakeAtEpochMilliseconds'
+>;
 
 async function loadRecallIncrementalWorkerDependencies(): Promise<void> {
   await Promise.all([import('@huggingface/tokenizers'), import('@zvec/zvec')]);
@@ -161,12 +176,20 @@ function hasRecallMetadataReconciliationWork(
 
 async function readWorkerSourceModifiedAtEpochMilliseconds(
   workPlan: RecallMarkerReplayWorkPlan,
-): Promise<number> {
+): Promise<number | null> {
   const sourcePath = workPlan.workItems[0]?.marker.physicalSessionPath;
   if (sourcePath === undefined) {
     throw new Error('Recall worker source metadata requires one marker work item');
   }
-  const metadata = await stat(sourcePath, { bigint: true });
+  let metadata: Awaited<ReturnType<typeof stat>>;
+  try {
+    metadata = await stat(sourcePath, { bigint: true });
+  } catch (error) {
+    if (readNodeErrorCode(error) === 'ENOENT') {
+      return null;
+    }
+    throw error;
+  }
   const modifiedAtEpochMilliseconds = Number(metadata.mtimeNs / 1_000_000n);
   if (!Number.isSafeInteger(modifiedAtEpochMilliseconds) || modifiedAtEpochMilliseconds < 0) {
     throw new Error('Recall worker source modified time invalid');
@@ -209,7 +232,7 @@ export async function runRecallIncrementalWorker(
       : {}),
   });
   function finishWorkerResult(
-    result: RecallIncrementalWorkerResult,
+    result: RecallIncrementalWorkerResultInput,
   ): RecallIncrementalWorkerResult {
     const metrics = createRecallIncrementalDiagnosticMetrics();
     metrics.elapsedMilliseconds = Math.max(monotonicMilliseconds() - startedAtMilliseconds, 0);
@@ -238,7 +261,16 @@ export async function runRecallIncrementalWorker(
       status: RecallDiagnosticStatus.SUCCEEDED,
       metrics,
     });
-    return result;
+    const deferredDeadlines = result.transferOutcomes.flatMap((outcome) =>
+      outcome.kind === RecallIncrementalTransferOutcomeKind.DEFERRED
+        ? [outcome.readyAtEpochMilliseconds]
+        : [],
+    );
+    return {
+      ...result,
+      nextWakeAtEpochMilliseconds:
+        deferredDeadlines.length === 0 ? null : Math.min(...deferredDeadlines),
+    };
   }
   if (commitsFrozen) {
     return finishWorkerResult({
@@ -248,10 +280,21 @@ export async function runRecallIncrementalWorker(
       commitsFrozen: true,
       generationReplayCompleted: null,
       transferOutcomes: [],
+      largeTransferDeferrals: [],
     });
   }
+  const physicalSourceStates = await Promise.all(
+    splitRecallWorkPlanByPhysicalSession(workPlan).map(async (physicalWorkPlan) => ({
+      workPlan: physicalWorkPlan,
+      sourceModifiedAtEpochMilliseconds:
+        await readWorkerSourceModifiedAtEpochMilliseconds(physicalWorkPlan),
+    })),
+  );
   const shouldSweepMetadata =
     workPlanRequestsRecallMetadataSweep(workPlan) ||
+    physicalSourceStates.some(
+      ({ sourceModifiedAtEpochMilliseconds }) => sourceModifiedAtEpochMilliseconds === null,
+    ) ||
     (await hasRecallMetadataSweepContinuation(options.controlDirectory));
   const knownSourceInventory = shouldSweepMetadata
     ? await (options.loadKnownSourceInventory?.() ??
@@ -298,46 +341,19 @@ export async function runRecallIncrementalWorker(
       commitsFrozen: false,
       generationReplayCompleted,
       transferOutcomes: [],
+      largeTransferDeferrals: [],
     });
   }
-  const transferOutcomes: IncrementalRecallWorkPlanTransferOutcome[] = [];
-  const readyPhysicalWorkPlans: RecallMarkerReplayWorkPlan[] = [];
-  for (const physicalWorkPlan of splitRecallWorkPlanByPhysicalSession(workPlan)) {
-    const sourceModifiedAtEpochMilliseconds =
-      await readWorkerSourceModifiedAtEpochMilliseconds(physicalWorkPlan);
-    const schedule = scheduleRecallWorkPlanEligibility({
-      workPlan: physicalWorkPlan,
-      sourceModifiedAtEpochMilliseconds,
-      preparedDocumentCount: 0,
-      nowEpochMilliseconds,
-    });
-    if (schedule.ready) {
-      readyPhysicalWorkPlans.push(physicalWorkPlan);
-    } else {
-      transferOutcomes.push({
-        kind: RecallIncrementalTransferOutcomeKind.DEFERRED,
-        threshold: schedule.threshold,
-        readyAtEpochMilliseconds: schedule.readyAtEpochMilliseconds,
-      });
-    }
-  }
-  if (readyPhysicalWorkPlans.length === 0 && !hasRecallMetadataReconciliationWork(metadataSweep)) {
-    return finishWorkerResult({
-      workPlan,
-      metadataSweep,
-      heavyDependenciesLoaded: false,
-      commitsFrozen: false,
-      generationReplayCompleted: null,
-      transferOutcomes,
-    });
-  }
-  await (options.loadHeavyDependencies ?? loadRecallIncrementalWorkerDependencies)();
-  for (const physicalWorkPlan of readyPhysicalWorkPlans) {
-    const outcome = await options.transferWorkPlan?.(physicalWorkPlan);
-    if (outcome !== undefined) {
-      transferOutcomes.push(outcome);
-    }
-  }
+  const missingPhysicalSessionIds = new Set(metadataSweep?.missingPhysicalSessionIds ?? []);
+  const missingSourceWorkPlans = physicalSourceStates
+    .filter(
+      ({ workPlan: physicalWorkPlan, sourceModifiedAtEpochMilliseconds }) =>
+        sourceModifiedAtEpochMilliseconds === null ||
+        missingPhysicalSessionIds.has(
+          physicalWorkPlan.workItems[0]?.marker.physicalSessionId ?? '',
+        ),
+    )
+    .map(({ workPlan: physicalWorkPlan }) => physicalWorkPlan);
   if (
     metadataSweep !== null &&
     metadataSweep.status !== RecallMetadataSweepStatus.CONTINUATION_REQUIRED &&
@@ -346,7 +362,101 @@ export async function runRecallIncrementalWorker(
     await options.reconcileDeletion?.(
       metadataSweep,
       knownSourceInventory?.physicalProjections ?? [],
+      missingSourceWorkPlans,
     );
+  }
+  const transferOutcomes: IncrementalRecallWorkPlanTransferOutcome[] = [];
+  const largeTransferDeferrals: RecallLargeTransferDeferral[] = [];
+  const readyPhysicalSourceStates: Array<{
+    workPlan: RecallMarkerReplayWorkPlan;
+    sourceModifiedAtEpochMilliseconds: number;
+  }> = [];
+  const observedNowEpochMilliseconds = nowEpochMilliseconds();
+  for (const physicalSourceState of physicalSourceStates) {
+    const { workPlan: physicalWorkPlan, sourceModifiedAtEpochMilliseconds } = physicalSourceState;
+    if (
+      sourceModifiedAtEpochMilliseconds === null ||
+      missingSourceWorkPlans.includes(physicalWorkPlan)
+    ) {
+      continue;
+    }
+    const physicalSessionId = physicalWorkPlan.workItems[0]?.marker.physicalSessionId;
+    const persistedLargeTransferDeferral = options.persistedLargeTransferDeferrals?.find(
+      (candidate) =>
+        candidate.physicalSessionId === physicalSessionId &&
+        candidate.sourceModifiedAtEpochMilliseconds === sourceModifiedAtEpochMilliseconds &&
+        candidate.sourceMarkerIds.length === physicalWorkPlan.sourceMarkerIds.length &&
+        candidate.sourceMarkerIds.every(
+          (markerId, index) => markerId === physicalWorkPlan.sourceMarkerIds[index],
+        ),
+    );
+    if (
+      persistedLargeTransferDeferral !== undefined &&
+      observedNowEpochMilliseconds < persistedLargeTransferDeferral.readyAtEpochMilliseconds
+    ) {
+      largeTransferDeferrals.push(persistedLargeTransferDeferral);
+      transferOutcomes.push({
+        kind: RecallIncrementalTransferOutcomeKind.DEFERRED,
+        threshold: RecallEligibilityThreshold.LARGE_PREPARED_TRANSFER,
+        readyAtEpochMilliseconds: persistedLargeTransferDeferral.readyAtEpochMilliseconds,
+      });
+      continue;
+    }
+    const schedule = scheduleRecallWorkPlanEligibility({
+      workPlan: physicalWorkPlan,
+      sourceModifiedAtEpochMilliseconds,
+      preparedDocumentCount: 0,
+      nowEpochMilliseconds: () => observedNowEpochMilliseconds,
+    });
+    if (schedule.ready) {
+      readyPhysicalSourceStates.push({
+        workPlan: physicalWorkPlan,
+        sourceModifiedAtEpochMilliseconds,
+      });
+    } else {
+      transferOutcomes.push({
+        kind: RecallIncrementalTransferOutcomeKind.DEFERRED,
+        threshold: schedule.threshold,
+        readyAtEpochMilliseconds: schedule.readyAtEpochMilliseconds,
+      });
+    }
+  }
+  if (readyPhysicalSourceStates.length === 0) {
+    return finishWorkerResult({
+      workPlan,
+      metadataSweep,
+      heavyDependenciesLoaded: false,
+      commitsFrozen: false,
+      generationReplayCompleted: null,
+      transferOutcomes,
+      largeTransferDeferrals,
+    });
+  }
+  await (options.loadHeavyDependencies ?? loadRecallIncrementalWorkerDependencies)();
+  for (const {
+    workPlan: physicalWorkPlan,
+    sourceModifiedAtEpochMilliseconds,
+  } of readyPhysicalSourceStates) {
+    const outcome = await options.transferWorkPlan?.(physicalWorkPlan);
+    if (outcome !== undefined) {
+      transferOutcomes.push(outcome);
+      if (
+        outcome.kind === RecallIncrementalTransferOutcomeKind.DEFERRED &&
+        outcome.threshold === RecallEligibilityThreshold.LARGE_PREPARED_TRANSFER
+      ) {
+        const physicalSessionId = physicalWorkPlan.workItems[0]?.marker.physicalSessionId;
+        if (physicalSessionId === undefined) {
+          throw new Error('Recall large transfer deferral requires one physical session');
+        }
+        largeTransferDeferrals.push({
+          physicalSessionId,
+          sourceModifiedAtEpochMilliseconds,
+          sourceMarkerIds: [...physicalWorkPlan.sourceMarkerIds],
+          threshold: RecallEligibilityThreshold.LARGE_PREPARED_TRANSFER,
+          readyAtEpochMilliseconds: outcome.readyAtEpochMilliseconds,
+        });
+      }
+    }
   }
   return finishWorkerResult({
     workPlan,
@@ -355,6 +465,7 @@ export async function runRecallIncrementalWorker(
     commitsFrozen: false,
     generationReplayCompleted: null,
     transferOutcomes,
+    largeTransferDeferrals,
   });
 }
 
@@ -383,6 +494,62 @@ async function loadRecallKnownSourceInventory(
   } finally {
     store.close();
   }
+}
+
+/** Scalar generation-state paths and clock used by one worker backlog refresh. */
+export interface RecallIncrementalWorkerBacklogPaths {
+  backlogSummaryPath: string;
+  generationRegistryPath: string;
+  targetGenerationId: string;
+  nowEpochMilliseconds?: () => number;
+}
+
+/** Atomically refreshes scalar backlog state after worker completion or executable failure. */
+export async function writeRecallIncrementalWorkerBacklog(
+  paths: RecallIncrementalWorkerBacklogPaths,
+  failureCategory: RecallBacklogFailureCategory | null,
+  result?: RecallIncrementalWorkerResult,
+): Promise<void> {
+  const registry = await readRecallGenerationRegistry(paths.generationRegistryPath);
+  const activeEntry = registry?.generations.find(
+    ({ generationId }) => generationId === paths.targetGenerationId,
+  );
+  if (registry === null || activeEntry === undefined) {
+    return;
+  }
+  const nowEpochMilliseconds = paths.nowEpochMilliseconds?.() ?? Date.now();
+  const buildingEntry = registry.generations.find(
+    ({ generationId }) => generationId === registry.buildingGenerationId,
+  );
+  const physicalSessionIds = new Set(
+    result?.workPlan.workItems.map(({ marker }) => marker.physicalSessionId) ?? [],
+  );
+  const oldestMarkerCreatedAtEpochMilliseconds = result?.workPlan.workItems.reduce(
+    (oldest, { marker }) => Math.min(oldest, marker.createdAtEpochMilliseconds),
+    Number.POSITIVE_INFINITY,
+  );
+  await writeRecallBacklogSummary(paths.backlogSummaryPath, {
+    version: RECALL_BACKLOG_SUMMARY_VERSION,
+    pendingEligibleSessionCount: physicalSessionIds.size,
+    oldestEligibleMarkerAgeMilliseconds:
+      oldestMarkerCreatedAtEpochMilliseconds === undefined ||
+      !Number.isFinite(oldestMarkerCreatedAtEpochMilliseconds)
+        ? null
+        : Math.max(0, nowEpochMilliseconds - oldestMarkerCreatedAtEpochMilliseconds),
+    activeGenerationId: paths.targetGenerationId,
+    buildingGenerationId: registry.buildingGenerationId,
+    generationState: buildingEntry?.state ?? activeEntry.state,
+    activeGenerationAgeMilliseconds: Math.max(
+      0,
+      nowEpochMilliseconds - activeEntry.stateChangedAtEpochMilliseconds,
+    ),
+    rebuildAgeMilliseconds:
+      buildingEntry === undefined
+        ? null
+        : Math.max(0, nowEpochMilliseconds - buildingEntry.rebuildStartedAtEpochMilliseconds),
+    lastFailureCategory: failureCategory,
+    observedAtEpochMilliseconds: nowEpochMilliseconds,
+  });
 }
 
 async function runRecallIncrementalWorkerExecutable(): Promise<void> {
@@ -414,85 +581,173 @@ async function runRecallIncrementalWorkerExecutable(): Promise<void> {
       process.emitWarning(message);
     },
   });
-  const manifest = await readRecallIndexManifest(activeSelection.manifestPath);
-  if (manifest === null) {
-    throw new Error('Recall incremental worker active generation manifest missing');
-  }
-  const embeddings = createLocalEmbeddingClient({
-    baseUrl: config.embeddingBaseUrl,
-    model: config.embeddingModel,
-    dimensions: config.embeddingDimensions,
-    batchSize: config.embeddingBatchSize,
-  });
-  const embeddingCache = createEmbeddingVectorCache({
-    cacheDirectory: config.embeddingCacheDirectory,
-    identity: createEmbeddingVectorCacheIdentity(manifest),
-    embeddingRequestBatchSize: config.embeddingBatchSize,
-    embeddings,
-  });
-  const loadTokenizer = () =>
-    loadOctenConversationTokenizer({ cacheDirectory: config.tokenizerCacheDirectory });
+  const schedulePath = resolve(config.markerControlDirectory, 'incremental-worker-schedule.json');
+  const persistedSchedule = await readRecallIncrementalWorkerSchedule(schedulePath);
   const resolveWorkerProjectIdentity = createLineageResolver(
     config.projectLineages,
     resolveProjectIdentity,
   );
-  await runRecallIncrementalWorker({
-    markerSpoolDirectory: config.markerSpoolDirectory,
-    markerQuarantineDirectory: config.markerQuarantineDirectory,
-    controlDirectory: config.markerControlDirectory,
-    targetGenerationId: activeSelection.activeGenerationId,
-    generationRegistryPath: config.generationRegistryPath,
-    generationReplayCompletion: {
-      activeGenerationPointerPath: config.activeGenerationPointerPath,
+  let productionTransferDependencies:
+    | Promise<{
+        embeddingCache: EmbeddingVectorCache;
+        chunkPolicy: TransferIncrementalRecallWorkPlanOptions['chunkPolicy'];
+        loadTokenizer: () => Promise<ConversationTextTokenizer>;
+        transferWorkPlan(
+          options: TransferIncrementalRecallWorkPlanOptions,
+        ): Promise<IncrementalRecallWorkPlanTransferOutcome>;
+      }>
+    | undefined;
+  const loadProductionTransferDependencies = () => {
+    productionTransferDependencies ??= Promise.all([
+      import('./embedding-vector-cache.js'),
+      import('./local-embedding-client.js'),
+      import('./octen-conversation-tokenizer.js'),
+      import('./recall-index-manifest.js'),
+      import('./transfer-incremental-recall-work-plan.js'),
+    ]).then(
+      async ([
+        embeddingCacheModule,
+        embeddingClientModule,
+        tokenizerModule,
+        manifestModule,
+        transferModule,
+      ]) => {
+        const manifest = await manifestModule.readRecallIndexManifest(activeSelection.manifestPath);
+        if (manifest === null) {
+          throw new Error('Recall incremental worker active generation manifest missing');
+        }
+        const embeddings = embeddingClientModule.createLocalEmbeddingClient({
+          baseUrl: config.embeddingBaseUrl,
+          model: config.embeddingModel,
+          dimensions: config.embeddingDimensions,
+          batchSize: config.embeddingBatchSize,
+        });
+        return {
+          embeddingCache: embeddingCacheModule.createEmbeddingVectorCache({
+            cacheDirectory: config.embeddingCacheDirectory,
+            identity: embeddingCacheModule.createEmbeddingVectorCacheIdentity(manifest),
+            embeddingRequestBatchSize: config.embeddingBatchSize,
+            embeddings,
+          }),
+          chunkPolicy: manifest.chunkPolicy,
+          loadTokenizer: () =>
+            tokenizerModule.loadOctenConversationTokenizer({
+              cacheDirectory: config.tokenizerCacheDirectory,
+            }),
+          transferWorkPlan: transferModule.transferIncrementalRecallWorkPlan,
+        };
+      },
+    );
+    return productionTransferDependencies;
+  };
+  let result: RecallIncrementalWorkerResult;
+  try {
+    result = await runRecallIncrementalWorker({
+      markerSpoolDirectory: config.markerSpoolDirectory,
+      markerQuarantineDirectory: config.markerQuarantineDirectory,
+      controlDirectory: config.markerControlDirectory,
+      targetGenerationId: activeSelection.activeGenerationId,
       generationRegistryPath: config.generationRegistryPath,
-      backlogSummaryPath: config.backlogSummaryPath,
-      lockPath: config.lockPath,
-    },
-    ...(registry?.rollbackGenerationId
-      ? { retainedMarkerDirectory: resolve(config.markerControlDirectory, 'rollback-retained') }
-      : {}),
-    trustedSessionRoots: [config.sessionsDirectory],
-    confirmedDeletionMaxMissingSourceCount: config.confirmedDeletionMaxMissingSourceCount,
-    confirmedDeletionMaxMissingSourceRatio: config.confirmedDeletionMaxMissingSourceRatio,
-    operationDiagnostics,
-    transferWorkPlan: (workPlan) =>
-      transferIncrementalRecallWorkPlan({
-        workPlan,
-        lockPath: config.lockPath,
-        evidenceDatabasePath: activeSelection.databasePath,
-        projectionDatabasePath: activeSelection.projectionDatabasePath,
-        embeddingDimensions: config.embeddingDimensions,
-        chunkPolicy: manifest.chunkPolicy,
-        loadTokenizer,
-        resolveProjectIdentity: resolveWorkerProjectIdentity,
-        embeddingCache,
-        nowEpochMilliseconds: Date.now,
-      }),
-    loadKnownSourceInventory: () =>
-      loadRecallKnownSourceInventory(
-        activeSelection.projectionDatabasePath,
-        activeSelection.activeGenerationId,
-        config.sessionsDirectory,
-      ),
-    async reconcileDeletion(metadataSweep, physicalProjections) {
-      const { formatConfirmedSessionDeletionResult, reconcileConfirmedSessionDeletion } =
-        await import('./reconcile-confirmed-session-deletion.js');
-      const result = await reconcileConfirmedSessionDeletion({
-        metadataSweep,
-        physicalProjections,
+      generationReplayCompletion: {
         activeGenerationPointerPath: config.activeGenerationPointerPath,
-        generationRootDirectory: config.generationRootDirectory,
+        generationRegistryPath: config.generationRegistryPath,
+        backlogSummaryPath: config.backlogSummaryPath,
         lockPath: config.lockPath,
-        embeddingDimensions: config.embeddingDimensions,
+      },
+      ...(registry?.rollbackGenerationId
+        ? { retainedMarkerDirectory: resolve(config.markerControlDirectory, 'rollback-retained') }
+        : {}),
+      trustedSessionRoots: [config.sessionsDirectory],
+      confirmedDeletionMaxMissingSourceCount: config.confirmedDeletionMaxMissingSourceCount,
+      confirmedDeletionMaxMissingSourceRatio: config.confirmedDeletionMaxMissingSourceRatio,
+      operationDiagnostics,
+      persistedLargeTransferDeferrals: persistedSchedule?.largeTransferDeferrals ?? [],
+      async transferWorkPlan(workPlan) {
+        const dependencies = await loadProductionTransferDependencies();
+        return dependencies.transferWorkPlan({
+          workPlan,
+          lockPath: config.lockPath,
+          evidenceDatabasePath: activeSelection.databasePath,
+          projectionDatabasePath: activeSelection.projectionDatabasePath,
+          embeddingDimensions: config.embeddingDimensions,
+          chunkPolicy: dependencies.chunkPolicy,
+          loadTokenizer: dependencies.loadTokenizer,
+          resolveProjectIdentity: resolveWorkerProjectIdentity,
+          embeddingCache: dependencies.embeddingCache,
+          nowEpochMilliseconds: Date.now,
+        });
+      },
+      loadKnownSourceInventory: () =>
+        loadRecallKnownSourceInventory(
+          activeSelection.projectionDatabasePath,
+          activeSelection.activeGenerationId,
+          config.sessionsDirectory,
+        ),
+      async reconcileDeletion(metadataSweep, physicalProjections, missingSourceWorkPlans) {
+        const { formatConfirmedSessionDeletionResult, reconcileConfirmedSessionDeletion } =
+          await import('./reconcile-confirmed-session-deletion.js');
+        const result = await reconcileConfirmedSessionDeletion({
+          metadataSweep,
+          physicalProjections,
+          activeGenerationPointerPath: config.activeGenerationPointerPath,
+          generationRootDirectory: config.generationRootDirectory,
+          lockPath: config.lockPath,
+          embeddingDimensions: config.embeddingDimensions,
+          markerWorkPlans: missingSourceWorkPlans,
+        });
+        if (result.halted || result.confirmedSourceDeletionCount > 0) {
+          process.emitWarning(
+            `Recall confirmed deletion: ${formatConfirmedSessionDeletionResult(result)}`,
+          );
+        }
+      },
+    });
+    const shouldSignalWake = await persistRecallIncrementalWorkerSchedule({
+      schedulePath,
+      nowEpochMilliseconds: Date.now(),
+      schedule: {
+        version: RECALL_INCREMENTAL_WORKER_SCHEDULE_VERSION,
+        nextWakeAtEpochMilliseconds: result.nextWakeAtEpochMilliseconds,
+        largeTransferDeferrals: [...result.largeTransferDeferrals],
+      },
+    });
+    if (shouldSignalWake && result.nextWakeAtEpochMilliseconds !== null) {
+      signalRecallIncrementalWorkerWake({
+        readyAtEpochMilliseconds: result.nextWakeAtEpochMilliseconds,
+        workerOwnershipLockPath: config.workerOwnershipLockPath,
+        workerExecutablePath: fileURLToPath(import.meta.url),
       });
-      if (result.halted || result.confirmedSourceDeletionCount > 0) {
-        process.emitWarning(
-          `Recall confirmed deletion: ${formatConfirmedSessionDeletionResult(result)}`,
-        );
-      }
-    },
-  });
-  await operationDiagnostics.flush();
+    }
+    await writeRecallIncrementalWorkerBacklog(
+      {
+        backlogSummaryPath: config.backlogSummaryPath,
+        generationRegistryPath: config.generationRegistryPath,
+        targetGenerationId: activeSelection.activeGenerationId,
+      },
+      null,
+      result,
+    );
+  } catch (error) {
+    const [backlogWriteResult] = await Promise.allSettled([
+      writeRecallIncrementalWorkerBacklog(
+        {
+          backlogSummaryPath: config.backlogSummaryPath,
+          generationRegistryPath: config.generationRegistryPath,
+          targetGenerationId: activeSelection.activeGenerationId,
+        },
+        RecallBacklogFailureCategory.WRITE_FAILED,
+      ),
+    ]);
+    if (backlogWriteResult.status === 'rejected') {
+      throw new AggregateError(
+        [error, backlogWriteResult.reason],
+        'Recall incremental worker and backlog update failed',
+      );
+    }
+    throw error;
+  } finally {
+    await operationDiagnostics.flush();
+  }
 }
 
 const executedModulePath = process.argv[1];

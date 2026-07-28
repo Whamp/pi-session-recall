@@ -81,7 +81,16 @@ void test('side-by-side rebuild keeps old search selected through build and opti
     generationId: 'generation_new',
     rollbackRetentionMilliseconds: 1_000,
     nowEpochMilliseconds: () => 10_000,
-    async buildGeneration(paths) {
+    async captureBuildSnapshot() {
+      assert.deepEqual(await inspectRecallWriteWindow(fixture.lockPath), {
+        currentWindow: true,
+        recoveryRequired: true,
+      });
+      assert.equal(await readRecallGenerationRegistry(fixture.generationRegistryPath), null);
+      return 'approved-projection-snapshot';
+    },
+    async buildGeneration(paths, approvedProjectionSnapshot) {
+      assert.equal(approvedProjectionSnapshot, 'approved-projection-snapshot');
       assert.deepEqual(await inspectRecallWriteWindow(fixture.lockPath), {
         currentWindow: false,
         recoveryRequired: false,

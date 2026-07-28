@@ -68,8 +68,8 @@ async function pathExists(path: string): Promise<boolean> {
 
 /** Combines caller cancellation with one bounded operation-lock wait. */
 export function createRecallWriteWindowAcquisitionSignal(
-  signal: AbortSignal | undefined,
-  lockWaitMilliseconds: number | undefined,
+  signal?: AbortSignal,
+  lockWaitMilliseconds?: number,
 ): AbortSignal | undefined {
   if (lockWaitMilliseconds === undefined) {
     return signal;

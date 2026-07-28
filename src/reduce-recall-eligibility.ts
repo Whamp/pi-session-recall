@@ -106,9 +106,9 @@ function addCompactionEligibility(
 function addBranchExitEligibility(
   oldLeafEntryId: string | null,
   newLeafEntryId: string | null,
-  summaryEntryId: string | undefined,
   entriesById: ReadonlyMap<string, RecallProjectedEntryDescriptor>,
   eligibleEntryIds: Set<string>,
+  summaryEntryId?: string,
 ): boolean {
   const oldPath =
     oldLeafEntryId === null ? [] : readProjectedRecallSessionEntryPath(oldLeafEntryId, entriesById);
@@ -238,9 +238,9 @@ export function reduceRecallEligibility(
           !addBranchExitEligibility(
             marker.trigger.oldLeafEntryId,
             marker.trigger.newLeafEntryId,
-            marker.trigger.summaryEntryId,
             entriesById,
             eligibleEntryIds,
+            marker.trigger.summaryEntryId,
           )
         ) {
           malformed = true;

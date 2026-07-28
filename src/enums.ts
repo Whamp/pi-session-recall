@@ -1,3 +1,6 @@
+/** Current strict version for the recall index manifest contract. */
+export const RECALL_INDEX_MANIFEST_VERSION = 6;
+
 /** Kind of bounded local recall operation diagnostic. */
 export enum RecallDiagnosticOperationKind {
   SEARCH = 'search',

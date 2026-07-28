@@ -125,7 +125,7 @@ function readCurrentSessionProjections(
   options: TransferIncrementalRecallWorkPlanOptions,
   physicalProjectionId: string,
 ): {
-  physicalProjection: PhysicalSessionProjection | undefined;
+  physicalProjection?: PhysicalSessionProjection;
   logicalProjections: LogicalSessionProjection[];
 } {
   const store = openZvecSessionProjectionStore({
@@ -142,7 +142,7 @@ function readCurrentSessionProjections(
       physicalProjection === undefined ||
       physicalProjection.projectionKind !== RecallSessionProjectionKind.PHYSICAL_SESSION
     ) {
-      return { physicalProjection: undefined, logicalProjections: [] };
+      return { logicalProjections: [] };
     }
     const logicalProjectionIds = physicalProjection.logicalSessionIds.map((logicalSessionId) =>
       createLogicalSessionProjectionId(physicalProjection.physicalSessionId, logicalSessionId),

@@ -76,6 +76,30 @@ _Avoid_: Exact result
 One conversation, summary, or tool evidence document deduplicated across retrieval channels, with its document kind and each component rank and score retained.
 _Avoid_: Semantic match
 
+**Query plan**:
+One ordered, validated collection of planned retrieval queries produced by an invoking agent or a configured query planning model. It does not itself execute retrieval or ranking.
+_Avoid_: Expanded query string, generated search
+
+**Planned retrieval query**:
+One typed `lex`, `vec`, or `hyde` query inside a query plan. Lexical queries target ordinary lexical evidence; semantic and hypothetical-answer queries target dense evidence.
+_Avoid_: Search result, identifier query
+
+**Query planning capability verification**:
+One independent conformance operation that checks planner profile, adapter, prompt, grammar, typed bounds, recall intent, cancellation, timeout, and cache identity before query-planned search can use it.
+_Avoid_: Query-planned search, model health check
+
+**Inference configuration**:
+The atomic local selection of independently verified embedding, reranking, and query-planning model profiles plus their execution backends. Embeddings are required; the other capabilities are optional.
+_Avoid_: Model stack, index manifest
+
+**Inference configuration candidate**:
+One exact capability profile, backend, adapter, artifact/device description, and conformance operation offered to setup. A candidate is never an automatic fallback.
+_Avoid_: Provider default, generic endpoint
+
+**Capability conformance record**:
+The accepted profile, backend, adapter, cache identity, verification time, and bounded measurement persisted after one capability-specific conformance operation passes.
+_Avoid_: Health check, model availability
+
 **Evidence occurrence**:
 One exact source location for recalled evidence, including its session, graph position, and source geometry. Copied evidence can have several occurrences.
 _Avoid_: Duplicate result, source alias
@@ -91,6 +115,38 @@ _Avoid_: Final match, semantic match
 **Neighbor context**:
 Readable context formed from a winning atomic conversation chunk and its valid contiguous siblings in the same visible text run. The contributing chunks remain individually identified.
 _Avoid_: Expanded transcript, joined messages
+
+**Index generation**:
+One self-consistent vector store, incremental session state, and index manifest built with one embedding profile.
+_Avoid_: Index directory, database
+
+**Active index generation**:
+The complete, validated index generation selected atomically for recall search and incremental maintenance.
+_Avoid_: Current database, production index
+
+**Staging index generation**:
+One resumable index generation built and validated without changing the active index generation.
+_Avoid_: Temporary index, partial active index
+
+**Background index build**:
+One detached child process that owns a staging index generation and its writer lock until activation, failure, or an explicit stop.
+_Avoid_: Daemon, background job framework
+
+**Background index status record**:
+The one bounded local record containing a background index build's generation, process state, progress, latest durable checkpoint, and latest actionable error.
+_Avoid_: Event log, job history
+
+**Corpus metadata estimate**:
+A model-free count of physical session files and their total source bytes before first-index approval.
+_Avoid_: Index estimate, corpus scan
+
+**Measured indexing sample**:
+Bounded first-index work that measures model cold start and throughput while retaining compatible embeddings for the approved full build.
+_Avoid_: Benchmark, throwaway sample
+
+**Recall readiness**:
+Whether one complete active index generation is available for recall search; selected inference configuration alone is not ready.
+_Avoid_: Setup complete, model ready
 
 **Index manifest**:
 The versioned identity of the model, tokenizer, chunk policy, provenance schema, and zvec schema used by one index generation.

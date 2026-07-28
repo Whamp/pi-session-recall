@@ -11,10 +11,16 @@ import {
   RecallProjectIdentitySource,
   RecallSearchScope,
 } from './enums.js';
+import type { RecallEmbeddingProvider } from './recall-inference-capabilities.js';
 import type { LocalEmbeddingClient } from './local-embedding-client.js';
 import { loadRecallQualityCorpus } from './recall-quality-corpus.js';
 import type { RecallConversationConfig } from './recall-conversation-service.js';
-import { RECALL_EMBEDDING_CANARY_TEXT } from './recall-index-manifest.js';
+import {
+  readRecallIndexManifest,
+  RECALL_EMBEDDING_CANARY_TEXT,
+  type RecallTokenizerManifestIdentity,
+} from './recall-index-manifest.js';
+import type { RecallEmbeddingModelProfile } from './recall-model-profiles.js';
 import { normalizeRecallProjectLineages } from './resolve-project-identity.js';
 import { runRecallQualityEvaluation } from './run-recall-quality-evaluation.js';
 import type { ConversationTextTokenizer } from './session-conversation-index.js';
@@ -144,6 +150,45 @@ void test('recall quality runner indexes and searches only the bounded declared 
       return texts.map((text) => (text === RECALL_EMBEDDING_CANARY_TEXT ? [0, 0, 1] : [1, 0, 0]));
     },
   };
+  const embeddingProfile: RecallEmbeddingModelProfile = {
+    identity: {
+      requestModel: 'bounded-profile',
+      servedModelId: 'bounded-profile-served',
+      artifact: 'bounded-profile.gguf',
+      artifactRepository: 'example.test/bounded-profile',
+      artifactRevision: 'bounded-revision',
+      artifactSha256: 'a'.repeat(64),
+      dimensions: 3,
+      quantization: 'fixture',
+      pooling: 'mean',
+      normalization: 'l2',
+    },
+    queryInputPrefix: 'query: ',
+    documentInputPrefix: 'document: ',
+    canary: {
+      policy: 'repeat-cosine-v1',
+      operation: 'query',
+      query: 'bounded canary',
+      expectedDimensions: 3,
+      expectedNormalization: 'l2',
+      minimumRepeatCosineSimilarity: 0.9995,
+    },
+  };
+  const embeddingProvider: RecallEmbeddingProvider = {
+    async embedQuery() {
+      return [0, 0, 1];
+    },
+    async embedDocuments(texts) {
+      return texts.map(() => [1, 0, 0]);
+    },
+  };
+  const tokenizerIdentity: RecallTokenizerManifestIdentity = {
+    model: 'bounded-tokenizer',
+    revision: 'bounded-tokenizer-revision',
+    library: { name: 'bounded-tokenizer-library', version: '1.0.0' },
+    encodeOptions: { addSpecialTokens: false, returnTokenTypeIds: false },
+    assets: [{ fileName: 'bounded-tokenizer.gguf', sha256: 'b'.repeat(64) }],
+  };
   const tokenizer: ConversationTextTokenizer = {
     encodeConversationText(text) {
       return {
@@ -195,6 +240,33 @@ void test('recall quality runner indexes and searches only the bounded declared 
   assert.deepEqual(result.configurations[0]?.measurement.queryLatencyByScope.global, null);
   assert.ok(result.configurations[0]?.measurement.queryLatencyByScope.project);
 
+  const profileWorkDirectory = join(
+    evaluationDirectory,
+    '.recall-data',
+    'profile-aware',
+    'recall-quality-evaluation',
+  );
+  const profileResult = await runRecallQualityEvaluation({
+    corpus,
+    baseConfig,
+    workDirectory: profileWorkDirectory,
+    dependencies: {
+      embeddingProfile,
+      embeddingProvider,
+      tokenizerIdentity,
+      async loadTokenizer() {
+        return tokenizer;
+      },
+    },
+  });
+  const profileManifest = await readRecallIndexManifest(
+    join(profileWorkDirectory, '512-64', 'index-manifest.json'),
+  );
+  assert.equal(profileResult.selection.passed, true);
+  assert.equal(profileManifest?.embedding.requestModel, 'bounded-profile');
+  assert.equal(profileManifest?.embedding.dimensions, 3);
+  assert.deepEqual(profileManifest?.tokenizer, tokenizerIdentity);
+
   await assert.rejects(
     () =>
       runRecallQualityEvaluation({
@@ -202,7 +274,9 @@ void test('recall quality runner indexes and searches only the bounded declared 
         baseConfig,
         workDirectory: join(directory, 'recall-quality-evaluation'),
         dependencies: {
-          embeddings,
+          embeddingProfile,
+          embeddingProvider,
+          tokenizerIdentity,
           async loadTokenizer() {
             return tokenizer;
           },

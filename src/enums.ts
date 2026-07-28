@@ -1,3 +1,63 @@
+/** Supported execution backend for embedded model inference. */
+export enum EmbeddedInferenceComputeBackend {
+  CPU = 'cpu',
+  METAL = 'metal',
+  CUDA = 'cuda',
+  VULKAN = 'vulkan',
+}
+
+/** Operator policy for automatic or explicit embedded inference device selection. */
+export enum EmbeddedInferenceDevicePolicy {
+  AUTO = 'auto',
+  CPU = 'cpu',
+  METAL = 'metal',
+  CUDA = 'cuda',
+  VULKAN = 'vulkan',
+}
+
+/** Whether recall uses verified configured inference, proven legacy Octen, or no inference. */
+export enum RecallInstallationMode {
+  CONFIGURED = 'configured',
+  LEGACY_OCTEN = 'legacy-octen',
+  UNCONFIGURED = 'unconfigured',
+}
+
+/** Capability selected independently in one inference configuration. */
+export enum RecallInferenceCapability {
+  EMBEDDING = 'embedding',
+  RERANKING = 'reranking',
+  QUERY_PLANNING = 'query-planning',
+}
+
+/** Execution location selected without changing model-profile semantics. */
+export enum RecallInferenceBackend {
+  EMBEDDED = 'embedded',
+  LLAMA_CPP_HTTP = 'llama-cpp-http',
+  CUSTOM = 'custom',
+}
+
+/** Local model artifact health recorded for setup and repair. */
+export enum RecallInferenceArtifactState {
+  VALID = 'valid',
+  MISSING = 'missing',
+  CORRUPT = 'corrupt',
+  PARTIAL = 'partial',
+  INCOMPATIBLE = 'incompatible',
+  NOT_REQUIRED = 'not-required',
+}
+
+/** Lifecycle state of one detached staging index build process. */
+export enum RecallBackgroundIndexProcessState {
+  STARTING = 'starting',
+  RUNNING = 'running',
+  STOPPING = 'stopping',
+  STOPPED = 'stopped',
+  SUCCEEDED = 'succeeded',
+  FAILED = 'failed',
+  CRASHED = 'crashed',
+  DISCARDED = 'discarded',
+}
+
 /** Kind of bounded local recall operation diagnostic. */
 export enum RecallDiagnosticOperationKind {
   LIVE_SESSION_RECONCILIATION = 'live_session_reconciliation',
@@ -62,9 +122,6 @@ export enum SessionImportReplayOutcome {
   ACCEPTED = 'accepted',
   REJECTED = 'rejected',
 }
-
-/** Version of trusted-invocation exact project filtering before every retrieval-channel limit. */
-export const PROJECT_SCOPE_POLICY_VERSION = 1;
 
 /** Retrieval channel that produced one bounded recall ranked list. */
 export enum RecallRankedListSource {

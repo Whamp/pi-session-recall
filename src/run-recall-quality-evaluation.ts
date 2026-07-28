@@ -4,11 +4,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:pat
 import { performance } from 'node:perf_hooks';
 import { promisify } from 'node:util';
 
-import {
-  PROJECT_SCOPE_POLICY_VERSION,
-  RecallProjectIdentitySource,
-  RecallSearchScope,
-} from './enums.js';
+import { RecallProjectIdentitySource, RecallSearchScope } from './enums.js';
 import {
   RECALL_RANK_FUSION_VERSION,
   RECALL_RRF_RANK_CONSTANT,
@@ -42,20 +38,23 @@ import {
   PROJECT_IDENTITY_METADATA_SCHEMA_VERSION,
   PROJECT_IDENTITY_POLICY_VERSION,
   PROJECT_LINEAGE_POLICY_VERSION,
+  PROJECT_SCOPE_POLICY_VERSION,
   parseProjectIdentity,
   resolveProjectIdentity,
   type ResolvedProjectIdentity,
 } from './resolve-project-identity.js';
-import type { ConversationTextTokenizer } from './session-conversation-index.js';
 
 const EXEC_FILE_ASYNC = promisify(execFile);
 const RECALL_QUALITY_FULL_POOL_LIMIT = 200;
 const RECALL_QUALITY_WORK_DIRECTORY_NAME = 'recall-quality-evaluation';
 
-/** Local model and tokenizer boundaries that make the bounded runner integration-testable. */
-export interface RecallQualityEvaluationDependencies {
+/** Profile-aware inference and tokenizer boundaries for bounded quality evaluation. */
+export interface RecallQualityEvaluationDependencies extends Pick<
+  RecallConversationDependencies,
+  'embeddingProfile' | 'embeddingProvider' | 'tokenizerIdentity' | 'loadTokenizer'
+> {
+  /** @deprecated Use embeddingProvider for profile-aware query and document semantics. */
   embeddings?: LocalEmbeddingClient;
-  loadTokenizer?: () => Promise<ConversationTextTokenizer>;
 }
 
 /** Inputs for one bounded evaluation run over a checksum-fixed corpus. */
@@ -290,16 +289,27 @@ async function createEvaluationProjectResolver(
 }
 
 function createServiceDependencies(
-  embeddings: LocalEmbeddingClient,
   reranker: LocalRerankerClient,
   resolveProjectIdentity: (workingDirectory: string) => Promise<ResolvedProjectIdentity | null>,
-  loadTokenizer?: () => Promise<ConversationTextTokenizer>,
+  evaluationDependencies?: RecallQualityEvaluationDependencies,
+  embeddings?: LocalEmbeddingClient,
 ): RecallConversationDependencies {
   return {
-    embeddings,
+    ...(evaluationDependencies?.embeddingProfile
+      ? { embeddingProfile: evaluationDependencies.embeddingProfile }
+      : {}),
+    ...(evaluationDependencies?.embeddingProvider
+      ? { embeddingProvider: evaluationDependencies.embeddingProvider }
+      : {}),
+    ...(evaluationDependencies?.tokenizerIdentity
+      ? { tokenizerIdentity: evaluationDependencies.tokenizerIdentity }
+      : {}),
+    ...(embeddings ? { embeddings } : {}),
     reranker,
     resolveProjectIdentity,
-    ...(loadTokenizer ? { loadTokenizer } : {}),
+    ...(evaluationDependencies?.loadTokenizer
+      ? { loadTokenizer: evaluationDependencies.loadTokenizer }
+      : {}),
   };
 }
 
@@ -342,10 +352,9 @@ export async function runRecallQualityEvaluation(
   await rm(workDirectory, { recursive: true, force: true });
   await mkdir(workDirectory, { recursive: true });
 
-  const embeddings = createEvaluationEmbeddingClient(
-    options.baseConfig,
-    options.dependencies?.embeddings,
-  );
+  const embeddings = options.dependencies?.embeddingProvider
+    ? undefined
+    : createEvaluationEmbeddingClient(options.baseConfig, options.dependencies?.embeddings);
   const projectResolver = await createEvaluationProjectResolver(options.corpus, workDirectory);
   const indexRuns: RecallQualityIndexRun[] = [];
   const configurations: RecallQualityConfigurationMeasurement[] = [];
@@ -373,10 +382,10 @@ export async function runRecallQualityEvaluation(
     const indexService = createRecallConversationService(
       indexConfig,
       createServiceDependencies(
-        embeddings,
         rejectingReranker,
         projectResolver.resolveProjectIdentity,
-        options.dependencies?.loadTokenizer,
+        options.dependencies,
+        embeddings,
       ),
     );
     const indexStarted = performance.now();
@@ -411,10 +420,10 @@ export async function runRecallQualityEvaluation(
       const searchService = createRecallConversationService(
         searchConfig,
         createServiceDependencies(
-          embeddings,
           rejectingReranker,
           projectResolver.resolveProjectIdentity,
-          options.dependencies?.loadTokenizer,
+          options.dependencies,
+          embeddings,
         ),
       );
       const warmupCases = specification.cases.filter(

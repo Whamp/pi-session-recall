@@ -124,6 +124,11 @@ export function formatRecallSearchResults(
       `Ranked lists: ${queryPlan.rankedLists.map((list) => `${list.source} ${list.admittedCandidateCount}/${list.candidateLimit} for ${list.query}`).join(' · ')}`,
     );
   }
+  if (search.searchPolicy.rerankerIdentity) {
+    lines.push(
+      `Reranker identity: reranker profile ${search.searchPolicy.rerankerIdentity.profileId} · adapter ${search.searchPolicy.rerankerIdentity.adapterId} · cache ${search.searchPolicy.rerankerIdentity.cacheIdentity}.`,
+    );
+  }
   if (search.results.length === 0) {
     lines.push('No matching past conversations found.');
     if (search.searchPolicy.scope === RecallSearchScope.PROJECT) {

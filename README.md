@@ -1,6 +1,6 @@
 # Pi Session Recall
 
-`pi-session-recall` gives Pi a `pi-session-recall` tool for searching past conversations by meaning or exact text. It reads Pi session JSONL files, embeds user-visible conversation text with a local OpenAI-compatible model, stores durable FP32 vectors in a content-addressed cache, and builds dense plus full-text indexes in an in-process [zvec](https://github.com/alibaba/zvec) collection. Search fuses every bounded retrieval channel and suppresses duplicate evidence. Fast deterministic hybrid ranking is the default; local Qwen3 reranking is an explicit deep-search option.
+`pi-session-recall` gives Pi a `pi-session-recall` tool for searching past conversations by meaning or exact text. It reads Pi session JSONL files, embeds user-visible conversation text through a configured inference provider, stores durable FP32 vectors in a content-addressed cache, and builds dense plus full-text indexes in an in-process [zvec](https://github.com/alibaba/zvec) collection. Search fuses every bounded retrieval channel and suppresses duplicate evidence. Fast deterministic hybrid ranking is the default; Qwen3 reranking is an explicit deep-search option.
 
 ## What it indexes
 
@@ -24,7 +24,7 @@ Turn-context documents are secondary evidence. Each starts with visible user tex
 
 Tool calls, results, and direct bash executions follow a separate lexical-only evidence path. Names, compact JSON argument objects, result text, commands, and shell output are stored without redaction. Every document stays within one tool source block or bash message field and records its evidence part, tool name, available call linkage, error state, and source path. Thinking and images are never tool evidence.
 
-All evidence uses the exact pinned Octen tokenizer for bounded geometry. The approved policy targets at most 512 tokens with 64 tokens of overlap between adjacent siblings. Tool evidence also contains at most 512 tokens, uses no overlap, and preserves every source character. Splitting prefers Markdown sections, paragraphs, fenced-code boundaries, lines, and sentences before a hard token cut.
+All evidence uses the tokenizer owned by its embedding profile: the exact pinned Octen tokenizer for Octen generations or the checksum-pinned GGUF tokenizer for EmbeddingGemma generations. The approved policy targets at most 512 tokens with 64 tokens of overlap between adjacent siblings. Tool evidence also contains at most 512 tokens, uses no overlap, and preserves every source character. Splitting prefers Markdown sections, paragraphs, fenced-code boundaries, lines, and sentences before a hard token cut.
 
 Every stored document includes:
 
@@ -83,11 +83,26 @@ pi install /home/will/projects/pi-session-recall
 
 Reload a running Pi session with `/reload`.
 
-The committed quality report passes and selects 512/64 chunks, 8 candidates per channel, and 5 final results. Create the initial production index explicitly:
+The committed quality report passes and selects 512/64 chunks, 8 candidates per channel, and 5 final results. A fresh guided setup remains unconfigured until the operator selects and verifies embeddings:
 
-```text
-/pi-session-recall-index --rebuild
+```bash
+npm run --silent setup:recall -- status
+npm run --silent setup:recall -- select-embeddinggemma --approve-download
+npm run --silent setup:recall -- estimate
+npm run --silent setup:recall -- estimate --measure --sample-sessions 3 # optional
+npm run --silent setup:recall -- start --approve-build
 ```
+
+The metadata estimate performs no model work. The optional measured sample warms the same profile-bound cache that the detached full build reuses. Build approval is separate from download approval and returns after worker launch. See [Guided setup for the first index](docs/inference/first-index-guided-setup.md).
+
+On upgrade, an existing legacy index manifest writes a durable Octen migration marker. Only marked installations retain the implicit Octen path; fresh installations refuse search and indexing until setup verifies an embedding. Marked Octen installations can continue through `/pi-session-recall-index --rebuild`. Later setup runs inspect and repair independently verified capabilities without resetting valid siblings:
+
+```bash
+npm run --silent setup:recall -- inference status
+npm run --silent setup:recall -- inference doctor
+```
+
+Embedding is the only required capability. Reranking and query planning are optional; an embedding-only runtime serves hybrid recall and rejects deep reranking explicitly. See [Mixed inference configuration and repair](docs/inference/mixed-inference-configuration.md).
 
 After that initial generation exists, interactive Pi operations read it without performing whole-session maintenance:
 
@@ -97,7 +112,21 @@ After that initial generation exists, interactive Pi operations read it without 
 
 This keeps session parsing, tokenization, embedding-cache checks, and zvec writes out of latency-sensitive Pi lifecycle and search operations. Active conversation content remains in Pi's model context; it becomes searchable recall evidence after explicit maintenance. The incremental state skips unchanged JSONL files, cached vectors prevent unchanged text from reaching the embedding model, and the PID-owned writer lock serializes multiple index processes.
 
-Use `/pi-session-recall-index` for an explicit full catch-up and optimization. Use `--rebuild` to replace an incompatible generation while preserving tokenizer assets and cached vectors. A future compaction-aware incremental path may index only content that has left the active model context; the current implementation deliberately does not approximate that behavior with whole-session work.
+Use `/pi-session-recall-index` for an explicit in-process catch-up and optimization. Full first and replacement builds run in a detached child process:
+
+```text
+/pi-session-recall-index --rebuild
+/pi-session-recall-index --status
+/pi-session-recall-index --stop
+/pi-session-recall-index --resume
+/pi-session-recall-index --discard
+```
+
+`--rebuild` returns after launch. The worker owns only its staging generation and writer lock, so searches keep using the active generation. One bounded `background-index-status.json` record reports the generation, PID, process state, current scan progress, latest durable session checkpoint, and latest actionable error. `--stop` preserves staging state and profile-bound cached vectors. `--resume` skips checkpointed sessions and repeats any uncheckpointed upserts safely. A dead worker is reported as `crashed`, not `running`, and its staging generation remains resumable. `--discard` is the only command that removes abandoned staging work; it rejects a live worker and never removes the active generation.
+
+The worker catches up files changed during the build, optimizes and validates staging, then switches active selection atomically. A caller that injects a custom embedding profile, provider, tokenizer, store, or project resolver must provide `backgroundIndexServiceFactory` so the child can reconstruct the same semantics. Background launch fails rather than using built-in defaults when injected indexing dependencies lack that factory.
+
+A future compaction-aware incremental path may index only content that has left the active model context; the current implementation deliberately does not approximate that behavior with whole-session work.
 
 ## Use
 
@@ -121,7 +150,7 @@ The extension tells Pi to use `pi-session-recall` when a task depends on a past 
 
 Each atomic conversation, turn-context, or summary document is stored once with three searchable representations:
 
-- an Octen embedding queried by cosine distance, where lower is better;
+- its generation's configured profile embedding queried by cosine distance, where lower is better;
 - ordinary zvec FTS using the standard tokenizer and lowercase filter, where higher is better;
 - case-preserving zvec FTS using the standard tokenizer without filters and requiring every query token, where higher is better.
 
@@ -146,7 +175,7 @@ Search shapes the full fused candidate pool before applying the requested result
 
 Each duplicate group retains every suppressed candidate with its source geometry and fusion components. Neighbor context retains every contributing atomic chunk. A deep-rerank HTTP, JSON, coverage, index, or score failure rejects that deep search; default hybrid search never calls the reranker.
 
-After the quality gate passes, `/pi-session-recall-index` performs a manual full catch-up and optimizes zvec. Use `/pi-session-recall-index --rebuild` when a compatibility error requires a replacement generation. Automatic lifecycle ingestion never creates or replaces an incompatible generation. A search against a missing, locked, or incompatible generation fails without clearing another process's lock.
+After the quality gate passes, `/pi-session-recall-index` performs a manual full catch-up and optimizes zvec. Use `/pi-session-recall-index --rebuild` when a compatibility error requires a detached replacement generation, then inspect it with `--status`. The worker's staging lock does not block active-generation search. Interactive lifecycle and search operations never create or replace a generation. A search against a missing, locked, or incompatible active generation fails without clearing another process's lock.
 
 ## Exact Octen tokenizer
 
@@ -175,9 +204,60 @@ Each index generation has a separately versioned `index-manifest.json`. It ident
 - project identity, lineage policy versions, and a canonical digest of personal lineage declarations;
 - zvec schema, ordinary and case-preserving FTS configuration, FP32 vector storage, and pinned HNSW parameters.
 
-The extension validates the complete manifest before opening or updating zvec. Missing or mismatched manifests are incompatible. The error reports every mismatched field and points to the implemented `/pi-session-recall-index --rebuild` operation. Rebuild removes only zvec, incremental state, and the old manifest under the writer lock; it preserves tokenizer assets and cached vectors. The quality gate must pass before the production command can run.
+The extension validates the complete manifest before opening or updating zvec. Missing or mismatched manifests are incompatible. The error reports every mismatched field and points to `/pi-session-recall-index --rebuild`. Each managed generation lives under `index-generations/<generation-id>/` with its own `zvec/`, `index-state.json`, `index-manifest.json`, and writer lock. Atomic `active-generation.json` and `staging-generation.json` files select the searchable and resumable generations. `background-index-request.json` is ephemeral worker input; `background-index-status.json` is the single bounded control record retained after completion.
+
+Before activation, rebuild optimizes staging and validates its manifest, fresh canary, zvec dimensions, session state, document counts, stored documents, and dense vectors. A failure does not change active selection. Rebuild preserves tokenizer assets and the profile-bound embedding cache. The quality gate must pass before the production command can run. Pre-generation installations remain readable through their legacy paths until an explicit rebuild selects a managed generation.
 
 Embedding text is normalized to Unicode NFC under `unicode-nfc-v1`. Cache identity includes the normalized-text SHA-256; full served-model identity and dimensions; tokenizer revision, assets, library, and encode options; chunk-policy version; and normalization version. A model, text, tokenizer, policy, normalization, or dimension change therefore misses rather than reusing incompatible geometry.
+
+## Inference profiles and execution backends
+
+Model profiles define inference semantics; backend settings define where those semantics execute. The Octen profile preserves raw text and its existing manifest identity. The EmbeddingGemma profile fixes asymmetric prompts, 768 dimensions, mean pooling, L2 normalization, GGUF tokenizer identity, immutable artifact identity, and query-canary behavior. The recommended Qwen reranker profile fixes its artifact and `[0,1]` llama.cpp probability semantics. The recommended QMD query planner profile fixes its artifact, no-think prompt, grammar, typed bounds, and sampling policy. `RecallEmbeddingProvider` keeps query and document operations separate; `RecallRerankingProvider` preserves candidate order; `RecallQueryPlanningProvider` produces an ordered query plan without executing search.
+
+Backend URLs, devices, and adapter implementations are not model-profile identity. An EmbeddingGemma generation can move between embedded CPU, Metal, CUDA, Vulkan, and the built-in llama.cpp HTTP provider without rebuilding. Moving between EmbeddingGemma and Octen requires another generation. Reranker or planner profile and adapter changes update only their capability/cache identity without changing vector compatibility.
+
+`node-llama-cpp@3.18.1` is optional and loads dynamically only when embedded embedding, local GGUF tokenization, embedded reranking, or embedded query planning begins. Embedded execution probes supported accelerators by default, reports the selected backend and device, and retries the same profile on CPU with one warning when automatic accelerator initialization fails. Explicit device overrides fail closed. Parallelism and contexts are conservatively bounded, native logs stay on stderr, and idle resources unload after five minutes unless a checked-out synchronous tokenizer still needs the model. HTTP-only search does not load the native runtime; building an EmbeddingGemma generation still loads the checksum-pinned local GGUF tokenizer.
+
+See [Inference profiles and provider conformance](docs/inference/provider-conformance.md), [Embedded EmbeddingGemma execution](docs/inference/embedded-embeddinggemma.md), the [recommended Qwen reranker](docs/inference/qwen-reranker.md), and the [recommended QMD query planner](docs/inference/qmd-query-planner.md) for service wiring, deterministic evidence, and pending real-model acceptance.
+
+The recommended EmbeddingGemma artifact is available only through an explicit operator workflow. [Guided first-index setup](docs/inference/first-index-guided-setup.md) combines selection, corpus estimates, and detached build approval. Inspecting or checking the artifact alone never downloads a model:
+
+```bash
+npm run --silent model:embeddinggemma -- inspect
+npm run --silent model:embeddinggemma -- doctor
+```
+
+Download, repair, and removal require `--approve`:
+
+```bash
+npm run --silent model:embeddinggemma -- download --approve
+npm run --silent model:embeddinggemma -- repair --approve
+npm run --silent model:embeddinggemma -- remove --approve
+```
+
+The recommended Qwen reranker has the same explicit artifact workflow:
+
+```bash
+npm run --silent model:qwen-reranker -- inspect
+npm run --silent model:qwen-reranker -- doctor
+npm run --silent model:qwen-reranker -- download --approve
+npm run --silent model:qwen-reranker -- repair --approve
+npm run --silent model:qwen-reranker -- remove --approve
+```
+
+The recommended QMD query planner is independently managed and verified:
+
+```bash
+npm run --silent model:qmd-query-planner -- inspect
+npm run --silent model:qmd-query-planner -- doctor
+npm run --silent model:qmd-query-planner -- download --approve
+npm run --silent model:qmd-query-planner -- repair --approve
+npm run --silent model:qmd-query-planner -- remove --approve
+```
+
+Injecting a planner profile and identified embedded or HTTP adapter enables `RecallConversationService.verifyQueryPlanningCapability()`. It does not add a query-planned search mode; issue #29 owns retrieval and ranking integration. Artifact-only workflows never start inference or indexing. First-index setup persists the verified embedded embedding selection. The mixed inference command API independently configures, verifies, repairs, and removes optional capabilities; profile changes update only their own cache/search-policy identity, while embedding profile replacement starts staging. After initial selection, measured estimates and first-generation launch reconstruct the authoritative mixed inference selection rather than silently returning to the original embedded backend. See [Mixed inference configuration and repair](docs/inference/mixed-inference-configuration.md), [Pinned EmbeddingGemma model artifact](docs/inference/embeddinggemma-model-artifact.md), [Embedded EmbeddingGemma execution](docs/inference/embedded-embeddinggemma.md), the [recommended Qwen reranker](docs/inference/qwen-reranker.md), and the [recommended QMD query planner](docs/inference/qmd-query-planner.md) for behavior and evidence limits.
+
+[Embedded profile acceptance evidence](docs/evaluation/embedded-profile-acceptance.md) records the no-download conformance result, the unchanged Octen report identity, background interruption coverage, the live EmbeddingGemma quality command, and every external release blocker. The linked [distribution review packet](docs/inference/embedded-profile-distribution-review.md) requires maintainer approval; it does not claim legal clearance.
 
 ## Default local models
 
@@ -194,7 +274,7 @@ The checked-in embedding defaults match `~/.pi/agent/LOCAL-AI.md`:
 | Dimensions      | `2560`                         |
 | Batch size      | `16`                           |
 
-The embedding endpoint must implement `POST /v1/embeddings` with the OpenAI request and response shape. Read-only search embeds the fixed canary before every query, so an in-process model swap is rejected before zvec opens. On ordinary indexing, an all-hit cache-only rebuild makes no Octen call; the first cache miss validates a fresh canary before any new chunk text reaches the model, preventing new-model vectors from entering an old generation. Explicit `--rebuild` refreshes and preflights the canary before deleting the old generation.
+The embedding endpoint must implement `POST /v1/embeddings` with the OpenAI request and response shape. Read-only search embeds the fixed canary before every query, so an in-process model swap is rejected before zvec opens. On ordinary incremental indexing, an all-hit cache-only update makes no Octen call; the first cache miss validates a fresh canary before any new chunk text reaches the model, preventing new-model vectors from entering an active generation. Explicit `--rebuild` preflights the canary before staging writes and verifies it again before atomic activation; it never deletes the old active generation.
 
 The manifest stores one canonical FP32 canary vector and uses its exact hash as embedding-cache identity. Compatibility compares a fresh canary by cosine similarity with a minimum of `0.9995`. This tolerates the measured geometry variation across llama.cpp parallel slots while rejecting larger drift. A tolerated rebuild retains the persisted canonical hash and can reuse vectors; a canary below the floor creates a new identity and misses the old cache.
 
@@ -206,7 +286,7 @@ Optional deep-rerank defaults are:
 | Request model | `qwen3-rerank`                |
 | Endpoint      | `POST /v1/rerank`             |
 
-In `deep-rerank` mode, the request is `{ model, query, documents, top_n }`. The response must contain `{ model, object, usage, results }`, with one `{ index, relevance_score }` result for every submitted document. Embedding and reranker HTTP requests abort after 60 seconds unless the caller cancels first.
+In `deep-rerank` mode, the request is `{ model, query, documents, top_n }`. The response must contain `{ model, object, usage, results }`, with one `{ index, relevance_score }` result for every submitted document. Scores must be finite probabilities from `0` through `1`. Embedding and reranker HTTP requests abort after 60 seconds unless the caller cancels first. Deep-search output records the reranker profile, adapter, and profile-plus-adapter cache identity. A reranker failure rejects the requested mode without switching backend or falling back to hybrid.
 
 ## Configure
 
@@ -268,10 +348,11 @@ Default data paths:
 ~/.pi/agent/recall/index-manifest.json      generation compatibility identity
 ~/.pi/agent/recall/tokenizers/<revision>/   checksum-verified tokenizer assets
 ~/.pi/agent/recall/embedding-cache/v1/      durable content-addressed FP32 vectors
+~/.pi/agent/recall/models/                  explicitly approved pinned model artifacts
 ~/.pi/agent/recall/operation.lock/          explicit-index writer lock
 ```
 
-A process-local mutex and PID-owned writer lock serialize manual and automatic indexing. Targeted lifecycle ingestion waits at most 250 milliseconds for another writer, then defers quietly until the next lifecycle event. The active-session freshness barrier waits under the tool's cancellation signal because search must not silently return stale evidence from its invoking session. Search never clears or repairs another process's lock. Manual full catch-up checkpoints every 100 changed files; targeted reconciliation checkpoints its one session immediately. Embedding writes use bounded 128-chunk windows.
+A process-local mutex and PID-owned writer lock serialize explicit indexing. Interactive lifecycle events and recall search do not reconcile whole sessions. Search never clears or repairs another process's lock. Manual catch-up checkpoints each changed physical session, and embedding writes use bounded 128-chunk windows.
 
 The embedding cache is a sibling of zvec rather than part of the collection. Each entry has a versioned identity header, FP32 payload, and SHA-256 checksum. Writers fsync a unique temporary file and atomically rename it only after validation. Readers reject identity, dimension, byte-length, checksum, and non-finite-value failures. Rebuilding only zvec and index state leaves the cache available, so unchanged chunks need zero chunk-embedding requests. Index completion reports cache hits, newly embedded chunks, and chunk-embedding request count separately; the model-identity canary request is not a chunk-embedding request.
 
@@ -296,10 +377,11 @@ Only clean version-4 evidence can unblock production indexing. The gate binds th
 
 ## Develop
 
-All tests use explicit fixture session directories and temporary recall data directories.
+All tests use explicit fixture session directories and temporary recall data directories. The inference conformance tests use temporary deterministic HTTP servers; they do not require a live model.
 
 ```bash
 npm install
+node --import tsx --test src/recall-inference-conformance.test.ts
 npm test
 npm run typecheck
 npm run lint

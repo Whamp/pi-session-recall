@@ -5,10 +5,13 @@ import { join } from 'node:path';
 import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 
-import type { RecallConversationConfig } from './recall-conversation-service.js';
+import type { RecallChunkPolicy } from './recall-chunk-policy.js';
 import { RecallDiagnosticsMode } from './enums.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
-import { normalizeRecallProjectLineages } from './resolve-project-identity.js';
+import {
+  normalizeRecallProjectLineages,
+  type RecallProjectLineages,
+} from './resolve-project-identity.js';
 
 const DEFAULT_RECALL_CHANNEL_CANDIDATE_LIMIT = 40;
 const MAX_RECALL_CHANNEL_CANDIDATE_LIMIT = 200;
@@ -28,6 +31,7 @@ const recallConfigFileSchema = Type.Object(
     embeddingBatchSize: Type.Optional(Type.Integer({ minimum: 1 })),
     rerankerBaseUrl: Type.Optional(Type.String({ minLength: 1 })),
     rerankerModel: Type.Optional(Type.String({ minLength: 1 })),
+    queryPlannerBaseUrl: Type.Optional(Type.String({ minLength: 1 })),
     denseCandidateLimit: Type.Optional(
       Type.Integer({ minimum: 1, maximum: MAX_RECALL_CHANNEL_CANDIDATE_LIMIT }),
     ),
@@ -46,6 +50,55 @@ const recallConfigFileSchema = Type.Object(
   },
   { additionalProperties: false },
 );
+
+/** Per-channel candidate caps applied before recall rank fusion. */
+export interface RecallSearchCandidateLimits {
+  dense: number;
+  lexical: number;
+  identifier: number;
+}
+
+/** Runtime paths, bounded retrieval channels, and local embedding plus reranker identity. */
+export interface RecallConversationConfig {
+  sessionsDirectory: string;
+  databasePath: string;
+  statePath: string;
+  manifestPath: string;
+  tokenizerCacheDirectory: string;
+  embeddingCacheDirectory: string;
+  lockPath: string;
+  /** Managed index generation directories; defaults beside the legacy manifest. */
+  generationsDirectory?: string;
+  /** Atomic active-generation selection file; defaults beside the legacy manifest. */
+  activeGenerationPath?: string;
+  /** Resumable staging-generation selection file; defaults beside the legacy manifest. */
+  stagingGenerationPath?: string;
+  /** One bounded detached-build status record; defaults beside the legacy manifest. */
+  backgroundIndexStatusPath?: string;
+  /** Ephemeral detached-worker request; defaults beside the legacy manifest. */
+  backgroundIndexRequestPath?: string;
+  diagnosticsMode: RecallDiagnosticsMode;
+  diagnosticLogPath: string;
+  retainedDiagnosticLogPath: string;
+  embeddingBaseUrl: string;
+  embeddingModel: string;
+  embeddingServedModelId: string;
+  embeddingArtifact: string;
+  embeddingQuantization: string;
+  embeddingPooling: string;
+  embeddingDimensions: number;
+  embeddingBatchSize: number;
+  rerankerBaseUrl: string;
+  rerankerModel: string;
+  queryPlannerBaseUrl?: string;
+  projectLineages: RecallProjectLineages;
+  searchCandidateLimits: RecallSearchCandidateLimits;
+  /** Maximum fused candidates admitted before duplicate grouping in hybrid and deep-rerank modes. */
+  fusedPoolLimit?: number;
+  /** Maximum duplicate evidence groups admitted to deep reranking. */
+  rerankPoolLimit?: number;
+  chunkPolicy?: RecallChunkPolicy;
+}
 
 /** Inputs used to locate and override recall configuration, primarily for tests and embedding migrations. */
 export interface RecallConversationConfigLoadOptions {
@@ -125,6 +178,11 @@ export async function loadRecallConversationConfig(
     tokenizerCacheDirectory: join(dataDirectory, 'tokenizers'),
     embeddingCacheDirectory: join(dataDirectory, 'embedding-cache'),
     lockPath: join(dataDirectory, 'operation.lock'),
+    generationsDirectory: join(dataDirectory, 'index-generations'),
+    activeGenerationPath: join(dataDirectory, 'active-generation.json'),
+    stagingGenerationPath: join(dataDirectory, 'staging-generation.json'),
+    backgroundIndexStatusPath: join(dataDirectory, 'background-index-status.json'),
+    backgroundIndexRequestPath: join(dataDirectory, 'background-index-request.json'),
     diagnosticsMode: file.diagnostics ?? RecallDiagnosticsMode.SLOW,
     diagnosticLogPath: join(dataDirectory, 'diagnostics.jsonl'),
     retainedDiagnosticLogPath: join(dataDirectory, 'diagnostics.previous.jsonl'),
@@ -161,6 +219,10 @@ export async function loadRecallConversationConfig(
       file.rerankerBaseUrl ??
       'http://192.168.0.67:8091/v1',
     rerankerModel: environment.PI_RECALL_RERANKER_MODEL ?? file.rerankerModel ?? 'qwen3-rerank',
+    queryPlannerBaseUrl:
+      environment.PI_RECALL_QUERY_PLANNER_BASE_URL ??
+      file.queryPlannerBaseUrl ??
+      'http://192.168.0.67:8092/v1',
     projectLineages,
     searchCandidateLimits: {
       dense: resolveRecallCandidateLimit(

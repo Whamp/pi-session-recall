@@ -1,19 +1,25 @@
+import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 import {
   createEmbeddingVectorCache,
   createEmbeddingVectorCacheIdentity,
 } from './embedding-vector-cache.js';
+import type {
+  RecallConversationConfig,
+  RecallSearchCandidateLimits,
+} from './recall-conversation-config.js';
 import {
+  RecallBackgroundIndexProcessState,
   RecallDiagnosticErrorCategory,
   RecallDiagnosticStatus,
-  type RecallDiagnosticsMode,
   RecallEvidenceRelation,
   RecallLifecycleTrigger,
   RecallManualMaintenanceTrigger,
+  RecallInferenceBackend,
   RecallProjectIdentitySource,
   RecallRankedListSource,
   RecallSearchScope,
@@ -25,15 +31,68 @@ import {
   type RecallRankedList,
 } from './fuse-recall-ranked-lists.js';
 import {
+  inspectRecallConversationCorpus,
+  MAX_RECALL_FIRST_INDEX_SAMPLE_SESSION_COUNT,
+  selectRecallConversationCorpusSample,
+  type RecallConversationCorpusInspection,
+} from './recall-conversation-corpus.js';
+import { isUnknownRecord } from './is-unknown-record.js';
+import {
   indexChangedConversationSession,
   indexChangedConversationSessions,
+  readRecallConversationIndexStateSummary,
+  type ConversationIndexCheckpoint,
   type ConversationIndexProgress,
   type ConversationIndexSummary,
 } from './incremental-session-indexer.js';
-import { isUnknownRecord } from './is-unknown-record.js';
-import { createLocalEmbeddingClient, type LocalEmbeddingClient } from './local-embedding-client.js';
-import { createLocalRerankerClient, type LocalRerankerClient } from './local-reranker-client.js';
+import {
+  markRecallBackgroundIndexGenerationDiscarded,
+  readRecallBackgroundIndexGenerationStatus,
+  removeRecallBackgroundIndexWorkerRequest,
+  resumeRecallBackgroundIndexGeneration,
+  startRecallBackgroundIndexGeneration,
+  stopRecallBackgroundIndexGeneration,
+  type RecallBackgroundIndexCoordinatorConfig,
+  type RecallBackgroundIndexGenerationStatus,
+  type RecallBackgroundIndexServiceFactory,
+} from './recall-background-index-build.js';
+import type { LocalEmbeddingClient } from './local-embedding-client.js';
 import { loadOctenConversationTokenizer } from './octen-conversation-tokenizer.js';
+import {
+  createOctenEmbeddingModelProfile,
+  createQwenRerankingModelProfile,
+  type RecallEmbeddingModelProfile,
+  type RecallQueryPlanningModelProfile,
+  type RecallRerankingModelProfile,
+} from './recall-model-profiles.js';
+import {
+  createRecallRerankingExecutionIdentity,
+  type RecallEmbeddingProvider,
+  type RecallIdentifiedQueryPlanningProvider,
+  type RecallPlannedRetrievalQuery,
+  type RecallQueryPlanningExecutionIdentity,
+  type RecallRerankingExecutionIdentity,
+  type RecallRerankingProvider,
+} from './recall-inference-capabilities.js';
+import {
+  measureRecallQueryPlanningProviderConformance,
+  measureRecallRerankingProviderConformance,
+  type RecallQueryPlanningProviderConformanceMeasurement,
+  type RecallRerankingProviderConformanceMeasurement,
+} from './recall-inference-conformance.js';
+import { createLlamaCppHttpEmbeddingProvider } from './createLlamaCppHttpEmbeddingProvider.js';
+import { createQwenHttpRerankingProvider } from './createQwenHttpRerankingProvider.js';
+import {
+  activateStagingRecallIndexGeneration,
+  discardStagingRecallIndexGeneration,
+  prepareStagingRecallIndexGeneration,
+  preserveStagingRecallIndexGeneration,
+  readRecallIndexGenerationStatus,
+  resolveActiveRecallIndexGeneration,
+  type RecallIndexGenerationCoordinatorConfig,
+  type RecallIndexGenerationPaths,
+  type RecallIndexGenerationStatus,
+} from './recall-index-generations.js';
 import {
   assertRecallIndexManifestCompatible,
   calculateRecallEmbeddingCanaryCosineSimilarity,
@@ -44,8 +103,8 @@ import {
   writeRecallIndexManifest,
   type RecallEmbeddingModelIdentity,
   type RecallIndexManifest,
+  type RecallTokenizerManifestIdentity,
 } from './recall-index-manifest.js';
-import type { RecallChunkPolicy } from './recall-chunk-policy.js';
 import {
   createRecallIndexMetrics,
   createRecallOperationDiagnostics,
@@ -61,7 +120,6 @@ import {
   createLineageResolver,
   resolveProjectIdentity,
   type ProjectIdentity,
-  type RecallProjectLineages,
   type ResolvedProjectIdentity,
 } from './resolve-project-identity.js';
 import {
@@ -74,47 +132,20 @@ import {
   type RankedRecallSearchResult,
   type RecallFusedRankBlendBand,
 } from './rank-recall-search-results.js';
-import type { ConversationTextTokenizer } from './session-conversation-index.js';
+import {
+  readSessionConversationChunks,
+  type ConversationTextTokenizer,
+} from './session-conversation-index.js';
 import {
   openZvecConversationStore,
   type ZvecConversationStore,
 } from './zvec-conversation-store.js';
 
-/** Runtime paths, bounded retrieval channels, and local embedding plus reranker identity. */
-export interface RecallConversationConfig {
-  sessionsDirectory: string;
-  databasePath: string;
-  statePath: string;
-  manifestPath: string;
-  tokenizerCacheDirectory: string;
-  embeddingCacheDirectory: string;
-  lockPath: string;
-  diagnosticsMode: RecallDiagnosticsMode;
-  diagnosticLogPath: string;
-  retainedDiagnosticLogPath: string;
-  embeddingBaseUrl: string;
-  embeddingModel: string;
-  embeddingServedModelId: string;
-  embeddingArtifact: string;
-  embeddingQuantization: string;
-  embeddingPooling: string;
-  embeddingDimensions: number;
-  embeddingBatchSize: number;
-  rerankerBaseUrl: string;
-  rerankerModel: string;
-  projectLineages: RecallProjectLineages;
-  searchCandidateLimits: RecallSearchCandidateLimits;
-  fusedPoolLimit?: number;
-  rerankPoolLimit?: number;
-  chunkPolicy?: RecallChunkPolicy;
-}
-
-/** Per-channel candidate caps applied before recall rank fusion. */
-export interface RecallSearchCandidateLimits {
-  dense: number;
-  lexical: number;
-  identifier: number;
-}
+export type {
+  RecallConversationConfig,
+  RecallSearchCandidateLimits,
+} from './recall-conversation-config.js';
+export type { RecallPlannedRetrievalQuery } from './recall-inference-capabilities.js';
 
 /** Maximum agent-supplied retrieval queries admitted by one query-planned recall search. */
 export const MAX_AGENT_RECALL_PLANNED_QUERY_COUNT = 10;
@@ -127,12 +158,6 @@ export const QUERY_PLANNED_RECALL_GROUP_LIMIT = 40;
 
 /** Final result cap applied before query-planned neighbor context expansion. */
 export const QUERY_PLANNED_RECALL_FINAL_RESULT_LIMIT = 5;
-
-/** One agent-supplied retrieval query routed only to its declared channel. */
-export interface RecallPlannedRetrievalQuery {
-  type: 'lex' | 'vec' | 'hyde';
-  query: string;
-}
 
 /** User-selected ranking depth for hybrid-only, local Qwen, or agent-planned recall search. */
 export type RecallSearchMode = 'hybrid' | 'deep-rerank' | 'query-planned';
@@ -183,6 +208,13 @@ export interface RecallConversationSearchOptions {
   signal?: AbortSignal;
 }
 
+/** Profile, adapter, and cache identity for the reranker used by one deep search. */
+export interface RecallSearchRerankerIdentity {
+  profileId: string;
+  adapterId: string;
+  cacheIdentity: string;
+}
+
 /** Exact fusion, optional Qwen reranking, branch-prior, and neighbor policy for one search. */
 export interface RecallSearchPolicy {
   scope: RecallSearchScope;
@@ -192,6 +224,7 @@ export interface RecallSearchPolicy {
   reciprocalRankConstant: number;
   rerankPolicyVersion: number | null;
   rerankerModel: string | null;
+  rerankerIdentity: RecallSearchRerankerIdentity | null;
   activeBranchPrior: number;
   candidateLimits: RecallSearchCandidateLimits;
   fusedPoolLimit: number;
@@ -217,6 +250,7 @@ interface RecallConversationIndexBaseOptions {
   lockWaitMilliseconds?: number;
   requireExistingGeneration?: boolean;
   onProgress?: (progress: ConversationIndexProgress) => void;
+  onCheckpoint?: (checkpoint: ConversationIndexCheckpoint) => void;
   optimize?: boolean;
 }
 
@@ -254,30 +288,139 @@ export interface RecallConversationIndexResult {
   totalChunks: number;
 }
 
-/** Search plus full and targeted index-maintenance operations exposed by the extension. */
+/** Verified embedding profile and tokenizer identity accepted before guided setup persists it. */
+export interface RecallEmbeddingCapabilityVerification {
+  embeddingProfileId: string;
+  model: string;
+  dimensions: number;
+  normalization: 'l2' | null;
+  tokenizerModel: string;
+}
+
+/** Bound and cancellation for one optional first-index measurement sample. */
+export interface RecallFirstIndexSampleOptions {
+  maximumSessionCount?: number;
+  signal?: AbortSignal;
+}
+
+/** Cold start, throughput, cache reuse, and duration range from one bounded corpus sample. */
+export interface RecallFirstIndexSampleMeasurement {
+  corpus: RecallConversationCorpusInspection;
+  sampledSessionCount: number;
+  sampledSourceByteSize: number;
+  sampledDenseDocumentCount: number;
+  coldStartMilliseconds: number;
+  measuredSampleMilliseconds: number;
+  sourceBytesPerSecond: number;
+  denseDocumentsPerSecond: number;
+  cacheHitCount: number;
+  newlyEmbeddedDocumentCount: number;
+  embeddingRequestCount: number;
+  estimatedDurationMilliseconds: {
+    minimum: number;
+    maximum: number;
+  };
+}
+
+/** Independent fixed-score fixture required to accept one reranking adapter. */
+export interface RecallRerankingCapabilityVerificationOptions {
+  query: string;
+  documents: readonly string[];
+  expectedScores: readonly number[];
+  maximumAbsoluteDifference?: number;
+  signal?: AbortSignal;
+}
+
+/** Inspectable profile, adapter, score policy, and measurement from reranker conformance. */
+export interface RecallRerankingCapabilityVerification {
+  profileId: string;
+  model: string;
+  scorePolicy: string;
+  executionIdentity: Readonly<RecallRerankingExecutionIdentity>;
+  measurement: RecallRerankingProviderConformanceMeasurement;
+}
+
+/** Cancellation accepted by independent query planner setup verification. */
+export interface RecallQueryPlanningCapabilityVerificationOptions {
+  expectedPlan?: readonly Readonly<RecallPlannedRetrievalQuery>[];
+  signal?: AbortSignal;
+}
+
+/** Inspectable profile, adapter, policy, and measurement from accepted planner conformance. */
+export interface RecallQueryPlanningCapabilityVerification {
+  profileId: string;
+  model: string;
+  promptPolicy: string;
+  grammarVersion: string;
+  executionIdentity: Readonly<RecallQueryPlanningExecutionIdentity>;
+  measurement: RecallQueryPlanningProviderConformanceMeasurement;
+}
+
+/** Search plus inference verification and explicit index-generation operations. */
 export interface RecallConversationService {
+  /** Verifies the selected embedding canary and tokenizer without indexing corpus documents. */
+  verifyEmbeddingCapability(options?: {
+    signal?: AbortSignal;
+  }): Promise<RecallEmbeddingCapabilityVerification>;
+  /** Inspects session count and source bytes without parsing sessions or invoking inference. */
+  inspectConversationCorpus(): Promise<RecallConversationCorpusInspection>;
+  /** Warms the staging generation's profile-bound cache from a bounded corpus sample. */
+  measureFirstIndexSample(
+    options?: RecallFirstIndexSampleOptions,
+  ): Promise<RecallFirstIndexSampleMeasurement>;
+  /** Verifies ordered reranker score semantics against an independent fixed fixture. */
+  verifyRerankingCapability(
+    options: RecallRerankingCapabilityVerificationOptions,
+  ): Promise<RecallRerankingCapabilityVerification>;
+  verifyQueryPlanningCapability(
+    options?: RecallQueryPlanningCapabilityVerificationOptions,
+  ): Promise<RecallQueryPlanningCapabilityVerification>;
   search(
     query: string,
     limit: number,
     options?: RecallConversationSearchOptions,
   ): Promise<RecallConversationSearch>;
   index(options?: RecallConversationIndexOptions): Promise<RecallConversationIndexResult>;
+  startBackgroundIndexGeneration(): Promise<RecallBackgroundIndexGenerationStatus>;
+  resumeBackgroundIndexGeneration(): Promise<RecallBackgroundIndexGenerationStatus>;
+  readBackgroundIndexGenerationStatus(): Promise<RecallBackgroundIndexGenerationStatus | null>;
+  stopBackgroundIndexGeneration(): Promise<RecallBackgroundIndexGenerationStatus>;
+  readIndexGenerationStatus(): Promise<RecallIndexGenerationStatus>;
+  discardStagingIndexGeneration(): Promise<boolean>;
   reconcileSession(
     sessionPath: string,
     options: RecallConversationReconcileOptions,
   ): Promise<RecallConversationIndexResult>;
 }
 
-/** Injectable local model, tokenizer, and zvec boundaries used by tests and bounded evaluation. */
+/** Injectable inference, tokenizer, and zvec boundaries used by tests and bounded evaluation. */
 export interface RecallConversationDependencies {
+  /** Model semantics authoritative for manifest compatibility across embedded and HTTP execution. */
+  embeddingProfile?: RecallEmbeddingModelProfile;
+  /** Capability-specific embedding provider; preferred over the legacy shared operation. */
+  embeddingProvider?: RecallEmbeddingProvider;
+  /** @deprecated Use embeddingProvider so query and document semantics stay distinct. */
   embeddings?: LocalEmbeddingClient;
-  reranker?: LocalRerankerClient;
+  /** Model semantics recorded in deep-search policy; pair null with a null provider to disable. */
+  rerankingProfile?: RecallRerankingModelProfile | null;
+  /** Optional reranker; pair null with a null profile for embedding-only hybrid recall. */
+  reranker?: RecallRerankingProvider | null;
+  /** Explicit identity for an injected custom reranker adapter. */
+  rerankerExecutionIdentity?: RecallRerankingExecutionIdentity | null;
+  /** Optional query planner semantics verified independently and excluded from vector identity. */
+  queryPlanningProfile?: RecallQueryPlanningModelProfile;
+  /** Optional identified planner adapter; query-planned retrieval remains outside this ticket. */
+  queryPlanner?: RecallIdentifiedQueryPlanningProvider;
+  /** Profile-owned tokenizer identity recorded with chunk geometry in the index manifest. */
+  tokenizerIdentity?: RecallTokenizerManifestIdentity;
   loadTokenizer?: () => Promise<ConversationTextTokenizer>;
-  openStore?: (mode: 'read' | 'write') => ZvecConversationStore;
+  openStore?: (mode: 'read' | 'write', databasePath?: string) => ZvecConversationStore;
   resolveProjectIdentity?: (workingDirectory: string) => Promise<ResolvedProjectIdentity | null>;
   diagnostics?: RecallOperationDiagnostics;
   diagnosticsClock?: RecallDiagnosticsClock;
   notifyWarning?: (message: string) => void;
+  /** Reconstructs custom inference and indexing dependencies inside the detached worker. */
+  backgroundIndexServiceFactory?: RecallBackgroundIndexServiceFactory;
 }
 
 interface ValidatedRecallQueryPlanningOptions {
@@ -677,6 +820,39 @@ async function assertRecallIndexUnlockedForSearch(lockPath: string): Promise<voi
   );
 }
 
+function readRecallRerankingExecutionIdentity(
+  provider: RecallRerankingProvider,
+): RecallRerankingExecutionIdentity | undefined {
+  if (!('executionIdentity' in provider)) {
+    return undefined;
+  }
+  const identity = provider.executionIdentity;
+  if (
+    !isUnknownRecord(identity) ||
+    typeof identity.adapterId !== 'string' ||
+    typeof identity.cacheIdentity !== 'string' ||
+    typeof identity.modelProfileId !== 'string'
+  ) {
+    return undefined;
+  }
+  let backend: RecallInferenceBackend;
+  if (identity.backend === RecallInferenceBackend.EMBEDDED) {
+    backend = RecallInferenceBackend.EMBEDDED;
+  } else if (identity.backend === RecallInferenceBackend.LLAMA_CPP_HTTP) {
+    backend = RecallInferenceBackend.LLAMA_CPP_HTTP;
+  } else if (identity.backend === RecallInferenceBackend.CUSTOM) {
+    backend = RecallInferenceBackend.CUSTOM;
+  } else {
+    return undefined;
+  }
+  return {
+    adapterId: identity.adapterId,
+    backend,
+    cacheIdentity: identity.cacheIdentity,
+    modelProfileId: identity.modelProfileId,
+  };
+}
+
 function createEmbeddingModelIdentity(
   config: RecallConversationConfig,
 ): RecallEmbeddingModelIdentity {
@@ -695,20 +871,104 @@ export function createRecallConversationService(
   config: RecallConversationConfig,
   dependencies: RecallConversationDependencies = {},
 ): RecallConversationService {
-  const embeddings =
-    dependencies.embeddings ??
-    createLocalEmbeddingClient({
-      baseUrl: config.embeddingBaseUrl,
-      model: config.embeddingModel,
-      dimensions: config.embeddingDimensions,
-      batchSize: config.embeddingBatchSize,
-    });
-  const reranker =
-    dependencies.reranker ??
-    createLocalRerankerClient({
-      baseUrl: config.rerankerBaseUrl,
-      model: config.rerankerModel,
-    });
+  const embeddingProfile =
+    dependencies.embeddingProfile ??
+    createOctenEmbeddingModelProfile(createEmbeddingModelIdentity(config));
+  if (dependencies.embeddingProfile && !dependencies.tokenizerIdentity) {
+    throw new Error(
+      'Recall embedding profile configuration incomplete: tokenizer manifest identity is required',
+    );
+  }
+  if (
+    embeddingProfile.canary &&
+    (embeddingProfile.canary.expectedDimensions !== embeddingProfile.identity.dimensions ||
+      embeddingProfile.canary.expectedNormalization !== embeddingProfile.identity.normalization)
+  ) {
+    throw new Error(
+      'Recall embedding profile canary incompatible: dimensions and normalization must match the embedding identity',
+    );
+  }
+  const legacyEmbeddings = dependencies.embeddings;
+  const embeddingProvider: RecallEmbeddingProvider =
+    dependencies.embeddingProvider ??
+    (legacyEmbeddings
+      ? {
+          async embedQuery(query, signal) {
+            const embedding = (await legacyEmbeddings.embedTexts([query], signal))[0];
+            if (!embedding) {
+              throw new Error('Recall embedding response missing query vector');
+            }
+            return embedding;
+          },
+          embedDocuments(documents, signal) {
+            return legacyEmbeddings.embedTexts([...documents], signal);
+          },
+        }
+      : createLlamaCppHttpEmbeddingProvider(embeddingProfile, {
+          baseUrl: config.embeddingBaseUrl,
+          batchSize: config.embeddingBatchSize,
+        }));
+  const rerankingDisabled =
+    dependencies.rerankingProfile === null && dependencies.reranker === null;
+  if (
+    (dependencies.rerankingProfile === null) !== (dependencies.reranker === null) ||
+    (rerankingDisabled && dependencies.rerankerExecutionIdentity)
+  ) {
+    throw new Error(
+      'Recall reranker configuration incomplete: profile and provider must both be configured or both be null',
+    );
+  }
+  let rerankingProfile: RecallRerankingModelProfile | null;
+  let reranker: RecallRerankingProvider | null;
+  if (rerankingDisabled) {
+    rerankingProfile = null;
+    reranker = null;
+  } else {
+    rerankingProfile =
+      dependencies.rerankingProfile ?? createQwenRerankingModelProfile(config.rerankerModel);
+    reranker =
+      dependencies.reranker ??
+      createQwenHttpRerankingProvider(rerankingProfile, {
+        baseUrl: config.rerankerBaseUrl,
+      });
+  }
+  const providerExecutionIdentity = reranker
+    ? readRecallRerankingExecutionIdentity(reranker)
+    : null;
+  const rerankerExecutionIdentity = rerankingProfile
+    ? (dependencies.rerankerExecutionIdentity ??
+      providerExecutionIdentity ??
+      createRecallRerankingExecutionIdentity(
+        rerankingProfile.profileId,
+        'custom-injected-reranking-v1',
+        RecallInferenceBackend.CUSTOM,
+      ))
+    : null;
+  if (
+    rerankingProfile &&
+    rerankerExecutionIdentity &&
+    rerankerExecutionIdentity.modelProfileId !== rerankingProfile.profileId
+  ) {
+    throw new Error(
+      `Recall reranker profile identity mismatch: expected ${rerankingProfile.profileId}, received ${rerankerExecutionIdentity.modelProfileId}`,
+    );
+  }
+  const queryPlanningProfile = dependencies.queryPlanningProfile;
+  const queryPlanner = dependencies.queryPlanner;
+  if ((queryPlanningProfile && !queryPlanner) || (!queryPlanningProfile && queryPlanner)) {
+    throw new Error(
+      'Recall query planner configuration incomplete: profile and identified provider are both required',
+    );
+  }
+  if (
+    queryPlanningProfile &&
+    queryPlanner &&
+    queryPlanner.executionIdentity.modelProfileId !== queryPlanningProfile.profileId
+  ) {
+    throw new Error(
+      `Recall query planner profile identity mismatch: expected ${queryPlanningProfile.profileId}, received ${queryPlanner.executionIdentity.modelProfileId}`,
+    );
+  }
   const loadTokenizer =
     dependencies.loadTokenizer ??
     (() => loadOctenConversationTokenizer({ cacheDirectory: config.tokenizerCacheDirectory }));
@@ -716,12 +976,70 @@ export function createRecallConversationService(
     config.projectLineages,
     dependencies.resolveProjectIdentity ?? resolveProjectIdentity,
   );
+  const embeddingProfileId = `embedding-profile-${createHash('sha256')
+    .update(
+      JSON.stringify({
+        identity: embeddingProfile.identity,
+        queryInputPrefix: embeddingProfile.queryInputPrefix,
+        documentInputPrefix: embeddingProfile.documentInputPrefix,
+        canary: embeddingProfile.canary ?? null,
+      }),
+    )
+    .digest('hex')}`;
+  const generationDataDirectory = dirname(config.manifestPath);
+  const generationCoordinatorConfig: RecallIndexGenerationCoordinatorConfig = {
+    legacyPaths: {
+      databasePath: config.databasePath,
+      statePath: config.statePath,
+      manifestPath: config.manifestPath,
+      lockPath: config.lockPath,
+    },
+    generationsDirectory:
+      config.generationsDirectory ?? join(generationDataDirectory, 'index-generations'),
+    activeGenerationPath:
+      config.activeGenerationPath ?? join(generationDataDirectory, 'active-generation.json'),
+    stagingGenerationPath:
+      config.stagingGenerationPath ?? join(generationDataDirectory, 'staging-generation.json'),
+  };
+  const backgroundIndexCoordinatorConfig: RecallBackgroundIndexCoordinatorConfig = {
+    serviceConfig: config,
+    generationCoordinatorConfig,
+    statusPath:
+      config.backgroundIndexStatusPath ??
+      join(generationDataDirectory, 'background-index-status.json'),
+    requestPath:
+      config.backgroundIndexRequestPath ??
+      join(generationDataDirectory, 'background-index-request.json'),
+    embeddingProfileId,
+    serviceFactory: dependencies.backgroundIndexServiceFactory ?? {
+      moduleUrl: import.meta.url,
+      exportName: 'createRecallConversationService',
+    },
+  };
+  const backgroundWorkerNeedsCustomFactory =
+    !dependencies.backgroundIndexServiceFactory &&
+    Boolean(
+      dependencies.embeddingProfile ||
+      dependencies.embeddingProvider ||
+      dependencies.embeddings ||
+      dependencies.tokenizerIdentity ||
+      dependencies.loadTokenizer ||
+      dependencies.openStore ||
+      dependencies.resolveProjectIdentity,
+    );
+  function assertBackgroundIndexWorkerCanReconstructService(): void {
+    if (backgroundWorkerNeedsCustomFactory) {
+      throw new Error(
+        'Recall background index worker cannot reconstruct injected indexing dependencies; configure backgroundIndexServiceFactory',
+      );
+    }
+  }
   const openStore =
     dependencies.openStore ??
-    ((mode) =>
+    ((mode, databasePath = config.databasePath) =>
       openZvecConversationStore({
-        databasePath: config.databasePath,
-        dimensions: config.embeddingDimensions,
+        databasePath,
+        dimensions: embeddingProfile.identity.dimensions,
         createIfMissing: mode === 'write',
         readOnly: mode === 'read',
       }));
@@ -763,7 +1081,30 @@ export function createRecallConversationService(
   }
 
   async function readCurrentEmbeddingCanary(signal?: AbortSignal): Promise<number[]> {
-    const embedding = (await embeddings.embedTexts([RECALL_EMBEDDING_CANARY_TEXT], signal))[0];
+    if (embeddingProfile.canary) {
+      const firstEmbedding = await embeddingProvider.embedQuery(
+        embeddingProfile.canary.query,
+        signal,
+      );
+      const repeatedEmbedding = await embeddingProvider.embedQuery(
+        embeddingProfile.canary.query,
+        signal,
+      );
+      const repeatCosineSimilarity = calculateRecallEmbeddingCanaryCosineSimilarity(
+        firstEmbedding,
+        repeatedEmbedding,
+        embeddingProfile.identity.dimensions,
+      );
+      if (repeatCosineSimilarity < embeddingProfile.canary.minimumRepeatCosineSimilarity) {
+        throw new Error(
+          `Recall embedding canary repeatability mismatch: expected cosine similarity at least ${embeddingProfile.canary.minimumRepeatCosineSimilarity}, received ${repeatCosineSimilarity}`,
+        );
+      }
+      return [...firstEmbedding];
+    }
+    const embedding = (
+      await embeddingProvider.embedDocuments([RECALL_EMBEDDING_CANARY_TEXT], signal)
+    )[0];
     if (!embedding) {
       throw new Error('Recall embedding response missing canary vector');
     }
@@ -789,14 +1130,19 @@ export function createRecallConversationService(
 
   function createExpectedManifest(canaryEmbedding: readonly number[]): RecallIndexManifest {
     return createRecallIndexManifest({
-      embeddingIdentity: createEmbeddingModelIdentity(config),
+      embeddingIdentity: embeddingProfile.identity,
       canaryEmbedding,
+      ...(embeddingProfile.canary ? { embeddingCanary: embeddingProfile.canary } : {}),
+      ...(dependencies.tokenizerIdentity
+        ? { tokenizerIdentity: dependencies.tokenizerIdentity }
+        : {}),
       projectLineages: config.projectLineages,
       ...(config.chunkPolicy ? { chunkPolicy: config.chunkPolicy } : {}),
     });
   }
 
   async function readCanonicalRebuildCanary(
+    activeManifestPath?: string,
     signal?: AbortSignal,
     diagnosticMetrics?: RecallIndexDiagnosticMetrics,
   ): Promise<number[]> {
@@ -810,46 +1156,51 @@ export function createRecallConversationService(
           canaryMinimumCosineSimilarity: number;
         }
       | undefined;
-    try {
-      const actualManifest = await readRecallIndexManifest(config.manifestPath);
-      previousCanary = actualManifest?.embedding;
-    } catch (error) {
-      if (
-        !(error instanceof Error) ||
-        !error.message.startsWith(`Recall index manifest invalid at ${config.manifestPath}:`)
-      ) {
-        throw error;
+    if (activeManifestPath) {
+      try {
+        const actualManifest = await readRecallIndexManifest(activeManifestPath);
+        previousCanary = actualManifest?.embedding;
+      } catch (error) {
+        if (
+          !(error instanceof Error) ||
+          !error.message.startsWith(`Recall index manifest invalid at ${activeManifestPath}:`)
+        ) {
+          throw error;
+        }
+        previousCanary =
+          (await recoverRecallEmbeddingCanaryFromManifest(
+            activeManifestPath,
+            embeddingProfile.identity.dimensions,
+          )) ?? undefined;
       }
-      previousCanary =
-        (await recoverRecallEmbeddingCanaryFromManifest(
-          config.manifestPath,
-          config.embeddingDimensions,
-        )) ?? undefined;
     }
-    if (!previousCanary || previousCanary.dimensions !== config.embeddingDimensions) {
+    if (!previousCanary || previousCanary.dimensions !== embeddingProfile.identity.dimensions) {
       return currentCanary;
     }
     const cosineSimilarity = calculateRecallEmbeddingCanaryCosineSimilarity(
       previousCanary.canaryVector,
       currentCanary,
-      config.embeddingDimensions,
+      embeddingProfile.identity.dimensions,
     );
     return cosineSimilarity >= previousCanary.canaryMinimumCosineSimilarity
       ? [...previousCanary.canaryVector]
       : currentCanary;
   }
 
-  async function readRequiredManifest(): Promise<RecallIndexManifest> {
-    const actual = await readRecallIndexManifest(config.manifestPath);
+  async function readRequiredManifest(
+    generationPaths: RecallIndexGenerationPaths,
+  ): Promise<RecallIndexManifest> {
+    const actual = await readRecallIndexManifest(generationPaths.manifestPath);
     if (!actual) {
       throw new Error(
-        `Recall index manifest missing at ${config.manifestPath}; reindex with /pi-session-recall-index --rebuild`,
+        `Recall index manifest missing at ${generationPaths.manifestPath}; reindex with /pi-session-recall-index --rebuild`,
       );
     }
     return actual;
   }
 
   async function prepareIndexForWrite(
+    generationPaths: RecallIndexGenerationPaths,
     signal?: AbortSignal,
     preflightedCanary?: readonly number[],
     requireExistingGeneration = false,
@@ -859,43 +1210,43 @@ export function createRecallConversationService(
     manifest: RecallIndexManifest;
     embeddingModelPreflighted: boolean;
   }> {
-    const actual = await readRecallIndexManifest(config.manifestPath);
+    const actual = await readRecallIndexManifest(generationPaths.manifestPath);
     if (!actual && requireExistingGeneration) {
       throw new Error(
-        `Recall automatic session ingestion requires an existing index generation at ${config.manifestPath}; initialize it with /pi-session-recall-index --rebuild`,
+        `Recall automatic session ingestion requires an existing index generation at ${generationPaths.manifestPath}; initialize it with /pi-session-recall-index --rebuild`,
       );
     }
-    if (!actual && (existsSync(config.databasePath) || existsSync(config.statePath))) {
+    if (
+      !actual &&
+      (existsSync(generationPaths.databasePath) || existsSync(generationPaths.statePath))
+    ) {
       throw new Error(
-        `Recall index manifest missing at ${config.manifestPath} for existing index data; reindex with /pi-session-recall-index --rebuild`,
+        `Recall index manifest missing at ${generationPaths.manifestPath} for existing index data; reindex with /pi-session-recall-index --rebuild`,
       );
     }
-    const tokenizer = await getConversationTokenizer();
     if (actual) {
       const expected = createExpectedManifest(actual.embedding.canaryVector);
-      assertRecallIndexManifestCompatible(actual, expected, config.manifestPath);
+      assertRecallIndexManifestCompatible(actual, expected, generationPaths.manifestPath);
+      const tokenizer = await getConversationTokenizer();
       return { tokenizer, manifest: actual, embeddingModelPreflighted: false };
     }
     const expected = createExpectedManifest(
       preflightedCanary ?? (await readIndexEmbeddingCanary(signal, diagnosticMetrics)),
     );
-    await writeRecallIndexManifest(config.manifestPath, expected);
+    const tokenizer = await getConversationTokenizer();
+    await writeRecallIndexManifest(generationPaths.manifestPath, expected);
     return { tokenizer, manifest: expected, embeddingModelPreflighted: true };
   }
 
-  async function removeRecallIndexGeneration(): Promise<void> {
-    await rm(config.databasePath, { recursive: true, force: true });
-    await rm(config.statePath, { force: true });
-    await rm(config.manifestPath, { force: true });
-  }
-
   async function updateConversationIndex(
+    generationPaths: RecallIndexGenerationPaths,
     store: ZvecConversationStore,
     tokenizer: ConversationTextTokenizer,
     manifest: RecallIndexManifest,
     embeddingModelPreflighted: boolean,
     signal?: AbortSignal,
     onProgress?: (progress: ConversationIndexProgress) => void,
+    onCheckpoint?: (checkpoint: ConversationIndexCheckpoint) => void,
     sessionPath?: string,
     diagnosticMetrics?: RecallIndexDiagnosticMetrics,
     onPhysicalSessionCheck?: (completion: RecallPhysicalSessionDiagnostic) => void,
@@ -907,10 +1258,10 @@ export function createRecallConversationService(
     ): Promise<number[][]> {
       if (!modelPreflighted) {
         const expected = createExpectedManifest(await readCurrentEmbeddingCanary(embeddingSignal));
-        assertRecallIndexManifestCompatible(manifest, expected, config.manifestPath);
+        assertRecallIndexManifestCompatible(manifest, expected, generationPaths.manifestPath);
         modelPreflighted = true;
       }
-      return embeddings.embedTexts(texts, embeddingSignal);
+      return embeddingProvider.embedDocuments(texts, embeddingSignal);
     }
     const preflightedEmbeddings: LocalEmbeddingClient = {
       embedTexts: embedTextsAfterModelPreflight,
@@ -923,7 +1274,7 @@ export function createRecallConversationService(
       diagnosticsClock,
     });
     const indexerOptions = {
-      statePath: config.statePath,
+      statePath: generationPaths.statePath,
       store,
       embeddingCache,
       tokenizer,
@@ -935,6 +1286,7 @@ export function createRecallConversationService(
       ...(signal ? { signal } : {}),
       ...(diagnosticMetrics ? { diagnosticMetrics, diagnosticsClock } : {}),
       ...(onPhysicalSessionCheck ? { onPhysicalSessionCheck } : {}),
+      ...(onCheckpoint ? { onCheckpoint } : {}),
     };
     return sessionPath
       ? indexChangedConversationSession({ ...indexerOptions, sessionPath })
@@ -951,11 +1303,13 @@ export function createRecallConversationService(
     lockWaitMilliseconds?: number,
     diagnosticMetrics?: RecallIndexDiagnosticMetrics,
   ): Promise<RecallConversationIndexResult> {
+    const activeGeneration = await resolveActiveRecallIndexGeneration(generationCoordinatorConfig);
+    const generationPaths = activeGeneration?.paths ?? generationCoordinatorConfig.legacyPaths;
     const lockSignal = createRecallLockAcquisitionSignal(signal, lockWaitMilliseconds);
     const lockStartedAtMilliseconds = diagnosticsClock.monotonicMilliseconds();
     let releaseLock: (() => Promise<void>) | undefined;
     try {
-      releaseLock = await acquireRecallConversationLock(config.lockPath, lockSignal);
+      releaseLock = await acquireRecallConversationLock(generationPaths.lockPath, lockSignal);
     } finally {
       if (diagnosticMetrics) {
         diagnosticMetrics.writerLockWaitMilliseconds += Math.max(
@@ -969,8 +1323,8 @@ export function createRecallConversationService(
       const preparationStartedAtMilliseconds = diagnosticsClock.monotonicMilliseconds();
       let preparedIndex: Awaited<ReturnType<typeof prepareIndexForWrite>>;
       try {
-        preparedIndex = await prepareIndexForWrite(signal, undefined, true);
-        store = openStore('write');
+        preparedIndex = await prepareIndexForWrite(generationPaths, signal, undefined, true);
+        store = openStore('write', generationPaths.databasePath);
       } finally {
         if (diagnosticMetrics) {
           diagnosticMetrics.manifestStorePreparationMilliseconds += Math.max(
@@ -980,11 +1334,13 @@ export function createRecallConversationService(
         }
       }
       const summary = await updateConversationIndex(
+        generationPaths,
         store,
         preparedIndex.tokenizer,
         preparedIndex.manifest,
         preparedIndex.embeddingModelPreflighted,
         signal,
+        undefined,
         undefined,
         sessionPath,
         diagnosticMetrics,
@@ -1002,7 +1358,218 @@ export function createRecallConversationService(
   }
 
   return {
-    async search(query, limit, options = {}) {
+    async verifyEmbeddingCapability(options = {}) {
+      const canary = await readCurrentEmbeddingCanary(options.signal);
+      await getConversationTokenizer();
+      const manifest = createExpectedManifest(canary);
+      return {
+        embeddingProfileId,
+        model: embeddingProfile.identity.requestModel,
+        dimensions: embeddingProfile.identity.dimensions,
+        normalization: embeddingProfile.identity.normalization ?? null,
+        tokenizerModel: manifest.tokenizer.model,
+      };
+    },
+    async inspectConversationCorpus() {
+      return (await inspectRecallConversationCorpus(config.sessionsDirectory)).inspection;
+    },
+    measureFirstIndexSample(options = {}) {
+      return runSerialized(async () => {
+        const maximumSessionCount =
+          options.maximumSessionCount ?? MAX_RECALL_FIRST_INDEX_SAMPLE_SESSION_COUNT;
+        const corpus = await inspectRecallConversationCorpus(config.sessionsDirectory);
+        const sampleFiles = selectRecallConversationCorpusSample(corpus.files, maximumSessionCount);
+        const generationStatus = await readRecallIndexGenerationStatus(generationCoordinatorConfig);
+        if (generationStatus.active) {
+          throw new Error(
+            `Recall first-index sample requires no active generation; active generation ${generationStatus.active.generationId} already exists`,
+          );
+        }
+
+        const stagingBuildLockPath = join(
+          generationCoordinatorConfig.generationsDirectory,
+          'staging-operation.lock',
+        );
+        const stagingBuildSignal = createRecallLockAcquisitionSignal(options.signal, undefined);
+        const releaseStagingBuildLock = await acquireRecallConversationLock(
+          stagingBuildLockPath,
+          stagingBuildSignal,
+        );
+        let stagingGeneration:
+          | Awaited<ReturnType<typeof prepareStagingRecallIndexGeneration>>
+          | undefined;
+        let releaseGenerationLock: (() => Promise<void>) | undefined;
+        try {
+          stagingGeneration = await prepareStagingRecallIndexGeneration(
+            generationCoordinatorConfig,
+            embeddingProfileId,
+          );
+          releaseGenerationLock = await acquireRecallConversationLock(
+            stagingGeneration.paths.lockPath,
+            stagingBuildSignal,
+          );
+
+          const coldStartStartedAtMilliseconds = diagnosticsClock.monotonicMilliseconds();
+          const canary = await readCurrentEmbeddingCanary(options.signal);
+          await getConversationTokenizer();
+          const coldStartMilliseconds = Math.max(
+            diagnosticsClock.monotonicMilliseconds() - coldStartStartedAtMilliseconds,
+            0,
+          );
+          const preparedIndex = await prepareIndexForWrite(
+            stagingGeneration.paths,
+            options.signal,
+            canary,
+          );
+          const embeddingCache = createEmbeddingVectorCache({
+            cacheDirectory: config.embeddingCacheDirectory,
+            identity: createEmbeddingVectorCacheIdentity(preparedIndex.manifest),
+            embeddingRequestBatchSize: config.embeddingBatchSize,
+            embeddings: {
+              embedTexts: embeddingProvider.embedDocuments.bind(embeddingProvider),
+            },
+            diagnosticsClock,
+          });
+
+          let sampledDenseDocumentCount = 0;
+          let cacheHitCount = 0;
+          let newlyEmbeddedDocumentCount = 0;
+          let embeddingRequestCount = 0;
+          const measuredSampleStartedAtMilliseconds = diagnosticsClock.monotonicMilliseconds();
+          for (const file of sampleFiles) {
+            if (options.signal?.aborted) {
+              throw new Error('Recall first-index sample cancelled', {
+                cause: options.signal.reason,
+              });
+            }
+            const chunks = await readSessionConversationChunks(file.sessionPath, {
+              tokenizer: preparedIndex.tokenizer,
+              maxTokens: preparedIndex.manifest.chunkPolicy.maxTokens,
+              overlapTokens: preparedIndex.manifest.chunkPolicy.overlapTokens,
+            });
+            const denseDocuments = chunks
+              .filter((chunk) => chunk.isDenseSearchable)
+              .map((chunk) => chunk.content);
+            sampledDenseDocumentCount += denseDocuments.length;
+            for (let start = 0; start < denseDocuments.length; start += 128) {
+              const cacheResult = await embeddingCache.resolveEmbeddingVectors(
+                denseDocuments.slice(start, start + 128),
+                options.signal,
+              );
+              cacheHitCount += cacheResult.cacheHits;
+              newlyEmbeddedDocumentCount += cacheResult.newlyEmbeddedChunks;
+              embeddingRequestCount += cacheResult.embeddingRequestCount;
+            }
+          }
+          const measuredSampleMilliseconds = Math.max(
+            diagnosticsClock.monotonicMilliseconds() - measuredSampleStartedAtMilliseconds,
+            0,
+          );
+          const sampledSourceByteSize = sampleFiles.reduce(
+            (total, file) => total + file.sourceByteSize,
+            0,
+          );
+          const measuredSampleSeconds = measuredSampleMilliseconds / 1_000;
+          const sourceBytesPerSecond =
+            measuredSampleSeconds > 0 ? sampledSourceByteSize / measuredSampleSeconds : 0;
+          const denseDocumentsPerSecond =
+            measuredSampleSeconds > 0 ? sampledDenseDocumentCount / measuredSampleSeconds : 0;
+          const projectedVariableMilliseconds =
+            sampledSourceByteSize > 0
+              ? measuredSampleMilliseconds *
+                (corpus.inspection.sourceByteSize / sampledSourceByteSize)
+              : 0;
+          const projectedDurationMilliseconds =
+            coldStartMilliseconds + projectedVariableMilliseconds;
+
+          await preserveStagingRecallIndexGeneration(
+            generationCoordinatorConfig,
+            stagingGeneration.generationId,
+          );
+          return {
+            corpus: corpus.inspection,
+            sampledSessionCount: sampleFiles.length,
+            sampledSourceByteSize,
+            sampledDenseDocumentCount,
+            coldStartMilliseconds,
+            measuredSampleMilliseconds,
+            sourceBytesPerSecond,
+            denseDocumentsPerSecond,
+            cacheHitCount,
+            newlyEmbeddedDocumentCount,
+            embeddingRequestCount,
+            estimatedDurationMilliseconds: {
+              minimum: Math.floor(projectedDurationMilliseconds * 0.8),
+              maximum: Math.ceil(projectedDurationMilliseconds * 1.25),
+            },
+          };
+        } catch (error) {
+          if (stagingGeneration) {
+            await preserveStagingRecallIndexGeneration(
+              generationCoordinatorConfig,
+              stagingGeneration.generationId,
+            );
+          }
+          throw error;
+        } finally {
+          await releaseGenerationLock?.();
+          await releaseStagingBuildLock();
+        }
+      });
+    },
+    async verifyRerankingCapability(options) {
+      if (!rerankingProfile || !reranker || !rerankerExecutionIdentity) {
+        throw new Error(
+          'Recall reranking is not configured: select a profile and adapter before verification',
+        );
+      }
+      const measurement = await measureRecallRerankingProviderConformance({
+        provider: {
+          executionIdentity: rerankerExecutionIdentity,
+          rerankDocuments: reranker.rerankDocuments.bind(reranker),
+        },
+        profile: rerankingProfile,
+        query: options.query,
+        documents: options.documents,
+        expectedScores: options.expectedScores,
+        ...(options.maximumAbsoluteDifference === undefined
+          ? {}
+          : { maximumAbsoluteDifference: options.maximumAbsoluteDifference }),
+        ...(options.signal ? { signal: options.signal } : {}),
+      });
+      return {
+        profileId: rerankingProfile.profileId,
+        model: rerankingProfile.model,
+        scorePolicy: rerankingProfile.scorePolicy,
+        executionIdentity: rerankerExecutionIdentity,
+        measurement,
+      };
+    },
+    async verifyQueryPlanningCapability(options = {}) {
+      if (!queryPlanningProfile || !queryPlanner) {
+        throw new Error(
+          'Recall query planner is not configured: select a profile and adapter before verification',
+        );
+      }
+      const measurement = await measureRecallQueryPlanningProviderConformance({
+        provider: queryPlanner,
+        profile: queryPlanningProfile,
+        query: queryPlanningProfile.conformanceCanary.query,
+        recallIntent: queryPlanningProfile.conformanceCanary.recallIntent,
+        protectedTerms: queryPlanningProfile.conformanceCanary.protectedTerms,
+        ...(options.expectedPlan ? { expectedPlan: options.expectedPlan } : {}),
+        ...(options.signal ? { signal: options.signal } : {}),
+      });
+      return {
+        profileId: queryPlanningProfile.profileId,
+        model: queryPlanningProfile.model,
+        promptPolicy: queryPlanningProfile.promptPolicy,
+        grammarVersion: queryPlanningProfile.grammarVersion,
+        executionIdentity: queryPlanner.executionIdentity,
+        measurement,
+      };
+    },
+    search(query, limit, options = {}) {
       const {
         mode = 'hybrid',
         scope = RecallSearchScope.PROJECT,
@@ -1012,8 +1579,18 @@ export function createRecallConversationService(
         intent,
         signal,
       } = options;
-      const queryPlanning = validateRecallQueryPlanningOptions(mode, plan, intent);
-      return await runRecallSearchWithDiagnostics({
+      let queryPlanning: ValidatedRecallQueryPlanningOptions;
+      try {
+        queryPlanning = validateRecallQueryPlanningOptions(mode, plan, intent);
+      } catch (error) {
+        return Promise.reject(error);
+      }
+      if (mode !== 'hybrid' && (!rerankingProfile || !reranker || !rerankerExecutionIdentity)) {
+        throw new Error(
+          `Recall reranking is not configured: select and verify a reranking capability before ${mode} search`,
+        );
+      }
+      return runRecallSearchWithDiagnostics({
         diagnostics,
         searchMode: mode,
         recallScope: scope,
@@ -1024,17 +1601,22 @@ export function createRecallConversationService(
             if (!searchQuery) {
               throw new Error('Recall query must not be blank');
             }
+            const activeGeneration = await resolveActiveRecallIndexGeneration(
+              generationCoordinatorConfig,
+            );
+            const generationPaths =
+              activeGeneration?.paths ?? generationCoordinatorConfig.legacyPaths;
             let actualManifest: RecallIndexManifest;
             const manifestReadStartedAtMilliseconds = diagnosticsClock.monotonicMilliseconds();
             try {
-              actualManifest = await readRequiredManifest();
+              actualManifest = await readRequiredManifest(generationPaths);
             } finally {
               diagnosticMetrics.embeddingModelVerificationMilliseconds += Math.max(
                 diagnosticsClock.monotonicMilliseconds() - manifestReadStartedAtMilliseconds,
                 0,
               );
             }
-            await assertRecallIndexUnlockedForSearch(config.lockPath);
+            await assertRecallIndexUnlockedForSearch(generationPaths.lockPath);
             const canaryVerificationStartedAtMilliseconds =
               diagnosticsClock.monotonicMilliseconds();
             try {
@@ -1044,7 +1626,7 @@ export function createRecallConversationService(
               assertRecallIndexManifestCompatible(
                 actualManifest,
                 expectedManifest,
-                config.manifestPath,
+                generationPaths.manifestPath,
               );
             } finally {
               diagnosticMetrics.embeddingModelVerificationMilliseconds += Math.max(
@@ -1076,7 +1658,7 @@ export function createRecallConversationService(
                 );
               }
             }
-            await assertRecallIndexUnlockedForSearch(config.lockPath);
+            await assertRecallIndexUnlockedForSearch(generationPaths.lockPath);
             if (scope === RecallSearchScope.PROJECT && !invocationDirectory) {
               throw new Error(
                 'Project-scoped recall requires Pi trusted invocation directory context',
@@ -1092,7 +1674,7 @@ export function createRecallConversationService(
             }
             const projectIdentityPredicate =
               scope === RecallSearchScope.PROJECT ? invocationProject?.projectIdentity : undefined;
-            const store = openStore('read');
+            const store = openStore('read', generationPaths.databasePath);
             try {
               const semanticQueryTexts = [
                 searchQuery,
@@ -1105,7 +1687,11 @@ export function createRecallConversationService(
               const queryEmbeddingStartedAtMilliseconds = diagnosticsClock.monotonicMilliseconds();
               let queryEmbeddings: number[][];
               try {
-                queryEmbeddings = await embeddings.embedTexts(semanticQueryTexts, signal);
+                queryEmbeddings = await Promise.all(
+                  semanticQueryTexts.map((semanticQueryText) =>
+                    embeddingProvider.embedQuery(semanticQueryText, signal),
+                  ),
+                );
               } finally {
                 diagnosticMetrics.queryEmbeddingMilliseconds += Math.max(
                   diagnosticsClock.monotonicMilliseconds() - queryEmbeddingStartedAtMilliseconds,
@@ -1287,11 +1873,16 @@ export function createRecallConversationService(
                       }
                     : undefined,
                 );
-                const diagnosticReranker: LocalRerankerClient = {
+                const diagnosticReranker: RecallRerankingProvider = {
                   async rerankDocuments(rerankerQuery, documents, rerankerSignal) {
                     const deepRerankStartedAtMilliseconds =
                       diagnosticsClock.monotonicMilliseconds();
                     try {
+                      if (!reranker) {
+                        throw new Error(
+                          'Recall reranking became unavailable during deep-rerank search',
+                        );
+                      }
                       return await reranker.rerankDocuments(
                         rerankerQuery,
                         documents,
@@ -1369,7 +1960,16 @@ export function createRecallConversationService(
                         : mode === 'deep-rerank'
                           ? RECALL_RERANK_POLICY_VERSION
                           : null,
-                    rerankerModel: mode === 'hybrid' ? null : config.rerankerModel,
+                    rerankerModel:
+                      mode !== 'hybrid' && rerankingProfile ? rerankingProfile.model : null,
+                    rerankerIdentity:
+                      mode !== 'hybrid' && rerankingProfile && rerankerExecutionIdentity
+                        ? {
+                            profileId: rerankingProfile.profileId,
+                            adapterId: rerankerExecutionIdentity.adapterId,
+                            cacheIdentity: rerankerExecutionIdentity.cacheIdentity,
+                          }
+                        : null,
                     activeBranchPrior: RECALL_ACTIVE_BRANCH_PRIOR,
                     candidateLimits: { ...submittedQueryCandidateLimits },
                     fusedPoolLimit,
@@ -1392,7 +1992,7 @@ export function createRecallConversationService(
                               rankTwoOrThreeBonus: QUERY_PLANNED_RECALL_RANK_TWO_OR_THREE_BONUS,
                             },
                             rerankerProfile: {
-                              model: config.rerankerModel,
+                              model: rerankingProfile?.model ?? config.rerankerModel,
                               policyVersion: QUERY_PLANNED_RECALL_RERANK_POLICY_VERSION,
                               fusedRankBlend: QUERY_PLANNED_RECALL_FUSED_RANK_BLEND,
                             },
@@ -1423,20 +2023,49 @@ export function createRecallConversationService(
     },
     async index(options = {}) {
       assertRecallManualMaintenanceTriggerMatchesIndexOptions(options);
-      const runConversationIndexMaintenance = (
+      const runConversationIndexMaintenance = async (
         diagnosticMetrics?: RecallIndexDiagnosticMetrics,
         onPhysicalSessionCheck?: (completion: RecallPhysicalSessionDiagnostic) => void,
         runOptimizationWithDiagnostics?: (optimize: () => Promise<void>) => Promise<void>,
-      ) =>
-        runSerialized(async () => {
-          const lockSignal = createRecallLockAcquisitionSignal(
+      ): Promise<RecallConversationIndexResult> => {
+        async function optimizeConversationStore(store: ZvecConversationStore): Promise<void> {
+          const optimizationStartedAtMilliseconds = diagnosticsClock.monotonicMilliseconds();
+          if (diagnosticMetrics) {
+            diagnosticMetrics.optimizationRan = true;
+          }
+          try {
+            const optimizeStore = () => store.optimize();
+            if (runOptimizationWithDiagnostics) {
+              await runOptimizationWithDiagnostics(optimizeStore);
+            } else {
+              await optimizeStore();
+            }
+          } finally {
+            if (diagnosticMetrics) {
+              diagnosticMetrics.optimizationMilliseconds += Math.max(
+                diagnosticsClock.monotonicMilliseconds() - optimizationStartedAtMilliseconds,
+                0,
+              );
+            }
+          }
+        }
+
+        if (options.rebuild) {
+          const stagingBuildLockPath = join(
+            generationCoordinatorConfig.generationsDirectory,
+            'staging-operation.lock',
+          );
+          const stagingBuildSignal = createRecallLockAcquisitionSignal(
             options.signal,
             options.lockWaitMilliseconds,
           );
           const lockStartedAtMilliseconds = diagnosticsClock.monotonicMilliseconds();
-          let releaseLock: (() => Promise<void>) | undefined;
+          let releaseStagingBuildLock: (() => Promise<void>) | undefined;
           try {
-            releaseLock = await acquireRecallConversationLock(config.lockPath, lockSignal);
+            releaseStagingBuildLock = await acquireRecallConversationLock(
+              stagingBuildLockPath,
+              stagingBuildSignal,
+            );
           } finally {
             if (diagnosticMetrics) {
               diagnosticMetrics.writerLockWaitMilliseconds += Math.max(
@@ -1445,26 +2074,43 @@ export function createRecallConversationService(
               );
             }
           }
+
+          let stagingGeneration:
+            | Awaited<ReturnType<typeof prepareStagingRecallIndexGeneration>>
+            | undefined;
+          let releaseGenerationLock: (() => Promise<void>) | undefined;
           let store: ZvecConversationStore | undefined;
           try {
             const preparationStartedAtMilliseconds = diagnosticsClock.monotonicMilliseconds();
             const embeddingServerMillisecondsBeforePreparation =
               diagnosticMetrics?.embeddingServerRequestMilliseconds ?? 0;
-            let preparedIndex: Awaited<ReturnType<typeof prepareIndexForWrite>>;
+            let preparedIndex: Awaited<ReturnType<typeof prepareIndexForWrite>> | undefined;
             try {
-              let rebuildCanary: number[] | undefined;
-              if (options.rebuild) {
-                await getConversationTokenizer();
-                rebuildCanary = await readCanonicalRebuildCanary(options.signal, diagnosticMetrics);
-                await removeRecallIndexGeneration();
-              }
-              preparedIndex = await prepareIndexForWrite(
+              const activeGeneration = await resolveActiveRecallIndexGeneration(
+                generationCoordinatorConfig,
+              );
+              await getConversationTokenizer();
+              const rebuildCanary = await readCanonicalRebuildCanary(
+                activeGeneration?.paths.manifestPath,
                 options.signal,
-                rebuildCanary,
-                options.requireExistingGeneration,
                 diagnosticMetrics,
               );
-              store = openStore('write');
+              stagingGeneration = await prepareStagingRecallIndexGeneration(
+                generationCoordinatorConfig,
+                embeddingProfileId,
+              );
+              releaseGenerationLock = await acquireRecallConversationLock(
+                stagingGeneration.paths.lockPath,
+                stagingBuildSignal,
+              );
+              preparedIndex = await prepareIndexForWrite(
+                stagingGeneration.paths,
+                options.signal,
+                rebuildCanary,
+                false,
+                diagnosticMetrics,
+              );
+              store = openStore('write', stagingGeneration.paths.databasePath);
             } finally {
               if (diagnosticMetrics) {
                 const preparationElapsedMilliseconds = Math.max(
@@ -1482,13 +2128,171 @@ export function createRecallConversationService(
                 );
               }
             }
+            if (!stagingGeneration || !preparedIndex || !store) {
+              throw new Error('Recall staging generation preparation did not complete');
+            }
             const indexSummary = await updateConversationIndex(
+              stagingGeneration.paths,
               store,
               preparedIndex.tokenizer,
               preparedIndex.manifest,
               preparedIndex.embeddingModelPreflighted,
               options.signal,
               options.onProgress,
+              options.onCheckpoint,
+              undefined,
+              diagnosticMetrics,
+              onPhysicalSessionCheck,
+            );
+            if (indexSummary.failedSessions.length > 0) {
+              throw new Error(
+                `Recall staging generation build failed: ${indexSummary.failedSessions[0]?.sessionPath}: ${indexSummary.failedSessions[0]?.error}`,
+              );
+            }
+
+            const catchUpSummary = await updateConversationIndex(
+              stagingGeneration.paths,
+              store,
+              preparedIndex.tokenizer,
+              preparedIndex.manifest,
+              true,
+              options.signal,
+              undefined,
+              options.onCheckpoint,
+              undefined,
+              diagnosticMetrics,
+              onPhysicalSessionCheck,
+            );
+            if (catchUpSummary.failedSessions.length > 0) {
+              throw new Error(
+                `Recall staging generation catch-up failed: ${catchUpSummary.failedSessions[0]?.sessionPath}: ${catchUpSummary.failedSessions[0]?.error}`,
+              );
+            }
+            indexSummary.indexedSessions += catchUpSummary.indexedSessions;
+            indexSummary.removedSessions += catchUpSummary.removedSessions;
+            indexSummary.cacheHits += catchUpSummary.cacheHits;
+            indexSummary.newlyEmbeddedChunks += catchUpSummary.newlyEmbeddedChunks;
+            indexSummary.embeddingRequestCount += catchUpSummary.embeddingRequestCount;
+            indexSummary.deletedChunks += catchUpSummary.deletedChunks;
+
+            await optimizeConversationStore(store);
+            const actualManifest = await readRequiredManifest(stagingGeneration.paths);
+            const expectedManifest = createExpectedManifest(
+              await readIndexEmbeddingCanary(options.signal, diagnosticMetrics),
+            );
+            assertRecallIndexManifestCompatible(
+              actualManifest,
+              expectedManifest,
+              stagingGeneration.paths.manifestPath,
+            );
+            if (!existsSync(stagingGeneration.paths.statePath)) {
+              throw new Error(
+                `Recall staging generation session state missing at ${stagingGeneration.paths.statePath}`,
+              );
+            }
+            const stateSummary = await readRecallConversationIndexStateSummary(
+              stagingGeneration.paths.statePath,
+            );
+            const documentCount = store.count();
+            if (documentCount !== stateSummary.documentIds.length) {
+              throw new Error(
+                `Recall staging generation document count mismatch: session state has ${stateSummary.documentIds.length}, zvec has ${documentCount}`,
+              );
+            }
+            for (let start = 0; start < stateSummary.documentIds.length; start += 256) {
+              const documentIds = stateSummary.documentIds.slice(start, start + 256);
+              const chunksById = store.fetchConversationChunks(documentIds);
+              if (chunksById.size !== documentIds.length) {
+                throw new Error(
+                  `Recall staging generation store health check failed: fetched ${chunksById.size} of ${documentIds.length} session-state documents`,
+                );
+              }
+              const denseDocumentIds = documentIds.filter(
+                (documentId) => chunksById.get(documentId)?.isDenseSearchable === true,
+              );
+              const vectorsById = store.fetchVectors(denseDocumentIds);
+              if (vectorsById.size !== denseDocumentIds.length) {
+                throw new Error(
+                  `Recall staging generation vector count mismatch: fetched ${vectorsById.size} of ${denseDocumentIds.length} dense vectors`,
+                );
+              }
+              for (const [documentId, vector] of vectorsById) {
+                if (
+                  vector.length !== embeddingProfile.identity.dimensions ||
+                  vector.some((value) => !Number.isFinite(value))
+                ) {
+                  throw new Error(
+                    `Recall staging generation vector invalid for ${documentId}: expected ${embeddingProfile.identity.dimensions} finite dimensions, received ${vector.length}`,
+                  );
+                }
+              }
+            }
+            store.close();
+            store = undefined;
+            await releaseGenerationLock();
+            releaseGenerationLock = undefined;
+            await activateStagingRecallIndexGeneration(
+              generationCoordinatorConfig,
+              stagingGeneration.generationId,
+              embeddingProfileId,
+            );
+            return { indexSummary, totalChunks: documentCount };
+          } catch (error) {
+            if (stagingGeneration) {
+              await preserveStagingRecallIndexGeneration(
+                generationCoordinatorConfig,
+                stagingGeneration.generationId,
+              );
+            }
+            throw error;
+          } finally {
+            store?.close();
+            await releaseGenerationLock?.();
+            await releaseStagingBuildLock?.();
+          }
+        }
+
+        return runSerialized(async () => {
+          const activeGeneration = await resolveActiveRecallIndexGeneration(
+            generationCoordinatorConfig,
+          );
+          const generationPaths =
+            activeGeneration?.paths ?? generationCoordinatorConfig.legacyPaths;
+          const lockSignal = createRecallLockAcquisitionSignal(
+            options.signal,
+            options.lockWaitMilliseconds,
+          );
+          const lockStartedAtMilliseconds = diagnosticsClock.monotonicMilliseconds();
+          let releaseLock: (() => Promise<void>) | undefined;
+          try {
+            releaseLock = await acquireRecallConversationLock(generationPaths.lockPath, lockSignal);
+          } finally {
+            if (diagnosticMetrics) {
+              diagnosticMetrics.writerLockWaitMilliseconds += Math.max(
+                diagnosticsClock.monotonicMilliseconds() - lockStartedAtMilliseconds,
+                0,
+              );
+            }
+          }
+          let store: ZvecConversationStore | undefined;
+          try {
+            const preparedIndex = await prepareIndexForWrite(
+              generationPaths,
+              options.signal,
+              undefined,
+              options.requireExistingGeneration,
+              diagnosticMetrics,
+            );
+            store = openStore('write', generationPaths.databasePath);
+            const indexSummary = await updateConversationIndex(
+              generationPaths,
+              store,
+              preparedIndex.tokenizer,
+              preparedIndex.manifest,
+              preparedIndex.embeddingModelPreflighted,
+              options.signal,
+              options.onProgress,
+              options.onCheckpoint,
               undefined,
               diagnosticMetrics,
               onPhysicalSessionCheck,
@@ -1499,26 +2303,7 @@ export function createRecallConversationService(
                 indexSummary.newlyEmbeddedChunks > 0 ||
                 indexSummary.deletedChunks > 0)
             ) {
-              const optimizationStartedAtMilliseconds = diagnosticsClock.monotonicMilliseconds();
-              const storeToOptimize = store;
-              if (diagnosticMetrics) {
-                diagnosticMetrics.optimizationRan = true;
-              }
-              try {
-                const optimizeStore = () => storeToOptimize.optimize();
-                if (runOptimizationWithDiagnostics) {
-                  await runOptimizationWithDiagnostics(optimizeStore);
-                } else {
-                  await optimizeStore();
-                }
-              } finally {
-                if (diagnosticMetrics) {
-                  diagnosticMetrics.optimizationMilliseconds += Math.max(
-                    diagnosticsClock.monotonicMilliseconds() - optimizationStartedAtMilliseconds,
-                    0,
-                  );
-                }
-              }
+              await optimizeConversationStore(store);
             }
             return { indexSummary, totalChunks: store.count() };
           } finally {
@@ -1526,6 +2311,7 @@ export function createRecallConversationService(
             await releaseLock();
           }
         });
+      };
       return options.manualMaintenanceTrigger
         ? runManualIndexWithDiagnostics({
             diagnostics,
@@ -1534,6 +2320,57 @@ export function createRecallConversationService(
             runIndexMaintenance: runConversationIndexMaintenance,
           })
         : runConversationIndexMaintenance();
+    },
+    startBackgroundIndexGeneration() {
+      assertBackgroundIndexWorkerCanReconstructService();
+      return startRecallBackgroundIndexGeneration(backgroundIndexCoordinatorConfig);
+    },
+    resumeBackgroundIndexGeneration() {
+      assertBackgroundIndexWorkerCanReconstructService();
+      return resumeRecallBackgroundIndexGeneration(backgroundIndexCoordinatorConfig);
+    },
+    readBackgroundIndexGenerationStatus() {
+      return readRecallBackgroundIndexGenerationStatus(backgroundIndexCoordinatorConfig);
+    },
+    stopBackgroundIndexGeneration() {
+      return stopRecallBackgroundIndexGeneration(backgroundIndexCoordinatorConfig);
+    },
+    readIndexGenerationStatus() {
+      return readRecallIndexGenerationStatus(generationCoordinatorConfig);
+    },
+    async discardStagingIndexGeneration() {
+      const backgroundStatus = await readRecallBackgroundIndexGenerationStatus(
+        backgroundIndexCoordinatorConfig,
+      );
+      if (
+        backgroundStatus &&
+        [
+          RecallBackgroundIndexProcessState.STARTING,
+          RecallBackgroundIndexProcessState.RUNNING,
+          RecallBackgroundIndexProcessState.STOPPING,
+        ].includes(backgroundStatus.processState)
+      ) {
+        throw new Error(
+          `Recall staging generation is owned by ${backgroundStatus.processState} worker ${backgroundStatus.processId}; stop it before discard`,
+        );
+      }
+      const stagingBuildLockPath = join(
+        generationCoordinatorConfig.generationsDirectory,
+        'staging-operation.lock',
+      );
+      const releaseLock = await acquireRecallConversationLock(stagingBuildLockPath);
+      try {
+        const discarded = await discardStagingRecallIndexGeneration(generationCoordinatorConfig);
+        if (discarded) {
+          await markRecallBackgroundIndexGenerationDiscarded(backgroundIndexCoordinatorConfig);
+          await removeRecallBackgroundIndexWorkerRequest(
+            backgroundIndexCoordinatorConfig.requestPath,
+          );
+        }
+        return discarded;
+      } finally {
+        await releaseLock();
+      }
     },
     reconcileSession(sessionPath, options) {
       return runLiveSessionReconciliationWithDiagnostics({

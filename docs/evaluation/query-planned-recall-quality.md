@@ -4,7 +4,7 @@ This report compares fixed private agent plans with normal hybrid and retrieval-
 
 ## Identity
 
-- Recorded against commit: `030396576c03c705a1f3c84dce1ff639256ed2cf`
+- Recorded against commit: `9d25c5c4fb11edb7122bfbe2489002851d3e318f`
 - Private manifest SHA-256: `4b3fb8573bcd52a26d66a2f8e60f5bbba57b098530791b23f55505d3e9a1187e`
 - Fixed plan source: `agent`
 - Fixed plan SHA-256: `245f28cb6f541d336f99a829c187e76e8f50e3a81bb473626f5c21e5b5b640a5`
@@ -19,10 +19,10 @@ This report compares fixed private agent plans with normal hybrid and retrieval-
 
 - New candidate admission beyond both controls: 4
 - Ranking-only promotion of an already admitted source: 1
-- Preserved existing success: 2
+- Preserved existing success: 1
 - No improvement: 2
 
-A planned search receives source-admission credit only when its admission probe finds the expected source and both original-query candidate unions miss. Promotion of a source admitted by either control is reported separately as ranking-only behavior. Existing-success preservation is an independent guard and can overlap a contribution class.
+A planned search receives source-admission credit only when its admission probe finds the expected source and both original-query candidate unions miss. Promotion of a source admitted by either control is reported separately as ranking-only behavior. Existing-success preservation requires both the measured normal hybrid arm and query-planned arm to succeed.
 
 ## Ranking policy
 

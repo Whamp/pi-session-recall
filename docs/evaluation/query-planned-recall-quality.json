@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "recordedAgainstCommit": "030396576c03c705a1f3c84dce1ff639256ed2cf",
+  "recordedAgainstCommit": "9d25c5c4fb11edb7122bfbe2489002851d3e318f",
   "privateManifestSha256": "4b3fb8573bcd52a26d66a2f8e60f5bbba57b098530791b23f55505d3e9a1187e",
   "controlsSha256": "a5b300c736ddfed35e4e65635fe5752b17b53df2c61a97079229c3ff0b44d605",
   "evaluation": {
@@ -507,7 +507,7 @@
         "contribution": {
           "newCandidateAdmission": false,
           "rankingOnlyPromotion": true,
-          "preservedExistingSuccess": true,
+          "preservedExistingSuccess": false,
           "noImprovement": false
         }
       },
@@ -1155,7 +1155,7 @@
     "contributionCounts": {
       "newCandidateAdmission": 4,
       "rankingOnlyPromotion": 1,
-      "preservedExistingSuccess": 2,
+      "preservedExistingSuccess": 1,
       "noImprovement": 2
     }
   }

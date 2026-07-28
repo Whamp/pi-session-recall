@@ -62,17 +62,17 @@ void test('committed query-planned recall evidence is deterministic and records 
 
   assert.equal(
     createSha256(evidenceContent),
-    '1c7300c0d975fbab62a0b9cfe5eeb2a976eeeaa1a22dcbb3880514e4e480e6f1',
+    'a377d2197d142d048281f31d92f99115e1b4a680a68eed493969e4822658ad2d',
   );
   assert.equal(
     createSha256(reportContent),
-    'ff54709d367ada9db38e72dc3452d62917281f7c769fc5cf961e49c9fa8728d5',
+    '49440877ab6f1a93694ce5ef0f600ecc000694ffd3cccf41c31f9dc0eb6c79d5',
   );
   assert.equal(Reflect.get(evaluation, 'executedSearchRequests'), 32);
   assert.deepEqual(Reflect.get(evaluation, 'contributionCounts'), {
     newCandidateAdmission: 4,
     rankingOnlyPromotion: 1,
-    preservedExistingSuccess: 2,
+    preservedExistingSuccess: 1,
     noImprovement: 2,
   });
   assert.match(reportContent, /New candidate admission beyond both controls: 4/u);

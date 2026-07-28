@@ -6,6 +6,7 @@ import { dirname } from 'node:path';
 import { RecallEligibilityThreshold } from './enums.js';
 import { isUnknownRecord } from './is-unknown-record.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
+import { resolveRecallFlockExecutable } from './resolve-recall-flock-executable.js';
 import { syncRecallDirectory } from './sync-recall-directory.js';
 
 /** Current strict version for the generation-independent incremental worker schedule. */
@@ -192,14 +193,15 @@ export function signalRecallIncrementalWorkerWake(
     '/bin/sh',
     [
       '-c',
-      'sleep "$1"; exec /usr/bin/flock "$2" "$3" --import tsx "$4"',
+      'sleep "$1"; exec "$2" "$3" "$4" --import tsx "$5"',
       'recall-worker-wake',
       String(delaySeconds),
+      resolveRecallFlockExecutable(),
       options.workerOwnershipLockPath,
       process.execPath,
       options.workerExecutablePath,
     ],
-    { detached: true, stdio: 'ignore' },
+    { cwd: dirname(options.workerExecutablePath), detached: true, stdio: 'ignore' },
   );
   child.once('error', (error) => {
     process.emitWarning(

@@ -3,6 +3,8 @@ import { mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 
+import { resolveRecallFlockExecutable } from './resolve-recall-flock-executable.js';
+
 /** One crash-released kernel lock proving a replacement build is still live. */
 export interface HeldRecallRebuildOwnershipLock {
   release(): Promise<void>;
@@ -68,7 +70,7 @@ export async function tryAcquireRecallRebuildOwnershipLock(
 ): Promise<HeldRecallRebuildOwnershipLock | null> {
   await mkdir(dirname(lockPath), { recursive: true });
   const token = `recall-rebuild-owner-${randomUUID()}`;
-  const child = spawn('/usr/bin/flock', ['--exclusive', '--nonblock', lockPath, '/bin/cat'], {
+  const child = spawn(resolveRecallFlockExecutable(), ['--exclusive', '--nonblock', lockPath, '/bin/cat'], {
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   // A losing nonblocking flock can close stdin before the token write reaches its pipe.

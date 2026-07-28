@@ -401,6 +401,7 @@ async function spawnBackgroundIndexWorker(
 
   const workerPath = fileURLToPath(new URL('./recall-background-index-worker.ts', import.meta.url));
   const child = spawn(process.execPath, ['--import', 'tsx', workerPath, config.requestPath], {
+    cwd: dirname(workerPath),
     detached: true,
     stdio: 'ignore',
   });

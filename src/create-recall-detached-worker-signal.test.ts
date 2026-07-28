@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import { createRecallDetachedWorkerSignal } from './create-recall-detached-worker-signal.js';
+import { resolveRecallFlockExecutable } from './resolve-recall-flock-executable.js';
 
 async function waitForPath(path: string): Promise<void> {
   const deadline = Date.now() + 2_000;
@@ -43,7 +44,7 @@ void test('detached worker signals coalesce behind an active ownership lock with
       `}\n`,
   );
   const holder = spawn(
-    '/usr/bin/flock',
+    resolveRecallFlockExecutable(),
     [
       workerOwnershipLockPath,
       process.execPath,

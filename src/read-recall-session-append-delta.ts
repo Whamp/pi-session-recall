@@ -9,7 +9,7 @@ import {
 } from './parse-recall-session-record.js';
 import type { PhysicalSessionProjection } from './recall-session-projection.js';
 
-const RECALL_APPEND_BOUNDARY_WINDOW_BYTES = 4_096;
+export const RECALL_APPEND_BOUNDARY_WINDOW_BYTES = 4_096;
 
 /** Reads one exact half-open source byte range for bounded append and graph materialization. */
 export interface RecallSessionSourceRangeReader {
@@ -96,7 +96,7 @@ function reconciliation(
   return { status: RecallAppendDeltaStatus.REQUIRES_RECONCILIATION, repairReason };
 }
 
-function frameCompleteRecallAppendRecords(
+export function frameCompleteRecallAppendRecords(
   bytes: Buffer,
   sourcePath: string,
   cursorBytes: number,

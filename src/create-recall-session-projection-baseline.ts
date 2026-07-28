@@ -1,13 +1,17 @@
 import { createHash } from 'node:crypto';
-import { stat } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 
 import {
   RecallAppendDeltaStatus,
   RecallAppendProjectionStatus,
+  RecallProjectionRepairReason,
   RecallProjectionRepairState,
   RecallSessionProjectionKind,
   RecallSourceAvailability,
+  SessionImportFormat,
 } from './enums.js';
+import { importSessionJsonl } from './import-session-jsonl.js';
+import type { ParsedRecallSessionRecord } from './parse-recall-session-record.js';
 import { projectRecallSessionAppend } from './project-recall-session-append.js';
 import type { RecallChunkPolicy } from './recall-chunk-policy.js';
 import {
@@ -19,7 +23,12 @@ import {
   type RecallEligibleSourceSpan,
   type RecallSessionProjection,
 } from './recall-session-projection.js';
-import { readRecallSessionAppendDelta } from './read-recall-session-append-delta.js';
+import {
+  frameCompleteRecallAppendRecords,
+  RECALL_APPEND_BOUNDARY_WINDOW_BYTES,
+  readRecallSessionAppendDelta,
+  type RecallSessionAppendDelta,
+} from './read-recall-session-append-delta.js';
 import {
   readSessionConversationImport,
   type ConversationTextTokenizer,
@@ -75,6 +84,48 @@ export interface CreateRecallSessionProjectionBaselineOptions {
   expectedSourceByteSize?: number;
 }
 
+async function synthesizePiV1AppendDelta(filePath: string): Promise<RecallSessionAppendDelta> {
+  const [allBytes, metadata, jsonlImport] = await Promise.all([
+    readFile(filePath),
+    stat(filePath, { bigint: true }),
+    importSessionJsonl(filePath),
+  ]);
+  const framed = frameCompleteRecallAppendRecords(allBytes, filePath, 0, 0);
+  const physicalByLine = new Map(framed.records.map((record) => [record.sourceLine, record]));
+  const synthesizedRecords: ParsedRecallSessionRecord[] = [];
+  for (const session of jsonlImport.sessions) {
+    for (const canonicalRecord of session.records) {
+      const physical = physicalByLine.get(canonicalRecord.sourceLine);
+      if (physical === undefined) {
+        throw new Error(
+          `Recall v1 baseline synthesis missing physical framing at ${filePath}:${canonicalRecord.sourceLine}`,
+        );
+      }
+      synthesizedRecords.push({
+        sourceLine: physical.sourceLine,
+        startByte: physical.startByte,
+        endByte: physical.endByte,
+        sourceFingerprint: physical.sourceFingerprint,
+        value: canonicalRecord.value,
+      });
+    }
+  }
+  const committedBoundaryStart = Math.max(0, framed.appendCursorBytes - RECALL_APPEND_BOUNDARY_WINDOW_BYTES);
+  const boundaryFingerprint = createHash('sha256')
+    .update(allBytes.subarray(committedBoundaryStart, framed.appendCursorBytes))
+    .digest('hex');
+  return {
+    status: RecallAppendDeltaStatus.APPENDED,
+    records: synthesizedRecords,
+    appendCursorBytes: framed.appendCursorBytes,
+    appendCursorLines: framed.appendCursorLines,
+    boundaryFingerprint,
+    partialFinalRecordBytes: framed.partialFinalRecordBytes,
+    sourceDevice: metadata.dev.toString(),
+    sourceInode: metadata.ino.toString(),
+  };
+}
+
 function eligibleSpanForDescriptor(
   descriptor: LogicalSessionProjection['entryDescriptors'][number],
 ): RecallEligibleSourceSpan {
@@ -106,11 +157,19 @@ export async function createRecallSessionProjectionBaseline(
     physicalSessionPath: options.physicalSessionPath,
     generationId: options.generationId,
   });
-  const appendDelta = await readRecallSessionAppendDelta(
+  const appendDeltaResult = await readRecallSessionAppendDelta(
     options.physicalSessionPath,
     initialPhysicalProjection,
   );
-  if (appendDelta.status !== RecallAppendDeltaStatus.APPENDED) {
+  let effectiveAppendDelta: RecallSessionAppendDelta;
+  if (appendDeltaResult.status === RecallAppendDeltaStatus.APPENDED) {
+    effectiveAppendDelta = appendDeltaResult;
+  } else if (
+    appendDeltaResult.repairReason === RecallProjectionRepairReason.UNSUPPORTED_LAYOUT &&
+    imported.format === SessionImportFormat.PI_V1_LINEAR
+  ) {
+    effectiveAppendDelta = await synthesizePiV1AppendDelta(options.physicalSessionPath);
+  } else {
     throw new Error(
       `Recall rebuild source projection requires reconciliation: ${options.physicalSessionPath}`,
     );
@@ -118,7 +177,7 @@ export async function createRecallSessionProjectionBaseline(
   const projected = projectRecallSessionAppend({
     physicalProjection: initialPhysicalProjection,
     logicalProjections: [],
-    appendDelta,
+    appendDelta: effectiveAppendDelta,
     markers: [],
     quiescenceObserved: false,
   });

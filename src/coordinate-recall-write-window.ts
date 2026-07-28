@@ -5,6 +5,7 @@ import { dirname } from 'node:path';
 
 import { RecallRecoveryRequiredError, RecallSearchBusyError } from './errors.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
+import { resolveRecallFlockExecutable } from './resolve-recall-flock-executable.js';
 import { syncRecallDirectory } from './sync-recall-directory.js';
 
 /** Durable files that distinguish a current recall write window from required crash recovery. */
@@ -175,7 +176,7 @@ async function acquireRecallKernelLock(
 ): Promise<HeldRecallKernelLock> {
   await mkdir(dirname(lockPath), { recursive: true });
   const token = `recall-${mode}-window-${randomUUID()}`;
-  const child = spawn('/usr/bin/flock', [`--${mode}`, lockPath, '/bin/cat'], {
+  const child = spawn(resolveRecallFlockExecutable(), [`--${mode}`, lockPath, '/bin/cat'], {
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   child.stdin.write(`${token}\n`);

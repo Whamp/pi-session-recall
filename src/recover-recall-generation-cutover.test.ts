@@ -468,3 +468,99 @@ void test('registry-first legacy adoption recovery creates a missing active poin
     targetPointer.activeGenerationId,
   );
 });
+
+void test('validated READY replacement with old active pointer completes cutover recovery', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recover-recall-ready-preswap-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const activeGenerationPointerPath = join(directory, 'active-generation.json');
+  const generationRegistryPath = join(directory, 'generation-registry.json');
+  const backlogSummaryPath = join(directory, 'backlog-summary.json');
+  const generationRootDirectory = join(directory, 'generations');
+  const oldPointer = createRecallActiveGenerationPointer('generation_old');
+  const replacementGenerationId = 'generation_ready_replacement';
+  await mkdir(join(generationRootDirectory, replacementGenerationId), { recursive: true });
+  await writeRecallActiveGenerationPointer(activeGenerationPointerPath, oldPointer);
+  await writeRecallGenerationRegistry(generationRegistryPath, {
+    version: RECALL_GENERATION_REGISTRY_VERSION,
+    activeGenerationId: oldPointer.activeGenerationId,
+    buildingGenerationId: replacementGenerationId,
+    rollbackGenerationId: null,
+    activePointerChecksum: oldPointer.checksum,
+    generations: [
+      {
+        generationId: oldPointer.activeGenerationId,
+        state: RecallGenerationCutoverState.ACTIVE,
+        indexManifestVersion: 6,
+        markerSchemaVersion: 1,
+        sessionProjectionSchemaVersion: 3,
+        indexManifestFingerprint: 'a'.repeat(64),
+        rebuildStartedAtEpochMilliseconds: 1,
+        stateChangedAtEpochMilliseconds: 2,
+        rebuildStartMarkerId: null,
+        rebuildMarkerWatermark: [],
+        validatedAtEpochMilliseconds: 2,
+        retireAfterEpochMilliseconds: null,
+      },
+      {
+        generationId: replacementGenerationId,
+        state: RecallGenerationCutoverState.READY,
+        indexManifestVersion: 6,
+        markerSchemaVersion: 1,
+        sessionProjectionSchemaVersion: 3,
+        indexManifestFingerprint: 'c'.repeat(64),
+        rebuildStartedAtEpochMilliseconds: 10,
+        stateChangedAtEpochMilliseconds: 15,
+        rebuildStartMarkerId: null,
+        rebuildMarkerWatermark: ['marker-a', 'marker-b'],
+        validatedAtEpochMilliseconds: 15,
+        retireAfterEpochMilliseconds: null,
+      },
+    ],
+  });
+
+  assert.equal(
+    await recoverRecallGenerationCutover({
+      activeGenerationPointerPath,
+      generationRegistryPath,
+      generationRootDirectory,
+      backlogSummaryPath,
+      lockPath: join(directory, 'operation.lock'),
+      embeddingDimensions: 3,
+      nowEpochMilliseconds: () => 20_000,
+      openWriteEvidenceStore() {
+        return { close() {} };
+      },
+      openWriteProjectionStore() {
+        return { close() {} };
+      },
+    }),
+    true,
+  );
+
+  assert.equal(
+    (await readRecallActiveGenerationPointer(activeGenerationPointerPath))?.activeGenerationId,
+    replacementGenerationId,
+  );
+  const recoveredRegistry = await readRecallGenerationRegistry(generationRegistryPath);
+  assert.equal(recoveredRegistry?.activeGenerationId, replacementGenerationId);
+  assert.equal(recoveredRegistry?.buildingGenerationId, null);
+  assert.equal(recoveredRegistry?.rollbackGenerationId, oldPointer.activeGenerationId);
+  assert.equal(
+    recoveredRegistry?.generations.find(
+      ({ generationId }) => generationId === replacementGenerationId,
+    )?.state,
+    RecallGenerationCutoverState.REPLAY_PENDING,
+  );
+  assert.equal(
+    recoveredRegistry?.generations.find(
+      ({ generationId }) => generationId === oldPointer.activeGenerationId,
+    )?.state,
+    RecallGenerationCutoverState.ROLLBACK,
+  );
+  assert.notEqual(
+    recoveredRegistry?.generations.find(
+      ({ generationId }) => generationId === replacementGenerationId,
+    )?.state,
+    RecallGenerationCutoverState.RETIRED,
+  );
+});

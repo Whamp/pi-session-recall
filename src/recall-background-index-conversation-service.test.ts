@@ -11,6 +11,9 @@ import { promisify } from 'node:util';
 import {
   RecallBackgroundIndexProcessState,
   RecallDiagnosticsMode,
+  RecallGenerationCutoverState,
+  RecallInferenceBackend,
+  RecallInferenceCapability,
   RecallSearchScope,
 } from './enums.js';
 import { isUnknownRecord } from './is-unknown-record.js';
@@ -18,6 +21,16 @@ import {
   createRecallConversationService,
   type RecallConversationConfig,
 } from './recall-conversation-service.js';
+import {
+  createRecallActiveGenerationPointer,
+  writeRecallActiveGenerationPointer,
+  writeRecallGenerationRegistry,
+  RECALL_GENERATION_REGISTRY_VERSION,
+} from './recall-generation-state.js';
+import {
+  readRecallInferenceConfiguration,
+  writeRecallInferenceConfiguration,
+} from './recall-inference-configuration.js';
 import { normalizeRecallProjectLineages } from './resolve-project-identity.js';
 
 const EXEC_FILE_ASYNC = promisify(execFile);
@@ -402,6 +415,121 @@ void test('background worker bootstrap failure persists one bounded actionable e
     .trim()
     .split('\n');
   assert.equal(statusLines.length, 1);
+});
+
+void test('discarding staging clears pending embedding replacement', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-discard-pending-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionsDirectory = join(directory, 'sessions');
+  await mkdir(sessionsDirectory);
+  const config = createBackgroundIndexTestConfig(directory, sessionsDirectory);
+  const activePointer = createRecallActiveGenerationPointer('generation_active');
+  await mkdir(join(config.generationRootDirectory, activePointer.activeGenerationId), {
+    recursive: true,
+  });
+  await mkdir(join(config.generationRootDirectory, 'generation_staging'), { recursive: true });
+  await writeRecallActiveGenerationPointer(config.activeGenerationPointerPath, activePointer);
+  await writeRecallGenerationRegistry(config.generationRegistryPath, {
+    version: RECALL_GENERATION_REGISTRY_VERSION,
+    activeGenerationId: activePointer.activeGenerationId,
+    buildingGenerationId: null,
+    rollbackGenerationId: null,
+    activePointerChecksum: activePointer.checksum,
+    generations: [
+      {
+        generationId: activePointer.activeGenerationId,
+        state: RecallGenerationCutoverState.ACTIVE,
+        embeddingProfileId: 'embedding-profile-v1',
+        indexManifestVersion: 6,
+        markerSchemaVersion: 1,
+        sessionProjectionSchemaVersion: 3,
+        indexManifestFingerprint: 'a'.repeat(64),
+        rebuildStartedAtEpochMilliseconds: 1,
+        stateChangedAtEpochMilliseconds: 2,
+        rebuildStartMarkerId: null,
+        rebuildMarkerWatermark: [],
+        validatedAtEpochMilliseconds: 2,
+        retireAfterEpochMilliseconds: null,
+      },
+      {
+        generationId: 'generation_staging',
+        state: RecallGenerationCutoverState.FAILED,
+        embeddingProfileId: 'embedding-profile-v2',
+        indexManifestVersion: 6,
+        markerSchemaVersion: 1,
+        sessionProjectionSchemaVersion: 3,
+        indexManifestFingerprint: '0'.repeat(64),
+        rebuildStartedAtEpochMilliseconds: 3,
+        stateChangedAtEpochMilliseconds: 4,
+        rebuildStartMarkerId: null,
+        rebuildMarkerWatermark: [],
+        validatedAtEpochMilliseconds: null,
+        retireAfterEpochMilliseconds: null,
+      },
+    ],
+  });
+  const inferenceConfigurationPath = join(directory, 'inference-configuration.json');
+  await writeRecallInferenceConfiguration(inferenceConfigurationPath, {
+    version: 2,
+    embedding: {
+      capability: RecallInferenceCapability.EMBEDDING,
+      candidateId: 'embedding-v1',
+      profileId: 'embedding-profile-v1',
+      backend: RecallInferenceBackend.CUSTOM,
+      adapterId: 'embedding-v1',
+      endpoint: null,
+      device: null,
+      artifact: null,
+      conformance: {
+        verifiedAt: '2026-01-01T00:00:00.000Z',
+        cacheIdentity: 'embedding-profile-v1',
+        embeddingProfileId: 'embedding-profile-v1',
+        measurement: { verificationOperations: 1 },
+      },
+    },
+    reranking: null,
+    queryPlanning: null,
+    pendingEmbeddingReplacement: {
+      embeddingProfileId: 'embedding-profile-v2',
+      selection: {
+        capability: RecallInferenceCapability.EMBEDDING,
+        candidateId: 'embedding-v2',
+        profileId: 'embedding-profile-v2',
+        backend: RecallInferenceBackend.CUSTOM,
+        adapterId: 'embedding-v2',
+        endpoint: null,
+        device: null,
+        artifact: null,
+        conformance: {
+          verifiedAt: '2026-01-01T00:00:00.000Z',
+          cacheIdentity: 'embedding-profile-v2',
+          embeddingProfileId: 'embedding-profile-v2',
+          measurement: { verificationOperations: 1 },
+        },
+      },
+    },
+  });
+
+  const service = createRecallConversationService(config, {
+    embeddingProvider: {
+      async embedQuery() {
+        return [1, 0, 0];
+      },
+      async embedDocuments(documents) {
+        return documents.map(() => [1, 0, 0]);
+      },
+    },
+    async loadTokenizer() {
+      return TOKENIZER;
+    },
+  });
+
+  assert.equal(await service.discardStagingIndexGeneration(), true);
+  assert.equal((await service.readIndexGenerationStatus()).staging, null);
+  assert.equal(
+    (await readRecallInferenceConfiguration(inferenceConfigurationPath)).pendingEmbeddingReplacement,
+    null,
+  );
 });
 
 void test('crashed workers at every staging phase remain resumable and idempotent', async (t) => {

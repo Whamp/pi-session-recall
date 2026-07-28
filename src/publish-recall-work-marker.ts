@@ -13,11 +13,6 @@ import {
   type RecallWorkMarkerCodecOptions,
 } from './recall-work-marker.js';
 
-export {
-  createRecallDetachedWorkerSignal,
-  type RecallDetachedWorkerSignal,
-} from './create-recall-detached-worker-signal.js';
-
 /** Minimal durable file capabilities used to publish one recall work marker atomically. */
 export interface RecallMarkerPublicationFile {
   writeFile(content: string): Promise<void>;

@@ -846,7 +846,6 @@ void test('ordinary worker exposes quarantine failure until replay can complete'
       activeGenerationPointerPath,
       generationRegistryPath,
       backlogSummaryPath,
-      markerQuarantineDirectory: fixture.markerQuarantineDirectory,
       lockPath,
     },
     trustedSessionRoots: [fixture.sessionsDirectory],
@@ -854,7 +853,10 @@ void test('ordinary worker exposes quarantine failure until replay can complete'
   const quarantined = await runRecallIncrementalWorker(workerOptions);
 
   assert.equal(quarantined.generationReplayCompleted, false);
-  assert.equal(quarantined.failureCategory, RecallBacklogFailureCategory.MARKER_DECODE_FAILED);
+  assert.equal(
+    quarantined.replayBlockingFailureCategory,
+    RecallBacklogFailureCategory.MARKER_DECODE_FAILED,
+  );
   assert.equal(
     (await readRecallGenerationRegistry(generationRegistryPath))?.generations[0]?.state,
     RecallGenerationCutoverState.REPLAY_PENDING,
@@ -863,7 +865,7 @@ void test('ordinary worker exposes quarantine failure until replay can complete'
   await rm(fixture.markerQuarantineDirectory, { recursive: true, force: true });
   const completed = await runRecallIncrementalWorker(workerOptions);
   assert.equal(completed.generationReplayCompleted, true);
-  assert.equal(completed.failureCategory, null);
+  assert.equal(completed.replayBlockingFailureCategory, null);
   assert.equal(
     (await readRecallGenerationRegistry(generationRegistryPath))?.generations[0]?.state,
     RecallGenerationCutoverState.ACTIVE,

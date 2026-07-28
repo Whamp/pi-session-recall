@@ -9,7 +9,7 @@ import {
   inspectRecallWriteWindow,
   recallWriteWindowStatePaths,
 } from './coordinate-recall-write-window.js';
-import { RecallGenerationCutoverState } from './enums.js';
+import { RecallBacklogFailureCategory, RecallGenerationCutoverState } from './enums.js';
 import {
   createRecallActiveGenerationPointer,
   decodeRecallBacklogSummary,
@@ -142,6 +142,17 @@ void test('side-by-side rebuild keeps old search selected through build and opti
     async onCutoverStage(stage) {
       cutoverStages.push(stage);
       assert.equal((await inspectRecallWriteWindow(fixture.lockPath)).currentWindow, true);
+      if (stage === RecallGenerationCutoverStage.BEFORE_POINTER_SWAP) {
+        const registryBeforePointer = await readRecallGenerationRegistry(
+          fixture.generationRegistryPath,
+        );
+        assert.equal(
+          registryBeforePointer?.generations.find(
+            ({ generationId }) => generationId === 'generation_new',
+          )?.state,
+          RecallGenerationCutoverState.BUILDING,
+        );
+      }
       const expectedGenerationId =
         stage === RecallGenerationCutoverStage.BEFORE_POINTER_SWAP
           ? fixture.oldGenerationId
@@ -199,6 +210,73 @@ void test('side-by-side rebuild keeps old search selected through build and opti
   });
 });
 
+void test('freeze backlog failure does not publish a frozen generation registry', async (t) => {
+  const fixture = await createRebuildFixture(t);
+  await mkdir(fixture.backlogSummaryPath);
+  let workerSignalCalls = 0;
+
+  await assert.rejects(
+    () =>
+      rebuildRecallGeneration({
+        ...fixture,
+        generationId: 'generation_freeze_failed',
+        workerSignal: {
+          signalDetachedWorker() {
+            workerSignalCalls += 1;
+          },
+        },
+        async buildGeneration() {
+          assert.fail('freeze failure must not start the replacement build');
+        },
+        async validateGeneration() {
+          assert.fail('freeze failure must not validate');
+        },
+      }),
+    /EISDIR|directory/iu,
+  );
+
+  assert.equal(workerSignalCalls, 0);
+  assert.equal(await readRecallGenerationRegistry(fixture.generationRegistryPath), null);
+  assert.equal(
+    (await readRecallActiveGenerationPointer(fixture.activeGenerationPointerPath))
+      ?.activeGenerationId,
+    fixture.oldGenerationId,
+  );
+});
+
+void test('freeze registry failure compensates the previously published building backlog', async (t) => {
+  const fixture = await createRebuildFixture(t);
+
+  await assert.rejects(
+    () =>
+      rebuildRecallGeneration({
+        ...fixture,
+        generationId: 'generation_registry_freeze_failed',
+        async captureBuildSnapshot() {
+          await mkdir(fixture.generationRegistryPath);
+          return null;
+        },
+        async buildGeneration() {
+          assert.fail('registry freeze failure must not start the replacement build');
+        },
+        async validateGeneration() {
+          assert.fail('registry freeze failure must not validate');
+        },
+      }),
+    /EISDIR|directory/iu,
+  );
+
+  const backlog = decodeRecallBacklogSummary(await readFile(fixture.backlogSummaryPath, 'utf8'));
+  assert.equal(backlog.buildingGenerationId, null);
+  assert.equal(backlog.generationState, RecallGenerationCutoverState.ACTIVE);
+  assert.equal(backlog.lastFailureCategory, RecallBacklogFailureCategory.REBUILD_FAILED);
+  assert.equal(
+    (await readRecallActiveGenerationPointer(fixture.activeGenerationPointerPath))
+      ?.activeGenerationId,
+    fixture.oldGenerationId,
+  );
+});
+
 void test('successful empty-spool cutover wakes the ordinary worker after lock release', async (t) => {
   const fixture = await createRebuildFixture(t);
   const statePaths = recallWriteWindowStatePaths(fixture.lockPath);
@@ -233,6 +311,52 @@ void test('successful empty-spool cutover wakes the ordinary worker after lock r
     (await readRecallGenerationRegistry(fixture.generationRegistryPath))?.generations.find(
       ({ generationId }) => generationId === 'generation_idle_cutover',
     )?.state,
+    RecallGenerationCutoverState.REPLAY_PENDING,
+  );
+});
+
+void test('post-swap backlog failure still wakes replay for the replacement', async (t) => {
+  const fixture = await createRebuildFixture(t);
+  let workerSignalCalls = 0;
+
+  await assert.rejects(
+    () =>
+      rebuildRecallGeneration({
+        ...fixture,
+        generationId: 'generation_backlog_failed',
+        workerSignal: {
+          signalDetachedWorker() {
+            workerSignalCalls += 1;
+          },
+        },
+        async buildGeneration(paths) {
+          await createBuiltGeneration(paths);
+          return { result: null, async close() {} };
+        },
+        async validateGeneration() {
+          return { indexManifestFingerprint: '9'.repeat(64) };
+        },
+        async onCutoverStage(stage) {
+          if (stage === RecallGenerationCutoverStage.AFTER_POINTER_SWAP) {
+            await rm(fixture.backlogSummaryPath, { force: true });
+            await mkdir(fixture.backlogSummaryPath);
+          }
+        },
+      }),
+    /EISDIR|directory/iu,
+  );
+
+  assert.equal(workerSignalCalls, 1);
+  assert.equal(
+    (await readRecallActiveGenerationPointer(fixture.activeGenerationPointerPath))
+      ?.activeGenerationId,
+    'generation_backlog_failed',
+  );
+  const registry = await readRecallGenerationRegistry(fixture.generationRegistryPath);
+  assert.equal(registry?.activeGenerationId, 'generation_backlog_failed');
+  assert.equal(
+    registry?.generations.find(({ generationId }) => generationId === 'generation_backlog_failed')
+      ?.state,
     RecallGenerationCutoverState.REPLAY_PENDING,
   );
 });
@@ -314,6 +438,185 @@ void test('optimization cancellation closes the replacement and never swaps the 
   );
 });
 
+void test('validation cancellation fails the replacement and wakes the old generation', async (t) => {
+  const fixture = await createRebuildFixture(t);
+  const abortController = new AbortController();
+  let workerSignalCalls = 0;
+
+  await assert.rejects(
+    () =>
+      rebuildRecallGeneration({
+        ...fixture,
+        generationId: 'generation_validation_cancelled',
+        signal: abortController.signal,
+        workerSignal: {
+          signalDetachedWorker() {
+            workerSignalCalls += 1;
+          },
+        },
+        async buildGeneration(paths) {
+          await createBuiltGeneration(paths);
+          return { result: null, async close() {} };
+        },
+        async validateGeneration() {
+          abortController.abort(new Error('validation policy cancelled cutover'));
+          return { indexManifestFingerprint: 'd'.repeat(64) };
+        },
+      }),
+    /validation policy cancelled cutover/u,
+  );
+
+  assert.equal(workerSignalCalls, 1);
+  assert.equal(
+    (await readRecallActiveGenerationPointer(fixture.activeGenerationPointerPath))
+      ?.activeGenerationId,
+    fixture.oldGenerationId,
+  );
+  const registry = await readRecallGenerationRegistry(fixture.generationRegistryPath);
+  assert.equal(registry?.buildingGenerationId, null);
+  assert.equal(
+    registry?.generations.find(
+      ({ generationId }) => generationId === 'generation_validation_cancelled',
+    )?.state,
+    RecallGenerationCutoverState.FAILED,
+  );
+});
+
+void test('cutover-window cancellation preserves the old pointer and wakes its worker', async (t) => {
+  const fixture = await createRebuildFixture(t);
+  const abortController = new AbortController();
+  let workerSignalCalls = 0;
+
+  await assert.rejects(
+    () =>
+      rebuildRecallGeneration({
+        ...fixture,
+        generationId: 'generation_cutover_cancelled',
+        signal: abortController.signal,
+        workerSignal: {
+          signalDetachedWorker() {
+            workerSignalCalls += 1;
+          },
+        },
+        async buildGeneration(paths) {
+          await createBuiltGeneration(paths);
+          return { result: null, async close() {} };
+        },
+        async validateGeneration() {
+          return { indexManifestFingerprint: 'f'.repeat(64) };
+        },
+        async onCutoverStage(stage) {
+          if (stage === RecallGenerationCutoverStage.BEFORE_POINTER_SWAP) {
+            abortController.abort(new Error('cutover policy cancelled pointer swap'));
+          }
+        },
+      }),
+    /cutover policy cancelled pointer swap/u,
+  );
+
+  assert.equal(workerSignalCalls, 1);
+  assert.equal(
+    (await readRecallActiveGenerationPointer(fixture.activeGenerationPointerPath))
+      ?.activeGenerationId,
+    fixture.oldGenerationId,
+  );
+  const registry = await readRecallGenerationRegistry(fixture.generationRegistryPath);
+  assert.equal(registry?.buildingGenerationId, null);
+  assert.equal(
+    registry?.generations.find(
+      ({ generationId }) => generationId === 'generation_cutover_cancelled',
+    )?.state,
+    RecallGenerationCutoverState.FAILED,
+  );
+});
+
+void test('post-validation watermark failure unfreezes and wakes the old generation', async (t) => {
+  const fixture = await createRebuildFixture(t);
+  let workerSignalCalls = 0;
+
+  await assert.rejects(
+    () =>
+      rebuildRecallGeneration({
+        ...fixture,
+        generationId: 'generation_watermark_failed',
+        workerSignal: {
+          signalDetachedWorker() {
+            workerSignalCalls += 1;
+          },
+        },
+        async buildGeneration(paths) {
+          await createBuiltGeneration(paths);
+          return { result: null, async close() {} };
+        },
+        async validateGeneration() {
+          await rm(fixture.markerSpoolDirectory, { recursive: true, force: true });
+          await writeFile(fixture.markerSpoolDirectory, 'not a directory\n');
+          return { indexManifestFingerprint: 'e'.repeat(64) };
+        },
+      }),
+    /ENOTDIR|not a directory/iu,
+  );
+
+  assert.equal(workerSignalCalls, 1);
+  assert.equal(
+    (await readRecallActiveGenerationPointer(fixture.activeGenerationPointerPath))
+      ?.activeGenerationId,
+    fixture.oldGenerationId,
+  );
+  const registry = await readRecallGenerationRegistry(fixture.generationRegistryPath);
+  assert.equal(registry?.buildingGenerationId, null);
+  assert.equal(
+    registry?.generations.find(({ generationId }) => generationId === 'generation_watermark_failed')
+      ?.state,
+    RecallGenerationCutoverState.FAILED,
+  );
+});
+
+void test('pre-swap cutover failure unfreezes and wakes the old generation', async (t) => {
+  const fixture = await createRebuildFixture(t);
+  let workerSignalCalls = 0;
+
+  await assert.rejects(
+    () =>
+      rebuildRecallGeneration({
+        ...fixture,
+        generationId: 'generation_preswap_failed',
+        workerSignal: {
+          signalDetachedWorker() {
+            workerSignalCalls += 1;
+          },
+        },
+        async buildGeneration(paths) {
+          await createBuiltGeneration(paths);
+          return { result: null, async close() {} };
+        },
+        async validateGeneration() {
+          return { indexManifestFingerprint: '7'.repeat(64) };
+        },
+        async onCutoverStage(stage) {
+          if (stage === RecallGenerationCutoverStage.BEFORE_POINTER_SWAP) {
+            throw new Error('injected pre-swap failure');
+          }
+        },
+      }),
+    /injected pre-swap failure/u,
+  );
+
+  assert.equal(workerSignalCalls, 1);
+  assert.equal(
+    (await readRecallActiveGenerationPointer(fixture.activeGenerationPointerPath))
+      ?.activeGenerationId,
+    fixture.oldGenerationId,
+  );
+  const registry = await readRecallGenerationRegistry(fixture.generationRegistryPath);
+  assert.equal(registry?.buildingGenerationId, null);
+  assert.equal(
+    registry?.generations.find(({ generationId }) => generationId === 'generation_preswap_failed')
+      ?.state,
+    RecallGenerationCutoverState.FAILED,
+  );
+});
+
 for (const faultStage of [
   RecallGenerationCutoverStage.BEFORE_POINTER_SWAP,
   RecallGenerationCutoverStage.AFTER_POINTER_SWAP,
@@ -369,7 +672,7 @@ for (const faultStage of [
           return { close() {} };
         },
       }),
-      true,
+      faultStage === RecallGenerationCutoverStage.AFTER_POINTER_SWAP,
     );
     const recoveredActiveGenerationId = (
       await readRecallGenerationRegistry(fixture.generationRegistryPath)

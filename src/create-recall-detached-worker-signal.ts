@@ -16,6 +16,7 @@ export interface CreateRecallDetachedWorkerSignalOptions {
   workingDirectory?: string;
 }
 
+// File descriptor 9 coalesces one waiter until descriptor 8 owns the worker lock, then unlocks so the next occupied interval can queue its own successor.
 const RECALL_WORKER_SIGNAL_HANDOFF_SCRIPT = `
 signal_lock_path=$1
 ownership_lock_path=$2

@@ -1,12 +1,14 @@
+import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import {
   coordinateRecallWriteWindow,
   inspectRecallWriteWindow,
 } from './coordinate-recall-write-window.js';
-import { RecallGenerationCutoverState } from './enums.js';
+import { RecallBacklogFailureCategory, RecallGenerationCutoverState } from './enums.js';
 import {
   createRecallActiveGenerationPointer,
+  decodeRecallBacklogSummary,
   readRecallActiveGenerationPointer,
   readRecallGenerationRegistry,
   resolveRecallGenerationDirectory,
@@ -17,6 +19,7 @@ import {
   type RecallGenerationRegistry,
   type RecallGenerationRegistryEntry,
 } from './recall-generation-state.js';
+import { readNodeErrorCode } from './read-node-error-code.js';
 
 /** Paths, store recovery capabilities, and retention for repairing generation cutover state. */
 export interface RecoverRecallGenerationCutoverOptions {
@@ -161,13 +164,27 @@ function finalizeRecoveredRecallRegistry(
   };
 }
 
+async function readRecallRecoveryBacklogSummary(
+  backlogSummaryPath: string,
+): Promise<ReturnType<typeof decodeRecallBacklogSummary> | null> {
+  try {
+    return decodeRecallBacklogSummary(await readFile(backlogSummaryPath, 'utf8'));
+  } catch (error) {
+    if (readNodeErrorCode(error) === 'ENOENT') {
+      return null;
+    }
+    throw error;
+  }
+}
+
 /** Recovers validated rebuild, rollback, or legacy cutover ordering and preserves unknown states. */
 export async function recoverRecallGenerationCutover(
   options: RecoverRecallGenerationCutoverOptions,
 ): Promise<boolean> {
-  const [initialPointer, initialRegistry, writeWindowState] = await Promise.all([
+  const [initialPointer, initialRegistry, initialBacklog, writeWindowState] = await Promise.all([
     readRecallActiveGenerationPointer(options.activeGenerationPointerPath),
     readRecallGenerationRegistry(options.generationRegistryPath),
+    readRecallRecoveryBacklogSummary(options.backlogSummaryPath),
     inspectRecallWriteWindow(options.lockPath),
   ]);
   const initiallyConsistent =
@@ -179,9 +196,14 @@ export async function recoverRecallGenerationCutover(
       generationId === initialRegistry.buildingGenerationId &&
       initialRegistry.buildingGenerationId !== null,
   );
+  const failedBuildingGenerationRequiresRecovery =
+    initialReadyBuildingGeneration?.state === RecallGenerationCutoverState.BUILDING &&
+    initialBacklog?.buildingGenerationId === initialReadyBuildingGeneration.generationId &&
+    initialBacklog.lastFailureCategory === RecallBacklogFailureCategory.REBUILD_FAILED;
   if (
     ((initiallyConsistent &&
-      initialReadyBuildingGeneration?.state !== RecallGenerationCutoverState.READY) ||
+      initialReadyBuildingGeneration?.state !== RecallGenerationCutoverState.READY &&
+      !failedBuildingGenerationRequiresRecovery) ||
       (initialPointer === null && initialRegistry === null)) &&
     !writeWindowState.currentWindow &&
     !writeWindowState.recoveryRequired
@@ -192,9 +214,10 @@ export async function recoverRecallGenerationCutover(
   return coordinateRecallWriteWindow(
     { lockPath: options.lockPath, allowRecovery: true },
     async (writeWindow) => {
-      const [pointer, registry] = await Promise.all([
+      const [pointer, registry, backlog] = await Promise.all([
         readRecallActiveGenerationPointer(options.activeGenerationPointerPath),
         readRecallGenerationRegistry(options.generationRegistryPath),
+        readRecallRecoveryBacklogSummary(options.backlogSummaryPath),
       ]);
       const readyBuildingGeneration = registry?.generations.find(
         ({ generationId }) =>
@@ -212,6 +235,50 @@ export async function recoverRecallGenerationCutover(
         writeWindow.attestRecoveryCompleted();
         return true;
       };
+      if (
+        pointerAndRegistrySelectSameGeneration &&
+        pointer !== null &&
+        registry !== null &&
+        readyBuildingGeneration?.state === RecallGenerationCutoverState.BUILDING &&
+        backlog?.buildingGenerationId === readyBuildingGeneration.generationId &&
+        backlog.lastFailureCategory === RecallBacklogFailureCategory.REBUILD_FAILED
+      ) {
+        const recoveredAt = options.nowEpochMilliseconds?.() ?? Date.now();
+        const activeEntry = registry.generations.find(
+          ({ generationId }) => generationId === registry.activeGenerationId,
+        );
+        if (activeEntry === undefined) {
+          writeWindow.retainRecoveryRequired();
+          throw new Error('Recall failed rebuild recovery active registry entry missing');
+        }
+        await writeRecallGenerationRegistry(options.generationRegistryPath, {
+          ...registry,
+          buildingGenerationId: null,
+          generations: registry.generations.map((entry) =>
+            entry.generationId === readyBuildingGeneration.generationId
+              ? {
+                  ...entry,
+                  state: RecallGenerationCutoverState.FAILED,
+                  stateChangedAtEpochMilliseconds: recoveredAt,
+                }
+              : entry,
+          ),
+        });
+        await writeRecallBacklogSummary(options.backlogSummaryPath, {
+          version: RECALL_BACKLOG_SUMMARY_VERSION,
+          pendingEligibleSessionCount: backlog.pendingEligibleSessionCount,
+          oldestEligibleMarkerAgeMilliseconds: backlog.oldestEligibleMarkerAgeMilliseconds,
+          activeGenerationId: pointer.activeGenerationId,
+          buildingGenerationId: null,
+          generationState: activeEntry.state,
+          activeGenerationAgeMilliseconds: 0,
+          rebuildAgeMilliseconds: null,
+          lastFailureCategory: RecallBacklogFailureCategory.REBUILD_FAILED,
+          observedAtEpochMilliseconds: recoveredAt,
+        });
+        await attestRecoveredActiveStores(pointer.activeGenerationId);
+        return true;
+      }
       if (
         pointerAndRegistrySelectSameGeneration &&
         pointer !== null &&

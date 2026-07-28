@@ -10,12 +10,15 @@ import {
   inspectRecallWriteWindow,
   recallWriteWindowStatePaths,
 } from './coordinate-recall-write-window.js';
-import { RecallGenerationCutoverState } from './enums.js';
+import { RecallBacklogFailureCategory, RecallGenerationCutoverState } from './enums.js';
 import {
   createRecallActiveGenerationPointer,
   readRecallActiveGenerationPointer,
+  readRecallGenerationRegistry,
   writeRecallActiveGenerationPointer,
+  writeRecallBacklogSummary,
   writeRecallGenerationRegistry,
+  RECALL_BACKLOG_SUMMARY_VERSION,
   RECALL_GENERATION_REGISTRY_VERSION,
 } from './recall-generation-state.js';
 import { recoverRecallGenerationCutover } from './recover-recall-generation-cutover.js';
@@ -60,6 +63,93 @@ void test('consistent active pointer requires no generation cutover recovery', a
       embeddingDimensions: 3,
     }),
     false,
+  );
+});
+
+void test('failed rebuild backlog recovers a building registry to failed and unfreezes commits', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recover-recall-failed-building-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const activeGenerationPointerPath = join(directory, 'active-generation.json');
+  const generationRegistryPath = join(directory, 'generation-registry.json');
+  const backlogSummaryPath = join(directory, 'backlog-summary.json');
+  const generationRootDirectory = join(directory, 'generations');
+  const pointer = createRecallActiveGenerationPointer('generation_active');
+  await mkdir(join(generationRootDirectory, pointer.activeGenerationId), { recursive: true });
+  await writeRecallActiveGenerationPointer(activeGenerationPointerPath, pointer);
+  await writeRecallGenerationRegistry(generationRegistryPath, {
+    version: RECALL_GENERATION_REGISTRY_VERSION,
+    activeGenerationId: pointer.activeGenerationId,
+    buildingGenerationId: 'generation_failed_build',
+    rollbackGenerationId: null,
+    activePointerChecksum: pointer.checksum,
+    generations: [
+      {
+        generationId: pointer.activeGenerationId,
+        state: RecallGenerationCutoverState.ACTIVE,
+        indexManifestVersion: 6,
+        markerSchemaVersion: 1,
+        sessionProjectionSchemaVersion: 3,
+        indexManifestFingerprint: 'a'.repeat(64),
+        rebuildStartedAtEpochMilliseconds: 1,
+        stateChangedAtEpochMilliseconds: 2,
+        rebuildStartMarkerId: null,
+        rebuildMarkerWatermark: [],
+        validatedAtEpochMilliseconds: 2,
+        retireAfterEpochMilliseconds: null,
+      },
+      {
+        generationId: 'generation_failed_build',
+        state: RecallGenerationCutoverState.BUILDING,
+        indexManifestVersion: 6,
+        markerSchemaVersion: 1,
+        sessionProjectionSchemaVersion: 3,
+        indexManifestFingerprint: '0'.repeat(64),
+        rebuildStartedAtEpochMilliseconds: 3,
+        stateChangedAtEpochMilliseconds: 3,
+        rebuildStartMarkerId: null,
+        rebuildMarkerWatermark: [],
+        validatedAtEpochMilliseconds: null,
+        retireAfterEpochMilliseconds: null,
+      },
+    ],
+  });
+  await writeRecallBacklogSummary(backlogSummaryPath, {
+    version: RECALL_BACKLOG_SUMMARY_VERSION,
+    pendingEligibleSessionCount: 1,
+    oldestEligibleMarkerAgeMilliseconds: null,
+    activeGenerationId: pointer.activeGenerationId,
+    buildingGenerationId: 'generation_failed_build',
+    generationState: RecallGenerationCutoverState.FAILED,
+    activeGenerationAgeMilliseconds: 0,
+    rebuildAgeMilliseconds: 1,
+    lastFailureCategory: RecallBacklogFailureCategory.REBUILD_FAILED,
+    observedAtEpochMilliseconds: 4,
+  });
+
+  assert.equal(
+    await recoverRecallGenerationCutover({
+      activeGenerationPointerPath,
+      generationRegistryPath,
+      generationRootDirectory,
+      backlogSummaryPath,
+      lockPath: join(directory, 'operation.lock'),
+      embeddingDimensions: 3,
+      nowEpochMilliseconds: () => 5,
+      openWriteEvidenceStore() {
+        return { close() {} };
+      },
+      openWriteProjectionStore() {
+        return { close() {} };
+      },
+    }),
+    true,
+  );
+  const registry = await readRecallGenerationRegistry(generationRegistryPath);
+  assert.equal(registry?.buildingGenerationId, null);
+  assert.equal(
+    registry?.generations.find(({ generationId }) => generationId === 'generation_failed_build')
+      ?.state,
+    RecallGenerationCutoverState.FAILED,
   );
 });
 

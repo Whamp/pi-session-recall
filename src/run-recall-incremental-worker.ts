@@ -150,7 +150,10 @@ export interface RunRecallIncrementalWorkerOptions extends RecallWorkMarkerCodec
   targetGenerationId: string;
   generationRegistryPath?: string;
   retainedMarkerDirectory?: string;
-  generationReplayCompletion?: RecallGenerationReplayCompletionPaths;
+  generationReplayCompletion?: Omit<
+    RecallGenerationReplayCompletionPaths,
+    'markerQuarantineDirectory'
+  >;
   knownSources?: readonly KnownRecallSessionMetadataSource[];
   confirmedDeletionMaxMissingSourceCount?: number;
   confirmedDeletionMaxMissingSourceRatio?: number;
@@ -188,12 +191,12 @@ export interface RecallIncrementalWorkerResult {
   transferOutcomes: readonly IncrementalRecallWorkPlanTransferOutcome[];
   largeTransferDeferrals: readonly RecallLargeTransferDeferral[];
   nextWakeAtEpochMilliseconds: number | null;
-  failureCategory: RecallBacklogFailureCategory | null;
+  replayBlockingFailureCategory: RecallBacklogFailureCategory | null;
 }
 
 type RecallIncrementalWorkerResultInput = Omit<
   RecallIncrementalWorkerResult,
-  'failureCategory' | 'nextWakeAtEpochMilliseconds'
+  'nextWakeAtEpochMilliseconds' | 'replayBlockingFailureCategory'
 >;
 
 async function loadRecallIncrementalWorkerDependencies(): Promise<void> {
@@ -317,7 +320,12 @@ export async function runRecallIncrementalWorker(
       ? { retainedMarkerDirectory: options.retainedMarkerDirectory }
       : {}),
     ...(options.generationReplayCompletion
-      ? { generationReplayCompletion: options.generationReplayCompletion }
+      ? {
+          generationReplayCompletion: {
+            ...options.generationReplayCompletion,
+            markerQuarantineDirectory: options.markerQuarantineDirectory,
+          },
+        }
       : {}),
   });
   function finishWorkerResult(
@@ -363,7 +371,7 @@ export async function runRecallIncrementalWorker(
     return {
       ...result,
       nextWakeAtEpochMilliseconds: wakeDeadlines.length === 0 ? null : Math.min(...wakeDeadlines),
-      failureCategory:
+      replayBlockingFailureCategory:
         workPlan.quarantineDiagnostics.length === 0
           ? null
           : RecallBacklogFailureCategory.MARKER_DECODE_FAILED,
@@ -884,7 +892,6 @@ async function runConfiguredRecallIncrementalWorkerExecutable(
       activeGenerationPointerPath: config.activeGenerationPointerPath,
       generationRegistryPath: config.generationRegistryPath,
       backlogSummaryPath: config.backlogSummaryPath,
-      markerQuarantineDirectory: config.markerQuarantineDirectory,
       lockPath: config.lockPath,
     },
     ...(registry?.rollbackGenerationId
@@ -978,7 +985,7 @@ async function runConfiguredRecallIncrementalWorkerExecutable(
     },
     deletionReconciliationHalted
       ? RecallBacklogFailureCategory.CONFIRMED_DELETION_HALTED
-      : result.failureCategory,
+      : result.replayBlockingFailureCategory,
     result,
   );
 }

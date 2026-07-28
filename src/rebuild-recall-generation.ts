@@ -223,6 +223,10 @@ async function assertRecallCutoverFilesystem(
   }
 }
 
+function normalizeRecallRebuildError(error: unknown, fallbackMessage: string): Error {
+  return error instanceof Error ? error : new Error(fallbackMessage, { cause: error });
+}
+
 function throwIfRebuildCancelled(signal?: AbortSignal): void {
   if (!signal?.aborted) {
     return;
@@ -307,7 +311,6 @@ export async function rebuildRecallGeneration<Result, BuildSnapshot = undefined>
         buildingGenerationId: generationId,
         generations: [...registry.generations, buildingEntry],
       };
-      await writeRecallGenerationRegistry(options.generationRegistryPath, frozenRegistry);
       if (frozenRegistry.activeGenerationId !== null) {
         await writeRecallBacklogSummary(options.backlogSummaryPath, {
           version: RECALL_BACKLOG_SUMMARY_VERSION,
@@ -322,58 +325,69 @@ export async function rebuildRecallGeneration<Result, BuildSnapshot = undefined>
           observedAtEpochMilliseconds: now,
         });
       }
+      const [freezeRegistryWrite] = await Promise.allSettled([
+        writeRecallGenerationRegistry(options.generationRegistryPath, frozenRegistry),
+      ]);
+      if (freezeRegistryWrite?.status === 'rejected') {
+        if (frozenRegistry.activeGenerationId !== null) {
+          const activeEntry = frozenRegistry.generations.find(
+            ({ generationId: candidateId }) => candidateId === frozenRegistry.activeGenerationId,
+          );
+          await writeRecallBacklogSummary(options.backlogSummaryPath, {
+            version: RECALL_BACKLOG_SUMMARY_VERSION,
+            pendingEligibleSessionCount: rebuildMarkerWatermark.length,
+            oldestEligibleMarkerAgeMilliseconds: null,
+            activeGenerationId: frozenRegistry.activeGenerationId,
+            buildingGenerationId: null,
+            generationState: activeEntry?.state ?? RecallGenerationCutoverState.ACTIVE,
+            activeGenerationAgeMilliseconds: 0,
+            rebuildAgeMilliseconds: null,
+            lastFailureCategory: RecallBacklogFailureCategory.REBUILD_FAILED,
+            observedAtEpochMilliseconds: now,
+          });
+        }
+        throw freezeRegistryWrite.reason;
+      }
       return { buildingEntry, buildSnapshot, rebuildMarkerWatermark, registry: frozenRegistry };
     },
   );
   const { buildingEntry, buildSnapshot, rebuildMarkerWatermark } = frozenBuild;
   registry = frozenBuild.registry;
 
-  let build: RecallReplacementGenerationBuild<Result> | undefined;
-  let buildResult: Result | undefined;
-  let validation: RecallGenerationValidation | undefined;
-  try {
-    throwIfRebuildCancelled(options.signal);
-    build = await options.buildGeneration(paths, buildSnapshot);
-    buildResult = build.result;
-    if (build.optimize) {
-      await build.optimize();
-    }
-    throwIfRebuildCancelled(options.signal);
-    await build.close();
-    build = undefined;
-    validation = await options.validateGeneration(paths, buildResult, buildSnapshot);
-    await resolveRecallGenerationDirectory(options.generationRootDirectory, generationId);
-  } catch (error) {
-    let rebuildError = error;
-    if (build) {
-      try {
-        await build.close();
-      } catch (closeError) {
-        rebuildError = new AggregateError(
-          [error, closeError],
-          'Recall replacement build and close failed',
-        );
-      }
-    }
+  async function failRecallReplacementBuild(
+    buildFailure: Error,
+    pendingMarkerWatermark: readonly string[],
+  ): Promise<never> {
+    let rebuildError = buildFailure;
     const failedAt = options.nowEpochMilliseconds?.() ?? Date.now();
     const failedEntry: RecallGenerationRegistryEntry = {
       ...buildingEntry,
       state: RecallGenerationCutoverState.FAILED,
       stateChangedAtEpochMilliseconds: failedAt,
+      rebuildMarkerWatermark: [...pendingMarkerWatermark],
     };
-    await writeRecallGenerationRegistry(options.generationRegistryPath, {
-      ...registry,
-      buildingGenerationId: null,
-      generations: replaceGenerationEntry(registry, failedEntry),
-    });
+    const [registryWrite] = await Promise.allSettled([
+      writeRecallGenerationRegistry(options.generationRegistryPath, {
+        ...registry,
+        buildingGenerationId: null,
+        generations: replaceGenerationEntry(registry, failedEntry),
+      }),
+    ]);
+    if (registryWrite?.status === 'rejected') {
+      rebuildError = new AggregateError(
+        [rebuildError, registryWrite.reason],
+        'Recall replacement build and failure registry update failed',
+      );
+    }
     if (registry.activeGenerationId !== null) {
       try {
         await writeRecallBacklogSummary(options.backlogSummaryPath, {
           version: RECALL_BACKLOG_SUMMARY_VERSION,
-          pendingEligibleSessionCount: rebuildMarkerWatermark.length,
+          pendingEligibleSessionCount: pendingMarkerWatermark.length,
           oldestEligibleMarkerAgeMilliseconds: null,
           activeGenerationId: registry.activeGenerationId,
-          buildingGenerationId: null,
+          buildingGenerationId:
+            registryWrite?.status === 'rejected' ? buildingEntry.generationId : null,
           generationState: RecallGenerationCutoverState.FAILED,
           activeGenerationAgeMilliseconds: 0,
           rebuildAgeMilliseconds: Math.max(0, failedAt - now),
@@ -398,26 +412,67 @@ export async function rebuildRecallGeneration<Result, BuildSnapshot = undefined>
     throw rebuildError;
   }
 
-  const readyAt = options.nowEpochMilliseconds?.() ?? Date.now();
-  const readyWatermark = [
-    ...new Set([
-      ...rebuildMarkerWatermark,
-      ...(await listPendingRecallMarkerIds(options.markerSpoolDirectory)),
-    ]),
-  ].toSorted();
-  const readyEntry: RecallGenerationRegistryEntry = {
-    ...buildingEntry,
-    state: RecallGenerationCutoverState.READY,
-    indexManifestFingerprint: validation.indexManifestFingerprint,
-    stateChangedAtEpochMilliseconds: readyAt,
-    rebuildMarkerWatermark: readyWatermark,
-    validatedAtEpochMilliseconds: readyAt,
-  };
-  registry = {
-    ...registry,
-    generations: replaceGenerationEntry(registry, readyEntry),
-  };
-  await writeRecallGenerationRegistry(options.generationRegistryPath, registry);
+  let build: RecallReplacementGenerationBuild<Result> | undefined;
+  let buildResult: Result | undefined;
+  let validation: RecallGenerationValidation | undefined;
+  try {
+    throwIfRebuildCancelled(options.signal);
+    build = await options.buildGeneration(paths, buildSnapshot);
+    buildResult = build.result;
+    if (build.optimize) {
+      await build.optimize();
+    }
+    throwIfRebuildCancelled(options.signal);
+    await build.close();
+    build = undefined;
+    validation = await options.validateGeneration(paths, buildResult, buildSnapshot);
+    await resolveRecallGenerationDirectory(options.generationRootDirectory, generationId);
+  } catch (error) {
+    let rebuildError = normalizeRecallRebuildError(error, 'Recall replacement build failed');
+    if (build) {
+      try {
+        await build.close();
+      } catch (closeError) {
+        rebuildError = new AggregateError(
+          [rebuildError, closeError],
+          'Recall replacement build and close failed',
+        );
+      }
+    }
+    return failRecallReplacementBuild(rebuildError, rebuildMarkerWatermark);
+  }
+
+  let readyWatermark = rebuildMarkerWatermark;
+  let readyEntry: RecallGenerationRegistryEntry;
+  try {
+    throwIfRebuildCancelled(options.signal);
+    const readyAt = options.nowEpochMilliseconds?.() ?? Date.now();
+    readyWatermark = [
+      ...new Set([
+        ...rebuildMarkerWatermark,
+        ...(await listPendingRecallMarkerIds(options.markerSpoolDirectory)),
+      ]),
+    ].toSorted();
+    readyEntry = {
+      ...buildingEntry,
+      state: RecallGenerationCutoverState.READY,
+      indexManifestFingerprint: validation.indexManifestFingerprint,
+      stateChangedAtEpochMilliseconds: readyAt,
+      rebuildMarkerWatermark: readyWatermark,
+      validatedAtEpochMilliseconds: readyAt,
+    };
+    registry = {
+      ...registry,
+      generations: replaceGenerationEntry(registry, readyEntry),
+    };
+    throwIfRebuildCancelled(options.signal);
+  } catch (error) {
+    const readinessError = normalizeRecallRebuildError(
+      error,
+      'Recall replacement readiness failed',
+    );
+    return failRecallReplacementBuild(readinessError, readyWatermark);
+  }
   const newPointer = createRecallActiveGenerationPointer(generationId);
   const activatedAt = options.nowEpochMilliseconds?.() ?? Date.now();
   const retentionMilliseconds =
@@ -453,45 +508,70 @@ export async function rebuildRecallGeneration<Result, BuildSnapshot = undefined>
     generations: finalizedEntries,
   };
 
-  await coordinateRecallWriteWindow(
-    {
-      lockPath: options.lockPath,
-      allowRecovery: false,
-    },
-    async (writeWindow) => {
-      const currentPointer = await readRecallActiveGenerationPointer(
-        options.activeGenerationPointerPath,
-      );
-      if (
-        currentPointer?.activeGenerationId !== startingPointer?.activeGenerationId ||
-        currentPointer?.checksum !== startingPointer?.checksum
-      ) {
-        throw new Error('Recall active generation changed before pointer cutover');
-      }
-      await options.onCutoverStage?.(RecallGenerationCutoverStage.BEFORE_POINTER_SWAP);
-      try {
-        await writeRecallActiveGenerationPointer(options.activeGenerationPointerPath, newPointer);
-        await options.onCutoverStage?.(RecallGenerationCutoverStage.AFTER_POINTER_SWAP);
-        await writeRecallGenerationRegistry(options.generationRegistryPath, finalRegistry);
-      } catch (error) {
-        writeWindow.retainRecoveryRequired();
-        throw error;
-      }
-    },
-  );
-  await writeRecallBacklogSummary(options.backlogSummaryPath, {
-    version: RECALL_BACKLOG_SUMMARY_VERSION,
-    pendingEligibleSessionCount: readyWatermark.length,
-    oldestEligibleMarkerAgeMilliseconds: null,
-    activeGenerationId: generationId,
-    buildingGenerationId: null,
-    generationState: RecallGenerationCutoverState.REPLAY_PENDING,
-    activeGenerationAgeMilliseconds: 0,
-    rebuildAgeMilliseconds: Math.max(0, activatedAt - now),
-    lastFailureCategory: null,
-    observedAtEpochMilliseconds: activatedAt,
-  });
+  try {
+    await coordinateRecallWriteWindow(
+      {
+        lockPath: options.lockPath,
+        allowRecovery: false,
+        ...(options.signal ? { signal: options.signal } : {}),
+      },
+      async (writeWindow) => {
+        throwIfRebuildCancelled(options.signal);
+        const [currentPointer, currentRegistry] = await Promise.all([
+          readRecallActiveGenerationPointer(options.activeGenerationPointerPath),
+          readRecallGenerationRegistry(options.generationRegistryPath),
+        ]);
+        if (
+          currentPointer?.activeGenerationId !== startingPointer?.activeGenerationId ||
+          currentPointer?.checksum !== startingPointer?.checksum ||
+          currentRegistry === null ||
+          encodeRecallGenerationRegistry(currentRegistry) !==
+            encodeRecallGenerationRegistry(frozenBuild.registry)
+        ) {
+          throw new Error('Recall generation state changed before pointer cutover');
+        }
+        await options.onCutoverStage?.(RecallGenerationCutoverStage.BEFORE_POINTER_SWAP);
+        throwIfRebuildCancelled(options.signal);
+        try {
+          await writeRecallGenerationRegistry(options.generationRegistryPath, registry);
+          await writeRecallActiveGenerationPointer(options.activeGenerationPointerPath, newPointer);
+          await options.onCutoverStage?.(RecallGenerationCutoverStage.AFTER_POINTER_SWAP);
+          await writeRecallGenerationRegistry(options.generationRegistryPath, finalRegistry);
+        } catch (error) {
+          writeWindow.retainRecoveryRequired();
+          throw error;
+        }
+      },
+    );
+  } catch (error) {
+    const currentPointer = await readRecallActiveGenerationPointer(
+      options.activeGenerationPointerPath,
+    );
+    if (currentPointer?.checksum === startingPointer?.checksum) {
+      const cutoverError = normalizeRecallRebuildError(error, 'Recall replacement cutover failed');
+      return failRecallReplacementBuild(cutoverError, readyWatermark);
+    }
+    options.workerSignal.signalDetachedWorker();
+    throw error;
+  }
+  const [backlogWrite] = await Promise.allSettled([
+    writeRecallBacklogSummary(options.backlogSummaryPath, {
+      version: RECALL_BACKLOG_SUMMARY_VERSION,
+      pendingEligibleSessionCount: readyWatermark.length,
+      oldestEligibleMarkerAgeMilliseconds: null,
+      activeGenerationId: generationId,
+      buildingGenerationId: null,
+      generationState: RecallGenerationCutoverState.REPLAY_PENDING,
+      activeGenerationAgeMilliseconds: 0,
+      rebuildAgeMilliseconds: Math.max(0, activatedAt - now),
+      lastFailureCategory: null,
+      observedAtEpochMilliseconds: activatedAt,
+    }),
+  ]);
   options.workerSignal.signalDetachedWorker();
+  if (backlogWrite?.status === 'rejected') {
+    throw backlogWrite.reason;
+  }
   return {
     result: buildResult,
     previousGenerationId,

@@ -15,9 +15,10 @@ import {
   writeRecallGenerationRegistry,
   RECALL_GENERATION_REGISTRY_VERSION,
 } from './recall-generation-state.js';
+import { recoverRecallGenerationCutover } from './recover-recall-generation-cutover.js';
 import { rollbackRecallGeneration } from './rollback-recall-generation.js';
 
-void test('explicit rollback atomically restores the retained generation and archived markers', async (t) => {
+void test('explicit rollback restores retained markers and wakes replay after partial failures', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'rollback-recall-generation-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const generationRootDirectory = join(directory, 'generations');
@@ -71,21 +72,25 @@ void test('explicit rollback atomically restores the retained generation and arc
   });
 
   const lockPath = join(directory, 'operation.lock');
+  const backlogSummaryPath = join(directory, 'backlog-summary.json');
   let workerSignalCount = 0;
+  const workerSignal = {
+    signalDetachedWorker() {
+      workerSignalCount += 1;
+      if (workerSignalCount === 1) {
+        assert.equal(readFileSyncState().currentWindow, false);
+      }
+    },
+  };
   const result = await rollbackRecallGeneration({
     activeGenerationPointerPath,
     generationRegistryPath,
     generationRootDirectory,
-    backlogSummaryPath: join(directory, 'backlog-summary.json'),
+    backlogSummaryPath,
     markerSpoolDirectory,
     retainedMarkerDirectory,
     lockPath,
-    workerSignal: {
-      signalDetachedWorker() {
-        workerSignalCount += 1;
-        assert.deepEqual(readFileSyncState(), { currentWindow: false, recoveryRequired: false });
-      },
-    },
+    workerSignal,
     rollbackRetentionMilliseconds: 1_000,
     nowEpochMilliseconds: () => 10_000,
   });
@@ -118,5 +123,70 @@ void test('explicit rollback atomically restores the retained generation and arc
   assert.equal(
     registry?.generations.find(({ generationId }) => generationId === 'generation_old')?.state,
     RecallGenerationCutoverState.REPLAY_PENDING,
+  );
+
+  await rm(backlogSummaryPath, { force: true });
+  await mkdir(backlogSummaryPath);
+  await assert.rejects(
+    () =>
+      rollbackRecallGeneration({
+        activeGenerationPointerPath,
+        generationRegistryPath,
+        generationRootDirectory,
+        backlogSummaryPath,
+        markerSpoolDirectory,
+        retainedMarkerDirectory,
+        lockPath,
+        workerSignal,
+        rollbackRetentionMilliseconds: 1_000,
+        nowEpochMilliseconds: () => 10_500,
+      }),
+    /EISDIR|directory/iu,
+  );
+  assert.equal(workerSignalCount, 2);
+  assert.equal(
+    (await readRecallActiveGenerationPointer(activeGenerationPointerPath))?.activeGenerationId,
+    'generation_new',
+  );
+  await rm(backlogSummaryPath, { recursive: true, force: true });
+  assert.equal(
+    await recoverRecallGenerationCutover({
+      activeGenerationPointerPath,
+      generationRegistryPath,
+      generationRootDirectory,
+      backlogSummaryPath,
+      lockPath,
+      embeddingDimensions: 3,
+      openWriteEvidenceStore() {
+        return { close() {} };
+      },
+      openWriteProjectionStore() {
+        return { close() {} };
+      },
+    }),
+    true,
+  );
+
+  await mkdir(join(retainedMarkerDirectory, 'marker_invalid.json'));
+  await assert.rejects(
+    () =>
+      rollbackRecallGeneration({
+        activeGenerationPointerPath,
+        generationRegistryPath,
+        generationRootDirectory,
+        backlogSummaryPath,
+        markerSpoolDirectory,
+        retainedMarkerDirectory,
+        lockPath,
+        workerSignal,
+        rollbackRetentionMilliseconds: 1_000,
+        nowEpochMilliseconds: () => 10_750,
+      }),
+    /EISDIR|directory/iu,
+  );
+  assert.equal(workerSignalCount, 3);
+  assert.equal(
+    (await readRecallActiveGenerationPointer(activeGenerationPointerPath))?.activeGenerationId,
+    'generation_new',
   );
 });

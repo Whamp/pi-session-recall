@@ -12,6 +12,7 @@ import {
 } from '@earendil-works/pi-coding-agent';
 
 import { RecallSearchScope } from './enums.js';
+import type { RecallDetachedWorkerSignal } from './create-recall-detached-worker-signal.js';
 import { formatRecallSearchResults } from './format-recall-search-results.js';
 import { loadRecallConversationConfig } from './recall-conversation-config.js';
 import {
@@ -21,10 +22,7 @@ import {
   type RecallConversationService,
   type RecallSearchMode,
 } from './recall-conversation-service.js';
-import {
-  publishRecallWorkMarker,
-  type RecallDetachedWorkerSignal,
-} from './publish-recall-work-marker.js';
+import { publishRecallWorkMarker } from './publish-recall-work-marker.js';
 import {
   registerRecallLifecycleMarkers,
   type RecallLifecycleRuntimeFactory,

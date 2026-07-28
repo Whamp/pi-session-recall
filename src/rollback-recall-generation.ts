@@ -60,6 +60,7 @@ async function pathExists(path: string): Promise<boolean> {
 async function restoreRetainedRecallMarkers(
   retainedMarkerDirectory: string,
   markerSpoolDirectory: string,
+  onMarkerRestored: (restoredMarkerCount: number) => void,
 ): Promise<number> {
   let markerNames: string[];
   try {
@@ -78,6 +79,7 @@ async function restoreRetainedRecallMarkers(
     const destinationPath = join(markerSpoolDirectory, markerName);
     if (await pathExists(destinationPath)) {
       restoredMarkerCount += 1;
+      onMarkerRestored(restoredMarkerCount);
       continue;
     }
     const temporaryPath = `${destinationPath}.${randomUUID()}.rollback.tmp`;
@@ -95,6 +97,7 @@ async function restoreRetainedRecallMarkers(
       }
       await rename(temporaryPath, destinationPath);
       restoredMarkerCount += 1;
+      onMarkerRestored(restoredMarkerCount);
     } catch (error) {
       await rm(temporaryPath, { force: true });
       throw error;
@@ -110,125 +113,150 @@ async function restoreRetainedRecallMarkers(
 export async function rollbackRecallGeneration(
   options: RollbackRecallGenerationOptions,
 ): Promise<RollbackRecallGenerationResult> {
-  const rollback = await coordinateRecallWriteWindow(
-    {
-      lockPath: options.lockPath,
-      allowRecovery: false,
-      ...(options.signal ? { signal: options.signal } : {}),
-    },
-    async (writeWindow) => {
-      const [pointer, registry] = await Promise.all([
-        readRecallActiveGenerationPointer(options.activeGenerationPointerPath),
-        readRecallGenerationRegistry(options.generationRegistryPath),
-      ]);
-      if (!pointer || !registry || !registry.rollbackGenerationId) {
-        throw new Error('Recall generation rollback unavailable: no retained rollback generation');
-      }
-      if (
-        registry.activeGenerationId !== pointer.activeGenerationId ||
-        registry.activePointerChecksum !== pointer.checksum
-      ) {
-        throw new Error('Recall generation rollback found pointer and registry disagreement');
-      }
-      if (registry.buildingGenerationId !== null) {
-        throw new Error('Recall generation rollback unavailable while a replacement builds');
-      }
-      const rollbackEntry = registry.generations.find(
-        ({ generationId }) => generationId === registry.rollbackGenerationId,
-      );
-      const activeEntry = registry.generations.find(
-        ({ generationId }) => generationId === registry.activeGenerationId,
-      );
-      if (
-        !rollbackEntry ||
-        !activeEntry ||
-        rollbackEntry.state !== RecallGenerationCutoverState.ROLLBACK
-      ) {
-        throw new Error('Recall generation rollback registry roles invalid');
-      }
-      await resolveRecallGenerationDirectory(
-        options.generationRootDirectory,
-        rollbackEntry.generationId,
-      );
-      const rolledBackAt = options.nowEpochMilliseconds?.() ?? Date.now();
-      if (
-        rollbackEntry.retireAfterEpochMilliseconds !== undefined &&
-        rollbackEntry.retireAfterEpochMilliseconds !== null &&
-        rollbackEntry.retireAfterEpochMilliseconds <= rolledBackAt
-      ) {
-        throw new Error('Recall generation rollback unavailable: retention period expired');
-      }
-      const targetState =
-        rollbackEntry.indexManifestVersion === 5
-          ? RecallGenerationCutoverState.LEGACY_READ_ONLY
-          : RecallGenerationCutoverState.REPLAY_PENDING;
-      const activeReplacement: RecallGenerationRegistryEntry = {
-        ...rollbackEntry,
-        state: targetState,
-        stateChangedAtEpochMilliseconds: rolledBackAt,
-        retireAfterEpochMilliseconds: null,
-      };
-      const rollbackReplacement: RecallGenerationRegistryEntry = {
-        ...activeEntry,
-        state: RecallGenerationCutoverState.ROLLBACK,
-        stateChangedAtEpochMilliseconds: rolledBackAt,
-        retireAfterEpochMilliseconds:
-          rolledBackAt +
-          (options.rollbackRetentionMilliseconds ?? DEFAULT_ROLLBACK_RETENTION_MILLISECONDS),
-      };
-      const targetPointer = createRecallActiveGenerationPointer(rollbackEntry.generationId);
-      const nextRegistry = {
-        ...registry,
-        activeGenerationId: rollbackEntry.generationId,
-        rollbackGenerationId: activeEntry.generationId,
-        activePointerChecksum: targetPointer.checksum,
-        generations: registry.generations.map((entry) => {
-          if (entry.generationId === activeReplacement.generationId) {
-            return activeReplacement;
-          }
-          if (entry.generationId === rollbackReplacement.generationId) {
-            return rollbackReplacement;
-          }
-          return entry;
-        }),
-      };
-      const restoredMarkerCount = await restoreRetainedRecallMarkers(
-        options.retainedMarkerDirectory,
-        options.markerSpoolDirectory,
-      );
-      try {
-        // Registry-first ordering leaves the old pointer searchable until recovery completes.
-        await writeRecallGenerationRegistry(options.generationRegistryPath, nextRegistry);
-        await writeRecallActiveGenerationPointer(
-          options.activeGenerationPointerPath,
-          targetPointer,
+  let restoredMarkerCountBeforeFailure = 0;
+  let rollback: {
+    result: RollbackRecallGenerationResult;
+    replayRequired: boolean;
+  };
+  try {
+    rollback = await coordinateRecallWriteWindow(
+      {
+        lockPath: options.lockPath,
+        allowRecovery: false,
+        ...(options.signal ? { signal: options.signal } : {}),
+      },
+      async (writeWindow) => {
+        const [pointer, registry] = await Promise.all([
+          readRecallActiveGenerationPointer(options.activeGenerationPointerPath),
+          readRecallGenerationRegistry(options.generationRegistryPath),
+        ]);
+        if (!pointer || !registry || !registry.rollbackGenerationId) {
+          throw new Error(
+            'Recall generation rollback unavailable: no retained rollback generation',
+          );
+        }
+        if (
+          registry.activeGenerationId !== pointer.activeGenerationId ||
+          registry.activePointerChecksum !== pointer.checksum
+        ) {
+          throw new Error('Recall generation rollback found pointer and registry disagreement');
+        }
+        if (registry.buildingGenerationId !== null) {
+          throw new Error('Recall generation rollback unavailable while a replacement builds');
+        }
+        const rollbackEntry = registry.generations.find(
+          ({ generationId }) => generationId === registry.rollbackGenerationId,
         );
-        await writeRecallBacklogSummary(options.backlogSummaryPath, {
-          version: RECALL_BACKLOG_SUMMARY_VERSION,
-          pendingEligibleSessionCount: restoredMarkerCount,
-          oldestEligibleMarkerAgeMilliseconds: null,
-          activeGenerationId: rollbackEntry.generationId,
-          buildingGenerationId: null,
-          generationState: targetState,
-          activeGenerationAgeMilliseconds: 0,
-          rebuildAgeMilliseconds: null,
-          lastFailureCategory: null,
-          observedAtEpochMilliseconds: rolledBackAt,
-        });
-      } catch (error) {
-        writeWindow.retainRecoveryRequired();
-        throw error;
-      }
-      return {
-        result: {
+        const activeEntry = registry.generations.find(
+          ({ generationId }) => generationId === registry.activeGenerationId,
+        );
+        if (
+          !rollbackEntry ||
+          !activeEntry ||
+          rollbackEntry.state !== RecallGenerationCutoverState.ROLLBACK
+        ) {
+          throw new Error('Recall generation rollback registry roles invalid');
+        }
+        await resolveRecallGenerationDirectory(
+          options.generationRootDirectory,
+          rollbackEntry.generationId,
+        );
+        const rolledBackAt = options.nowEpochMilliseconds?.() ?? Date.now();
+        if (
+          rollbackEntry.retireAfterEpochMilliseconds !== undefined &&
+          rollbackEntry.retireAfterEpochMilliseconds !== null &&
+          rollbackEntry.retireAfterEpochMilliseconds <= rolledBackAt
+        ) {
+          throw new Error('Recall generation rollback unavailable: retention period expired');
+        }
+        const targetState =
+          rollbackEntry.indexManifestVersion === 5
+            ? RecallGenerationCutoverState.LEGACY_READ_ONLY
+            : RecallGenerationCutoverState.REPLAY_PENDING;
+        const activeReplacement: RecallGenerationRegistryEntry = {
+          ...rollbackEntry,
+          state: targetState,
+          stateChangedAtEpochMilliseconds: rolledBackAt,
+          retireAfterEpochMilliseconds: null,
+        };
+        const rollbackReplacement: RecallGenerationRegistryEntry = {
+          ...activeEntry,
+          state: RecallGenerationCutoverState.ROLLBACK,
+          stateChangedAtEpochMilliseconds: rolledBackAt,
+          retireAfterEpochMilliseconds:
+            rolledBackAt +
+            (options.rollbackRetentionMilliseconds ?? DEFAULT_ROLLBACK_RETENTION_MILLISECONDS),
+        };
+        const targetPointer = createRecallActiveGenerationPointer(rollbackEntry.generationId);
+        const nextRegistry = {
+          ...registry,
           activeGenerationId: rollbackEntry.generationId,
           rollbackGenerationId: activeEntry.generationId,
-          restoredMarkerCount,
-        },
-        replayRequired: targetState === RecallGenerationCutoverState.REPLAY_PENDING,
-      };
-    },
-  );
+          activePointerChecksum: targetPointer.checksum,
+          generations: registry.generations.map((entry) => {
+            if (entry.generationId === activeReplacement.generationId) {
+              return activeReplacement;
+            }
+            if (entry.generationId === rollbackReplacement.generationId) {
+              return rollbackReplacement;
+            }
+            return entry;
+          }),
+        };
+        const restoredMarkerCount = await restoreRetainedRecallMarkers(
+          options.retainedMarkerDirectory,
+          options.markerSpoolDirectory,
+          (restoredCount) => {
+            restoredMarkerCountBeforeFailure = restoredCount;
+          },
+        );
+        try {
+          // Registry-first ordering leaves the old pointer searchable until recovery completes.
+          await writeRecallGenerationRegistry(options.generationRegistryPath, nextRegistry);
+          await writeRecallActiveGenerationPointer(
+            options.activeGenerationPointerPath,
+            targetPointer,
+          );
+          await writeRecallBacklogSummary(options.backlogSummaryPath, {
+            version: RECALL_BACKLOG_SUMMARY_VERSION,
+            pendingEligibleSessionCount: restoredMarkerCount,
+            oldestEligibleMarkerAgeMilliseconds: null,
+            activeGenerationId: rollbackEntry.generationId,
+            buildingGenerationId: null,
+            generationState: targetState,
+            activeGenerationAgeMilliseconds: 0,
+            rebuildAgeMilliseconds: null,
+            lastFailureCategory: null,
+            observedAtEpochMilliseconds: rolledBackAt,
+          });
+        } catch (error) {
+          writeWindow.retainRecoveryRequired();
+          throw error;
+        }
+        return {
+          result: {
+            activeGenerationId: rollbackEntry.generationId,
+            rollbackGenerationId: activeEntry.generationId,
+            restoredMarkerCount,
+          },
+          replayRequired: targetState === RecallGenerationCutoverState.REPLAY_PENDING,
+        };
+      },
+    );
+  } catch (error) {
+    if (restoredMarkerCountBeforeFailure > 0) {
+      options.workerSignal.signalDetachedWorker();
+      throw error;
+    }
+    const registry = await readRecallGenerationRegistry(options.generationRegistryPath);
+    const persistedActiveEntry = registry?.generations.find(
+      ({ generationId }) => generationId === registry.activeGenerationId,
+    );
+    if (persistedActiveEntry?.state === RecallGenerationCutoverState.REPLAY_PENDING) {
+      options.workerSignal.signalDetachedWorker();
+    }
+    throw error;
+  }
   if (rollback.replayRequired) {
     options.workerSignal.signalDetachedWorker();
   }

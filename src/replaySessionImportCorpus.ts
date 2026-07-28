@@ -110,7 +110,7 @@ function assertReplaySourcesUnchanged(
 }
 
 async function resolveReplayCorpusRoot(corpusRoot: string): Promise<string> {
-  const resolvedRoot = await realpath(resolve(corpusRoot));
+  const absoluteRoot = resolve(corpusRoot);
   const explicitConfig = process.env.PI_RECALL_CONFIG
     ? await loadRecallConversationConfig({
         configPath: process.env.PI_RECALL_CONFIG,
@@ -118,7 +118,7 @@ async function resolveReplayCorpusRoot(corpusRoot: string): Promise<string> {
       })
     : null;
   await assertRecallTestDataRoot({
-    testDataRoot: resolvedRoot,
+    testDataRoot: absoluteRoot,
     repositoryRoot: fileURLToPath(new URL('../', import.meta.url)),
     configuredProtectedPaths:
       explicitConfig === null
@@ -133,6 +133,7 @@ async function resolveReplayCorpusRoot(corpusRoot: string): Promise<string> {
             explicitConfig.markerControlDirectory,
           ],
   });
+  const resolvedRoot = await realpath(absoluteRoot);
   const rootStats = await stat(resolvedRoot);
   if (!rootStats.isDirectory()) {
     throw new Error(`Recall session import replay corpus root is not a directory: ${resolvedRoot}`);

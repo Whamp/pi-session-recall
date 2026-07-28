@@ -8,12 +8,12 @@ import {
   readProjectedActiveContextPath,
   readProjectedRecallSessionEntryPath,
 } from './parse-recall-session-record.js';
-import type {
-  LogicalSessionProjection,
-  PhysicalSessionProjection,
-  RecallEligibleSourceSpan,
-  RecallMarkerRuntimeCheckpoint,
-  RecallProjectedEntryDescriptor,
+import {
+  mergeRecallMarkerCheckpoint,
+  type LogicalSessionProjection,
+  type PhysicalSessionProjection,
+  type RecallEligibleSourceSpan,
+  type RecallProjectedEntryDescriptor,
 } from './recall-session-projection.js';
 import {
   isBoundedRecallDepartureMarkerTrigger,
@@ -116,24 +116,6 @@ function createEligibleSourceSpan(
     endEntryId: descriptor.entryId,
     contributorEntryIds: [descriptor.entryId],
   };
-}
-
-function updateRuntimeCheckpoints(
-  current: readonly RecallMarkerRuntimeCheckpoint[],
-  markers: readonly RecallWorkMarker[],
-): RecallMarkerRuntimeCheckpoint[] {
-  const sequences = new Map(
-    current.map(({ runtimeInstanceId, sequence }) => [runtimeInstanceId, sequence]),
-  );
-  for (const marker of markers) {
-    sequences.set(
-      marker.runtimeInstanceId,
-      Math.max(sequences.get(marker.runtimeInstanceId) ?? 0, marker.runtimeSequence),
-    );
-  }
-  return [...sequences.entries()]
-    .map(([runtimeInstanceId, sequence]) => ({ runtimeInstanceId, sequence }))
-    .toSorted((left, right) => left.runtimeInstanceId.localeCompare(right.runtimeInstanceId));
 }
 
 function markLogicalProjectionMalformed(
@@ -277,9 +259,6 @@ export function reduceRecallEligibility(
     ({ entryId }) => eligibleEntryIds.has(entryId) && !previousEligibleEntryIds.has(entryId),
   );
   const newlyEligibleSpans = newlyEligibleDescriptors.map(createEligibleSourceSpan);
-  for (const marker of unprocessedMarkers) {
-    coveredMarkerIds.add(marker.markerId);
-  }
   return {
     logicalProjection: {
       ...projection,
@@ -292,14 +271,15 @@ export function reduceRecallEligibility(
         .map(({ entryId }) => entryId)
         .filter((entryId) => eligibleEntryIds.has(entryId)),
       eligibleSpans: [...projection.eligibleSpans, ...newlyEligibleSpans],
-      markerCheckpoint: {
-        ...projection.markerCheckpoint,
-        coveredMarkerIds: [...coveredMarkerIds].toSorted(),
-        runtimeSequences: updateRuntimeCheckpoints(
-          projection.markerCheckpoint.runtimeSequences,
-          unprocessedMarkers,
-        ),
-      },
+      markerCheckpoint: mergeRecallMarkerCheckpoint({
+        generationId: projection.markerCheckpoint.generationId,
+        current: projection.markerCheckpoint,
+        coveredMarkerIds: unprocessedMarkers.map(({ markerId }) => markerId),
+        runtimeSequences: unprocessedMarkers.map(({ runtimeInstanceId, runtimeSequence }) => ({
+          runtimeInstanceId,
+          sequence: runtimeSequence,
+        })),
+      }),
     },
     newlyEligibleContributorEntryIds: newlyEligibleDescriptors.map(({ entryId }) => entryId),
     newlyEligibleSpans,

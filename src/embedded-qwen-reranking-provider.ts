@@ -1,10 +1,7 @@
 import {
-  acquireSharedEmbeddedLlamaRuntime,
-  initializeEmbeddedInferenceWithAutoCpuFallback,
-  probeSupportedEmbeddedComputeBackends,
-  readEmbeddedInferenceDeviceNames,
-  resolveEmbeddedInferenceComputeBackend,
-  writeEmbeddedLlamaLog,
+  acquireEmbeddedLlamaRuntimeForBackend,
+  initializeEmbeddedProviderResources,
+  resolveEmbeddedModelGpuLayers,
   type NodeLlamaCppGpuBackend,
 } from './acquireSharedEmbeddedLlamaRuntime.js';
 import {
@@ -12,9 +9,9 @@ import {
   EMBEDDED_NODE_LLAMA_CPP_VERSION,
 } from './embedded-embeddinggemma-provider.js';
 import {
-  EmbeddedInferenceComputeBackend,
   EmbeddedInferenceDevicePolicy,
   RecallInferenceBackend,
+  type EmbeddedInferenceComputeBackend,
 } from './enums.js';
 import {
   createRecallRerankingExecutionIdentity,
@@ -355,51 +352,25 @@ export function createEmbeddedQwenRerankingProvider(
     modelPath: string,
     computeBackend: EmbeddedInferenceComputeBackend,
   ): Promise<LoadedQwenRerankingResources> {
-    let runtime: QwenLlamaRuntime | undefined;
     let releaseRuntime: (() => Promise<void>) | undefined;
     let model: QwenLlamaModel | undefined;
     const contexts: QwenLlamaRankingContext[] = [];
     try {
-      const requestedGpu =
-        computeBackend === EmbeddedInferenceComputeBackend.CPU ? false : computeBackend;
-      const loadRuntime = () =>
-        nodeLlamaCpp.getLlama({
-          build: 'never',
-          debug: false,
-          gpu: requestedGpu,
-          logger: writeEmbeddedLlamaLog,
-          logLevel: nodeLlamaCpp.LlamaLogLevel.error,
-          progressLogs: false,
-          skipDownload: true,
-        });
-      if (nodeLlamaCpp.runtimePoolIdentity) {
-        const lease = await acquireSharedEmbeddedLlamaRuntime(
-          nodeLlamaCpp.runtimePoolIdentity,
-          `${nodeLlamaCpp.version}:${computeBackend}`,
-          loadRuntime,
-          isQwenLlamaRuntime,
-          (sharedRuntime) => sharedRuntime.dispose(),
-        );
-        runtime = lease.runtime;
-        releaseRuntime = () => lease.release();
-      } else {
-        runtime = await loadRuntime();
-        releaseRuntime = () => runtime?.dispose() ?? Promise.resolve();
-      }
-      if (runtime.gpu !== requestedGpu) {
-        throw new Error(
-          `Recall embedded Qwen reranker compute backend mismatch: requested ${computeBackend}, received ${runtime.gpu === false ? 'cpu' : runtime.gpu}`,
-        );
-      }
+      const acquired = await acquireEmbeddedLlamaRuntimeForBackend({
+        capabilityLabel: 'Qwen reranker',
+        computeBackend,
+        nodeLlamaCpp,
+        isRuntime: (value): value is QwenLlamaRuntime => isQwenLlamaRuntime(value),
+      });
+      const { runtime } = acquired;
+      releaseRuntime = () => acquired.releaseRuntime();
       model = await runtime.loadModel({
         modelPath,
-        gpuLayers:
-          computeBackend === EmbeddedInferenceComputeBackend.CPU
-            ? 0
-            : {
-                fitContext: { contextSize, embeddingContext: true },
-                max: QWEN_RERANKER_MAX_GPU_LAYERS,
-              },
+        gpuLayers: resolveEmbeddedModelGpuLayers({
+          computeBackend,
+          maxGpuLayers: QWEN_RERANKER_MAX_GPU_LAYERS,
+          fitContext: { contextSize, embeddingContext: true },
+        }),
       });
       for (let index = 0; index < parallelism; index += 1) {
         contexts.push(
@@ -437,29 +408,14 @@ export function createEmbeddedQwenRerankingProvider(
       return resources;
     }
     resourcesLoadPromise ??= (async () => {
-      const modelPath = await verifyModelArtifact();
-      const nodeLlamaCpp = await loadNodeLlamaCpp();
-      if (nodeLlamaCpp.version !== EMBEDDED_NODE_LLAMA_CPP_VERSION) {
-        throw new Error(
-          `Recall embedded Qwen reranker runtime version mismatch: expected ${EMBEDDED_NODE_LLAMA_CPP_VERSION}, received ${nodeLlamaCpp.version}`,
-        );
-      }
-      const probedComputeBackends = await probeSupportedEmbeddedComputeBackends(
+      const initialized = await initializeEmbeddedProviderResources({
+        capabilityLabel: 'Qwen reranker',
         devicePolicy,
-        nodeLlamaCpp.getLlamaGpuTypes
-          ? (include) => nodeLlamaCpp.getLlamaGpuTypes!(include)
-          : undefined,
-      );
-      const requestedComputeBackend = resolveEmbeddedInferenceComputeBackend(
-        devicePolicy,
-        probedComputeBackends,
-      );
-      const initialized = await initializeEmbeddedInferenceWithAutoCpuFallback({
-        devicePolicy,
-        requestedComputeBackend,
+        expectedNodeLlamaCppVersion: EMBEDDED_NODE_LLAMA_CPP_VERSION,
         fallbackWarningAlreadyEmitted: cpuFallbackWarningEmitted,
-        initialize: (computeBackend) =>
-          loadQwenRerankingResourcesForBackend(nodeLlamaCpp, modelPath, computeBackend),
+        verifyModelArtifact,
+        loadNodeLlamaCpp,
+        initializeForBackend: loadQwenRerankingResourcesForBackend,
         writeFallbackWarning: (fallbackFromComputeBackend, error) => {
           writeWarning(
             `Recall embedded Qwen reranker accelerator initialization failed for ${fallbackFromComputeBackend}; retrying the same profile ${profile.profileId} on CPU: ${readQwenRerankingErrorMessage(error)}`,
@@ -468,21 +424,17 @@ export function createEmbeddedQwenRerankingProvider(
       });
       resources = initialized.resources;
       cpuFallbackWarningEmitted = initialized.fallbackWarningEmitted;
-      const deviceNames = await readEmbeddedInferenceDeviceNames(
-        initialized.selectedComputeBackend,
-        resources.runtime,
-      );
       executionIdentity = Object.freeze({
         ...baseExecutionIdentity,
         adapterId: NODE_LLAMA_CPP_RERANKING_ADAPTER_ID,
         backend: RecallInferenceBackend.EMBEDDED,
         computeBackend: initialized.selectedComputeBackend,
-        deviceNames: Object.freeze([...deviceNames]),
+        deviceNames: Object.freeze([...initialized.deviceNames]),
         devicePolicy,
         fallbackFromComputeBackend: initialized.fallbackFromComputeBackend,
         nodeLlamaCppVersion: EMBEDDED_NODE_LLAMA_CPP_VERSION,
         parallelism,
-        probedComputeBackends: Object.freeze([...probedComputeBackends]),
+        probedComputeBackends: Object.freeze([...initialized.probedComputeBackends]),
       });
       return resources;
     })();

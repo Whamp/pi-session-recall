@@ -1,13 +1,10 @@
 import {
-  acquireSharedEmbeddedLlamaRuntime,
-  initializeEmbeddedInferenceWithAutoCpuFallback,
-  probeSupportedEmbeddedComputeBackends,
-  readEmbeddedInferenceDeviceNames,
-  resolveEmbeddedInferenceComputeBackend,
-  writeEmbeddedLlamaLog,
+  acquireEmbeddedLlamaRuntimeForBackend,
+  initializeEmbeddedProviderResources,
+  resolveEmbeddedModelGpuLayers,
   type NodeLlamaCppGpuBackend,
 } from './acquireSharedEmbeddedLlamaRuntime.js';
-import { EmbeddedInferenceComputeBackend, EmbeddedInferenceDevicePolicy } from './enums.js';
+import { EmbeddedInferenceDevicePolicy, type EmbeddedInferenceComputeBackend } from './enums.js';
 import type { RecallEmbeddingProvider } from './recall-inference-capabilities.js';
 import type { RecallTokenizerManifestIdentity } from './recall-index-manifest.js';
 import { createRecallModelArtifactCache } from './recall-model-artifact-cache.js';
@@ -330,51 +327,26 @@ export function createEmbeddedEmbeddingGemmaProvider(
     modelPath: string,
     computeBackend: EmbeddedInferenceComputeBackend,
   ): Promise<LoadedEmbeddingGemmaResources> {
-    let runtime: EmbeddingGemmaLlamaRuntime | undefined;
     let releaseRuntime: (() => Promise<void>) | undefined;
     let model: EmbeddingGemmaLlamaModel | undefined;
     const contexts: EmbeddingGemmaLlamaEmbeddingContext[] = [];
     try {
-      const requestedGpu =
-        computeBackend === EmbeddedInferenceComputeBackend.CPU ? false : computeBackend;
-      const loadRuntime = () =>
-        nodeLlamaCpp.getLlama({
-          build: 'never',
-          debug: false,
-          gpu: requestedGpu,
-          logger: writeEmbeddedLlamaLog,
-          logLevel: nodeLlamaCpp.LlamaLogLevel.error,
-          progressLogs: false,
-          skipDownload: true,
-        });
-      if (nodeLlamaCpp.runtimePoolIdentity) {
-        const lease = await acquireSharedEmbeddedLlamaRuntime(
-          nodeLlamaCpp.runtimePoolIdentity,
-          `${nodeLlamaCpp.version}:${computeBackend}`,
-          loadRuntime,
-          isEmbeddingGemmaLlamaRuntime,
-          (sharedRuntime) => sharedRuntime.dispose(),
-        );
-        runtime = lease.runtime;
-        releaseRuntime = () => lease.release();
-      } else {
-        runtime = await loadRuntime();
-        releaseRuntime = () => runtime?.dispose() ?? Promise.resolve();
-      }
-      if (runtime.gpu !== requestedGpu) {
-        throw new Error(
-          `Recall embedded EmbeddingGemma compute backend mismatch: requested ${computeBackend}, received ${runtime.gpu === false ? 'cpu' : runtime.gpu}`,
-        );
-      }
+      const acquired = await acquireEmbeddedLlamaRuntimeForBackend({
+        capabilityLabel: 'EmbeddingGemma',
+        computeBackend,
+        nodeLlamaCpp,
+        isRuntime: (value): value is EmbeddingGemmaLlamaRuntime =>
+          isEmbeddingGemmaLlamaRuntime(value),
+      });
+      const { runtime } = acquired;
+      releaseRuntime = () => acquired.releaseRuntime();
       model = await runtime.loadModel({
         modelPath,
-        gpuLayers:
-          computeBackend === EmbeddedInferenceComputeBackend.CPU
-            ? 0
-            : {
-                fitContext: { contextSize, embeddingContext: true },
-                max: EMBEDDING_GEMMA_MAX_GPU_LAYERS,
-              },
+        gpuLayers: resolveEmbeddedModelGpuLayers({
+          computeBackend,
+          maxGpuLayers: EMBEDDING_GEMMA_MAX_GPU_LAYERS,
+          fitContext: { contextSize, embeddingContext: true },
+        }),
       });
       if (model.embeddingVectorSize !== profile.identity.dimensions) {
         throw new Error(
@@ -420,29 +392,14 @@ export function createEmbeddedEmbeddingGemmaProvider(
       return resources;
     }
     resourcesLoadPromise ??= (async () => {
-      const modelPath = await verifyModelArtifact();
-      const nodeLlamaCpp = await loadNodeLlamaCpp();
-      if (nodeLlamaCpp.version !== EMBEDDED_NODE_LLAMA_CPP_VERSION) {
-        throw new Error(
-          `Recall embedded EmbeddingGemma runtime version mismatch: expected ${EMBEDDED_NODE_LLAMA_CPP_VERSION}, received ${nodeLlamaCpp.version}`,
-        );
-      }
-      const probedComputeBackends = await probeSupportedEmbeddedComputeBackends(
+      const initialized = await initializeEmbeddedProviderResources({
+        capabilityLabel: 'EmbeddingGemma',
         devicePolicy,
-        nodeLlamaCpp.getLlamaGpuTypes
-          ? (include) => nodeLlamaCpp.getLlamaGpuTypes!(include)
-          : undefined,
-      );
-      const requestedComputeBackend = resolveEmbeddedInferenceComputeBackend(
-        devicePolicy,
-        probedComputeBackends,
-      );
-      const initialized = await initializeEmbeddedInferenceWithAutoCpuFallback({
-        devicePolicy,
-        requestedComputeBackend,
+        expectedNodeLlamaCppVersion: EMBEDDED_NODE_LLAMA_CPP_VERSION,
         fallbackWarningAlreadyEmitted: cpuFallbackWarningEmitted,
-        initialize: (computeBackend) =>
-          loadResourcesForBackend(nodeLlamaCpp, modelPath, computeBackend),
+        verifyModelArtifact,
+        loadNodeLlamaCpp,
+        initializeForBackend: loadResourcesForBackend,
         writeFallbackWarning: (fallbackFromComputeBackend, error) => {
           writeWarning(
             `Recall embedded EmbeddingGemma accelerator initialization failed for ${fallbackFromComputeBackend}; retrying the same profile ${profile.profileId} on CPU: ${readEmbeddingErrorMessage(error)}`,
@@ -451,20 +408,16 @@ export function createEmbeddedEmbeddingGemmaProvider(
       });
       resources = initialized.resources;
       cpuFallbackWarningEmitted = initialized.fallbackWarningEmitted;
-      const deviceNames = await readEmbeddedInferenceDeviceNames(
-        initialized.selectedComputeBackend,
-        resources.runtime,
-      );
       executionIdentity = Object.freeze({
         adapter: 'node-llama-cpp-embedded-v2',
         backend: 'embedded',
         computeBackend: initialized.selectedComputeBackend,
-        deviceNames: Object.freeze([...deviceNames]),
+        deviceNames: Object.freeze([...initialized.deviceNames]),
         devicePolicy,
         fallbackFromComputeBackend: initialized.fallbackFromComputeBackend,
         nodeLlamaCppVersion: EMBEDDED_NODE_LLAMA_CPP_VERSION,
         parallelism,
-        probedComputeBackends: Object.freeze([...probedComputeBackends]),
+        probedComputeBackends: Object.freeze([...initialized.probedComputeBackends]),
         profileId: profile.profileId,
       });
       return resources;

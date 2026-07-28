@@ -295,6 +295,28 @@ export function activateRecallReplacementInRegistry(
   };
 }
 
+/** Builds the backlog summary written when a validated replacement becomes REPLAY_PENDING. */
+export function createReplayPendingActivationBacklogSummary(
+  replacement: RecallGenerationRegistryEntry,
+  observedAtEpochMilliseconds: number,
+): RecallBacklogSummary {
+  return {
+    version: RECALL_BACKLOG_SUMMARY_VERSION,
+    pendingEligibleSessionCount: replacement.rebuildMarkerWatermark?.length ?? 0,
+    oldestEligibleMarkerAgeMilliseconds: null,
+    activeGenerationId: replacement.generationId,
+    buildingGenerationId: null,
+    generationState: RecallGenerationCutoverState.REPLAY_PENDING,
+    activeGenerationAgeMilliseconds: 0,
+    rebuildAgeMilliseconds: Math.max(
+      0,
+      observedAtEpochMilliseconds - replacement.rebuildStartedAtEpochMilliseconds,
+    ),
+    lastFailureCategory: null,
+    observedAtEpochMilliseconds,
+  };
+}
+
 /** Strictly validates and serializes one active-generation pointer without writing it. */
 export function encodeRecallActiveGenerationPointer(
   pointer: RecallActiveGenerationPointer,

@@ -19,6 +19,7 @@ import {
 } from './recall-generation-state.js';
 import {
   createLogicalSessionProjectionId,
+  mergeRecallMarkerCheckpoint,
   type PhysicalSessionProjection,
 } from './recall-session-projection.js';
 import type { RecallMarkerReplayWorkPlan } from './coordinate-recall-marker-replay.js';
@@ -382,34 +383,17 @@ function coverConfirmedDeletionMarkers(
   if (workPlan === undefined) {
     return projection;
   }
-  const coveredMarkerIds = new Set(projection.markerCheckpoint.coveredMarkerIds);
-  const runtimeSequences = new Map(
-    projection.markerCheckpoint.runtimeSequences.map(({ runtimeInstanceId, sequence }) => [
-      runtimeInstanceId,
-      sequence,
-    ]),
-  );
-  for (const workItem of workPlan.workItems) {
-    for (const markerId of workItem.coveredMarkerIds) {
-      coveredMarkerIds.add(markerId);
-    }
-    runtimeSequences.set(
-      workItem.marker.runtimeInstanceId,
-      Math.max(
-        runtimeSequences.get(workItem.marker.runtimeInstanceId) ?? 0,
-        workItem.marker.runtimeSequence,
-      ),
-    );
-  }
   return {
     ...projection,
-    markerCheckpoint: {
+    markerCheckpoint: mergeRecallMarkerCheckpoint({
       generationId: projection.generationId,
-      coveredMarkerIds: [...coveredMarkerIds].toSorted(),
-      runtimeSequences: [...runtimeSequences.entries()]
-        .map(([runtimeInstanceId, sequence]) => ({ runtimeInstanceId, sequence }))
-        .toSorted((left, right) => left.runtimeInstanceId.localeCompare(right.runtimeInstanceId)),
-    },
+      current: projection.markerCheckpoint,
+      coveredMarkerIds: workPlan.workItems.flatMap(({ coveredMarkerIds }) => coveredMarkerIds),
+      runtimeSequences: workPlan.workItems.map(({ marker }) => ({
+        runtimeInstanceId: marker.runtimeInstanceId,
+        sequence: marker.runtimeSequence,
+      })),
+    }),
   };
 }
 

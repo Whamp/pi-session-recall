@@ -1,17 +1,14 @@
 import {
-  acquireSharedEmbeddedLlamaRuntime,
-  initializeEmbeddedInferenceWithAutoCpuFallback,
-  probeSupportedEmbeddedComputeBackends,
-  readEmbeddedInferenceDeviceNames,
-  resolveEmbeddedInferenceComputeBackend,
-  writeEmbeddedLlamaLog,
+  acquireEmbeddedLlamaRuntimeForBackend,
+  initializeEmbeddedProviderResources,
+  resolveEmbeddedModelGpuLayers,
   type NodeLlamaCppGpuBackend,
 } from './acquireSharedEmbeddedLlamaRuntime.js';
 import { EMBEDDED_NODE_LLAMA_CPP_VERSION } from './embedded-embeddinggemma-provider.js';
 import {
-  EmbeddedInferenceComputeBackend,
   EmbeddedInferenceDevicePolicy,
   RecallInferenceBackend,
+  type EmbeddedInferenceComputeBackend,
 } from './enums.js';
 import {
   createRecallQueryPlanningExecutionIdentity,
@@ -340,50 +337,24 @@ export function createEmbeddedQmdQueryPlanningProvider(
     modelPath: string,
     computeBackend: EmbeddedInferenceComputeBackend,
   ): Promise<LoadedQmdQueryPlanningResources> {
-    let runtime: QmdQueryPlanningRuntime | undefined;
     let releaseRuntime: (() => Promise<void>) | undefined;
     let model: QmdQueryPlanningModel | undefined;
     try {
-      const requestedGpu =
-        computeBackend === EmbeddedInferenceComputeBackend.CPU ? false : computeBackend;
-      const loadRuntime = () =>
-        nodeLlamaCpp.getLlama({
-          build: 'never',
-          debug: false,
-          gpu: requestedGpu,
-          logger: writeEmbeddedLlamaLog,
-          logLevel: nodeLlamaCpp.LlamaLogLevel.error,
-          progressLogs: false,
-          skipDownload: true,
-        });
-      if (nodeLlamaCpp.runtimePoolIdentity) {
-        const lease = await acquireSharedEmbeddedLlamaRuntime(
-          nodeLlamaCpp.runtimePoolIdentity,
-          `${nodeLlamaCpp.version}:${computeBackend}`,
-          loadRuntime,
-          isQmdQueryPlanningRuntime,
-          (sharedRuntime) => sharedRuntime.dispose(),
-        );
-        runtime = lease.runtime;
-        releaseRuntime = () => lease.release();
-      } else {
-        runtime = await loadRuntime();
-        releaseRuntime = () => runtime?.dispose() ?? Promise.resolve();
-      }
-      if (runtime.gpu !== requestedGpu) {
-        throw new Error(
-          `Recall embedded QMD query planner compute backend mismatch: requested ${computeBackend}, received ${runtime.gpu === false ? 'cpu' : runtime.gpu}`,
-        );
-      }
+      const acquired = await acquireEmbeddedLlamaRuntimeForBackend({
+        capabilityLabel: 'QMD query planner',
+        computeBackend,
+        nodeLlamaCpp,
+        isRuntime: (value): value is QmdQueryPlanningRuntime => isQmdQueryPlanningRuntime(value),
+      });
+      const { runtime } = acquired;
+      releaseRuntime = () => acquired.releaseRuntime();
       model = await runtime.loadModel({
         modelPath,
-        gpuLayers:
-          computeBackend === EmbeddedInferenceComputeBackend.CPU
-            ? 0
-            : {
-                fitContext: { contextSize: profile.generationPolicy.contextSize },
-                max: QMD_QUERY_PLANNER_MAX_GPU_LAYERS,
-              },
+        gpuLayers: resolveEmbeddedModelGpuLayers({
+          computeBackend,
+          maxGpuLayers: QMD_QUERY_PLANNER_MAX_GPU_LAYERS,
+          fitContext: { contextSize: profile.generationPolicy.contextSize },
+        }),
       });
       const grammar = await runtime.createGrammar({ grammar: profile.grammar });
       return { nodeLlamaCpp, runtime, releaseRuntime, model, grammar };
@@ -404,29 +375,14 @@ export function createEmbeddedQmdQueryPlanningProvider(
       return resources;
     }
     resourcesLoadPromise ??= (async () => {
-      const modelPath = await verifyModelArtifact();
-      const nodeLlamaCpp = await loadNodeLlamaCpp();
-      if (nodeLlamaCpp.version !== EMBEDDED_NODE_LLAMA_CPP_VERSION) {
-        throw new Error(
-          `Recall embedded QMD query planner runtime version mismatch: expected ${EMBEDDED_NODE_LLAMA_CPP_VERSION}, received ${nodeLlamaCpp.version}`,
-        );
-      }
-      const probedComputeBackends = await probeSupportedEmbeddedComputeBackends(
+      const initialized = await initializeEmbeddedProviderResources({
+        capabilityLabel: 'QMD query planner',
         devicePolicy,
-        nodeLlamaCpp.getLlamaGpuTypes
-          ? (include) => nodeLlamaCpp.getLlamaGpuTypes!(include)
-          : undefined,
-      );
-      const requestedComputeBackend = resolveEmbeddedInferenceComputeBackend(
-        devicePolicy,
-        probedComputeBackends,
-      );
-      const initialized = await initializeEmbeddedInferenceWithAutoCpuFallback({
-        devicePolicy,
-        requestedComputeBackend,
+        expectedNodeLlamaCppVersion: EMBEDDED_NODE_LLAMA_CPP_VERSION,
         fallbackWarningAlreadyEmitted: cpuFallbackWarningEmitted,
-        initialize: (computeBackend) =>
-          loadQmdQueryPlanningResourcesForBackend(nodeLlamaCpp, modelPath, computeBackend),
+        verifyModelArtifact,
+        loadNodeLlamaCpp,
+        initializeForBackend: loadQmdQueryPlanningResourcesForBackend,
         writeFallbackWarning: (fallbackFromComputeBackend, error) => {
           writeWarning(
             `Recall embedded QMD query planner accelerator initialization failed for ${fallbackFromComputeBackend}; retrying the same profile ${profile.profileId} on CPU: ${readQmdQueryPlanningErrorMessage(error)}`,
@@ -435,20 +391,16 @@ export function createEmbeddedQmdQueryPlanningProvider(
       });
       resources = initialized.resources;
       cpuFallbackWarningEmitted = initialized.fallbackWarningEmitted;
-      const deviceNames = await readEmbeddedInferenceDeviceNames(
-        initialized.selectedComputeBackend,
-        resources.runtime,
-      );
       executionIdentity = Object.freeze({
         ...baseExecutionIdentity,
         adapterId: NODE_LLAMA_CPP_QUERY_PLANNING_ADAPTER_ID,
         backend: RecallInferenceBackend.EMBEDDED,
         computeBackend: initialized.selectedComputeBackend,
-        deviceNames: Object.freeze([...deviceNames]),
+        deviceNames: Object.freeze([...initialized.deviceNames]),
         devicePolicy,
         fallbackFromComputeBackend: initialized.fallbackFromComputeBackend,
         nodeLlamaCppVersion: EMBEDDED_NODE_LLAMA_CPP_VERSION,
-        probedComputeBackends: Object.freeze([...probedComputeBackends]),
+        probedComputeBackends: Object.freeze([...initialized.probedComputeBackends]),
       });
       return resources;
     })();

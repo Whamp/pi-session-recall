@@ -282,6 +282,10 @@ type ConfirmedDeletionWindowOutcome =
   | { action: 'phase_advanced' }
   | { action: 'ack_pending'; confirmedSweepId: string }
   | {
+      action: 'acknowledgement_checkpointed';
+      progress: ConfirmedSessionDeletionProgress;
+    }
+  | {
       action: 'physical_projection_removed';
       progress: ConfirmedSessionDeletionProgress;
     }
@@ -365,6 +369,25 @@ function defaultConfirmedDeletionProjectionStore(
     createIfMissing: false,
     readOnly,
   });
+}
+
+function listDurableConfirmedDeletionTombstones(
+  selection: RecallActiveGenerationSelection,
+): readonly PhysicalSessionProjection[] {
+  const projectionStore = defaultConfirmedDeletionProjectionStore(selection, true);
+  try {
+    return projectionStore.listPhysicalProjections().filter((projection) => {
+      const phase = projection.deletionCheckpoint?.phase;
+      return (
+        projection.sourceAvailability === RecallSourceAvailability.DELETION_CONFIRMED &&
+        (phase === RecallConfirmedDeletionPhase.PHYSICAL_PROJECTION ||
+          phase === RecallConfirmedDeletionPhase.ACK_PENDING ||
+          phase === RecallConfirmedDeletionPhase.ACKNOWLEDGED)
+      );
+    });
+  } finally {
+    projectionStore.close();
+  }
 }
 
 function findConfirmedDeletionMarkerWorkPlan(
@@ -608,12 +631,42 @@ async function runConfirmedDeletionWriteWindow(
             };
           }
           case RecallConfirmedDeletionPhase.PHYSICAL_PROJECTION:
+            await projectionStore.upsertProjections([
+              {
+                ...projection,
+                deletionCheckpoint: {
+                  ...checkpoint,
+                  phase: RecallConfirmedDeletionPhase.ACK_PENDING,
+                },
+              },
+            ]);
+            return { action: 'phase_advanced' };
+          case RecallConfirmedDeletionPhase.ACK_PENDING:
             if (!acknowledgementCompleted) {
               return {
                 action: 'ack_pending',
                 confirmedSweepId: checkpoint.confirmedSweepId,
               };
             }
+            await projectionStore.upsertProjections([
+              {
+                ...projection,
+                deletionCheckpoint: {
+                  ...checkpoint,
+                  phase: RecallConfirmedDeletionPhase.ACKNOWLEDGED,
+                },
+              },
+            ]);
+            return {
+              action: 'acknowledgement_checkpointed',
+              progress: {
+                phase: RecallConfirmedDeletionPhase.ACKNOWLEDGED,
+                removedEvidenceOccurrenceCount: checkpoint.deletedEvidenceCount,
+                removedLogicalProjectionCount: checkpoint.deletedLogicalProjectionCount,
+                removedPhysicalProjectionCount: 0,
+              },
+            };
+          case RecallConfirmedDeletionPhase.ACKNOWLEDGED:
             await projectionStore.deleteProjections([projection.projectionId]);
             return {
               action: 'physical_projection_removed',
@@ -689,18 +742,25 @@ export async function reconcileConfirmedSessionDeletion(
     options.onDiagnostic?.(result);
     return result;
   }
-  const projectionsNeedingReconciliation = options.physicalProjections.filter((projection) =>
-    physicalProjectionNeedsDeletionReconciliation(projection, options.metadataSweep),
+  const targetSelection = await readRecallActiveGenerationSelection(
+    options.activeGenerationPointerPath,
+    options.generationRootDirectory,
+  );
+  const reconciliationProjectionById = new Map(
+    options.physicalProjections.map((projection) => [projection.projectionId, projection]),
+  );
+  for (const tombstone of listDurableConfirmedDeletionTombstones(targetSelection)) {
+    reconciliationProjectionById.set(tombstone.projectionId, tombstone);
+  }
+  const projectionsNeedingReconciliation = [...reconciliationProjectionById.values()].filter(
+    (projection) =>
+      physicalProjectionNeedsDeletionReconciliation(projection, options.metadataSweep),
   );
   if (projectionsNeedingReconciliation.length === 0) {
     const result = createConfirmedDeletionResult(false, 0, counts);
     options.onDiagnostic?.(result);
     return result;
   }
-  const targetSelection = await readRecallActiveGenerationSelection(
-    options.activeGenerationPointerPath,
-    options.generationRootDirectory,
-  );
   let consideredPhysicalSessionCount = 0;
   const acknowledgedPhysicalProjectionIds = new Set<string>();
 
@@ -771,6 +831,9 @@ export async function reconcileConfirmedSessionDeletion(
           );
           acknowledgedPhysicalProjectionIds.add(suppliedProjection.projectionId);
           counts.acknowledgedCheckpointCount += 1;
+          continue;
+        case 'acknowledgement_checkpointed':
+          await options.onProgress?.(Object.freeze({ ...outcome.progress }));
           continue;
         case 'physical_projection_removed':
           counts.removedEvidenceOccurrenceCount += outcome.progress.removedEvidenceOccurrenceCount;

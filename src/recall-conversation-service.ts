@@ -1815,6 +1815,19 @@ export function createRecallConversationService(
                     );
                   }
                 }
+                if (approvedRebuildSnapshot != null) {
+                  const extraSourcePath = [...reproducedApprovedSourcePaths].find(
+                    (sourcePath) =>
+                      !approvedRebuildSnapshot.eligibleContributorEntryIdsBySessionPath.has(
+                        sourcePath,
+                      ),
+                  );
+                  if (extraSourcePath !== undefined) {
+                    throw new Error(
+                      `Recall rebuild indexed physical source outside approved snapshot: ${extraSourcePath}`,
+                    );
+                  }
+                }
                 const result = { indexSummary, totalChunks: store.count() };
                 if (approvedRebuildSnapshot != null) {
                   await validateApprovedRebuildSourceFingerprints(
@@ -2152,17 +2165,22 @@ export function createRecallConversationService(
           discardedGenerationId,
         );
         await rm(stagingGenerationDirectory, { recursive: true, force: true });
-        const registryAfterRemoval = await readRecallGenerationRegistry(
-          config.generationRegistryPath,
+        await coordinateRecallWriteWindow(
+          { lockPath: config.lockPath, allowRecovery: false },
+          async () => {
+            const registryAfterRemoval = await readRecallGenerationRegistry(
+              config.generationRegistryPath,
+            );
+            if (registryAfterRemoval) {
+              await writeRecallGenerationRegistry(config.generationRegistryPath, {
+                ...registryAfterRemoval,
+                generations: registryAfterRemoval.generations.filter(
+                  ({ generationId }) => generationId !== discardedGenerationId,
+                ),
+              });
+            }
+          },
         );
-        if (registryAfterRemoval) {
-          await writeRecallGenerationRegistry(config.generationRegistryPath, {
-            ...registryAfterRemoval,
-            generations: registryAfterRemoval.generations.filter(
-              ({ generationId }) => generationId !== discardedGenerationId,
-            ),
-          });
-        }
         await markRecallBackgroundIndexGenerationDiscarded(backgroundIndexCoordinatorConfig);
         workerSignal.signalDetachedWorker();
         return true;

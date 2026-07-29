@@ -1,7 +1,7 @@
 import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 
-/** Default local reranker request timeout in milliseconds. */
+/** Bounds a local reranker request to 60 seconds when the caller supplies no timeout. */
 export const DEFAULT_LOCAL_RERANKER_REQUEST_TIMEOUT_MILLISECONDS = 60_000;
 
 const LOCAL_RERANKER_RESPONSE_SCHEMA = Type.Object({

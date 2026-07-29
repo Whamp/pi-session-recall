@@ -128,6 +128,14 @@ _Avoid_: Model stack, index manifest
 One exact capability profile, backend, adapter, artifact/device description, and conformance operation offered to setup. A candidate is never an automatic fallback.
 _Avoid_: Provider default, generic endpoint
 
+**Execution identity**:
+The canonical profile, adapter revision and settings, evaluation policy, software, resolved compute backend, and physical device identity that can affect one measured inference result.
+_Avoid_: Cache key, profile label
+
+**Physical device identity**:
+The normalized names and stable processor-count metadata for the resolved device used by one embedded inference capability.
+_Avoid_: Caller device label, requested device policy, hardware identity
+
 **Capability conformance record**:
 The accepted profile, backend, adapter, cache identity, verification time, and bounded measurement persisted after one capability-specific conformance operation passes.
 _Avoid_: Health check, model availability

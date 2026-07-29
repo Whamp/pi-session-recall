@@ -9,6 +9,7 @@ import { Value } from 'typebox/value';
 
 import { createCanonicalIdentity } from './create-canonical-identity.js';
 import {
+  EmbeddedInferenceComputeBackend,
   QueryPlannedRecallBaselineOutcome,
   QueryPlannedRecallControlKind,
   RecallInferenceBackend,
@@ -25,6 +26,7 @@ import {
   isPathInsideRecallEvaluationArea,
 } from './recall-evaluation-file-system.js';
 import { classifyQueryPlannedRecallContribution } from './query-planned-recall-contribution.js';
+import { DEFAULT_RECALL_CHUNK_POLICY } from './recall-index-manifest.js';
 import type {
   LoadedPrivateQueryPlannedRecallCorpus,
   PublishableQueryPlannedRecallControls,
@@ -877,7 +879,7 @@ export function createLiveQueryPlannedEvaluationConfigurationIdentity(
     effectiveConfigurationIdentity: createCanonicalIdentity(
       'live-query-planned-effective-evaluation-config-v1',
       {
-        chunkPolicy: baseConfig.chunkPolicy ?? null,
+        chunkPolicy: baseConfig.chunkPolicy ?? DEFAULT_RECALL_CHUNK_POLICY,
         embeddingBatchSize: baseConfig.embeddingBatchSize,
         embeddingDimensions: QUERY_PLANNED_RECALL_EVALUATION_EMBEDDING_DIMENSIONS,
         embeddingPolicy: 'deterministic-token-hash-v1',
@@ -1408,10 +1410,12 @@ function assertLiveProfileExecutionIdentity(run: LiveQueryPlannedProfileEvaluati
     planner.promptPolicy !== 'qmd-query-expansion-no-think-v1' ||
     planner.grammarVersion !== 'qmd-bounded-query-plan-v2' ||
     planner.executionIdentity.adapterId !== expectedPlannerAdapter ||
+    planner.executionIdentity.adapterVersion !== '1' ||
     planner.executionIdentity.backend !== run.profileRun.backend ||
     reranker.profileId !== 'qwen3-reranker-0.6b-q8-0-v1' ||
     reranker.scorePolicy !== 'llama-cpp-qwen3-rank-probability-v1' ||
     reranker.executionIdentity.adapterId !== expectedRerankerAdapter ||
+    reranker.executionIdentity.adapterVersion !== '1' ||
     reranker.executionIdentity.backend !== run.profileRun.backend
   ) {
     throw new Error(
@@ -1458,6 +1462,14 @@ function assertLiveProfileExecutionIdentity(run: LiveQueryPlannedProfileEvaluati
       'fallbackFromComputeBackend' in reranker.executionIdentity
         ? reranker.executionIdentity.fallbackFromComputeBackend
         : undefined;
+    const plannerDeviceNames =
+      'deviceNames' in planner.executionIdentity
+        ? planner.executionIdentity.deviceNames
+        : undefined;
+    const rerankerDeviceNames =
+      'deviceNames' in reranker.executionIdentity
+        ? reranker.executionIdentity.deviceNames
+        : undefined;
     const plannerPhysicalDeviceIdentity =
       'physicalDeviceIdentity' in planner.executionIdentity
         ? planner.executionIdentity.physicalDeviceIdentity
@@ -1466,20 +1478,39 @@ function assertLiveProfileExecutionIdentity(run: LiveQueryPlannedProfileEvaluati
       'physicalDeviceIdentity' in reranker.executionIdentity
         ? reranker.executionIdentity.physicalDeviceIdentity
         : undefined;
-    const resolvedDeviceClass = plannerComputeBackend === 'cpu' ? 'cpu' : 'accelerated';
+    const expectedComputeBackend =
+      run.profileRun.device === 'cpu'
+        ? EmbeddedInferenceComputeBackend.CPU
+        : run.profileRun.device === 'metal'
+          ? EmbeddedInferenceComputeBackend.METAL
+          : run.profileRun.device === 'cuda'
+            ? EmbeddedInferenceComputeBackend.CUDA
+            : run.profileRun.device === 'vulkan'
+              ? EmbeddedInferenceComputeBackend.VULKAN
+              : null;
+    const expectedDeviceClass =
+      expectedComputeBackend === EmbeddedInferenceComputeBackend.CPU ? 'cpu' : 'accelerated';
     if (
-      plannerComputeBackend !== rerankerComputeBackend ||
+      !expectedComputeBackend ||
+      plannerComputeBackend !== expectedComputeBackend ||
+      rerankerComputeBackend !== expectedComputeBackend ||
       plannerDevicePolicy !== run.profileRun.device ||
       rerankerDevicePolicy !== run.profileRun.device ||
-      resolvedDeviceClass !== run.profileRun.deviceClass ||
+      expectedDeviceClass !== run.profileRun.deviceClass ||
       plannerFallback !== null ||
       rerankerFallback !== null ||
+      !Array.isArray(plannerDeviceNames) ||
+      plannerDeviceNames.length === 0 ||
+      plannerDeviceNames.some(
+        (deviceName) => typeof deviceName !== 'string' || !deviceName.trim(),
+      ) ||
+      !isDeepStrictEqual(plannerDeviceNames, rerankerDeviceNames) ||
       !Array.isArray(plannerPhysicalDeviceIdentity) ||
       plannerPhysicalDeviceIdentity.length === 0 ||
       !isDeepStrictEqual(plannerPhysicalDeviceIdentity, rerankerPhysicalDeviceIdentity)
     ) {
       throw new Error(
-        `Live query-planned profile acceptance resolved hardware identity mismatch for ${run.profileRun.id}`,
+        `Live query-planned profile acceptance resolved physical device identity mismatch for ${run.profileRun.id}`,
       );
     }
   }

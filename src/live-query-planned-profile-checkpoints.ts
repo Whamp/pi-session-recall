@@ -5,6 +5,8 @@ import { isDeepStrictEqual } from 'node:util';
 import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 import {
+  EmbeddedInferenceComputeBackend,
+  EmbeddedInferenceDevicePolicy,
   QueryPlannedRecallBaselineOutcome,
   QueryPlannedRecallCaseCategory,
   QueryPlannedRecallControlKind,
@@ -22,28 +24,77 @@ const PROFILE_RUN_SCHEMA = Type.Object({
   device: Type.String(),
   backendVersion: Type.Optional(Type.String()),
 });
-const QUERY_PLANNING_EXECUTION_IDENTITY_SCHEMA = Type.Object({
+const RESOLVED_COMPUTE_BACKEND_SCHEMA = Type.Enum(EmbeddedInferenceComputeBackend);
+const EMBEDDED_DEVICE_POLICY_SCHEMA = Type.Enum(EmbeddedInferenceDevicePolicy);
+const NULLABLE_ACCELERATED_COMPUTE_BACKEND_SCHEMA = Type.Union([
+  Type.Literal(EmbeddedInferenceComputeBackend.METAL),
+  Type.Literal(EmbeddedInferenceComputeBackend.CUDA),
+  Type.Literal(EmbeddedInferenceComputeBackend.VULKAN),
+  Type.Null(),
+]);
+const EMBEDDED_PHYSICAL_DEVICE_EXECUTION_IDENTITY_PROPERTIES = {
+  computeBackend: RESOLVED_COMPUTE_BACKEND_SCHEMA,
+  deviceNames: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
+  devicePolicy: EMBEDDED_DEVICE_POLICY_SCHEMA,
+  fallbackFromComputeBackend: NULLABLE_ACCELERATED_COMPUTE_BACKEND_SCHEMA,
+  physicalDeviceIdentity: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
+  probedComputeBackends: Type.Array(
+    Type.Union([
+      Type.Literal(EmbeddedInferenceComputeBackend.METAL),
+      Type.Literal(EmbeddedInferenceComputeBackend.CUDA),
+      Type.Literal(EmbeddedInferenceComputeBackend.VULKAN),
+    ]),
+  ),
+};
+const QUERY_PLANNING_EXECUTION_IDENTITY_PROPERTIES = {
   adapterId: Type.String(),
   adapterVersion: Type.String(),
   adapterConfigurationIdentity: Type.String(),
-  backend: EXECUTION_BACKEND_SCHEMA,
   cacheIdentity: Type.String(),
   modelProfileId: Type.String(),
   modelProfileIdentity: Type.String(),
   promptPolicy: Type.String(),
   grammarVersion: Type.String(),
   requestTimeoutMilliseconds: Type.Number(),
-});
-const RERANKING_EXECUTION_IDENTITY_SCHEMA = Type.Object({
+};
+const QUERY_PLANNING_EXECUTION_IDENTITY_SCHEMA = Type.Union([
+  Type.Object({
+    ...QUERY_PLANNING_EXECUTION_IDENTITY_PROPERTIES,
+    backend: Type.Literal(RecallInferenceBackend.EMBEDDED),
+    ...EMBEDDED_PHYSICAL_DEVICE_EXECUTION_IDENTITY_PROPERTIES,
+    contextSize: Type.Integer({ minimum: 1 }),
+    threads: Type.Union([Type.Integer({ minimum: 1 }), Type.Null()]),
+    nodeLlamaCppVersion: Type.String({ minLength: 1 }),
+  }),
+  Type.Object({
+    ...QUERY_PLANNING_EXECUTION_IDENTITY_PROPERTIES,
+    backend: Type.Literal(RecallInferenceBackend.LLAMA_CPP_HTTP),
+  }),
+]);
+const RERANKING_EXECUTION_IDENTITY_PROPERTIES = {
   adapterId: Type.String(),
   adapterVersion: Type.String(),
   adapterConfigurationIdentity: Type.String(),
-  backend: EXECUTION_BACKEND_SCHEMA,
   cacheIdentity: Type.String(),
   modelProfileId: Type.String(),
   modelProfileIdentity: Type.String(),
   requestTimeoutMilliseconds: Type.Number(),
-});
+};
+const RERANKING_EXECUTION_IDENTITY_SCHEMA = Type.Union([
+  Type.Object({
+    ...RERANKING_EXECUTION_IDENTITY_PROPERTIES,
+    backend: Type.Literal(RecallInferenceBackend.EMBEDDED),
+    ...EMBEDDED_PHYSICAL_DEVICE_EXECUTION_IDENTITY_PROPERTIES,
+    contextSize: Type.Integer({ minimum: 1 }),
+    threads: Type.Union([Type.Integer({ minimum: 1 }), Type.Null()]),
+    nodeLlamaCppVersion: Type.String({ minLength: 1 }),
+    parallelism: Type.Integer({ minimum: 1 }),
+  }),
+  Type.Object({
+    ...RERANKING_EXECUTION_IDENTITY_PROPERTIES,
+    backend: Type.Literal(RecallInferenceBackend.LLAMA_CPP_HTTP),
+  }),
+]);
 const CANDIDATE_LIMITS_SCHEMA = Type.Object({
   dense: Type.Number(),
   lexical: Type.Number(),
@@ -234,7 +285,7 @@ const LIVE_PROFILE_CHECKPOINT_SCHEMA = Type.Object({
   result: LIVE_PROFILE_RESULT_SCHEMA,
 });
 
-/** Exact code, corpus, canonical execution, evaluation, software, and hardware identity for resume. */
+/** Exact code, corpus, canonical execution, evaluation, software, and physical device identity for resume. */
 export interface LiveProfileEvaluationCheckpointIdentity {
   version: 2;
   recordedAgainstCommit: string;

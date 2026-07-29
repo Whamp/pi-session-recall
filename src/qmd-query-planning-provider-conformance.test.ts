@@ -183,7 +183,7 @@ void test('QMD HTTP query planner passes shared bounded-plan conformance with re
   assert.match(cacheIdentity, /^recall-query-planning-execution-v1:[a-f0-9]{64}$/u);
   assert.deepEqual(executionIdentity, {
     adapterId: 'llama-cpp-http-query-planning-v1',
-    adapterVersion: 'llama-cpp-http-query-planning-v1',
+    adapterVersion: '1',
     backend: 'llama-cpp-http',
     modelProfileId: profile.profileId,
     modelProfileIdentity: provider.executionIdentity.modelProfileIdentity,

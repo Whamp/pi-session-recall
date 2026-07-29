@@ -29,6 +29,8 @@ void test('Qwen HTTP reranking identity normalizes endpoints and binds timeout c
     requestTimeoutMilliseconds: 2_000,
   });
 
+  assert.equal(first.executionIdentity.adapterVersion, '1');
+  assert.notEqual(first.executionIdentity.adapterVersion, first.executionIdentity.adapterId);
   assert.deepEqual(first.executionIdentity, equivalent.executionIdentity);
   assert.notEqual(
     first.executionIdentity.cacheIdentity,

@@ -15,6 +15,8 @@ import {
 } from './recall-query-planning-policy.js';
 
 const DEFAULT_QMD_HTTP_QUERY_PLANNING_TIMEOUT_MILLISECONDS = 60_000;
+const LLAMA_CPP_HTTP_QUERY_PLANNING_ADAPTER_ID = 'llama-cpp-http-query-planning-v1';
+const LLAMA_CPP_HTTP_QUERY_PLANNING_ADAPTER_VERSION = '1';
 
 const QMD_HTTP_QUERY_PLANNING_RESPONSE_SCHEMA = Type.Object({
   model: Type.String({ minLength: 1 }),
@@ -76,10 +78,11 @@ export function createQmdHttpQueryPlanningProvider(
   return {
     executionIdentity: createRecallQueryPlanningExecutionIdentity(
       profile,
-      'llama-cpp-http-query-planning-v1',
+      LLAMA_CPP_HTTP_QUERY_PLANNING_ADAPTER_ID,
       adapterConfigurationIdentity,
       RecallInferenceBackend.LLAMA_CPP_HTTP,
       requestTimeoutMilliseconds,
+      LLAMA_CPP_HTTP_QUERY_PLANNING_ADAPTER_VERSION,
     ),
     async planRecallQuery(request, signal) {
       const timeoutSignal = AbortSignal.timeout(requestTimeoutMilliseconds);

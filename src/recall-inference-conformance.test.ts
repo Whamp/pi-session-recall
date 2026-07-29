@@ -218,7 +218,7 @@ void test('Qwen HTTP reranking provider passes shared ordered-score conformance'
   const clockValues = [0, 13];
 
   assert.equal(provider.executionIdentity.adapterId, 'llama-cpp-http-reranking-v1');
-  assert.equal(provider.executionIdentity.adapterVersion, 'llama-cpp-http-reranking-v1');
+  assert.equal(provider.executionIdentity.adapterVersion, '1');
   assert.equal(provider.executionIdentity.backend, 'llama-cpp-http');
   assert.equal(provider.executionIdentity.modelProfileId, 'qwen-reranking:qwen3-rerank');
   assert.match(

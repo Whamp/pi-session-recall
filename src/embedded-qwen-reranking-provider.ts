@@ -16,8 +16,7 @@ import {
 } from './enums.js';
 import {
   createRecallRerankingExecutionIdentity,
-  normalizeRecallPhysicalDeviceIdentity,
-  resolveRecallCpuHardwareIdentity,
+  resolveRecallPhysicalDeviceIdentity,
   type RecallIdentifiedRerankingProvider,
   type RecallRerankingExecutionIdentity,
 } from './recall-inference-capabilities.js';
@@ -28,6 +27,7 @@ import type { RecommendedQwenRerankingModelProfile } from './recall-model-profil
 export const QWEN_RERANKER_MAX_GPU_LAYERS = 40;
 
 const NODE_LLAMA_CPP_RERANKING_ADAPTER_ID = 'node-llama-cpp-qwen-reranking-logit-recovery-v1';
+const NODE_LLAMA_CPP_RERANKING_ADAPTER_VERSION = '1';
 const NODE_LLAMA_CPP_EXTRA_SIGMOID_MINIMUM = 0.5;
 const NODE_LLAMA_CPP_EXTRA_SIGMOID_MAXIMUM = 1 / (1 + Math.exp(-1));
 
@@ -106,7 +106,7 @@ export interface EmbeddedQwenRerankingExecutionIdentity extends RecallRerankingE
 /** Embedded reranking provider with corrected llama.cpp scores and explicit native disposal. */
 export interface EmbeddedQwenRerankingProvider extends RecallIdentifiedRerankingProvider {
   readonly executionIdentity: Readonly<EmbeddedQwenRerankingExecutionIdentity>;
-  /** Loads native resources far enough to bind resolved compute and physical hardware identity. */
+  /** Loads native resources far enough to bind resolved compute and physical device identity. */
   resolveExecutionIdentity(): Promise<Readonly<EmbeddedQwenRerankingExecutionIdentity>>;
   dispose(): Promise<void>;
 }
@@ -315,6 +315,7 @@ export function createEmbeddedQwenRerankingProvider(
       }),
       RecallInferenceBackend.EMBEDDED,
       requestTimeoutMilliseconds,
+      NODE_LLAMA_CPP_RERANKING_ADAPTER_VERSION,
     );
   }
   let executionIdentity: Readonly<EmbeddedQwenRerankingExecutionIdentity> = Object.freeze({
@@ -525,15 +526,14 @@ export function createEmbeddedQwenRerankingProvider(
           EmbeddedInferenceComputeBackend.CPU,
         );
       }
-      const cpuHardwareIdentity =
+      const acceleratedDeviceNames =
         selectedComputeBackend === EmbeddedInferenceComputeBackend.CPU
-          ? resolveRecallCpuHardwareIdentity()
-          : null;
-      const deviceNames = cpuHardwareIdentity?.deviceNames ??
-        (await resources.runtime.getGpuDeviceNames?.()) ?? [selectedComputeBackend];
-      const physicalDeviceIdentity =
-        cpuHardwareIdentity?.physicalDeviceIdentity ??
-        normalizeRecallPhysicalDeviceIdentity(deviceNames);
+          ? undefined
+          : await resources.runtime.getGpuDeviceNames?.();
+      const { deviceNames, physicalDeviceIdentity } = resolveRecallPhysicalDeviceIdentity(
+        selectedComputeBackend,
+        acceleratedDeviceNames,
+      );
       executionIdentity = Object.freeze({
         ...createBaseExecutionIdentity(
           selectedComputeBackend,

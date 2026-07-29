@@ -4,7 +4,7 @@ import test from 'node:test';
 import { EmbeddedInferenceDevicePolicy } from './enums.js';
 
 import { createEmbeddedQmdQueryPlanningProvider } from './embedded-qmd-query-planning-provider.js';
-import { resolveRecallCpuHardwareIdentity } from './recall-inference-capabilities.js';
+import { resolveRecallCpuPhysicalDeviceIdentity } from './recall-inference-capabilities.js';
 import { measureRecallQueryPlanningProviderConformance } from './recall-inference-conformance.js';
 import { createRecommendedQmdQueryPlanningModelProfile } from './recall-model-profiles.js';
 
@@ -132,7 +132,7 @@ void test('embedded QMD query planner passes shared conformance with profile gra
     signal: calls[0]?.options.signal,
   });
   assert.ok(calls[0]?.options.signal instanceof AbortSignal);
-  const cpuHardwareIdentity = resolveRecallCpuHardwareIdentity();
+  const cpuPhysicalDeviceIdentity = resolveRecallCpuPhysicalDeviceIdentity();
   const { adapterConfigurationIdentity, cacheIdentity, ...executionIdentity } =
     provider.executionIdentity;
   assert.match(
@@ -143,7 +143,7 @@ void test('embedded QMD query planner passes shared conformance with profile gra
   assert.match(cacheIdentity, /^recall-query-planning-execution-v1:[a-f0-9]{64}$/u);
   assert.deepEqual(executionIdentity, {
     adapterId: 'node-llama-cpp-qmd-query-planning-v1',
-    adapterVersion: 'node-llama-cpp-qmd-query-planning-v1',
+    adapterVersion: '1',
     backend: 'embedded',
     modelProfileId: profile.profileId,
     modelProfileIdentity: provider.executionIdentity.modelProfileIdentity,
@@ -151,13 +151,13 @@ void test('embedded QMD query planner passes shared conformance with profile gra
     grammarVersion: profile.grammarVersion,
     requestTimeoutMilliseconds: 4_321,
     computeBackend: 'cpu',
-    deviceNames: cpuHardwareIdentity.deviceNames,
+    deviceNames: cpuPhysicalDeviceIdentity.deviceNames,
     devicePolicy: 'cpu',
     fallbackFromComputeBackend: null,
     contextSize: 2_048,
     threads: null,
     nodeLlamaCppVersion: '3.18.1',
-    physicalDeviceIdentity: cpuHardwareIdentity.physicalDeviceIdentity,
+    physicalDeviceIdentity: cpuPhysicalDeviceIdentity.physicalDeviceIdentity,
     probedComputeBackends: [],
   });
   assert.deepEqual(measurement, {

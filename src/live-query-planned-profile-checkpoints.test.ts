@@ -51,9 +51,14 @@ function createProfileResult(
       300_000,
     ),
     computeBackend: 'cpu',
+    deviceNames: ['Fixture CPU'],
     devicePolicy: 'cpu',
     fallbackFromComputeBackend: null,
+    contextSize: 2_048,
+    threads: null,
+    nodeLlamaCppVersion: '3.18.1',
     physicalDeviceIdentity: [physicalDeviceIdentity],
+    probedComputeBackends: [],
   };
   const rerankingExecutionIdentity = {
     ...createRecallRerankingExecutionIdentity(
@@ -64,9 +69,15 @@ function createProfileResult(
       300_000,
     ),
     computeBackend: 'cpu',
+    deviceNames: ['Fixture CPU'],
     devicePolicy: 'cpu',
     fallbackFromComputeBackend: null,
+    contextSize: 4_096,
+    threads: null,
+    nodeLlamaCppVersion: '3.18.1',
+    parallelism: 1,
     physicalDeviceIdentity: [physicalDeviceIdentity],
+    probedComputeBackends: [],
   };
   return {
     version: 1,
@@ -349,6 +360,131 @@ void test('live profile matrix resumes only an exact identity-bound checkpoint',
       'Starting live profile embedded-cpu (1/1)',
       'Completed live profile embedded-cpu (1/1)',
     ]);
+
+    const changedPlannerExecutionIdentity = {
+      ...replacementDeviceResult.profileIdentity.queryPlanning.executionIdentity,
+      adapterConfigurationIdentity: 'changed-planner-configuration',
+      cacheIdentity: 'changed-planner-cache-identity',
+    };
+    const changedRerankerExecutionIdentity = {
+      ...replacementDeviceResult.profileIdentity.reranking.executionIdentity,
+      adapterConfigurationIdentity: 'changed-reranker-configuration',
+      adapterVersion: '2',
+      cacheIdentity: 'changed-reranker-cache-identity',
+      modelProfileIdentity: 'changed-reranker-model-profile',
+    };
+    const identityFamilyResults: Array<{
+      family: string;
+      result: LiveQueryPlannedProfileEvaluationResult;
+    }> = [
+      {
+        family: 'effective evaluation configuration',
+        result: {
+          ...replacementDeviceResult,
+          profileIdentity: {
+            ...replacementDeviceResult.profileIdentity,
+            evaluationConfiguration: {
+              ...replacementDeviceResult.profileIdentity.evaluationConfiguration,
+              effectiveConfigurationIdentity: 'changed-effective-evaluation-configuration',
+            },
+          },
+        },
+      },
+      {
+        family: 'reranker conformance fixture',
+        result: {
+          ...replacementDeviceResult,
+          profileIdentity: {
+            ...replacementDeviceResult.profileIdentity,
+            evaluationConfiguration: {
+              ...replacementDeviceResult.profileIdentity.evaluationConfiguration,
+              rerankerConformanceFixtureIdentity: 'changed-reranker-conformance-fixture',
+            },
+          },
+        },
+      },
+      {
+        family: 'software',
+        result: {
+          ...replacementDeviceResult,
+          profileIdentity: {
+            ...replacementDeviceResult.profileIdentity,
+            software: {
+              ...replacementDeviceResult.profileIdentity.software,
+              nodeVersion: 'v25.0.0',
+            },
+          },
+        },
+      },
+      {
+        family: 'query planning adapter and profile',
+        result: {
+          ...replacementDeviceResult,
+          profileIdentity: {
+            ...replacementDeviceResult.profileIdentity,
+            queryPlanning: {
+              ...replacementDeviceResult.profileIdentity.queryPlanning,
+              executionIdentity: changedPlannerExecutionIdentity,
+            },
+          },
+          capabilityConformance: {
+            ...replacementDeviceResult.capabilityConformance,
+            queryPlanning: {
+              ...replacementDeviceResult.capabilityConformance.queryPlanning,
+              executionIdentity: changedPlannerExecutionIdentity,
+            },
+          },
+        },
+      },
+      {
+        family: 'reranking adapter and profile',
+        result: {
+          ...replacementDeviceResult,
+          profileIdentity: {
+            ...replacementDeviceResult.profileIdentity,
+            reranking: {
+              ...replacementDeviceResult.profileIdentity.reranking,
+              executionIdentity: changedRerankerExecutionIdentity,
+            },
+          },
+          capabilityConformance: {
+            ...replacementDeviceResult.capabilityConformance,
+            reranking: {
+              ...replacementDeviceResult.capabilityConformance.reranking,
+              executionIdentity: changedRerankerExecutionIdentity,
+            },
+          },
+        },
+      },
+    ];
+    for (const [familyIndex, { family, result: familyResult }] of identityFamilyResults.entries()) {
+      progress.length = 0;
+      const familyIdentity = createCheckpointIdentity('commit-two', familyResult);
+      assert.notDeepEqual(familyResult.profileIdentity, replacementDeviceResult.profileIdentity);
+      await runCheckpointedLiveProfileEvaluationMatrix({
+        checkpointDirectory,
+        profiles: [
+          {
+            profileRun: familyIdentity.profileRun,
+            async resolveCheckpointIdentity() {
+              return familyIdentity;
+            },
+            async evaluateProfile() {
+              runCount += 1;
+              return familyResult;
+            },
+          },
+        ],
+        reportProgress(message) {
+          progress.push(message);
+        },
+      });
+      assert.equal(runCount, 4 + familyIndex, `${family} change must invalidate checkpoint reuse`);
+      assert.deepEqual(progress, [
+        'Starting live profile embedded-cpu (1/1)',
+        'Completed live profile embedded-cpu (1/1)',
+      ]);
+    }
   } finally {
     await rm(checkpointDirectory, { recursive: true, force: true });
   }

@@ -209,6 +209,7 @@ export async function measureRecallRerankingProviderConformance(
     rerankingIdentity.adapterConfigurationIdentity,
     rerankingIdentity.backend,
     rerankingIdentity.requestTimeoutMilliseconds,
+    rerankingIdentity.adapterVersion,
   ).cacheIdentity;
   if (rerankingIdentity.cacheIdentity !== expectedCacheIdentity) {
     throw new Error(
@@ -302,6 +303,7 @@ export async function measureRecallQueryPlanningProviderConformance(
     identity.adapterConfigurationIdentity,
     identity.backend,
     identity.requestTimeoutMilliseconds,
+    identity.adapterVersion,
   ).cacheIdentity;
   if (identity.cacheIdentity !== expectedCacheIdentity) {
     throw new Error(

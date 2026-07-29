@@ -24,6 +24,7 @@ import {
   loadPrivateQueryPlannedRecallPlans,
   runLiveQueryPlannedProfileEvaluation,
   runPrivateQueryPlannedRecallEvaluation,
+  type LiveQueryPlannedProfileEvaluationResult,
 } from './query-planned-recall-evaluation.js';
 import {
   createPublishableQueryPlannedRecallControls,
@@ -33,6 +34,7 @@ import {
 import { isUnknownRecord } from './is-unknown-record.js';
 import { createRecallConversationService } from './recall-conversation-service.js';
 import { loadRecallConversationConfig } from './recall-conversation-config.js';
+import { DEFAULT_RECALL_CHUNK_POLICY } from './recall-index-manifest.js';
 import {
   createRecallQueryPlanningExecutionIdentity,
   createRecallRerankingExecutionIdentity,
@@ -321,6 +323,13 @@ void test('fixed private plans prove new source admission through deterministic 
       { ...conformanceFixture },
     ),
   );
+  assert.deepEqual(
+    evaluationConfigurationIdentity,
+    createLiveQueryPlannedEvaluationConfigurationIdentity(
+      { ...baseConfig, chunkPolicy: DEFAULT_RECALL_CHUNK_POLICY },
+      conformanceFixture,
+    ),
+  );
   assert.notDeepEqual(
     evaluationConfigurationIdentity,
     createLiveQueryPlannedEvaluationConfigurationIdentity(
@@ -469,11 +478,17 @@ void test('fixed private plans prove new source admission through deterministic 
       'fixture-live-planner-configuration-v1',
       RecallInferenceBackend.EMBEDDED,
       1_000,
+      '1',
     ),
     computeBackend: 'cpu',
+    deviceNames: ['Fixture CPU'],
     devicePolicy: 'cpu',
     fallbackFromComputeBackend: null,
+    contextSize: 2_048,
+    threads: null,
+    nodeLlamaCppVersion: '3.18.1',
     physicalDeviceIdentity: ['fixture cpu'],
+    probedComputeBackends: [],
   };
   const fixtureRerankingExecutionIdentity = {
     ...createRecallRerankingExecutionIdentity(
@@ -482,11 +497,18 @@ void test('fixed private plans prove new source admission through deterministic 
       'fixture-live-reranker-configuration-v1',
       RecallInferenceBackend.EMBEDDED,
       1_000,
+      '1',
     ),
     computeBackend: 'cpu',
+    deviceNames: ['Fixture CPU'],
     devicePolicy: 'cpu',
     fallbackFromComputeBackend: null,
+    contextSize: 4_096,
+    threads: null,
+    nodeLlamaCppVersion: '3.18.1',
+    parallelism: 1,
     physicalDeviceIdentity: ['fixture cpu'],
+    probedComputeBackends: [],
   };
   const liveEvaluation = await runLiveQueryPlannedProfileEvaluation({
     corpus,
@@ -622,13 +644,19 @@ void test('fixed private plans prove new source admission through deterministic 
       backend === RecallInferenceBackend.EMBEDDED ? embeddedDevice : 'fixture HTTP CPU';
     const backendVersion =
       backend === RecallInferenceBackend.EMBEDDED ? 'fixture-embedded-v1' : 'fixture-http-v1';
-    const embeddedHardwareIdentity =
+    const embeddedPhysicalDeviceIdentity =
       backend === RecallInferenceBackend.EMBEDDED
         ? {
             computeBackend: embeddedDevice,
+            deviceNames: [deviceClass === 'cpu' ? 'Fixture CPU' : 'Fixture GPU'],
             devicePolicy: embeddedDevice,
             fallbackFromComputeBackend: null,
+            contextSize: 4_096,
+            threads: null,
+            nodeLlamaCppVersion: '3.18.1',
+            parallelism: 1,
             physicalDeviceIdentity: [deviceClass === 'cpu' ? 'fixture cpu' : 'fixture gpu'],
+            probedComputeBackends: [],
           }
         : {};
     const queryPlanningExecutionIdentity = {
@@ -638,8 +666,9 @@ void test('fixed private plans prove new source admission through deterministic 
         `${adapterIds.queryPlanning}-configuration`,
         backend,
         1_000,
+        '1',
       ),
-      ...embeddedHardwareIdentity,
+      ...embeddedPhysicalDeviceIdentity,
     };
     const rerankingExecutionIdentity = {
       ...createRecallRerankingExecutionIdentity(
@@ -648,8 +677,9 @@ void test('fixed private plans prove new source admission through deterministic 
         `${adapterIds.reranking}-configuration`,
         backend,
         1_000,
+        '1',
       ),
-      ...embeddedHardwareIdentity,
+      ...embeddedPhysicalDeviceIdentity,
     };
     return {
       ...liveEvaluation,
@@ -770,7 +800,9 @@ void test('fixed private plans prove new source admission through deterministic 
   assert.equal(acceptanceReport.includes(lexicalPlanQuery), false);
   assert.equal(acceptanceReport.includes('Private mechanism phrase'), false);
 
-  const createAcceptanceWithProfileRuns = (profileRuns: typeof measuredProfileRuns) =>
+  const createAcceptanceWithProfileRuns = (
+    profileRuns: readonly LiveQueryPlannedProfileEvaluationResult[],
+  ) =>
     createPublishableLiveQueryPlannedProfileAcceptance({
       recordedAgainstCommit: acceptance.recordedAgainstCommit,
       defaultSearchMode: acceptance.defaultSearchMode,
@@ -831,6 +863,75 @@ void test('fixed private plans prove new source admission through deterministic 
   assert.throws(
     () => createAcceptanceWithProfileRuns([...measuredProfileRuns, httpRun]),
     /duplicate or extra profile tuples/u,
+  );
+
+  function replaceEmbeddedPhysicalDeviceIdentity(
+    run: LiveQueryPlannedProfileEvaluationResult,
+    changes: Record<string, unknown>,
+  ): LiveQueryPlannedProfileEvaluationResult {
+    const queryPlanningExecutionIdentity = {
+      ...run.profileIdentity.queryPlanning.executionIdentity,
+      ...changes,
+    };
+    const rerankingExecutionIdentity = {
+      ...run.profileIdentity.reranking.executionIdentity,
+      ...changes,
+    };
+    return {
+      ...run,
+      profileIdentity: {
+        ...run.profileIdentity,
+        queryPlanning: {
+          ...run.profileIdentity.queryPlanning,
+          executionIdentity: queryPlanningExecutionIdentity,
+        },
+        reranking: {
+          ...run.profileIdentity.reranking,
+          executionIdentity: rerankingExecutionIdentity,
+        },
+      },
+      capabilityConformance: {
+        queryPlanning: {
+          ...run.capabilityConformance.queryPlanning,
+          executionIdentity: queryPlanningExecutionIdentity,
+        },
+        reranking: {
+          ...run.capabilityConformance.reranking,
+          executionIdentity: rerankingExecutionIdentity,
+        },
+      },
+    };
+  }
+  assert.throws(
+    () =>
+      createAcceptanceWithProfileRuns([
+        embeddedCpuRun,
+        replaceEmbeddedPhysicalDeviceIdentity(embeddedAcceleratedRun, { deviceNames: [] }),
+        httpRun,
+      ]),
+    /resolved physical device identity mismatch/u,
+  );
+  assert.throws(
+    () =>
+      createAcceptanceWithProfileRuns([
+        embeddedCpuRun,
+        replaceEmbeddedPhysicalDeviceIdentity(embeddedAcceleratedRun, {
+          computeBackend: 'pending',
+        }),
+        httpRun,
+      ]),
+    /resolved physical device identity mismatch/u,
+  );
+  assert.throws(
+    () =>
+      createAcceptanceWithProfileRuns([
+        embeddedCpuRun,
+        replaceEmbeddedPhysicalDeviceIdentity(embeddedAcceleratedRun, {
+          computeBackend: 'metal',
+        }),
+        httpRun,
+      ]),
+    /resolved physical device identity mismatch/u,
   );
 
   const fallbackAcceptance = createPublishableLiveQueryPlannedProfileAcceptance({

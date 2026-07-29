@@ -1,13 +1,13 @@
 import { cpus, type CpuInfo } from 'node:os';
 
 import { createCanonicalIdentity } from './create-canonical-identity.js';
-import type { RecallInferenceBackend } from './enums.js';
+import { EmbeddedInferenceComputeBackend, type RecallInferenceBackend } from './enums.js';
 import type {
   RecallQueryPlanningModelProfile,
   RecallRerankingModelProfile,
 } from './recall-model-profiles.js';
 
-/** Normalizes resolved physical device names for stable hardware-bound execution identity. */
+/** Normalizes resolved physical device names for stable physical device-bound execution identity. */
 export function normalizeRecallPhysicalDeviceIdentity(
   deviceNames: readonly string[],
 ): readonly string[] {
@@ -17,8 +17,8 @@ export function normalizeRecallPhysicalDeviceIdentity(
   return Object.freeze([...new Set(normalizedNames)].sort());
 }
 
-/** Resolves publishable CPU names plus a stable model-and-logical-processor hardware identity. */
-export function resolveRecallCpuHardwareIdentity(
+/** Resolves publishable CPU names plus a stable model-and-logical-processor physical device identity. */
+export function resolveRecallCpuPhysicalDeviceIdentity(
   processors: readonly Pick<CpuInfo, 'model'>[] = cpus(),
 ): { deviceNames: readonly string[]; physicalDeviceIdentity: readonly string[] } {
   const deviceNamesByNormalizedName = new Map<string, string>();
@@ -40,6 +40,21 @@ export function resolveRecallCpuHardwareIdentity(
       ...deviceNames,
       `logical-processors:${processors.length}`,
     ]),
+  });
+}
+
+/** Resolves published names and physical device identity for one selected compute backend. */
+export function resolveRecallPhysicalDeviceIdentity(
+  computeBackend: EmbeddedInferenceComputeBackend,
+  acceleratedDeviceNames?: readonly string[],
+): { deviceNames: readonly string[]; physicalDeviceIdentity: readonly string[] } {
+  if (computeBackend === EmbeddedInferenceComputeBackend.CPU) {
+    return resolveRecallCpuPhysicalDeviceIdentity();
+  }
+  const deviceNames = Object.freeze([...(acceleratedDeviceNames ?? [computeBackend])]);
+  return Object.freeze({
+    deviceNames,
+    physicalDeviceIdentity: normalizeRecallPhysicalDeviceIdentity(deviceNames),
   });
 }
 
@@ -110,8 +125,8 @@ export function createRecallQueryPlanningExecutionIdentity(
   adapterConfigurationIdentity: string,
   backend: RecallQueryPlanningExecutionIdentity['backend'],
   requestTimeoutMilliseconds: number,
+  adapterVersion: string = adapterId,
 ): Readonly<RecallQueryPlanningExecutionIdentity> {
-  const adapterVersion = adapterId;
   const modelProfileIdentity = createCanonicalIdentity(
     'recall-query-planning-model-profile-v1',
     profile,
@@ -161,8 +176,8 @@ export function createRecallRerankingExecutionIdentity(
   adapterConfigurationIdentity: string,
   backend: RecallRerankingExecutionIdentity['backend'],
   requestTimeoutMilliseconds: number,
+  adapterVersion: string = adapterId,
 ): Readonly<RecallRerankingExecutionIdentity> {
-  const adapterVersion = adapterId;
   const modelProfileIdentity = createCanonicalIdentity(
     'recall-reranking-model-profile-v1',
     profile,

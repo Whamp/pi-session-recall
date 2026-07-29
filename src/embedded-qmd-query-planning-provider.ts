@@ -13,8 +13,7 @@ import {
 } from './enums.js';
 import {
   createRecallQueryPlanningExecutionIdentity,
-  normalizeRecallPhysicalDeviceIdentity,
-  resolveRecallCpuHardwareIdentity,
+  resolveRecallPhysicalDeviceIdentity,
   type RecallIdentifiedQueryPlanningProvider,
   type RecallQueryPlanningExecutionIdentity,
 } from './recall-inference-capabilities.js';
@@ -29,6 +28,7 @@ import {
 export const QMD_QUERY_PLANNER_MAX_GPU_LAYERS = 40;
 
 const NODE_LLAMA_CPP_QUERY_PLANNING_ADAPTER_ID = 'node-llama-cpp-qmd-query-planning-v1';
+const NODE_LLAMA_CPP_QUERY_PLANNING_ADAPTER_VERSION = '1';
 
 function createEmbeddedQmdQueryPlanningAdapterConfigurationIdentity(configuration: {
   devicePolicy: EmbeddedInferenceDevicePolicy;
@@ -126,7 +126,7 @@ export interface EmbeddedQmdQueryPlanningExecutionIdentity extends RecallQueryPl
 /** Embedded QMD planner with inspectable execution identity and explicit native disposal. */
 export interface EmbeddedQmdQueryPlanningProvider extends RecallIdentifiedQueryPlanningProvider {
   readonly executionIdentity: Readonly<EmbeddedQmdQueryPlanningExecutionIdentity>;
-  /** Loads native resources far enough to bind resolved compute and physical hardware identity. */
+  /** Loads native resources far enough to bind resolved compute and physical device identity. */
   resolveExecutionIdentity(): Promise<Readonly<EmbeddedQmdQueryPlanningExecutionIdentity>>;
   dispose(): Promise<void>;
 }
@@ -319,6 +319,7 @@ export function createEmbeddedQmdQueryPlanningProvider(
       }),
       RecallInferenceBackend.EMBEDDED,
       requestTimeoutMilliseconds,
+      NODE_LLAMA_CPP_QUERY_PLANNING_ADAPTER_VERSION,
     );
   }
   const configuredComputeBackend: EmbeddedInferenceComputeBackend | 'pending' =
@@ -516,15 +517,14 @@ export function createEmbeddedQmdQueryPlanningProvider(
           EmbeddedInferenceComputeBackend.CPU,
         );
       }
-      const cpuHardwareIdentity =
+      const acceleratedDeviceNames =
         selectedComputeBackend === EmbeddedInferenceComputeBackend.CPU
-          ? resolveRecallCpuHardwareIdentity()
-          : null;
-      const deviceNames = cpuHardwareIdentity?.deviceNames ??
-        (await resources.runtime.getGpuDeviceNames?.()) ?? [selectedComputeBackend];
-      const physicalDeviceIdentity =
-        cpuHardwareIdentity?.physicalDeviceIdentity ??
-        normalizeRecallPhysicalDeviceIdentity(deviceNames);
+          ? undefined
+          : await resources.runtime.getGpuDeviceNames?.();
+      const { deviceNames, physicalDeviceIdentity } = resolveRecallPhysicalDeviceIdentity(
+        selectedComputeBackend,
+        acceleratedDeviceNames,
+      );
       executionIdentity = Object.freeze({
         ...createBaseExecutionIdentity(
           selectedComputeBackend,

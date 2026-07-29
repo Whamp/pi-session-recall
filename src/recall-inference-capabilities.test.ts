@@ -6,7 +6,7 @@ import {
   createRecallQueryPlanningExecutionIdentity,
   createRecallRerankingExecutionIdentity,
   normalizeRecallPhysicalDeviceIdentity,
-  resolveRecallCpuHardwareIdentity,
+  resolveRecallCpuPhysicalDeviceIdentity,
 } from './recall-inference-capabilities.js';
 import {
   createRecommendedQmdQueryPlanningModelProfile,
@@ -26,6 +26,18 @@ void test('capability identities include adapter policy without changing model p
   assert.equal(rerankerIdentity.adapterId, 'custom-reranker-v1');
   assert.equal(rerankerIdentity.backend, RecallInferenceBackend.CUSTOM);
   assert.match(rerankerIdentity.cacheIdentity, /recall-reranking-execution-v1/u);
+  const changedRerankerAdapterVersionIdentity = createRecallRerankingExecutionIdentity(
+    createRecommendedQwenRerankingModelProfile(),
+    'custom-reranker-v1',
+    'custom-reranker-configuration-v1',
+    RecallInferenceBackend.CUSTOM,
+    1_000,
+    '2',
+  );
+  assert.notEqual(
+    rerankerIdentity.cacheIdentity,
+    changedRerankerAdapterVersionIdentity.cacheIdentity,
+  );
   const changedRerankerProfileIdentity = createRecallRerankingExecutionIdentity(
     {
       ...createRecommendedQwenRerankingModelProfile(),
@@ -59,20 +71,20 @@ void test('physical device identity normalizes case, whitespace, duplicates, and
   ]);
 });
 
-void test('CPU hardware identity binds physical model names and logical processor count', () => {
-  const first = resolveRecallCpuHardwareIdentity([
+void test('CPU physical device identity binds model names and logical processor count', () => {
+  const first = resolveRecallCpuPhysicalDeviceIdentity([
     { model: ' Fixture CPU 9000 ' },
     { model: 'Fixture CPU 9000' },
   ]);
-  const equivalent = resolveRecallCpuHardwareIdentity([
+  const equivalent = resolveRecallCpuPhysicalDeviceIdentity([
     { model: 'fixture   cpu 9000' },
     { model: 'FIXTURE CPU 9000' },
   ]);
-  const replacementModel = resolveRecallCpuHardwareIdentity([
+  const replacementModel = resolveRecallCpuPhysicalDeviceIdentity([
     { model: 'Fixture CPU 9100' },
     { model: 'Fixture CPU 9100' },
   ]);
-  const replacementProcessorCount = resolveRecallCpuHardwareIdentity([
+  const replacementProcessorCount = resolveRecallCpuPhysicalDeviceIdentity([
     { model: 'Fixture CPU 9000' },
   ]);
 

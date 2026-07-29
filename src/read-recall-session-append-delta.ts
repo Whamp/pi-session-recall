@@ -165,69 +165,104 @@ export async function readRecallSessionAppendDelta(
   if (filePath !== physicalProjection.sourcePath) {
     return reconciliation(RecallProjectionRepairReason.SOURCE_IDENTITY_MISMATCH);
   }
-  const metadata = await stat(filePath, { bigint: true });
-  const sourceDevice = metadata.dev.toString();
-  const sourceInode = metadata.ino.toString();
-  if (
-    sourceDevice !== physicalProjection.sourceDevice ||
-    sourceInode !== physicalProjection.sourceInode
-  ) {
-    return reconciliation(RecallProjectionRepairReason.SOURCE_IDENTITY_MISMATCH);
-  }
-  const sourceSize = Number(metadata.size);
-  if (!Number.isSafeInteger(sourceSize) || sourceSize < cursorBytes) {
-    return reconciliation(RecallProjectionRepairReason.SOURCE_SHRANK);
-  }
-
-  const readRange = options.readRange ?? readRecallSessionSourceRange;
-  const boundaryStart = Math.max(0, cursorBytes - RECALL_APPEND_BOUNDARY_WINDOW_BYTES);
-  const boundaryBytes =
-    boundaryStart === cursorBytes
-      ? Buffer.alloc(0)
-      : await readRecallRangeBytes(readRange, filePath, boundaryStart, cursorBytes);
-  if (
-    boundaryBytes.length !== cursorBytes - boundaryStart ||
-    createRecallBoundaryFingerprint(boundaryBytes) !== physicalProjection.boundaryFingerprint
-  ) {
-    return reconciliation(RecallProjectionRepairReason.BOUNDARY_MISMATCH);
-  }
-
-  const appendBytes =
-    sourceSize === cursorBytes
-      ? Buffer.alloc(0)
-      : await readRecallRangeBytes(readRange, filePath, cursorBytes, sourceSize);
-  if (appendBytes.length !== sourceSize - cursorBytes) {
-    return reconciliation(RecallProjectionRepairReason.APPEND_CURSOR_MISSING);
-  }
-  let framed: ReturnType<typeof frameCompleteRecallAppendRecords>;
+  const handle = await open(filePath, 'r');
   try {
-    framed = frameCompleteRecallAppendRecords(appendBytes, filePath, cursorBytes, cursorLines);
-  } catch {
-    return reconciliation(RecallProjectionRepairReason.MALFORMED_GRAPH);
-  }
-  if (hasUnsupportedAppendLayout(physicalProjection, framed.records)) {
-    return reconciliation(RecallProjectionRepairReason.UNSUPPORTED_LAYOUT);
-  }
-  const committedBoundaryStart = Math.max(
-    0,
-    framed.appendCursorBytes - RECALL_APPEND_BOUNDARY_WINDOW_BYTES,
-  );
-  let committedBoundaryBytes: Buffer;
-  if (committedBoundaryStart >= cursorBytes) {
-    committedBoundaryBytes = appendBytes.subarray(
-      committedBoundaryStart - cursorBytes,
-      framed.appendCursorBytes - cursorBytes,
+    const metadata = await handle.stat({ bigint: true });
+    const sourceDevice = metadata.dev.toString();
+    const sourceInode = metadata.ino.toString();
+    if (
+      sourceDevice !== physicalProjection.sourceDevice ||
+      sourceInode !== physicalProjection.sourceInode
+    ) {
+      return reconciliation(RecallProjectionRepairReason.SOURCE_IDENTITY_MISMATCH);
+    }
+    const sourceSize = Number(metadata.size);
+    if (!Number.isSafeInteger(sourceSize) || sourceSize < cursorBytes) {
+      return reconciliation(RecallProjectionRepairReason.SOURCE_SHRANK);
+    }
+
+    const readRange =
+      options.readRange ??
+      async function* readOpenedRecallSessionRange(
+        _sourcePath: string,
+        startByte: number,
+        endByteExclusive: number,
+      ): AsyncGenerator<Buffer> {
+        let position = startByte;
+        while (position < endByteExclusive) {
+          const byteLength = Math.min(64 * 1_024, endByteExclusive - position);
+          const bytes = Buffer.allocUnsafe(byteLength);
+          const read = await handle.read(bytes, 0, byteLength, position);
+          if (read.bytesRead === 0) {
+            break;
+          }
+          position += read.bytesRead;
+          yield bytes.subarray(0, read.bytesRead);
+        }
+      };
+    const boundaryStart = Math.max(0, cursorBytes - RECALL_APPEND_BOUNDARY_WINDOW_BYTES);
+    const boundaryBytes =
+      boundaryStart === cursorBytes
+        ? Buffer.alloc(0)
+        : await readRecallRangeBytes(readRange, filePath, boundaryStart, cursorBytes);
+    if (
+      boundaryBytes.length !== cursorBytes - boundaryStart ||
+      createRecallBoundaryFingerprint(boundaryBytes) !== physicalProjection.boundaryFingerprint
+    ) {
+      return reconciliation(RecallProjectionRepairReason.BOUNDARY_MISMATCH);
+    }
+
+    const appendBytes =
+      sourceSize === cursorBytes
+        ? Buffer.alloc(0)
+        : await readRecallRangeBytes(readRange, filePath, cursorBytes, sourceSize);
+    if (appendBytes.length !== sourceSize - cursorBytes) {
+      return reconciliation(RecallProjectionRepairReason.APPEND_CURSOR_MISSING);
+    }
+    let framed: ReturnType<typeof frameCompleteRecallAppendRecords>;
+    try {
+      framed = frameCompleteRecallAppendRecords(appendBytes, filePath, cursorBytes, cursorLines);
+    } catch {
+      return reconciliation(RecallProjectionRepairReason.MALFORMED_GRAPH);
+    }
+    if (hasUnsupportedAppendLayout(physicalProjection, framed.records)) {
+      return reconciliation(RecallProjectionRepairReason.UNSUPPORTED_LAYOUT);
+    }
+    const committedBoundaryStart = Math.max(
+      0,
+      framed.appendCursorBytes - RECALL_APPEND_BOUNDARY_WINDOW_BYTES,
     );
-  } else {
-    const prefix = boundaryBytes.subarray(committedBoundaryStart - boundaryStart);
-    const suffix = appendBytes.subarray(0, framed.appendCursorBytes - cursorBytes);
-    committedBoundaryBytes = Buffer.concat([prefix, suffix]);
+    let committedBoundaryBytes: Buffer;
+    if (committedBoundaryStart >= cursorBytes) {
+      committedBoundaryBytes = appendBytes.subarray(
+        committedBoundaryStart - cursorBytes,
+        framed.appendCursorBytes - cursorBytes,
+      );
+    } else {
+      const prefix = boundaryBytes.subarray(committedBoundaryStart - boundaryStart);
+      const suffix = appendBytes.subarray(0, framed.appendCursorBytes - cursorBytes);
+      committedBoundaryBytes = Buffer.concat([prefix, suffix]);
+    }
+    const [finalHandleMetadata, finalPathMetadata] = await Promise.all([
+      handle.stat({ bigint: true }),
+      stat(filePath, { bigint: true }),
+    ]);
+    if (
+      finalHandleMetadata.dev.toString() !== sourceDevice ||
+      finalHandleMetadata.ino.toString() !== sourceInode ||
+      finalPathMetadata.dev.toString() !== sourceDevice ||
+      finalPathMetadata.ino.toString() !== sourceInode
+    ) {
+      return reconciliation(RecallProjectionRepairReason.SOURCE_IDENTITY_MISMATCH);
+    }
+    return {
+      status: RecallAppendDeltaStatus.APPENDED,
+      ...framed,
+      boundaryFingerprint: createRecallBoundaryFingerprint(committedBoundaryBytes),
+      sourceDevice,
+      sourceInode,
+    };
+  } finally {
+    await handle.close();
   }
-  return {
-    status: RecallAppendDeltaStatus.APPENDED,
-    ...framed,
-    boundaryFingerprint: createRecallBoundaryFingerprint(committedBoundaryBytes),
-    sourceDevice,
-    sourceInode,
-  };
 }

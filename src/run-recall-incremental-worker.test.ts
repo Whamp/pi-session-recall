@@ -1162,6 +1162,68 @@ void test('kernel flock admits one worker, rejects losers promptly, and releases
   assert.equal((await readFile(probePath, 'utf8')).trim().split('\n').length, 3);
 });
 
+void test('metadata sweep publishes arrival for a session header larger than one read buffer', async (t) => {
+  const fixture = await createWorkerFixture(t, { kind: RecallWorkMarkerTrigger.ARRIVAL });
+  await fixture.publishMarker();
+  const unknownSessionPath = join(fixture.sessionsDirectory, 'long-header-session.jsonl');
+  await writeFile(
+    unknownSessionPath,
+    `${JSON.stringify({
+      type: 'session',
+      version: 3,
+      id: 'long-header-physical-session',
+      timestamp: '2026-07-27T10:00:00.000Z',
+      cwd: `/${'nested/'.repeat(700)}`,
+    })}\n`,
+  );
+
+  const result = await runRecallIncrementalWorker({
+    markerSpoolDirectory: fixture.markerSpoolDirectory,
+    markerQuarantineDirectory: fixture.markerQuarantineDirectory,
+    controlDirectory: fixture.controlDirectory,
+    targetGenerationId: 'generation-1',
+    trustedSessionRoots: [fixture.sessionsDirectory],
+    nowEpochMilliseconds: () => fixture.marker.createdAtEpochMilliseconds + 1,
+    async loadKnownSourceInventory() {
+      return { knownSources: [], physicalProjections: [] };
+    },
+    async scanSessionMetadata() {
+      return {
+        sweepId: 'long-header-sweep',
+        status: RecallMetadataSweepStatus.COMPLETE,
+        rootHealthy: true,
+        deletionConfirmationSuppressed: false,
+        scannedFileCount: 1,
+        observedSessionFileCount: 1,
+        observedSessionMetadata: [
+          {
+            physicalSessionId: null,
+            relativePath: 'long-header-session.jsonl',
+            sizeBytes: 5_000,
+            modifiedAtEpochMilliseconds: fixture.marker.createdAtEpochMilliseconds,
+            sourceDevice: '1',
+            sourceInode: '100',
+          },
+        ],
+        observedKnownSourceIdentities: [],
+        missingPhysicalSessionIds: [],
+        continuationPersisted: false,
+        elapsedMilliseconds: 1,
+      };
+    },
+  });
+
+  assert.equal(result.metadataSweepFollowUpRequired, true);
+  const spoolFiles = await (await import('node:fs/promises')).readdir(fixture.markerSpoolDirectory);
+  const markerSources = await Promise.all(
+    spoolFiles.map((name) => readFile(join(fixture.markerSpoolDirectory, name), 'utf8')),
+  );
+  assert.equal(
+    markerSources.some((source) => source.includes('long-header-physical-session')),
+    true,
+  );
+});
+
 void test('metadata sweep of unknown jsonl publishes arrival marker and schedules follow-up', async (t) => {
   const fixture = await createWorkerFixture(t, { kind: RecallWorkMarkerTrigger.ARRIVAL });
   // Publish the arrival marker for session.jsonl to trigger a metadata sweep in this pass.

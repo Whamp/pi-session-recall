@@ -243,30 +243,45 @@ function workPlanRequestsRecallMetadataSweep(workPlan: RecallMarkerReplayWorkPla
  * session header.
  */
 async function readPhysicalSessionIdFromJsonlHeader(filePath: string): Promise<string | null> {
+  const maximumHeaderBytes = 1024 * 1024;
   const handle = await open(filePath, 'r');
   try {
-    const buffer = Buffer.allocUnsafe(4096);
-    const { bytesRead } = await handle.read(buffer, 0, 4096, 0);
-    const text = buffer.subarray(0, bytesRead).toString('utf8');
-    const newlineIndex = text.indexOf('\n');
-    const firstLine = newlineIndex >= 0 ? text.slice(0, newlineIndex) : text;
-    const trimmed = firstLine.endsWith('\r') ? firstLine.slice(0, -1) : firstLine;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(trimmed);
-    } catch (error) {
-      if (error instanceof SyntaxError) {
+    const chunks: Buffer[] = [];
+    let totalBytes = 0;
+    while (totalBytes < maximumHeaderBytes) {
+      const buffer = Buffer.allocUnsafe(Math.min(4096, maximumHeaderBytes - totalBytes));
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, totalBytes);
+      if (bytesRead === 0) {
         return null;
       }
-      throw error;
-    }
-    if (
-      isUnknownRecord(parsed) &&
-      (parsed.type === 'session' || parsed.type === 'v1_session') &&
-      typeof parsed.id === 'string' &&
-      parsed.id.length > 0
-    ) {
-      return parsed.id;
+      const chunk = buffer.subarray(0, bytesRead);
+      const newlineIndex = chunk.indexOf(0x0a);
+      if (newlineIndex === -1) {
+        chunks.push(chunk);
+        totalBytes += bytesRead;
+        continue;
+      }
+      chunks.push(chunk.subarray(0, newlineIndex));
+      const firstLine = Buffer.concat(chunks).toString('utf8');
+      const trimmed = firstLine.endsWith('\r') ? firstLine.slice(0, -1) : firstLine;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(trimmed);
+      } catch (error) {
+        if (error instanceof SyntaxError) {
+          return null;
+        }
+        throw error;
+      }
+      if (
+        isUnknownRecord(parsed) &&
+        (parsed.type === 'session' || parsed.type === 'v1_session') &&
+        typeof parsed.id === 'string' &&
+        parsed.id.length > 0
+      ) {
+        return parsed.id;
+      }
+      return null;
     }
     return null;
   } finally {
@@ -1139,6 +1154,7 @@ async function runConfiguredRecallIncrementalWorkerExecutable(
     const shouldSignalWake = await persistRecallIncrementalWorkerSchedule({
       schedulePath,
       nowEpochMilliseconds: Date.now(),
+      acknowledgedMetadataSweepRevision: persistedSchedule?.metadataSweepRevision ?? 0,
       schedule: {
         version: RECALL_INCREMENTAL_WORKER_SCHEDULE_VERSION,
         nextWakeAtEpochMilliseconds: result.nextWakeAtEpochMilliseconds,

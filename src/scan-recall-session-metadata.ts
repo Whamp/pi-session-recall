@@ -66,6 +66,7 @@ export interface RecallMetadataSweepContinuation {
   sweepId: string;
   currentRelativeDirectory: string;
   afterEntryName: string | null;
+  processedEntryNames?: string[];
   pendingRelativeDirectories: string[];
   observedPhysicalSessionIds: string[];
   observedKnownSourceIdentities: ObservedKnownRecallSourceIdentity[];
@@ -119,6 +120,7 @@ const recallMetadataSweepContinuationSchema = Type.Object(
     sweepId: Type.String({ minLength: 1 }),
     currentRelativeDirectory: relativeDirectorySchema,
     afterEntryName: Type.Union([entryNameSchema, Type.Null()]),
+    processedEntryNames: Type.Optional(Type.Array(entryNameSchema)),
     pendingRelativeDirectories: Type.Array(relativeDirectorySchema),
     observedPhysicalSessionIds: Type.Array(Type.String({ minLength: 1 })),
     observedKnownSourceIdentities: Type.Array(
@@ -225,6 +227,7 @@ function createInitialRecallMetadataSweepContinuation(
     sweepId,
     currentRelativeDirectory: '',
     afterEntryName: null,
+    processedEntryNames: [],
     pendingRelativeDirectories: [],
     observedPhysicalSessionIds: [],
     observedKnownSourceIdentities: [],
@@ -376,9 +379,9 @@ export async function scanRecallSessionMetadata(
       return persistRecallMetadataSweepResult(failureStatus);
     }
 
-    const remainingEntryNames = entryNames.filter(
-      (name) => continuation.afterEntryName === null || name > continuation.afterEntryName,
-    );
+    continuation.processedEntryNames ??= [];
+    const processedEntryNames = new Set(continuation.processedEntryNames);
+    const remainingEntryNames = entryNames.filter((name) => !processedEntryNames.has(name));
     for (const [entryIndex, entryName] of remainingEntryNames.entries()) {
       if (!Value.Check(entryNameSchema, entryName)) {
         throw new Error('Recall metadata sweep directory returned an invalid entry name');
@@ -402,6 +405,7 @@ export async function scanRecallSessionMetadata(
         return persistRecallMetadataSweepResult(failureStatus);
       }
       continuation.afterEntryName = entryName;
+      continuation.processedEntryNames.push(entryName);
       if (metadata.isDirectory) {
         continuation.pendingRelativeDirectories.push(relativePath);
         continuation.pendingRelativeDirectories.sort();
@@ -448,6 +452,7 @@ export async function scanRecallSessionMetadata(
     }
     continuation.currentRelativeDirectory = nextRelativeDirectory;
     continuation.afterEntryName = null;
+    continuation.processedEntryNames = [];
   }
 
   await continuationStore.clearContinuation();

@@ -97,6 +97,51 @@ void test('metadata sweep stops at 10,000 files and resumes its persisted contin
   );
 });
 
+void test('metadata sweep resumes newly inserted names before the lexical cursor', async () => {
+  const continuationStore = createMemoryContinuationStore();
+  let names = ['b.jsonl', 'c.jsonl'];
+  const filesystem: RecallSessionMetadataFilesystem = {
+    async readDirectory() {
+      return names;
+    },
+    async statPath(path) {
+      return {
+        isDirectory: false,
+        isFile: true,
+        sizeBytes: 10,
+        modifiedAtEpochMilliseconds: 20,
+        sourceDevice: '10',
+        sourceInode: path,
+      };
+    },
+  };
+  const first = await scanRecallSessionMetadata({
+    sessionRootDirectory: '/isolated/sessions',
+    controlDirectory: '/isolated/control',
+    filesystem,
+    continuationStore,
+    maxFiles: 1,
+    monotonicNowMilliseconds: () => 0,
+  });
+  assert.equal(first.status, RecallMetadataSweepStatus.CONTINUATION_REQUIRED);
+  names = ['a.jsonl', 'b.jsonl', 'c.jsonl'];
+
+  const second = await scanRecallSessionMetadata({
+    sessionRootDirectory: '/isolated/sessions',
+    controlDirectory: '/isolated/control',
+    filesystem,
+    continuationStore,
+    maxFiles: 10,
+    monotonicNowMilliseconds: () => 0,
+  });
+
+  assert.equal(second.status, RecallMetadataSweepStatus.COMPLETE);
+  assert.deepEqual(
+    second.observedSessionMetadata.map(({ relativePath }) => relativePath).toSorted(),
+    ['a.jsonl', 'c.jsonl'],
+  );
+});
+
 void test('metadata sweep independently stops when its monotonic 500 ms budget is reached', async () => {
   const filesystem = createFlatMetadataFilesystem(100);
   const continuationStore = createMemoryContinuationStore();
@@ -147,6 +192,7 @@ void test('metadata sweep persists a strict scalar continuation outside session 
     'observedPhysicalSessionIds',
     'observedSessionFileCount',
     'pendingRelativeDirectories',
+    'processedEntryNames',
     'sweepId',
     'version',
   ]);

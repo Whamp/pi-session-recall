@@ -661,3 +661,38 @@ void test('confirmed deletion is the sole transition that retracts eligibility a
   assert.equal(result.logicalProjection, null);
   assert.deepEqual(result.newlyEligibleContributorEntryIds, []);
 });
+
+void test('uncovered late departure remains eligible below the runtime sequence checkpoint', () => {
+  const projection = logical(linear);
+  projection.markerCheckpoint = {
+    generationId,
+    coveredMarkerIds: ['sequence-2'],
+    runtimeSequences: [{ runtimeInstanceId: 'runtime-1', sequence: 2 }],
+  };
+  const lateDeparture = marker(
+    'late-departure',
+    {
+      kind: RecallWorkMarkerTrigger.DEPARTURE,
+      logicalSessionId: 'logical',
+      leafEntryId: 'e2',
+    },
+    'runtime-1',
+    1,
+  );
+
+  const result = reduceRecallEligibility({
+    physicalProjection: physical(),
+    logicalProjection: projection,
+    markers: [lateDeparture],
+    quiescenceObserved: false,
+  });
+
+  assert.deepEqual(result.newlyEligibleContributorEntryIds, ['e1', 'e2']);
+  assert.deepEqual(result.logicalProjection?.markerCheckpoint.coveredMarkerIds, [
+    'late-departure',
+    'sequence-2',
+  ]);
+  assert.deepEqual(result.logicalProjection?.markerCheckpoint.runtimeSequences, [
+    { runtimeInstanceId: 'runtime-1', sequence: 2 },
+  ]);
+});

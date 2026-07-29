@@ -192,6 +192,47 @@ void test('append reader reads only the bounded fingerprint and bytes at or afte
   ]);
 });
 
+void test('append reader rejects a path replacement between bounded range reads', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-append-replaced-between-reads-'));
+  const sessionPath = join(directory, 'session.jsonl');
+  const header = record({
+    type: 'session',
+    version: 3,
+    id: 'logical-replaced',
+    timestamp: '2026-07-24T10:00:00Z',
+    cwd: '/project',
+  });
+  const originalAppend = record({ type: 'leaf', targetId: 'a' });
+  const replacementAppend = record({ type: 'leaf', targetId: 'b' });
+  await writeFile(sessionPath, Buffer.concat([header, originalAppend]));
+  const projection = await createProjection(sessionPath, header, header.length, 1);
+  const replacementPath = join(directory, 'replacement.jsonl');
+  await writeFile(replacementPath, Buffer.concat([header, replacementAppend]));
+  let readCount = 0;
+
+  const delta = await readRecallSessionAppendDelta(sessionPath, projection, {
+    async *readRange(path, start, endExclusive) {
+      const handle = await open(path, 'r');
+      try {
+        const bytes = Buffer.alloc(endExclusive - start);
+        await handle.read(bytes, 0, bytes.length, start);
+        yield bytes;
+      } finally {
+        await handle.close();
+      }
+      readCount += 1;
+      if (readCount === 1) {
+        await rename(replacementPath, sessionPath);
+      }
+    },
+  });
+
+  assert.deepEqual(delta, {
+    status: RecallAppendDeltaStatus.REQUIRES_RECONCILIATION,
+    repairReason: RecallProjectionRepairReason.SOURCE_IDENTITY_MISMATCH,
+  });
+});
+
 void test('arbitrary source byte chunking preserves complete JSONL framing and exact cursor advancement', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'recall-append-property-'));
   const sessionPath = join(directory, 'session.jsonl');

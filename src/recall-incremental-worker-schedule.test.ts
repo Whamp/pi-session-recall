@@ -54,6 +54,7 @@ void test('incremental worker schedule persists the earliest future wake and lar
     version: 1,
     nextWakeAtEpochMilliseconds: 5_000,
     metadataSweepRequested: true,
+    metadataSweepRevision: 2,
     largeTransferDeferrals: [largeTransferDeferral],
   });
   assert.match(await readFile(schedulePath, 'utf8'), /^\{"version":1,/u);
@@ -73,6 +74,51 @@ void test('incremental worker schedule persists the earliest future wake and lar
   assert.equal(
     (await readRecallIncrementalWorkerSchedule(schedulePath))?.nextWakeAtEpochMilliseconds,
     null,
+  );
+});
+
+void test('incremental worker schedule preserves a request newer than the worker acknowledgment', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-worker-schedule-request-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const schedulePath = join(directory, 'worker-schedule.json');
+  await persistRecallIncrementalWorkerSchedule({
+    schedulePath,
+    nowEpochMilliseconds: 1_000,
+    schedule: {
+      version: 1,
+      nextWakeAtEpochMilliseconds: null,
+      metadataSweepRequested: true,
+      largeTransferDeferrals: [],
+    },
+  });
+  const workerObservation = await readRecallIncrementalWorkerSchedule(schedulePath);
+  assert.ok(workerObservation);
+  await persistRecallIncrementalWorkerSchedule({
+    schedulePath,
+    nowEpochMilliseconds: 1_001,
+    schedule: {
+      version: 1,
+      nextWakeAtEpochMilliseconds: null,
+      metadataSweepRequested: true,
+      largeTransferDeferrals: [],
+    },
+  });
+
+  await persistRecallIncrementalWorkerSchedule({
+    schedulePath,
+    nowEpochMilliseconds: 1_002,
+    acknowledgedMetadataSweepRevision: workerObservation.metadataSweepRevision ?? 0,
+    schedule: {
+      version: 1,
+      nextWakeAtEpochMilliseconds: null,
+      metadataSweepRequested: false,
+      largeTransferDeferrals: [],
+    },
+  });
+
+  assert.equal(
+    (await readRecallIncrementalWorkerSchedule(schedulePath))?.metadataSweepRequested,
+    true,
   );
 });
 

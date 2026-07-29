@@ -14,12 +14,12 @@ import {
 import { applyRecallQualityPolicyToConversationConfig } from './applyRecallQualityPolicyToConversationConfig.js';
 import {
   createConfiguredRecallInferenceRuntime,
-  type ConfiguredRecallInferenceRuntime,
   resolveRecallInferenceConfigurationPath,
 } from './configured-recall-inference-runtime.js';
 import { RecallSearchScope } from './enums.js';
 import type { RecallDetachedWorkerSignal } from './create-recall-detached-worker-signal.js';
 import { formatRecallSearchResults } from './format-recall-search-results.js';
+import { isUnknownRecord } from './is-unknown-record.js';
 import { loadRecallConversationConfig } from './recall-conversation-config.js';
 import {
   readRecallFirstIndexSetupState,
@@ -38,7 +38,10 @@ import {
   type RecallLifecycleRuntimeFactory,
 } from './register-recall-lifecycle-markers.js';
 import { runRecallIndexCommand } from './recall-index-command.js';
-import { readRecallInferenceConfiguration } from './recall-inference-configuration.js';
+import {
+  readRecallInferenceConfiguration,
+  type RecallInferenceConfiguration,
+} from './recall-inference-configuration.js';
 import { createRecommendedEmbeddingGemmaModelProfile } from './recall-model-profiles.js';
 import { createRecommendedEmbeddingGemmaConversationRuntime } from './recommended-embeddinggemma-conversation-service.js';
 import {
@@ -63,11 +66,60 @@ interface PiRecallInvocationContext {
   cwd: ExtensionContext['cwd'];
 }
 
+/** One cached recall service whose inference resources are always owned by the extension. */
+export interface RecallExtensionServiceRuntime {
+  service: RecallConversationService;
+  dispose(): Promise<void>;
+}
+
+interface OwnedRecallExtensionServiceRuntime {
+  runtime: RecallExtensionServiceRuntime;
+  inferenceConfigurationKey: string;
+  activeOperationCount: number;
+  idleResolvers: Array<() => void>;
+}
+
+interface RecallExtensionServiceRuntimeLease {
+  service: RecallConversationService;
+  release(): void;
+}
+
+function canonicalizeRecallInferenceCacheKeyValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(canonicalizeRecallInferenceCacheKeyValue);
+  }
+  if (!isUnknownRecord(value)) {
+    return value;
+  }
+  const canonicalValue: Record<string, unknown> = {};
+  for (const key of Object.keys(value).toSorted()) {
+    canonicalValue[key] = canonicalizeRecallInferenceCacheKeyValue(value[key]);
+  }
+  return canonicalValue;
+}
+
+function createRecallInferenceRuntimeCacheKey(
+  inferenceConfiguration: RecallInferenceConfiguration,
+  selectedEmbeddingProfileId?: string,
+): string {
+  return JSON.stringify(
+    canonicalizeRecallInferenceCacheKeyValue({
+      inferenceConfiguration,
+      selectedEmbeddingProfile: selectedEmbeddingProfileId ?? null,
+    }),
+  );
+}
+
 /** Explicit startup seams used by tests to avoid production recall paths and worker processes. */
 export interface RecallExtensionStartupOptions {
   config?: RecallConversationConfig;
   workerSignal?: RecallDetachedWorkerSignal;
   lifecycleRuntimeFactory?: RecallLifecycleRuntimeFactory;
+  createServiceRuntime?: (
+    inferenceConfiguration: RecallInferenceConfiguration,
+    selectedEmbeddingProfileId?: string,
+  ) => RecallExtensionServiceRuntime | Promise<RecallExtensionServiceRuntime>;
+  registerServiceRuntimeShutdown?: (disposeRuntime: () => Promise<void>) => void;
 }
 
 /** Applies trusted Pi tool context and project-default scope to one recall service search. */
@@ -99,16 +151,103 @@ export default async function recallExtension(
 
   const recommendedEmbeddingProfile = createRecommendedEmbeddingGemmaModelProfile();
 
-  // Lazy service resolution — recreated only when embedding selection changes.
-  let lastEmbeddingServiceKey: string | undefined;
-  let cachedService: RecallConversationService | undefined;
-  let cachedConfiguredRuntime: ConfiguredRecallInferenceRuntime | undefined;
+  // Lazy service resolution — recreated only when the effective inference configuration changes.
+  let cachedRuntimeOwnership: OwnedRecallExtensionServiceRuntime | undefined;
+  let serviceRuntimeOperationQueue = Promise.resolve();
+
+  async function runSerializedServiceRuntimeOperation<Result>(
+    operation: () => Promise<Result>,
+  ): Promise<Result> {
+    const previousOperation = serviceRuntimeOperationQueue;
+    let completeOperation = (): void => {};
+    serviceRuntimeOperationQueue = new Promise<void>((resolve) => {
+      completeOperation = resolve;
+    });
+    await previousOperation;
+    try {
+      return await operation();
+    } finally {
+      completeOperation();
+    }
+  }
 
   async function resolveInstallationMode() {
     return resolveRecallInstallationMode(config);
   }
 
-  async function resolveService(): Promise<RecallConversationService> {
+  async function createServiceRuntime(
+    inferenceConfiguration: RecallInferenceConfiguration,
+    selectedEmbeddingProfileId?: string,
+  ): Promise<RecallExtensionServiceRuntime> {
+    if (startupOptions.createServiceRuntime) {
+      return startupOptions.createServiceRuntime(
+        inferenceConfiguration,
+        selectedEmbeddingProfileId,
+      );
+    }
+    if (inferenceConfiguration.embedding) {
+      return createConfiguredRecallInferenceRuntime(config, {
+        inferenceConfiguration,
+        onWarning(message) {
+          recallWarningHandler?.(message);
+        },
+      });
+    }
+    if (selectedEmbeddingProfileId) {
+      return createRecommendedEmbeddingGemmaConversationRuntime(config, {
+        onWarning(message) {
+          recallWarningHandler?.(message);
+        },
+      });
+    }
+    return {
+      service: createRecallConversationService(config, {
+        notifyWarning(message) {
+          recallWarningHandler?.(message);
+        },
+        ...(startupOptions.workerSignal === undefined
+          ? {}
+          : { workerSignal: startupOptions.workerSignal }),
+      }),
+      async dispose() {},
+    };
+  }
+
+  async function waitForServiceRuntimeIdle(
+    ownership: OwnedRecallExtensionServiceRuntime,
+  ): Promise<void> {
+    if (ownership.activeOperationCount === 0) {
+      return;
+    }
+    await new Promise<void>((resolve) => {
+      ownership.idleResolvers.push(resolve);
+    });
+  }
+
+  function createServiceRuntimeLease(
+    ownership: OwnedRecallExtensionServiceRuntime,
+  ): RecallExtensionServiceRuntimeLease {
+    ownership.activeOperationCount += 1;
+    let released = false;
+    return {
+      service: ownership.runtime.service,
+      release() {
+        if (released) {
+          return;
+        }
+        released = true;
+        ownership.activeOperationCount -= 1;
+        if (ownership.activeOperationCount === 0) {
+          const idleResolvers = ownership.idleResolvers.splice(0);
+          for (const resolve of idleResolvers) {
+            resolve();
+          }
+        }
+      },
+    };
+  }
+
+  async function acquireServiceRuntimeLeaseWithoutConcurrentReplacement(): Promise<RecallExtensionServiceRuntimeLease> {
     const [inferenceConfiguration, firstIndexSetupState] = await Promise.all([
       readRecallInferenceConfiguration(resolveRecallInferenceConfigurationPath(config)),
       readRecallFirstIndexSetupState(resolveRecallFirstIndexSetupStatePath(config)),
@@ -126,51 +265,56 @@ export default async function recallExtension(
       );
     }
 
-    const embeddingServiceKey = inferenceConfiguration.embedding
-      ? `configured:${inferenceConfiguration.embedding.candidateId}:${inferenceConfiguration.embedding.profileId}`
-      : (selectedEmbeddingProfile ?? 'basic');
+    const inferenceConfigurationKey = createRecallInferenceRuntimeCacheKey(
+      inferenceConfiguration,
+      selectedEmbeddingProfile,
+    );
 
-    if (embeddingServiceKey === lastEmbeddingServiceKey && cachedService !== undefined) {
-      return cachedService;
+    if (cachedRuntimeOwnership?.inferenceConfigurationKey === inferenceConfigurationKey) {
+      return createServiceRuntimeLease(cachedRuntimeOwnership);
     }
 
-    const previousRuntime = cachedConfiguredRuntime;
-    cachedConfiguredRuntime = undefined;
-    cachedService = undefined;
-    lastEmbeddingServiceKey = undefined;
-    if (previousRuntime) {
-      await previousRuntime.dispose();
+    const previousOwnership = cachedRuntimeOwnership;
+    if (previousOwnership !== undefined) {
+      await waitForServiceRuntimeIdle(previousOwnership);
+      await previousOwnership.runtime.dispose();
+      cachedRuntimeOwnership = undefined;
     }
 
-    let newService: RecallConversationService;
-    if (inferenceConfiguration.embedding) {
-      const runtime = await createConfiguredRecallInferenceRuntime(config, {
-        onWarning(message) {
-          recallWarningHandler?.(message);
-        },
-      });
-      cachedConfiguredRuntime = runtime;
-      newService = runtime.service;
-    } else if (selectedEmbeddingProfile) {
-      newService = createRecommendedEmbeddingGemmaConversationRuntime(config, {
-        onWarning(message) {
-          recallWarningHandler?.(message);
-        },
-      }).service;
-    } else {
-      newService = createRecallConversationService(config, {
-        notifyWarning(message) {
-          recallWarningHandler?.(message);
-        },
-        ...(startupOptions.workerSignal === undefined
-          ? {}
-          : { workerSignal: startupOptions.workerSignal }),
-      });
-    }
+    const newRuntime = await createServiceRuntime(inferenceConfiguration, selectedEmbeddingProfile);
+    const newOwnership: OwnedRecallExtensionServiceRuntime = {
+      runtime: newRuntime,
+      inferenceConfigurationKey,
+      activeOperationCount: 0,
+      idleResolvers: [],
+    };
+    cachedRuntimeOwnership = newOwnership;
+    return createServiceRuntimeLease(newOwnership);
+  }
 
-    lastEmbeddingServiceKey = embeddingServiceKey;
-    cachedService = newService;
-    return newService;
+  async function useServiceRuntime<Result>(
+    operation: (service: RecallConversationService) => Promise<Result>,
+  ): Promise<Result> {
+    const lease = await runSerializedServiceRuntimeOperation(
+      acquireServiceRuntimeLeaseWithoutConcurrentReplacement,
+    );
+    try {
+      return await operation(lease.service);
+    } finally {
+      lease.release();
+    }
+  }
+
+  async function disposeCachedServiceRuntime(): Promise<void> {
+    await runSerializedServiceRuntimeOperation(async () => {
+      const ownership = cachedRuntimeOwnership;
+      if (ownership === undefined) {
+        return;
+      }
+      await waitForServiceRuntimeIdle(ownership);
+      await ownership.runtime.dispose();
+      cachedRuntimeOwnership = undefined;
+    });
   }
 
   registerRecallLifecycleMarkers(
@@ -192,6 +336,13 @@ export default async function recallExtension(
       nowEpochMilliseconds: Date.now,
     },
   );
+  if (startupOptions.registerServiceRuntimeShutdown !== undefined) {
+    startupOptions.registerServiceRuntimeShutdown(disposeCachedServiceRuntime);
+  } else {
+    pi.on('session_shutdown', async () => {
+      await disposeCachedServiceRuntime();
+    });
+  }
   pi.registerTool({
     name: 'pi-session-recall',
     label: 'Pi Session Recall',
@@ -235,17 +386,12 @@ export default async function recallExtension(
       void toolCallId;
       recallWarningHandler = (message) => context.ui.notify(message, 'warning');
       assertRecallInstallationConfigured(await resolveInstallationMode());
-      const service = await resolveService();
       const query = parameters.query.trim();
       if (!query) {
         throw new Error('Recall query must not be blank');
       }
-      const search = await searchPiRecall(
-        service,
-        { ...parameters, query },
-        context,
-        defaultResultLimit,
-        signal,
+      const search = await useServiceRuntime((service) =>
+        searchPiRecall(service, { ...parameters, query }, context, defaultResultLimit, signal),
       );
       const formatted = formatRecallSearchResults(search);
       const truncation = truncateHead(formatted, {
@@ -318,20 +464,21 @@ export default async function recallExtension(
     async handler(argumentsText, context) {
       recallWarningHandler = (message) => context.ui.notify(message, 'warning');
       assertRecallInstallationConfigured(await resolveInstallationMode());
-      const service = await resolveService();
-      await runRecallIndexCommand({
-        argumentsText,
-        qualityGateDecision,
-        service,
-        ui: {
-          setStatus(status) {
-            context.ui.setStatus('pi-session-recall', status);
+      await useServiceRuntime((service) =>
+        runRecallIndexCommand({
+          argumentsText,
+          qualityGateDecision,
+          service,
+          ui: {
+            setStatus(status) {
+              context.ui.setStatus('pi-session-recall', status);
+            },
+            notify(message, level) {
+              context.ui.notify(message, level);
+            },
           },
-          notify(message, level) {
-            context.ui.notify(message, level);
-          },
-        },
-      });
+        }),
+      );
     },
   });
 }

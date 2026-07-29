@@ -1,15 +1,15 @@
 {
   "version": 1,
   "releaseDecision": "approved-explicit-fallback",
-  "recordedAgainstCommit": "f4f7227dcf70fb014ceebdb9dd5251d61806a729",
+  "recordedAgainstCommit": "52b84c8be6a8425fefb149144a5da2143a66e030",
   "approvedSearchMode": "query-planned",
   "defaultSearchMode": "hybrid",
   "committedCorpus": [
     {
       "evidenceKind": "accepted-hybrid-baseline",
       "deviceClass": "baseline",
-      "profileId": "octen-embed",
-      "evidenceSha256": "58a0b23e35d7033c396f179dee022fa55dc66a30018f0b94f37626a4f6a437c2",
+      "profileId": "deterministic-fixture-v1",
+      "evidenceSha256": "4ec75569bf29be698a824c563af36a81b80a9f56bb3e8735be44b9c94341b1a6",
       "qualityPassed": true,
       "candidatePoolRecall": 1,
       "finalRecall": 1
@@ -69,7 +69,7 @@
           "rerankerConformanceFixtureIdentity": "live-query-planned-reranker-conformance-fixture-v1:6d78e2775446350ffc2606be15392ccdc2eb66137b249a40bcffa9ddb769cf3a"
         },
         "software": {
-          "repositoryCommit": "f4f7227dcf70fb014ceebdb9dd5251d61806a729",
+          "repositoryCommit": "52b84c8be6a8425fefb149144a5da2143a66e030",
           "backendVersion": "node-llama-cpp@3.18.1 / llama.cpp b8390",
           "nodeVersion": "v24.16.0",
           "platform": "linux",
@@ -172,7 +172,7 @@
             "lexQueryCount": 1,
             "vecQueryCount": 1,
             "hydeQueryCount": 1,
-            "planningMilliseconds": 2136.3777200000004
+            "planningMilliseconds": 2345.801249
           }
         },
         "reranking": {
@@ -206,20 +206,20 @@
           "measurement": {
             "queryCount": 1,
             "documentCount": 2,
-            "rerankingMilliseconds": 420.6554730000007
+            "rerankingMilliseconds": 381.44801499999994
           }
         }
       },
       "latency": {
-        "coldPlanningMilliseconds": 2136.3777200000004,
-        "warmPlanningMilliseconds": 8749.197076000002,
+        "coldPlanningMilliseconds": 2345.801249,
+        "warmPlanningMilliseconds": 2106.784616000001,
         "warmPlanningSucceeded": true,
-        "coldRerankingMilliseconds": 420.6554730000007,
-        "warmRerankingMilliseconds": 395.5345809999999,
+        "coldRerankingMilliseconds": 381.44801499999994,
+        "warmRerankingMilliseconds": 378.30160700000124,
         "totalSearchMilliseconds": {
-          "minimum": 45693.45256500004,
-          "median": 60869.28287150001,
-          "maximum": 126536.91910300008
+          "minimum": 51285.06770500005,
+          "median": 59267.98347549996,
+          "maximum": 129312.50671899994
         }
       },
       "cases": [
@@ -231,23 +231,23 @@
           "plannedQueries": [
             {
               "type": "lex",
-              "querySha256": "ac7a13bf0c9a09bd2d7539026851c6d9bd7d5150d3b4e8a71fbfc06c98eb576c"
+              "querySha256": "36f8470cfdd99281364f99ddc351a5eed790a9b75ddbdb1ede240aa08be0db32"
             },
             {
               "type": "lex",
-              "querySha256": "d39146635c922ef0701a68cc2b8431c092c92e62f1c36d6fe9b6ee29b836c94a"
+              "querySha256": "2c6d0f7a5878adc6b80ffb7091a165ac788e70d8f5ad87898dcc5ff74cd108d1"
             },
             {
               "type": "vec",
-              "querySha256": "17996940198465fcdcd424d6f04681f1357626ad50e49a81773d6d78adc74fb5"
+              "querySha256": "93c4a05adb80a75e38c6fffaf99793554bb4d64658e479e0be851d95963841d8"
             },
             {
               "type": "vec",
-              "querySha256": "d60801176e2fd0ee40c4b2798f9b058a72b26ff8ee066f45b4f2de04ffbd0c0d"
+              "querySha256": "cd16e4964239fdf8df65a18980cd9df0b9b45b6a330abc3a4717a82ffc35982a"
             },
             {
               "type": "hyde",
-              "querySha256": "f4a0d869f33629153cee7f33ce96c968ba839aa5dcd2a607843c7a584ef0ef9d"
+              "querySha256": "1c57ff01ab50c21bedd91838fa5679cdd071a26ca74dc44f15ae9fe130cad99d"
             }
           ],
           "normal": {
@@ -289,17 +289,17 @@
             "reciprocalRankConstant": 60
           },
           "queryPlanned": {
-            "outcome": "final_rank_miss",
+            "outcome": "candidate_union_miss",
             "expectedSourceRanks": [null],
-            "candidateAdmissionSourceRanks": [121],
-            "candidateAdmissionVerified": true,
+            "candidateAdmissionSourceRanks": [null],
+            "candidateAdmissionVerified": false,
             "sourceProvenance": [
               {
-                "selectedFrom": "candidate_admission",
-                "passed": true
+                "selectedFrom": "missing",
+                "passed": false
               }
             ],
-            "provenancePassed": true,
+            "provenancePassed": false,
             "listWork": [
               {
                 "source": "dense",
@@ -391,14 +391,14 @@
             "rankingProviderPolicy": "live-profile-v1",
             "candidateAdmissionBoundaryPolicy": "fused-candidate-pool-v1"
           },
-          "planningMilliseconds": 15027.314285999979,
-          "rerankingMilliseconds": 48071.434676999925,
-          "totalSearchMilliseconds": 63174.70350599999,
+          "planningMilliseconds": 11178.119645999977,
+          "rerankingMilliseconds": 49887.033673000056,
+          "totalSearchMilliseconds": 61214.21240800002,
           "contribution": {
-            "newCandidateAdmission": true,
+            "newCandidateAdmission": false,
             "rankingOnlyPromotion": false,
             "preservedExistingSuccess": false,
-            "noImprovement": false
+            "noImprovement": true
           }
         },
         {
@@ -409,23 +409,23 @@
           "plannedQueries": [
             {
               "type": "lex",
-              "querySha256": "3e3291a857cb32e944df6f6d9abde243153705f61798f7d56e8afbfd4b211ce3"
+              "querySha256": "fc59d51b22ae3387d709993011c151cc1f8888397df08080ed39e18bf8c8d6a2"
             },
             {
               "type": "lex",
-              "querySha256": "d24e2b722353da20c8f9a8942a3977ea3c02cc136ec0f299b29d66bec449847b"
+              "querySha256": "a536cfdfd7284d260328046424a43038c3c1b7ed5e087b2e463f60d6a4123225"
             },
             {
               "type": "vec",
-              "querySha256": "c443dfec9d275af83401777468c8fc1a5d63ed46a72c091441f6aa489a0ba285"
+              "querySha256": "d41de674bd06a9cadb580d44a0a025acca19540e32d3e91eda3b6370621e929f"
             },
             {
               "type": "vec",
-              "querySha256": "f30968fe60af779a61265771b9badad5c730aaf27e9cdb3ab4928c725870afbf"
+              "querySha256": "064c634ec68bf1c8376c4a29058e1bc5452e533bdd2a48b4172b65d7be8b51cd"
             },
             {
               "type": "hyde",
-              "querySha256": "b921efa99327127c46c59ecc2885280a087dd69ab6f17f51372a6c4a5a47be90"
+              "querySha256": "44197e7f184e2414899dc7b354e98837fbc134055d85cec6d6cebbb8a8fcfc96"
             }
           ],
           "normal": {
@@ -569,9 +569,9 @@
             "rankingProviderPolicy": "live-profile-v1",
             "candidateAdmissionBoundaryPolicy": "fused-candidate-pool-v1"
           },
-          "planningMilliseconds": 2934.042414999916,
-          "rerankingMilliseconds": 55586.24689900001,
-          "totalSearchMilliseconds": 58563.86223700002,
+          "planningMilliseconds": 2918.1334620001744,
+          "rerankingMilliseconds": 50643.88679099991,
+          "totalSearchMilliseconds": 53737.63335699984,
           "contribution": {
             "newCandidateAdmission": false,
             "rankingOnlyPromotion": false,
@@ -587,20 +587,28 @@
           "plannedQueries": [
             {
               "type": "lex",
-              "querySha256": "938f9dcac1397968b1cbca605128e4af39b38f5541ac1fa7898073db40d94b45"
+              "querySha256": "af7a032bfa3ae764b14c8fde1cf2a9724b2fdcf9c858655c2e06db3cc753b8f1"
+            },
+            {
+              "type": "lex",
+              "querySha256": "7f4512dc6d720f99d7b86d876a31223dad67562aaf2a14e1d493f769032a1fd0"
             },
             {
               "type": "vec",
-              "querySha256": "1c1babf1a9840e7e7d1c826c179b512243a06ba12688f1be3e6ed3744e4b2259"
+              "querySha256": "af7a032bfa3ae764b14c8fde1cf2a9724b2fdcf9c858655c2e06db3cc753b8f1"
+            },
+            {
+              "type": "vec",
+              "querySha256": "125eda8f4b23ee9621f7780b36d62dc9bd4201e72a4c69f405940c5b6cfd5861"
             },
             {
               "type": "hyde",
-              "querySha256": "11051fd1c45b1cdd9cb61930554e9767072ff71467be452a5e3a277bfc84546c"
+              "querySha256": "c3c5ed0f30a9d5903942102d9b1f16a6f4b4c9e235b534cfc69feda2ddb3ddc7"
             }
           ],
           "normal": {
             "outcome": "final_rank_miss",
-            "expectedSourceRanks": [9],
+            "expectedSourceRanks": [8],
             "highestRelevantDistractorRank": null,
             "provenancePassed": true,
             "listLimits": {
@@ -619,19 +627,19 @@
           },
           "retrievalWorkMatched": {
             "outcome": "final_rank_miss",
-            "expectedSourceRanks": [13],
+            "expectedSourceRanks": [6],
             "highestRelevantDistractorRank": null,
             "provenancePassed": true,
             "listLimits": {
-              "dense": 40,
-              "lexical": 40,
-              "identifier": 40
+              "dense": 54,
+              "lexical": 53,
+              "identifier": 53
             },
-            "totalCandidatesExamined": 82,
-            "uniqueCandidatesAdmitted": 72,
+            "totalCandidatesExamined": 109,
+            "uniqueCandidatesAdmitted": 96,
             "finalResultCount": 5,
-            "fusedPoolLimit": 120,
-            "rerankPoolLimit": 120,
+            "fusedPoolLimit": 160,
+            "rerankPoolLimit": 160,
             "rankingMode": "hybrid",
             "rankFusionVersion": 2,
             "reciprocalRankConstant": 60
@@ -639,7 +647,7 @@
           "queryPlanned": {
             "outcome": "success",
             "expectedSourceRanks": [3],
-            "candidateAdmissionSourceRanks": [17],
+            "candidateAdmissionSourceRanks": [19],
             "candidateAdmissionVerified": true,
             "sourceProvenance": [
               {
@@ -674,6 +682,18 @@
                 "admittedCandidateCount": 20
               },
               {
+                "source": "planned_lex",
+                "weight": 1,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "planned_vec",
+                "weight": 1,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
                 "source": "planned_vec",
                 "weight": 1,
                 "candidateLimit": 20,
@@ -686,10 +706,10 @@
                 "admittedCandidateCount": 20
               }
             ],
-            "totalCandidatesExamined": 102,
+            "totalCandidatesExamined": 142,
             "rerankCandidatesExamined": 40,
             "finalResultCount": 5,
-            "fusedPoolLimit": 120,
+            "fusedPoolLimit": 160,
             "rerankPoolLimit": 40,
             "finalResultLimit": 5,
             "rankFusionVersion": 2,
@@ -727,9 +747,9 @@
             "rankingProviderPolicy": "live-profile-v1",
             "candidateAdmissionBoundaryPolicy": "fused-candidate-pool-v1"
           },
-          "planningMilliseconds": 2519.3002620000625,
-          "rerankingMilliseconds": 43133.46825399995,
-          "totalSearchMilliseconds": 45693.45256500004,
+          "planningMilliseconds": 3811.6648650001734,
+          "rerankingMilliseconds": 47298.21182999994,
+          "totalSearchMilliseconds": 51285.06770500005,
           "contribution": {
             "newCandidateAdmission": false,
             "rankingOnlyPromotion": true,
@@ -745,23 +765,23 @@
           "plannedQueries": [
             {
               "type": "lex",
-              "querySha256": "e930a77487445ff24f066775867fa701a2230e61155e4dc31c095d8b86f67e22"
+              "querySha256": "330e8694d7d55bd23ace53113bf84fee84d31612f9dd875a29770547c394b6cb"
             },
             {
               "type": "lex",
-              "querySha256": "672c0d48078d34cb4123adb84aab23705e811cbf78c8ed349d092159ca74edb7"
+              "querySha256": "2134d2b6228f9fce80e503b2e2074212fffb67a406ed69cf010986d6dcca9244"
             },
             {
               "type": "vec",
-              "querySha256": "35116e42131b7851cfd3979c19da8575c63b4c71a0d42a696f6103b6135d2149"
+              "querySha256": "90bc354dbad46a1cc2e2379d86398921a3c91080b1f273f6ee0e40d1987c5dcb"
             },
             {
               "type": "vec",
-              "querySha256": "eaf2570f68b9ee7856c4f9e1a843ad6f81583ca810005677f61a40755f4074ac"
+              "querySha256": "8a5b513ce76b01bea70df04b2618651e102f9dc624bd1602b554f4e58dd64d5a"
             },
             {
               "type": "hyde",
-              "querySha256": "233560be2df3b21c762bcaca3bd71ce20a1cf5abea9ca9afde67f25cf41eab18"
+              "querySha256": "f1affd801faa9e61d7fe5daa401256a3b2754b0c85cfb2dc1d9be1ef4c3c66f8"
             }
           ],
           "normal": {
@@ -905,9 +925,9 @@
             "rankingProviderPolicy": "live-profile-v1",
             "candidateAdmissionBoundaryPolicy": "fused-candidate-pool-v1"
           },
-          "planningMilliseconds": 7406.43291600002,
-          "rerankingMilliseconds": 119069.44467899998,
-          "totalSearchMilliseconds": 126536.91910300008,
+          "planningMilliseconds": 4512.959309999831,
+          "rerankingMilliseconds": 124603.7916900001,
+          "totalSearchMilliseconds": 129312.50671899994,
           "contribution": {
             "newCandidateAdmission": false,
             "rankingOnlyPromotion": false,
@@ -923,23 +943,15 @@
           "plannedQueries": [
             {
               "type": "lex",
-              "querySha256": "b87a8d575cfdc4caa41b3088df20fbfe7146fd3565d8b4dd33947966bb0938b0"
-            },
-            {
-              "type": "lex",
-              "querySha256": "6c34de1fc1b0a5288929e84b62c09361823e8126dbf1b6a2466b3f98e75c62f7"
+              "querySha256": "112687a5df1935bdbc24aaf205dc311cd309d6f0a56cb2b400d1add43902e3b2"
             },
             {
               "type": "vec",
-              "querySha256": "bcac2755936d1e1aa42ddb953935f0bbd411470a79cf71f183205f01c0887c7e"
-            },
-            {
-              "type": "vec",
-              "querySha256": "fd70576e5bd9b8d72fcff62804d9bd6f2aae0e2d62b51caa10437c5f6b4ddd82"
+              "querySha256": "be3727092a4e89767d7ea8d7bf4b1291fbe9565f39f49fb56a9e51e689c981ea"
             },
             {
               "type": "hyde",
-              "querySha256": "fdd376f319b7dbbafe4bb024f5e07209737029997f973a9cee702937475fe4b6"
+              "querySha256": "2dafae9a4a70521f4804893ad99aed2a97144f246e3f1feb944a7ead57a8d79a"
             }
           ],
           "normal": {
@@ -967,15 +979,15 @@
             "highestRelevantDistractorRank": null,
             "provenancePassed": false,
             "listLimits": {
-              "dense": 54,
-              "lexical": 53,
-              "identifier": 53
+              "dense": 40,
+              "lexical": 40,
+              "identifier": 40
             },
-            "totalCandidatesExamined": 110,
-            "uniqueCandidatesAdmitted": 90,
+            "totalCandidatesExamined": 83,
+            "uniqueCandidatesAdmitted": 70,
             "finalResultCount": 5,
-            "fusedPoolLimit": 160,
-            "rerankPoolLimit": 160,
+            "fusedPoolLimit": 120,
+            "rerankPoolLimit": 120,
             "rankingMode": "hybrid",
             "rankFusionVersion": 2,
             "reciprocalRankConstant": 60
@@ -1018,18 +1030,6 @@
                 "admittedCandidateCount": 20
               },
               {
-                "source": "planned_lex",
-                "weight": 1,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "planned_vec",
-                "weight": 1,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
                 "source": "planned_vec",
                 "weight": 1,
                 "candidateLimit": 20,
@@ -1042,10 +1042,10 @@
                 "admittedCandidateCount": 20
               }
             ],
-            "totalCandidatesExamined": 143,
+            "totalCandidatesExamined": 103,
             "rerankCandidatesExamined": 40,
             "finalResultCount": 5,
-            "fusedPoolLimit": 160,
+            "fusedPoolLimit": 120,
             "rerankPoolLimit": 40,
             "finalResultLimit": 5,
             "rankFusionVersion": 2,
@@ -1083,9 +1083,9 @@
             "rankingProviderPolicy": "live-profile-v1",
             "candidateAdmissionBoundaryPolicy": "fused-candidate-pool-v1"
           },
-          "planningMilliseconds": 5520.4159340000515,
-          "rerankingMilliseconds": 60044.939841000014,
-          "totalSearchMilliseconds": 65613.28494599997,
+          "planningMilliseconds": 2959.2347260001116,
+          "rerankingMilliseconds": 58329.796361000044,
+          "totalSearchMilliseconds": 61464.32738299994,
           "contribution": {
             "newCandidateAdmission": false,
             "rankingOnlyPromotion": false,
@@ -1101,7 +1101,7 @@
           "plannedQueries": [
             {
               "type": "lex",
-              "querySha256": "c924a68cda0987c3566223a73ce72c935c694564aab7ad3e935ace484dfb1a3b"
+              "querySha256": "6abefc00bb120e2f48bb9756020502035cc6c33f6e30a98a0523745b47711d10"
             },
             {
               "type": "lex",
@@ -1109,15 +1109,15 @@
             },
             {
               "type": "vec",
-              "querySha256": "739f7ba69c68b33de99278d259d6c7edfa3e61b7e8264af3cb66918f55c75794"
+              "querySha256": "c3afc6286fd09fc407d86346a4ac85df1d7c6eea19f711493734add692848dc6"
             },
             {
               "type": "vec",
-              "querySha256": "75d371b60bda0ee30e1b313d0c979f3279e6305f0f29b73e7aac0cf05a141353"
+              "querySha256": "3705147f34495fd030be0ce6c0305f949bdc81b105112f7688f83baccbb64d78"
             },
             {
               "type": "hyde",
-              "querySha256": "c62bf1cc8090abd5d1286b966298431d3f97e826d6766e546083194b61bd5b44"
+              "querySha256": "a3a3a7343ca44cefa8cf09b525d24b34a70df5b97ecae56db01c0c425d9ae3c2"
             }
           ],
           "normal": {
@@ -1261,9 +1261,9 @@
             "rankingProviderPolicy": "live-profile-v1",
             "candidateAdmissionBoundaryPolicy": "fused-candidate-pool-v1"
           },
-          "planningMilliseconds": 3028.658044999931,
-          "rerankingMilliseconds": 43683.52620199998,
-          "totalSearchMilliseconds": 46754.069479000056,
+          "planningMilliseconds": 4394.563797999872,
+          "rerankingMilliseconds": 46773.56390099996,
+          "totalSearchMilliseconds": 51341.54373500007,
           "contribution": {
             "newCandidateAdmission": false,
             "rankingOnlyPromotion": false,
@@ -1279,23 +1279,23 @@
           "plannedQueries": [
             {
               "type": "lex",
-              "querySha256": "b87a8d575cfdc4caa41b3088df20fbfe7146fd3565d8b4dd33947966bb0938b0"
-            },
-            {
-              "type": "lex",
               "querySha256": "ec5710ad2634fe08291c7568d1a6408861178bbdff2f4a1920b44bc3600003fa"
             },
             {
-              "type": "vec",
-              "querySha256": "346ba39277e4afab13accaf85f6fee752c4755c11249327292f7f7f08f517898"
+              "type": "lex",
+              "querySha256": "29c9e1091258c08c31053ed83806d8f4249ffe6d9853e5987e3ab2b3d9672328"
             },
             {
               "type": "vec",
-              "querySha256": "1808c9006160406cd585721495d8ef9520cac8807c681fcde0f8119492c9dfff"
+              "querySha256": "fcc594083aa4cc392ef314045cf3ce245be4828d4d07640553eee78a516abb24"
+            },
+            {
+              "type": "vec",
+              "querySha256": "6444988042bc593c1dd04ba48135f104a6d8e5245d4b2a2bedf2d5eb86d41674"
             },
             {
               "type": "hyde",
-              "querySha256": "1a62153c5dcbecbac7291ad5a473e0ec25cf9c9c7becf08be5b2e34a8d3b1796"
+              "querySha256": "3257bc2eae9d21905b6cf9250b849c7c37e31123922acfdf7a13b7a705c78e83"
             }
           ],
           "normal": {
@@ -1320,6 +1320,903 @@
           "retrievalWorkMatched": {
             "outcome": "success",
             "expectedSourceRanks": [5],
+            "highestRelevantDistractorRank": null,
+            "provenancePassed": true,
+            "listLimits": {
+              "dense": 54,
+              "lexical": 53,
+              "identifier": 53
+            },
+            "totalCandidatesExamined": 109,
+            "uniqueCandidatesAdmitted": 96,
+            "finalResultCount": 5,
+            "fusedPoolLimit": 160,
+            "rerankPoolLimit": 160,
+            "rankingMode": "hybrid",
+            "rankFusionVersion": 2,
+            "reciprocalRankConstant": 60
+          },
+          "queryPlanned": {
+            "outcome": "final_rank_miss",
+            "expectedSourceRanks": [null],
+            "candidateAdmissionSourceRanks": [25],
+            "candidateAdmissionVerified": true,
+            "sourceProvenance": [
+              {
+                "selectedFrom": "candidate_admission",
+                "passed": true
+              }
+            ],
+            "provenancePassed": true,
+            "listWork": [
+              {
+                "source": "dense",
+                "weight": 2,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "lexical",
+                "weight": 2,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "identifier",
+                "weight": 2,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 2
+              },
+              {
+                "source": "planned_lex",
+                "weight": 1,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "planned_lex",
+                "weight": 1,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "planned_vec",
+                "weight": 1,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "planned_vec",
+                "weight": 1,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "planned_hyde",
+                "weight": 1,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              }
+            ],
+            "totalCandidatesExamined": 142,
+            "rerankCandidatesExamined": 40,
+            "finalResultCount": 5,
+            "fusedPoolLimit": 160,
+            "rerankPoolLimit": 40,
+            "finalResultLimit": 5,
+            "rankFusionVersion": 2,
+            "reciprocalRankConstant": 60,
+            "fusionPolicy": {
+              "submittedQueryListWeight": 2,
+              "plannedQueryListWeight": 1,
+              "rankOneBonus": 0.05,
+              "rankTwoOrThreeBonus": 0.02
+            },
+            "rerankerPolicy": {
+              "version": 2,
+              "activeBranchPrior": 0.01,
+              "fusedRankBlend": [
+                {
+                  "firstRank": 1,
+                  "lastRank": 3,
+                  "retrievalWeight": 0.75,
+                  "rerankerWeight": 0.25
+                },
+                {
+                  "firstRank": 4,
+                  "lastRank": 10,
+                  "retrievalWeight": 0.6,
+                  "rerankerWeight": 0.4
+                },
+                {
+                  "firstRank": 11,
+                  "lastRank": null,
+                  "retrievalWeight": 0.4,
+                  "rerankerWeight": 0.6
+                }
+              ]
+            },
+            "rankingProviderPolicy": "live-profile-v1",
+            "candidateAdmissionBoundaryPolicy": "fused-candidate-pool-v1"
+          },
+          "planningMilliseconds": 4047.489636000013,
+          "rerankingMilliseconds": 53096.325115999905,
+          "totalSearchMilliseconds": 57321.7545429999,
+          "contribution": {
+            "newCandidateAdmission": false,
+            "rankingOnlyPromotion": false,
+            "preservedExistingSuccess": false,
+            "noImprovement": true
+          }
+        },
+        {
+          "caseId": "case-008",
+          "category": "exact_identifier",
+          "controlKind": "successful_baseline_control",
+          "planSource": "planner",
+          "plannedQueries": [
+            {
+              "type": "lex",
+              "querySha256": "a6bea42e85006f8f9bac590d345744dab8e82e39a34cea86b00553a9cdbb2dfd"
+            },
+            {
+              "type": "lex",
+              "querySha256": "adc4af6da65c1fe9fd301a631bc60c4f6de44a69952d1674000dec2fbc850bdc"
+            },
+            {
+              "type": "vec",
+              "querySha256": "a6bea42e85006f8f9bac590d345744dab8e82e39a34cea86b00553a9cdbb2dfd"
+            },
+            {
+              "type": "vec",
+              "querySha256": "adc4af6da65c1fe9fd301a631bc60c4f6de44a69952d1674000dec2fbc850bdc"
+            },
+            {
+              "type": "hyde",
+              "querySha256": "ce7ab4a442caf546e21ab0f721918abacf7c0740a8af3e7aa49c03d7d29c429e"
+            }
+          ],
+          "normal": {
+            "outcome": "success",
+            "expectedSourceRanks": [1],
+            "highestRelevantDistractorRank": null,
+            "provenancePassed": true,
+            "listLimits": {
+              "dense": 8,
+              "lexical": 8,
+              "identifier": 8
+            },
+            "totalCandidatesExamined": 24,
+            "uniqueCandidatesAdmitted": 16,
+            "finalResultCount": 5,
+            "fusedPoolLimit": 24,
+            "rerankPoolLimit": 24,
+            "rankingMode": "hybrid",
+            "rankFusionVersion": 2,
+            "reciprocalRankConstant": 60
+          },
+          "retrievalWorkMatched": {
+            "outcome": "success",
+            "expectedSourceRanks": [1],
+            "highestRelevantDistractorRank": null,
+            "provenancePassed": true,
+            "listLimits": {
+              "dense": 54,
+              "lexical": 53,
+              "identifier": 53
+            },
+            "totalCandidatesExamined": 143,
+            "uniqueCandidatesAdmitted": 107,
+            "finalResultCount": 5,
+            "fusedPoolLimit": 160,
+            "rerankPoolLimit": 160,
+            "rankingMode": "hybrid",
+            "rankFusionVersion": 2,
+            "reciprocalRankConstant": 60
+          },
+          "queryPlanned": {
+            "outcome": "success",
+            "expectedSourceRanks": [1],
+            "candidateAdmissionSourceRanks": [1],
+            "candidateAdmissionVerified": true,
+            "sourceProvenance": [
+              {
+                "selectedFrom": "ranked_result",
+                "passed": true
+              }
+            ],
+            "provenancePassed": true,
+            "listWork": [
+              {
+                "source": "dense",
+                "weight": 2,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "lexical",
+                "weight": 2,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "identifier",
+                "weight": 2,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "planned_lex",
+                "weight": 1,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "planned_lex",
+                "weight": 1,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "planned_vec",
+                "weight": 1,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "planned_vec",
+                "weight": 1,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "planned_hyde",
+                "weight": 1,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              }
+            ],
+            "totalCandidatesExamined": 160,
+            "rerankCandidatesExamined": 40,
+            "finalResultCount": 5,
+            "fusedPoolLimit": 160,
+            "rerankPoolLimit": 40,
+            "finalResultLimit": 5,
+            "rankFusionVersion": 2,
+            "reciprocalRankConstant": 60,
+            "fusionPolicy": {
+              "submittedQueryListWeight": 2,
+              "plannedQueryListWeight": 1,
+              "rankOneBonus": 0.05,
+              "rankTwoOrThreeBonus": 0.02
+            },
+            "rerankerPolicy": {
+              "version": 2,
+              "activeBranchPrior": 0.01,
+              "fusedRankBlend": [
+                {
+                  "firstRank": 1,
+                  "lastRank": 3,
+                  "retrievalWeight": 0.75,
+                  "rerankerWeight": 0.25
+                },
+                {
+                  "firstRank": 4,
+                  "lastRank": 10,
+                  "retrievalWeight": 0.6,
+                  "rerankerWeight": 0.4
+                },
+                {
+                  "firstRank": 11,
+                  "lastRank": null,
+                  "retrievalWeight": 0.4,
+                  "rerankerWeight": 0.6
+                }
+              ]
+            },
+            "rankingProviderPolicy": "live-profile-v1",
+            "candidateAdmissionBoundaryPolicy": "fused-candidate-pool-v1"
+          },
+          "planningMilliseconds": 3283.8461570001673,
+          "rerankingMilliseconds": 69842.09332500002,
+          "totalSearchMilliseconds": 73303.00158499996,
+          "contribution": {
+            "newCandidateAdmission": false,
+            "rankingOnlyPromotion": false,
+            "preservedExistingSuccess": true,
+            "noImprovement": false
+          }
+        }
+      ],
+      "quality": {
+        "newCandidateAdmissionCount": 0,
+        "rankingOnlyPromotionCount": 1,
+        "preservedExistingSuccessCount": 1,
+        "plannerFallbackCount": 0
+      }
+    },
+    {
+      "version": 1,
+      "profileRun": {
+        "id": "embedded-vulkan",
+        "backend": "embedded",
+        "deviceClass": "accelerated",
+        "device": "vulkan",
+        "backendVersion": "node-llama-cpp@3.18.1 / llama.cpp b8390"
+      },
+      "corpus": {
+        "id": "query-planned-real-recall-v1",
+        "privateManifestSha256": "4b3fb8573bcd52a26d66a2f8e60f5bbba57b098530791b23f55505d3e9a1187e",
+        "snapshotCount": 8,
+        "snapshotSha256": [
+          "df69bfa20acfb033175717f9070eb761e405ed9d9f8a49b011e6ddad92db2b35",
+          "880f5ae1cfcdf9d94b537cdf6c76e0e2581e9d7aa23b673947905149e51f5653",
+          "cc2b50fd0b09b76fe9260cd163df2fe004af2b3c41c3a568ad9bc75ef743579a",
+          "9f5f40459c3b3e593dcdf407ccb54c05c501b4d512f95c53e6285e23b84325b3",
+          "fc8cdf518cb6abe5f84a7b4a7474faf5cf886f2e4a479bcfbf9e4fac8703e5b7",
+          "1e7b95d66176ece794135d31f3a406a2d76a5324cc0bceca302fce9feb66b330",
+          "068100f8111d17867b2e1ef656ed11a300e14b62007a52225fd74b617bbdc54b",
+          "f5d53b87e3ee71085d7b075b5d0195b090a752a7374c4ff98f3e711820b2b6dd"
+        ],
+        "indexedDocumentCount": 44521,
+        "caseCount": 8
+      },
+      "profileIdentity": {
+        "embeddingPolicy": "deterministic-token-hash-v1",
+        "embeddingDimensions": 256,
+        "evaluationConfiguration": {
+          "version": 1,
+          "effectiveConfigurationIdentity": "live-query-planned-effective-evaluation-config-v1:30a786261e7b53d3796928c4485897990f2faefe56030379b35307e15d522863",
+          "rerankerConformanceFixtureIdentity": "live-query-planned-reranker-conformance-fixture-v1:6d78e2775446350ffc2606be15392ccdc2eb66137b249a40bcffa9ddb769cf3a"
+        },
+        "software": {
+          "repositoryCommit": "52b84c8be6a8425fefb149144a5da2143a66e030",
+          "backendVersion": "node-llama-cpp@3.18.1 / llama.cpp b8390",
+          "nodeVersion": "v24.16.0",
+          "platform": "linux",
+          "architecture": "x64"
+        },
+        "queryPlanning": {
+          "profileId": "qmd-query-expansion-1.7b-q4-k-m-v1",
+          "model": "qmd-query-expansion-1.7B-q4_k_m",
+          "promptPolicy": "qmd-query-expansion-no-think-v1",
+          "grammarVersion": "qmd-bounded-query-plan-v2",
+          "executionIdentity": {
+            "adapterId": "node-llama-cpp-qmd-query-planning-v1",
+            "adapterVersion": "1",
+            "adapterConfigurationIdentity": "node-llama-cpp-qmd-query-planning-config-v1:9ba6c579991594a65b0325bf003c7537f026ba1b21aca8b888d1f6cd97d269f7",
+            "backend": "embedded",
+            "cacheIdentity": "recall-query-planning-execution-v1:8fd436e3f671da780f38cae886c464f6dbb991c04c3fd47301065ab5a5b3d64e",
+            "modelProfileId": "qmd-query-expansion-1.7b-q4-k-m-v1",
+            "modelProfileIdentity": "recall-query-planning-model-profile-v1:b2bfd3f93c8ff05d49dd357b2bb0ecf3f8e472ad214108120922609804a7c6d6",
+            "promptPolicy": "qmd-query-expansion-no-think-v1",
+            "grammarVersion": "qmd-bounded-query-plan-v2",
+            "requestTimeoutMilliseconds": 300000,
+            "computeBackend": "vulkan",
+            "deviceNames": ["AMD Radeon 780M Graphics (RADV PHOENIX)"],
+            "devicePolicy": "vulkan",
+            "fallbackFromComputeBackend": null,
+            "contextSize": 2048,
+            "threads": null,
+            "nodeLlamaCppVersion": "3.18.1",
+            "idleTimeoutMilliseconds": 300000,
+            "physicalDeviceIdentity": ["amd radeon 780m graphics (radv phoenix)"],
+            "probedComputeBackends": []
+          }
+        },
+        "reranking": {
+          "profileId": "qwen3-reranker-0.6b-q8-0-v1",
+          "model": "qwen3-reranker-0.6b-q8_0",
+          "scorePolicy": "llama-cpp-qwen3-rank-probability-v1",
+          "executionIdentity": {
+            "adapterId": "node-llama-cpp-qwen-reranking-logit-recovery-v1",
+            "adapterVersion": "1",
+            "adapterConfigurationIdentity": "node-llama-cpp-qwen-reranking-config-v1:57d960e58cc6a1794e6365adaade3a827a1a7428668cdf1bb49ea7d6b48cac17",
+            "backend": "embedded",
+            "cacheIdentity": "recall-reranking-execution-v1:6a25614ce85904070227c37e56442e3f2c84ec9cd8b3253c426e743609fb5dc5",
+            "modelProfileId": "qwen3-reranker-0.6b-q8-0-v1",
+            "modelProfileIdentity": "recall-reranking-model-profile-v1:c7d9d2da2c03edd04fc1468cb467f1c087a4d181d35cfb571266c621166d2025",
+            "requestTimeoutMilliseconds": 300000,
+            "computeBackend": "vulkan",
+            "deviceNames": ["AMD Radeon 780M Graphics (RADV PHOENIX)"],
+            "devicePolicy": "vulkan",
+            "fallbackFromComputeBackend": null,
+            "contextSize": 4096,
+            "threads": null,
+            "nodeLlamaCppVersion": "3.18.1",
+            "parallelism": 1,
+            "idleTimeoutMilliseconds": 300000,
+            "physicalDeviceIdentity": ["amd radeon 780m graphics (radv phoenix)"],
+            "probedComputeBackends": []
+          }
+        }
+      },
+      "capabilityConformance": {
+        "queryPlanning": {
+          "profileId": "qmd-query-expansion-1.7b-q4-k-m-v1",
+          "model": "qmd-query-expansion-1.7B-q4_k_m",
+          "promptPolicy": "qmd-query-expansion-no-think-v1",
+          "grammarVersion": "qmd-bounded-query-plan-v2",
+          "executionIdentity": {
+            "adapterId": "node-llama-cpp-qmd-query-planning-v1",
+            "adapterVersion": "1",
+            "adapterConfigurationIdentity": "node-llama-cpp-qmd-query-planning-config-v1:9ba6c579991594a65b0325bf003c7537f026ba1b21aca8b888d1f6cd97d269f7",
+            "backend": "embedded",
+            "cacheIdentity": "recall-query-planning-execution-v1:8fd436e3f671da780f38cae886c464f6dbb991c04c3fd47301065ab5a5b3d64e",
+            "modelProfileId": "qmd-query-expansion-1.7b-q4-k-m-v1",
+            "modelProfileIdentity": "recall-query-planning-model-profile-v1:b2bfd3f93c8ff05d49dd357b2bb0ecf3f8e472ad214108120922609804a7c6d6",
+            "promptPolicy": "qmd-query-expansion-no-think-v1",
+            "grammarVersion": "qmd-bounded-query-plan-v2",
+            "requestTimeoutMilliseconds": 300000,
+            "computeBackend": "vulkan",
+            "deviceNames": ["AMD Radeon 780M Graphics (RADV PHOENIX)"],
+            "devicePolicy": "vulkan",
+            "fallbackFromComputeBackend": null,
+            "contextSize": 2048,
+            "threads": null,
+            "nodeLlamaCppVersion": "3.18.1",
+            "idleTimeoutMilliseconds": 300000,
+            "physicalDeviceIdentity": ["amd radeon 780m graphics (radv phoenix)"],
+            "probedComputeBackends": []
+          },
+          "measurement": {
+            "plannedQueryCount": 3,
+            "lexQueryCount": 1,
+            "vecQueryCount": 1,
+            "hydeQueryCount": 1,
+            "planningMilliseconds": 2256.636111000087
+          }
+        },
+        "reranking": {
+          "profileId": "qwen3-reranker-0.6b-q8-0-v1",
+          "model": "qwen3-reranker-0.6b-q8_0",
+          "scorePolicy": "llama-cpp-qwen3-rank-probability-v1",
+          "executionIdentity": {
+            "adapterId": "node-llama-cpp-qwen-reranking-logit-recovery-v1",
+            "adapterVersion": "1",
+            "adapterConfigurationIdentity": "node-llama-cpp-qwen-reranking-config-v1:57d960e58cc6a1794e6365adaade3a827a1a7428668cdf1bb49ea7d6b48cac17",
+            "backend": "embedded",
+            "cacheIdentity": "recall-reranking-execution-v1:6a25614ce85904070227c37e56442e3f2c84ec9cd8b3253c426e743609fb5dc5",
+            "modelProfileId": "qwen3-reranker-0.6b-q8-0-v1",
+            "modelProfileIdentity": "recall-reranking-model-profile-v1:c7d9d2da2c03edd04fc1468cb467f1c087a4d181d35cfb571266c621166d2025",
+            "requestTimeoutMilliseconds": 300000,
+            "computeBackend": "vulkan",
+            "deviceNames": ["AMD Radeon 780M Graphics (RADV PHOENIX)"],
+            "devicePolicy": "vulkan",
+            "fallbackFromComputeBackend": null,
+            "contextSize": 4096,
+            "threads": null,
+            "nodeLlamaCppVersion": "3.18.1",
+            "parallelism": 1,
+            "idleTimeoutMilliseconds": 300000,
+            "physicalDeviceIdentity": ["amd radeon 780m graphics (radv phoenix)"],
+            "probedComputeBackends": []
+          },
+          "measurement": {
+            "queryCount": 1,
+            "documentCount": 2,
+            "rerankingMilliseconds": 155.24825399997644
+          }
+        }
+      },
+      "latency": {
+        "coldPlanningMilliseconds": 2256.636111000087,
+        "warmPlanningMilliseconds": 2169.2121690001804,
+        "warmPlanningSucceeded": true,
+        "coldRerankingMilliseconds": 155.24825399997644,
+        "warmRerankingMilliseconds": 147.61540200002491,
+        "totalSearchMilliseconds": {
+          "minimum": 12728.755340000149,
+          "median": 15208.848718999885,
+          "maximum": 26684.398437999655
+        }
+      },
+      "cases": [
+        {
+          "caseId": "case-001",
+          "category": "ambiguous_decision",
+          "controlKind": "difficult_case",
+          "planSource": "planner",
+          "plannedQueries": [
+            {
+              "type": "lex",
+              "querySha256": "92533c9d64bb232f098277ef78d557549e4a278e7dd0c93615cb0925834eeb64"
+            },
+            {
+              "type": "lex",
+              "querySha256": "b923845b0f15172457b449210ea4f78b37eac47d36785314000f1ff6f0f3e83c"
+            },
+            {
+              "type": "vec",
+              "querySha256": "5b19cb295c93019aadd3cf8fbd8a466431bc91e5dc4379004f10b07339f0b69b"
+            },
+            {
+              "type": "vec",
+              "querySha256": "133dc40d387ec900de80325e4675af80db89945ac728a1c2cca0ca47814526c4"
+            },
+            {
+              "type": "hyde",
+              "querySha256": "5b1e7f0956ea36bb36583ce36f0716fc9afe8b75ca8e7169e8ecbf5a22c3958e"
+            }
+          ],
+          "normal": {
+            "outcome": "candidate_union_miss",
+            "expectedSourceRanks": [null],
+            "highestRelevantDistractorRank": null,
+            "provenancePassed": false,
+            "listLimits": {
+              "dense": 8,
+              "lexical": 8,
+              "identifier": 8
+            },
+            "totalCandidatesExamined": 24,
+            "uniqueCandidatesAdmitted": 20,
+            "finalResultCount": 5,
+            "fusedPoolLimit": 24,
+            "rerankPoolLimit": 24,
+            "rankingMode": "hybrid",
+            "rankFusionVersion": 2,
+            "reciprocalRankConstant": 60
+          },
+          "retrievalWorkMatched": {
+            "outcome": "candidate_union_miss",
+            "expectedSourceRanks": [null],
+            "highestRelevantDistractorRank": null,
+            "provenancePassed": false,
+            "listLimits": {
+              "dense": 54,
+              "lexical": 53,
+              "identifier": 53
+            },
+            "totalCandidatesExamined": 119,
+            "uniqueCandidatesAdmitted": 108,
+            "finalResultCount": 5,
+            "fusedPoolLimit": 160,
+            "rerankPoolLimit": 160,
+            "rankingMode": "hybrid",
+            "rankFusionVersion": 2,
+            "reciprocalRankConstant": 60
+          },
+          "queryPlanned": {
+            "outcome": "candidate_union_miss",
+            "expectedSourceRanks": [null],
+            "candidateAdmissionSourceRanks": [null],
+            "candidateAdmissionVerified": false,
+            "sourceProvenance": [
+              {
+                "selectedFrom": "missing",
+                "passed": false
+              }
+            ],
+            "provenancePassed": false,
+            "listWork": [
+              {
+                "source": "dense",
+                "weight": 2,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "lexical",
+                "weight": 2,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "identifier",
+                "weight": 2,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 12
+              },
+              {
+                "source": "planned_lex",
+                "weight": 1,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "planned_lex",
+                "weight": 1,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "planned_vec",
+                "weight": 1,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "planned_vec",
+                "weight": 1,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "planned_hyde",
+                "weight": 1,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              }
+            ],
+            "totalCandidatesExamined": 152,
+            "rerankCandidatesExamined": 40,
+            "finalResultCount": 5,
+            "fusedPoolLimit": 160,
+            "rerankPoolLimit": 40,
+            "finalResultLimit": 5,
+            "rankFusionVersion": 2,
+            "reciprocalRankConstant": 60,
+            "fusionPolicy": {
+              "submittedQueryListWeight": 2,
+              "plannedQueryListWeight": 1,
+              "rankOneBonus": 0.05,
+              "rankTwoOrThreeBonus": 0.02
+            },
+            "rerankerPolicy": {
+              "version": 2,
+              "activeBranchPrior": 0.01,
+              "fusedRankBlend": [
+                {
+                  "firstRank": 1,
+                  "lastRank": 3,
+                  "retrievalWeight": 0.75,
+                  "rerankerWeight": 0.25
+                },
+                {
+                  "firstRank": 4,
+                  "lastRank": 10,
+                  "retrievalWeight": 0.6,
+                  "rerankerWeight": 0.4
+                },
+                {
+                  "firstRank": 11,
+                  "lastRank": null,
+                  "retrievalWeight": 0.4,
+                  "rerankerWeight": 0.6
+                }
+              ]
+            },
+            "rankingProviderPolicy": "live-profile-v1",
+            "candidateAdmissionBoundaryPolicy": "fused-candidate-pool-v1"
+          },
+          "planningMilliseconds": 10236.405010999646,
+          "rerankingMilliseconds": 15356.652180999983,
+          "totalSearchMilliseconds": 25743.711528000422,
+          "contribution": {
+            "newCandidateAdmission": false,
+            "rankingOnlyPromotion": false,
+            "preservedExistingSuccess": false,
+            "noImprovement": true
+          }
+        },
+        {
+          "caseId": "case-002",
+          "category": "symptom_to_mechanism",
+          "controlKind": "difficult_case",
+          "planSource": "planner",
+          "plannedQueries": [
+            {
+              "type": "lex",
+              "querySha256": "d24e2b722353da20c8f9a8942a3977ea3c02cc136ec0f299b29d66bec449847b"
+            },
+            {
+              "type": "lex",
+              "querySha256": "82c1088955860c6c8c7892d8cd4fdaf290c5f959de2d5f9fe88564c1dd5c3429"
+            },
+            {
+              "type": "vec",
+              "querySha256": "b9ea6ec927a3693f4c3afe50b42852844b7e710ed2d49c81fc1c8640f0ebcb02"
+            },
+            {
+              "type": "vec",
+              "querySha256": "d201ae6e2d583765204b0359da1e7f66387357d5d91aa0378436328cd320b60a"
+            },
+            {
+              "type": "hyde",
+              "querySha256": "44197e7f184e2414899dc7b354e98837fbc134055d85cec6d6cebbb8a8fcfc96"
+            }
+          ],
+          "normal": {
+            "outcome": "candidate_union_miss",
+            "expectedSourceRanks": [null],
+            "highestRelevantDistractorRank": null,
+            "provenancePassed": false,
+            "listLimits": {
+              "dense": 8,
+              "lexical": 8,
+              "identifier": 8
+            },
+            "totalCandidatesExamined": 24,
+            "uniqueCandidatesAdmitted": 19,
+            "finalResultCount": 5,
+            "fusedPoolLimit": 24,
+            "rerankPoolLimit": 24,
+            "rankingMode": "hybrid",
+            "rankFusionVersion": 2,
+            "reciprocalRankConstant": 60
+          },
+          "retrievalWorkMatched": {
+            "outcome": "final_rank_miss",
+            "expectedSourceRanks": [45],
+            "highestRelevantDistractorRank": null,
+            "provenancePassed": true,
+            "listLimits": {
+              "dense": 54,
+              "lexical": 53,
+              "identifier": 53
+            },
+            "totalCandidatesExamined": 145,
+            "uniqueCandidatesAdmitted": 121,
+            "finalResultCount": 5,
+            "fusedPoolLimit": 160,
+            "rerankPoolLimit": 160,
+            "rankingMode": "hybrid",
+            "rankFusionVersion": 2,
+            "reciprocalRankConstant": 60
+          },
+          "queryPlanned": {
+            "outcome": "candidate_union_miss",
+            "expectedSourceRanks": [null],
+            "candidateAdmissionSourceRanks": [null],
+            "candidateAdmissionVerified": false,
+            "sourceProvenance": [
+              {
+                "selectedFrom": "missing",
+                "passed": false
+              }
+            ],
+            "provenancePassed": false,
+            "listWork": [
+              {
+                "source": "dense",
+                "weight": 2,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "lexical",
+                "weight": 2,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "identifier",
+                "weight": 2,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "planned_lex",
+                "weight": 1,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "planned_lex",
+                "weight": 1,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "planned_vec",
+                "weight": 1,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "planned_vec",
+                "weight": 1,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "planned_hyde",
+                "weight": 1,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              }
+            ],
+            "totalCandidatesExamined": 160,
+            "rerankCandidatesExamined": 40,
+            "finalResultCount": 5,
+            "fusedPoolLimit": 160,
+            "rerankPoolLimit": 40,
+            "finalResultLimit": 5,
+            "rankFusionVersion": 2,
+            "reciprocalRankConstant": 60,
+            "fusionPolicy": {
+              "submittedQueryListWeight": 2,
+              "plannedQueryListWeight": 1,
+              "rankOneBonus": 0.05,
+              "rankTwoOrThreeBonus": 0.02
+            },
+            "rerankerPolicy": {
+              "version": 2,
+              "activeBranchPrior": 0.01,
+              "fusedRankBlend": [
+                {
+                  "firstRank": 1,
+                  "lastRank": 3,
+                  "retrievalWeight": 0.75,
+                  "rerankerWeight": 0.25
+                },
+                {
+                  "firstRank": 4,
+                  "lastRank": 10,
+                  "retrievalWeight": 0.6,
+                  "rerankerWeight": 0.4
+                },
+                {
+                  "firstRank": 11,
+                  "lastRank": null,
+                  "retrievalWeight": 0.4,
+                  "rerankerWeight": 0.6
+                }
+              ]
+            },
+            "rankingProviderPolicy": "live-profile-v1",
+            "candidateAdmissionBoundaryPolicy": "fused-candidate-pool-v1"
+          },
+          "planningMilliseconds": 2538.135048000142,
+          "rerankingMilliseconds": 10039.260575000197,
+          "totalSearchMilliseconds": 12728.755340000149,
+          "contribution": {
+            "newCandidateAdmission": false,
+            "rankingOnlyPromotion": false,
+            "preservedExistingSuccess": false,
+            "noImprovement": true
+          }
+        },
+        {
+          "caseId": "case-003",
+          "category": "vocabulary_drift",
+          "controlKind": "successful_baseline_control",
+          "planSource": "planner",
+          "plannedQueries": [
+            {
+              "type": "lex",
+              "querySha256": "af7a032bfa3ae764b14c8fde1cf2a9724b2fdcf9c858655c2e06db3cc753b8f1"
+            },
+            {
+              "type": "lex",
+              "querySha256": "69e02f58f9bd232519442d75dbea7a6f7b6a22b4c6b6f17fc49b62a0f5f6f154"
+            },
+            {
+              "type": "vec",
+              "querySha256": "af7a032bfa3ae764b14c8fde1cf2a9724b2fdcf9c858655c2e06db3cc753b8f1"
+            },
+            {
+              "type": "vec",
+              "querySha256": "3ef026bb65c70d585fef0da001dd68098cd80afa73193dc212f9aed5b9dd5812"
+            },
+            {
+              "type": "hyde",
+              "querySha256": "a17c6af15d33e25c853b5217811c297569f9733f0973eebc91c2384754d5eb2b"
+            }
+          ],
+          "normal": {
+            "outcome": "final_rank_miss",
+            "expectedSourceRanks": [8],
+            "highestRelevantDistractorRank": null,
+            "provenancePassed": true,
+            "listLimits": {
+              "dense": 8,
+              "lexical": 8,
+              "identifier": 8
+            },
+            "totalCandidatesExamined": 18,
+            "uniqueCandidatesAdmitted": 13,
+            "finalResultCount": 5,
+            "fusedPoolLimit": 24,
+            "rerankPoolLimit": 24,
+            "rankingMode": "hybrid",
+            "rankFusionVersion": 2,
+            "reciprocalRankConstant": 60
+          },
+          "retrievalWorkMatched": {
+            "outcome": "final_rank_miss",
+            "expectedSourceRanks": [6],
             "highestRelevantDistractorRank": null,
             "provenancePassed": true,
             "listLimits": {
@@ -1439,906 +2336,9 @@
             "rankingProviderPolicy": "live-profile-v1",
             "candidateAdmissionBoundaryPolicy": "fused-candidate-pool-v1"
           },
-          "planningMilliseconds": 2921.1662589999614,
-          "rerankingMilliseconds": 53202.810061999946,
-          "totalSearchMilliseconds": 56171.33534899994,
-          "contribution": {
-            "newCandidateAdmission": false,
-            "rankingOnlyPromotion": false,
-            "preservedExistingSuccess": true,
-            "noImprovement": false
-          }
-        },
-        {
-          "caseId": "case-008",
-          "category": "exact_identifier",
-          "controlKind": "successful_baseline_control",
-          "planSource": "planner",
-          "plannedQueries": [
-            {
-              "type": "lex",
-              "querySha256": "9ecbd0355faac59618d4b7d02e5443e0b0f132e72a6c7d195ca12c6360d7beed"
-            },
-            {
-              "type": "lex",
-              "querySha256": "edfe27841af8397013170d55ec65292b13e5a0aa4e9033e16bdfb76837e21d00"
-            },
-            {
-              "type": "vec",
-              "querySha256": "9ecbd0355faac59618d4b7d02e5443e0b0f132e72a6c7d195ca12c6360d7beed"
-            },
-            {
-              "type": "vec",
-              "querySha256": "edfe27841af8397013170d55ec65292b13e5a0aa4e9033e16bdfb76837e21d00"
-            },
-            {
-              "type": "hyde",
-              "querySha256": "ad00581bbbc23c6ca0382cf7b01cd33f5326354f74eead71c45d2a001395098b"
-            }
-          ],
-          "normal": {
-            "outcome": "success",
-            "expectedSourceRanks": [1],
-            "highestRelevantDistractorRank": null,
-            "provenancePassed": true,
-            "listLimits": {
-              "dense": 8,
-              "lexical": 8,
-              "identifier": 8
-            },
-            "totalCandidatesExamined": 24,
-            "uniqueCandidatesAdmitted": 16,
-            "finalResultCount": 5,
-            "fusedPoolLimit": 24,
-            "rerankPoolLimit": 24,
-            "rankingMode": "hybrid",
-            "rankFusionVersion": 2,
-            "reciprocalRankConstant": 60
-          },
-          "retrievalWorkMatched": {
-            "outcome": "success",
-            "expectedSourceRanks": [1],
-            "highestRelevantDistractorRank": null,
-            "provenancePassed": true,
-            "listLimits": {
-              "dense": 54,
-              "lexical": 53,
-              "identifier": 53
-            },
-            "totalCandidatesExamined": 143,
-            "uniqueCandidatesAdmitted": 107,
-            "finalResultCount": 5,
-            "fusedPoolLimit": 160,
-            "rerankPoolLimit": 160,
-            "rankingMode": "hybrid",
-            "rankFusionVersion": 2,
-            "reciprocalRankConstant": 60
-          },
-          "queryPlanned": {
-            "outcome": "success",
-            "expectedSourceRanks": [1],
-            "candidateAdmissionSourceRanks": [1],
-            "candidateAdmissionVerified": true,
-            "sourceProvenance": [
-              {
-                "selectedFrom": "ranked_result",
-                "passed": true
-              }
-            ],
-            "provenancePassed": true,
-            "listWork": [
-              {
-                "source": "dense",
-                "weight": 2,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "lexical",
-                "weight": 2,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "identifier",
-                "weight": 2,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "planned_lex",
-                "weight": 1,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "planned_lex",
-                "weight": 1,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "planned_vec",
-                "weight": 1,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "planned_vec",
-                "weight": 1,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "planned_hyde",
-                "weight": 1,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              }
-            ],
-            "totalCandidatesExamined": 160,
-            "rerankCandidatesExamined": 40,
-            "finalResultCount": 5,
-            "fusedPoolLimit": 160,
-            "rerankPoolLimit": 40,
-            "finalResultLimit": 5,
-            "rankFusionVersion": 2,
-            "reciprocalRankConstant": 60,
-            "fusionPolicy": {
-              "submittedQueryListWeight": 2,
-              "plannedQueryListWeight": 1,
-              "rankOneBonus": 0.05,
-              "rankTwoOrThreeBonus": 0.02
-            },
-            "rerankerPolicy": {
-              "version": 2,
-              "activeBranchPrior": 0.01,
-              "fusedRankBlend": [
-                {
-                  "firstRank": 1,
-                  "lastRank": 3,
-                  "retrievalWeight": 0.75,
-                  "rerankerWeight": 0.25
-                },
-                {
-                  "firstRank": 4,
-                  "lastRank": 10,
-                  "retrievalWeight": 0.6,
-                  "rerankerWeight": 0.4
-                },
-                {
-                  "firstRank": 11,
-                  "lastRank": null,
-                  "retrievalWeight": 0.4,
-                  "rerankerWeight": 0.6
-                }
-              ]
-            },
-            "rankingProviderPolicy": "live-profile-v1",
-            "candidateAdmissionBoundaryPolicy": "fused-candidate-pool-v1"
-          },
-          "planningMilliseconds": 6935.759375000023,
-          "rerankingMilliseconds": 66703.70657100005,
-          "totalSearchMilliseconds": 73681.70596499986,
-          "contribution": {
-            "newCandidateAdmission": false,
-            "rankingOnlyPromotion": false,
-            "preservedExistingSuccess": true,
-            "noImprovement": false
-          }
-        }
-      ],
-      "quality": {
-        "newCandidateAdmissionCount": 1,
-        "rankingOnlyPromotionCount": 1,
-        "preservedExistingSuccessCount": 2,
-        "plannerFallbackCount": 0
-      }
-    },
-    {
-      "version": 1,
-      "profileRun": {
-        "id": "embedded-vulkan",
-        "backend": "embedded",
-        "deviceClass": "accelerated",
-        "device": "vulkan",
-        "backendVersion": "node-llama-cpp@3.18.1 / llama.cpp b8390"
-      },
-      "corpus": {
-        "id": "query-planned-real-recall-v1",
-        "privateManifestSha256": "4b3fb8573bcd52a26d66a2f8e60f5bbba57b098530791b23f55505d3e9a1187e",
-        "snapshotCount": 8,
-        "snapshotSha256": [
-          "df69bfa20acfb033175717f9070eb761e405ed9d9f8a49b011e6ddad92db2b35",
-          "880f5ae1cfcdf9d94b537cdf6c76e0e2581e9d7aa23b673947905149e51f5653",
-          "cc2b50fd0b09b76fe9260cd163df2fe004af2b3c41c3a568ad9bc75ef743579a",
-          "9f5f40459c3b3e593dcdf407ccb54c05c501b4d512f95c53e6285e23b84325b3",
-          "fc8cdf518cb6abe5f84a7b4a7474faf5cf886f2e4a479bcfbf9e4fac8703e5b7",
-          "1e7b95d66176ece794135d31f3a406a2d76a5324cc0bceca302fce9feb66b330",
-          "068100f8111d17867b2e1ef656ed11a300e14b62007a52225fd74b617bbdc54b",
-          "f5d53b87e3ee71085d7b075b5d0195b090a752a7374c4ff98f3e711820b2b6dd"
-        ],
-        "indexedDocumentCount": 44521,
-        "caseCount": 8
-      },
-      "profileIdentity": {
-        "embeddingPolicy": "deterministic-token-hash-v1",
-        "embeddingDimensions": 256,
-        "evaluationConfiguration": {
-          "version": 1,
-          "effectiveConfigurationIdentity": "live-query-planned-effective-evaluation-config-v1:30a786261e7b53d3796928c4485897990f2faefe56030379b35307e15d522863",
-          "rerankerConformanceFixtureIdentity": "live-query-planned-reranker-conformance-fixture-v1:6d78e2775446350ffc2606be15392ccdc2eb66137b249a40bcffa9ddb769cf3a"
-        },
-        "software": {
-          "repositoryCommit": "f4f7227dcf70fb014ceebdb9dd5251d61806a729",
-          "backendVersion": "node-llama-cpp@3.18.1 / llama.cpp b8390",
-          "nodeVersion": "v24.16.0",
-          "platform": "linux",
-          "architecture": "x64"
-        },
-        "queryPlanning": {
-          "profileId": "qmd-query-expansion-1.7b-q4-k-m-v1",
-          "model": "qmd-query-expansion-1.7B-q4_k_m",
-          "promptPolicy": "qmd-query-expansion-no-think-v1",
-          "grammarVersion": "qmd-bounded-query-plan-v2",
-          "executionIdentity": {
-            "adapterId": "node-llama-cpp-qmd-query-planning-v1",
-            "adapterVersion": "1",
-            "adapterConfigurationIdentity": "node-llama-cpp-qmd-query-planning-config-v1:9ba6c579991594a65b0325bf003c7537f026ba1b21aca8b888d1f6cd97d269f7",
-            "backend": "embedded",
-            "cacheIdentity": "recall-query-planning-execution-v1:8fd436e3f671da780f38cae886c464f6dbb991c04c3fd47301065ab5a5b3d64e",
-            "modelProfileId": "qmd-query-expansion-1.7b-q4-k-m-v1",
-            "modelProfileIdentity": "recall-query-planning-model-profile-v1:b2bfd3f93c8ff05d49dd357b2bb0ecf3f8e472ad214108120922609804a7c6d6",
-            "promptPolicy": "qmd-query-expansion-no-think-v1",
-            "grammarVersion": "qmd-bounded-query-plan-v2",
-            "requestTimeoutMilliseconds": 300000,
-            "computeBackend": "vulkan",
-            "deviceNames": ["AMD Radeon 780M Graphics (RADV PHOENIX)"],
-            "devicePolicy": "vulkan",
-            "fallbackFromComputeBackend": null,
-            "contextSize": 2048,
-            "threads": null,
-            "nodeLlamaCppVersion": "3.18.1",
-            "idleTimeoutMilliseconds": 300000,
-            "physicalDeviceIdentity": ["amd radeon 780m graphics (radv phoenix)"],
-            "probedComputeBackends": []
-          }
-        },
-        "reranking": {
-          "profileId": "qwen3-reranker-0.6b-q8-0-v1",
-          "model": "qwen3-reranker-0.6b-q8_0",
-          "scorePolicy": "llama-cpp-qwen3-rank-probability-v1",
-          "executionIdentity": {
-            "adapterId": "node-llama-cpp-qwen-reranking-logit-recovery-v1",
-            "adapterVersion": "1",
-            "adapterConfigurationIdentity": "node-llama-cpp-qwen-reranking-config-v1:57d960e58cc6a1794e6365adaade3a827a1a7428668cdf1bb49ea7d6b48cac17",
-            "backend": "embedded",
-            "cacheIdentity": "recall-reranking-execution-v1:6a25614ce85904070227c37e56442e3f2c84ec9cd8b3253c426e743609fb5dc5",
-            "modelProfileId": "qwen3-reranker-0.6b-q8-0-v1",
-            "modelProfileIdentity": "recall-reranking-model-profile-v1:c7d9d2da2c03edd04fc1468cb467f1c087a4d181d35cfb571266c621166d2025",
-            "requestTimeoutMilliseconds": 300000,
-            "computeBackend": "vulkan",
-            "deviceNames": ["AMD Radeon 780M Graphics (RADV PHOENIX)"],
-            "devicePolicy": "vulkan",
-            "fallbackFromComputeBackend": null,
-            "contextSize": 4096,
-            "threads": null,
-            "nodeLlamaCppVersion": "3.18.1",
-            "parallelism": 1,
-            "idleTimeoutMilliseconds": 300000,
-            "physicalDeviceIdentity": ["amd radeon 780m graphics (radv phoenix)"],
-            "probedComputeBackends": []
-          }
-        }
-      },
-      "capabilityConformance": {
-        "queryPlanning": {
-          "profileId": "qmd-query-expansion-1.7b-q4-k-m-v1",
-          "model": "qmd-query-expansion-1.7B-q4_k_m",
-          "promptPolicy": "qmd-query-expansion-no-think-v1",
-          "grammarVersion": "qmd-bounded-query-plan-v2",
-          "executionIdentity": {
-            "adapterId": "node-llama-cpp-qmd-query-planning-v1",
-            "adapterVersion": "1",
-            "adapterConfigurationIdentity": "node-llama-cpp-qmd-query-planning-config-v1:9ba6c579991594a65b0325bf003c7537f026ba1b21aca8b888d1f6cd97d269f7",
-            "backend": "embedded",
-            "cacheIdentity": "recall-query-planning-execution-v1:8fd436e3f671da780f38cae886c464f6dbb991c04c3fd47301065ab5a5b3d64e",
-            "modelProfileId": "qmd-query-expansion-1.7b-q4-k-m-v1",
-            "modelProfileIdentity": "recall-query-planning-model-profile-v1:b2bfd3f93c8ff05d49dd357b2bb0ecf3f8e472ad214108120922609804a7c6d6",
-            "promptPolicy": "qmd-query-expansion-no-think-v1",
-            "grammarVersion": "qmd-bounded-query-plan-v2",
-            "requestTimeoutMilliseconds": 300000,
-            "computeBackend": "vulkan",
-            "deviceNames": ["AMD Radeon 780M Graphics (RADV PHOENIX)"],
-            "devicePolicy": "vulkan",
-            "fallbackFromComputeBackend": null,
-            "contextSize": 2048,
-            "threads": null,
-            "nodeLlamaCppVersion": "3.18.1",
-            "idleTimeoutMilliseconds": 300000,
-            "physicalDeviceIdentity": ["amd radeon 780m graphics (radv phoenix)"],
-            "probedComputeBackends": []
-          },
-          "measurement": {
-            "plannedQueryCount": 3,
-            "lexQueryCount": 1,
-            "vecQueryCount": 1,
-            "hydeQueryCount": 1,
-            "planningMilliseconds": 2449.3280790001154
-          }
-        },
-        "reranking": {
-          "profileId": "qwen3-reranker-0.6b-q8-0-v1",
-          "model": "qwen3-reranker-0.6b-q8_0",
-          "scorePolicy": "llama-cpp-qwen3-rank-probability-v1",
-          "executionIdentity": {
-            "adapterId": "node-llama-cpp-qwen-reranking-logit-recovery-v1",
-            "adapterVersion": "1",
-            "adapterConfigurationIdentity": "node-llama-cpp-qwen-reranking-config-v1:57d960e58cc6a1794e6365adaade3a827a1a7428668cdf1bb49ea7d6b48cac17",
-            "backend": "embedded",
-            "cacheIdentity": "recall-reranking-execution-v1:6a25614ce85904070227c37e56442e3f2c84ec9cd8b3253c426e743609fb5dc5",
-            "modelProfileId": "qwen3-reranker-0.6b-q8-0-v1",
-            "modelProfileIdentity": "recall-reranking-model-profile-v1:c7d9d2da2c03edd04fc1468cb467f1c087a4d181d35cfb571266c621166d2025",
-            "requestTimeoutMilliseconds": 300000,
-            "computeBackend": "vulkan",
-            "deviceNames": ["AMD Radeon 780M Graphics (RADV PHOENIX)"],
-            "devicePolicy": "vulkan",
-            "fallbackFromComputeBackend": null,
-            "contextSize": 4096,
-            "threads": null,
-            "nodeLlamaCppVersion": "3.18.1",
-            "parallelism": 1,
-            "idleTimeoutMilliseconds": 300000,
-            "physicalDeviceIdentity": ["amd radeon 780m graphics (radv phoenix)"],
-            "probedComputeBackends": []
-          },
-          "measurement": {
-            "queryCount": 1,
-            "documentCount": 2,
-            "rerankingMilliseconds": 155.36243900004774
-          }
-        }
-      },
-      "latency": {
-        "coldPlanningMilliseconds": 2449.3280790001154,
-        "warmPlanningMilliseconds": 1972.6197619999293,
-        "warmPlanningSucceeded": true,
-        "coldRerankingMilliseconds": 155.36243900004774,
-        "warmRerankingMilliseconds": 145.81492999987677,
-        "totalSearchMilliseconds": {
-          "minimum": 11991.28845699993,
-          "median": 13906.39182099991,
-          "maximum": 26931.527996000135
-        }
-      },
-      "cases": [
-        {
-          "caseId": "case-001",
-          "category": "ambiguous_decision",
-          "controlKind": "difficult_case",
-          "planSource": "planner",
-          "plannedQueries": [
-            {
-              "type": "lex",
-              "querySha256": "36f8470cfdd99281364f99ddc351a5eed790a9b75ddbdb1ede240aa08be0db32"
-            },
-            {
-              "type": "lex",
-              "querySha256": "92533c9d64bb232f098277ef78d557549e4a278e7dd0c93615cb0925834eeb64"
-            },
-            {
-              "type": "vec",
-              "querySha256": "93c4a05adb80a75e38c6fffaf99793554bb4d64658e479e0be851d95963841d8"
-            },
-            {
-              "type": "vec",
-              "querySha256": "5d90f95d720798704a1efad254272ada8dd6f14e04d95cefdd250303e6a03c13"
-            },
-            {
-              "type": "hyde",
-              "querySha256": "af9b7dc808bcc68093e4f19417631b662a95aaaf26136aced38972198bb59644"
-            }
-          ],
-          "normal": {
-            "outcome": "candidate_union_miss",
-            "expectedSourceRanks": [null],
-            "highestRelevantDistractorRank": null,
-            "provenancePassed": false,
-            "listLimits": {
-              "dense": 8,
-              "lexical": 8,
-              "identifier": 8
-            },
-            "totalCandidatesExamined": 24,
-            "uniqueCandidatesAdmitted": 20,
-            "finalResultCount": 5,
-            "fusedPoolLimit": 24,
-            "rerankPoolLimit": 24,
-            "rankingMode": "hybrid",
-            "rankFusionVersion": 2,
-            "reciprocalRankConstant": 60
-          },
-          "retrievalWorkMatched": {
-            "outcome": "candidate_union_miss",
-            "expectedSourceRanks": [null],
-            "highestRelevantDistractorRank": null,
-            "provenancePassed": false,
-            "listLimits": {
-              "dense": 54,
-              "lexical": 53,
-              "identifier": 53
-            },
-            "totalCandidatesExamined": 119,
-            "uniqueCandidatesAdmitted": 108,
-            "finalResultCount": 5,
-            "fusedPoolLimit": 160,
-            "rerankPoolLimit": 160,
-            "rankingMode": "hybrid",
-            "rankFusionVersion": 2,
-            "reciprocalRankConstant": 60
-          },
-          "queryPlanned": {
-            "outcome": "candidate_union_miss",
-            "expectedSourceRanks": [null],
-            "candidateAdmissionSourceRanks": [null],
-            "candidateAdmissionVerified": false,
-            "sourceProvenance": [
-              {
-                "selectedFrom": "missing",
-                "passed": false
-              }
-            ],
-            "provenancePassed": false,
-            "listWork": [
-              {
-                "source": "dense",
-                "weight": 2,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "lexical",
-                "weight": 2,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "identifier",
-                "weight": 2,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 12
-              },
-              {
-                "source": "planned_lex",
-                "weight": 1,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "planned_lex",
-                "weight": 1,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "planned_vec",
-                "weight": 1,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "planned_vec",
-                "weight": 1,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "planned_hyde",
-                "weight": 1,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              }
-            ],
-            "totalCandidatesExamined": 152,
-            "rerankCandidatesExamined": 40,
-            "finalResultCount": 5,
-            "fusedPoolLimit": 160,
-            "rerankPoolLimit": 40,
-            "finalResultLimit": 5,
-            "rankFusionVersion": 2,
-            "reciprocalRankConstant": 60,
-            "fusionPolicy": {
-              "submittedQueryListWeight": 2,
-              "plannedQueryListWeight": 1,
-              "rankOneBonus": 0.05,
-              "rankTwoOrThreeBonus": 0.02
-            },
-            "rerankerPolicy": {
-              "version": 2,
-              "activeBranchPrior": 0.01,
-              "fusedRankBlend": [
-                {
-                  "firstRank": 1,
-                  "lastRank": 3,
-                  "retrievalWeight": 0.75,
-                  "rerankerWeight": 0.25
-                },
-                {
-                  "firstRank": 4,
-                  "lastRank": 10,
-                  "retrievalWeight": 0.6,
-                  "rerankerWeight": 0.4
-                },
-                {
-                  "firstRank": 11,
-                  "lastRank": null,
-                  "retrievalWeight": 0.4,
-                  "rerankerWeight": 0.6
-                }
-              ]
-            },
-            "rankingProviderPolicy": "live-profile-v1",
-            "candidateAdmissionBoundaryPolicy": "fused-candidate-pool-v1"
-          },
-          "planningMilliseconds": 10982.598192000063,
-          "rerankingMilliseconds": 15872.14120199997,
-          "totalSearchMilliseconds": 26931.527996000135,
-          "contribution": {
-            "newCandidateAdmission": false,
-            "rankingOnlyPromotion": false,
-            "preservedExistingSuccess": false,
-            "noImprovement": true
-          }
-        },
-        {
-          "caseId": "case-002",
-          "category": "symptom_to_mechanism",
-          "controlKind": "difficult_case",
-          "planSource": "planner",
-          "plannedQueries": [
-            {
-              "type": "lex",
-              "querySha256": "3ee40c8581902c457ec248d765edee5bb73bb3b206ddad917374b3d30fcf9151"
-            },
-            {
-              "type": "lex",
-              "querySha256": "3e3291a857cb32e944df6f6d9abde243153705f61798f7d56e8afbfd4b211ce3"
-            },
-            {
-              "type": "vec",
-              "querySha256": "9e3ba329ec01a1f91121a73fe0eed061d9497f09f1588cbb0f3e9b3d87025704"
-            },
-            {
-              "type": "vec",
-              "querySha256": "2f131a746255827b5bab7789cfbafde7ee6e226ff66c94c7a595737c6068cb03"
-            },
-            {
-              "type": "hyde",
-              "querySha256": "f28b4a72d47166e12770f75a2e0bd917291fc75c65a9c57733c4f5dc91ef809d"
-            }
-          ],
-          "normal": {
-            "outcome": "candidate_union_miss",
-            "expectedSourceRanks": [null],
-            "highestRelevantDistractorRank": null,
-            "provenancePassed": false,
-            "listLimits": {
-              "dense": 8,
-              "lexical": 8,
-              "identifier": 8
-            },
-            "totalCandidatesExamined": 24,
-            "uniqueCandidatesAdmitted": 19,
-            "finalResultCount": 5,
-            "fusedPoolLimit": 24,
-            "rerankPoolLimit": 24,
-            "rankingMode": "hybrid",
-            "rankFusionVersion": 2,
-            "reciprocalRankConstant": 60
-          },
-          "retrievalWorkMatched": {
-            "outcome": "final_rank_miss",
-            "expectedSourceRanks": [45],
-            "highestRelevantDistractorRank": null,
-            "provenancePassed": true,
-            "listLimits": {
-              "dense": 54,
-              "lexical": 53,
-              "identifier": 53
-            },
-            "totalCandidatesExamined": 145,
-            "uniqueCandidatesAdmitted": 121,
-            "finalResultCount": 5,
-            "fusedPoolLimit": 160,
-            "rerankPoolLimit": 160,
-            "rankingMode": "hybrid",
-            "rankFusionVersion": 2,
-            "reciprocalRankConstant": 60
-          },
-          "queryPlanned": {
-            "outcome": "candidate_union_miss",
-            "expectedSourceRanks": [null],
-            "candidateAdmissionSourceRanks": [null],
-            "candidateAdmissionVerified": false,
-            "sourceProvenance": [
-              {
-                "selectedFrom": "missing",
-                "passed": false
-              }
-            ],
-            "provenancePassed": false,
-            "listWork": [
-              {
-                "source": "dense",
-                "weight": 2,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "lexical",
-                "weight": 2,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "identifier",
-                "weight": 2,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "planned_lex",
-                "weight": 1,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "planned_lex",
-                "weight": 1,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "planned_vec",
-                "weight": 1,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "planned_vec",
-                "weight": 1,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "planned_hyde",
-                "weight": 1,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              }
-            ],
-            "totalCandidatesExamined": 160,
-            "rerankCandidatesExamined": 40,
-            "finalResultCount": 5,
-            "fusedPoolLimit": 160,
-            "rerankPoolLimit": 40,
-            "finalResultLimit": 5,
-            "rankFusionVersion": 2,
-            "reciprocalRankConstant": 60,
-            "fusionPolicy": {
-              "submittedQueryListWeight": 2,
-              "plannedQueryListWeight": 1,
-              "rankOneBonus": 0.05,
-              "rankTwoOrThreeBonus": 0.02
-            },
-            "rerankerPolicy": {
-              "version": 2,
-              "activeBranchPrior": 0.01,
-              "fusedRankBlend": [
-                {
-                  "firstRank": 1,
-                  "lastRank": 3,
-                  "retrievalWeight": 0.75,
-                  "rerankerWeight": 0.25
-                },
-                {
-                  "firstRank": 4,
-                  "lastRank": 10,
-                  "retrievalWeight": 0.6,
-                  "rerankerWeight": 0.4
-                },
-                {
-                  "firstRank": 11,
-                  "lastRank": null,
-                  "retrievalWeight": 0.4,
-                  "rerankerWeight": 0.6
-                }
-              ]
-            },
-            "rankingProviderPolicy": "live-profile-v1",
-            "candidateAdmissionBoundaryPolicy": "fused-candidate-pool-v1"
-          },
-          "planningMilliseconds": 2471.4637740000617,
-          "rerankingMilliseconds": 9476.042456999887,
-          "totalSearchMilliseconds": 11991.28845699993,
-          "contribution": {
-            "newCandidateAdmission": false,
-            "rankingOnlyPromotion": false,
-            "preservedExistingSuccess": false,
-            "noImprovement": true
-          }
-        },
-        {
-          "caseId": "case-003",
-          "category": "vocabulary_drift",
-          "controlKind": "successful_baseline_control",
-          "planSource": "planner",
-          "plannedQueries": [
-            {
-              "type": "lex",
-              "querySha256": "af7a032bfa3ae764b14c8fde1cf2a9724b2fdcf9c858655c2e06db3cc753b8f1"
-            },
-            {
-              "type": "lex",
-              "querySha256": "69e02f58f9bd232519442d75dbea7a6f7b6a22b4c6b6f17fc49b62a0f5f6f154"
-            },
-            {
-              "type": "vec",
-              "querySha256": "af7a032bfa3ae764b14c8fde1cf2a9724b2fdcf9c858655c2e06db3cc753b8f1"
-            },
-            {
-              "type": "vec",
-              "querySha256": "3ef026bb65c70d585fef0da001dd68098cd80afa73193dc212f9aed5b9dd5812"
-            },
-            {
-              "type": "hyde",
-              "querySha256": "a86bf5588f7900baff5b613b410ca420a88f0b4a6d85b092683ac9da5311edfc"
-            }
-          ],
-          "normal": {
-            "outcome": "final_rank_miss",
-            "expectedSourceRanks": [9],
-            "highestRelevantDistractorRank": null,
-            "provenancePassed": true,
-            "listLimits": {
-              "dense": 8,
-              "lexical": 8,
-              "identifier": 8
-            },
-            "totalCandidatesExamined": 18,
-            "uniqueCandidatesAdmitted": 13,
-            "finalResultCount": 5,
-            "fusedPoolLimit": 24,
-            "rerankPoolLimit": 24,
-            "rankingMode": "hybrid",
-            "rankFusionVersion": 2,
-            "reciprocalRankConstant": 60
-          },
-          "retrievalWorkMatched": {
-            "outcome": "final_rank_miss",
-            "expectedSourceRanks": [6],
-            "highestRelevantDistractorRank": null,
-            "provenancePassed": true,
-            "listLimits": {
-              "dense": 54,
-              "lexical": 53,
-              "identifier": 53
-            },
-            "totalCandidatesExamined": 109,
-            "uniqueCandidatesAdmitted": 96,
-            "finalResultCount": 5,
-            "fusedPoolLimit": 160,
-            "rerankPoolLimit": 160,
-            "rankingMode": "hybrid",
-            "rankFusionVersion": 2,
-            "reciprocalRankConstant": 60
-          },
-          "queryPlanned": {
-            "outcome": "success",
-            "expectedSourceRanks": [3],
-            "candidateAdmissionSourceRanks": [20],
-            "candidateAdmissionVerified": true,
-            "sourceProvenance": [
-              {
-                "selectedFrom": "ranked_result",
-                "passed": true
-              }
-            ],
-            "provenancePassed": true,
-            "listWork": [
-              {
-                "source": "dense",
-                "weight": 2,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "lexical",
-                "weight": 2,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "identifier",
-                "weight": 2,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 2
-              },
-              {
-                "source": "planned_lex",
-                "weight": 1,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "planned_lex",
-                "weight": 1,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "planned_vec",
-                "weight": 1,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "planned_vec",
-                "weight": 1,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "planned_hyde",
-                "weight": 1,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              }
-            ],
-            "totalCandidatesExamined": 142,
-            "rerankCandidatesExamined": 40,
-            "finalResultCount": 5,
-            "fusedPoolLimit": 160,
-            "rerankPoolLimit": 40,
-            "finalResultLimit": 5,
-            "rankFusionVersion": 2,
-            "reciprocalRankConstant": 60,
-            "fusionPolicy": {
-              "submittedQueryListWeight": 2,
-              "plannedQueryListWeight": 1,
-              "rankOneBonus": 0.05,
-              "rankTwoOrThreeBonus": 0.02
-            },
-            "rerankerPolicy": {
-              "version": 2,
-              "activeBranchPrior": 0.01,
-              "fusedRankBlend": [
-                {
-                  "firstRank": 1,
-                  "lastRank": 3,
-                  "retrievalWeight": 0.75,
-                  "rerankerWeight": 0.25
-                },
-                {
-                  "firstRank": 4,
-                  "lastRank": 10,
-                  "retrievalWeight": 0.6,
-                  "rerankerWeight": 0.4
-                },
-                {
-                  "firstRank": 11,
-                  "lastRank": null,
-                  "retrievalWeight": 0.4,
-                  "rerankerWeight": 0.6
-                }
-              ]
-            },
-            "rankingProviderPolicy": "live-profile-v1",
-            "candidateAdmissionBoundaryPolicy": "fused-candidate-pool-v1"
-          },
-          "planningMilliseconds": 3682.588333999971,
-          "rerankingMilliseconds": 9538.00001999992,
-          "totalSearchMilliseconds": 13268.471132999985,
+          "planningMilliseconds": 3188.0190719999373,
+          "rerankingMilliseconds": 9708.968520000111,
+          "totalSearchMilliseconds": 13027.236320000142,
           "contribution": {
             "newCandidateAdmission": false,
             "rankingOnlyPromotion": true,
@@ -2354,23 +2354,23 @@
           "plannedQueries": [
             {
               "type": "lex",
-              "querySha256": "330e8694d7d55bd23ace53113bf84fee84d31612f9dd875a29770547c394b6cb"
+              "querySha256": "b53e3fc70fb894e86e8c37bba88fb9765d90c0d62a544d9c59d73a3b0b486ed0"
             },
             {
               "type": "lex",
-              "querySha256": "2134d2b6228f9fce80e503b2e2074212fffb67a406ed69cf010986d6dcca9244"
+              "querySha256": "910d1cbdc89a2704be751853e179d5dc1a289bd92a269bbefee1c7482bcaec59"
             },
             {
               "type": "vec",
-              "querySha256": "71549f8fd1bbd72b7dfde4e7407febaf7e06dd77369d1ecfa651606147181e3b"
+              "querySha256": "1fd68c817a710df68f0bff9d3bfb867c721f98f83e7cb14e4c8eaf6c7e130d2e"
             },
             {
               "type": "vec",
-              "querySha256": "1c9d647726fdf52aec8b9ddf2673a6fb433a78e74d6dae70f98b4fb4b733c566"
+              "querySha256": "910d1cbdc89a2704be751853e179d5dc1a289bd92a269bbefee1c7482bcaec59"
             },
             {
               "type": "hyde",
-              "querySha256": "50e6684e4f88204a17a7de910403c8555e4fa4460d4282b4fe6e23b863c3c924"
+              "querySha256": "eb45f70bc234a34fa3296fd17f3a29fcaf443835ac9efa24588a7577dd71e37f"
             }
           ],
           "normal": {
@@ -2514,9 +2514,9 @@
             "rankingProviderPolicy": "live-profile-v1",
             "candidateAdmissionBoundaryPolicy": "fused-candidate-pool-v1"
           },
-          "planningMilliseconds": 3158.1880099999253,
-          "rerankingMilliseconds": 22051.401922000106,
-          "totalSearchMilliseconds": 25273.048684000038,
+          "planningMilliseconds": 5588.7010840000585,
+          "rerankingMilliseconds": 20950.380495000165,
+          "totalSearchMilliseconds": 26684.398437999655,
           "contribution": {
             "newCandidateAdmission": false,
             "rankingOnlyPromotion": false,
@@ -2532,23 +2532,15 @@
           "plannedQueries": [
             {
               "type": "lex",
-              "querySha256": "c6fbc615aaa48e48c0384106b476165f6c90779d0f77b55dc5c0f47b5bcfe1ab"
-            },
-            {
-              "type": "lex",
-              "querySha256": "1356f9e5cdb5b37ce84d9303ce8dad087a6a20b13db40b5c2aa7f695eebd5d67"
+              "querySha256": "36f0d672e43181950bef9e51c563205b84765ebe36ba42bcb56bc81edf79c795"
             },
             {
               "type": "vec",
-              "querySha256": "ed4e59e0201bd5377ff239de0416e378377970011c970ee88bf73c663a15e755"
-            },
-            {
-              "type": "vec",
-              "querySha256": "a53cf79f5aa9f3c98e4479103c9943628366997ea199aa94842ca211e18200dc"
+              "querySha256": "18612b6df615814ca73d5204e1c612d98854a5612579fad0b5ce89d744a65acf"
             },
             {
               "type": "hyde",
-              "querySha256": "ad9e24cee1d4c8afba1f4f638c8f216808ae4e18e1f0ddc638fd88ed9187c0b9"
+              "querySha256": "61ecebdfb90a6a1ad590f43bf9f708f54bc1f4a754df401e8039f691e48fdc5a"
             }
           ],
           "normal": {
@@ -2576,15 +2568,15 @@
             "highestRelevantDistractorRank": null,
             "provenancePassed": false,
             "listLimits": {
-              "dense": 54,
-              "lexical": 53,
-              "identifier": 53
+              "dense": 40,
+              "lexical": 40,
+              "identifier": 40
             },
-            "totalCandidatesExamined": 110,
-            "uniqueCandidatesAdmitted": 90,
+            "totalCandidatesExamined": 83,
+            "uniqueCandidatesAdmitted": 70,
             "finalResultCount": 5,
-            "fusedPoolLimit": 160,
-            "rerankPoolLimit": 160,
+            "fusedPoolLimit": 120,
+            "rerankPoolLimit": 120,
             "rankingMode": "hybrid",
             "rankFusionVersion": 2,
             "reciprocalRankConstant": 60
@@ -2627,18 +2619,6 @@
                 "admittedCandidateCount": 20
               },
               {
-                "source": "planned_lex",
-                "weight": 1,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "planned_vec",
-                "weight": 1,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
                 "source": "planned_vec",
                 "weight": 1,
                 "candidateLimit": 20,
@@ -2651,10 +2631,10 @@
                 "admittedCandidateCount": 20
               }
             ],
-            "totalCandidatesExamined": 143,
+            "totalCandidatesExamined": 103,
             "rerankCandidatesExamined": 40,
             "finalResultCount": 5,
-            "fusedPoolLimit": 160,
+            "fusedPoolLimit": 120,
             "rerankPoolLimit": 40,
             "finalResultLimit": 5,
             "rankFusionVersion": 2,
@@ -2692,9 +2672,9 @@
             "rankingProviderPolicy": "live-profile-v1",
             "candidateAdmissionBoundaryPolicy": "fused-candidate-pool-v1"
           },
-          "planningMilliseconds": 3376.134842000203,
-          "rerankingMilliseconds": 10615.859062999953,
-          "totalSearchMilliseconds": 14039.916635999922,
+          "planningMilliseconds": 6136.234980000183,
+          "rerankingMilliseconds": 11972.554772999603,
+          "totalSearchMilliseconds": 18238.999569999985,
           "contribution": {
             "newCandidateAdmission": false,
             "rankingOnlyPromotion": false,
@@ -2710,23 +2690,23 @@
           "plannedQueries": [
             {
               "type": "lex",
-              "querySha256": "c924a68cda0987c3566223a73ce72c935c694564aab7ad3e935ace484dfb1a3b"
+              "querySha256": "876b5dc3e98c81ea313d6f426b6fc88a4d08b4b321c2036443a7a35fef86019f"
             },
             {
               "type": "lex",
-              "querySha256": "9ddbcbd71484c1d82e88199488b8e634fb5aec353f59b647d4a02302e54c57ef"
+              "querySha256": "4a84f238af0b532fb70e4d6b6d4deef6579ce1d1047b93a3d4c8be8cac98bd6a"
             },
             {
               "type": "vec",
-              "querySha256": "739f7ba69c68b33de99278d259d6c7edfa3e61b7e8264af3cb66918f55c75794"
+              "querySha256": "8624f4bef86b5e63b22f16bca670fa7182bd6c9fdcfcbdb9631a5773d4284f5e"
             },
             {
               "type": "vec",
-              "querySha256": "898a3ad4d90a4bd4512e116d0aebcdd44ec4697179121850d34463775a9d9756"
+              "querySha256": "ae664affd3a099e440119818b74fc961b60d5f85dd33c84eaa24a5eb193b5e20"
             },
             {
               "type": "hyde",
-              "querySha256": "a632793f5a9e24ce5af2e554450b174e8ef7ab2048faaef12a5b326d32068f84"
+              "querySha256": "523118684480b6bafdecb7b4d7ab56268b797e2ccdd36c52dfd6a4a40a74d80e"
             }
           ],
           "normal": {
@@ -2870,9 +2850,9 @@
             "rankingProviderPolicy": "live-profile-v1",
             "candidateAdmissionBoundaryPolicy": "fused-candidate-pool-v1"
           },
-          "planningMilliseconds": 2991.7928920001723,
-          "rerankingMilliseconds": 9288.818862000015,
-          "totalSearchMilliseconds": 12322.989718999946,
+          "planningMilliseconds": 2929.265103999991,
+          "rerankingMilliseconds": 10526.916506000329,
+          "totalSearchMilliseconds": 13583.628253000323,
           "contribution": {
             "newCandidateAdmission": false,
             "rankingOnlyPromotion": false,
@@ -2888,23 +2868,23 @@
           "plannedQueries": [
             {
               "type": "lex",
-              "querySha256": "223cc23982d3108fcefc9a45db7a778991e06179fddda6abd26ef3bc397ab9db"
+              "querySha256": "88e6d8c5f3af4a7af41b9c9ebe848dbaea14694cc8b021e782f1b48d4246400c"
             },
             {
               "type": "lex",
-              "querySha256": "3b62ec85a3ed7bc78bb502d64dd7875251edce8d3046201ca6b79dfd9ec4b438"
+              "querySha256": "d39146635c922ef0701a68cc2b8431c092c92e62f1c36d6fe9b6ee29b836c94a"
             },
             {
               "type": "vec",
-              "querySha256": "dda242beb46e8c40aad65b566e2e305ffb04f5c1e3d16df375336d80b9bc23c8"
+              "querySha256": "0637744ec800cc12cccc368e180e90c4b7a5dcdf297d8513e4be82fcbe85d609"
             },
             {
               "type": "vec",
-              "querySha256": "3cec79ea687aab015c290ecf83bf1f14cb3f5476f21273e152546d5429f426e6"
+              "querySha256": "588cc1f1ea55467208531a059cb4042297637043bece9edaca336038364004fa"
             },
             {
               "type": "hyde",
-              "querySha256": "2a4997b335924ee864474b32f9477fc396f8323dd1cfff198c868b30fedfa8f6"
+              "querySha256": "d7ee9da3d50c895d2ec6866991f22a7ea1c358e46fb93b87dad8dab885c65973"
             }
           ],
           "normal": {
@@ -2948,7 +2928,7 @@
           "queryPlanned": {
             "outcome": "success",
             "expectedSourceRanks": [5],
-            "candidateAdmissionSourceRanks": [30],
+            "candidateAdmissionSourceRanks": [32],
             "candidateAdmissionVerified": true,
             "sourceProvenance": [
               {
@@ -3048,9 +3028,9 @@
             "rankingProviderPolicy": "live-profile-v1",
             "candidateAdmissionBoundaryPolicy": "fused-candidate-pool-v1"
           },
-          "planningMilliseconds": 2775.220968000125,
-          "rerankingMilliseconds": 10951.071413000114,
-          "totalSearchMilliseconds": 13772.867005999899,
+          "planningMilliseconds": 3775.8932949998416,
+          "rerankingMilliseconds": 10331.326517999638,
+          "totalSearchMilliseconds": 14240.60277199978,
           "contribution": {
             "newCandidateAdmission": false,
             "rankingOnlyPromotion": false,
@@ -3066,23 +3046,23 @@
           "plannedQueries": [
             {
               "type": "lex",
-              "querySha256": "9ff52e07af2ca83b40651330a7ed65bf7de89142c0a013ace432a93429de6055"
+              "querySha256": "4e39427638ff623d6cde9fd6f4bd4d0dd0a82111d87445a7bc7f4654add81824"
             },
             {
               "type": "lex",
-              "querySha256": "fb90d43ba1a36e7bf10a31c80dd6d78bfb507084b98b3fc60720deff67d65585"
+              "querySha256": "b2ad4af479f67c79d119038b7423546b1a3174729a58d8bea4858ec52cc28c7b"
             },
             {
               "type": "vec",
-              "querySha256": "9ff52e07af2ca83b40651330a7ed65bf7de89142c0a013ace432a93429de6055"
+              "querySha256": "4e39427638ff623d6cde9fd6f4bd4d0dd0a82111d87445a7bc7f4654add81824"
             },
             {
               "type": "vec",
-              "querySha256": "fb90d43ba1a36e7bf10a31c80dd6d78bfb507084b98b3fc60720deff67d65585"
+              "querySha256": "b2ad4af479f67c79d119038b7423546b1a3174729a58d8bea4858ec52cc28c7b"
             },
             {
               "type": "hyde",
-              "querySha256": "6379fc5c451ca0683d4eb41f25f57fb229824f3ed27ce6058f0ee903e85e18ee"
+              "querySha256": "a86f11ccb571ba42cbed29203cde5869fe83d653a3d0e33c444d3546fec87eaa"
             }
           ],
           "normal": {
@@ -3226,9 +3206,9 @@
             "rankingProviderPolicy": "live-profile-v1",
             "candidateAdmissionBoundaryPolicy": "fused-candidate-pool-v1"
           },
-          "planningMilliseconds": 6069.496173999971,
-          "rerankingMilliseconds": 12647.016418999992,
-          "totalSearchMilliseconds": 18774.836298000067,
+          "planningMilliseconds": 5056.248710999731,
+          "rerankingMilliseconds": 10988.062179999892,
+          "totalSearchMilliseconds": 16177.09466599999,
           "contribution": {
             "newCandidateAdmission": false,
             "rankingOnlyPromotion": false,
@@ -3279,7 +3259,7 @@
           "rerankerConformanceFixtureIdentity": "live-query-planned-reranker-conformance-fixture-v1:6d78e2775446350ffc2606be15392ccdc2eb66137b249a40bcffa9ddb769cf3a"
         },
         "software": {
-          "repositoryCommit": "f4f7227dcf70fb014ceebdb9dd5251d61806a729",
+          "repositoryCommit": "52b84c8be6a8425fefb149144a5da2143a66e030",
           "backendVersion": "llama.cpp b8390 bundle b10e98a CPU planner-ctx-2048 reranker-ctx-8192 batch-2048",
           "nodeVersion": "v24.16.0",
           "platform": "linux",
@@ -3342,7 +3322,7 @@
             "lexQueryCount": 1,
             "vecQueryCount": 1,
             "hydeQueryCount": 1,
-            "planningMilliseconds": 5467.8993799998425
+            "planningMilliseconds": 1049.3661420000717
           }
         },
         "reranking": {
@@ -3362,20 +3342,20 @@
           "measurement": {
             "queryCount": 1,
             "documentCount": 2,
-            "rerankingMilliseconds": 472.27252100012265
+            "rerankingMilliseconds": 282.16995700029656
           }
         }
       },
       "latency": {
-        "coldPlanningMilliseconds": 5467.8993799998425,
-        "warmPlanningMilliseconds": 1237.880542999832,
+        "coldPlanningMilliseconds": 1049.3661420000717,
+        "warmPlanningMilliseconds": 1074.3917000000365,
         "warmPlanningSucceeded": true,
-        "coldRerankingMilliseconds": 472.27252100012265,
-        "warmRerankingMilliseconds": 430.32863299991004,
+        "coldRerankingMilliseconds": 282.16995700029656,
+        "warmRerankingMilliseconds": 265.4521539998241,
         "totalSearchMilliseconds": {
-          "minimum": 31873.878651000094,
-          "median": 41111.47459050012,
-          "maximum": 101667.53645600006
+          "minimum": 32665.09191299975,
+          "median": 41345.11006799992,
+          "maximum": 90803.99817099981
         }
       },
       "cases": [
@@ -3387,23 +3367,23 @@
           "plannedQueries": [
             {
               "type": "lex",
-              "querySha256": "af13e7798f810b846772ded9e5d3cffb553d65b947678d70375c4251e7188930"
+              "querySha256": "4a84f238af0b532fb70e4d6b6d4deef6579ce1d1047b93a3d4c8be8cac98bd6a"
             },
             {
               "type": "lex",
-              "querySha256": "8081a0eb71dfaaed5d5c70d9b158f0dd1937984f2c459fbcb353aa2d1cac2bbf"
+              "querySha256": "48dff868c2d1b9753792cbee08ac303798c25385a4759df95a17d0cbe09f323b"
             },
             {
               "type": "vec",
-              "querySha256": "08cdf75bcf97f7da9e6e1ec3342c1ea857b4277fd5ff7d7bed0d551e0d062af4"
+              "querySha256": "dfd210318177eaa720ab6e45d4d347a1413ef7348dbab87c1c0cdf02e3d3698d"
             },
             {
               "type": "vec",
-              "querySha256": "43ec7b3ce56e4c76a71facec44972b0563d526ca08e1cc72e792ad5f01e820b6"
+              "querySha256": "1dce5f7e215154c3604874e0090c32fce413b4985c424be983e8ba67c0ce906b"
             },
             {
               "type": "hyde",
-              "querySha256": "8fcacee80b757067d37da8879bb59e5eaf5092af9224e239eb9e606db483dc5b"
+              "querySha256": "bd880fdecf362abb908c4f4563605e142ee540fb9184bab5feb5641f2206bb3c"
             }
           ],
           "normal": {
@@ -3547,9 +3527,9 @@
             "rankingProviderPolicy": "live-profile-v1",
             "candidateAdmissionBoundaryPolicy": "fused-candidate-pool-v1"
           },
-          "planningMilliseconds": 3321.5208239997737,
-          "rerankingMilliseconds": 35812.339500000235,
-          "totalSearchMilliseconds": 39178.45548700029,
+          "planningMilliseconds": 1438.3772060000338,
+          "rerankingMilliseconds": 33549.133684,
+          "totalSearchMilliseconds": 35122.773668999784,
           "contribution": {
             "newCandidateAdmission": false,
             "rankingOnlyPromotion": false,
@@ -3565,23 +3545,23 @@
           "plannedQueries": [
             {
               "type": "lex",
-              "querySha256": "3e3291a857cb32e944df6f6d9abde243153705f61798f7d56e8afbfd4b211ce3"
+              "querySha256": "d24e2b722353da20c8f9a8942a3977ea3c02cc136ec0f299b29d66bec449847b"
             },
             {
               "type": "lex",
-              "querySha256": "4b6ec852297a9b8629c03bab77c5213d8b4b4997684aecb9dfcbd96d9724298f"
+              "querySha256": "3e3291a857cb32e944df6f6d9abde243153705f61798f7d56e8afbfd4b211ce3"
             },
             {
               "type": "vec",
-              "querySha256": "00388a09164cba165f6d845616fa11908f3e3f709a7024fe9fbe2260397cd557"
+              "querySha256": "b6575311e906042731e07518f4aaa007d17dcac5e44a777af5677aed7104b1e6"
             },
             {
               "type": "vec",
-              "querySha256": "f0c436359ae9fdf0cc330db32796ec58de181213826ba24f7292190bd64a4d00"
+              "querySha256": "688dbe9af76183df83e523179de69f3902144295f5895e14e9ec4cd46eb5d38c"
             },
             {
               "type": "hyde",
-              "querySha256": "bc99e93641712152c59fe7c6a80d7c9f00b81dc4edea764b85c112c0e3ab7c57"
+              "querySha256": "e91904fb0bb89d29627e82e4ff9ead90dbed0a8209926fb78a132c7fe57e1ddb"
             }
           ],
           "normal": {
@@ -3725,9 +3705,9 @@
             "rankingProviderPolicy": "live-profile-v1",
             "candidateAdmissionBoundaryPolicy": "fused-candidate-pool-v1"
           },
-          "planningMilliseconds": 1413.7466959999874,
-          "rerankingMilliseconds": 41585.68740999978,
-          "totalSearchMilliseconds": 43044.493693999946,
+          "planningMilliseconds": 1297.5279649998993,
+          "rerankingMilliseconds": 37074.24268499995,
+          "totalSearchMilliseconds": 38504.17274199985,
           "contribution": {
             "newCandidateAdmission": false,
             "rankingOnlyPromotion": false,
@@ -3743,28 +3723,28 @@
           "plannedQueries": [
             {
               "type": "lex",
-              "querySha256": "5e570a5dddc6731af71755a7771e8a9be743b5c981e6d4d2213df8be4c571710"
+              "querySha256": "8ed8091aa4cfb6a0b2514455fa56408a927fb0c40d2a44e644e9fbe5294b6c6f"
             },
             {
               "type": "lex",
-              "querySha256": "5120fdef54e788a2962a4dd5d332168df9a7f2ada4754ba576ceb0583309ade7"
+              "querySha256": "8e0dc4ee1d69a1996112fae95dc8ae6e2b171c49f1303e0da4cc10fb3f23da6c"
             },
             {
               "type": "vec",
-              "querySha256": "5e570a5dddc6731af71755a7771e8a9be743b5c981e6d4d2213df8be4c571710"
+              "querySha256": "4677914d2f69ccd27c1bbae626a7be07d831ac26f219105e2019be9c7ecf7b8f"
             },
             {
               "type": "vec",
-              "querySha256": "57e97ba3a27c6119f36bb397d454311f0537a63651ad74afe17b12804006852b"
+              "querySha256": "70a3f4e2b831164efd21d88600c5929bb631ea6aeefc4c5028ad0dc6706409b7"
             },
             {
               "type": "hyde",
-              "querySha256": "2376614cb726f3695b111ef63940c4a25bd167055bbb22c55710359fd5b19da2"
+              "querySha256": "d5cd983f7b079e0a03dad7b4dcc0284640dd98af4337faa68f7386495bda08b6"
             }
           ],
           "normal": {
             "outcome": "final_rank_miss",
-            "expectedSourceRanks": [9],
+            "expectedSourceRanks": [8],
             "highestRelevantDistractorRank": null,
             "provenancePassed": true,
             "listLimits": {
@@ -3802,8 +3782,8 @@
           },
           "queryPlanned": {
             "outcome": "success",
-            "expectedSourceRanks": [4],
-            "candidateAdmissionSourceRanks": [25],
+            "expectedSourceRanks": [2],
+            "candidateAdmissionSourceRanks": [13],
             "candidateAdmissionVerified": true,
             "sourceProvenance": [
               {
@@ -3903,9 +3883,9 @@
             "rankingProviderPolicy": "live-profile-v1",
             "candidateAdmissionBoundaryPolicy": "fused-candidate-pool-v1"
           },
-          "planningMilliseconds": 1882.6959130000323,
-          "rerankingMilliseconds": 29941.428824999835,
-          "totalSearchMilliseconds": 31873.878651000094,
+          "planningMilliseconds": 2425.608006000053,
+          "rerankingMilliseconds": 30238.335868000053,
+          "totalSearchMilliseconds": 32800.15009600017,
           "contribution": {
             "newCandidateAdmission": false,
             "rankingOnlyPromotion": true,
@@ -3921,23 +3901,23 @@
           "plannedQueries": [
             {
               "type": "lex",
-              "querySha256": "ab122a45821041dbcb2c1bd9cc0b72f79e3c187b0f6bfb5ab91e922917f3c877"
+              "querySha256": "195e011e778e67cdaddc280568be1fb4b32b2247eed2323b7c4313f978a53a76"
             },
             {
               "type": "lex",
-              "querySha256": "be71a07aa9c55a91575344246b4ef4dcc3248d9700af8eaa24763a20ef356f5f"
+              "querySha256": "2134d2b6228f9fce80e503b2e2074212fffb67a406ed69cf010986d6dcca9244"
             },
             {
               "type": "vec",
-              "querySha256": "ab122a45821041dbcb2c1bd9cc0b72f79e3c187b0f6bfb5ab91e922917f3c877"
+              "querySha256": "1bf87ec5ee722ffd1672fdbc504e040e0a3f512399f0065d7147122ac44c51b7"
             },
             {
               "type": "vec",
-              "querySha256": "be71a07aa9c55a91575344246b4ef4dcc3248d9700af8eaa24763a20ef356f5f"
+              "querySha256": "15bccd631cc48703216a784a5555e3d46420d45f629d833c78e4dcefef36bd87"
             },
             {
               "type": "hyde",
-              "querySha256": "e30865ce53da47409af1419cdf59db8cbc8cc4b31e80c1098c30fe6212b59c97"
+              "querySha256": "7e9056dbf6260af3ac15a67d69facd1ff564224c5374953ae5b4a1a27ca4c581"
             }
           ],
           "normal": {
@@ -4081,9 +4061,9 @@
             "rankingProviderPolicy": "live-profile-v1",
             "candidateAdmissionBoundaryPolicy": "fused-candidate-pool-v1"
           },
-          "planningMilliseconds": 9267.402943999972,
-          "rerankingMilliseconds": 92337.03776900005,
-          "totalSearchMilliseconds": 101667.53645600006,
+          "planningMilliseconds": 4198.849682,
+          "rerankingMilliseconds": 86453.1423510001,
+          "totalSearchMilliseconds": 90803.99817099981,
           "contribution": {
             "newCandidateAdmission": false,
             "rankingOnlyPromotion": false,
@@ -4103,7 +4083,7 @@
             },
             {
               "type": "lex",
-              "querySha256": "66c4afdda26ad7cb8322b9874b59440c75a7077c438a6e53732ebacac52ece4f"
+              "querySha256": "3b62ec85a3ed7bc78bb502d64dd7875251edce8d3046201ca6b79dfd9ec4b438"
             },
             {
               "type": "vec",
@@ -4111,11 +4091,11 @@
             },
             {
               "type": "vec",
-              "querySha256": "bc026f939a1cf9ea7dc5f82a5706c8c11a6dfb9436febe2e60bbe73d9e3c27aa"
+              "querySha256": "bcecc024cff0623bcb13fc1bedd0e11a7a4ad93467daf39b49535c7601f3d62e"
             },
             {
               "type": "hyde",
-              "querySha256": "94d6c18d8512dd4017d45fa3eb00266cc11c5214d06cef98e02f35d704acda16"
+              "querySha256": "4ffeacfd7cf6931c2d92bd9641f552becf1bd33b58bc013260010cead467aa31"
             }
           ],
           "normal": {
@@ -4259,9 +4239,9 @@
             "rankingProviderPolicy": "live-profile-v1",
             "candidateAdmissionBoundaryPolicy": "fused-candidate-pool-v1"
           },
-          "planningMilliseconds": 2562.4663589997217,
-          "rerankingMilliseconds": 43959.36846100027,
-          "totalSearchMilliseconds": 46570.68370099971,
+          "planningMilliseconds": 2075.8725729999132,
+          "rerankingMilliseconds": 43539.45348699996,
+          "totalSearchMilliseconds": 45754.09643699974,
           "contribution": {
             "newCandidateAdmission": false,
             "rankingOnlyPromotion": false,
@@ -4277,23 +4257,23 @@
           "plannedQueries": [
             {
               "type": "lex",
-              "querySha256": "0511ca3e6808232dec4cf4563b439b7354f13cd2289d5af71bae8dac66b6f9ef"
+              "querySha256": "c57966addac4b89cb7f2a778270af0c35b066892c4838ce028c7bfa49c7e4961"
             },
             {
               "type": "lex",
-              "querySha256": "612a5f947d74edf664b9528d192500df27ac23811603eb27b76aadcf61de0627"
+              "querySha256": "d0eec15bced48387a9b46ef663abd4f6aad48efcbaa4859df8ade22fdd82273c"
             },
             {
               "type": "vec",
-              "querySha256": "0511ca3e6808232dec4cf4563b439b7354f13cd2289d5af71bae8dac66b6f9ef"
+              "querySha256": "c57966addac4b89cb7f2a778270af0c35b066892c4838ce028c7bfa49c7e4961"
             },
             {
               "type": "vec",
-              "querySha256": "612a5f947d74edf664b9528d192500df27ac23811603eb27b76aadcf61de0627"
+              "querySha256": "d0eec15bced48387a9b46ef663abd4f6aad48efcbaa4859df8ade22fdd82273c"
             },
             {
               "type": "hyde",
-              "querySha256": "d6a4ff5d9c5dc6fd9d3dfe9034c16f9fc13fdc9959b85dde8524cc74feba14c7"
+              "querySha256": "44af4977a6a56b5bf48c76a5abdd3e1231cb658f4a83ff8926744a831fae884d"
             }
           ],
           "normal": {
@@ -4437,9 +4417,9 @@
             "rankingProviderPolicy": "live-profile-v1",
             "candidateAdmissionBoundaryPolicy": "fused-candidate-pool-v1"
           },
-          "planningMilliseconds": 1177.6447560000233,
-          "rerankingMilliseconds": 31884.87306999974,
-          "totalSearchMilliseconds": 33108.00527899992,
+          "planningMilliseconds": 1269.0967890000902,
+          "rerankingMilliseconds": 31264.384423000272,
+          "totalSearchMilliseconds": 32665.09191299975,
           "contribution": {
             "newCandidateAdmission": false,
             "rankingOnlyPromotion": false,
@@ -4455,23 +4435,23 @@
           "plannedQueries": [
             {
               "type": "lex",
-              "querySha256": "df373ae12384700d0bfa80d738ca16653431d70a455adddcfa8fc2b21fca17c2"
+              "querySha256": "2f32a0e9d496b83ed4d6de6252735f5e6c8551a27367a004b0dfb834dca68cc8"
             },
             {
               "type": "lex",
-              "querySha256": "554dd676906f1bd43912b51dd7bd82fc432fbc7689f67567df824471c9fa6dca"
+              "querySha256": "c0d2de62e4a066a8438d798870edc17063a5c2af513caf9242197f6072f5f524"
             },
             {
               "type": "vec",
-              "querySha256": "f43a99cca5c5d7c5b1f9341edc3fffb36bc04cc0d3a166bf10540a8eb68b154b"
+              "querySha256": "19b9eeecda4a8c51a7dea828b587b374a208b76057ea72f1470885b0002dbebf"
             },
             {
               "type": "vec",
-              "querySha256": "d88e277ecdfcbf1dbe03012a2f584f4199174a15e1567e087f3114acb2e0ae28"
+              "querySha256": "09627e56548f50c33d8bc3deb0d01fbc98f6edad32b61fa0e88f75f6ca7878ba"
             },
             {
               "type": "hyde",
-              "querySha256": "db4a31c14194b875a39202b58872ecd12423d3193cf57236ff01ca17ff383cd6"
+              "querySha256": "72e8a524cefbb050b969c475015b58ebf5f201a39c5615017aa5666fa70132e9"
             }
           ],
           "normal": {
@@ -4514,8 +4494,8 @@
           },
           "queryPlanned": {
             "outcome": "success",
-            "expectedSourceRanks": [4],
-            "candidateAdmissionSourceRanks": [24],
+            "expectedSourceRanks": [5],
+            "candidateAdmissionSourceRanks": [31],
             "candidateAdmissionVerified": true,
             "sourceProvenance": [
               {
@@ -4615,9 +4595,9 @@
             "rankingProviderPolicy": "live-profile-v1",
             "candidateAdmissionBoundaryPolicy": "fused-candidate-pool-v1"
           },
-          "planningMilliseconds": 2557.1101269996725,
-          "rerankingMilliseconds": 30963.159002,
-          "totalSearchMilliseconds": 33567.18434400018,
+          "planningMilliseconds": 2436.5929939998314,
+          "rerankingMilliseconds": 41615.657081999816,
+          "totalSearchMilliseconds": 44186.047393999994,
           "contribution": {
             "newCandidateAdmission": false,
             "rankingOnlyPromotion": false,
@@ -4633,23 +4613,23 @@
           "plannedQueries": [
             {
               "type": "lex",
-              "querySha256": "f9e39f39c7d294a5444ebbc8c5cf062916b5e3c8299816f3776101d08671472e"
+              "querySha256": "adc4af6da65c1fe9fd301a631bc60c4f6de44a69952d1674000dec2fbc850bdc"
             },
             {
               "type": "lex",
-              "querySha256": "fe58ce2cdcf545562fea97618bf149502b1626ff7fc5140efffb066360f4783c"
+              "querySha256": "6960431a4bb86af11b365a25dc4b518d44576dbf9e3a736d9fa4646432d2e501"
             },
             {
               "type": "vec",
-              "querySha256": "f9e39f39c7d294a5444ebbc8c5cf062916b5e3c8299816f3776101d08671472e"
+              "querySha256": "adc4af6da65c1fe9fd301a631bc60c4f6de44a69952d1674000dec2fbc850bdc"
             },
             {
               "type": "vec",
-              "querySha256": "fe58ce2cdcf545562fea97618bf149502b1626ff7fc5140efffb066360f4783c"
+              "querySha256": "6960431a4bb86af11b365a25dc4b518d44576dbf9e3a736d9fa4646432d2e501"
             },
             {
               "type": "hyde",
-              "querySha256": "4cec07d9a30d1cdaacd0f6cd1f024942b083569a7a882789324a1183f69e9902"
+              "querySha256": "45f5e6e16887be7bfd5d9320ddc0a174bde9987ad91bcbfdfaa3dd79d8ec105c"
             }
           ],
           "normal": {
@@ -4793,9 +4773,9 @@
             "rankingProviderPolicy": "live-profile-v1",
             "candidateAdmissionBoundaryPolicy": "fused-candidate-pool-v1"
           },
-          "planningMilliseconds": 1406.940771999769,
-          "rerankingMilliseconds": 48492.52636100026,
-          "totalSearchMilliseconds": 49942.77168799983,
+          "planningMilliseconds": 1654.3292100001127,
+          "rerankingMilliseconds": 49827.97101299977,
+          "totalSearchMilliseconds": 51616.955908,
           "contribution": {
             "newCandidateAdmission": false,
             "rankingOnlyPromotion": false,
@@ -4822,18 +4802,18 @@
     "piToolContractPassed": true
   },
   "aggregateQuality": {
-    "newCandidateAdmissionCount": 1,
+    "newCandidateAdmissionCount": 0,
     "rankingOnlyPromotionCount": 3,
-    "preservedExistingSuccessCount": 6,
+    "preservedExistingSuccessCount": 5,
     "plannerFallbackCount": 0
   },
   "fallbackCharacterization": {
-    "liveNewCandidateAdmissionObserved": true,
-    "existingSuccessPreservedAcrossProfiles": true,
-    "existingSuccessRegressionProfileRunIds": []
+    "liveNewCandidateAdmissionObserved": false,
+    "existingSuccessPreservedAcrossProfiles": false,
+    "existingSuccessRegressionProfileRunIds": ["embedded-cpu"]
   },
   "limitations": [
-    "Approval applies only as an explicit fallback after hybrid recall misses, with the accepted Octen embedding baseline and recorded planner, reranker, adapter, grammar, score, and search-policy identities.",
+    "Approval applies only as an explicit fallback after hybrid recall misses, with the accepted committed hybrid baseline and recorded planner, reranker, adapter, grammar, score, and search-policy identities.",
     "Live candidate admissions and preservation of queries already answered by hybrid are reported as fallback characterization, not release gates.",
     "EmbeddingGemma live candidates remain separate and are not approved when their committed-corpus quality gate fails.",
     "The committed corpus is synthetic-but-session-shaped; the private corpus is bounded and does not establish broad superiority.",

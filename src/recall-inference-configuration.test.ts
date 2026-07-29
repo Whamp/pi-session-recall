@@ -18,6 +18,7 @@ import {
   createRecallActiveGenerationPointer,
   writeRecallGenerationRegistry,
 } from './recall-generation-state.js';
+import { tryAcquireRecallRebuildOwnershipLock } from './recall-rebuild-ownership-lock.js';
 import { runRecallInferenceSetupCommand } from './runRecallInferenceSetupCommand.js';
 import {
   clearPendingRecallEmbeddingReplacement,
@@ -440,6 +441,32 @@ void test('embedding replacement validates and persists pending selection before
     await chmod(root, 0o700);
   }
   assert.equal(backgroundStartCount, 0);
+});
+
+void test('inference configuration changes wait for flock ownership', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-inference-flock-contention-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const statePath = join(root, 'inference-configuration.json');
+  await writeRecallInferenceConfiguration(statePath, {
+    version: 2,
+    embedding: null,
+    reranking: null,
+    queryPlanning: null,
+    pendingEmbeddingReplacement: null,
+  });
+  const owner = await tryAcquireRecallRebuildOwnershipLock(`${statePath}.configuration-lock`);
+  assert.ok(owner);
+  t.after(() => owner.release());
+
+  const change = removeRecallInferenceCapability(statePath, RecallInferenceCapability.RERANKING);
+  const completedWhileContended = await Promise.race([
+    change.then(() => true),
+    sleep(200).then(() => false),
+  ]);
+  assert.equal(completedWhileContended, false);
+
+  await owner.release();
+  await change;
 });
 
 void test('concurrent embedding replacements cannot roll back a later successful launch', async (t) => {

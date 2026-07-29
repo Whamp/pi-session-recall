@@ -127,6 +127,7 @@ import {
 } from './recall-rebuild-ownership-lock.js';
 import {
   createLogicalSessionProjectionId,
+  type PhysicalSessionProjection,
   type RecallSessionProjection,
 } from './recall-session-projection.js';
 import { readRecallSessionSourceRange } from './read-recall-session-append-delta.js';
@@ -771,6 +772,67 @@ async function readApprovedRecallRebuildSnapshot(
     return { projections, eligibleContributorEntryIdsBySessionPath };
   } finally {
     store.close();
+  }
+}
+
+async function validateApprovedRebuildEvidenceMembership(
+  store: ZvecConversationStore,
+  approvedRebuildSnapshot: ApprovedRecallRebuildSnapshot,
+  totalChunkCount: number,
+): Promise<void> {
+  const physicalProjectionBySourcePath = new Map<string, PhysicalSessionProjection>();
+  for (const projection of approvedRebuildSnapshot.projections) {
+    if (projection.projectionKind === RecallSessionProjectionKind.PHYSICAL_SESSION) {
+      physicalProjectionBySourcePath.set(projection.sourcePath, projection);
+    }
+  }
+
+  const indexedChunkIds = new Set<string>();
+  for (const [
+    sourcePath,
+    eligibleByLogicalSessionId,
+  ] of approvedRebuildSnapshot.eligibleContributorEntryIdsBySessionPath) {
+    const physicalProjection = physicalProjectionBySourcePath.get(sourcePath);
+    if (physicalProjection === undefined) {
+      throw new Error(`Recall rebuild approved physical projection missing: ${sourcePath}`);
+    }
+    const chunkIds = await store.listChunkIdsByPhysicalSessionProjectionId(
+      physicalProjection.projectionId,
+      totalChunkCount + 1,
+    );
+    const chunks = store.fetchConversationChunks(chunkIds);
+    if (chunks.size !== chunkIds.length) {
+      throw new Error(`Recall rebuild indexed evidence could not be reloaded: ${sourcePath}`);
+    }
+    const approvedContributorEntryIds = new Set(
+      [...eligibleByLogicalSessionId.values()].flatMap((entryIds) => [...entryIds]),
+    );
+    const indexedContributorEntryIds = new Set<string>();
+    for (const [chunkId, chunk] of chunks) {
+      indexedChunkIds.add(chunkId);
+      for (const { value } of chunk.contributingEntryIds) {
+        indexedContributorEntryIds.add(value);
+      }
+    }
+    const unexpectedContributorEntryId = [...indexedContributorEntryIds].find(
+      (entryId) => !approvedContributorEntryIds.has(entryId),
+    );
+    if (unexpectedContributorEntryId !== undefined) {
+      throw new Error(
+        `Recall rebuild indexed evidence outside approved snapshot: ${sourcePath}:${unexpectedContributorEntryId}`,
+      );
+    }
+    const missingContributorEntryId = [...approvedContributorEntryIds].find(
+      (entryId) => !indexedContributorEntryIds.has(entryId),
+    );
+    if (missingContributorEntryId !== undefined) {
+      throw new Error(
+        `Recall rebuild approved evidence was not reproduced: ${sourcePath}:${missingContributorEntryId}`,
+      );
+    }
+  }
+  if (indexedChunkIds.size !== totalChunkCount) {
+    throw new Error('Recall rebuild indexed evidence outside approved snapshot: unknown source');
   }
 }
 
@@ -1920,6 +1982,13 @@ export function createRecallConversationService(
               try {
                 if (validationStore.count() !== result.totalChunks) {
                   throw new Error('Recall replacement generation count changed during validation');
+                }
+                if (approvedRebuildSnapshot != null) {
+                  await validateApprovedRebuildEvidenceMembership(
+                    validationStore,
+                    approvedRebuildSnapshot,
+                    result.totalChunks,
+                  );
                 }
               } finally {
                 validationStore.close();

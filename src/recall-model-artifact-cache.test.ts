@@ -14,6 +14,38 @@ import {
 } from './recall-model-artifact.test-utils.js';
 import { createRecommendedEmbeddingGemmaModelProfile } from './recall-model-profiles.js';
 
+void test('model artifact cache rejects profile path traversal before filesystem access', () => {
+  const fixtureArtifact = createFixtureGguf();
+  const profile = createFixtureProfile(fixtureArtifact);
+  const traversalCases = [
+    { profileId: '../victim' },
+    { profileId: '..\\victim' },
+    { revision: '..' },
+    { artifact: 'nested/model.gguf' },
+    { artifact: '.' },
+    { artifact: '/tmp/model.gguf' },
+  ];
+
+  for (const traversalCase of traversalCases) {
+    assert.throws(
+      () =>
+        createRecallModelArtifactCache({
+          cacheDirectory: '/cache',
+          profile: {
+            ...profile,
+            profileId: traversalCase.profileId ?? profile.profileId,
+            source: {
+              ...profile.source,
+              revision: traversalCase.revision ?? profile.source.revision,
+              artifact: traversalCase.artifact ?? profile.source.artifact,
+            },
+          },
+        }),
+      /Recall model artifact cache path segment invalid/u,
+    );
+  }
+});
+
 void test('model artifact cache reports missing and refuses download without explicit approval', async (t) => {
   const cacheDirectory = await mkdtemp(join(tmpdir(), 'recall-model-cache-'));
   t.after(async () => {

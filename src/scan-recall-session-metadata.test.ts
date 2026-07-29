@@ -142,6 +142,51 @@ void test('metadata sweep resumes newly inserted names before the lexical cursor
   );
 });
 
+void test('metadata sweep final rescan observes insertions in a completed parent directory', async () => {
+  const continuationStore = createMemoryContinuationStore();
+  let rootNames = ['child'];
+  const filesystem: RecallSessionMetadataFilesystem = {
+    async readDirectory(path) {
+      return path.endsWith('/child') ? ['first.jsonl', 'second.jsonl'] : rootNames;
+    },
+    async statPath(path) {
+      return {
+        isDirectory: path.endsWith('/child'),
+        isFile: !path.endsWith('/child'),
+        sizeBytes: 10,
+        modifiedAtEpochMilliseconds: 20,
+        sourceDevice: '10',
+        sourceInode: path,
+      };
+    },
+  };
+  const first = await scanRecallSessionMetadata({
+    sessionRootDirectory: '/isolated/sessions',
+    controlDirectory: '/isolated/control',
+    filesystem,
+    continuationStore,
+    maxFiles: 1,
+    monotonicNowMilliseconds: () => 0,
+  });
+  assert.equal(first.status, RecallMetadataSweepStatus.CONTINUATION_REQUIRED);
+  rootNames = ['child', 'inserted.jsonl'];
+
+  const second = await scanRecallSessionMetadata({
+    sessionRootDirectory: '/isolated/sessions',
+    controlDirectory: '/isolated/control',
+    filesystem,
+    continuationStore,
+    maxFiles: 10,
+    monotonicNowMilliseconds: () => 0,
+  });
+
+  assert.equal(second.status, RecallMetadataSweepStatus.COMPLETE);
+  assert.deepEqual(
+    second.observedSessionMetadata.map(({ relativePath }) => relativePath).toSorted(),
+    ['child/second.jsonl', 'inserted.jsonl'],
+  );
+});
+
 void test('metadata sweep independently stops when its monotonic 500 ms budget is reached', async () => {
   const filesystem = createFlatMetadataFilesystem(100);
   const continuationStore = createMemoryContinuationStore();
@@ -186,13 +231,13 @@ void test('metadata sweep persists a strict scalar continuation outside session 
     throw new Error('Expected strict scalar metadata continuation');
   }
   assert.deepEqual(Object.keys(continuation).toSorted(), [
-    'afterEntryName',
     'currentRelativeDirectory',
+    'directoryCheckpoints',
     'observedKnownSourceIdentities',
     'observedPhysicalSessionIds',
     'observedSessionFileCount',
     'pendingRelativeDirectories',
-    'processedEntryNames',
+    'rescanStarted',
     'sweepId',
     'version',
   ]);

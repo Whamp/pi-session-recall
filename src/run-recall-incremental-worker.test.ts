@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { access, mkdir, mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, readdir, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -1214,7 +1214,7 @@ void test('metadata sweep publishes arrival for a session header larger than one
   });
 
   assert.equal(result.metadataSweepFollowUpRequired, true);
-  const spoolFiles = await (await import('node:fs/promises')).readdir(fixture.markerSpoolDirectory);
+  const spoolFiles = await readdir(fixture.markerSpoolDirectory);
   const markerSources = await Promise.all(
     spoolFiles.map((name) => readFile(join(fixture.markerSpoolDirectory, name), 'utf8')),
   );
@@ -1284,7 +1284,6 @@ void test('metadata sweep of unknown jsonl publishes arrival marker and schedule
   assert.equal(result.metadataSweepFollowUpRequired, true);
 
   // Verify the arrival marker was written to the spool.
-  const { readdir } = await import('node:fs/promises');
   const spoolFiles = await readdir(spoolDirectory);
   const arrivalFiles = spoolFiles.filter((f) => f.endsWith('.json'));
   // The fixture's own marker is in the spool plus the newly published arrival marker.

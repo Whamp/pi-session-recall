@@ -16,9 +16,10 @@ export interface RecallSessionSourceRangeReader {
   (sourcePath: string, startByte: number, endByteExclusive: number): AsyncIterable<Buffer>;
 }
 
-/** Injectable bounded range reader used to verify which source bytes append projection consumes. */
+/** Safe append-read probes that preserve the single open file-handle invariant. */
 export interface RecallSessionAppendReadOptions {
-  readRange?: RecallSessionSourceRangeReader;
+  beforeReadRange?: (startByte: number, endByteExclusive: number) => void | Promise<void>;
+  readChunkByteLength?: (remainingByteLength: number) => number;
 }
 
 /** Successfully framed complete append records and the next durable physical cursor. */
@@ -72,7 +73,7 @@ export async function* readRecallSessionSourceRange(
 }
 
 async function readRecallRangeBytes(
-  readRange: NonNullable<RecallSessionAppendReadOptions['readRange']>,
+  readRange: RecallSessionSourceRangeReader,
   sourcePath: string,
   startByte: number,
   endByteExclusive: number,
@@ -181,30 +182,44 @@ export async function readRecallSessionAppendDelta(
       return reconciliation(RecallProjectionRepairReason.SOURCE_SHRANK);
     }
 
-    const readRange =
-      options.readRange ??
-      async function* readOpenedRecallSessionRange(
-        _sourcePath: string,
-        startByte: number,
-        endByteExclusive: number,
-      ): AsyncGenerator<Buffer> {
-        let position = startByte;
-        while (position < endByteExclusive) {
-          const byteLength = Math.min(64 * 1_024, endByteExclusive - position);
-          const bytes = Buffer.allocUnsafe(byteLength);
-          const read = await handle.read(bytes, 0, byteLength, position);
-          if (read.bytesRead === 0) {
-            break;
-          }
-          position += read.bytesRead;
-          yield bytes.subarray(0, read.bytesRead);
+    const readRange: RecallSessionSourceRangeReader = async function* readOpenedRecallSessionRange(
+      sourcePath,
+      startByte,
+      endByteExclusive,
+    ): AsyncGenerator<Buffer> {
+      if (sourcePath !== filePath) {
+        throw new Error('Recall append read source path changed within one open handle');
+      }
+      let position = startByte;
+      while (position < endByteExclusive) {
+        const remainingByteLength = endByteExclusive - position;
+        const requestedChunkByteLength =
+          options.readChunkByteLength?.(remainingByteLength) ?? 64 * 1_024;
+        if (!Number.isSafeInteger(requestedChunkByteLength) || requestedChunkByteLength < 1) {
+          throw new Error('Recall append read chunk byte length must be a positive safe integer');
         }
-      };
+        const byteLength = Math.min(requestedChunkByteLength, remainingByteLength);
+        const bytes = Buffer.allocUnsafe(byteLength);
+        const read = await handle.read(bytes, 0, byteLength, position);
+        if (read.bytesRead === 0) {
+          break;
+        }
+        position += read.bytesRead;
+        yield bytes.subarray(0, read.bytesRead);
+      }
+    };
+    const readOpenedRange = async (
+      startByte: number,
+      endByteExclusive: number,
+    ): Promise<Buffer> => {
+      await options.beforeReadRange?.(startByte, endByteExclusive);
+      return readRecallRangeBytes(readRange, filePath, startByte, endByteExclusive);
+    };
     const boundaryStart = Math.max(0, cursorBytes - RECALL_APPEND_BOUNDARY_WINDOW_BYTES);
     const boundaryBytes =
       boundaryStart === cursorBytes
         ? Buffer.alloc(0)
-        : await readRecallRangeBytes(readRange, filePath, boundaryStart, cursorBytes);
+        : await readOpenedRange(boundaryStart, cursorBytes);
     if (
       boundaryBytes.length !== cursorBytes - boundaryStart ||
       createRecallBoundaryFingerprint(boundaryBytes) !== physicalProjection.boundaryFingerprint
@@ -213,9 +228,7 @@ export async function readRecallSessionAppendDelta(
     }
 
     const appendBytes =
-      sourceSize === cursorBytes
-        ? Buffer.alloc(0)
-        : await readRecallRangeBytes(readRange, filePath, cursorBytes, sourceSize);
+      sourceSize === cursorBytes ? Buffer.alloc(0) : await readOpenedRange(cursorBytes, sourceSize);
     if (appendBytes.length !== sourceSize - cursorBytes) {
       return reconciliation(RecallProjectionRepairReason.APPEND_CURSOR_MISSING);
     }

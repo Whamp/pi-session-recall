@@ -123,13 +123,13 @@ function captureIndexCommand() {
       command = definition;
     },
   };
-  async function invokeIndexCommand(): Promise<void> {
+  async function invokeIndexCommand(argumentsText = 'invalid'): Promise<void> {
     assert.ok(command);
     // oxlint-disable-next-line typescript/consistent-type-assertions -- invalid arguments fail before the command reads any other context fields
     const context = {
       ui: { setStatus() {}, notify() {} },
     } as unknown as Parameters<typeof command.handler>[1];
-    await command.handler('invalid', context);
+    await command.handler(argumentsText, context);
   }
   return {
     registrar,
@@ -167,6 +167,18 @@ void test('Pi recall invalidates its runtime cache for every effective inference
   });
 
   await command.resolveService();
+  await command.resolveService();
+  assert.equal(createdConfigurations.length, 1);
+  await writeFile(
+    inferenceConfigurationPath,
+    `${JSON.stringify({
+      pendingEmbeddingReplacement: null,
+      queryPlanning: null,
+      reranking: null,
+      embedding,
+      version: 2,
+    })}\n`,
+  );
   await command.resolveService();
   assert.equal(createdConfigurations.length, 1);
 
@@ -414,6 +426,50 @@ void test('Pi recall disposes its current runtime exactly once on shutdown', asy
   await shutdownRuntime();
   await shutdownRuntime();
 
+  assert.equal(disposalCount, 1);
+});
+
+void test('Pi recall waits for an active operation before shutdown disposal', async (t) => {
+  const config = await createExtensionTestConfig(t);
+  await writeRecommendedFirstIndexSetup(config);
+  const operationStarted = createDeferred();
+  const releaseOperation = createDeferred();
+  let shutdownRuntime: (() => Promise<void>) | undefined;
+  let disposalCount = 0;
+  const command = captureIndexCommand();
+  await recallExtension(command.registrar, {
+    config,
+    registerServiceRuntimeShutdown(disposeRuntime) {
+      shutdownRuntime = disposeRuntime;
+    },
+    createServiceRuntime() {
+      const service = createRecallConversationService(config);
+      return {
+        service: {
+          ...service,
+          async readBackgroundIndexGenerationStatus() {
+            operationStarted.resolve();
+            await releaseOperation.promise;
+            return service.readBackgroundIndexGenerationStatus();
+          },
+        },
+        async dispose() {
+          disposalCount += 1;
+        },
+      };
+    },
+  });
+
+  const activeOperation = command.invokeIndexCommand('--status');
+  await operationStarted.promise;
+  assert.ok(shutdownRuntime);
+  const shutdown = shutdownRuntime();
+  await sleep(20);
+  assert.equal(disposalCount, 0);
+
+  releaseOperation.resolve();
+  await activeOperation;
+  await shutdown;
   assert.equal(disposalCount, 1);
 });
 

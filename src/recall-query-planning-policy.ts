@@ -1,6 +1,8 @@
 import type { RecallPlannedRetrievalQuery } from './recall-inference-capabilities.js';
 import type { RecallQueryPlanningModelProfile } from './recall-model-profiles.js';
 
+const MAXIMUM_QMD_QUERY_CONTENT_CODE_POINTS = 512;
+
 /** Formats the QMD no-think query expansion prompt, including optional recall intent. */
 export function formatQmdQueryPlanningPrompt(query: string, recallIntent?: string): string {
   const normalizedQuery = query.trim();
@@ -17,12 +19,15 @@ export function formatQmdQueryPlanningPrompt(query: string, recallIntent?: strin
   return `/no_think Expand this search query: ${normalizedQuery}\nQuery intent: ${normalizedRecallIntent}`;
 }
 
-/** Validates and normalizes a model-generated plan against QMD grammar and profile bounds. */
+/** Validates ordered QMD plan bounds using at most 512 Unicode code points after trimming. */
 export function validateQmdQueryPlanningPlan(
   plan: readonly RecallPlannedRetrievalQuery[],
   profile: RecallQueryPlanningModelProfile,
 ): RecallPlannedRetrievalQuery[] {
   const normalizedPlan: RecallPlannedRetrievalQuery[] = [];
+  let seenLexicalQuery = false;
+  let seenVectorQuery = false;
+  let seenHypotheticalAnswerQuery = false;
   for (const [index, plannedQuery] of plan.entries()) {
     if (
       plannedQuery.type !== 'lex' &&
@@ -43,7 +48,40 @@ export function validateQmdQueryPlanningPlan(
         `Recall query planning output grammar invalid at entry ${index + 1}: expected non-blank single-line text`,
       );
     }
-    normalizedPlan.push({ type: plannedQuery.type, query: plannedQuery.query.trim() });
+    const normalizedQuery = plannedQuery.query.trim();
+    if (Array.from(normalizedQuery).length > MAXIMUM_QMD_QUERY_CONTENT_CODE_POINTS) {
+      throw new Error(
+        `Recall query planning output grammar invalid at entry ${index + 1}: expected at most ${MAXIMUM_QMD_QUERY_CONTENT_CODE_POINTS} Unicode code points`,
+      );
+    }
+    if (seenHypotheticalAnswerQuery) {
+      throw new Error(
+        `Recall query planning output ordering invalid at entry ${index + 1}: no query may follow a hypothetical-answer query`,
+      );
+    }
+    if (plannedQuery.type === 'lex') {
+      if (seenVectorQuery) {
+        throw new Error(
+          `Recall query planning output ordering invalid at entry ${index + 1}: lexical queries must precede vector queries`,
+        );
+      }
+      seenLexicalQuery = true;
+    } else if (plannedQuery.type === 'vec') {
+      if (!seenLexicalQuery) {
+        throw new Error(
+          `Recall query planning output ordering invalid at entry ${index + 1}: vector queries must follow at least one lexical query`,
+        );
+      }
+      seenVectorQuery = true;
+    } else {
+      if (!seenVectorQuery) {
+        throw new Error(
+          `Recall query planning output ordering invalid at entry ${index + 1}: a hypothetical-answer query must follow all lexical and vector queries`,
+        );
+      }
+      seenHypotheticalAnswerQuery = true;
+    }
+    normalizedPlan.push({ type: plannedQuery.type, query: normalizedQuery });
   }
   const lexQueryCount = normalizedPlan.filter((query) => query.type === 'lex').length;
   const vecQueryCount = normalizedPlan.filter((query) => query.type === 'vec').length;
@@ -96,14 +134,5 @@ export function parseQmdQueryPlanningOutput(
     }
     return { type, query };
   });
-  const typedQueryIdentities = new Set<string>();
-  const uniquePlan = plan.filter((plannedQuery) => {
-    const identity = `${plannedQuery.type}:${plannedQuery.query}`;
-    if (typedQueryIdentities.has(identity)) {
-      return false;
-    }
-    typedQueryIdentities.add(identity);
-    return true;
-  });
-  return validateQmdQueryPlanningPlan(uniquePlan, profile);
+  return validateQmdQueryPlanningPlan(plan, profile);
 }

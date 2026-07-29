@@ -9,6 +9,7 @@ import type {
   RecallQueryPlanningModelProfile,
   RecallRerankingModelProfile,
 } from './recall-model-profiles.js';
+import { validateQmdQueryPlanningPlan } from './recall-query-planning-policy.js';
 
 /** Deterministic probe and expected vectors for one embedding provider conformance run. */
 export interface RecallEmbeddingProviderConformanceOptions {
@@ -308,51 +309,20 @@ export async function measureRecallQueryPlanningProviderConformance(
   }
   const monotonicMilliseconds = options.monotonicMilliseconds ?? (() => performance.now());
   const planningStartedAtMilliseconds = monotonicMilliseconds();
-  const plan = await options.provider.planRecallQuery(
-    {
-      query: options.query,
-      ...(options.recallIntent === undefined ? {} : { recallIntent: options.recallIntent }),
-    },
-    options.signal,
+  const plan = validateQmdQueryPlanningPlan(
+    await options.provider.planRecallQuery(
+      {
+        query: options.query,
+        ...(options.recallIntent === undefined ? {} : { recallIntent: options.recallIntent }),
+      },
+      options.signal,
+    ),
+    options.profile,
   );
   const planningMilliseconds = Math.max(monotonicMilliseconds() - planningStartedAtMilliseconds, 0);
-  let lexQueryCount = 0;
-  let vecQueryCount = 0;
-  let hydeQueryCount = 0;
-  const seenQueries = new Set<string>();
-  for (const [index, plannedQuery] of plan.entries()) {
-    if (
-      plannedQuery.type !== 'lex' &&
-      plannedQuery.type !== 'vec' &&
-      plannedQuery.type !== 'hyde'
-    ) {
-      throw new Error(
-        `Recall query planning conformance query type invalid at index ${index}: ${String(plannedQuery.type)}`,
-      );
-    }
-    const normalizedQuery = plannedQuery.query.trim();
-    if (!normalizedQuery || /[\r\n]/u.test(normalizedQuery)) {
-      throw new Error(
-        `Recall query planning conformance query invalid at index ${index}: expected non-blank single-line text`,
-      );
-    }
-    const queryIdentity = `${plannedQuery.type}:${normalizedQuery}`;
-    if (seenQueries.has(queryIdentity)) {
-      throw new Error(
-        `Recall query planning conformance duplicate typed query at index ${index}: ${queryIdentity}`,
-      );
-    }
-    seenQueries.add(queryIdentity);
-    if (plannedQuery.type === 'lex') {
-      lexQueryCount += 1;
-    }
-    if (plannedQuery.type === 'vec') {
-      vecQueryCount += 1;
-    }
-    if (plannedQuery.type === 'hyde') {
-      hydeQueryCount += 1;
-    }
-  }
+  const lexQueryCount = plan.filter(({ type }) => type === 'lex').length;
+  const vecQueryCount = plan.filter(({ type }) => type === 'vec').length;
+  const hydeQueryCount = plan.filter(({ type }) => type === 'hyde').length;
   const normalizedPlanText = plan
     .map(({ query }) => query)
     .join('\n')
@@ -361,18 +331,6 @@ export async function measureRecallQueryPlanningProviderConformance(
   if (missingProtectedTerms.length > 0) {
     throw new Error(
       `Recall query planning conformance protected terms missing from plan: ${missingProtectedTerms.join(', ')}`,
-    );
-  }
-  const bounds = options.profile.planBounds;
-  if (
-    lexQueryCount < bounds.minimumLexQueries ||
-    lexQueryCount > bounds.maximumLexQueries ||
-    vecQueryCount < bounds.minimumVecQueries ||
-    vecQueryCount > bounds.maximumVecQueries ||
-    hydeQueryCount > bounds.maximumHydeQueries
-  ) {
-    throw new Error(
-      `Recall query planning conformance bounds invalid: expected ${bounds.minimumLexQueries}-${bounds.maximumLexQueries} lex, ${bounds.minimumVecQueries}-${bounds.maximumVecQueries} vec, and 0-${bounds.maximumHydeQueries} hyde queries; received ${lexQueryCount} lex, ${vecQueryCount} vec, and ${hydeQueryCount} hyde`,
     );
   }
   if (options.expectedPlan) {

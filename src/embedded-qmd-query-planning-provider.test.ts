@@ -7,6 +7,37 @@ import { createEmbeddedQmdQueryPlanningProvider } from './embedded-qmd-query-pla
 import { measureRecallQueryPlanningProviderConformance } from './recall-inference-conformance.js';
 import { createRecommendedQmdQueryPlanningModelProfile } from './recall-model-profiles.js';
 
+interface InvalidEmbeddedQmdOutputCase {
+  name: string;
+  output: string;
+}
+
+const INVALID_EMBEDDED_QMD_OUTPUT_CASES: readonly InvalidEmbeddedQmdOutputCase[] = [
+  {
+    name: 'vector before the first lexical query',
+    output: 'vec: Copper Finch semantic evidence\nlex: Copper Finch evidence',
+  },
+  {
+    name: 'lexical query after a vector query',
+    output:
+      'lex: Copper Finch evidence\nvec: Copper Finch semantic evidence\nlex: retained Copper Finch records',
+  },
+  {
+    name: 'non-final hypothetical-answer query',
+    output:
+      'lex: Copper Finch evidence\nhyde: Copper Finch appears in retained evidence.\nvec: Copper Finch semantic evidence',
+  },
+  {
+    name: 'entry after a hypothetical-answer query',
+    output:
+      'lex: Copper Finch evidence\nvec: Copper Finch semantic evidence\nhyde: Copper Finch appears in retained evidence.\nvec: where Copper Finch was retained',
+  },
+  {
+    name: '513-code-point query content',
+    output: `lex: ${'x'.repeat(513)}\nvec: Copper Finch semantic evidence`,
+  },
+];
+
 void test('embedded QMD query planner passes shared conformance with profile grammar and intent', async (t) => {
   const profile = createRecommendedQmdQueryPlanningModelProfile();
   const calls: Array<{ prompt: string; options: Record<string, unknown> }> = [];
@@ -28,9 +59,9 @@ void test('embedded QMD query planner passes shared conformance with profile gra
             async prompt(prompt: string, options: Record<string, unknown>) {
               calls.push({ prompt, options });
               return [
-                'hyde: Copper Finch connects recalled recovery evidence to its original session.',
                 'lex: Copper Finch recovery evidence',
                 'vec: how Finch identifies original conversation evidence',
+                'hyde: Copper Finch connects recalled recovery evidence to its original session.',
               ].join('\n');
             },
           };
@@ -131,6 +162,58 @@ void test('embedded QMD query planner passes shared conformance with profile gra
   });
   assert.ok(measurement.planningMilliseconds >= 0);
   assert.deepEqual(disposals, ['context']);
+});
+
+void test('embedded QMD query planner rejects every invalid generated ordering and length', async (t) => {
+  const profile = createRecommendedQmdQueryPlanningModelProfile();
+  let generatedOutput = '';
+  const provider = createEmbeddedQmdQueryPlanningProvider(profile, {
+    modelCacheDirectory: '/models',
+    device: EmbeddedInferenceDevicePolicy.CPU,
+    async verifyModelArtifact() {
+      return '/models/qmd-query-expansion-1.7B-q4_k_m.gguf';
+    },
+    async loadNodeLlamaCpp() {
+      return {
+        version: '3.18.1',
+        LlamaLogLevel: { error: 'error' },
+        createChatSession() {
+          return {
+            async prompt() {
+              return generatedOutput;
+            },
+          };
+        },
+        async getLlama() {
+          return {
+            gpu: false,
+            async createGrammar() {
+              return {};
+            },
+            async loadModel() {
+              return {
+                async createContext() {
+                  return { getSequence: () => ({}), async dispose() {} };
+                },
+                async dispose() {},
+              };
+            },
+            async dispose() {},
+          };
+        },
+      };
+    },
+  });
+  t.after(() => provider.dispose());
+
+  for (const invalidCase of INVALID_EMBEDDED_QMD_OUTPUT_CASES) {
+    generatedOutput = invalidCase.output;
+    await assert.rejects(
+      () => provider.planRecallQuery({ query: profile.conformanceCanary.query }),
+      /Recall query planning output/u,
+      invalidCase.name,
+    );
+  }
 });
 
 void test('embedded QMD query planner retries automatic accelerator failure on CPU once', async (t) => {

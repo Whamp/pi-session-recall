@@ -2073,12 +2073,13 @@ export function createRecallConversationService(
       if (!status.staging) {
         return false;
       }
+      const discardedGenerationId = status.staging.generationId;
       const ownership = await tryAcquireRecallRebuildOwnershipLock(
         recallRebuildOwnershipLockPath(config.lockPath),
       );
       if (!ownership) {
         throw new Error(
-          `Recall staging generation ${status.staging.generationId} is owned by a live rebuild; stop it before discard`,
+          `Recall staging generation ${discardedGenerationId} is owned by a live rebuild; stop it before discard`,
         );
       }
       try {
@@ -2089,19 +2090,30 @@ export function createRecallConversationService(
             if (!registry) {
               throw new Error('Recall generation registry missing during staging discard');
             }
-            if (registry.activeGenerationId === status.staging?.generationId) {
+            if (registry.activeGenerationId === discardedGenerationId) {
               throw new Error('Recall active generation cannot be discarded as staging');
             }
-            const remainingGenerations = registry.generations.filter(
-              ({ generationId }) => generationId !== status.staging?.generationId,
-            );
+            const discardedAt = Date.now();
+            const generationsAfterDiscard = registry.generations.map((entry) => {
+              if (entry.generationId !== discardedGenerationId) {
+                return entry;
+              }
+              return {
+                ...entry,
+                state: RecallGenerationCutoverState.RETIRED,
+                stateChangedAtEpochMilliseconds: discardedAt,
+                validatedAtEpochMilliseconds:
+                  entry.validatedAtEpochMilliseconds ?? discardedAt,
+                retireAfterEpochMilliseconds: discardedAt,
+              };
+            });
             await writeRecallGenerationRegistry(config.generationRegistryPath, {
               ...registry,
               buildingGenerationId:
-                registry.buildingGenerationId === status.staging?.generationId
+                registry.buildingGenerationId === discardedGenerationId
                   ? null
                   : registry.buildingGenerationId,
-              generations: remainingGenerations,
+              generations: generationsAfterDiscard,
             });
             if (registry.activeGenerationId) {
               let backlogSummary;
@@ -2115,7 +2127,7 @@ export function createRecallConversationService(
                 }
               }
               if (backlogSummary) {
-                const activeEntry = remainingGenerations.find(
+                const activeEntry = generationsAfterDiscard.find(
                   ({ generationId }) => generationId === registry.activeGenerationId,
                 );
                 await writeRecallBacklogSummary(config.backlogSummaryPath, {
@@ -2124,7 +2136,7 @@ export function createRecallConversationService(
                   generationState: activeEntry?.state ?? RecallGenerationCutoverState.ACTIVE,
                   rebuildAgeMilliseconds: null,
                   lastFailureCategory: null,
-                  observedAtEpochMilliseconds: Date.now(),
+                  observedAtEpochMilliseconds: discardedAt,
                 });
               }
             }
@@ -2138,9 +2150,20 @@ export function createRecallConversationService(
         );
         const stagingGenerationDirectory = await resolveRecallGenerationDirectory(
           config.generationRootDirectory,
-          status.staging.generationId,
+          discardedGenerationId,
         );
         await rm(stagingGenerationDirectory, { recursive: true, force: true });
+        const registryAfterRemoval = await readRecallGenerationRegistry(
+          config.generationRegistryPath,
+        );
+        if (registryAfterRemoval) {
+          await writeRecallGenerationRegistry(config.generationRegistryPath, {
+            ...registryAfterRemoval,
+            generations: registryAfterRemoval.generations.filter(
+              ({ generationId }) => generationId !== discardedGenerationId,
+            ),
+          });
+        }
         await markRecallBackgroundIndexGenerationDiscarded(backgroundIndexCoordinatorConfig);
         workerSignal.signalDetachedWorker();
         return true;

@@ -23,6 +23,7 @@ import {
 } from './recall-conversation-service.js';
 import {
   createRecallActiveGenerationPointer,
+  readRecallGenerationRegistry,
   writeRecallActiveGenerationPointer,
   writeRecallGenerationRegistry,
   RECALL_GENERATION_REGISTRY_VERSION,
@@ -527,8 +528,126 @@ void test('discarding staging clears pending embedding replacement', async (t) =
   assert.equal(await service.discardStagingIndexGeneration(), true);
   assert.equal((await service.readIndexGenerationStatus()).staging, null);
   assert.equal(
-    (await readRecallInferenceConfiguration(inferenceConfigurationPath)).pendingEmbeddingReplacement,
+    (await readRecallInferenceConfiguration(inferenceConfigurationPath))
+      .pendingEmbeddingReplacement,
     null,
+  );
+  assert.equal(
+    (await readRecallGenerationRegistry(config.generationRegistryPath))?.generations.some(
+      ({ generationId }) => generationId === 'generation_staging',
+    ),
+    false,
+  );
+  await assert.rejects(
+    () => access(join(config.generationRootDirectory, 'generation_staging')),
+    { code: 'ENOENT' },
+  );
+});
+
+void test('discarded staging stays retired and collectible when directory removal fails', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-discard-orphan-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionsDirectory = join(directory, 'sessions');
+  await mkdir(sessionsDirectory);
+  const config = createBackgroundIndexTestConfig(directory, sessionsDirectory);
+  const activePointer = createRecallActiveGenerationPointer('generation_active');
+  await mkdir(join(config.generationRootDirectory, activePointer.activeGenerationId), {
+    recursive: true,
+  });
+  const stagingDirectory = join(config.generationRootDirectory, 'generation_staging');
+  await mkdir(stagingDirectory, { recursive: true });
+  await writeRecallActiveGenerationPointer(config.activeGenerationPointerPath, activePointer);
+  await writeRecallGenerationRegistry(config.generationRegistryPath, {
+    version: RECALL_GENERATION_REGISTRY_VERSION,
+    activeGenerationId: activePointer.activeGenerationId,
+    buildingGenerationId: null,
+    rollbackGenerationId: null,
+    activePointerChecksum: activePointer.checksum,
+    generations: [
+      {
+        generationId: activePointer.activeGenerationId,
+        state: RecallGenerationCutoverState.ACTIVE,
+        embeddingProfileId: 'embedding-profile-v1',
+        indexManifestVersion: 6,
+        markerSchemaVersion: 1,
+        sessionProjectionSchemaVersion: 3,
+        indexManifestFingerprint: 'a'.repeat(64),
+        rebuildStartedAtEpochMilliseconds: 1,
+        stateChangedAtEpochMilliseconds: 2,
+        rebuildStartMarkerId: null,
+        rebuildMarkerWatermark: [],
+        validatedAtEpochMilliseconds: 2,
+        retireAfterEpochMilliseconds: null,
+      },
+      {
+        generationId: 'generation_staging',
+        state: RecallGenerationCutoverState.FAILED,
+        embeddingProfileId: 'embedding-profile-v2',
+        indexManifestVersion: 6,
+        markerSchemaVersion: 1,
+        sessionProjectionSchemaVersion: 3,
+        indexManifestFingerprint: '0'.repeat(64),
+        rebuildStartedAtEpochMilliseconds: 3,
+        stateChangedAtEpochMilliseconds: 4,
+        rebuildStartMarkerId: null,
+        rebuildMarkerWatermark: [],
+        validatedAtEpochMilliseconds: null,
+        retireAfterEpochMilliseconds: null,
+      },
+    ],
+  });
+
+  const service = createRecallConversationService(config, {
+    embeddingProvider: {
+      async embedQuery() {
+        return [1, 0, 0];
+      },
+      async embedDocuments(documents) {
+        return documents.map(() => [1, 0, 0]);
+      },
+    },
+    async loadTokenizer() {
+      return TOKENIZER;
+    },
+  });
+
+  // Simulate a crash after marking RETIRED but before directory removal by only applying the
+  // registry transition, then prove collect-retired can finish cleanup.
+  const registry = await readRecallGenerationRegistry(config.generationRegistryPath);
+  assert.ok(registry);
+  const discardedAt = 50;
+  await writeRecallGenerationRegistry(config.generationRegistryPath, {
+    ...registry,
+    generations: registry.generations.map((entry) =>
+      entry.generationId === 'generation_staging'
+        ? {
+            ...entry,
+            state: RecallGenerationCutoverState.RETIRED,
+            stateChangedAtEpochMilliseconds: discardedAt,
+            validatedAtEpochMilliseconds: discardedAt,
+            retireAfterEpochMilliseconds: discardedAt,
+          }
+        : entry,
+    ),
+  });
+  assert.equal((await service.readIndexGenerationStatus()).staging, null);
+  await access(stagingDirectory);
+
+  const { collectRetiredRecallGenerations } = await import('./collect-retired-recall-generations.js');
+  const collected = await collectRetiredRecallGenerations({
+    activeGenerationPointerPath: config.activeGenerationPointerPath,
+    generationRegistryPath: config.generationRegistryPath,
+    generationRootDirectory: config.generationRootDirectory,
+    lockPath: config.lockPath,
+    nowEpochMilliseconds: () => discardedAt,
+  });
+  assert.deepEqual(collected.deletedGenerationIds, ['generation_staging']);
+  await assert.rejects(() => access(stagingDirectory), { code: 'ENOENT' });
+  assert.equal(
+    (await readRecallGenerationRegistry(config.generationRegistryPath))?.generations.some(
+      ({ generationId }) => generationId === 'generation_staging',
+    ),
+    false,
   );
 });
 

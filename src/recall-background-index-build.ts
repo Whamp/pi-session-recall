@@ -220,6 +220,14 @@ async function writeAtomicJson(path: string, value: unknown): Promise<void> {
   await rename(temporaryPath, path);
 }
 
+/** Derives one build-scoped worker request path from the configured request base path. */
+export function recallBackgroundIndexWorkerRequestPath(
+  baseRequestPath: string,
+  buildId: string,
+): string {
+  return `${baseRequestPath}.${buildId}`;
+}
+
 /** Reads one validated background worker request written by the conversation service. */
 export async function readRecallBackgroundIndexWorkerRequest(
   requestPath: string,
@@ -386,6 +394,7 @@ async function spawnBackgroundIndexWorker(
   generationId: string | null,
 ): Promise<RecallBackgroundIndexGenerationStatus> {
   const buildId = randomUUID();
+  const requestPath = recallBackgroundIndexWorkerRequestPath(config.requestPath, buildId);
   const request = {
     version: 1,
     buildId,
@@ -397,10 +406,10 @@ async function spawnBackgroundIndexWorker(
     },
     serviceFactory: config.serviceFactory,
   };
-  await writeAtomicJson(config.requestPath, request);
+  await writeAtomicJson(requestPath, request);
 
   const workerPath = fileURLToPath(new URL('./recall-background-index-worker.ts', import.meta.url));
-  const child = spawn(process.execPath, ['--import', 'tsx', workerPath, config.requestPath], {
+  const child = spawn(process.execPath, ['--import', 'tsx', workerPath, requestPath], {
     cwd: dirname(workerPath),
     detached: true,
     stdio: 'ignore',
@@ -553,7 +562,7 @@ export async function markRecallBackgroundIndexGenerationDiscarded(
   }
 }
 
-/** Removes a worker request after a terminal state; status remains as bounded evidence. */
+/** Removes one build-scoped worker request after a terminal state; status remains as bounded evidence. */
 export async function removeRecallBackgroundIndexWorkerRequest(requestPath: string): Promise<void> {
   await rm(requestPath, { force: true });
 }

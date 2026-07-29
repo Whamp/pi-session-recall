@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { setTimeout as sleep } from 'node:timers/promises';
 
 import { EmbeddedInferenceDevicePolicy } from './enums.js';
 
@@ -123,6 +124,124 @@ void test('embedded QMD query planner passes shared conformance with profile gra
   });
   assert.ok(measurement.planningMilliseconds >= 0);
   assert.deepEqual(disposals, ['context']);
+});
+
+void test('embedded QMD disposal releases the runtime after model disposal fails', async () => {
+  const profile = createRecommendedQmdQueryPlanningModelProfile();
+  const events: string[] = [];
+  const provider = createEmbeddedQmdQueryPlanningProvider(profile, {
+    modelCacheDirectory: '/models',
+    device: EmbeddedInferenceDevicePolicy.CPU,
+    async verifyModelArtifact() {
+      return '/models/qmd-query-expansion.gguf';
+    },
+    async loadNodeLlamaCpp() {
+      return {
+        version: '3.18.1',
+        LlamaLogLevel: { error: 'error' },
+        createChatSession() {
+          return {
+            async prompt() {
+              return 'lex: fixture query\nvec: fixture semantic query';
+            },
+          };
+        },
+        async getLlama() {
+          return {
+            gpu: false as const,
+            async createGrammar() {
+              return {};
+            },
+            async loadModel() {
+              return {
+                async createContext() {
+                  return { getSequence: () => ({}), async dispose() {} };
+                },
+                async dispose() {
+                  events.push('model');
+                  throw new Error('fixture model disposal failed');
+                },
+              };
+            },
+            async dispose() {
+              events.push('runtime');
+            },
+          };
+        },
+      };
+    },
+  });
+
+  await provider.planRecallQuery({ query: 'load resources' });
+  await assert.rejects(() => provider.dispose(), AggregateError);
+  assert.deepEqual(events, ['model', 'runtime']);
+});
+
+void test('QMD context disposal failure preserves the operation error and schedules idle cleanup', async () => {
+  const profile = createRecommendedQmdQueryPlanningModelProfile();
+  const events: string[] = [];
+  const provider = createEmbeddedQmdQueryPlanningProvider(profile, {
+    modelCacheDirectory: '/models',
+    device: EmbeddedInferenceDevicePolicy.CPU,
+    idleTimeoutMilliseconds: 5,
+    async verifyModelArtifact() {
+      return '/models/qmd-query-expansion.gguf';
+    },
+    async loadNodeLlamaCpp() {
+      return {
+        version: '3.18.1',
+        LlamaLogLevel: { error: 'error' },
+        createChatSession() {
+          return {
+            async prompt() {
+              throw new Error('fixture prompt failed');
+            },
+          };
+        },
+        async getLlama() {
+          return {
+            gpu: false as const,
+            async createGrammar() {
+              return {};
+            },
+            async loadModel() {
+              return {
+                async createContext() {
+                  return {
+                    getSequence: () => ({}),
+                    async dispose() {
+                      throw new Error('fixture context disposal failed');
+                    },
+                  };
+                },
+                async dispose() {
+                  events.push('model');
+                },
+              };
+            },
+            async dispose() {
+              events.push('runtime');
+            },
+          };
+        },
+      };
+    },
+  });
+
+  await assert.rejects(
+    () => provider.planRecallQuery({ query: 'failing operation' }),
+    (error: unknown) => {
+      assert.ok(error instanceof AggregateError);
+      assert.deepEqual(
+        error.errors.map((item) => (item instanceof Error ? item.message : String(item))),
+        ['fixture prompt failed', 'fixture context disposal failed'],
+      );
+      return true;
+    },
+  );
+  await sleep(20);
+  assert.deepEqual(events, ['model', 'runtime']);
+  await provider.dispose();
 });
 
 void test('embedded QMD query planner retries automatic accelerator failure on CPU once', async (t) => {

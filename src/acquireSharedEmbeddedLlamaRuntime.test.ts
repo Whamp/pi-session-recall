@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { acquireSharedEmbeddedLlamaRuntime } from './acquireSharedEmbeddedLlamaRuntime.js';
+import {
+  acquireEmbeddedLlamaRuntimeForBackend,
+  acquireSharedEmbeddedLlamaRuntime,
+} from './acquireSharedEmbeddedLlamaRuntime.js';
 import { createEmbeddedEmbeddingGemmaProvider } from './embedded-embeddinggemma-provider.js';
 import { createEmbeddedQwenRerankingProvider } from './embedded-qwen-reranking-provider.js';
-import { EmbeddedInferenceDevicePolicy } from './enums.js';
+import { EmbeddedInferenceComputeBackend, EmbeddedInferenceDevicePolicy } from './enums.js';
 import {
   createRecommendedEmbeddingGemmaModelProfile,
   createRecommendedQwenRerankingModelProfile,
@@ -106,6 +109,35 @@ void test('EmbeddingGemma and Qwen providers share one runtime without premature
   assert.equal(runtimeDisposeCount, 0);
   await rerankingProvider.dispose();
   assert.equal(runtimeDisposeCount, 1);
+});
+
+void test('backend mismatch releases the acquired embedded runtime', async () => {
+  let disposeCount = 0;
+
+  await assert.rejects(
+    () =>
+      acquireEmbeddedLlamaRuntimeForBackend({
+        capabilityLabel: 'fixture',
+        computeBackend: EmbeddedInferenceComputeBackend.METAL,
+        nodeLlamaCpp: {
+          version: '3.18.1',
+          LlamaLogLevel: { error: 'error' },
+          async getLlama() {
+            return {
+              gpu: false as const,
+              async dispose() {
+                disposeCount += 1;
+              },
+            };
+          },
+        },
+        isRuntime: (value): value is { gpu: false; dispose(): Promise<void> } =>
+          typeof value === 'object' && value !== null,
+      }),
+    /compute backend mismatch/u,
+  );
+
+  assert.equal(disposeCount, 1);
 });
 
 void test('embedded capabilities share one in-flight runtime until every lease releases', async () => {

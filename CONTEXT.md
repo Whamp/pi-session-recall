@@ -108,6 +108,14 @@ _Avoid_: Exact result
 One conversation, summary, or tool evidence document deduplicated across retrieval channels, with its document kind and each component rank and score retained.
 _Avoid_: Semantic match
 
+**Submitted recall query**:
+The exact search text that an invoking agent sends to Conversation Recall.
+_Avoid_: User query, original query
+
+**Recall intent**:
+Optional context supplied by the invoking agent to disambiguate query planning and reranking without becoming a retrieval query itself.
+_Avoid_: Search query, filter, agent prompt
+
 **Query plan**:
 One ordered, validated collection of planned retrieval queries produced by an invoking agent or a configured query planning model. It does not itself execute retrieval or ranking.
 _Avoid_: Expanded query string, generated search
@@ -119,6 +127,18 @@ _Avoid_: Search result, identifier query
 **Query planning capability verification**:
 One independent conformance operation that checks planner profile, adapter, prompt, grammar, typed bounds, recall intent, cancellation, timeout, and cache identity before query-planned search can use it.
 _Avoid_: Query-planned search, model health check
+
+**Query-planned recall**:
+A recall search that keeps every submitted-query retrieval channel and adds ranked lists from a query plan. An invoking agent may supply the plan; otherwise a configured query-planning model produces it.
+_Avoid_: Planned search, query rewrite, agentic search
+
+**Model profile**:
+The immutable semantic identity of one inference model's accepted inputs and produced outputs, independent of where or how the model executes.
+_Avoid_: Backend, endpoint configuration, model name
+
+**Inference adapter**:
+A verified translation between one inference service contract and one Conversation Recall capability contract, including the service's capability-specific semantics.
+_Avoid_: Endpoint mapping, generic model adapter, inference configuration
 
 **Inference configuration**:
 The atomic local selection of independently verified embedding, reranking, and query-planning model profiles plus their execution backends. Embeddings are required; the other capabilities are optional.

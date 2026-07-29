@@ -578,9 +578,15 @@ async function scanPhysicalSessionFiles(options: IncrementalSessionIndexerOption
 }> {
   const scanStartedAtMilliseconds = options.diagnosticsClock?.monotonicMilliseconds();
   try {
+    const sessionFiles = await listRecallConversationSessionFiles(options.sessionsDirectory);
     return {
       state: await readConversationIndexState(options.statePath),
-      sessionFiles: await listRecallConversationSessionFiles(options.sessionsDirectory),
+      sessionFiles:
+        options.eligibleContributorEntryIdsBySessionPath === undefined
+          ? sessionFiles
+          : sessionFiles.filter((sessionPath) =>
+              options.eligibleContributorEntryIdsBySessionPath?.has(sessionPath),
+            ),
     };
   } finally {
     if (

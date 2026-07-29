@@ -6,6 +6,7 @@ import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { promisify } from 'node:util';
 
 import {
@@ -49,7 +50,10 @@ import {
   encodeRecallActiveGenerationPointer,
   encodeRecallBacklogSummary,
   readRecallActiveGenerationSelection,
+  readRecallGenerationRegistry,
   RECALL_BACKLOG_SUMMARY_VERSION,
+  RECALL_GENERATION_REGISTRY_VERSION,
+  writeRecallGenerationRegistry,
 } from './recall-generation-state.js';
 import {
   createRecallConversationService as createProductionRecallConversationService,
@@ -951,6 +955,162 @@ void test('manual rebuild diagnostics isolate final database optimization durati
   assert.equal(records[1]?.unattributedMilliseconds, 18);
 });
 
+void test('rebuild excludes live physical sources absent from the approved snapshot', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-service-rebuild-approved-only-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionsDirectory = join(directory, 'sessions');
+  const approvedSessionPath = join(sessionsDirectory, 'approved-session.jsonl');
+  const unapprovedSessionPath = join(sessionsDirectory, 'unapproved-session.jsonl');
+  await mkdir(sessionsDirectory);
+  await writeFile(
+    approvedSessionPath,
+    `${JSON.stringify({
+      type: 'session',
+      version: 3,
+      id: 'approved-session',
+      timestamp: '2026-07-27T10:00:00.000Z',
+      cwd: '/workspace/approved',
+    })}\n${JSON.stringify({
+      type: 'message',
+      id: 'approved-entry',
+      parentId: null,
+      timestamp: '2026-07-27T10:00:01.000Z',
+      message: { role: 'user', content: 'approved but ineligible evidence' },
+    })}\n`,
+  );
+  await writeFile(
+    unapprovedSessionPath,
+    `${JSON.stringify({
+      type: 'session',
+      version: 3,
+      id: 'unapproved-session',
+      timestamp: '2026-07-27T10:00:02.000Z',
+      cwd: '/workspace/unapproved',
+    })}\n${JSON.stringify({
+      type: 'message',
+      id: 'unapproved-entry',
+      parentId: null,
+      timestamp: '2026-07-27T10:00:03.000Z',
+      message: { role: 'user', content: 'unapproved searchable evidence' },
+    })}\n`,
+  );
+  const config = createTestConfig(directory, sessionsDirectory);
+  await mkdir(join(config.generationRootDirectory, TEST_ACTIVE_GENERATION_ID), {
+    recursive: true,
+  });
+  await writeRecallIndexManifest(
+    config.manifestPath,
+    createRecallIndexManifest({
+      embeddingIdentity: {
+        requestModel: config.embeddingModel,
+        servedModelId: config.embeddingServedModelId,
+        artifact: config.embeddingArtifact,
+        dimensions: config.embeddingDimensions,
+        quantization: config.embeddingQuantization,
+        pooling: config.embeddingPooling,
+      },
+      canaryEmbedding: [1, 0, 0],
+    }),
+  );
+  const physicalProjection: PhysicalSessionProjection = {
+    schemaVersion: RECALL_SESSION_PROJECTION_SCHEMA_VERSION,
+    projectionKind: RecallSessionProjectionKind.PHYSICAL_SESSION,
+    projectionId: createPhysicalSessionProjectionId('approved-physical-session'),
+    generationId: TEST_ACTIVE_GENERATION_ID,
+    physicalSessionId: 'approved-physical-session',
+    sourcePath: approvedSessionPath,
+    sourceDevice: '1',
+    sourceInode: '2',
+    appendCursorBytes: 1,
+    appendCursorLines: 2,
+    boundaryFingerprint: 'a'.repeat(64),
+    lastEntryId: 'approved-entry',
+    logicalSessionIds: [],
+    sourceAvailability: RecallSourceAvailability.PRESENT,
+    sourceMissingObservedAtEpochMilliseconds: null,
+    sourceMissingObservationCount: 0,
+    sourceMissingSweepId: null,
+    deletionCheckpoint: null,
+    markerCheckpoint: {
+      generationId: TEST_ACTIVE_GENERATION_ID,
+      coveredMarkerIds: [],
+      runtimeSequences: [],
+    },
+    repairState: RecallProjectionRepairState.READY,
+    repairReason: null,
+  };
+  const projectionStore = openZvecSessionProjectionStore({
+    databasePath: config.projectionDatabasePath,
+    generationId: TEST_ACTIVE_GENERATION_ID,
+  });
+  await projectionStore.upsertProjections([physicalProjection]);
+  projectionStore.close();
+  const storedChunks = new Map<string, IndexedSessionConversationChunk>();
+  const service = createRecallConversationService(config, {
+    embeddings: {
+      async embedTexts(texts) {
+        return texts.map(() => [1, 0, 0]);
+      },
+    },
+    async loadTokenizer() {
+      return tokenizer;
+    },
+    openStore() {
+      return {
+        async upsertChunks(chunks) {
+          for (const chunk of chunks) {
+            storedChunks.set(chunk.id, chunk);
+          }
+        },
+        async deleteChunks(ids) {
+          for (const id of ids) {
+            storedChunks.delete(id);
+          }
+        },
+        async listChunkIdsByPhysicalSessionProjectionId() {
+          return [];
+        },
+        async searchDenseCandidates() {
+          return [];
+        },
+        async searchLexicalCandidates() {
+          return [];
+        },
+        async searchIdentifierCandidates() {
+          return [];
+        },
+        fetchConversationChunks(ids) {
+          return new Map(
+            ids.flatMap((id) => {
+              const chunk = storedChunks.get(id);
+              return chunk ? [[id, chunk] as const] : [];
+            }),
+          );
+        },
+        fetchVectors() {
+          return new Map();
+        },
+        groupDenseCandidates() {
+          return [];
+        },
+        addColumn() {},
+        alterColumn() {},
+        createIndex() {},
+        async optimize() {},
+        close() {},
+        count() {
+          return storedChunks.size;
+        },
+      };
+    },
+  });
+
+  const result = await service.index({ rebuild: true });
+
+  assert.equal(result.indexSummary.scannedSessions, 1);
+  assert.equal(result.totalChunks, 0);
+});
+
 void test('rebuild preserves the active generation when an approved physical source disappears', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'recall-service-rebuild-source-disappears-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -1123,6 +1283,100 @@ void test('rebuild preserves the active generation when an approved physical sou
     ).activeGenerationId,
     TEST_ACTIVE_GENERATION_ID,
   );
+});
+
+void test('staging discard holds a write window for its final registry rewrite', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-service-discard-registry-lock-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionsDirectory = join(directory, 'sessions');
+  await mkdir(sessionsDirectory);
+  const config = createTestConfig(directory, sessionsDirectory);
+  const stagingGenerationId = 'generation_staging';
+  const stagingDirectory = join(config.generationRootDirectory, stagingGenerationId);
+  await mkdir(stagingDirectory, { recursive: true });
+  await Promise.all(
+    Array.from({ length: 1_000 }, (_, index) =>
+      writeFile(join(stagingDirectory, `discard-${index}.tmp`), 'discard registry lock fixture'),
+    ),
+  );
+  const activePointer = createRecallActiveGenerationPointer(TEST_ACTIVE_GENERATION_ID);
+  await writeRecallGenerationRegistry(config.generationRegistryPath, {
+    version: RECALL_GENERATION_REGISTRY_VERSION,
+    activeGenerationId: TEST_ACTIVE_GENERATION_ID,
+    buildingGenerationId: null,
+    rollbackGenerationId: null,
+    activePointerChecksum: activePointer.checksum,
+    generations: [
+      {
+        generationId: TEST_ACTIVE_GENERATION_ID,
+        state: RecallGenerationCutoverState.ACTIVE,
+        embeddingProfileId: 'embedding-profile-v1',
+        indexManifestVersion: 6,
+        markerSchemaVersion: 1,
+        sessionProjectionSchemaVersion: 3,
+        indexManifestFingerprint: 'a'.repeat(64),
+        rebuildStartedAtEpochMilliseconds: 1,
+        stateChangedAtEpochMilliseconds: 2,
+        rebuildStartMarkerId: null,
+        rebuildMarkerWatermark: [],
+        validatedAtEpochMilliseconds: 2,
+        retireAfterEpochMilliseconds: null,
+      },
+      {
+        generationId: stagingGenerationId,
+        state: RecallGenerationCutoverState.FAILED,
+        embeddingProfileId: 'embedding-profile-v2',
+        indexManifestVersion: 6,
+        markerSchemaVersion: 1,
+        sessionProjectionSchemaVersion: 3,
+        indexManifestFingerprint: 'b'.repeat(64),
+        rebuildStartedAtEpochMilliseconds: 3,
+        stateChangedAtEpochMilliseconds: 4,
+        rebuildStartMarkerId: null,
+        rebuildMarkerWatermark: [],
+        validatedAtEpochMilliseconds: null,
+        retireAfterEpochMilliseconds: null,
+      },
+    ],
+  });
+  const service = createRecallConversationService(config, {
+    embeddings: {
+      async embedTexts(texts) {
+        return texts.map(() => [1, 0, 0]);
+      },
+    },
+    async loadTokenizer() {
+      return tokenizer;
+    },
+  });
+  let discardSettled = false;
+  const discard = service.discardStagingIndexGeneration().finally(() => {
+    discardSettled = true;
+  });
+  for (;;) {
+    const registry = await readRecallGenerationRegistry(config.generationRegistryPath);
+    const stagingEntry = registry?.generations.find(
+      ({ generationId }) => generationId === stagingGenerationId,
+    );
+    if (stagingEntry?.state === RecallGenerationCutoverState.RETIRED) {
+      break;
+    }
+    assert.equal(
+      discardSettled,
+      false,
+      'discard removed the registry entry before lock observation',
+    );
+    await sleep(1);
+  }
+
+  await coordinateRecallWriteWindow(
+    { lockPath: config.lockPath, allowRecovery: false },
+    async () => {
+      await sleep(50);
+      assert.equal(discardSettled, false);
+    },
+  );
+  assert.equal(await discard, true);
 });
 
 void test('manual index diagnostics preserve optimization failure and release the writer lock', async (t) => {

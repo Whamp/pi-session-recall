@@ -1,4 +1,8 @@
-import { RecallGenerationCutoverState } from './enums.js';
+import {
+  RecallBacklogFailureCategory,
+  RecallGenerationCutoverState,
+  RECALL_INDEX_MANIFEST_VERSION,
+} from './enums.js';
 import {
   activateRecallReplacementInRegistry,
   createRecallActiveGenerationPointer,
@@ -14,8 +18,61 @@ import {
   type RecallGenerationRegistry,
   type RecallGenerationRegistryEntry,
 } from './recall-generation-state.js';
+import { RECALL_SESSION_PROJECTION_SCHEMA_VERSION } from './recall-session-projection.js';
+import { RECALL_WORK_MARKER_VERSION } from './recall-work-marker.js';
 
 const DEFAULT_ROLLBACK_RETENTION_MILLISECONDS = 7 * 24 * 60 * 60_000;
+
+/** Initial registry and pointer identity used to validate build start or resume. */
+export interface InspectRecallGenerationBuildStartTransitionOptions {
+  registry: RecallGenerationRegistry;
+  activePointer: Awaited<ReturnType<typeof readRecallActiveGenerationPointer>>;
+  generationId: string;
+  resumeExistingGeneration: boolean;
+}
+
+/** Existing failed/building entry reused by an explicit resume, when requested. */
+export interface InspectRecallGenerationBuildStartTransitionResult {
+  resumableEntry?: RecallGenerationRegistryEntry;
+}
+
+/** Expected durable state checked immediately before snapshot capture and build freeze. */
+export interface AssertRecallGenerationBuildStateUnchangedTransitionOptions {
+  activeGenerationPointerPath: string;
+  generationRegistryPath: string;
+  expectedActivePointer: Awaited<ReturnType<typeof readRecallActiveGenerationPointer>>;
+  expectedPersistedRegistry: RecallGenerationRegistry | null;
+}
+
+/** Durable inputs for freezing incremental commits behind one BUILDING generation. */
+export interface StartRecallGenerationBuildTransitionOptions {
+  generationRegistryPath: string;
+  backlogSummaryPath: string;
+  registry: RecallGenerationRegistry;
+  generationId: string;
+  resumableEntry?: RecallGenerationRegistryEntry;
+  embeddingProfileId?: string;
+  rebuildMarkerWatermark: readonly string[];
+  startedAtEpochMilliseconds: number;
+}
+
+/** BUILDING entry and frozen registry published before model work starts. */
+export interface StartRecallGenerationBuildTransitionResult {
+  buildingEntry: RecallGenerationRegistryEntry;
+  registry: RecallGenerationRegistry;
+}
+
+/** Durable state and original error used to fail one replacement build. */
+export interface FailRecallGenerationBuildTransitionOptions {
+  generationRegistryPath: string;
+  backlogSummaryPath: string;
+  registry: RecallGenerationRegistry;
+  buildingEntry: RecallGenerationRegistryEntry;
+  buildFailure: Error;
+  pendingMarkerWatermark: readonly string[];
+  rebuildStartedAtEpochMilliseconds: number;
+  failedAtEpochMilliseconds: number;
+}
 
 /** Validated build evidence required to create one READY replacement snapshot. */
 export interface CreateReadyRecallGenerationTransitionOptions {
@@ -114,6 +171,183 @@ export interface CompleteRecallGenerationReplayTransitionOptions {
   backlogSummaryPath: string;
   nowEpochMilliseconds?: () => number;
   proveReplayWorkComplete(): Promise<boolean>;
+}
+
+/** Validates active/building roles before a new build directory is created or resumed. */
+export function inspectRecallGenerationBuildStartTransition(
+  options: InspectRecallGenerationBuildStartTransitionOptions,
+): InspectRecallGenerationBuildStartTransitionResult {
+  const resumableEntry = options.resumeExistingGeneration
+    ? options.registry.generations.find(({ generationId }) => generationId === options.generationId)
+    : undefined;
+  if (
+    options.resumeExistingGeneration &&
+    (!resumableEntry ||
+      (resumableEntry.state !== RecallGenerationCutoverState.FAILED &&
+        resumableEntry.state !== RecallGenerationCutoverState.BUILDING))
+  ) {
+    throw new Error(
+      `Recall generation resume requires failed or abandoned building state: ${options.generationId}`,
+    );
+  }
+  if (
+    options.registry.buildingGenerationId !== null &&
+    options.registry.buildingGenerationId !== resumableEntry?.generationId
+  ) {
+    throw new Error(
+      `Recall generation rebuild already in progress: ${options.registry.buildingGenerationId}`,
+    );
+  }
+  if (
+    options.registry.activeGenerationId !== (options.activePointer?.activeGenerationId ?? null) ||
+    options.registry.activePointerChecksum !== (options.activePointer?.checksum ?? null)
+  ) {
+    throw new Error('Recall generation registry and active pointer disagree before rebuild');
+  }
+  return resumableEntry ? { resumableEntry } : {};
+}
+
+/** Proves pointer and registry state remain unchanged before external snapshot capture. */
+export async function assertRecallGenerationBuildStateUnchangedTransition(
+  options: AssertRecallGenerationBuildStateUnchangedTransitionOptions,
+): Promise<void> {
+  const [currentPointer, currentRegistry] = await Promise.all([
+    readRecallActiveGenerationPointer(options.activeGenerationPointerPath),
+    readRecallGenerationRegistry(options.generationRegistryPath),
+  ]);
+  const registryChanged =
+    options.expectedPersistedRegistry === null
+      ? currentRegistry !== null
+      : currentRegistry === null ||
+        encodeRecallGenerationRegistry(currentRegistry) !==
+          encodeRecallGenerationRegistry(options.expectedPersistedRegistry);
+  if (currentPointer?.checksum !== options.expectedActivePointer?.checksum || registryChanged) {
+    throw new Error('Recall generation state changed before rebuild freeze');
+  }
+}
+
+/** Publishes BUILDING backlog then registry, compensating backlog if registry publication fails. */
+export async function startRecallGenerationBuildTransition(
+  options: StartRecallGenerationBuildTransitionOptions,
+): Promise<StartRecallGenerationBuildTransitionResult> {
+  const buildingEntry: RecallGenerationRegistryEntry = {
+    ...(options.resumableEntry ?? {
+      generationId: options.generationId,
+      indexManifestVersion: RECALL_INDEX_MANIFEST_VERSION,
+      markerSchemaVersion: RECALL_WORK_MARKER_VERSION,
+      sessionProjectionSchemaVersion: RECALL_SESSION_PROJECTION_SCHEMA_VERSION,
+      rebuildStartedAtEpochMilliseconds: options.startedAtEpochMilliseconds,
+    }),
+    state: RecallGenerationCutoverState.BUILDING,
+    ...(options.embeddingProfileId ? { embeddingProfileId: options.embeddingProfileId } : {}),
+    indexManifestFingerprint: '0'.repeat(64),
+    stateChangedAtEpochMilliseconds: options.startedAtEpochMilliseconds,
+    rebuildStartMarkerId: options.rebuildMarkerWatermark[0] ?? null,
+    rebuildMarkerWatermark: [...options.rebuildMarkerWatermark],
+    validatedAtEpochMilliseconds: null,
+    retireAfterEpochMilliseconds: null,
+  };
+  const frozenRegistry: RecallGenerationRegistry = {
+    ...options.registry,
+    buildingGenerationId: options.generationId,
+    generations: options.resumableEntry
+      ? options.registry.generations.map((entry) =>
+          entry.generationId === buildingEntry.generationId ? buildingEntry : entry,
+        )
+      : [...options.registry.generations, buildingEntry],
+  };
+  if (frozenRegistry.activeGenerationId !== null) {
+    await writeRecallBacklogSummary(options.backlogSummaryPath, {
+      version: RECALL_BACKLOG_SUMMARY_VERSION,
+      pendingEligibleSessionCount: options.rebuildMarkerWatermark.length,
+      oldestEligibleMarkerAgeMilliseconds: null,
+      activeGenerationId: frozenRegistry.activeGenerationId,
+      buildingGenerationId: options.generationId,
+      generationState: RecallGenerationCutoverState.BUILDING,
+      activeGenerationAgeMilliseconds: 0,
+      rebuildAgeMilliseconds: 0,
+      lastFailureCategory: null,
+      observedAtEpochMilliseconds: options.startedAtEpochMilliseconds,
+    });
+  }
+  const [registryWrite] = await Promise.allSettled([
+    writeRecallGenerationRegistry(options.generationRegistryPath, frozenRegistry),
+  ]);
+  if (registryWrite?.status === 'rejected') {
+    if (frozenRegistry.activeGenerationId !== null) {
+      const activeEntry = frozenRegistry.generations.find(
+        ({ generationId }) => generationId === frozenRegistry.activeGenerationId,
+      );
+      await writeRecallBacklogSummary(options.backlogSummaryPath, {
+        version: RECALL_BACKLOG_SUMMARY_VERSION,
+        pendingEligibleSessionCount: options.rebuildMarkerWatermark.length,
+        oldestEligibleMarkerAgeMilliseconds: null,
+        activeGenerationId: frozenRegistry.activeGenerationId,
+        buildingGenerationId: null,
+        generationState: activeEntry?.state ?? RecallGenerationCutoverState.ACTIVE,
+        activeGenerationAgeMilliseconds: 0,
+        rebuildAgeMilliseconds: null,
+        lastFailureCategory: RecallBacklogFailureCategory.REBUILD_FAILED,
+        observedAtEpochMilliseconds: options.startedAtEpochMilliseconds,
+      });
+    }
+    throw registryWrite.reason;
+  }
+  return { buildingEntry, registry: frozenRegistry };
+}
+
+/** Marks a BUILDING replacement failed while preserving every original publication error. */
+export async function failRecallGenerationBuildTransition(
+  options: FailRecallGenerationBuildTransitionOptions,
+): Promise<Error> {
+  let rebuildError = options.buildFailure;
+  const failedEntry: RecallGenerationRegistryEntry = {
+    ...options.buildingEntry,
+    state: RecallGenerationCutoverState.FAILED,
+    stateChangedAtEpochMilliseconds: options.failedAtEpochMilliseconds,
+    rebuildMarkerWatermark: [...options.pendingMarkerWatermark],
+  };
+  const [registryWrite] = await Promise.allSettled([
+    writeRecallGenerationRegistry(options.generationRegistryPath, {
+      ...options.registry,
+      buildingGenerationId: null,
+      generations: options.registry.generations.map((entry) =>
+        entry.generationId === failedEntry.generationId ? failedEntry : entry,
+      ),
+    }),
+  ]);
+  if (registryWrite?.status === 'rejected') {
+    rebuildError = new AggregateError(
+      [rebuildError, registryWrite.reason],
+      'Recall replacement build and failure registry update failed',
+    );
+  }
+  if (options.registry.activeGenerationId !== null) {
+    try {
+      await writeRecallBacklogSummary(options.backlogSummaryPath, {
+        version: RECALL_BACKLOG_SUMMARY_VERSION,
+        pendingEligibleSessionCount: options.pendingMarkerWatermark.length,
+        oldestEligibleMarkerAgeMilliseconds: null,
+        activeGenerationId: options.registry.activeGenerationId,
+        buildingGenerationId:
+          registryWrite?.status === 'rejected' ? options.buildingEntry.generationId : null,
+        generationState: RecallGenerationCutoverState.FAILED,
+        activeGenerationAgeMilliseconds: 0,
+        rebuildAgeMilliseconds: Math.max(
+          0,
+          options.failedAtEpochMilliseconds - options.rebuildStartedAtEpochMilliseconds,
+        ),
+        lastFailureCategory: RecallBacklogFailureCategory.REBUILD_FAILED,
+        observedAtEpochMilliseconds: options.failedAtEpochMilliseconds,
+      });
+    } catch (backlogError) {
+      rebuildError = new AggregateError(
+        [rebuildError, backlogError],
+        'Recall replacement build and failure backlog update failed',
+      );
+    }
+  }
+  return rebuildError;
 }
 
 /** Creates a READY replacement entry without publishing cutover state. */

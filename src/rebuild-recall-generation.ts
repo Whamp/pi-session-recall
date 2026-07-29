@@ -417,7 +417,10 @@ async function rebuildRecallGenerationUnderOwnership<Result, BuildSnapshot = und
   ]);
   options.workerSignal.signalDetachedWorker();
   if (backlogWrite?.status === 'rejected') {
-    throw backlogWrite.reason;
+    throw normalizeRecallRebuildError(
+      backlogWrite.reason,
+      'Recall generation activation backlog publication failed',
+    );
   }
   return {
     result: buildResult,

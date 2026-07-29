@@ -15,6 +15,7 @@ import {
   type RecallGenerationRegistry,
 } from './recall-generation-state.js';
 import {
+  activateReadyRecallGenerationTransition,
   completeRecallGenerationReplayTransition,
   completeStagingRecallGenerationDiscardTransition,
   prepareStagingRecallGenerationDiscardTransition,
@@ -88,6 +89,57 @@ function createStagingDiscardRegistry(
     ],
   };
 }
+
+void test('activation preserves READY registry state when pointer publication fails', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-activation-pointer-fault-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const pointerPath = join(root, 'active-generation.json');
+  const registryPath = join(root, 'generation-registry.json');
+  const frozenRegistry = createStagingDiscardRegistry(RecallGenerationCutoverState.BUILDING);
+  const readyRegistry = createStagingDiscardRegistry(RecallGenerationCutoverState.READY);
+  const readyEntry = readyRegistry.generations.find(
+    ({ generationId }) => generationId === 'generation_staging',
+  );
+  assert.ok(readyEntry);
+  await writeRecallActiveGenerationPointer(
+    pointerPath,
+    createRecallActiveGenerationPointer('generation_active'),
+  );
+  await writeRecallGenerationRegistry(registryPath, frozenRegistry);
+  let recoveryRequired = false;
+
+  await assert.rejects(
+    () =>
+      activateReadyRecallGenerationTransition({
+        activeGenerationPointerPath: pointerPath,
+        generationRegistryPath: registryPath,
+        expectedActivePointer: createRecallActiveGenerationPointer('generation_active'),
+        expectedFrozenRegistry: frozenRegistry,
+        readyRegistry,
+        readyEntry,
+        activatedAtEpochMilliseconds: 20_000,
+        async beforePointerSwap() {
+          await rm(pointerPath);
+          await mkdir(pointerPath);
+        },
+        throwIfCancelled() {},
+        retainRecoveryRequired() {
+          recoveryRequired = true;
+        },
+      }),
+    /EISDIR|directory/iu,
+  );
+
+  const interruptedRegistry = await readRecallGenerationRegistry(registryPath);
+  assert.equal(interruptedRegistry?.buildingGenerationId, 'generation_staging');
+  assert.equal(
+    interruptedRegistry?.generations.find(
+      ({ generationId }) => generationId === 'generation_staging',
+    )?.state,
+    RecallGenerationCutoverState.READY,
+  );
+  assert.equal(recoveryRequired, true);
+});
 
 void test('staging discard rejects a retained rollback generation', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'recall-staging-discard-source-'));

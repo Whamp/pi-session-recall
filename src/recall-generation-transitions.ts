@@ -813,7 +813,10 @@ export async function startRecallGenerationBuildTransition(
         observedAtEpochMilliseconds: options.startedAtEpochMilliseconds,
       });
     }
-    throw registryWrite.reason;
+    const reason: unknown = registryWrite.reason;
+    throw reason instanceof Error
+      ? reason
+      : new Error('Recall generation registry write failed', { cause: reason });
   }
   return { buildingEntry, registry: frozenRegistry };
 }

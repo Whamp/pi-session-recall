@@ -708,6 +708,7 @@ void test('fixed private plans prove new source admission through deterministic 
   assert.equal(liveEvaluation.capabilityConformance.reranking.measurement.documentCount, 2);
   assert.equal(liveEvaluation.latency.warmPlanningSucceeded, false);
   assert.equal(liveEvaluation.quality.newCandidateAdmissionCount, 1);
+  assert.equal(liveEvaluation.quality.noImprovementCount, 0);
   assert.equal(liveEvaluation.quality.plannerFallbackCount, 0);
   assert.equal(liveEvaluation.cases[0]?.planSource, 'planner');
   assert.deepEqual(liveEvaluation.cases[0]?.plannedQueries, [
@@ -769,6 +770,7 @@ void test('fixed private plans prove new source admission through deterministic 
     noImprovement: true,
   });
   assert.equal(fallbackEvaluation.quality.newCandidateAdmissionCount, 0);
+  assert.equal(fallbackEvaluation.quality.noImprovementCount, 1);
   assert.equal(fallbackEvaluation.quality.plannerFallbackCount, 1);
 
   function createMeasuredProfileRun(
@@ -847,6 +849,25 @@ void test('fixed private plans prove new source admission through deterministic 
           ...liveEvaluation.capabilityConformance.reranking,
           executionIdentity: rerankingExecutionIdentity,
         },
+      },
+      committedCorpus: {
+        corpusId: 'recall-quality-project-scoped-bounded-v3',
+        specificationSha256: '3'.repeat(64),
+        caseCount: 17,
+        qualityPassed: true,
+        candidatePoolRecall: 1,
+        finalRecall: 1,
+        contextUsefulness: 1,
+        sourceOccurrencePreservation: 1,
+        sessionOriginVerification: 1,
+        evidenceRelationVerification: 1,
+        contributingEntryVerification: 1,
+        branchVerification: 1,
+        policyFailureCaseIds: [],
+        queryLatencyMilliseconds: { median: 10, p95: 20 },
+        executedSearchRequests: 18,
+        plannerRequests: 17,
+        rerankerRequests: 18,
       },
     };
   }
@@ -930,6 +951,14 @@ void test('fixed private plans prove new source admission through deterministic 
   assert.equal(acceptance.releaseDecision, 'approved-explicit-fallback');
   assert.equal(acceptance.defaultSearchMode, 'hybrid');
   assert.equal(acceptance.aggregateQuality.newCandidateAdmissionCount, 3);
+  assert.equal(acceptance.aggregateQuality.noImprovementCount, 0);
+  assert.equal(
+    acceptance.aggregateQuality.newCandidateAdmissionCount +
+      acceptance.aggregateQuality.rankingOnlyPromotionCount +
+      acceptance.aggregateQuality.preservedExistingSuccessCount +
+      acceptance.aggregateQuality.noImprovementCount,
+    measuredProfileRuns.reduce((total, run) => total + run.cases.length, 0),
+  );
   assert.equal(acceptance.profileRuns.length, 3);
   const acceptanceReport = formatPublishableLiveQueryPlannedProfileAcceptanceReport(acceptance);
   assert.match(acceptanceReport, /Approved as an explicit fallback after hybrid misses/u);
@@ -940,6 +969,8 @@ void test('fixed private plans prove new source admission through deterministic 
   );
   assert.match(acceptanceReport, /embedded-cpu/u);
   assert.match(acceptanceReport, /Cold planning/u);
+  assert.match(acceptanceReport, /Live planner\/reranker quality on the committed corpus/u);
+  assert.match(acceptanceReport, /17 \| 100\.0% \| 100\.0%/u);
   assert.match(acceptanceReport, /Candidate work/u);
   assert.match(
     acceptanceReport,
@@ -947,6 +978,7 @@ void test('fixed private plans prove new source admission through deterministic 
   );
   assert.match(acceptanceReport, /Planner\/reranker backend/u);
   assert.match(acceptanceReport, /does not measure end-to-end production inference/u);
+  assert.match(acceptanceReport, /No improvement: 0/u);
   assert.match(acceptanceReport, /Planner fallbacks/u);
   assert.equal(acceptanceReport.includes(lexicalPlanQuery), false);
   assert.equal(acceptanceReport.includes('Private mechanism phrase'), false);
@@ -971,6 +1003,13 @@ void test('fixed private plans prove new source admission through deterministic 
   if (!embeddedCpuRun || !embeddedAcceleratedRun || !httpRun) {
     throw new Error('Expected complete measured profile fixture matrix');
   }
+  const { committedCorpus: omittedCommittedCorpus, ...runWithoutCommittedCorpus } = embeddedCpuRun;
+  void omittedCommittedCorpus;
+  assert.throws(
+    () =>
+      createAcceptanceWithProfileRuns([runWithoutCommittedCorpus, embeddedAcceleratedRun, httpRun]),
+    /committed-corpus planner\/reranker quality invalid/u,
+  );
   assert.throws(
     () =>
       createAcceptanceWithProfileRuns([

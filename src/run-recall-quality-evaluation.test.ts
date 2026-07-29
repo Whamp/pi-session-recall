@@ -9,10 +9,15 @@ import { fileURLToPath } from 'node:url';
 import {
   RecallDiagnosticsMode,
   RecallEvidenceRelation,
+  RecallInferenceBackend,
   RecallProjectIdentitySource,
   RecallSearchScope,
 } from './enums.js';
-import type { RecallEmbeddingProvider } from './recall-inference-capabilities.js';
+import {
+  createRecallQueryPlanningExecutionIdentity,
+  createRecallRerankingExecutionIdentity,
+  type RecallEmbeddingProvider,
+} from './recall-inference-capabilities.js';
 import type { LocalEmbeddingClient } from './local-embedding-client.js';
 import { loadRecallQualityCorpus } from './recall-quality-corpus.js';
 import {
@@ -24,7 +29,11 @@ import {
   RECALL_EMBEDDING_CANARY_TEXT,
   type RecallTokenizerManifestIdentity,
 } from './recall-index-manifest.js';
-import type { RecallEmbeddingModelProfile } from './recall-model-profiles.js';
+import {
+  createRecommendedQmdQueryPlanningModelProfile,
+  createRecommendedQwenRerankingModelProfile,
+  type RecallEmbeddingModelProfile,
+} from './recall-model-profiles.js';
 import { normalizeRecallProjectLineages } from './resolve-project-identity.js';
 import { runRecallQualityEvaluation } from './run-recall-quality-evaluation.js';
 import type { ConversationTextTokenizer } from './session-conversation-index.js';
@@ -339,6 +348,65 @@ void test('recall quality runner indexes and searches only the bounded declared 
   assert.deepEqual(result.configurations[0]?.measurement.policyFailureCaseIds, []);
   assert.deepEqual(result.configurations[0]?.measurement.queryLatencyByScope.global, null);
   assert.ok(result.configurations[0]?.measurement.queryLatencyByScope.project);
+
+  const queryPlanningProfile = createRecommendedQmdQueryPlanningModelProfile();
+  const rerankingProfile = createRecommendedQwenRerankingModelProfile();
+  const queryPlannerExecutionIdentity = createRecallQueryPlanningExecutionIdentity(
+    queryPlanningProfile,
+    'fixture-committed-corpus-query-planner-v1',
+    'fixture-committed-corpus-query-planner-config-v1',
+    RecallInferenceBackend.LLAMA_CPP_HTTP,
+    1_000,
+  );
+  const rerankerExecutionIdentity = createRecallRerankingExecutionIdentity(
+    rerankingProfile,
+    'fixture-committed-corpus-reranker-v1',
+    'fixture-committed-corpus-reranker-config-v1',
+    RecallInferenceBackend.LLAMA_CPP_HTTP,
+    1_000,
+  );
+  const queryPlannedResult = await runRecallQualityEvaluation({
+    corpus,
+    baseConfig,
+    workDirectory: join(
+      evaluationDirectory,
+      '.recall-data',
+      'query-planned',
+      'recall-quality-evaluation',
+    ),
+    dependencies: {
+      embeddings,
+      async loadTokenizer() {
+        return tokenizer;
+      },
+    },
+    queryPlannedDependencies: {
+      queryPlanningProfile,
+      queryPlanner: {
+        executionIdentity: queryPlannerExecutionIdentity,
+        async planRecallQuery(request) {
+          return [
+            { type: 'lex', query: request.query },
+            { type: 'vec', query: request.query },
+          ];
+        },
+      },
+      rerankingProfile,
+      reranker: {
+        executionIdentity: rerankerExecutionIdentity,
+        async rerankDocuments(query, documents) {
+          void query;
+          return documents.map((document) => (document.includes('quartz-heron') ? 1 : 0));
+        },
+      },
+    },
+  });
+  assert.equal(queryPlannedResult.queryPlanned?.selection.passed, true);
+  assert.equal(queryPlannedResult.queryPlanned?.boundedWork.executedSearchRequests, 1);
+  assert.equal(queryPlannedResult.queryPlanned?.boundedWork.plannerRequests, 1);
+  assert.equal(queryPlannedResult.queryPlanned?.boundedWork.rerankerRequests, 1);
+  assert.equal(queryPlannedResult.queryPlanned?.selection.selected?.candidatePoolRecall, 1);
+  assert.equal(queryPlannedResult.queryPlanned?.selection.selected?.finalRecall, 1);
 
   const profileWorkDirectory = join(
     evaluationDirectory,

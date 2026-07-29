@@ -25,6 +25,7 @@ void test('live query-planned profile acceptance CLI documents the complete meas
   assert.match(stdout, /--http-planner-url/u);
   assert.match(stdout, /--http-reranker-url/u);
   assert.match(stdout, /embedded CPU, embedded accelerator, and HTTP/u);
+  assert.match(stdout, /checksum-fixed\s+committed corpus and the approved private corpus/u);
   assert.match(stdout, /embeddinggemma-quality-cpu\.json/u);
   assert.match(stdout, /rerun resumes/u);
   assert.match(

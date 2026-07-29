@@ -1,8 +1,7 @@
-import { createHash } from 'node:crypto';
-
 import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 
+import { createCanonicalIdentity } from './create-canonical-identity.js';
 import {
   createRecallQueryPlanningExecutionIdentity,
   type RecallIdentifiedQueryPlanningProvider,
@@ -70,11 +69,10 @@ export function createQmdHttpQueryPlanningProvider(
       `Recall QMD query planner request timeout invalid: expected a positive integer, received ${requestTimeoutMilliseconds}`,
     );
   }
-  const adapterConfigurationIdentity = `llama-cpp-http-query-planning-config-v1:${createHash(
-    'sha256',
-  )
-    .update(JSON.stringify({ endpoint, requestTimeoutMilliseconds }))
-    .digest('hex')}`;
+  const adapterConfigurationIdentity = createCanonicalIdentity(
+    'llama-cpp-http-query-planning-config-v1',
+    { endpoint, requestTimeoutMilliseconds },
+  );
   return {
     executionIdentity: createRecallQueryPlanningExecutionIdentity(
       profile,

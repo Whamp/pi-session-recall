@@ -1057,6 +1057,27 @@ export function createLiveQueryPlannedEvaluationCorpusIdentity(
   };
 }
 
+/** Live planner and reranker quality over the checksum-fixed committed corpus. */
+export interface CommittedCorpusQueryPlannedProfileEvidence {
+  corpusId: string;
+  specificationSha256: string;
+  caseCount: number;
+  qualityPassed: boolean;
+  candidatePoolRecall: number;
+  finalRecall: number;
+  contextUsefulness: number;
+  sourceOccurrencePreservation: number;
+  sessionOriginVerification: number;
+  evidenceRelationVerification: number;
+  contributingEntryVerification: number;
+  branchVerification: number;
+  policyFailureCaseIds: readonly string[];
+  queryLatencyMilliseconds: { median: number; p95: number };
+  executedSearchRequests: number;
+  plannerRequests: number;
+  rerankerRequests: number;
+}
+
 /** Publishable profile-bound quality and latency without private query or source text. */
 export interface LiveQueryPlannedProfileEvaluationResult {
   version: 1;
@@ -1096,10 +1117,12 @@ export interface LiveQueryPlannedProfileEvaluationResult {
     totalSearchMilliseconds: number;
     contribution: PrivateQueryPlannedRecallEvaluationResult['cases'][number]['contribution'];
   }>;
+  committedCorpus?: CommittedCorpusQueryPlannedProfileEvidence;
   quality: {
     newCandidateAdmissionCount: number;
     rankingOnlyPromotionCount: number;
     preservedExistingSuccessCount: number;
+    noImprovementCount: number;
     plannerFallbackCount: number;
   };
 }
@@ -1116,6 +1139,7 @@ function createLiveQueryPlannedProfileQuality(
     preservedExistingSuccessCount: cases.filter(
       ({ contribution }) => contribution.preservedExistingSuccess,
     ).length,
+    noImprovementCount: cases.filter(({ contribution }) => contribution.noImprovement).length,
     plannerFallbackCount: cases.filter(({ planSource }) => planSource === 'fallback').length,
   };
 }
@@ -1586,6 +1610,7 @@ export interface PublishableLiveQueryPlannedProfileAcceptance {
     newCandidateAdmissionCount: number;
     rankingOnlyPromotionCount: number;
     preservedExistingSuccessCount: number;
+    noImprovementCount: number;
     plannerFallbackCount: number;
   };
   fallbackCharacterization: {
@@ -1861,6 +1886,8 @@ export function createPublishableLiveQueryPlannedProfileAcceptance(
   const existingSuccessRegressionProfileRunIds: string[] = [];
   const profileQualities: LiveQueryPlannedProfileEvaluationResult['quality'][] = [];
   const indexedDocumentCount = options.profileRuns[0]?.corpus.indexedDocumentCount;
+  let committedCorpusId: string | undefined;
+  let committedCorpusSpecificationSha256: string | undefined;
   for (const run of options.profileRuns) {
     assertLiveQueryPlannedProfileEvaluationResult(run, options.expectedCorpus);
     const quality = createLiveQueryPlannedProfileQuality(run.cases);
@@ -1879,6 +1906,39 @@ export function createPublishableLiveQueryPlannedProfileAcceptance(
       );
     }
     assertLiveProfileExecutionIdentity(run);
+    const committedCorpus = run.committedCorpus;
+    if (
+      !committedCorpus ||
+      !committedCorpus.qualityPassed ||
+      committedCorpus.caseCount < 1 ||
+      committedCorpus.candidatePoolRecall !== 1 ||
+      committedCorpus.finalRecall !== 1 ||
+      committedCorpus.contextUsefulness !== 1 ||
+      committedCorpus.sourceOccurrencePreservation !== 1 ||
+      committedCorpus.sessionOriginVerification !== 1 ||
+      committedCorpus.evidenceRelationVerification !== 1 ||
+      committedCorpus.contributingEntryVerification !== 1 ||
+      committedCorpus.branchVerification !== 1 ||
+      committedCorpus.policyFailureCaseIds.length !== 0 ||
+      committedCorpus.executedSearchRequests < committedCorpus.caseCount ||
+      committedCorpus.plannerRequests < 1 ||
+      committedCorpus.rerankerRequests < 1 ||
+      !/^[a-f0-9]{64}$/u.test(committedCorpus.specificationSha256)
+    ) {
+      throw new Error(
+        `Live query-planned profile acceptance failed: committed-corpus planner/reranker quality invalid for ${run.profileRun.id}`,
+      );
+    }
+    committedCorpusId ??= committedCorpus.corpusId;
+    committedCorpusSpecificationSha256 ??= committedCorpus.specificationSha256;
+    if (
+      committedCorpus.corpusId !== committedCorpusId ||
+      committedCorpus.specificationSha256 !== committedCorpusSpecificationSha256
+    ) {
+      throw new Error(
+        'Live query-planned profile acceptance failed: every profile must measure the same committed corpus',
+      );
+    }
     if (quality.preservedExistingSuccessCount < options.requiredSuccessfulBaselineControlCount) {
       existingSuccessRegressionProfileRunIds.push(run.profileRun.id);
     }
@@ -1894,6 +1954,10 @@ export function createPublishableLiveQueryPlannedProfileAcceptance(
     ),
     preservedExistingSuccessCount: profileQualities.reduce(
       (total, quality) => total + quality.preservedExistingSuccessCount,
+      0,
+    ),
+    noImprovementCount: profileQualities.reduce(
+      (total, quality) => total + quality.noImprovementCount,
       0,
     ),
     plannerFallbackCount: profileQualities.reduce(
@@ -1927,6 +1991,10 @@ export function createPublishableLiveQueryPlannedProfileAcceptance(
       'Hybrid remains the default search mode.',
     ],
   };
+}
+
+function formatQualityRate(rate: number): string {
+  return `${(rate * 100).toFixed(1)}%`;
 }
 
 /** Formats profile-bound live acceptance evidence without private query or source text. */
@@ -1981,7 +2049,7 @@ export function formatPublishableLiveQueryPlannedProfileAcceptanceReport(
     '',
     `Every matrix row uses \`${firstRun.profileIdentity.embeddingPolicy}\` test embeddings. The run name, backend, and device describe only where the query planner and reranker execute.`,
     '',
-    'The total search time includes retrieval with those fixed test embeddings plus live planning and live reranking. It does not measure end-to-end production inference with Octen or EmbeddingGemma embeddings. The committed-corpus table above reports EmbeddingGemma separately.',
+    'The private-corpus total search time includes retrieval with fixed test embeddings plus live planning and live reranking. The same live planner/reranker profiles also run over the checksum-fixed committed corpus with deterministic embeddings; this does not measure end-to-end production inference with EmbeddingGemma embeddings.',
     '',
     '## Live planner and reranker matrix',
     '',
@@ -1995,11 +2063,30 @@ export function formatPublishableLiveQueryPlannedProfileAcceptanceReport(
   }
   lines.push(
     '',
+    '## Live planner/reranker quality on the committed corpus',
+    '',
+    '| Profile run | Cases | Candidate pool recall | Final recall | Context | Source occurrences | Session origins | Evidence relations | Contributing entries | Branches | Planner / reranker calls | Median / p95 |',
+    '| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |',
+  );
+  for (const run of evidence.profileRuns) {
+    const committed = run.committedCorpus;
+    if (!committed) {
+      throw new Error(
+        `Live query-planned profile report invalid: committed-corpus evidence missing for ${run.profileRun.id}`,
+      );
+    }
+    lines.push(
+      `| ${run.profileRun.id} | ${committed.caseCount} | ${formatQualityRate(committed.candidatePoolRecall)} | ${formatQualityRate(committed.finalRecall)} | ${formatQualityRate(committed.contextUsefulness)} | ${formatQualityRate(committed.sourceOccurrencePreservation)} | ${formatQualityRate(committed.sessionOriginVerification)} | ${formatQualityRate(committed.evidenceRelationVerification)} | ${formatQualityRate(committed.contributingEntryVerification)} | ${formatQualityRate(committed.branchVerification)} | ${committed.plannerRequests} / ${committed.rerankerRequests} | ${committed.queryLatencyMilliseconds.median.toFixed(1)} / ${committed.queryLatencyMilliseconds.p95.toFixed(1)} ms |`,
+    );
+  }
+  lines.push(
+    '',
     '## Fallback characterization',
     '',
     `- New candidate admissions beyond normal and retrieval-work-matched original-query controls: ${evidence.aggregateQuality.newCandidateAdmissionCount}`,
     `- Ranking-only promotions: ${evidence.aggregateQuality.rankingOnlyPromotionCount}`,
     `- Preserved existing successes across profile runs: ${evidence.aggregateQuality.preservedExistingSuccessCount}`,
+    `- No improvement: ${evidence.aggregateQuality.noImprovementCount}`,
     `- Planner fallbacks: ${evidence.aggregateQuality.plannerFallbackCount}`,
     '- Live admissions and existing-success preservation are characterization, not release gates, because query-planned recall is invoked only after hybrid misses.',
     `- Live new-candidate admission observed: ${evidence.fallbackCharacterization.liveNewCandidateAdmissionObserved ? 'yes' : 'no'}`,

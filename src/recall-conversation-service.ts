@@ -177,6 +177,7 @@ export type {
   RecallConversationConfig,
   RecallSearchCandidateLimits,
 } from './recall-conversation-config.js';
+/** One typed lexical, semantic, or hypothetical-answer query accepted by planned recall. */
 export type { RecallPlannedRetrievalQuery } from './recall-inference-capabilities.js';
 
 /** Maximum agent-supplied retrieval queries admitted by one query-planned recall search. */
@@ -1756,7 +1757,13 @@ export function createRecallConversationService(
       try {
         queryPlanning = validateRecallQueryPlanningOptions(mode, query, plan, intent);
       } catch (error) {
-        return Promise.reject(error);
+        return Promise.reject(
+          error instanceof Error
+            ? error
+            : new Error('Recall query planning validation failed with a non-Error cause', {
+                cause: error,
+              }),
+        );
       }
       if (
         mode === 'query-planned' &&

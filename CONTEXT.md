@@ -148,6 +148,14 @@ _Avoid_: Model stack, index manifest
 One exact capability profile, backend, adapter, artifact/device description, and conformance operation offered to setup. A candidate is never an automatic fallback.
 _Avoid_: Provider default, generic endpoint
 
+**Execution identity**:
+The canonical profile, adapter revision and settings, evaluation policy, software, resolved compute backend, and physical device identity that can affect one measured inference result.
+_Avoid_: Cache key, profile label
+
+**Physical device identity**:
+The normalized names and stable processor-count metadata for the resolved device used by one embedded inference capability.
+_Avoid_: Caller device label, requested device policy, hardware identity
+
 **Capability conformance record**:
 The accepted profile, backend, adapter, cache identity, verification time, and bounded measurement persisted after one capability-specific conformance operation passes. Embedding records also carry the semantic identity that determines index-generation compatibility.
 _Avoid_: Health check, model availability
@@ -227,6 +235,22 @@ _Avoid_: Failed marker deletion, retry queue, marker contents diagnostic
 **Metadata recovery sweep**:
 One bounded, resumable inspection of physical session file names and metadata used to observe crash-missed source arrivals or absences without reading session content.
 _Avoid_: Full session scan, session parsing, deletion confirmation
+
+**Incremental recall worker**:
+The sole writer for deferred incremental transfer. This short-lived process runs outside Pi, drains recall work markers, processes eligible append deltas, and exits when no work remains.
+_Avoid_: Daemon, Pi lifecycle handler, full indexer
+
+**Recall maintenance class**:
+The cost and scheduling category of recall work: immediate bookkeeping, deferred incremental transfer, or explicit reconciliation. Measured work size separates prompt small transfers from transfers that wait for a longer quiet period.
+_Avoid_: Worker priority, ingestion mode, adaptive scheduler
+
+**Recall write window**:
+The bounded period when an incremental recall worker owns zvec exclusively to commit prepared evidence and session projection changes. A search may wait for the current window but never for the worker to finish all pending ingestion.
+_Avoid_: Maintenance outage, freshness barrier, indexing run
+
+**Recall work marker**:
+One immutable, atomically published event file telling an external worker that a physical session may contain newly eligible evidence. The worker orders and coalesces markers; Pi processes never overwrite them.
+_Avoid_: Index job, mutable session marker, session lock
 
 **Incremental recall worker**:
 The sole writer for deferred incremental transfer. This short-lived process runs outside Pi, drains recall work markers, processes eligible append deltas, and exits when no work remains.

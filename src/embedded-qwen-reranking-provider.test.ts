@@ -5,6 +5,7 @@ import test from 'node:test';
 import { EmbeddedInferenceDevicePolicy } from './enums.js';
 
 import { createEmbeddedQwenRerankingProvider } from './embedded-qwen-reranking-provider.js';
+import { resolveRecallCpuPhysicalDeviceIdentity } from './recall-inference-capabilities.js';
 import { measureRecallRerankingProviderConformance } from './recall-inference-conformance.js';
 import { createRecommendedQwenRerankingModelProfile } from './recall-model-profiles.js';
 
@@ -83,19 +84,28 @@ void test('embedded Qwen reranker restores llama.cpp score semantics and passes 
   ]);
   assert.equal(measurement.queryCount, 1);
   assert.equal(measurement.documentCount, 2);
-  assert.deepEqual(provider.executionIdentity, {
-    adapterId: 'node-llama-cpp-qwen-reranking-logit-recovery-v1',
-    backend: 'embedded',
-    cacheIdentity: 'qwen3-reranker-0.6b-q8-0-v1:node-llama-cpp-qwen-reranking-logit-recovery-v1',
-    modelProfileId: 'qwen3-reranker-0.6b-q8-0-v1',
-    computeBackend: 'cpu',
-    deviceNames: ['CPU'],
-    devicePolicy: 'cpu',
-    fallbackFromComputeBackend: null,
-    nodeLlamaCppVersion: '3.18.1',
-    parallelism: 1,
-    probedComputeBackends: [],
-  });
+  assert.match(
+    provider.executionIdentity.adapterConfigurationIdentity,
+    /^node-llama-cpp-qwen-reranking-config-v1:[a-f0-9]{64}$/u,
+  );
+  assert.match(
+    provider.executionIdentity.cacheIdentity,
+    /^recall-reranking-execution-v1:[a-f0-9]{64}$/u,
+  );
+  assert.equal(provider.executionIdentity.adapterVersion, '1');
+  assert.equal(provider.executionIdentity.contextSize, 4_096);
+  assert.equal(provider.executionIdentity.threads, 3);
+  assert.equal(provider.executionIdentity.parallelism, 1);
+  assert.equal(provider.executionIdentity.requestTimeoutMilliseconds, 60_000);
+  assert.equal(provider.executionIdentity.computeBackend, 'cpu');
+  assert.equal(provider.executionIdentity.devicePolicy, 'cpu');
+  assert.deepEqual(
+    {
+      deviceNames: provider.executionIdentity.deviceNames,
+      physicalDeviceIdentity: provider.executionIdentity.physicalDeviceIdentity,
+    },
+    resolveRecallCpuPhysicalDeviceIdentity(),
+  );
   assert.deepEqual(events.slice(0, 2), ['verify artifact', 'dynamic import']);
 });
 
@@ -142,9 +152,11 @@ void test('embedded Qwen reranker reports automatic accelerator selection', asyn
     },
   });
   t.after(() => provider.dispose());
+  const unresolvedCacheIdentity = provider.executionIdentity.cacheIdentity;
 
   await provider.rerankDocuments('query', ['candidate']);
 
+  assert.notEqual(provider.executionIdentity.cacheIdentity, unresolvedCacheIdentity);
   assert.deepEqual(loadModelOptions, {
     modelPath: '/models/qwen-reranker.gguf',
     gpuLayers: {
@@ -154,6 +166,7 @@ void test('embedded Qwen reranker reports automatic accelerator selection', asyn
   });
   assert.equal(provider.executionIdentity.computeBackend, 'cuda');
   assert.deepEqual(provider.executionIdentity.deviceNames, ['NVIDIA Test Device']);
+  assert.deepEqual(provider.executionIdentity.physicalDeviceIdentity, ['nvidia test device']);
   assert.deepEqual(provider.executionIdentity.probedComputeBackends, ['cuda', 'vulkan']);
 });
 
@@ -318,6 +331,70 @@ void test('embedded Qwen reranker enforces timeout and caller cancellation', asy
     () => operation,
     (error) => error === cancellationReason,
   );
+});
+
+void test('embedded Qwen reranker resolved identity aborts explicit accelerator initialization failure', async (t) => {
+  const profile = createRecommendedQwenRerankingModelProfile();
+  const requestedBackends: unknown[] = [];
+  const provider = createEmbeddedQwenRerankingProvider(profile, {
+    modelCacheDirectory: '/models',
+    device: EmbeddedInferenceDevicePolicy.VULKAN,
+    async verifyModelArtifact() {
+      return '/models/qwen-reranker.gguf';
+    },
+    async loadNodeLlamaCpp() {
+      return {
+        version: '3.18.1',
+        LlamaLogLevel: { error: 'error' },
+        async getLlama(options) {
+          requestedBackends.push(options.gpu);
+          throw new Error('fixture Vulkan initialization failed');
+        },
+      };
+    },
+  });
+  t.after(() => provider.dispose());
+
+  await assert.rejects(
+    () => provider.resolveExecutionIdentity(),
+    /fixture Vulkan initialization failed/u,
+  );
+  assert.deepEqual(requestedBackends, ['vulkan']);
+  assert.equal(provider.executionIdentity.computeBackend, 'pending');
+});
+
+void test('embedded Qwen reranker identity binds every result-affecting adapter setting', async (t) => {
+  const profile = createRecommendedQwenRerankingModelProfile();
+  const configurations = [
+    { modelCacheDirectory: '/models', device: EmbeddedInferenceDevicePolicy.CPU },
+    {
+      modelCacheDirectory: '/models',
+      device: EmbeddedInferenceDevicePolicy.CPU,
+      contextSize: 8_192,
+    },
+    { modelCacheDirectory: '/models', device: EmbeddedInferenceDevicePolicy.CPU, threads: 2 },
+    { modelCacheDirectory: '/models', device: EmbeddedInferenceDevicePolicy.CPU, parallelism: 2 },
+    {
+      modelCacheDirectory: '/models',
+      device: EmbeddedInferenceDevicePolicy.CPU,
+      requestTimeoutMilliseconds: 1_000,
+    },
+    {
+      modelCacheDirectory: '/models',
+      device: EmbeddedInferenceDevicePolicy.CPU,
+      idleTimeoutMilliseconds: 1_000,
+    },
+    { modelCacheDirectory: '/models', device: EmbeddedInferenceDevicePolicy.VULKAN },
+  ] as const;
+  const providers = configurations.map((options) =>
+    createEmbeddedQwenRerankingProvider(profile, options),
+  );
+  t.after(() => Promise.all(providers.map((provider) => provider.dispose())));
+
+  const configurationIdentities = providers.map(
+    (provider) => provider.executionIdentity.adapterConfigurationIdentity,
+  );
+  assert.equal(new Set(configurationIdentities).size, configurations.length);
 });
 
 void test('embedded Qwen reranker rejects uncorrected or differently transformed scores', async (t) => {

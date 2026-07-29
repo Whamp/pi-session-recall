@@ -12,6 +12,7 @@ import {
   QueryPlannedRecallCaseCategory,
   QueryPlannedRecallControlKind,
   RecallEvidenceRelation,
+  RecallManualMaintenanceTrigger,
   RecallSearchScope,
 } from './enums.js';
 import type { RecallSearchResult } from './fuse-recall-ranked-lists.js';
@@ -926,7 +927,11 @@ export async function runPrivateQueryPlannedRecallBaseline(
   );
   const dependencies = createPrivateBaselineDependencies(options.dependencies);
   const indexService = createRecallConversationService(indexConfig, dependencies);
-  const indexed = await indexService.index({ optimize: true });
+  const indexed = await indexService.index({
+    rebuild: true,
+    manualMaintenanceTrigger: RecallManualMaintenanceTrigger.MANUAL_REBUILD,
+    optimize: true,
+  });
   if (indexed.indexSummary.failedSessions.length > 0) {
     throw new Error(
       `Private query-planned recall baseline index failed for ${indexed.indexSummary.failedSessions.length} snapshot(s)`,

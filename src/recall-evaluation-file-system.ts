@@ -88,29 +88,33 @@ function resolvePhysicalPathFromExistingAncestor(path: string): string {
 function readProductionRecallProtectedPaths(
   config: RecallConversationConfig,
 ): Readonly<Record<string, string>> {
-  const generationDataDirectory = dirname(config.manifestPath);
   return {
     sessionsDirectory: config.sessionsDirectory,
+    dataDirectory: config.dataDirectory,
     databasePath: config.databasePath,
+    projectionDatabasePath: config.projectionDatabasePath,
     statePath: config.statePath,
     manifestPath: config.manifestPath,
     tokenizerCacheDirectory: config.tokenizerCacheDirectory,
     embeddingCacheDirectory: config.embeddingCacheDirectory,
     lockPath: config.lockPath,
-    generationsDirectory:
-      config.generationsDirectory ?? join(generationDataDirectory, 'index-generations'),
-    activeGenerationPath:
-      config.activeGenerationPath ?? join(generationDataDirectory, 'active-generation.json'),
-    stagingGenerationPath:
-      config.stagingGenerationPath ?? join(generationDataDirectory, 'staging-generation.json'),
-    backgroundIndexStatusPath:
-      config.backgroundIndexStatusPath ??
-      join(generationDataDirectory, 'background-index-status.json'),
-    backgroundIndexRequestPath:
-      config.backgroundIndexRequestPath ??
-      join(generationDataDirectory, 'background-index-request.json'),
     diagnosticLogPath: config.diagnosticLogPath,
     retainedDiagnosticLogPath: config.retainedDiagnosticLogPath,
+    markerSpoolDirectory: config.markerSpoolDirectory,
+    markerQuarantineDirectory: config.markerQuarantineDirectory,
+    markerControlDirectory: config.markerControlDirectory,
+    workerOwnershipLockPath: config.workerOwnershipLockPath,
+    generationRootDirectory: config.generationRootDirectory,
+    activeGenerationPointerPath: config.activeGenerationPointerPath,
+    generationRegistryPath: config.generationRegistryPath,
+    backlogSummaryPath: config.backlogSummaryPath,
+    incrementalDiagnosticLogPath: config.incrementalDiagnosticLogPath,
+    backgroundIndexStatusPath:
+      config.backgroundIndexStatusPath ??
+      join(config.dataDirectory, 'background-index-status.json'),
+    backgroundIndexRequestPath:
+      config.backgroundIndexRequestPath ??
+      join(config.dataDirectory, 'background-index-request.json'),
   };
 }
 
@@ -173,19 +177,27 @@ export function createPrivateRecallEvaluationConfig(
     }
   }
   const writablePaths = {
+    dataDirectory: workDirectory,
     databasePath: resolve(workDirectory, 'zvec'),
+    projectionDatabasePath: resolve(workDirectory, 'session-projections'),
     statePath: resolve(workDirectory, 'index-state.json'),
     manifestPath: resolve(workDirectory, 'index-manifest.json'),
     tokenizerCacheDirectory: resolve(workDirectory, 'tokenizers'),
     embeddingCacheDirectory: resolve(workDirectory, 'embedding-cache'),
     lockPath: resolve(workDirectory, 'operation.lock'),
-    generationsDirectory: resolve(workDirectory, 'index-generations'),
-    activeGenerationPath: resolve(workDirectory, 'active-generation.json'),
-    stagingGenerationPath: resolve(workDirectory, 'staging-generation.json'),
-    backgroundIndexStatusPath: resolve(workDirectory, 'background-index-status.json'),
-    backgroundIndexRequestPath: resolve(workDirectory, 'background-index-request.json'),
     diagnosticLogPath: resolve(workDirectory, 'diagnostics.jsonl'),
     retainedDiagnosticLogPath: resolve(workDirectory, 'diagnostics.previous.jsonl'),
+    markerSpoolDirectory: resolve(workDirectory, 'markers', 'pending'),
+    markerQuarantineDirectory: resolve(workDirectory, 'markers', 'quarantine'),
+    markerControlDirectory: resolve(workDirectory, 'markers', 'control'),
+    workerOwnershipLockPath: resolve(workDirectory, 'incremental-worker.lock'),
+    generationRootDirectory: resolve(workDirectory, 'generations'),
+    activeGenerationPointerPath: resolve(workDirectory, 'active-generation.json'),
+    generationRegistryPath: resolve(workDirectory, 'generation-registry.json'),
+    backlogSummaryPath: resolve(workDirectory, 'backlog-summary.json'),
+    incrementalDiagnosticLogPath: resolve(workDirectory, 'incremental-diagnostics.jsonl'),
+    backgroundIndexStatusPath: resolve(workDirectory, 'background-index-status.json'),
+    backgroundIndexRequestPath: resolve(workDirectory, 'background-index-request.json'),
   };
   assertPrivateRecallEvaluationWritablePaths(workDirectory, immutableInputPaths, writablePaths);
   const fusedPoolLimit =
@@ -194,6 +206,7 @@ export function createPrivateRecallEvaluationConfig(
     options.candidateLimits.identifier;
   const embeddingIdentity = options.embeddingIdentity;
   return {
+    ...options.baseConfig,
     sessionsDirectory: resolve(options.sessionsDirectory),
     ...writablePaths,
     diagnosticsMode: RecallDiagnosticsMode.OFF,

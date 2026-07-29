@@ -380,7 +380,6 @@ void test('fixed private plans prove new source admission through deterministic 
     rerankingProfile: null,
     reranker: null,
   });
-  await productionService.index();
   await productionService.index({ rebuild: true });
   assert.equal((await productionService.readIndexGenerationStatus()).active?.kind, 'managed');
   let productionFilesBeforeEvaluation =

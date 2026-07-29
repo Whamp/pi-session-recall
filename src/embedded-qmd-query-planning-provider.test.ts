@@ -5,8 +5,40 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { EmbeddedInferenceDevicePolicy } from './enums.js';
 
 import { createEmbeddedQmdQueryPlanningProvider } from './embedded-qmd-query-planning-provider.js';
+import { resolveRecallCpuPhysicalDeviceIdentity } from './recall-inference-capabilities.js';
 import { measureRecallQueryPlanningProviderConformance } from './recall-inference-conformance.js';
 import { createRecommendedQmdQueryPlanningModelProfile } from './recall-model-profiles.js';
+
+interface InvalidEmbeddedQmdOutputCase {
+  name: string;
+  output: string;
+}
+
+const INVALID_EMBEDDED_QMD_OUTPUT_CASES: readonly InvalidEmbeddedQmdOutputCase[] = [
+  {
+    name: 'vector before the first lexical query',
+    output: 'vec: Copper Finch semantic evidence\nlex: Copper Finch evidence',
+  },
+  {
+    name: 'lexical query after a vector query',
+    output:
+      'lex: Copper Finch evidence\nvec: Copper Finch semantic evidence\nlex: retained Copper Finch records',
+  },
+  {
+    name: 'non-final hypothetical-answer query',
+    output:
+      'lex: Copper Finch evidence\nhyde: Copper Finch appears in retained evidence.\nvec: Copper Finch semantic evidence',
+  },
+  {
+    name: 'entry after a hypothetical-answer query',
+    output:
+      'lex: Copper Finch evidence\nvec: Copper Finch semantic evidence\nhyde: Copper Finch appears in retained evidence.\nvec: where Copper Finch was retained',
+  },
+  {
+    name: '513-code-point query content',
+    output: `lex: ${'x'.repeat(513)}\nvec: Copper Finch semantic evidence`,
+  },
+];
 
 void test('embedded QMD query planner passes shared conformance with profile grammar and intent', async (t) => {
   const profile = createRecommendedQmdQueryPlanningModelProfile();
@@ -29,9 +61,9 @@ void test('embedded QMD query planner passes shared conformance with profile gra
             async prompt(prompt: string, options: Record<string, unknown>) {
               calls.push({ prompt, options });
               return [
-                'hyde: Source provenance connects recalled evidence to its original session.',
-                'lex: source provenance evidence',
-                'vec: how source provenance identifies original conversation evidence',
+                'lex: Copper Finch recovery evidence',
+                'vec: how Finch identifies original conversation evidence',
+                'hyde: Copper Finch connects recalled recovery evidence to its original session.',
               ].join('\n');
             },
           };
@@ -74,6 +106,10 @@ void test('embedded QMD query planner passes shared conformance with profile gra
     },
   });
   t.after(() => provider.dispose());
+  const pendingAdapterConfigurationIdentity =
+    provider.executionIdentity.adapterConfigurationIdentity;
+  const resolvedExecutionIdentity = await provider.resolveExecutionIdentity();
+  assert.equal(resolvedExecutionIdentity, provider.executionIdentity);
 
   const measurement = await measureRecallQueryPlanningProviderConformance({
     provider,
@@ -87,7 +123,7 @@ void test('embedded QMD query planner passes shared conformance with profile gra
   assert.equal(calls.length, 1);
   assert.equal(
     calls[0]?.prompt,
-    '/no_think Expand this search query: source provenance\nQuery intent: Find Pi conversation evidence about retained source provenance.',
+    '/no_think Expand this search query: Copper Finch\nQuery intent: Find Pi conversation evidence about the exact Copper Finch recovery entity.',
   );
   assert.deepEqual(calls[0]?.options, {
     grammar: { grammar: profile.grammar },
@@ -99,20 +135,33 @@ void test('embedded QMD query planner passes shared conformance with profile gra
     signal: calls[0]?.options.signal,
   });
   assert.ok(calls[0]?.options.signal instanceof AbortSignal);
-  assert.deepEqual(provider.executionIdentity, {
+  const cpuPhysicalDeviceIdentity = resolveRecallCpuPhysicalDeviceIdentity();
+  const { adapterConfigurationIdentity, cacheIdentity, ...executionIdentity } =
+    provider.executionIdentity;
+  assert.match(
+    adapterConfigurationIdentity,
+    /^node-llama-cpp-qmd-query-planning-config-v1:[a-f0-9]{64}$/u,
+  );
+  assert.notEqual(adapterConfigurationIdentity, pendingAdapterConfigurationIdentity);
+  assert.match(cacheIdentity, /^recall-query-planning-execution-v1:[a-f0-9]{64}$/u);
+  assert.deepEqual(executionIdentity, {
     adapterId: 'node-llama-cpp-qmd-query-planning-v1',
+    adapterVersion: '1',
     backend: 'embedded',
-    cacheIdentity:
-      'qmd-query-expansion-1.7b-q4-k-m-v1:node-llama-cpp-qmd-query-planning-v1:qmd-query-expansion-no-think-v1:qmd-typed-query-plan-v1',
     modelProfileId: profile.profileId,
+    modelProfileIdentity: provider.executionIdentity.modelProfileIdentity,
     promptPolicy: profile.promptPolicy,
     grammarVersion: profile.grammarVersion,
     requestTimeoutMilliseconds: 4_321,
     computeBackend: 'cpu',
-    deviceNames: ['CPU'],
+    deviceNames: cpuPhysicalDeviceIdentity.deviceNames,
     devicePolicy: 'cpu',
     fallbackFromComputeBackend: null,
+    contextSize: 2_048,
+    threads: null,
     nodeLlamaCppVersion: '3.18.1',
+    idleTimeoutMilliseconds: 300_000,
+    physicalDeviceIdentity: cpuPhysicalDeviceIdentity.physicalDeviceIdentity,
     probedComputeBackends: [],
   });
   assert.deepEqual(measurement, {
@@ -244,6 +293,58 @@ void test('QMD context disposal failure preserves the operation error and schedu
   await provider.dispose();
 });
 
+void test('embedded QMD query planner rejects every invalid generated ordering and length', async (t) => {
+  const profile = createRecommendedQmdQueryPlanningModelProfile();
+  let generatedOutput = '';
+  const provider = createEmbeddedQmdQueryPlanningProvider(profile, {
+    modelCacheDirectory: '/models',
+    device: EmbeddedInferenceDevicePolicy.CPU,
+    async verifyModelArtifact() {
+      return '/models/qmd-query-expansion-1.7B-q4_k_m.gguf';
+    },
+    async loadNodeLlamaCpp() {
+      return {
+        version: '3.18.1',
+        LlamaLogLevel: { error: 'error' },
+        createChatSession() {
+          return {
+            async prompt() {
+              return generatedOutput;
+            },
+          };
+        },
+        async getLlama() {
+          return {
+            gpu: false,
+            async createGrammar() {
+              return {};
+            },
+            async loadModel() {
+              return {
+                async createContext() {
+                  return { getSequence: () => ({}), async dispose() {} };
+                },
+                async dispose() {},
+              };
+            },
+            async dispose() {},
+          };
+        },
+      };
+    },
+  });
+  t.after(() => provider.dispose());
+
+  for (const invalidCase of INVALID_EMBEDDED_QMD_OUTPUT_CASES) {
+    generatedOutput = invalidCase.output;
+    await assert.rejects(
+      () => provider.planRecallQuery({ query: profile.conformanceCanary.query }),
+      /Recall query planning output/u,
+      invalidCase.name,
+    );
+  }
+});
+
 void test('embedded QMD query planner retries automatic accelerator failure on CPU once', async (t) => {
   const profile = createRecommendedQmdQueryPlanningModelProfile();
   const requestedBackends: unknown[] = [];
@@ -263,7 +364,7 @@ void test('embedded QMD query planner retries automatic accelerator failure on C
         createChatSession() {
           return {
             async prompt() {
-              return 'lex: source provenance records\nvec: source provenance evidence';
+              return 'lex: Copper Finch records\nvec: Copper Finch evidence';
             },
           };
         },
@@ -295,6 +396,8 @@ void test('embedded QMD query planner retries automatic accelerator failure on C
     },
   });
   t.after(() => provider.dispose());
+  const pendingAdapterConfigurationIdentity =
+    provider.executionIdentity.adapterConfigurationIdentity;
 
   await measureRecallQueryPlanningProviderConformance({
     provider,
@@ -312,7 +415,39 @@ void test('embedded QMD query planner retries automatic accelerator failure on C
   );
   assert.equal(provider.executionIdentity.computeBackend, 'cpu');
   assert.equal(provider.executionIdentity.fallbackFromComputeBackend, 'metal');
+  assert.notEqual(
+    provider.executionIdentity.adapterConfigurationIdentity,
+    pendingAdapterConfigurationIdentity,
+  );
   assert.deepEqual(provider.executionIdentity.probedComputeBackends, ['metal']);
+});
+
+void test('embedded QMD query planner identity binds every result-affecting adapter setting', async (t) => {
+  const profile = createRecommendedQmdQueryPlanningModelProfile();
+  const configurations = [
+    { modelCacheDirectory: '/models', device: EmbeddedInferenceDevicePolicy.CPU },
+    { modelCacheDirectory: '/models', device: EmbeddedInferenceDevicePolicy.CPU, threads: 2 },
+    {
+      modelCacheDirectory: '/models',
+      device: EmbeddedInferenceDevicePolicy.CPU,
+      requestTimeoutMilliseconds: 1_000,
+    },
+    {
+      modelCacheDirectory: '/models',
+      device: EmbeddedInferenceDevicePolicy.CPU,
+      idleTimeoutMilliseconds: 1_000,
+    },
+    { modelCacheDirectory: '/models', device: EmbeddedInferenceDevicePolicy.VULKAN },
+  ] as const;
+  const providers = configurations.map((options) =>
+    createEmbeddedQmdQueryPlanningProvider(profile, options),
+  );
+  t.after(() => Promise.all(providers.map((provider) => provider.dispose())));
+
+  const configurationIdentities = providers.map(
+    (provider) => provider.executionIdentity.adapterConfigurationIdentity,
+  );
+  assert.equal(new Set(configurationIdentities).size, configurations.length);
 });
 
 void test('embedded QMD query planner enforces timeout and caller cancellation', async (t) => {

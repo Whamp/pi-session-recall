@@ -246,29 +246,58 @@ void test('private recall evaluation config replaces every production mutable an
     immutableInputPaths: [snapshotDirectory],
     candidateLimits: { dense: 8, lexical: 8, identifier: 8 },
   });
-  const writableAndSelectorPaths = [
-    privateConfig.databasePath,
-    privateConfig.statePath,
-    privateConfig.manifestPath,
-    privateConfig.tokenizerCacheDirectory,
-    privateConfig.embeddingCacheDirectory,
-    privateConfig.lockPath,
-    privateConfig.generationsDirectory,
-    privateConfig.activeGenerationPath,
-    privateConfig.stagingGenerationPath,
-    privateConfig.backgroundIndexStatusPath,
-    privateConfig.backgroundIndexRequestPath,
-    privateConfig.diagnosticLogPath,
-    privateConfig.retainedDiagnosticLogPath,
-  ];
-  for (const path of writableAndSelectorPaths) {
+  const writableAndSelectorPaths = {
+    dataDirectory: privateConfig.dataDirectory,
+    databasePath: privateConfig.databasePath,
+    projectionDatabasePath: privateConfig.projectionDatabasePath,
+    statePath: privateConfig.statePath,
+    manifestPath: privateConfig.manifestPath,
+    tokenizerCacheDirectory: privateConfig.tokenizerCacheDirectory,
+    embeddingCacheDirectory: privateConfig.embeddingCacheDirectory,
+    lockPath: privateConfig.lockPath,
+    diagnosticLogPath: privateConfig.diagnosticLogPath,
+    retainedDiagnosticLogPath: privateConfig.retainedDiagnosticLogPath,
+    markerSpoolDirectory: privateConfig.markerSpoolDirectory,
+    markerQuarantineDirectory: privateConfig.markerQuarantineDirectory,
+    markerControlDirectory: privateConfig.markerControlDirectory,
+    workerOwnershipLockPath: privateConfig.workerOwnershipLockPath,
+    generationRootDirectory: privateConfig.generationRootDirectory,
+    activeGenerationPointerPath: privateConfig.activeGenerationPointerPath,
+    generationRegistryPath: privateConfig.generationRegistryPath,
+    backlogSummaryPath: privateConfig.backlogSummaryPath,
+    incrementalDiagnosticLogPath: privateConfig.incrementalDiagnosticLogPath,
+    backgroundIndexStatusPath: privateConfig.backgroundIndexStatusPath,
+    backgroundIndexRequestPath: privateConfig.backgroundIndexRequestPath,
+  };
+  assert.deepEqual(writableAndSelectorPaths, {
+    dataDirectory: workDirectory,
+    databasePath: join(workDirectory, 'zvec'),
+    projectionDatabasePath: join(workDirectory, 'session-projections'),
+    statePath: join(workDirectory, 'index-state.json'),
+    manifestPath: join(workDirectory, 'index-manifest.json'),
+    tokenizerCacheDirectory: join(workDirectory, 'tokenizers'),
+    embeddingCacheDirectory: join(workDirectory, 'embedding-cache'),
+    lockPath: join(workDirectory, 'operation.lock'),
+    diagnosticLogPath: join(workDirectory, 'diagnostics.jsonl'),
+    retainedDiagnosticLogPath: join(workDirectory, 'diagnostics.previous.jsonl'),
+    markerSpoolDirectory: join(workDirectory, 'markers', 'pending'),
+    markerQuarantineDirectory: join(workDirectory, 'markers', 'quarantine'),
+    markerControlDirectory: join(workDirectory, 'markers', 'control'),
+    workerOwnershipLockPath: join(workDirectory, 'incremental-worker.lock'),
+    generationRootDirectory: join(workDirectory, 'generations'),
+    activeGenerationPointerPath: join(workDirectory, 'active-generation.json'),
+    generationRegistryPath: join(workDirectory, 'generation-registry.json'),
+    backlogSummaryPath: join(workDirectory, 'backlog-summary.json'),
+    incrementalDiagnosticLogPath: join(workDirectory, 'incremental-diagnostics.jsonl'),
+    backgroundIndexStatusPath: join(workDirectory, 'background-index-status.json'),
+    backgroundIndexRequestPath: join(workDirectory, 'background-index-request.json'),
+  });
+  for (const path of Object.values(writableAndSelectorPaths)) {
     assert.ok(path);
     assert.equal(isPathInsideRecallEvaluationArea(workDirectory, path), true);
     assert.equal(isPathInsideRecallEvaluationArea(productionDataDirectory, path), false);
   }
   assert.equal(privateConfig.sessionsDirectory, snapshotDirectory);
-  assert.notEqual(privateConfig.activeGenerationPath, baseConfig.activeGenerationPath);
-  assert.notEqual(privateConfig.stagingGenerationPath, baseConfig.stagingGenerationPath);
 
   assert.throws(
     () =>
@@ -300,7 +329,7 @@ void test('private recall evaluation config replaces every production mutable an
       createPrivateRecallEvaluationConfig({
         baseConfig: {
           ...baseConfig,
-          activeGenerationPath: join(workDirectory, 'production-active-generation.json'),
+          generationRegistryPath: join(workDirectory, 'production-generation-registry.json'),
         },
         evaluationRootDirectory,
         workDirectory,

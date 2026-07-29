@@ -6,6 +6,8 @@ import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import { createDeterministicRecallQualityDependencies } from './create-deterministic-recall-quality-dependencies.js';
+import { createDeterministicRecallQualityConfig } from './evaluate-recall-quality.js';
 import {
   RecallDiagnosticsMode,
   RecallEvidenceRelation,
@@ -104,6 +106,61 @@ void test('committed recall quality corpus remains indexable through the public 
   assert.equal(indexed.indexSummary.failedSessions.length, 0);
   assert.equal(indexed.indexSummary.scannedSessions, corpus.sessionFiles.length);
   assert.ok(indexed.totalChunks > 0);
+});
+
+void test('query-planned quality uses hybrid retrieval for the pre-rerank scope control', async (t) => {
+  const projectDirectory = dirname(dirname(fileURLToPath(import.meta.url)));
+  const directory = await mkdtemp(
+    join(projectDirectory, 'evaluation', '.recall-data', 'query-planned-scope-control-'),
+  );
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const corpus = await loadRecallQualityCorpus(
+    join(projectDirectory, 'evaluation', 'recall-quality-cases.json'),
+  );
+  const queryPlanningProfile = createRecommendedQmdQueryPlanningModelProfile();
+  const rerankingProfile = createRecommendedQwenRerankingModelProfile();
+  const result = await runRecallQualityEvaluation({
+    corpus,
+    baseConfig: createDeterministicRecallQualityConfig(projectDirectory),
+    workDirectory: join(directory, 'recall-quality-evaluation'),
+    dependencies: createDeterministicRecallQualityDependencies(),
+    queryPlannedDependencies: {
+      queryPlanningProfile,
+      queryPlanner: {
+        executionIdentity: createRecallQueryPlanningExecutionIdentity(
+          queryPlanningProfile,
+          'fixture-query-planned-scope-control-v1',
+          'fixture-query-planned-scope-control-config-v1',
+          RecallInferenceBackend.LLAMA_CPP_HTTP,
+          1_000,
+        ),
+        async planRecallQuery(request) {
+          return [
+            { type: 'lex', query: request.query },
+            { type: 'vec', query: request.query },
+          ];
+        },
+      },
+      rerankingProfile,
+      reranker: {
+        executionIdentity: createRecallRerankingExecutionIdentity(
+          rerankingProfile,
+          'fixture-query-planned-scope-control-reranker-v1',
+          'fixture-query-planned-scope-control-reranker-config-v1',
+          RecallInferenceBackend.LLAMA_CPP_HTTP,
+          1_000,
+        ),
+        async rerankDocuments(_query, documents) {
+          return documents.map((_document, index) => documents.length - index);
+        },
+      },
+    },
+  });
+
+  assert.equal(result.queryPlanned?.boundedWork.executedSearchRequests, 18);
+  assert.equal(result.queryPlanned?.boundedWork.plannerRequests, 17);
+  assert.equal(result.queryPlanned?.boundedWork.rerankerRequests, 17);
+  assert.deepEqual(result.queryPlanned?.configurations[0]?.measurement.policyFailureCaseIds, []);
 });
 
 void test('recall quality runner indexes and searches only the bounded declared corpus', async (t) => {

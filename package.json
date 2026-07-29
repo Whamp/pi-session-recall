@@ -11,24 +11,34 @@
   "type": "module",
   "scripts": {
     "test": "node --import tsx --test src/**/*.test.ts",
+    "diagnose:recall-marker-hook": "PI_RECALL_RUN_MARKER_DIAGNOSTIC=1 node --import tsx --test src/publish-recall-work-marker.diagnostic.test.ts",
+    "diagnose:recall-metadata-sweep": "PI_RECALL_RUN_METADATA_DIAGNOSTIC=1 node --import tsx --test src/scan-recall-session-metadata.diagnostic.test.ts",
+    "diagnose:recall-write-window": "PI_RECALL_RUN_WRITE_WINDOW_DIAGNOSTIC=1 node --import tsx --test src/commit-incremental-recall-transfer.diagnostic.test.ts",
     "evaluate:recall": "node --import tsx src/evaluate-recall-quality.ts",
+    "evaluate:embeddinggemma": "node --import tsx src/evaluateEmbeddingGemmaRecallQuality.ts",
+    "evidence:embedded:deterministic": "node --import tsx --test src/recall-inference-conformance.test.ts src/embedded-embeddinggemma-provider.test.ts src/embeddinggemma-recall-conversation-service.test.ts src/embedded-qwen-reranking-provider.test.ts src/qwen-reranker-recall-conversation-service.test.ts src/qmd-query-planning-provider-conformance.test.ts src/embedded-qmd-query-planning-provider.test.ts src/qmd-query-planner-recall-conversation-service.test.ts src/run-recall-quality-evaluation.test.ts src/recall-quality-corpus.test.ts src/recall-background-index-conversation-service.test.ts",
     "replay:session-import": "node --import tsx src/replaySessionImportCorpus.ts",
+    "model:embeddinggemma": "node --import tsx src/runRecallEmbeddingGemmaModelCommand.ts",
+    "model:qwen-reranker": "node --import tsx src/runRecallQwenRerankerModelCommand.ts",
+    "model:qmd-query-planner": "node --import tsx src/runRecallQmdQueryPlannerModelCommand.ts",
+    "setup:recall": "node --import tsx src/runRecallFirstIndexSetupCli.ts",
     "typecheck": "tsc --noEmit",
     "lint": "oxlint --type-aware src",
     "format:check": "oxfmt --check ."
   },
   "dependencies": {
     "@huggingface/tokenizers": "0.1.3",
-    "@zvec/zvec": "0.6.0"
+    "@zvec/zvec": "0.6.0",
+    "tsx": "^4.20.0"
   },
   "devDependencies": {
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",
     "@types/node": "^24.0.0",
+    "fast-check": "^4.9.0",
     "oxfmt": "^0.27.0",
     "oxlint": "^1.48.0",
     "oxlint-tsgolint": "^7.0.2001",
-    "tsx": "^4.20.0",
     "typebox": "^1.0.55",
     "typescript": "^5.9.0"
   },
@@ -36,6 +46,9 @@
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",
     "typebox": "*"
+  },
+  "optionalDependencies": {
+    "node-llama-cpp": "3.18.1"
   },
   "pi": {
     "extensions": [

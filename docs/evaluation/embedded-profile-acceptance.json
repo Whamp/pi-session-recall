@@ -1,0 +1,154 @@
+{
+  "version": 1,
+  "ticket": 44,
+  "recordedAt": "2026-07-27T15:36:59-07:00",
+  "releaseDecision": "blocked-pending-external-evidence-and-maintainer-approval",
+  "octenQualityEvidence": {
+    "status": "superseded-committed-artifacts-regenerated-with-deterministic-fixture",
+    "note": "Issue #44 accepted Octen-profile evidence for these paths. Commit 896ec7c regenerated the same committed artifacts under deterministic-fixture-v1 (64-d), so they no longer attest the Octen pass. Candidate policy below remains the frozen hybrid policy reused by EmbeddingGemma evidence.",
+    "historicalOctenProfile": {
+      "requestModel": "octen-embed",
+      "servedModelId": "Octen/Octen-Embedding-4B",
+      "artifact": "Octen-Embedding-4B.Q8_0.gguf",
+      "dimensions": 2560,
+      "queryPrompt": "input text unchanged",
+      "documentPrompt": "input text unchanged"
+    },
+    "committedArtifactEmbeddingIdentity": {
+      "requestModel": "deterministic-fixture-v1",
+      "servedModelId": "deterministic-fixture-v1",
+      "artifact": "committed-corpus-concept-hash-fp32",
+      "dimensions": 64
+    },
+    "candidatePolicy": {
+      "rankingMode": "hybrid",
+      "rankFusionVersion": 2,
+      "reciprocalRankConstant": 60,
+      "activeBranchPrior": 0.01,
+      "candidateLimits": {
+        "dense": 8,
+        "lexical": 8,
+        "identifier": 8
+      },
+      "finalResultCount": 5
+    },
+    "reportPath": "docs/evaluation/recall-quality-report.md",
+    "reportSha256": "4965b741e66bcb1c0a9f6bb9e4d290415495e13594b61e706ba908be7ab425c5",
+    "resultsPath": "docs/evaluation/recall-quality-results.json",
+    "resultsSha256": "390e76e73d9225404536e96ea17732a85cf79d23a64fc10d260ee76d121f1800"
+  },
+  "embeddingGemma": {
+    "status": "deterministic-contract-passed-live-quality-pending",
+    "profile": {
+      "profileId": "embeddinggemma-300m-q8-0-v1",
+      "backend": ["embedded", "llama-cpp-http"],
+      "embeddedAdapter": "node-llama-cpp-embedded-v2",
+      "dimensions": 768,
+      "pooling": "mean",
+      "normalization": "l2",
+      "queryPrompt": "task: search result | query: ",
+      "documentPrompt": "title: none | text: ",
+      "tokenizer": {
+        "kind": "gguf-metadata",
+        "model": "google/embeddinggemma-300M",
+        "library": "node-llama-cpp@3.18.1",
+        "addSpecialTokens": false,
+        "artifactSha256": "b5ce9d77a3fc4b3b39ccb5643c36777911cc4eb46a66962eadfa3f5f60490d63"
+      },
+      "canary": {
+        "policy": "repeat-cosine-v1",
+        "operation": "query",
+        "minimumRepeatCosineSimilarity": 0.9995
+      },
+      "candidatePolicySource": "octenQualityEvidence.candidatePolicy",
+      "embeddingCacheIdentity": {
+        "status": "pending-live-canary",
+        "derivation": "manifest embedding identity, canonical canary fingerprint, tokenizer identity, chunk policy, and embedding cache version"
+      }
+    },
+    "deterministicDeviceEvidence": {
+      "deviceClasses": ["fixture-cpu", "fixture-accelerator"],
+      "warning": "Injected node-llama-cpp boundaries prove selection, fallback, and identity behavior; they are not real-device measurements."
+    },
+    "liveCpuAttempt": {
+      "status": "blocked-before-model-load",
+      "command": "npm run evaluate:embeddinggemma -- --device cpu",
+      "error": "Recall embedded EmbeddingGemma artifact unavailable: state is missing; Run model repair and explicitly approve the pinned model download."
+    }
+  },
+  "qwenReranker": {
+    "status": "deterministic-conformance-and-deep-rerank-passed-live-score-parity-pending",
+    "profileId": "qwen3-reranker-0.6b-q8-0-v1",
+    "scorePolicy": "llama-cpp-qwen3-rank-probability-v1",
+    "backends": [
+      {
+        "backend": "embedded",
+        "adapter": "node-llama-cpp-qwen-reranking-logit-recovery-v1",
+        "cacheIdentity": "qwen3-reranker-0.6b-q8-0-v1:node-llama-cpp-qwen-reranking-logit-recovery-v1"
+      },
+      {
+        "backend": "llama-cpp-http",
+        "adapter": "llama-cpp-http-reranking-v1",
+        "cacheIdentity": "qwen3-reranker-0.6b-q8-0-v1:llama-cpp-http-reranking-v1"
+      }
+    ],
+    "deviceClasses": ["fixture-cpu", "fixture-accelerator"]
+  },
+  "qmdQueryPlanner": {
+    "status": "deterministic-capability-conformance-passed-live-output-parity-pending",
+    "profileId": "qmd-query-expansion-1.7b-q4-k-m-v1",
+    "promptPolicy": "qmd-query-expansion-no-think-v1",
+    "grammarVersion": "qmd-typed-query-plan-v1",
+    "backends": [
+      {
+        "backend": "embedded",
+        "adapter": "node-llama-cpp-qmd-query-planning-v1",
+        "cacheIdentity": "qmd-query-expansion-1.7b-q4-k-m-v1:node-llama-cpp-qmd-query-planning-v1:qmd-query-expansion-no-think-v1:qmd-typed-query-plan-v1"
+      },
+      {
+        "backend": "llama-cpp-http",
+        "adapter": "llama-cpp-http-query-planning-v1",
+        "cacheIdentity": "qmd-query-expansion-1.7b-q4-k-m-v1:llama-cpp-http-query-planning-v1:qmd-query-expansion-no-think-v1:qmd-typed-query-plan-v1"
+      }
+    ],
+    "deviceClasses": ["fixture-cpu", "fixture-accelerator"]
+  },
+  "deterministicRun": {
+    "status": "passed",
+    "command": "npm run evidence:embedded:deterministic",
+    "tests": 48,
+    "passed": 48,
+    "failed": 0,
+    "durationMilliseconds": 8268.60442,
+    "backgroundPhases": ["parsing", "embedding", "store-write", "optimization", "pre-activation"],
+    "backgroundBehavior": [
+      "detached-client-survival",
+      "progress-reporting",
+      "active-generation-search-availability",
+      "stop-and-resume-checkpoint-reuse",
+      "embedding-cache-reuse",
+      "validated-atomic-activation"
+    ]
+  },
+  "liveMeasurements": {
+    "status": "pending-external",
+    "required": [
+      "embedding cold start",
+      "warm query inference",
+      "warm document inference",
+      "indexing throughput",
+      "index size",
+      "embedding cache size",
+      "CPU execution identity",
+      "accelerated execution identity",
+      "automatic accelerator-to-CPU fallback",
+      "Qwen cold and warm reranking latency and throughput",
+      "QMD planner cold and warm latency and generated-token throughput"
+    ],
+    "reason": "All three pinned artifacts are absent; no download, real model run, real device run, or legal approval was authorized."
+  },
+  "distributionReview": {
+    "status": "maintainer-approval-required",
+    "document": "docs/inference/embedded-profile-distribution-review.md"
+  }
+}

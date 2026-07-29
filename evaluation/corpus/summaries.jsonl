@@ -1,5 +1,5 @@
 {"type":"session","version":3,"id":"eval-summaries","timestamp":"2026-07-20T12:00:00Z","cwd":"/evaluation/desktop"}
 {"type":"message","id":"summary-root","parentId":null,"timestamp":"2026-07-20T12:01:00Z","message":{"role":"user","content":"Record the kiosk recovery decision before compacting this session."}}
 {"type":"message","id":"summary-detail","parentId":"summary-root","timestamp":"2026-07-20T12:02:00Z","message":{"role":"assistant","content":"The recovery drill was completed and can now be summarized."}}
-{"type":"compaction","id":"recovery-compaction","parentId":"summary-detail","timestamp":"2026-07-20T12:03:00Z","summary":"Kiosk recovery phrase Copper Finch means boot from the signed USB, restore snapshot delta-29, then rotate the device certificate.","tokensBefore":1840}
+{"type":"compaction","id":"recovery-compaction","parentId":"summary-detail","timestamp":"2026-07-20T12:03:00Z","summary":"Kiosk recovery phrase Copper Finch means boot from the signed USB, restore snapshot delta-29, then rotate the device certificate.","firstKeptEntryId":"summary-detail","tokensBefore":1840}
 {"type":"message","id":"summary-followup","parentId":"recovery-compaction","timestamp":"2026-07-20T12:04:00Z","message":{"role":"assistant","content":"After compaction, continue with the ordinary monitoring checklist."}}

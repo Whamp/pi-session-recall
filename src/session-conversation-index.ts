@@ -2,12 +2,22 @@ import { createHash } from 'node:crypto';
 
 import { SessionImportFormat } from './enums.js';
 import { isUnknownRecord } from './is-unknown-record.js';
+import {
+  parseRecallSessionGraph,
+  type CanonicalSessionRepresentation,
+  type ParsedRecallSessionEntry,
+  type ParsedRecallSessionGraph,
+} from './parse-recall-session-record.js';
+import {
+  createLogicalSessionOccurrenceId,
+  createPhysicalSessionProjectionId,
+} from './recall-session-projection.js';
 import type { ResolvedProjectIdentity } from './resolve-project-identity.js';
 import { assertRecallChunkPolicy } from './recall-chunk-policy.js';
-import { importSessionJsonl, type CanonicalSessionRepresentation } from './import-session-jsonl.js';
+import { importSessionJsonl } from './import-session-jsonl.js';
 
 /** Version of the source and graph provenance stored on recall evidence documents. */
-export const SESSION_CONVERSATION_SCHEMA_VERSION = 8;
+export const SESSION_CONVERSATION_SCHEMA_VERSION = 9;
 
 /** A Pi session ID that cannot be passed where a session entry ID is required. */
 export interface PiSessionId {
@@ -34,6 +44,16 @@ export interface SessionConversationChunkOptions {
   tokenizer: ConversationTextTokenizer;
   maxTokens?: number;
   overlapTokens?: number;
+  /** Optional rebuild boundary containing approved contributors per logical session. */
+  eligibleContributorEntryIdsByLogicalSessionId?: ReadonlyMap<string, ReadonlySet<string>>;
+}
+
+/** Source identity and chunk policy used to build documents from one validated logical graph. */
+export interface SessionConversationDocumentBuilderOptions extends SessionConversationChunkOptions {
+  sessionPath: string;
+  logicalSessionIdentity: string;
+  physicalSessionProjectionId?: string;
+  newlyEligibleContributorEntryIds?: ReadonlySet<string>;
 }
 
 /** Stable graph identities and physical boundaries for one validated logical session. */
@@ -71,6 +91,7 @@ export interface SessionConversationChunk {
   checksum: string;
   sessionId: PiSessionId;
   sessionPath: string;
+  physicalSessionProjectionId: string;
   parentSessionPath: string | null;
   cwd: string;
   projectPath: string;
@@ -114,65 +135,6 @@ export interface SessionConversationChunk {
   content: string;
 }
 
-interface ParsedSessionHeader {
-  id: string;
-  cwd: string;
-  parentSessionPath: string | null;
-  lineIndex: number;
-}
-
-interface ParsedSessionEntry {
-  id: string;
-  parentId: string | null;
-  timestamp: string;
-  type: string;
-  lineIndex: number;
-  record: Record<string, unknown>;
-}
-
-interface ParsedSessionGraph {
-  header: ParsedSessionHeader;
-  entries: ParsedSessionEntry[];
-  entriesById: Map<string, ParsedSessionEntry>;
-  childEntryIdsById: Map<string, string[]>;
-  currentLeafId: string | null;
-  activeBranchEntryIds: Set<string>;
-  activeContextEntryIds: Set<string>;
-  branchPathLeafIdsByEntryId: Map<string, string[]>;
-  compactedByEntryIdsByEntryId: Map<string, string[]>;
-  toolCallEntryIdsByCallId: Map<string, string>;
-  toolResultEntryIdsByCallId: Map<string, string>;
-  sessionName: string;
-}
-
-interface ParsedSessionFileRecords {
-  headers: ParsedSessionHeader[];
-  entries: ParsedSessionEntry[];
-  entriesById: Map<string, ParsedSessionEntry>;
-  harnessLeafTarget?: string | null;
-  firstRecordLine: number;
-}
-
-interface ParsedSessionHeaderRecord {
-  kind: 'header';
-  header: ParsedSessionHeader;
-}
-
-interface ParsedSessionLeafRecord {
-  kind: 'leaf';
-  targetId: string | null;
-}
-
-interface ParsedSessionEntryRecord {
-  kind: 'entry';
-  entry: ParsedSessionEntry;
-}
-
-type ParsedSessionFileRecord =
-  | ParsedSessionHeaderRecord
-  | ParsedSessionLeafRecord
-  | ParsedSessionEntryRecord;
-
 interface VisibleConversationTextRun {
   text: string;
   textRunIndex: number;
@@ -196,8 +158,8 @@ interface TurnContextText {
 }
 
 interface PendingConversationDocumentBase {
-  entry: ParsedSessionEntry;
-  contributingEntries: ParsedSessionEntry[];
+  entry: ParsedRecallSessionEntry;
+  contributingEntries: ParsedRecallSessionEntry[];
   role: SessionConversationChunk['role'];
   summaryKind: SessionConversationChunk['summaryKind'];
   evidenceKind: SessionConversationChunk['evidenceKind'];
@@ -226,14 +188,15 @@ interface PendingTurnContextDocument extends PendingConversationDocumentBase {
 type PendingConversationDocument = PendingEntryScopedDocument | PendingTurnContextDocument;
 
 interface PendingTurnContextPath {
-  entry: ParsedSessionEntry;
-  contributingEntries: ParsedSessionEntry[];
+  entry: ParsedRecallSessionEntry;
+  contributingEntries: ParsedRecallSessionEntry[];
   assistantTexts: string[];
 }
 
 interface SessionConversationChunkContext {
-  graph: ParsedSessionGraph;
+  graph: ParsedRecallSessionGraph;
   sessionPath: string;
+  physicalSessionProjectionId: string;
   logicalSessionIdentity: string;
   tokenizer: ConversationTextTokenizer;
   maxTokens: number;
@@ -248,465 +211,6 @@ function hashConversationValue(value: string): string {
 
 function createPiSessionEntryId(value: string): PiSessionEntryId {
   return { value };
-}
-
-function parseRequiredString(
-  value: unknown,
-  fieldName: string,
-  sessionPath: string,
-  lineIndex: number,
-): string {
-  if (typeof value !== 'string' || value.length === 0) {
-    throw new Error(
-      `Recall session graph invalid at ${sessionPath}:${lineIndex}: ${fieldName} must be a nonempty string`,
-    );
-  }
-  return value;
-}
-
-function readSessionEntryPath(
-  entryId: string,
-  entriesById: Map<string, ParsedSessionEntry>,
-): ParsedSessionEntry[] {
-  const reversed: ParsedSessionEntry[] = [];
-  let current = entriesById.get(entryId);
-  while (current) {
-    reversed.push(current);
-    current = current.parentId ? entriesById.get(current.parentId) : undefined;
-  }
-  return reversed.reverse();
-}
-
-function findActiveContextEntryIds(
-  currentLeafId: string | null,
-  entriesById: Map<string, ParsedSessionEntry>,
-): Set<string> {
-  if (!currentLeafId) {
-    return new Set();
-  }
-  const path = readSessionEntryPath(currentLeafId, entriesById);
-  let latestCompactionIndex = -1;
-  for (const [index, entry] of path.entries()) {
-    if (entry.type === 'compaction') {
-      latestCompactionIndex = index;
-    }
-  }
-  if (latestCompactionIndex < 0) {
-    return new Set(path.map((entry) => entry.id));
-  }
-
-  const compaction = path[latestCompactionIndex];
-  if (!compaction) {
-    return new Set(path.map((entry) => entry.id));
-  }
-  const visible = new Set<string>([compaction.id]);
-  if (!Array.isArray(compaction.record.retainedTail)) {
-    const firstKeptEntryId = compaction.record.firstKeptEntryId;
-    if (typeof firstKeptEntryId === 'string') {
-      const firstKeptIndex = path.findIndex((entry) => entry.id === firstKeptEntryId);
-      if (firstKeptIndex >= 0 && firstKeptIndex < latestCompactionIndex) {
-        for (const entry of path.slice(firstKeptIndex, latestCompactionIndex)) {
-          visible.add(entry.id);
-        }
-      }
-    }
-  }
-  for (const entry of path.slice(latestCompactionIndex + 1)) {
-    visible.add(entry.id);
-  }
-  return visible;
-}
-
-function findCompactedByEntryIds(
-  entries: ParsedSessionEntry[],
-  entriesById: Map<string, ParsedSessionEntry>,
-): Map<string, string[]> {
-  const compactedBy = new Map<string, string[]>();
-  for (const compaction of entries.filter((entry) => entry.type === 'compaction')) {
-    if (!compaction.parentId) {
-      continue;
-    }
-    const ancestorPath = readSessionEntryPath(compaction.parentId, entriesById);
-    let summarizedEnd = ancestorPath.length;
-    if (!Array.isArray(compaction.record.retainedTail)) {
-      const firstKeptEntryId = compaction.record.firstKeptEntryId;
-      if (typeof firstKeptEntryId === 'string') {
-        const firstKeptIndex = ancestorPath.findIndex((entry) => entry.id === firstKeptEntryId);
-        if (firstKeptIndex >= 0) {
-          summarizedEnd = firstKeptIndex;
-        }
-      }
-    }
-    for (const summarizedEntry of ancestorPath.slice(0, summarizedEnd)) {
-      const compactionIds = compactedBy.get(summarizedEntry.id) ?? [];
-      compactionIds.push(compaction.id);
-      compactedBy.set(summarizedEntry.id, compactionIds);
-    }
-  }
-  return compactedBy;
-}
-
-function findBranchPathLeafIds(
-  entries: ParsedSessionEntry[],
-  entriesById: Map<string, ParsedSessionEntry>,
-  childEntryIdsById: Map<string, string[]>,
-  currentLeafId: string | null,
-): Map<string, string[]> {
-  const endpoints = entries
-    .filter((entry) => (childEntryIdsById.get(entry.id)?.length ?? 0) === 0)
-    .map((entry) => entry.id);
-  if (currentLeafId && !endpoints.includes(currentLeafId)) {
-    endpoints.push(currentLeafId);
-  }
-
-  const memberships = new Map<string, string[]>();
-  for (const endpoint of endpoints) {
-    for (const entry of readSessionEntryPath(endpoint, entriesById)) {
-      const leafIds = memberships.get(entry.id) ?? [];
-      if (!leafIds.includes(endpoint)) {
-        leafIds.push(endpoint);
-      }
-      memberships.set(entry.id, leafIds);
-    }
-  }
-  return memberships;
-}
-
-function parseSessionFileRecord(
-  parsed: unknown,
-  sessionPath: string,
-  lineIndex: number,
-): ParsedSessionFileRecord {
-  if (!isUnknownRecord(parsed) || typeof parsed.type !== 'string') {
-    throw new Error(
-      `Recall session graph invalid at ${sessionPath}:${lineIndex}: each line must be an object with a type`,
-    );
-  }
-  if (parsed.type === 'session') {
-    return {
-      kind: 'header',
-      header: {
-        id: parseRequiredString(parsed.id, 'session.id', sessionPath, lineIndex),
-        cwd: typeof parsed.cwd === 'string' ? parsed.cwd : '',
-        parentSessionPath: typeof parsed.parentSession === 'string' ? parsed.parentSession : null,
-        lineIndex,
-      },
-    };
-  }
-  if (parsed.type === 'leaf') {
-    if (parsed.targetId !== null && typeof parsed.targetId !== 'string') {
-      throw new Error(
-        `Recall session graph invalid at ${sessionPath}:${lineIndex}: leaf.targetId must be a string or null`,
-      );
-    }
-    return { kind: 'leaf', targetId: parsed.targetId };
-  }
-  const id = parseRequiredString(parsed.id, 'entry.id', sessionPath, lineIndex);
-  if (parsed.parentId !== null && typeof parsed.parentId !== 'string') {
-    throw new Error(
-      `Recall session graph invalid at ${sessionPath}:${lineIndex}: parentId must be a string or null`,
-    );
-  }
-  return {
-    kind: 'entry',
-    entry: {
-      id,
-      parentId: parsed.parentId,
-      timestamp: parseRequiredString(parsed.timestamp, 'entry.timestamp', sessionPath, lineIndex),
-      type: parsed.type,
-      lineIndex,
-      record: parsed,
-    },
-  };
-}
-
-function parseCanonicalSessionRecords(
-  session: CanonicalSessionRepresentation,
-  graphSource: string,
-): ParsedSessionFileRecords {
-  const records: ParsedSessionFileRecords = {
-    headers: [],
-    entries: [],
-    entriesById: new Map(),
-    firstRecordLine: 0,
-  };
-  for (const physicalRecord of session.records) {
-    const record = parseSessionFileRecord(
-      physicalRecord.value,
-      graphSource,
-      physicalRecord.sourceLine,
-    );
-    records.firstRecordLine ||= physicalRecord.sourceLine;
-    if (record.kind === 'header') {
-      records.headers.push(record.header);
-    } else if (record.kind === 'leaf') {
-      records.harnessLeafTarget = record.targetId;
-    } else {
-      if (records.entriesById.has(record.entry.id)) {
-        throw new Error(
-          `Recall session graph invalid at ${graphSource}:${physicalRecord.sourceLine}: duplicate entry id ${record.entry.id}`,
-        );
-      }
-      records.entries.push(record.entry);
-      records.entriesById.set(record.entry.id, record.entry);
-    }
-  }
-  return records;
-}
-
-function validateCanonicalSessionHeader(
-  headers: ParsedSessionHeader[],
-  firstRecordLine: number,
-  sessionPath: string,
-): ParsedSessionHeader {
-  if (headers.length !== 1) {
-    throw new Error(
-      `Recall session graph invalid at ${sessionPath}: expected exactly one session header, found ${headers.length}`,
-    );
-  }
-  const header = headers[0];
-  if (!header) {
-    throw new Error(`Recall session graph invalid at ${sessionPath}: session header missing`);
-  }
-  if (header.lineIndex !== firstRecordLine) {
-    throw new Error(`Recall session graph invalid at ${sessionPath}: session header must be first`);
-  }
-  return header;
-}
-
-function buildSessionChildEntryIds(
-  entries: ParsedSessionEntry[],
-  entriesById: Map<string, ParsedSessionEntry>,
-  sessionPath: string,
-): Map<string, string[]> {
-  const childEntryIdsById = new Map<string, string[]>();
-  for (const entry of entries) {
-    if (!entry.parentId) {
-      continue;
-    }
-    if (!entriesById.has(entry.parentId)) {
-      throw new Error(
-        `Recall session graph invalid at ${sessionPath}:${entry.lineIndex}: entry ${entry.id} has missing parent ${entry.parentId}`,
-      );
-    }
-    const childIds = childEntryIdsById.get(entry.parentId) ?? [];
-    childIds.push(entry.id);
-    childEntryIdsById.set(entry.parentId, childIds);
-  }
-  return childEntryIdsById;
-}
-
-function assertSessionParentPathsAcyclic(
-  entries: ParsedSessionEntry[],
-  entriesById: Map<string, ParsedSessionEntry>,
-  sessionPath: string,
-): void {
-  for (const entry of entries) {
-    const visited = new Set<string>();
-    let current: ParsedSessionEntry | undefined = entry;
-    while (current) {
-      if (visited.has(current.id)) {
-        throw new Error(
-          `Recall session graph invalid at ${sessionPath}:${entry.lineIndex}: parent cycle includes ${current.id}`,
-        );
-      }
-      visited.add(current.id);
-      current = current.parentId ? entriesById.get(current.parentId) : undefined;
-    }
-  }
-}
-
-function resolveCurrentSessionLeafId(
-  records: ParsedSessionFileRecords,
-  sessionPath: string,
-): string | null {
-  const legacyLeafId = records.entries.at(-1)?.id ?? null;
-  const currentLeafId =
-    records.harnessLeafTarget === undefined ? legacyLeafId : records.harnessLeafTarget;
-  if (currentLeafId && !records.entriesById.has(currentLeafId)) {
-    throw new Error(
-      `Recall session graph invalid at ${sessionPath}: leaf target ${currentLeafId} does not exist`,
-    );
-  }
-  return currentLeafId;
-}
-
-function readLatestSessionName(entries: ParsedSessionEntry[]): string {
-  let sessionName = '';
-  for (const entry of entries) {
-    if (entry.type === 'session_info' && typeof entry.record.name === 'string') {
-      sessionName = entry.record.name.trim();
-    }
-  }
-  return sessionName;
-}
-
-function assertSessionCompactionAndBranchLinks(
-  entries: ParsedSessionEntry[],
-  entriesById: Map<string, ParsedSessionEntry>,
-  sessionPath: string,
-): void {
-  for (const entry of entries) {
-    if (entry.type === 'compaction' && !Array.isArray(entry.record.retainedTail)) {
-      const firstKeptEntryId = entry.record.firstKeptEntryId;
-      const ancestorIds = new Set(
-        entry.parentId
-          ? readSessionEntryPath(entry.parentId, entriesById).map((ancestor) => ancestor.id)
-          : [],
-      );
-      if (typeof firstKeptEntryId !== 'string' || !ancestorIds.has(firstKeptEntryId)) {
-        throw new Error(
-          `Recall session graph invalid at ${sessionPath}:${entry.lineIndex}: compaction ${entry.id} firstKeptEntryId ${String(firstKeptEntryId)} is not an ancestor`,
-        );
-      }
-    }
-    if (entry.type === 'branch_summary') {
-      const fromId = entry.record.fromId;
-      if (fromId !== 'root' && (typeof fromId !== 'string' || !entriesById.has(fromId))) {
-        throw new Error(
-          `Recall session graph invalid at ${sessionPath}:${entry.lineIndex}: branch summary ${entry.id} fromId ${String(fromId)} does not name an entry or root`,
-        );
-      }
-    }
-  }
-}
-
-function isBlankToolPlaceholder(toolCallId: unknown, toolName: unknown): boolean {
-  return toolCallId === '' && toolName === '';
-}
-
-function findSessionToolEntryLinks(
-  entries: ParsedSessionEntry[],
-  sessionPath: string,
-): {
-  toolCallEntryIdsByCallId: Map<string, string>;
-  toolResultEntryIdsByCallId: Map<string, string>;
-} {
-  const toolCallEntryIdsByCallId = new Map<string, string>();
-  const toolCallNamesByCallId = new Map<string, string>();
-  const toolResultEntryIdsByCallId = new Map<string, string>();
-  const toolResultNamesByCallId = new Map<string, string>();
-  for (const entry of entries) {
-    if (entry.type !== 'message' || !isUnknownRecord(entry.record.message)) {
-      continue;
-    }
-    const message = entry.record.message;
-    if (message.role === 'assistant' && Array.isArray(message.content)) {
-      for (const block of message.content) {
-        if (!isUnknownRecord(block) || block.type !== 'toolCall') {
-          continue;
-        }
-        if (isBlankToolPlaceholder(block.id, block.name)) {
-          continue;
-        }
-        const toolCallId = parseRequiredString(
-          block.id,
-          'toolCall.id',
-          sessionPath,
-          entry.lineIndex,
-        );
-        const toolName = parseRequiredString(
-          block.name,
-          'toolCall.name',
-          sessionPath,
-          entry.lineIndex,
-        );
-        if (toolCallEntryIdsByCallId.has(toolCallId)) {
-          throw new Error(
-            `Recall session graph invalid at ${sessionPath}:${entry.lineIndex}: duplicate tool call id ${toolCallId}`,
-          );
-        }
-        toolCallEntryIdsByCallId.set(toolCallId, entry.id);
-        toolCallNamesByCallId.set(toolCallId, toolName);
-      }
-    }
-    if (message.role === 'toolResult') {
-      if (isBlankToolPlaceholder(message.toolCallId, message.toolName)) {
-        continue;
-      }
-      const toolCallId = parseRequiredString(
-        message.toolCallId,
-        'toolResult.toolCallId',
-        sessionPath,
-        entry.lineIndex,
-      );
-      const toolName = parseRequiredString(
-        message.toolName,
-        'toolResult.toolName',
-        sessionPath,
-        entry.lineIndex,
-      );
-      if (toolResultEntryIdsByCallId.has(toolCallId)) {
-        throw new Error(
-          `Recall session graph invalid at ${sessionPath}:${entry.lineIndex}: duplicate tool result id ${toolCallId}`,
-        );
-      }
-      toolResultEntryIdsByCallId.set(toolCallId, entry.id);
-      toolResultNamesByCallId.set(toolCallId, toolName);
-    }
-  }
-  for (const [toolCallId, resultEntryId] of toolResultEntryIdsByCallId) {
-    const callEntryId = toolCallEntryIdsByCallId.get(toolCallId);
-    if (!callEntryId) {
-      throw new Error(
-        `Recall session graph invalid at ${sessionPath}: tool result ${toolCallId} has no matching tool call`,
-      );
-    }
-    const callToolName = toolCallNamesByCallId.get(toolCallId);
-    const resultToolName = toolResultNamesByCallId.get(toolCallId);
-    if (callToolName !== resultToolName) {
-      throw new Error(
-        `Recall session graph invalid at ${sessionPath}: tool result ${toolCallId} names ${String(resultToolName)}, but call names ${String(callToolName)} (entries ${callEntryId} and ${resultEntryId})`,
-      );
-    }
-  }
-  return { toolCallEntryIdsByCallId, toolResultEntryIdsByCallId };
-}
-
-function readValidatedSessionGraph(session: CanonicalSessionRepresentation): ParsedSessionGraph {
-  const graphSource =
-    session.format === SessionImportFormat.PI_SESSION_REUSE_HISTORY
-      ? `${session.physicalPath} (logical session ${session.logicalSessionId})`
-      : session.physicalPath;
-  const records = parseCanonicalSessionRecords(session, graphSource);
-  const header = validateCanonicalSessionHeader(
-    records.headers,
-    records.firstRecordLine,
-    graphSource,
-  );
-  const childEntryIdsById = buildSessionChildEntryIds(
-    records.entries,
-    records.entriesById,
-    graphSource,
-  );
-  assertSessionParentPathsAcyclic(records.entries, records.entriesById, graphSource);
-  assertSessionCompactionAndBranchLinks(records.entries, records.entriesById, graphSource);
-  const currentLeafId = resolveCurrentSessionLeafId(records, graphSource);
-  const activeBranchEntryIds = new Set(
-    currentLeafId
-      ? readSessionEntryPath(currentLeafId, records.entriesById).map((entry) => entry.id)
-      : [],
-  );
-  const toolEntryLinks = findSessionToolEntryLinks(records.entries, graphSource);
-
-  return {
-    header,
-    entries: records.entries,
-    entriesById: records.entriesById,
-    childEntryIdsById,
-    currentLeafId,
-    activeBranchEntryIds,
-    activeContextEntryIds: findActiveContextEntryIds(currentLeafId, records.entriesById),
-    branchPathLeafIdsByEntryId: findBranchPathLeafIds(
-      records.entries,
-      records.entriesById,
-      childEntryIdsById,
-      currentLeafId,
-    ),
-    compactedByEntryIdsByEntryId: findCompactedByEntryIds(records.entries, records.entriesById),
-    ...toolEntryLinks,
-    sessionName: readLatestSessionName(records.entries),
-  };
 }
 
 function extractVisibleConversationTextRuns(content: unknown): VisibleConversationTextRun[] {
@@ -1114,7 +618,7 @@ function splitVerbatimToolEvidenceByTokens(
 }
 
 function createConversationTextDocuments(
-  entry: ParsedSessionEntry,
+  entry: ParsedRecallSessionEntry,
   role: 'user' | 'assistant' | 'custom',
   content: unknown,
 ): PendingConversationDocument[] {
@@ -1140,7 +644,7 @@ function createConversationTextDocuments(
 }
 
 function createSummaryTextDocument(
-  entry: ParsedSessionEntry,
+  entry: ParsedRecallSessionEntry,
   summaryKind: 'compaction' | 'branch',
 ): PendingConversationDocument[] {
   const text = typeof entry.record.summary === 'string' ? entry.record.summary.trim() : '';
@@ -1186,8 +690,8 @@ function isDerivedRecallToolEvidence(toolName: string): boolean {
 }
 
 function createToolCallDocuments(
-  graph: ParsedSessionGraph,
-  entry: ParsedSessionEntry,
+  graph: ParsedRecallSessionGraph,
+  entry: ParsedRecallSessionEntry,
   content: unknown,
 ): PendingConversationDocument[] {
   if (!Array.isArray(content)) {
@@ -1255,8 +759,8 @@ function createToolCallDocuments(
 }
 
 function createToolResultDocuments(
-  graph: ParsedSessionGraph,
-  entry: ParsedSessionEntry,
+  graph: ParsedRecallSessionGraph,
+  entry: ParsedRecallSessionEntry,
   message: Record<string, unknown>,
 ): PendingConversationDocument[] {
   if (
@@ -1313,7 +817,7 @@ function createToolResultDocuments(
 }
 
 function createBashExecutionDocuments(
-  entry: ParsedSessionEntry,
+  entry: ParsedRecallSessionEntry,
   message: Record<string, unknown>,
 ): PendingConversationDocument[] {
   let isError: boolean | null = null;
@@ -1359,7 +863,10 @@ function createBashExecutionDocuments(
   });
 }
 
-function readSessionGraphEntry(graph: ParsedSessionGraph, entryId: string): ParsedSessionEntry {
+function readSessionGraphEntry(
+  graph: ParsedRecallSessionGraph,
+  entryId: string,
+): ParsedRecallSessionEntry {
   const entry = graph.entriesById.get(entryId);
   if (!entry) {
     throw new Error(`Recall turn context entry missing from graph: ${entryId}`);
@@ -1367,14 +874,17 @@ function readSessionGraphEntry(graph: ParsedSessionGraph, entryId: string): Pars
   return entry;
 }
 
-function readSessionEntryMessage(entry: ParsedSessionEntry): Record<string, unknown> | null {
+function readSessionEntryMessage(entry: ParsedRecallSessionEntry): Record<string, unknown> | null {
   if (entry.type !== 'message' || !isUnknownRecord(entry.record.message)) {
     return null;
   }
   return entry.record.message;
 }
 
-function readTurnContextRoleText(entry: ParsedSessionEntry, role: 'user' | 'assistant'): string {
+function readTurnContextRoleText(
+  entry: ParsedRecallSessionEntry,
+  role: 'user' | 'assistant',
+): string {
   const message = readSessionEntryMessage(entry);
   if (message?.role !== role) {
     return '';
@@ -1384,7 +894,7 @@ function readTurnContextRoleText(entry: ParsedSessionEntry, role: 'user' | 'assi
     .join('\n\n');
 }
 
-function createContributingEntryIdentity(entries: ParsedSessionEntry[]): string {
+function createContributingEntryIdentity(entries: ParsedRecallSessionEntry[]): string {
   return entries.map((entry) => entry.id).join('\0');
 }
 
@@ -1394,7 +904,7 @@ function formatTurnContextText(turnContextText: TurnContextText): string {
 
 function addTurnContextPathDocument(
   documentsByContributingEntryIdentity: Map<string, PendingConversationDocument>,
-  userEntry: ParsedSessionEntry,
+  userEntry: ParsedRecallSessionEntry,
   userText: string,
   path: PendingTurnContextPath,
 ): void {
@@ -1573,7 +1083,9 @@ function createTokenBoundedTurnContextDocuments(
   );
 }
 
-function createTurnContextDocuments(graph: ParsedSessionGraph): PendingConversationDocument[] {
+function createTurnContextDocuments(
+  graph: ParsedRecallSessionGraph,
+): PendingConversationDocument[] {
   const documentsByContributingEntryIdentity = new Map<string, PendingConversationDocument>();
   for (const userEntry of graph.entries) {
     const userText = readTurnContextRoleText(userEntry, 'user');
@@ -1637,7 +1149,7 @@ function createTurnContextDocuments(graph: ParsedSessionGraph): PendingConversat
 }
 
 function createPendingConversationDocuments(
-  graph: ParsedSessionGraph,
+  graph: ParsedRecallSessionGraph,
 ): PendingConversationDocument[] {
   const entryScopedDocuments = graph.entries.flatMap((entry) => {
     if (entry.type === 'message' && isUnknownRecord(entry.record.message)) {
@@ -1673,8 +1185,8 @@ function createPendingConversationDocuments(
 }
 
 function findContributingBranchPathLeafIds(
-  graph: ParsedSessionGraph,
-  contributingEntries: ParsedSessionEntry[],
+  graph: ParsedRecallSessionGraph,
+  contributingEntries: ParsedRecallSessionEntry[],
 ): string[] {
   const firstEntry = contributingEntries[0];
   if (!firstEntry) {
@@ -1688,8 +1200,8 @@ function findContributingBranchPathLeafIds(
 }
 
 function findContributingCompactionEntryIds(
-  graph: ParsedSessionGraph,
-  contributingEntries: ParsedSessionEntry[],
+  graph: ParsedRecallSessionGraph,
+  contributingEntries: ParsedRecallSessionEntry[],
 ): string[] {
   const compactionEntryIds = new Set<string>();
   for (const entry of contributingEntries) {
@@ -1717,7 +1229,7 @@ function createSessionConversationChunks(
   );
   const sourceLineIndexes = pending.contributingEntries.map((entry) => entry.lineIndex);
   const textRunId = hashConversationValue(
-    `${SESSION_CONVERSATION_SCHEMA_VERSION}\0${context.logicalSessionIdentity}\0${pending.entry.id}\0${contributingEntryIdentity}\0${pending.evidenceKind}\0${pending.evidencePart}\0${pending.textRun.textRunIndex}`,
+    `${SESSION_CONVERSATION_SCHEMA_VERSION}\0${context.physicalSessionProjectionId}\0${context.sessionPath}\0${context.logicalSessionIdentity}\0${pending.entry.id}\0${contributingEntryIdentity}\0${pending.evidenceKind}\0${pending.evidencePart}\0${pending.textRun.textRunIndex}`,
   ).slice(0, 40);
   const chunkSpans = pending.preserveVerbatim
     ? splitVerbatimToolEvidenceByTokens(pending.textRun.text, context.tokenizer, context.maxTokens)
@@ -1758,6 +1270,7 @@ function createSessionConversationChunks(
       checksum: hashConversationValue(span.content),
       sessionId: context.sessionId,
       sessionPath: context.sessionPath,
+      physicalSessionProjectionId: context.physicalSessionProjectionId,
       parentSessionPath: graph.header.parentSessionPath,
       cwd: graph.header.cwd,
       projectPath: graph.header.cwd,
@@ -1817,9 +1330,50 @@ function createSessionConversationChunks(
   });
 }
 
+/**
+ * Builds recall documents only when every source contributor is explicitly eligible.
+ * Eligibility is checked before tokenization so active-tail text never reaches the tokenizer.
+ */
+export function buildSessionConversationDocuments(
+  graph: ParsedRecallSessionGraph,
+  eligibleContributorEntryIds: ReadonlySet<string>,
+  options: SessionConversationDocumentBuilderOptions,
+): SessionConversationChunk[] {
+  const maxTokens = options.maxTokens ?? 1_024;
+  const overlapTokens = options.overlapTokens ?? 128;
+  assertRecallChunkPolicy({ maxTokens, overlapTokens });
+  const context: SessionConversationChunkContext = {
+    graph,
+    sessionPath: options.sessionPath,
+    physicalSessionProjectionId:
+      options.physicalSessionProjectionId ?? createPhysicalSessionProjectionId(graph.header.id),
+    logicalSessionIdentity: options.logicalSessionIdentity,
+    tokenizer: options.tokenizer,
+    maxTokens,
+    overlapTokens,
+    sessionId: { value: graph.header.id },
+    currentLeafId: graph.currentLeafId ? createPiSessionEntryId(graph.currentLeafId) : null,
+  };
+  return createPendingConversationDocuments(graph)
+    .filter((pending) =>
+      pending.contributingEntries.every(({ id }) => eligibleContributorEntryIds.has(id)),
+    )
+    .filter(
+      (pending) =>
+        options.newlyEligibleContributorEntryIds === undefined ||
+        pending.contributingEntries.some(({ id }) =>
+          options.newlyEligibleContributorEntryIds?.has(id),
+        ),
+    )
+    .flatMap((pending) =>
+      createTokenBoundedTurnContextDocuments(pending, context.tokenizer, context.maxTokens),
+    )
+    .flatMap((pending) => createSessionConversationChunks(context, pending));
+}
+
 function createLogicalSessionSummary(
   session: CanonicalSessionRepresentation,
-  graph: ParsedSessionGraph,
+  graph: ParsedRecallSessionGraph,
 ): SessionConversationLogicalSession {
   return {
     sessionId: graph.header.id,
@@ -1845,29 +1399,60 @@ export async function readSessionConversationImport(
   const imported = await importSessionJsonl(sessionPath);
   const logicalSessions: SessionConversationLogicalSession[] = [];
   const chunks: SessionConversationChunk[] = [];
+  const remainingApprovedContributorIdsByLogicalSessionId =
+    options.eligibleContributorEntryIdsByLogicalSessionId === undefined
+      ? null
+      : new Map(options.eligibleContributorEntryIdsByLogicalSessionId);
+  let physicalSessionProjectionId: string | undefined;
   for (const session of imported.sessions) {
-    const graph = readValidatedSessionGraph(session);
+    const graph = parseRecallSessionGraph(session);
+    physicalSessionProjectionId ??= createPhysicalSessionProjectionId(graph.header.id);
     logicalSessions.push(createLogicalSessionSummary(session, graph));
     const logicalSessionIdentity =
       imported.format === SessionImportFormat.PI_SESSION_REUSE_HISTORY
-        ? `${graph.header.id}@${graph.header.lineIndex}`
+        ? createLogicalSessionOccurrenceId(graph.header.id, graph.header.lineIndex)
         : graph.header.id;
-    const context: SessionConversationChunkContext = {
-      graph,
-      sessionPath,
-      logicalSessionIdentity,
-      tokenizer: options.tokenizer,
-      maxTokens,
-      overlapTokens,
-      sessionId: { value: graph.header.id },
-      currentLeafId: graph.currentLeafId ? createPiSessionEntryId(graph.currentLeafId) : null,
-    };
+    const projectionLogicalSessionIdentity = createLogicalSessionOccurrenceId(
+      graph.header.id,
+      graph.header.lineIndex,
+    );
+    const approvedLogicalSessionIdentity =
+      remainingApprovedContributorIdsByLogicalSessionId?.has(logicalSessionIdentity) === true
+        ? logicalSessionIdentity
+        : projectionLogicalSessionIdentity;
+    const approvedContributorEntryIds =
+      remainingApprovedContributorIdsByLogicalSessionId === null
+        ? new Set(graph.entries.map(({ id }) => id))
+        : (remainingApprovedContributorIdsByLogicalSessionId.get(approvedLogicalSessionIdentity) ??
+          new Set<string>());
+    if (remainingApprovedContributorIdsByLogicalSessionId !== null) {
+      const sourceEntryIds = new Set(graph.entries.map(({ id }) => id));
+      for (const approvedContributorEntryId of approvedContributorEntryIds) {
+        if (!sourceEntryIds.has(approvedContributorEntryId)) {
+          throw new Error(
+            `Recall rebuild approved contributor missing from ${approvedLogicalSessionIdentity}: ${approvedContributorEntryId}`,
+          );
+        }
+      }
+      remainingApprovedContributorIdsByLogicalSessionId.delete(approvedLogicalSessionIdentity);
+    }
     chunks.push(
-      ...createPendingConversationDocuments(graph)
-        .flatMap((pending) =>
-          createTokenBoundedTurnContextDocuments(pending, context.tokenizer, context.maxTokens),
-        )
-        .flatMap((pending) => createSessionConversationChunks(context, pending)),
+      ...buildSessionConversationDocuments(graph, approvedContributorEntryIds, {
+        sessionPath,
+        logicalSessionIdentity,
+        physicalSessionProjectionId,
+        tokenizer: options.tokenizer,
+        maxTokens,
+        overlapTokens,
+      }),
+    );
+  }
+  const missingApprovedLogicalSessionId = [
+    ...(remainingApprovedContributorIdsByLogicalSessionId?.keys() ?? []),
+  ].toSorted()[0];
+  if (missingApprovedLogicalSessionId !== undefined) {
+    throw new Error(
+      `Recall rebuild approved logical session missing from source: ${missingApprovedLogicalSessionId}`,
     );
   }
   return { format: imported.format, logicalSessions, chunks };

@@ -6,11 +6,17 @@ import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import {
+  createDeterministicRecallQualityDependencies,
+  DETERMINISTIC_RECALL_QUALITY_EMBEDDING_DIMENSIONS,
+} from './create-deterministic-recall-quality-dependencies.js';
+import { RecallDiagnosticsMode } from './enums.js';
+import {
   formatRecallQualityReport,
   type RecallQualityReportEnvironment,
 } from './format-recall-quality-report.js';
+import type { RecallConversationConfig } from './recall-conversation-service.js';
 import { loadRecallQualityCorpus } from './recall-quality-corpus.js';
-import { loadRecallConversationConfig } from './recall-conversation-config.js';
+import { normalizeRecallProjectLineages } from './resolve-project-identity.js';
 import {
   runRecallQualityEvaluation,
   type RecallQualityEvaluationResult,
@@ -41,7 +47,7 @@ async function writeAtomicTextFile(path: string, content: string): Promise<void>
 
 function createReportEnvironment(
   projectDirectory: string,
-  config: Awaited<ReturnType<typeof loadRecallConversationConfig>>,
+  config: RecallConversationConfig,
 ): RecallQualityReportEnvironment {
   return {
     command: 'npm run evaluate:recall',
@@ -68,6 +74,50 @@ function createReportEnvironment(
   };
 }
 
+function createDeterministicRecallQualityConfig(
+  projectDirectory: string,
+): RecallConversationConfig {
+  const protectedDirectory = join(projectDirectory, 'evaluation', '.protected-production-sentinel');
+  return {
+    sessionsDirectory: join(protectedDirectory, 'sessions'),
+    dataDirectory: protectedDirectory,
+    databasePath: join(protectedDirectory, 'zvec'),
+    projectionDatabasePath: join(protectedDirectory, 'session-projections'),
+    statePath: join(protectedDirectory, 'index-state.json'),
+    manifestPath: join(protectedDirectory, 'index-manifest.json'),
+    tokenizerCacheDirectory: join(protectedDirectory, 'tokenizers'),
+    embeddingCacheDirectory: join(protectedDirectory, 'embedding-cache'),
+    lockPath: join(protectedDirectory, 'operation.lock'),
+    diagnosticsMode: RecallDiagnosticsMode.OFF,
+    diagnosticLogPath: join(protectedDirectory, 'diagnostics.jsonl'),
+    retainedDiagnosticLogPath: join(protectedDirectory, 'diagnostics.previous.jsonl'),
+    markerSpoolDirectory: join(protectedDirectory, 'markers', 'pending'),
+    markerQuarantineDirectory: join(protectedDirectory, 'markers', 'quarantine'),
+    markerControlDirectory: join(protectedDirectory, 'markers', 'control'),
+    workerOwnershipLockPath: join(protectedDirectory, 'incremental-worker.lock'),
+    generationRootDirectory: join(protectedDirectory, 'generations'),
+    activeGenerationPointerPath: join(protectedDirectory, 'active-generation.json'),
+    generationRegistryPath: join(protectedDirectory, 'generation-registry.json'),
+    backlogSummaryPath: join(protectedDirectory, 'backlog-summary.json'),
+    incrementalDiagnosticLogPath: join(protectedDirectory, 'incremental-diagnostics.jsonl'),
+    embeddingBaseUrl: 'in-process://deterministic-fixture-v1',
+    embeddingModel: 'deterministic-fixture-v1',
+    embeddingServedModelId: 'deterministic-fixture-v1',
+    embeddingArtifact: 'committed-corpus-concept-hash-fp32',
+    embeddingQuantization: 'fp32',
+    embeddingPooling: 'deterministic-fixture',
+    embeddingDimensions: DETERMINISTIC_RECALL_QUALITY_EMBEDDING_DIMENSIONS,
+    embeddingBatchSize: 16,
+    rerankerBaseUrl: 'disabled://unexpected-request-fails',
+    rerankerModel: 'rejecting-fake',
+    projectLineages: normalizeRecallProjectLineages({}),
+    searchCandidateLimits: { dense: 8, lexical: 8, identifier: 8 },
+    searchWriteWindowWaitMilliseconds: 500,
+    confirmedDeletionMaxMissingSourceCount: 1,
+    confirmedDeletionMaxMissingSourceRatio: 0.1,
+  };
+}
+
 /** Runs the fixed project-scope evaluation and atomically writes its Markdown and JSON evidence. */
 export async function evaluateRecallQuality(
   projectDirectory: string = process.cwd(),
@@ -76,18 +126,25 @@ export async function evaluateRecallQuality(
   const corpus = await loadRecallQualityCorpus(
     join(resolvedProjectDirectory, 'evaluation', 'recall-quality-cases.json'),
   );
-  const config = await loadRecallConversationConfig();
+  const config = createDeterministicRecallQualityConfig(resolvedProjectDirectory);
   const environment = createReportEnvironment(resolvedProjectDirectory, config);
-  const result = await runRecallQualityEvaluation({
-    corpus,
-    baseConfig: config,
-    workDirectory: join(
-      resolvedProjectDirectory,
-      'evaluation',
-      '.recall-data',
-      'recall-quality-evaluation',
-    ),
-  });
+  const workDirectory = join(
+    resolvedProjectDirectory,
+    'evaluation',
+    '.recall-data',
+    'recall-quality-evaluation',
+  );
+  let result: RecallQualityEvaluationResult;
+  try {
+    result = await runRecallQualityEvaluation({
+      corpus,
+      baseConfig: config,
+      workDirectory,
+      dependencies: createDeterministicRecallQualityDependencies(),
+    });
+  } finally {
+    await rm(workDirectory, { recursive: true, force: true });
+  }
   const reportPath = join(
     resolvedProjectDirectory,
     'docs',

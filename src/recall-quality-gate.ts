@@ -4,25 +4,26 @@ import { fileURLToPath } from 'node:url';
 import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 
-import {
-  PROJECT_SCOPE_POLICY_VERSION,
-  RecallProjectIdentitySource,
-  RecallSearchScope,
-} from './enums.js';
+import { RecallProjectIdentitySource, RecallSearchScope } from './enums.js';
 import {
   RECALL_RANK_FUSION_VERSION,
   RECALL_RRF_RANK_CONSTANT,
 } from './fuse-recall-search-candidates.js';
 import { RECALL_ACTIVE_BRANCH_PRIOR } from './rank-recall-search-results.js';
+import { RECALL_INDEX_MANIFEST_VERSION } from './recall-index-manifest.js';
 import { parseQualityCaseId } from './recall-quality-corpus.js';
+import { INCREMENTAL_RECALL_ELIGIBILITY_POLICY_VERSION } from './reduce-recall-eligibility.js';
 import {
   createLineageDigest,
   normalizeRecallProjectLineages,
   PROJECT_IDENTITY_METADATA_SCHEMA_VERSION,
   PROJECT_IDENTITY_POLICY_VERSION,
   PROJECT_LINEAGE_POLICY_VERSION,
+  PROJECT_SCOPE_POLICY_VERSION,
 } from './resolve-project-identity.js';
 import { selectRecallQualityPolicy } from './select-recall-quality-policy.js';
+import { SESSION_CONVERSATION_SCHEMA_VERSION } from './session-conversation-index.js';
+import { ZVEC_CONVERSATION_SCHEMA_VERSION } from './zvec-conversation-store.js';
 
 /** Highest final-result count accepted from evidence and exposed by the recall tool. */
 export const MAX_RECALL_FINAL_RESULT_COUNT = 10;
@@ -243,6 +244,14 @@ const RECALL_QUALITY_GATE_EVIDENCE_SCHEMA = Type.Object({
   ),
   result: Type.Object({
     version: POSITIVE_INTEGER_SCHEMA,
+    storageIdentity: Type.Optional(
+      Type.Object({
+        conversationSchemaVersion: POSITIVE_INTEGER_SCHEMA,
+        zvecSchemaVersion: POSITIVE_INTEGER_SCHEMA,
+        indexManifestVersion: POSITIVE_INTEGER_SCHEMA,
+        incrementalEligibilityPolicyVersion: NONNEGATIVE_INTEGER_SCHEMA,
+      }),
+    ),
     evaluationIdentity: Type.Optional(EVALUATION_IDENTITY_SCHEMA),
     indexRuns: Type.Optional(
       Type.Array(
@@ -297,7 +306,7 @@ export async function readRecallQualityGateDecision(
       `Recall quality gate evidence inconsistent at ${resultsPath}: pass and selected-policy decisions disagree`,
     );
   }
-  if (evidence.version !== 2 || evidence.result.version !== 4) {
+  if (evidence.version !== 2 || evidence.result.version !== 5) {
     return {
       automatedGatePassed: false,
       selectedPolicy: null,
@@ -308,14 +317,38 @@ export async function readRecallQualityGateDecision(
     };
   }
   const specification = evidence.specification;
+  const storageIdentity = evidence.result.storageIdentity;
   const evaluationIdentity = evidence.result.evaluationIdentity;
   const indexRuns = evidence.result.indexRuns;
   const configurations = evidence.result.configurations;
   const boundedWork = evidence.result.boundedWork;
-  if (!specification || !evaluationIdentity || !indexRuns || !configurations || !boundedWork) {
+  if (
+    !specification ||
+    !storageIdentity ||
+    !evaluationIdentity ||
+    !indexRuns ||
+    !configurations ||
+    !boundedWork
+  ) {
     throw new Error(
       `Recall quality gate evidence invalid at ${resultsPath}: project-scoped evidence requires complete specification, measurements, index runs, and bounded work`,
     );
+  }
+  if (
+    storageIdentity.conversationSchemaVersion !== SESSION_CONVERSATION_SCHEMA_VERSION ||
+    storageIdentity.zvecSchemaVersion !== ZVEC_CONVERSATION_SCHEMA_VERSION ||
+    storageIdentity.indexManifestVersion !== RECALL_INDEX_MANIFEST_VERSION ||
+    storageIdentity.incrementalEligibilityPolicyVersion !==
+      INCREMENTAL_RECALL_ELIGIBILITY_POLICY_VERSION
+  ) {
+    return {
+      automatedGatePassed: false,
+      selectedPolicy: null,
+      blockers: [
+        ...selection.blockers,
+        'Recall quality incremental storage identity does not match current eligibility, evidence, zvec, or manifest schemas; rerun npm run evaluate:recall',
+      ],
+    };
   }
   const expectedLineageDigest = createLineageDigest(
     normalizeRecallProjectLineages(specification.projectLineages),

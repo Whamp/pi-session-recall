@@ -10,24 +10,59 @@ interface RecallIndexCommandUi {
   notify(message: string, level: 'info' | 'warning'): void;
 }
 
+type RecallIndexCommandService = Pick<
+  RecallConversationService,
+  | 'adoptLegacy'
+  | 'collectRetired'
+  | 'discardStagingIndexGeneration'
+  | 'index'
+  | 'readBackgroundIndexGenerationStatus'
+  | 'resumeBackgroundIndexGeneration'
+  | 'rollback'
+  | 'startBackgroundIndexGeneration'
+  | 'stopBackgroundIndexGeneration'
+>;
+
+type RecallIndexCommandAction =
+  | 'adopt-legacy'
+  | 'collect-retired'
+  | 'discard'
+  | 'incremental'
+  | 'rebuild'
+  | 'resume'
+  | 'rollback'
+  | 'status'
+  | 'stop';
+
 /** Guarded inputs for the production conversation-index slash command. */
 export interface RecallIndexCommandOptions {
   argumentsText: string;
   qualityGateDecision: RecallQualityGateDecision;
-  service: Pick<RecallConversationService, 'index'>;
+  service: RecallIndexCommandService;
   ui: RecallIndexCommandUi;
 }
 
-function readRecallIndexRebuildFlag(argumentsText: string): boolean {
+function readRecallIndexCommandAction(argumentsText: string): RecallIndexCommandAction {
   const args = argumentsText.trim();
   if (!args) {
-    return false;
+    return 'incremental';
   }
-  if (args === '--rebuild') {
-    return true;
+  const actions: Readonly<Record<string, RecallIndexCommandAction>> = {
+    '--adopt-legacy': 'adopt-legacy',
+    '--collect-retired': 'collect-retired',
+    '--discard': 'discard',
+    '--rebuild': 'rebuild',
+    '--resume': 'resume',
+    '--rollback': 'rollback',
+    '--status': 'status',
+    '--stop': 'stop',
+  };
+  const action = actions[args];
+  if (action) {
+    return action;
   }
   throw new Error(
-    `Recall index command arguments invalid: ${args}; usage: /pi-session-recall-index [--rebuild]`,
+    `Recall index command arguments invalid: ${args}; usage: /pi-session-recall-index [--rebuild|--status|--stop|--resume|--discard|--rollback|--adopt-legacy|--collect-retired]`,
   );
 }
 
@@ -44,31 +79,119 @@ function assertRecallBackfillGatePassed(decision: RecallQualityGateDecision): vo
   );
 }
 
-/** Runs explicit incremental or rebuilding index maintenance only after the quality gate passes. */
+function formatBackgroundIndexStatus(
+  status: Awaited<ReturnType<RecallIndexCommandService['readBackgroundIndexGenerationStatus']>>,
+): string {
+  if (!status) {
+    return 'Recall background index: no build recorded';
+  }
+  const parts = [
+    `Recall background index ${status.processState}`,
+    `generation ${status.generationId ?? 'pending'}`,
+    `process ${status.processId}`,
+    status.progress
+      ? `progress ${status.progress.scannedSessions}/${status.progress.totalSessions}`
+      : undefined,
+    status.latestCheckpoint
+      ? `checkpoint ${status.latestCheckpoint.checkpointedSessions}/${status.latestCheckpoint.totalSessions}`
+      : undefined,
+    status.latestActionableError ?? undefined,
+  ];
+  return parts.filter((part) => part !== undefined).join(' · ');
+}
+
+/** Runs incremental maintenance, detached rebuild control, or explicit generation recovery. */
 export async function runRecallIndexCommand(options: RecallIndexCommandOptions): Promise<void> {
+  const action = readRecallIndexCommandAction(options.argumentsText);
+
+  if (action === 'status') {
+    const status = await options.service.readBackgroundIndexGenerationStatus();
+    options.ui.notify(
+      formatBackgroundIndexStatus(status),
+      status?.latestActionableError ? 'warning' : 'info',
+    );
+    return;
+  }
+  if (action === 'stop') {
+    const status = await options.service.stopBackgroundIndexGeneration();
+    options.ui.notify(formatBackgroundIndexStatus(status), 'info');
+    return;
+  }
+  if (action === 'discard') {
+    const discarded = await options.service.discardStagingIndexGeneration();
+    options.ui.notify(
+      discarded
+        ? 'Recall staging generation discarded'
+        : 'Recall staging generation: nothing to discard',
+      'info',
+    );
+    return;
+  }
+  if (action === 'rollback') {
+    options.ui.setStatus('rolling back recall generation…');
+    try {
+      await options.service.rollback();
+      options.ui.notify(
+        'Recall generation rolled back; retained markers are pending replay',
+        'warning',
+      );
+    } finally {
+      options.ui.setStatus();
+    }
+    return;
+  }
+  if (action === 'collect-retired') {
+    options.ui.setStatus('collecting retired recall generations…');
+    try {
+      await options.service.collectRetired();
+      options.ui.notify('Expired recall generations collected', 'info');
+    } finally {
+      options.ui.setStatus();
+    }
+    return;
+  }
+  if (action === 'adopt-legacy') {
+    options.ui.setStatus('adopting legacy recall generation…');
+    try {
+      await options.service.adoptLegacy();
+      options.ui.notify(
+        'Legacy recall generation adopted read-only; run --rebuild next',
+        'warning',
+      );
+    } finally {
+      options.ui.setStatus();
+    }
+    return;
+  }
+
   assertRecallBackfillGatePassed(options.qualityGateDecision);
-  const rebuild = readRecallIndexRebuildFlag(options.argumentsText);
-  options.ui.setStatus(rebuild ? 'rebuilding conversations…' : 'indexing conversations…');
+  if (action === 'rebuild' || action === 'resume') {
+    options.ui.setStatus(
+      action === 'rebuild' ? 'starting background rebuild…' : 'resuming rebuild…',
+    );
+    try {
+      const status =
+        action === 'rebuild'
+          ? await options.service.startBackgroundIndexGeneration()
+          : await options.service.resumeBackgroundIndexGeneration();
+      options.ui.notify(formatBackgroundIndexStatus(status), 'info');
+    } finally {
+      options.ui.setStatus();
+    }
+    return;
+  }
+
+  options.ui.setStatus('indexing conversations…');
   try {
     const onProgress: NonNullable<RecallConversationIndexOptions['onProgress']> = (progress) => {
-      options.ui.setStatus(
-        `${rebuild ? 'rebuilding' : 'indexing'} ${progress.scannedSessions}/${progress.totalSessions}`,
-      );
+      options.ui.setStatus(`indexing ${progress.scannedSessions}/${progress.totalSessions}`);
     };
-    const indexOptions: RecallConversationIndexOptions = rebuild
-      ? {
-          rebuild: true,
-          manualMaintenanceTrigger: RecallManualMaintenanceTrigger.MANUAL_REBUILD,
-          onProgress,
-          optimize: true,
-        }
-      : {
-          rebuild: false,
-          manualMaintenanceTrigger: RecallManualMaintenanceTrigger.MANUAL_INCREMENTAL_INDEX,
-          onProgress,
-          optimize: true,
-        };
-    const result = await options.service.index(indexOptions);
+    const result = await options.service.index({
+      rebuild: false,
+      manualMaintenanceTrigger: RecallManualMaintenanceTrigger.MANUAL_INCREMENTAL_INDEX,
+      onProgress,
+      optimize: true,
+    });
     const failures = result.indexSummary.failedSessions.length;
     const message = [
       `Recall index ready: ${result.totalChunks} chunks`,

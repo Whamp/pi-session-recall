@@ -17,6 +17,7 @@ import {
 import {
   createRecallRerankingExecutionIdentity,
   normalizeRecallPhysicalDeviceIdentity,
+  resolveRecallCpuHardwareIdentity,
   type RecallIdentifiedRerankingProvider,
   type RecallRerankingExecutionIdentity,
 } from './recall-inference-capabilities.js';
@@ -524,11 +525,15 @@ export function createEmbeddedQwenRerankingProvider(
           EmbeddedInferenceComputeBackend.CPU,
         );
       }
-      const deviceNames =
+      const cpuHardwareIdentity =
         selectedComputeBackend === EmbeddedInferenceComputeBackend.CPU
-          ? ['CPU']
-          : ((await resources.runtime.getGpuDeviceNames?.()) ?? [selectedComputeBackend]);
-      const physicalDeviceIdentity = normalizeRecallPhysicalDeviceIdentity(deviceNames);
+          ? resolveRecallCpuHardwareIdentity()
+          : null;
+      const deviceNames = cpuHardwareIdentity?.deviceNames ??
+        (await resources.runtime.getGpuDeviceNames?.()) ?? [selectedComputeBackend];
+      const physicalDeviceIdentity =
+        cpuHardwareIdentity?.physicalDeviceIdentity ??
+        normalizeRecallPhysicalDeviceIdentity(deviceNames);
       executionIdentity = Object.freeze({
         ...createBaseExecutionIdentity(
           selectedComputeBackend,

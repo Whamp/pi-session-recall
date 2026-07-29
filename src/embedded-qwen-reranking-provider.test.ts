@@ -5,6 +5,7 @@ import test from 'node:test';
 import { EmbeddedInferenceDevicePolicy } from './enums.js';
 
 import { createEmbeddedQwenRerankingProvider } from './embedded-qwen-reranking-provider.js';
+import { resolveRecallCpuHardwareIdentity } from './recall-inference-capabilities.js';
 import { measureRecallRerankingProviderConformance } from './recall-inference-conformance.js';
 import { createRecommendedQwenRerankingModelProfile } from './recall-model-profiles.js';
 
@@ -101,8 +102,13 @@ void test('embedded Qwen reranker restores llama.cpp score semantics and passes 
   assert.equal(provider.executionIdentity.requestTimeoutMilliseconds, 60_000);
   assert.equal(provider.executionIdentity.computeBackend, 'cpu');
   assert.equal(provider.executionIdentity.devicePolicy, 'cpu');
-  assert.deepEqual(provider.executionIdentity.deviceNames, ['CPU']);
-  assert.deepEqual(provider.executionIdentity.physicalDeviceIdentity, ['cpu']);
+  assert.deepEqual(
+    {
+      deviceNames: provider.executionIdentity.deviceNames,
+      physicalDeviceIdentity: provider.executionIdentity.physicalDeviceIdentity,
+    },
+    resolveRecallCpuHardwareIdentity(),
+  );
   assert.deepEqual(events.slice(0, 2), ['verify artifact', 'dynamic import']);
 });
 

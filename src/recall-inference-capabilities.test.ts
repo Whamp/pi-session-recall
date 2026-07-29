@@ -6,6 +6,7 @@ import {
   createRecallQueryPlanningExecutionIdentity,
   createRecallRerankingExecutionIdentity,
   normalizeRecallPhysicalDeviceIdentity,
+  resolveRecallCpuHardwareIdentity,
 } from './recall-inference-capabilities.js';
 import {
   createRecommendedQmdQueryPlanningModelProfile,
@@ -56,4 +57,30 @@ void test('physical device identity normalizes case, whitespace, duplicates, and
     'cpu',
     'nvidia rtx 4090',
   ]);
+});
+
+void test('CPU hardware identity binds physical model names and logical processor count', () => {
+  const first = resolveRecallCpuHardwareIdentity([
+    { model: ' Fixture CPU 9000 ' },
+    { model: 'Fixture CPU 9000' },
+  ]);
+  const equivalent = resolveRecallCpuHardwareIdentity([
+    { model: 'fixture   cpu 9000' },
+    { model: 'FIXTURE CPU 9000' },
+  ]);
+  const replacementModel = resolveRecallCpuHardwareIdentity([
+    { model: 'Fixture CPU 9100' },
+    { model: 'Fixture CPU 9100' },
+  ]);
+  const replacementProcessorCount = resolveRecallCpuHardwareIdentity([
+    { model: 'Fixture CPU 9000' },
+  ]);
+
+  assert.deepEqual(first.deviceNames, ['Fixture CPU 9000']);
+  assert.deepEqual(first.physicalDeviceIdentity, equivalent.physicalDeviceIdentity);
+  assert.notDeepEqual(first.physicalDeviceIdentity, replacementModel.physicalDeviceIdentity);
+  assert.notDeepEqual(
+    first.physicalDeviceIdentity,
+    replacementProcessorCount.physicalDeviceIdentity,
+  );
 });

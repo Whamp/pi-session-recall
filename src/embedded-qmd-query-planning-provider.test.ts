@@ -4,6 +4,7 @@ import test from 'node:test';
 import { EmbeddedInferenceDevicePolicy } from './enums.js';
 
 import { createEmbeddedQmdQueryPlanningProvider } from './embedded-qmd-query-planning-provider.js';
+import { resolveRecallCpuHardwareIdentity } from './recall-inference-capabilities.js';
 import { measureRecallQueryPlanningProviderConformance } from './recall-inference-conformance.js';
 import { createRecommendedQmdQueryPlanningModelProfile } from './recall-model-profiles.js';
 
@@ -131,6 +132,7 @@ void test('embedded QMD query planner passes shared conformance with profile gra
     signal: calls[0]?.options.signal,
   });
   assert.ok(calls[0]?.options.signal instanceof AbortSignal);
+  const cpuHardwareIdentity = resolveRecallCpuHardwareIdentity();
   const { adapterConfigurationIdentity, cacheIdentity, ...executionIdentity } =
     provider.executionIdentity;
   assert.match(
@@ -149,13 +151,13 @@ void test('embedded QMD query planner passes shared conformance with profile gra
     grammarVersion: profile.grammarVersion,
     requestTimeoutMilliseconds: 4_321,
     computeBackend: 'cpu',
-    deviceNames: ['CPU'],
+    deviceNames: cpuHardwareIdentity.deviceNames,
     devicePolicy: 'cpu',
     fallbackFromComputeBackend: null,
     contextSize: 2_048,
     threads: null,
     nodeLlamaCppVersion: '3.18.1',
-    physicalDeviceIdentity: ['cpu'],
+    physicalDeviceIdentity: cpuHardwareIdentity.physicalDeviceIdentity,
     probedComputeBackends: [],
   });
   assert.deepEqual(measurement, {

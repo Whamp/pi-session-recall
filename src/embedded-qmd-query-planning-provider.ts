@@ -14,6 +14,7 @@ import {
 import {
   createRecallQueryPlanningExecutionIdentity,
   normalizeRecallPhysicalDeviceIdentity,
+  resolveRecallCpuHardwareIdentity,
   type RecallIdentifiedQueryPlanningProvider,
   type RecallQueryPlanningExecutionIdentity,
 } from './recall-inference-capabilities.js';
@@ -515,11 +516,15 @@ export function createEmbeddedQmdQueryPlanningProvider(
           EmbeddedInferenceComputeBackend.CPU,
         );
       }
-      const deviceNames =
+      const cpuHardwareIdentity =
         selectedComputeBackend === EmbeddedInferenceComputeBackend.CPU
-          ? ['CPU']
-          : ((await resources.runtime.getGpuDeviceNames?.()) ?? [selectedComputeBackend]);
-      const physicalDeviceIdentity = normalizeRecallPhysicalDeviceIdentity(deviceNames);
+          ? resolveRecallCpuHardwareIdentity()
+          : null;
+      const deviceNames = cpuHardwareIdentity?.deviceNames ??
+        (await resources.runtime.getGpuDeviceNames?.()) ?? [selectedComputeBackend];
+      const physicalDeviceIdentity =
+        cpuHardwareIdentity?.physicalDeviceIdentity ??
+        normalizeRecallPhysicalDeviceIdentity(deviceNames);
       executionIdentity = Object.freeze({
         ...createBaseExecutionIdentity(
           selectedComputeBackend,

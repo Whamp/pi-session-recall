@@ -1,3 +1,5 @@
+import { cpus, type CpuInfo } from 'node:os';
+
 import { createCanonicalIdentity } from './create-canonical-identity.js';
 import type { RecallInferenceBackend } from './enums.js';
 import type {
@@ -13,6 +15,32 @@ export function normalizeRecallPhysicalDeviceIdentity(
     .map((deviceName) => deviceName.trim().replace(/\s+/gu, ' ').toLocaleLowerCase('en-US'))
     .filter(Boolean);
   return Object.freeze([...new Set(normalizedNames)].sort());
+}
+
+/** Resolves publishable CPU names plus a stable model-and-logical-processor hardware identity. */
+export function resolveRecallCpuHardwareIdentity(
+  processors: readonly Pick<CpuInfo, 'model'>[] = cpus(),
+): { deviceNames: readonly string[]; physicalDeviceIdentity: readonly string[] } {
+  const deviceNamesByNormalizedName = new Map<string, string>();
+  for (const processor of processors) {
+    const displayName = processor.model.trim().replace(/\s+/gu, ' ');
+    if (displayName) {
+      deviceNamesByNormalizedName.set(displayName.toLocaleLowerCase('en-US'), displayName);
+    }
+  }
+  const deviceNames = [...deviceNamesByNormalizedName.values()].sort((left, right) =>
+    left.localeCompare(right, 'en-US'),
+  );
+  if (deviceNames.length === 0) {
+    deviceNames.push('Unknown CPU');
+  }
+  return Object.freeze({
+    deviceNames: Object.freeze(deviceNames),
+    physicalDeviceIdentity: normalizeRecallPhysicalDeviceIdentity([
+      ...deviceNames,
+      `logical-processors:${processors.length}`,
+    ]),
+  });
 }
 
 /** Embeds recall queries and index documents through explicitly distinct model operations. */

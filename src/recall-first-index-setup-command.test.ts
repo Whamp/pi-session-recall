@@ -365,6 +365,124 @@ void test('first-index setup requires consent and uses the authoritative configu
   });
 });
 
+void test('guided setup preserves inference capabilities configured during embedding verification', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-first-index-concurrent-config-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const config = createSetupCommandTestConfig(root);
+  const inferenceConfigurationPath = join(root, 'data', 'inference-configuration.json');
+  const profile = createRecommendedEmbeddingGemmaModelProfile();
+  const artifactPath = join(root, 'models', profile.source.artifact);
+  const rerankingProfileId = 'concurrent-reranking-profile-v1';
+  const rerankingCandidate: RecallInferenceConfigurationCandidate = {
+    capability: RecallInferenceCapability.RERANKING,
+    candidateId: 'concurrent-reranking',
+    profileId: rerankingProfileId,
+    backend: RecallInferenceBackend.LLAMA_CPP_HTTP,
+    adapterId: 'concurrent-reranking-v1',
+    endpoint: 'http://reranking.test/v1',
+    device: null,
+    artifact: null,
+    async inspectHealth() {
+      return { artifactState: RecallInferenceArtifactState.NOT_REQUIRED, requiredRepair: null };
+    },
+    async verifyCapabilityConformance() {
+      return {
+        profileId: rerankingProfileId,
+        adapterId: 'concurrent-reranking-v1',
+        backend: RecallInferenceBackend.LLAMA_CPP_HTTP,
+        cacheIdentity: `${rerankingProfileId}:concurrent-reranking-v1`,
+        embeddingProfileId: null,
+        measurement: { fixtureOperations: 1 },
+      };
+    },
+  };
+  const service: RecallFirstIndexSetupCommandService = {
+    async verifyEmbeddingCapability() {
+      await configureRecallInferenceCapability(inferenceConfigurationPath, rerankingCandidate);
+      return {
+        embeddingProfileId: profile.profileId,
+        model: profile.identity.requestModel,
+        dimensions: 768,
+        normalization: 'l2',
+        tokenizerModel: profile.tokenizer.model,
+      };
+    },
+    async inspectConversationCorpus() {
+      throw new Error('corpus inspection not expected');
+    },
+    async measureFirstIndexSample() {
+      throw new Error('sample measurement not expected');
+    },
+    async readIndexGenerationStatus() {
+      throw new Error('generation status not expected');
+    },
+    async startBackgroundIndexGeneration() {
+      throw new Error('background start not expected');
+    },
+    async resumeBackgroundIndexGeneration() {
+      throw new Error('background resume not expected');
+    },
+  };
+  const artifactCache = {
+    async inspectArtifact() {
+      return {
+        profile,
+        status: {
+          state: 'missing' as const,
+          artifactPath,
+          partialPaths: [],
+          repair: 'download with explicit approval',
+        },
+      };
+    },
+    async verifyArtifact() {
+      throw new Error('artifact verification not expected');
+    },
+    async diagnoseArtifact() {
+      throw new Error('artifact diagnosis not expected');
+    },
+    async downloadArtifact() {
+      return {
+        state: 'valid' as const,
+        artifactPath,
+        partialPaths: [],
+        repair: 'none',
+      };
+    },
+    async repairArtifact() {
+      throw new Error('artifact repair not expected');
+    },
+    async removeArtifact() {
+      throw new Error('artifact removal not expected');
+    },
+  };
+
+  await runRecallFirstIndexSetupCommand(['select-embeddinggemma', '--approve-download'], {
+    config,
+    inferenceConfigurationPath,
+    profile,
+    artifactCache,
+    createSelectedServiceRuntime() {
+      return {
+        service,
+        executionIdentity: {
+          adapter: 'node-llama-cpp-embedded-v2' as const,
+          computeBackend: EmbeddedInferenceComputeBackend.CPU,
+          deviceNames: ['CPU'],
+          devicePolicy: EmbeddedInferenceDevicePolicy.AUTO,
+        },
+        async dispose() {},
+      };
+    },
+    nowIsoTimestamp: () => '2026-08-01T10:00:00.000Z',
+    writeOutput() {},
+  });
+
+  const inferenceConfiguration = await readRecallInferenceConfiguration(inferenceConfigurationPath);
+  assert.equal(inferenceConfiguration.embedding?.profileId, profile.profileId);
+  assert.equal(inferenceConfiguration.reranking?.profileId, rerankingProfileId);
+});
+
 void test('first-index measurement accepts an independently configured HTTP embedding', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'recall-first-index-http-command-'));
   t.after(() => rm(root, { recursive: true, force: true }));

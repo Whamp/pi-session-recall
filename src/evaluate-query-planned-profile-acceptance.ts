@@ -384,27 +384,49 @@ async function runCommittedCorpusQueryPlannedProfile(
       },
     });
     const queryPlanned = result.queryPlanned;
-    const selected = queryPlanned?.selection.selected;
-    if (!queryPlanned || !selected) {
+    const configuration = queryPlanned?.configurations[0];
+    const finalCount = options.corpus.specification.finalCounts[0];
+    const finalMeasurement = configuration?.measurement.finalCounts[0];
+    if (
+      !queryPlanned ||
+      queryPlanned.configurations.length !== 1 ||
+      !configuration ||
+      options.corpus.specification.finalCounts.length !== 1 ||
+      finalCount === undefined ||
+      configuration.measurement.finalCounts.length !== 1 ||
+      !finalMeasurement ||
+      finalMeasurement.finalCount !== finalCount
+    ) {
       throw new Error(
-        `Live profile committed-corpus evaluation failed: no query-planned quality selection for ${options.profileRun.id}`,
+        `Live profile committed-corpus evaluation failed: expected one fixed quality configuration for ${options.profileRun.id}`,
       );
     }
+    const measurement = configuration.measurement;
+    const qualityPassed =
+      measurement.candidatePoolRecall === 1 &&
+      finalMeasurement.finalRecall === 1 &&
+      finalMeasurement.contextUsefulness === 1 &&
+      finalMeasurement.sourceOccurrencePreservation === 1 &&
+      finalMeasurement.sessionOriginVerification === 1 &&
+      finalMeasurement.evidenceRelationVerification === 1 &&
+      finalMeasurement.contributingEntryVerification === 1 &&
+      finalMeasurement.branchVerification === 1 &&
+      measurement.policyFailureCaseIds.length === 0;
     return {
       corpusId: result.corpusId,
       specificationSha256: result.specificationSha256,
       caseCount: options.corpus.specification.cases.length,
-      qualityPassed: queryPlanned.selection.passed,
-      candidatePoolRecall: selected.candidatePoolRecall,
-      finalRecall: selected.finalRecall,
-      contextUsefulness: selected.contextUsefulness,
-      sourceOccurrencePreservation: selected.sourceOccurrencePreservation,
-      sessionOriginVerification: selected.sessionOriginVerification,
-      evidenceRelationVerification: selected.evidenceRelationVerification,
-      contributingEntryVerification: selected.contributingEntryVerification,
-      branchVerification: selected.branchVerification,
-      policyFailureCaseIds: selected.policyFailureCaseIds,
-      queryLatencyMilliseconds: selected.queryLatencyMilliseconds,
+      qualityPassed,
+      candidatePoolRecall: measurement.candidatePoolRecall,
+      finalRecall: finalMeasurement.finalRecall,
+      contextUsefulness: finalMeasurement.contextUsefulness,
+      sourceOccurrencePreservation: finalMeasurement.sourceOccurrencePreservation,
+      sessionOriginVerification: finalMeasurement.sessionOriginVerification,
+      evidenceRelationVerification: finalMeasurement.evidenceRelationVerification,
+      contributingEntryVerification: finalMeasurement.contributingEntryVerification,
+      branchVerification: finalMeasurement.branchVerification,
+      policyFailureCaseIds: measurement.policyFailureCaseIds,
+      queryLatencyMilliseconds: measurement.queryLatencyMilliseconds,
       executedSearchRequests: queryPlanned.boundedWork.executedSearchRequests,
       plannerRequests: queryPlanned.boundedWork.plannerRequests,
       rerankerRequests: queryPlanned.boundedWork.rerankerRequests,

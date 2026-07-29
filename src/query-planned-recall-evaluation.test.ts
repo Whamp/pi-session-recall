@@ -970,6 +970,7 @@ void test('fixed private plans prove new source admission through deterministic 
   assert.match(acceptanceReport, /embedded-cpu/u);
   assert.match(acceptanceReport, /Cold planning/u);
   assert.match(acceptanceReport, /Live planner\/reranker quality on the committed corpus/u);
+  assert.match(acceptanceReport, /hybrid 2-second latency gate does not apply/u);
   assert.match(acceptanceReport, /17 \| 100\.0% \| 100\.0%/u);
   assert.match(acceptanceReport, /Candidate work/u);
   assert.match(

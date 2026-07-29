@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { readFile, rm } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -15,6 +15,7 @@ import {
   QueryPlannedRecallControlKind,
   RecallInferenceBackend,
 } from './enums.js';
+import { createDeterministicRecallQualityDependencies } from './create-deterministic-recall-quality-dependencies.js';
 import { isUnknownRecord } from './is-unknown-record.js';
 import {
   runCheckpointedLiveProfileEvaluationMatrix,
@@ -31,7 +32,15 @@ import {
   readCleanRecallEvaluationGitRevision,
 } from './recall-evaluation-git-revision.js';
 import { verifyRequiredRecallEvaluationSemanticChecks } from './recall-evaluation-semantic-checks.js';
+import {
+  loadRecallQualityCorpus,
+  type LoadedRecallQualityCorpus,
+} from './recall-quality-corpus.js';
 import { readRecallQualityGateDecision } from './recall-quality-gate.js';
+import type {
+  RecallIdentifiedQueryPlanningProvider,
+  RecallIdentifiedRerankingProvider,
+} from './recall-inference-capabilities.js';
 import {
   loadPrivateQueryPlannedRecallCorpus,
   type LoadedPrivateQueryPlannedRecallCorpus,
@@ -45,6 +54,7 @@ import {
   loadPrivateQueryPlannedRecallPlans,
   runLiveQueryPlannedProfileEvaluation,
   type CommittedCorpusLiveProfileEvidence,
+  type CommittedCorpusQueryPlannedProfileEvidence,
   type LiveQueryPlannedProfileEvaluationResult,
   type LiveQueryPlannedProfileIdentity,
   type LiveQueryPlannedProfileRunIdentity,
@@ -54,7 +64,10 @@ import {
 import {
   createRecommendedQmdQueryPlanningModelProfile,
   createRecommendedQwenRerankingModelProfile,
+  type RecallQueryPlanningModelProfile,
+  type RecallRerankingModelProfile,
 } from './recall-model-profiles.js';
+import { runRecallQualityEvaluation } from './run-recall-quality-evaluation.js';
 
 const REQUIRE = createRequire(import.meta.url);
 
@@ -67,8 +80,9 @@ const LIVE_PROFILE_ACCEPTANCE_HELP = `Usage: npm run evaluate:query-planned-prof
   --http-backend-version <publishable-server-revision>
 
 Runs embedded CPU, embedded accelerator, and HTTP planner/reranker profiles through shared
-capability conformance and public RecallConversationService searches over the approved private
-corpus. It binds those runs to existing committed-corpus files:
+capability conformance and public RecallConversationService searches over both the checksum-fixed
+committed corpus and the approved private corpus. It also binds those runs to existing
+committed-corpus embedding files:
   docs/evaluation/embeddinggemma-quality-cpu.json
   docs/evaluation/embeddinggemma-quality-<accelerated-device>.json
 
@@ -331,9 +345,79 @@ function createLiveProfileSoftwareIdentity(
   };
 }
 
+interface RunCommittedCorpusQueryPlannedProfileOptions {
+  projectDirectory: string;
+  corpus: LoadedRecallQualityCorpus;
+  baseConfig: Awaited<ReturnType<typeof loadRecallConversationConfig>>;
+  profileRun: LiveQueryPlannedProfileRunIdentity;
+  queryPlanningProfile: RecallQueryPlanningModelProfile;
+  queryPlanner: RecallIdentifiedQueryPlanningProvider;
+  rerankingProfile: RecallRerankingModelProfile;
+  reranker: RecallIdentifiedRerankingProvider;
+  reportProgress: (message: string) => void;
+}
+
+async function runCommittedCorpusQueryPlannedProfile(
+  options: RunCommittedCorpusQueryPlannedProfileOptions,
+): Promise<CommittedCorpusQueryPlannedProfileEvidence> {
+  const workDirectory = join(
+    options.projectDirectory,
+    'evaluation',
+    '.recall-data',
+    `query-planned-${options.profileRun.id}`,
+    'recall-quality-evaluation',
+  );
+  options.reportProgress(
+    `Evaluating live profile ${options.profileRun.id} on the committed corpus`,
+  );
+  try {
+    const result = await runRecallQualityEvaluation({
+      corpus: options.corpus,
+      baseConfig: options.baseConfig,
+      workDirectory,
+      dependencies: createDeterministicRecallQualityDependencies(),
+      queryPlannedDependencies: {
+        queryPlanningProfile: options.queryPlanningProfile,
+        queryPlanner: options.queryPlanner,
+        rerankingProfile: options.rerankingProfile,
+        reranker: options.reranker,
+      },
+    });
+    const queryPlanned = result.queryPlanned;
+    const selected = queryPlanned?.selection.selected;
+    if (!queryPlanned || !selected) {
+      throw new Error(
+        `Live profile committed-corpus evaluation failed: no query-planned quality selection for ${options.profileRun.id}`,
+      );
+    }
+    return {
+      corpusId: result.corpusId,
+      specificationSha256: result.specificationSha256,
+      caseCount: options.corpus.specification.cases.length,
+      qualityPassed: queryPlanned.selection.passed,
+      candidatePoolRecall: selected.candidatePoolRecall,
+      finalRecall: selected.finalRecall,
+      contextUsefulness: selected.contextUsefulness,
+      sourceOccurrencePreservation: selected.sourceOccurrencePreservation,
+      sessionOriginVerification: selected.sessionOriginVerification,
+      evidenceRelationVerification: selected.evidenceRelationVerification,
+      contributingEntryVerification: selected.contributingEntryVerification,
+      branchVerification: selected.branchVerification,
+      policyFailureCaseIds: selected.policyFailureCaseIds,
+      queryLatencyMilliseconds: selected.queryLatencyMilliseconds,
+      executedSearchRequests: queryPlanned.boundedWork.executedSearchRequests,
+      plannerRequests: queryPlanned.boundedWork.plannerRequests,
+      rerankerRequests: queryPlanned.boundedWork.rerankerRequests,
+    };
+  } finally {
+    await rm(workDirectory, { recursive: true, force: true });
+  }
+}
+
 function createEmbeddedProfileEvaluation(
   projectDirectory: string,
   corpus: LoadedPrivateQueryPlannedRecallCorpus,
+  committedCorpus: LoadedRecallQualityCorpus,
   recordedAgainstCommit: string,
   device: EmbeddedInferenceDevicePolicy,
   deviceClass: 'cpu' | 'accelerated',
@@ -408,7 +492,7 @@ function createEmbeddedProfileEvaluation(
     },
     async evaluateProfile() {
       const baseConfig = await loadBaseConfig();
-      return runLiveQueryPlannedProfileEvaluation({
+      const privateEvaluation = await runLiveQueryPlannedProfileEvaluation({
         corpus,
         baseConfig,
         workDirectory: join(
@@ -430,6 +514,18 @@ function createEmbeddedProfileEvaluation(
         rerankerConformance,
         reportProgress,
       });
+      const committedCorpusEvidence = await runCommittedCorpusQueryPlannedProfile({
+        projectDirectory,
+        corpus: committedCorpus,
+        baseConfig,
+        profileRun,
+        queryPlanningProfile,
+        queryPlanner,
+        rerankingProfile,
+        reranker,
+        reportProgress,
+      });
+      return { ...privateEvaluation, committedCorpus: committedCorpusEvidence };
     },
     async disposeProfile() {
       await Promise.all([queryPlanner.dispose(), reranker.dispose()]);
@@ -440,6 +536,7 @@ function createEmbeddedProfileEvaluation(
 function createHttpProfileEvaluation(
   projectDirectory: string,
   corpus: LoadedPrivateQueryPlannedRecallCorpus,
+  committedCorpus: LoadedRecallQualityCorpus,
   recordedAgainstCommit: string,
   options: LiveProfileAcceptanceCliOptions,
   reportProgress: (message: string) => void,
@@ -498,7 +595,7 @@ function createHttpProfileEvaluation(
     },
     async evaluateProfile() {
       const baseConfig = await loadBaseConfig();
-      return runLiveQueryPlannedProfileEvaluation({
+      const privateEvaluation = await runLiveQueryPlannedProfileEvaluation({
         corpus,
         baseConfig,
         workDirectory: join(
@@ -520,6 +617,18 @@ function createHttpProfileEvaluation(
         rerankerConformance,
         reportProgress,
       });
+      const committedCorpusEvidence = await runCommittedCorpusQueryPlannedProfile({
+        projectDirectory,
+        corpus: committedCorpus,
+        baseConfig,
+        profileRun,
+        queryPlanningProfile,
+        queryPlanner,
+        rerankingProfile,
+        reranker,
+        reportProgress,
+      });
+      return { ...privateEvaluation, committedCorpus: committedCorpusEvidence };
     },
   };
 }
@@ -588,6 +697,9 @@ export async function evaluateQueryPlannedProfileAcceptance(
   const recordedAgainstCommit = readCleanRecallEvaluationGitRevision(resolvedProjectDirectory);
   const privateDirectory = join(resolvedProjectDirectory, '.recall-data', 'query-planned-recall');
   const corpus = await loadPrivateQueryPlannedRecallCorpus(join(privateDirectory, 'manifest.json'));
+  const committedQualityCorpus = await loadRecallQualityCorpus(
+    join(resolvedProjectDirectory, 'evaluation', 'recall-quality-cases.json'),
+  );
   const fixedPlans = await loadPrivateQueryPlannedRecallPlans(
     join(privateDirectory, 'plans.json'),
     corpus,
@@ -624,6 +736,7 @@ export async function evaluateQueryPlannedProfileAcceptance(
     createEmbeddedProfileEvaluation(
       resolvedProjectDirectory,
       corpus,
+      committedQualityCorpus,
       recordedAgainstCommit,
       EmbeddedInferenceDevicePolicy.CPU,
       'cpu',
@@ -632,6 +745,7 @@ export async function evaluateQueryPlannedProfileAcceptance(
     createEmbeddedProfileEvaluation(
       resolvedProjectDirectory,
       corpus,
+      committedQualityCorpus,
       recordedAgainstCommit,
       options.acceleratedDevice,
       'accelerated',
@@ -640,6 +754,7 @@ export async function evaluateQueryPlannedProfileAcceptance(
     createHttpProfileEvaluation(
       resolvedProjectDirectory,
       corpus,
+      committedQualityCorpus,
       recordedAgainstCommit,
       options,
       reportProgress,

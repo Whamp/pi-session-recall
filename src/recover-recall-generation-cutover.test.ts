@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -13,6 +13,7 @@ import {
 import { RecallBacklogFailureCategory, RecallGenerationCutoverState } from './enums.js';
 import {
   createRecallActiveGenerationPointer,
+  decodeRecallBacklogSummary,
   readRecallActiveGenerationPointer,
   readRecallGenerationRegistry,
   writeRecallActiveGenerationPointer,
@@ -367,6 +368,7 @@ void test('registry-first rollback cutover recovery publishes the retained targe
   t.after(() => rm(directory, { recursive: true, force: true }));
   const activeGenerationPointerPath = join(directory, 'active-generation.json');
   const generationRegistryPath = join(directory, 'generation-registry.json');
+  const backlogSummaryPath = join(directory, 'backlog-summary.json');
   const oldPointer = createRecallActiveGenerationPointer('generation_current');
   const targetPointer = createRecallActiveGenerationPointer('generation_target');
   await writeRecallActiveGenerationPointer(activeGenerationPointerPath, oldPointer);
@@ -387,6 +389,7 @@ void test('registry-first rollback cutover recovery publishes the retained targe
         rebuildStartedAtEpochMilliseconds: 1,
         stateChangedAtEpochMilliseconds: 2,
         rebuildStartMarkerId: null,
+        rebuildMarkerWatermark: ['marker-a', 'marker-b', 'marker-c'],
         validatedAtEpochMilliseconds: 2,
         retireAfterEpochMilliseconds: null,
       },
@@ -411,9 +414,10 @@ void test('registry-first rollback cutover recovery publishes the retained targe
       activeGenerationPointerPath,
       generationRegistryPath,
       generationRootDirectory: join(directory, 'generations'),
-      backlogSummaryPath: join(directory, 'backlog-summary.json'),
+      backlogSummaryPath,
       lockPath: join(directory, 'operation.lock'),
       embeddingDimensions: 3,
+      nowEpochMilliseconds: () => 10_000,
     }),
     true,
   );
@@ -421,6 +425,10 @@ void test('registry-first rollback cutover recovery publishes the retained targe
     (await readRecallActiveGenerationPointer(activeGenerationPointerPath))?.activeGenerationId,
     targetPointer.activeGenerationId,
   );
+  const backlogSummary = decodeRecallBacklogSummary(await readFile(backlogSummaryPath, 'utf8'));
+  assert.equal(backlogSummary.pendingEligibleSessionCount, 3);
+  assert.equal(backlogSummary.activeGenerationId, targetPointer.activeGenerationId);
+  assert.equal(backlogSummary.generationState, RecallGenerationCutoverState.REPLAY_PENDING);
 });
 
 void test('registry-first legacy adoption recovery creates a missing active pointer', async (t) => {

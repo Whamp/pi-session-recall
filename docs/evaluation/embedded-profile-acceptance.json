@@ -4,14 +4,21 @@
   "recordedAt": "2026-07-27T15:36:59-07:00",
   "releaseDecision": "blocked-pending-external-evidence-and-maintainer-approval",
   "octenQualityEvidence": {
-    "status": "accepted-existing-profile-evidence",
-    "profile": {
+    "status": "superseded-committed-artifacts-regenerated-with-deterministic-fixture",
+    "note": "Issue #44 accepted Octen-profile evidence for these paths. Commit 896ec7c regenerated the same committed artifacts under deterministic-fixture-v1 (64-d), so they no longer attest the Octen pass. Candidate policy below remains the frozen hybrid policy reused by EmbeddingGemma evidence.",
+    "historicalOctenProfile": {
       "requestModel": "octen-embed",
       "servedModelId": "Octen/Octen-Embedding-4B",
       "artifact": "Octen-Embedding-4B.Q8_0.gguf",
       "dimensions": 2560,
       "queryPrompt": "input text unchanged",
       "documentPrompt": "input text unchanged"
+    },
+    "committedArtifactEmbeddingIdentity": {
+      "requestModel": "deterministic-fixture-v1",
+      "servedModelId": "deterministic-fixture-v1",
+      "artifact": "committed-corpus-concept-hash-fp32",
+      "dimensions": 64
     },
     "candidatePolicy": {
       "rankingMode": "hybrid",
@@ -26,9 +33,9 @@
       "finalResultCount": 5
     },
     "reportPath": "docs/evaluation/recall-quality-report.md",
-    "reportSha256": "86cfdfa3c1a71c2caf7938f796eea56ff1e050f2edc17581ae87565aecde26a1",
+    "reportSha256": "4965b741e66bcb1c0a9f6bb9e4d290415495e13594b61e706ba908be7ab425c5",
     "resultsPath": "docs/evaluation/recall-quality-results.json",
-    "resultsSha256": "7072048c691a744bbfcffb8423d22e9cb74e046b27ef8acfa0f05b560f49b324"
+    "resultsSha256": "390e76e73d9225404536e96ea17732a85cf79d23a64fc10d260ee76d121f1800"
   },
   "embeddingGemma": {
     "status": "deterministic-contract-passed-live-quality-pending",

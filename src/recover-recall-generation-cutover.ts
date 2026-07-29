@@ -312,6 +312,7 @@ export async function recoverRecallGenerationCutover(
             (registrySelectedEntry.state === RecallGenerationCutoverState.REPLAY_PENDING ||
               registrySelectedEntry.state === RecallGenerationCutoverState.LEGACY_READ_ONLY)));
       if (registryFirstCutover) {
+        const recoveredAt = options.nowEpochMilliseconds?.() ?? Date.now();
         const targetPointer = createRecallActiveGenerationPointer(
           registrySelectedEntry.generationId,
         );
@@ -319,18 +320,23 @@ export async function recoverRecallGenerationCutover(
           options.activeGenerationPointerPath,
           targetPointer,
         );
-        await writeRecallBacklogSummary(options.backlogSummaryPath, {
-          version: RECALL_BACKLOG_SUMMARY_VERSION,
-          pendingEligibleSessionCount: 0,
-          oldestEligibleMarkerAgeMilliseconds: null,
-          activeGenerationId: registrySelectedEntry.generationId,
-          buildingGenerationId: null,
-          generationState: registrySelectedEntry.state,
-          activeGenerationAgeMilliseconds: 0,
-          rebuildAgeMilliseconds: null,
-          lastFailureCategory: null,
-          observedAtEpochMilliseconds: options.nowEpochMilliseconds?.() ?? Date.now(),
-        });
+        await writeRecallBacklogSummary(
+          options.backlogSummaryPath,
+          registrySelectedEntry.state === RecallGenerationCutoverState.REPLAY_PENDING
+            ? createReplayPendingActivationBacklogSummary(registrySelectedEntry, recoveredAt)
+            : {
+                version: RECALL_BACKLOG_SUMMARY_VERSION,
+                pendingEligibleSessionCount: 0,
+                oldestEligibleMarkerAgeMilliseconds: null,
+                activeGenerationId: registrySelectedEntry.generationId,
+                buildingGenerationId: null,
+                generationState: registrySelectedEntry.state,
+                activeGenerationAgeMilliseconds: 0,
+                rebuildAgeMilliseconds: null,
+                lastFailureCategory: null,
+                observedAtEpochMilliseconds: recoveredAt,
+              },
+        );
         await attestRecoveredActiveStores(registrySelectedEntry.generationId);
         return true;
       }

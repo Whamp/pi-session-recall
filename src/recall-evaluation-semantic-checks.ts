@@ -40,30 +40,25 @@ export function runExactRecallEvaluationSemanticTest(
   const exactPattern = `^${escapeTestNamePattern(testIdentity)}$`;
   const childEnvironment = { ...process.env };
   delete childEnvironment.NODE_TEST_CONTEXT;
-  let output: string;
-  try {
-    output = execFileSync(
-      process.execPath,
-      [
-        '--import',
-        'tsx',
-        '--test',
-        '--test-reporter=tap',
-        '--test-name-pattern',
-        exactPattern,
-        testFile,
-      ],
-      {
-        cwd: projectDirectory,
-        encoding: 'utf8',
-        env: childEnvironment,
-        maxBuffer: 16 * 1024 * 1024,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      },
-    );
-  } catch (error) {
-    throw new Error(`Recall acceptance semantic check failed: ${testIdentity}`, { cause: error });
-  }
+  const output = execFileSync(
+    process.execPath,
+    [
+      '--import',
+      'tsx',
+      '--test',
+      '--test-reporter=tap',
+      '--test-name-pattern',
+      exactPattern,
+      testFile,
+    ],
+    {
+      cwd: projectDirectory,
+      encoding: 'utf8',
+      env: childEnvironment,
+      maxBuffer: 16 * 1024 * 1024,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    },
+  );
   const lines = output.split(/\r?\n/u);
   const subtestLine = `# Subtest: ${testIdentity}`;
   const passedTestLine = new RegExp(`^ok \\d+ - ${escapeTestNamePattern(testIdentity)}$`, 'u');

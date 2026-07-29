@@ -242,18 +242,12 @@ const NODE_RECALL_EVALUATION_FILE_SYSTEM: RecallEvaluationFileSystem = {
   async mkdir(path) {
     return mkdir(path, { recursive: true });
   },
-  async open(path, flags) {
-    return open(path, flags);
-  },
-  async rename(from, to) {
-    await rename(from, to);
-  },
+  open,
+  rename,
   async rm(path) {
     await rm(path, { force: true });
   },
-  async readdir(path) {
-    return readdir(path);
-  },
+  readdir,
 };
 
 function escapeRegularExpression(value: string): string {
@@ -391,11 +385,7 @@ export async function writeAtomicRecallEvaluationFile(
     await syncRecallEvaluationDirectory(destinationDirectory, fileSystem);
   } catch (error) {
     const publicationError = normalizeRecallEvaluationFileError(error);
-    try {
-      await fileSystem.rm(temporaryPath);
-    } catch {
-      // Cleanup is best-effort so it cannot mask the publication failure.
-    }
+    await Promise.allSettled([fileSystem.rm(temporaryPath)]);
     throw publicationError;
   }
 }

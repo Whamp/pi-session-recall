@@ -24,6 +24,26 @@ import { RECALL_WORK_MARKER_VERSION } from './recall-work-marker.js';
 
 const DEFAULT_ROLLBACK_RETENTION_MILLISECONDS = 7 * 24 * 60 * 60_000;
 
+/** Durable crash state and ownership evidence used to recover an interrupted cutover. */
+export interface RecoverRecallGenerationStateTransitionOptions {
+  activeGenerationPointerPath: string;
+  generationRegistryPath: string;
+  backlogSummaryPath: string;
+  pointer: Awaited<ReturnType<typeof readRecallActiveGenerationPointer>>;
+  registry: RecallGenerationRegistry | null;
+  backlog: RecallBacklogSummary | null;
+  abandonedBuildingGeneration: boolean;
+  recoveredAtEpochMilliseconds: number;
+  rollbackRetentionMilliseconds?: number;
+  retainRecoveryRequired(): void;
+}
+
+/** State publication result plus the active store that may require write-mode attestation. */
+export interface RecoverRecallGenerationStateTransitionResult {
+  stateChanged: boolean;
+  activeGenerationId: string;
+}
+
 /** Exact version-5 identity permitted for explicit read-only legacy adoption. */
 export interface AdoptLegacyRecallGenerationTransitionOptions {
   activeGenerationPointerPath: string;
@@ -182,6 +202,169 @@ export interface CompleteRecallGenerationReplayTransitionOptions {
   backlogSummaryPath: string;
   nowEpochMilliseconds?: () => number;
   proveReplayWorkComplete(): Promise<boolean>;
+}
+
+/** Classifies and publishes every supported interrupted generation cutover state. */
+export async function recoverRecallGenerationStateTransition(
+  options: RecoverRecallGenerationStateTransitionOptions,
+): Promise<RecoverRecallGenerationStateTransitionResult> {
+  const { pointer, registry, backlog } = options;
+  const buildingGenerationEntry = registry?.generations.find(
+    ({ generationId }) =>
+      generationId === registry.buildingGenerationId && registry.buildingGenerationId !== null,
+  );
+  const pointerAndRegistrySelectSameGeneration =
+    pointer !== null &&
+    registry?.activeGenerationId === pointer.activeGenerationId &&
+    registry.activePointerChecksum === pointer.checksum;
+  if (
+    pointerAndRegistrySelectSameGeneration &&
+    pointer !== null &&
+    registry !== null &&
+    buildingGenerationEntry?.state === RecallGenerationCutoverState.BUILDING &&
+    ((backlog?.buildingGenerationId === buildingGenerationEntry.generationId &&
+      backlog.lastFailureCategory === RecallBacklogFailureCategory.REBUILD_FAILED) ||
+      options.abandonedBuildingGeneration)
+  ) {
+    const activeEntry = registry.generations.find(
+      ({ generationId }) => generationId === registry.activeGenerationId,
+    );
+    if (activeEntry === undefined) {
+      options.retainRecoveryRequired();
+      throw new Error('Recall failed rebuild recovery active registry entry missing');
+    }
+    await writeRecallGenerationRegistry(options.generationRegistryPath, {
+      ...registry,
+      buildingGenerationId: null,
+      generations: registry.generations.map((entry) =>
+        entry.generationId === buildingGenerationEntry.generationId
+          ? {
+              ...entry,
+              state: RecallGenerationCutoverState.FAILED,
+              stateChangedAtEpochMilliseconds: options.recoveredAtEpochMilliseconds,
+            }
+          : entry,
+      ),
+    });
+    await writeRecallBacklogSummary(options.backlogSummaryPath, {
+      version: RECALL_BACKLOG_SUMMARY_VERSION,
+      pendingEligibleSessionCount: backlog?.pendingEligibleSessionCount ?? 0,
+      oldestEligibleMarkerAgeMilliseconds: backlog?.oldestEligibleMarkerAgeMilliseconds ?? null,
+      activeGenerationId: pointer.activeGenerationId,
+      buildingGenerationId: null,
+      generationState: activeEntry.state,
+      activeGenerationAgeMilliseconds: 0,
+      rebuildAgeMilliseconds: null,
+      lastFailureCategory: RecallBacklogFailureCategory.REBUILD_FAILED,
+      observedAtEpochMilliseconds: options.recoveredAtEpochMilliseconds,
+    });
+    return { stateChanged: true, activeGenerationId: pointer.activeGenerationId };
+  }
+  if (
+    pointerAndRegistrySelectSameGeneration &&
+    pointer !== null &&
+    buildingGenerationEntry?.state !== RecallGenerationCutoverState.READY
+  ) {
+    return { stateChanged: false, activeGenerationId: pointer.activeGenerationId };
+  }
+  if (
+    pointerAndRegistrySelectSameGeneration &&
+    pointer !== null &&
+    registry !== null &&
+    buildingGenerationEntry?.state === RecallGenerationCutoverState.READY &&
+    buildingGenerationEntry.validatedAtEpochMilliseconds !== undefined &&
+    buildingGenerationEntry.validatedAtEpochMilliseconds !== null
+  ) {
+    const replacementPointer = createRecallActiveGenerationPointer(
+      buildingGenerationEntry.generationId,
+    );
+    const recoveredRegistry = activateRecallReplacementInRegistry(
+      registry,
+      buildingGenerationEntry,
+      replacementPointer.checksum,
+      options.recoveredAtEpochMilliseconds,
+      options.rollbackRetentionMilliseconds ?? DEFAULT_ROLLBACK_RETENTION_MILLISECONDS,
+    );
+    await writeRecallActiveGenerationPointer(
+      options.activeGenerationPointerPath,
+      replacementPointer,
+    );
+    await writeRecallGenerationRegistry(options.generationRegistryPath, recoveredRegistry);
+    await writeRecallBacklogSummary(
+      options.backlogSummaryPath,
+      createReplayPendingActivationBacklogSummary(
+        buildingGenerationEntry,
+        options.recoveredAtEpochMilliseconds,
+      ),
+    );
+    return { stateChanged: true, activeGenerationId: buildingGenerationEntry.generationId };
+  }
+  const registrySelectedEntry = registry?.generations.find(
+    ({ generationId }) => generationId === registry.activeGenerationId,
+  );
+  const registryFirstCutover =
+    registry !== null &&
+    registrySelectedEntry !== undefined &&
+    ((pointer === null &&
+      registrySelectedEntry.state === RecallGenerationCutoverState.LEGACY_READ_ONLY) ||
+      (pointer !== null &&
+        registry.rollbackGenerationId === pointer.activeGenerationId &&
+        (registrySelectedEntry.state === RecallGenerationCutoverState.REPLAY_PENDING ||
+          registrySelectedEntry.state === RecallGenerationCutoverState.LEGACY_READ_ONLY)));
+  if (registryFirstCutover) {
+    const targetPointer = createRecallActiveGenerationPointer(registrySelectedEntry.generationId);
+    await writeRecallActiveGenerationPointer(options.activeGenerationPointerPath, targetPointer);
+    await writeRecallBacklogSummary(
+      options.backlogSummaryPath,
+      registrySelectedEntry.state === RecallGenerationCutoverState.REPLAY_PENDING
+        ? createReplayPendingActivationBacklogSummary(
+            registrySelectedEntry,
+            options.recoveredAtEpochMilliseconds,
+          )
+        : {
+            version: RECALL_BACKLOG_SUMMARY_VERSION,
+            pendingEligibleSessionCount: 0,
+            oldestEligibleMarkerAgeMilliseconds: null,
+            activeGenerationId: registrySelectedEntry.generationId,
+            buildingGenerationId: null,
+            generationState: registrySelectedEntry.state,
+            activeGenerationAgeMilliseconds: 0,
+            rebuildAgeMilliseconds: null,
+            lastFailureCategory: null,
+            observedAtEpochMilliseconds: options.recoveredAtEpochMilliseconds,
+          },
+    );
+    return { stateChanged: true, activeGenerationId: registrySelectedEntry.generationId };
+  }
+  const replacement = registry?.generations.find(
+    ({ generationId }) => generationId === pointer?.activeGenerationId,
+  );
+  if (
+    pointer === null ||
+    registry === null ||
+    registry.buildingGenerationId !== pointer.activeGenerationId ||
+    replacement?.state !== RecallGenerationCutoverState.READY ||
+    replacement.validatedAtEpochMilliseconds === undefined ||
+    replacement.validatedAtEpochMilliseconds === null
+  ) {
+    options.retainRecoveryRequired();
+    throw new Error(
+      'Recall generation cutover recovery found an unsupported pointer and registry state',
+    );
+  }
+  const recoveredRegistry = activateRecallReplacementInRegistry(
+    registry,
+    replacement,
+    pointer.checksum,
+    options.recoveredAtEpochMilliseconds,
+    options.rollbackRetentionMilliseconds ?? DEFAULT_ROLLBACK_RETENTION_MILLISECONDS,
+  );
+  await writeRecallGenerationRegistry(options.generationRegistryPath, recoveredRegistry);
+  await writeRecallBacklogSummary(
+    options.backlogSummaryPath,
+    createReplayPendingActivationBacklogSummary(replacement, options.recoveredAtEpochMilliseconds),
+  );
+  return { stateChanged: true, activeGenerationId: replacement.generationId };
 }
 
 /** Publishes exact legacy adoption registry, pointer, then read-only backlog state. */

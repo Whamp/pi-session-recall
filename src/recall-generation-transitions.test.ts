@@ -14,7 +14,10 @@ import {
   RECALL_GENERATION_REGISTRY_VERSION,
   type RecallGenerationRegistry,
 } from './recall-generation-state.js';
-import { completeRecallGenerationReplayTransition } from './recall-generation-transitions.js';
+import {
+  completeRecallGenerationReplayTransition,
+  rollbackRecallGenerationTransition,
+} from './recall-generation-transitions.js';
 import { RECALL_SESSION_PROJECTION_SCHEMA_VERSION } from './recall-session-projection.js';
 
 function createReplayRegistry(generationId: string): RecallGenerationRegistry {
@@ -116,6 +119,100 @@ void test('active replay completion repairs backlog without rechecking marker wo
   assert.equal(
     decodeRecallBacklogSummary(await readFile(backlogPath, 'utf8')).observedAtEpochMilliseconds,
     30_000,
+  );
+});
+
+void test('rollback transition validates target then publishes registry pointer and backlog', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-rollback-transition-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const pointerPath = join(root, 'active-generation.json');
+  const registryPath = join(root, 'generation-registry.json');
+  const backlogPath = join(root, 'backlog-summary.json');
+  const activePointer = createRecallActiveGenerationPointer('generation_new');
+  await writeRecallActiveGenerationPointer(pointerPath, activePointer);
+  await writeRecallGenerationRegistry(registryPath, {
+    version: RECALL_GENERATION_REGISTRY_VERSION,
+    activeGenerationId: 'generation_new',
+    buildingGenerationId: null,
+    rollbackGenerationId: 'generation_old',
+    activePointerChecksum: activePointer.checksum,
+    generations: [
+      {
+        generationId: 'generation_old',
+        state: RecallGenerationCutoverState.ROLLBACK,
+        embeddingProfileId: 'embedding-profile-v1',
+        indexManifestVersion: 6,
+        markerSchemaVersion: 1,
+        sessionProjectionSchemaVersion: RECALL_SESSION_PROJECTION_SCHEMA_VERSION,
+        indexManifestFingerprint: 'a'.repeat(64),
+        rebuildStartedAtEpochMilliseconds: 1_000,
+        stateChangedAtEpochMilliseconds: 2_000,
+        rebuildStartMarkerId: null,
+        rebuildMarkerWatermark: [],
+        validatedAtEpochMilliseconds: 2_000,
+        retireAfterEpochMilliseconds: 50_000,
+      },
+      {
+        generationId: 'generation_new',
+        state: RecallGenerationCutoverState.ACTIVE,
+        embeddingProfileId: 'embedding-profile-v1',
+        indexManifestVersion: 6,
+        markerSchemaVersion: 1,
+        sessionProjectionSchemaVersion: RECALL_SESSION_PROJECTION_SCHEMA_VERSION,
+        indexManifestFingerprint: 'b'.repeat(64),
+        rebuildStartedAtEpochMilliseconds: 3_000,
+        stateChangedAtEpochMilliseconds: 4_000,
+        rebuildStartMarkerId: 'marker_start',
+        rebuildMarkerWatermark: ['marker_replay'],
+        validatedAtEpochMilliseconds: 4_000,
+        retireAfterEpochMilliseconds: null,
+      },
+    ],
+  });
+  const events: string[] = [];
+
+  const transition = await rollbackRecallGenerationTransition({
+    activeGenerationPointerPath: pointerPath,
+    generationRegistryPath: registryPath,
+    backlogSummaryPath: backlogPath,
+    rollbackRetentionMilliseconds: 1_000,
+    nowEpochMilliseconds: () => 10_000,
+    async validateRollbackGeneration(generationId) {
+      events.push(`validate:${generationId}`);
+    },
+    async restoreRetainedMarkers() {
+      events.push('restore-markers');
+      return 2;
+    },
+    retainRecoveryRequired() {
+      events.push('retain-recovery');
+    },
+  });
+
+  assert.deepEqual(events, ['validate:generation_old', 'restore-markers']);
+  assert.deepEqual(transition, {
+    result: {
+      activeGenerationId: 'generation_old',
+      rollbackGenerationId: 'generation_new',
+      restoredMarkerCount: 2,
+    },
+    replayRequired: true,
+  });
+  assert.equal(
+    (await readRecallGenerationRegistry(registryPath))?.generations.find(
+      ({ generationId }) => generationId === 'generation_old',
+    )?.state,
+    RecallGenerationCutoverState.REPLAY_PENDING,
+  );
+  assert.equal(
+    (await readRecallGenerationRegistry(registryPath))?.generations.find(
+      ({ generationId }) => generationId === 'generation_new',
+    )?.retireAfterEpochMilliseconds,
+    11_000,
+  );
+  assert.equal(
+    decodeRecallBacklogSummary(await readFile(backlogPath, 'utf8')).pendingEligibleSessionCount,
+    2,
   );
 });
 

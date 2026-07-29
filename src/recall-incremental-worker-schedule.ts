@@ -26,6 +26,7 @@ export interface RecallIncrementalWorkerSchedule {
   version: 1;
   nextWakeAtEpochMilliseconds: number | null;
   metadataSweepRequested?: boolean;
+  metadataSweepRevision?: number;
   largeTransferDeferrals: RecallLargeTransferDeferral[];
 }
 
@@ -33,6 +34,7 @@ export interface RecallIncrementalWorkerSchedule {
 export interface PersistRecallIncrementalWorkerScheduleOptions {
   schedulePath: string;
   nowEpochMilliseconds: number;
+  acknowledgedMetadataSweepRevision?: number;
   schedule: RecallIncrementalWorkerSchedule;
 }
 
@@ -92,6 +94,9 @@ function parseRecallIncrementalWorkerSchedule(value: unknown): RecallIncremental
     value.version !== RECALL_INCREMENTAL_WORKER_SCHEDULE_VERSION ||
     (value.metadataSweepRequested !== undefined &&
       typeof value.metadataSweepRequested !== 'boolean') ||
+    (value.metadataSweepRevision !== undefined &&
+      (!Number.isSafeInteger(value.metadataSweepRevision) ||
+        Number(value.metadataSweepRevision) < 0)) ||
     !Array.isArray(value.largeTransferDeferrals)
   ) {
     throw new Error('Recall incremental worker schedule invalid');
@@ -111,6 +116,7 @@ function parseRecallIncrementalWorkerSchedule(value: unknown): RecallIncremental
     version: RECALL_INCREMENTAL_WORKER_SCHEDULE_VERSION,
     nextWakeAtEpochMilliseconds,
     metadataSweepRequested: value.metadataSweepRequested ?? false,
+    metadataSweepRevision: Number(value.metadataSweepRevision ?? 0),
     largeTransferDeferrals: largeTransferDeferrals.toSorted((left, right) =>
       left.physicalSessionId.localeCompare(right.physicalSessionId),
     ),
@@ -155,29 +161,91 @@ async function writeRecallIncrementalWorkerSchedule(
   }
 }
 
-/** Atomically persists the earliest future wake and requests a sleeper whenever deferred work remains. */
+async function acquireRecallScheduleLock(lockPath: string): Promise<() => Promise<void>> {
+  await mkdir(dirname(lockPath), { recursive: true });
+  const token = `recall-schedule-${randomUUID()}`;
+  const child = spawn(resolveRecallFlockExecutable(), [lockPath, '/bin/cat'], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  child.stdin.write(`${token}\n`);
+  await new Promise<void>((resolve, reject) => {
+    let output = '';
+    const finish = (error?: Error): void => {
+      child.stdout.removeAllListeners();
+      child.removeAllListeners('error');
+      child.removeAllListeners('exit');
+      if (error === undefined) {
+        resolve();
+      } else {
+        reject(error);
+      }
+    };
+    child.stdout.on('data', (chunk: Buffer) => {
+      output += chunk.toString('utf8');
+      if (output.includes(token)) {
+        finish();
+      }
+    });
+    child.once('error', (error) => {
+      finish(new Error('Recall incremental worker schedule lock failed', { cause: error }));
+    });
+    child.once('exit', (code) => {
+      finish(
+        new Error(`Recall incremental worker schedule lock exited before acquisition: ${code}`),
+      );
+    });
+  });
+  return async () => {
+    if (child.exitCode !== null || child.signalCode !== null) {
+      return;
+    }
+    const exited = new Promise<void>((resolve, reject) => {
+      child.once('error', reject);
+      child.once('exit', () => resolve());
+    });
+    child.stdin.end();
+    await exited;
+  };
+}
+
+/** Atomically persists the earliest future wake and revisioned metadata sweep intent. */
 export async function persistRecallIncrementalWorkerSchedule(
   options: PersistRecallIncrementalWorkerScheduleOptions,
 ): Promise<boolean> {
-  const current = await readRecallIncrementalWorkerSchedule(options.schedulePath);
-  const currentFutureWake =
-    current?.nextWakeAtEpochMilliseconds !== null &&
-    current?.nextWakeAtEpochMilliseconds !== undefined &&
-    current.nextWakeAtEpochMilliseconds > options.nowEpochMilliseconds
-      ? current.nextWakeAtEpochMilliseconds
-      : null;
-  const proposedWake = options.schedule.nextWakeAtEpochMilliseconds;
-  const nextWakeAtEpochMilliseconds =
-    proposedWake === null
-      ? null
-      : currentFutureWake === null
-        ? proposedWake
-        : Math.min(currentFutureWake, proposedWake);
-  await writeRecallIncrementalWorkerSchedule(options.schedulePath, {
-    ...options.schedule,
-    nextWakeAtEpochMilliseconds,
-  });
-  return nextWakeAtEpochMilliseconds !== null;
+  const releaseLock = await acquireRecallScheduleLock(`${options.schedulePath}.lock`);
+  try {
+    const current = await readRecallIncrementalWorkerSchedule(options.schedulePath);
+    const currentFutureWake =
+      current?.nextWakeAtEpochMilliseconds !== null &&
+      current?.nextWakeAtEpochMilliseconds !== undefined &&
+      current.nextWakeAtEpochMilliseconds > options.nowEpochMilliseconds
+        ? current.nextWakeAtEpochMilliseconds
+        : null;
+    const proposedWake = options.schedule.nextWakeAtEpochMilliseconds;
+    const nextWakeAtEpochMilliseconds =
+      proposedWake === null
+        ? null
+        : currentFutureWake === null
+          ? proposedWake
+          : Math.min(currentFutureWake, proposedWake);
+    const currentMetadataSweepRevision = current?.metadataSweepRevision ?? 0;
+    const metadataSweepRevision = options.schedule.metadataSweepRequested
+      ? currentMetadataSweepRevision + 1
+      : currentMetadataSweepRevision;
+    const metadataSweepRequested = options.schedule.metadataSweepRequested
+      ? true
+      : current?.metadataSweepRequested === true &&
+        options.acknowledgedMetadataSweepRevision !== currentMetadataSweepRevision;
+    await writeRecallIncrementalWorkerSchedule(options.schedulePath, {
+      ...options.schedule,
+      nextWakeAtEpochMilliseconds,
+      metadataSweepRequested,
+      metadataSweepRevision,
+    });
+    return nextWakeAtEpochMilliseconds !== null;
+  } finally {
+    await releaseLock();
+  }
 }
 
 /** Starts one detached sleep followed by a blocking kernel-lock worker wake. */

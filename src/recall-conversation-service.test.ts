@@ -998,6 +998,7 @@ void test('approved rebuild excludes physical sources added after snapshot appro
     string,
     Map<string, IndexedSessionConversationChunk>
   >();
+  let injectUnexpectedEvidence = false;
   const service = createRecallConversationService(config, {
     embeddings: {
       async embedTexts(texts) {
@@ -1007,7 +1008,8 @@ void test('approved rebuild excludes physical sources added after snapshot appro
     async loadTokenizer() {
       return tokenizer;
     },
-    openStore(_mode, databasePath = config.databasePath) {
+    openStore(mode, databasePath = config.databasePath) {
+      void mode;
       const storedChunks =
         storedChunksByDatabasePath.get(databasePath) ??
         new Map<string, IndexedSessionConversationChunk>();
@@ -1017,14 +1019,31 @@ void test('approved rebuild excludes physical sources added after snapshot appro
           for (const chunk of chunks) {
             storedChunks.set(chunk.id, chunk);
           }
+          const approvedChunk = chunks[0];
+          if (
+            injectUnexpectedEvidence &&
+            databasePath !== config.databasePath &&
+            approvedChunk !== undefined
+          ) {
+            storedChunks.set('unexpected-rebuild-evidence', {
+              ...approvedChunk,
+              id: 'unexpected-rebuild-evidence',
+              checksum: 'f'.repeat(64),
+              contributingEntryIds: [{ value: 'unexpected-entry' }],
+            });
+            injectUnexpectedEvidence = false;
+          }
         },
         async deleteChunks(ids) {
           for (const id of ids) {
             storedChunks.delete(id);
           }
         },
-        async listChunkIdsByPhysicalSessionProjectionId() {
-          return [];
+        async listChunkIdsByPhysicalSessionProjectionId(physicalSessionProjectionId, limit) {
+          return [...storedChunks.values()]
+            .filter((chunk) => chunk.physicalSessionProjectionId === physicalSessionProjectionId)
+            .map(({ id }) => id)
+            .slice(0, limit);
         },
         async searchDenseCandidates() {
           return [];
@@ -1036,9 +1055,14 @@ void test('approved rebuild excludes physical sources added after snapshot appro
           return [];
         },
         fetchConversationChunks(ids) {
-          return new Map(
-            ids.flatMap((id) => (storedChunks.has(id) ? [[id, storedChunks.get(id)!]] : [])),
-          );
+          const chunks = new Map<string, IndexedSessionConversationChunk>();
+          for (const id of ids) {
+            const chunk = storedChunks.get(id);
+            if (chunk !== undefined) {
+              chunks.set(id, chunk);
+            }
+          }
+          return chunks;
         },
         fetchVectors() {
           return new Map();
@@ -1080,6 +1104,25 @@ void test('approved rebuild excludes physical sources added after snapshot appro
 
   assert.equal(rebuilt.totalChunks, 1);
   assert.equal(rebuilt.indexSummary.scannedSessions, 1);
+
+  const activeGenerationBeforeUnexpectedEvidence = await readRecallActiveGenerationSelection(
+    config.activeGenerationPointerPath,
+    config.generationRootDirectory,
+  );
+  injectUnexpectedEvidence = true;
+  await assert.rejects(
+    () => service.index({ rebuild: true }),
+    /Recall rebuild indexed evidence outside approved snapshot/u,
+  );
+  assert.equal(
+    (
+      await readRecallActiveGenerationSelection(
+        config.activeGenerationPointerPath,
+        config.generationRootDirectory,
+      )
+    ).activeGenerationId,
+    activeGenerationBeforeUnexpectedEvidence.activeGenerationId,
+  );
 });
 
 void test('rebuild preserves the active generation when an approved physical source disappears', async (t) => {
@@ -1266,8 +1309,9 @@ void test('staging discard holds the write window while removing its registry en
   const stagingGenerationId = 'generation_staging';
   const stagingDirectory = join(config.generationRootDirectory, stagingGenerationId);
   await mkdir(stagingDirectory, { recursive: true });
+  const stagingFileIndexes = [...Array.from({ length: 2_000 }).keys()];
   await Promise.all(
-    Array.from({ length: 2_000 }, (_, index) =>
+    stagingFileIndexes.map((index) =>
       writeFile(join(stagingDirectory, `discard-${index}.tmp`), 'discard'),
     ),
   );

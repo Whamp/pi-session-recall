@@ -20,8 +20,8 @@ import {
   type RecallModelArtifactCache,
 } from './recall-model-artifact-cache.js';
 import {
+  configureRecallInferenceCapability,
   readRecallInferenceConfiguration,
-  writeRecallInferenceConfiguration,
   type RecallInferenceConfiguration,
 } from './recall-inference-configuration.js';
 import {
@@ -415,9 +415,9 @@ export async function runRecallFirstIndexSetupCommand(
         verifiedAt,
       },
     };
-    await writeRecallInferenceConfiguration(inferenceConfigurationPath, {
-      ...inferenceConfiguration,
-      embedding: {
+    await configureRecallInferenceCapability(
+      inferenceConfigurationPath,
+      {
         capability: RecallInferenceCapability.EMBEDDING,
         candidateId: 'recommended-embeddinggemma-embedded',
         profileId: profile.profileId,
@@ -435,16 +435,31 @@ export async function runRecallFirstIndexSetupCommand(
           revision: profile.source.revision,
           sha256: profile.source.sha256,
           byteSize: profile.source.byteSize,
-          state: RecallInferenceArtifactState.VALID,
         },
-        conformance: {
-          verifiedAt,
-          cacheIdentity: selection.verification.embeddingProfileId,
-          embeddingProfileId: selection.verification.embeddingProfileId,
-          measurement: { verificationOperations: 1 },
+        async inspectHealth() {
+          return {
+            artifactState: RecallInferenceArtifactState.VALID,
+            requiredRepair: null,
+          };
+        },
+        async verifyCapabilityConformance() {
+          return {
+            profileId: profile.profileId,
+            adapterId: selection.executionIdentity.adapter,
+            backend: RecallInferenceBackend.EMBEDDED,
+            cacheIdentity: selection.verification.embeddingProfileId,
+            embeddingProfileId: selection.verification.embeddingProfileId,
+            measurement: { verificationOperations: 1 },
+          };
         },
       },
-    });
+      {
+        ...(options.config.generationRegistryPath
+          ? { generationRegistryPath: options.config.generationRegistryPath }
+          : {}),
+        nowIsoTimestamp: () => verifiedAt,
+      },
+    );
     await writeRecallFirstIndexSetupState(statePath, selectedState);
     writeOutput(
       JSON.stringify({

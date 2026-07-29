@@ -76,11 +76,12 @@ function createSetupCommandTestConfig(root: string): RecallConversationConfig {
   };
 }
 
-void test('first-index setup requires consent and uses the authoritative configured runtime after selection', async (t) => {
+void test('first-index setup preserves a concurrent inference selection after model verification', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'recall-first-index-command-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const config = createSetupCommandTestConfig(root);
   const statePath = join(root, 'data', 'first-index-setup.json');
+  const inferenceConfigurationPath = join(root, 'data', 'inference-configuration.json');
   const profile = createRecommendedEmbeddingGemmaModelProfile();
   const artifactPath = join(root, 'models', profile.source.artifact);
   let downloadCount = 0;
@@ -187,6 +188,32 @@ void test('first-index setup requires consent and uses the authoritative configu
     },
     async downloadArtifact() {
       downloadCount += 1;
+      await configureRecallInferenceCapability(inferenceConfigurationPath, {
+        capability: RecallInferenceCapability.RERANKING,
+        candidateId: 'concurrent-reranking',
+        profileId: 'concurrent-reranking-profile-v1',
+        backend: RecallInferenceBackend.LLAMA_CPP_HTTP,
+        adapterId: 'concurrent-reranking-adapter-v1',
+        endpoint: 'http://reranking.test/v1',
+        device: null,
+        artifact: null,
+        async inspectHealth() {
+          return {
+            artifactState: RecallInferenceArtifactState.NOT_REQUIRED,
+            requiredRepair: null,
+          };
+        },
+        async verifyCapabilityConformance() {
+          return {
+            profileId: 'concurrent-reranking-profile-v1',
+            adapterId: 'concurrent-reranking-adapter-v1',
+            backend: RecallInferenceBackend.LLAMA_CPP_HTTP,
+            cacheIdentity: 'concurrent-reranking-profile-v1:concurrent-reranking-adapter-v1',
+            embeddingProfileId: null,
+            measurement: { fixtureOperations: 1 },
+          };
+        },
+      });
       return {
         state: 'valid' as const,
         artifactPath,
@@ -278,13 +305,11 @@ void test('first-index setup requires consent and uses the authoritative configu
   assert.equal(downloadCount, 1);
   assert.equal(verificationCount, 1);
   assert.equal(disposeCount, 1);
-  const inferenceConfiguration = await readRecallInferenceConfiguration(
-    join(root, 'data', 'inference-configuration.json'),
-  );
+  const inferenceConfiguration = await readRecallInferenceConfiguration(inferenceConfigurationPath);
   assert.equal(inferenceConfiguration.embedding?.profileId, profile.profileId);
   assert.equal(inferenceConfiguration.embedding?.backend, 'embedded');
   assert.equal(inferenceConfiguration.embedding?.artifact?.state, 'valid');
-  assert.equal(inferenceConfiguration.reranking, null);
+  assert.equal(inferenceConfiguration.reranking?.profileId, 'concurrent-reranking-profile-v1');
   assert.equal(inferenceConfiguration.queryPlanning, null);
 
   await runRecallFirstIndexSetupCommand(['estimate'], options);

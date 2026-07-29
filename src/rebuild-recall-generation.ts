@@ -10,14 +10,11 @@ import {
   RECALL_INDEX_MANIFEST_VERSION,
 } from './enums.js';
 import {
-  activateRecallReplacementInRegistry,
   createRecallActiveGenerationPointer,
-  createReplayPendingActivationBacklogSummary,
   encodeRecallGenerationRegistry,
   readRecallActiveGenerationPointer,
   readRecallGenerationRegistry,
   resolveRecallGenerationDirectory,
-  writeRecallActiveGenerationPointer,
   writeRecallBacklogSummary,
   writeRecallGenerationRegistry,
   RECALL_BACKLOG_SUMMARY_VERSION,
@@ -26,6 +23,11 @@ import {
   type RecallGenerationRegistry,
   type RecallGenerationRegistryEntry,
 } from './recall-generation-state.js';
+import {
+  activateReadyRecallGenerationTransition,
+  createReadyRecallGenerationTransition,
+  publishRecallGenerationActivationBacklogTransition,
+} from './recall-generation-transitions.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
 import {
   recallRebuildOwnershipLockPath,
@@ -100,7 +102,6 @@ export interface RebuildRecallGenerationResult<Result> {
   replayMarkerWatermark: string[];
 }
 
-const DEFAULT_ROLLBACK_RETENTION_MILLISECONDS = 7 * 24 * 60 * 60_000;
 const MARKER_FILE_PATTERN = /^([A-Za-z0-9_-]+)\.json$/u;
 
 function createReplacementGenerationId(nowEpochMilliseconds: number): string {
@@ -499,18 +500,15 @@ async function rebuildRecallGenerationUnderOwnership<Result, BuildSnapshot = und
         ...(await listPendingRecallMarkerIds(options.markerSpoolDirectory)),
       ]),
     ].toSorted();
-    readyEntry = {
-      ...buildingEntry,
-      state: RecallGenerationCutoverState.READY,
+    const readiness = createReadyRecallGenerationTransition({
+      registry,
+      buildingEntry,
       indexManifestFingerprint: validation.indexManifestFingerprint,
-      stateChangedAtEpochMilliseconds: readyAt,
       rebuildMarkerWatermark: readyWatermark,
-      validatedAtEpochMilliseconds: readyAt,
-    };
-    registry = {
-      ...registry,
-      generations: replaceGenerationEntry(registry, readyEntry),
-    };
+      readyAtEpochMilliseconds: readyAt,
+    });
+    readyEntry = readiness.readyEntry;
+    registry = readiness.readyRegistry;
     throwIfRebuildCancelled(options.signal);
   } catch (error) {
     const readinessError = normalizeRecallRebuildError(
@@ -519,19 +517,8 @@ async function rebuildRecallGenerationUnderOwnership<Result, BuildSnapshot = und
     );
     return failRecallReplacementBuild(readinessError, readyWatermark);
   }
-  const newPointer = createRecallActiveGenerationPointer(generationId);
   const activatedAt = options.nowEpochMilliseconds?.() ?? Date.now();
-  const retentionMilliseconds =
-    options.rollbackRetentionMilliseconds ?? DEFAULT_ROLLBACK_RETENTION_MILLISECONDS;
-  const previousGenerationId = registry.activeGenerationId;
-  const finalRegistry = activateRecallReplacementInRegistry(
-    registry,
-    readyEntry,
-    newPointer.checksum,
-    activatedAt,
-    retentionMilliseconds,
-  );
-
+  let previousGenerationId: string | null = null;
   try {
     await coordinateRecallWriteWindow(
       {
@@ -541,30 +528,27 @@ async function rebuildRecallGenerationUnderOwnership<Result, BuildSnapshot = und
       },
       async (writeWindow) => {
         throwIfRebuildCancelled(options.signal);
-        const [currentPointer, currentRegistry] = await Promise.all([
-          readRecallActiveGenerationPointer(options.activeGenerationPointerPath),
-          readRecallGenerationRegistry(options.generationRegistryPath),
-        ]);
-        if (
-          currentPointer?.activeGenerationId !== startingPointer?.activeGenerationId ||
-          currentPointer?.checksum !== startingPointer?.checksum ||
-          currentRegistry === null ||
-          encodeRecallGenerationRegistry(currentRegistry) !==
-            encodeRecallGenerationRegistry(frozenBuild.registry)
-        ) {
-          throw new Error('Recall generation state changed before pointer cutover');
-        }
-        await options.onCutoverStage?.(RecallGenerationCutoverStage.BEFORE_POINTER_SWAP);
-        throwIfRebuildCancelled(options.signal);
-        try {
-          await writeRecallGenerationRegistry(options.generationRegistryPath, registry);
-          await writeRecallActiveGenerationPointer(options.activeGenerationPointerPath, newPointer);
-          await options.onCutoverStage?.(RecallGenerationCutoverStage.AFTER_POINTER_SWAP);
-          await writeRecallGenerationRegistry(options.generationRegistryPath, finalRegistry);
-        } catch (error) {
-          writeWindow.retainRecoveryRequired();
-          throw error;
-        }
+        const activation = await activateReadyRecallGenerationTransition({
+          activeGenerationPointerPath: options.activeGenerationPointerPath,
+          generationRegistryPath: options.generationRegistryPath,
+          expectedActivePointer: startingPointer,
+          expectedFrozenRegistry: frozenBuild.registry,
+          readyRegistry: registry,
+          readyEntry,
+          ...(options.rollbackRetentionMilliseconds === undefined
+            ? {}
+            : { rollbackRetentionMilliseconds: options.rollbackRetentionMilliseconds }),
+          activatedAtEpochMilliseconds: activatedAt,
+          beforePointerSwap: () =>
+            options.onCutoverStage?.(RecallGenerationCutoverStage.BEFORE_POINTER_SWAP) ??
+            Promise.resolve(),
+          afterPointerSwap: () =>
+            options.onCutoverStage?.(RecallGenerationCutoverStage.AFTER_POINTER_SWAP) ??
+            Promise.resolve(),
+          throwIfCancelled: () => throwIfRebuildCancelled(options.signal),
+          retainRecoveryRequired: () => writeWindow.retainRecoveryRequired(),
+        });
+        previousGenerationId = activation.previousGenerationId;
       },
     );
   } catch (error) {
@@ -579,10 +563,11 @@ async function rebuildRecallGenerationUnderOwnership<Result, BuildSnapshot = und
     throw error;
   }
   const [backlogWrite] = await Promise.allSettled([
-    writeRecallBacklogSummary(
-      options.backlogSummaryPath,
-      createReplayPendingActivationBacklogSummary(readyEntry, activatedAt),
-    ),
+    publishRecallGenerationActivationBacklogTransition({
+      backlogSummaryPath: options.backlogSummaryPath,
+      readyEntry,
+      activatedAtEpochMilliseconds: activatedAt,
+    }),
   ]);
   options.workerSignal.signalDetachedWorker();
   if (backlogWrite?.status === 'rejected') {

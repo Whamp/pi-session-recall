@@ -1436,15 +1436,20 @@ export async function readSessionConversationImport(
       }
       remainingApprovedContributorIdsByLogicalSessionId.delete(approvedLogicalSessionIdentity);
     }
+    const sessionChunks = buildSessionConversationDocuments(graph, approvedContributorEntryIds, {
+      sessionPath,
+      logicalSessionIdentity,
+      physicalSessionProjectionId,
+      tokenizer: options.tokenizer,
+      maxTokens,
+      overlapTokens,
+    });
     chunks.push(
-      ...buildSessionConversationDocuments(graph, approvedContributorEntryIds, {
-        sessionPath,
-        logicalSessionIdentity,
-        physicalSessionProjectionId,
-        tokenizer: options.tokenizer,
-        maxTokens,
-        overlapTokens,
-      }),
+      ...(remainingApprovedContributorIdsByLogicalSessionId === null
+        ? sessionChunks
+        : sessionChunks.filter((chunk) =>
+            chunk.contributingEntryIds.every(({ value }) => approvedContributorEntryIds.has(value)),
+          )),
     );
   }
   const missingApprovedLogicalSessionId = [

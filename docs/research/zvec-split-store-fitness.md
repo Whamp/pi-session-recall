@@ -55,7 +55,7 @@ The source review is of upstream code corresponding to release 0.6.0. The instal
 - **Recovery and research access:** GLM judged the local methods read-only-safe and treated writable recovery as a confirmed load-bearing behavior. OpenAI emphasized that read-only open enters recovery and that replay errors may be swallowed. Both agree that the observed SIGKILL sequence succeeded and that writable recovery is required. They disagree on how far that evidence generalizes. This report limits it to the tested process-crash path.
 - **Growth:** GLM called the growth model plausible pending a representative build. OpenAI additionally found that repeat upserts defeat physical idempotence. This report includes both constraints and does not claim corpus-scale predictability.
 
-Production measurements have the same method dispute. Filesystem `stat`, `find`, and `du` are read-only. Direct `ZVecOpen(..., {readOnly: true})` was not proven non-mutating: source enters recovery when a writing segment exists even on read-only open. No production mutation was established, but future research should use a snapshot/copy or first prove that no WAL recovery is pending.
+Production measurements have the same method dispute. Filesystem `stat`, `find`, and `du` are read-only. Direct `ZVecOpen(..., {readOnly: true})` is not metadata-preserving on this installation: a post-run audit found that all 64 `embedding.index.*.proxima` modification timestamps advanced together to 2026-07-29 08:20:59 during the GLM review's live read-only stats measurement. No scalar or manifest file changed in that window, and no pre-open hashes exist, so the audit does not establish a content change or prove the exact native cause. Source also enters recovery when a writing segment exists even on read-only open. Future research must use a disposable snapshot or copy and must not open the live collection through zvec.
 
 ## Requirement matrix
 
@@ -128,7 +128,7 @@ du -B1 -s ~/.pi/agent/recall/zvec
 du -B1 --apparent-size -s ~/.pi/agent/recall/zvec
 ```
 
-Do not directly open the production collection merely to reproduce zvec stats unless a read-only preflight proves there is no pending WAL/recovery state. Prefer a filesystem snapshot or disposable copy mounted read-only.
+Do not open the production collection through zvec to reproduce stats, even with `{readOnly: true}`. Use a disposable snapshot or copy; filesystem-only inspection of the live tree may use non-mutating metadata tools.
 
 Disposable 1,000-document probes observed:
 

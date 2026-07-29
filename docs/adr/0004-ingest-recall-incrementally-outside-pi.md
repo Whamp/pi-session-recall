@@ -38,7 +38,7 @@ recall/
     └── index-manifest.json
 ```
 
-A marker carries one runtime sequence and physical-session identity. Clean-departure markers also capture the event-time logical session and leaf; empty tree transitions publish no marker. The worker orders and coalesces activity while preserving every branch exit. It performs metadata-only recovery sweeps, validates the append cursor and its 4 KiB boundary fingerprint, and reads only appended bytes during normal processing. Projection payloads contain scalar IDs, links, boundaries, and spans; payloads above 1 MiB require explicit reconciliation.
+A marker carries one runtime sequence and physical-session identity. Clean-departure markers also capture the event-time logical session and leaf; empty tree transitions publish no marker. The worker orders and coalesces activity while preserving every branch exit. It performs metadata-only recovery sweeps, validates the append cursor and its 4 KiB boundary fingerprint, and reads only appended bytes during normal processing. Projection payloads contain scalar IDs, links, boundaries, and spans; payloads above 8 MiB require explicit reconciliation.
 
 The worker exits when no eligible work remains. A detached coalesced successor waits when marker publication races with an owned worker interval, so work published after the running worker's snapshot cannot be stranded. Bounded metadata sweep continuations and first missing-source observations schedule a follow-up sweep without requiring another lifecycle event. The worker is not a daemon, watcher, process lease, or source of global leaf authority. Concurrent runtimes contribute a monotonic union of observed context exits.
 
@@ -56,7 +56,7 @@ The following values are target-host candidates, not universal zvec guarantees:
 
 - marker publication plus detached spawn: p95 at most 25 ms;
 - metadata sweep: at most 10,000 files or 500 ms per resumable slice;
-- projection payload: at most 1 MiB;
+- projection payload: at most 8 MiB;
 - evidence batch: at most 32 documents;
 - write window: p95 target at most 300 ms;
 - search wait for the current window: at most 500 ms;

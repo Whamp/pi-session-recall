@@ -6,11 +6,13 @@ import test from 'node:test';
 
 import { RecallSessionProjectionKind } from './enums.js';
 import { createRecallSessionProjectionBaseline } from './create-recall-session-projection-baseline.js';
-import type {
-  LogicalSessionProjection,
-  PhysicalSessionProjection,
+import {
+  encodeRecallSessionProjection,
+  type LogicalSessionProjection,
+  type PhysicalSessionProjection,
 } from './recall-session-projection.js';
 import type { ConversationTextTokenizer } from './session-conversation-index.js';
+import { openZvecSessionProjectionStore } from './zvec-session-projection-store.js';
 
 const tokenizer: ConversationTextTokenizer = {
   encodeConversationText(text) {
@@ -182,5 +184,60 @@ void test('projection baseline succeeds for unversioned Pi v1 JSONL and produces
     assert.ok(span.startByte >= 0);
     assert.ok(span.endByte > span.startByte);
     assert.ok(span.endByte <= sourceByteSize);
+  }
+});
+
+void test('projection baseline accepts a valid scalar projection between four and eight MiB', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-projection-baseline-large-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionPath = join(directory, 'large-session.jsonl');
+  const records: Record<string, unknown>[] = [
+    {
+      type: 'session',
+      version: 3,
+      id: 'large-session',
+      timestamp: '2026-07-28T00:00:00.000Z',
+      cwd: '/large-session-fixture',
+    },
+  ];
+  let parentId: string | null = null;
+  for (let index = 0; index < 9_000; index += 1) {
+    const entryId = `large-entry-${index.toString().padStart(4, '0')}`;
+    records.push({
+      type: 'message',
+      id: entryId,
+      parentId,
+      timestamp: new Date(Date.UTC(2026, 6, 28, 0, 0, index)).toISOString(),
+      message: { role: 'assistant', content: `bounded projection fixture ${index}` },
+    });
+    parentId = entryId;
+  }
+  await writeFile(sessionPath, `${records.map((record) => JSON.stringify(record)).join('\n')}\n`);
+
+  const projections = await createRecallSessionProjectionBaseline({
+    physicalSessionPath: sessionPath,
+    generationId: 'generation-large-baseline',
+    tokenizer,
+    expectedSourceByteSize: (await stat(sessionPath)).size,
+  });
+  const logicalProjection = projections.find(
+    (projection): projection is LogicalSessionProjection =>
+      projection.projectionKind === RecallSessionProjectionKind.LOGICAL_SESSION,
+  );
+  assert.ok(logicalProjection);
+  const encoded = encodeRecallSessionProjection(logicalProjection, {
+    maxPayloadBytes: 8_388_608,
+  });
+  assert.equal(encoded.status, 'encoded');
+  assert.ok(encoded.byteLength > 4_194_304);
+  assert.ok(encoded.byteLength <= 8_388_608);
+  const projectionStore = openZvecSessionProjectionStore({
+    databasePath: join(directory, 'projection-store'),
+    generationId: 'generation-large-baseline',
+  });
+  try {
+    await projectionStore.upsertProjections(projections);
+  } finally {
+    projectionStore.close();
   }
 });

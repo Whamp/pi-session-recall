@@ -16,7 +16,7 @@ import {
 export const RECALL_SESSION_PROJECTION_SCHEMA_VERSION = 3;
 
 /** Maximum encoded scalar projection candidate size accepted without reconciliation. */
-export const RECALL_SESSION_PROJECTION_MAX_BYTES = 1_048_576;
+export const RECALL_SESSION_PROJECTION_MAX_BYTES = 8_388_608;
 
 /** Highest durably processed marker sequence for one Pi runtime instance. */
 export interface RecallMarkerRuntimeCheckpoint {

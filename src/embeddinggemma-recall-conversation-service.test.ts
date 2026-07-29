@@ -354,6 +354,7 @@ void test('recall service indexes with the same profile after automatic accelera
       embeddingProvider: provider,
       tokenizerIdentity: createEmbeddingGemmaTokenizerManifestIdentity(profile),
       loadTokenizer: () => provider.loadConversationTokenizer(),
+      workerSignal: { signalDetachedWorker() {} },
     },
   );
 

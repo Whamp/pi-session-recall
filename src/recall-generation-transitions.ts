@@ -236,17 +236,22 @@ export interface ActivateReadyRecallGenerationTransitionOptions {
   retainRecoveryRequired(): void;
 }
 
-/** Active and prior generation IDs produced by one completed durable pointer cutover. */
+interface RecallGenerationActivationBacklogPublication {
+  readyEntry: RecallGenerationRegistryEntry;
+  activatedAtEpochMilliseconds: number;
+}
+
+/** Active IDs and backlog capability produced only by a completed durable pointer cutover. */
 export interface ActivateReadyRecallGenerationTransitionResult {
   previousGenerationId: string | null;
   activeGenerationId: string;
+  backlogPublication: RecallGenerationActivationBacklogPublication;
 }
 
-/** Durable replay backlog publication after a replacement activation leaves the write window. */
+/** Successful activation result required to publish replay backlog after the write window. */
 export interface PublishRecallGenerationActivationBacklogTransitionOptions {
   backlogSummaryPath: string;
-  readyEntry: RecallGenerationRegistryEntry;
-  activatedAtEpochMilliseconds: number;
+  activation: ActivateReadyRecallGenerationTransitionResult;
 }
 
 /** Durable paths and clock used to select expired validated generations for collection. */
@@ -939,18 +944,22 @@ export async function activateReadyRecallGenerationTransition(
   return {
     previousGenerationId,
     activeGenerationId: options.readyEntry.generationId,
+    backlogPublication: {
+      readyEntry: options.readyEntry,
+      activatedAtEpochMilliseconds: options.activatedAtEpochMilliseconds,
+    },
   };
 }
 
-/** Publishes replay-pending backlog only after the active pointer cutover completes. */
+/** Publishes replay-pending backlog only from a successfully completed pointer cutover. */
 export async function publishRecallGenerationActivationBacklogTransition(
   options: PublishRecallGenerationActivationBacklogTransitionOptions,
 ): Promise<void> {
   await writeRecallBacklogSummary(
     options.backlogSummaryPath,
     createReplayPendingActivationBacklogSummary(
-      options.readyEntry,
-      options.activatedAtEpochMilliseconds,
+      options.activation.backlogPublication.readyEntry,
+      options.activation.backlogPublication.activatedAtEpochMilliseconds,
     ),
   );
 }

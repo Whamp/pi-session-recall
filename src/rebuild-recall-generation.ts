@@ -366,9 +366,9 @@ async function rebuildRecallGenerationUnderOwnership<Result, BuildSnapshot = und
     return failRecallReplacementBuild(readinessError, readyWatermark);
   }
   const activatedAt = options.nowEpochMilliseconds?.() ?? Date.now();
-  let previousGenerationId: string | null = null;
+  let activation: Awaited<ReturnType<typeof activateReadyRecallGenerationTransition>>;
   try {
-    await coordinateRecallWriteWindow(
+    activation = await coordinateRecallWriteWindow(
       {
         lockPath: options.lockPath,
         allowRecovery: false,
@@ -376,7 +376,7 @@ async function rebuildRecallGenerationUnderOwnership<Result, BuildSnapshot = und
       },
       async (writeWindow) => {
         throwIfRebuildCancelled(options.signal);
-        const activation = await activateReadyRecallGenerationTransition({
+        return activateReadyRecallGenerationTransition({
           activeGenerationPointerPath: options.activeGenerationPointerPath,
           generationRegistryPath: options.generationRegistryPath,
           expectedActivePointer: startingPointer,
@@ -396,7 +396,6 @@ async function rebuildRecallGenerationUnderOwnership<Result, BuildSnapshot = und
           throwIfCancelled: () => throwIfRebuildCancelled(options.signal),
           retainRecoveryRequired: () => writeWindow.retainRecoveryRequired(),
         });
-        previousGenerationId = activation.previousGenerationId;
       },
     );
   } catch (error) {
@@ -413,8 +412,7 @@ async function rebuildRecallGenerationUnderOwnership<Result, BuildSnapshot = und
   const [backlogWrite] = await Promise.allSettled([
     publishRecallGenerationActivationBacklogTransition({
       backlogSummaryPath: options.backlogSummaryPath,
-      readyEntry,
-      activatedAtEpochMilliseconds: activatedAt,
+      activation,
     }),
   ]);
   options.workerSignal.signalDetachedWorker();
@@ -423,7 +421,7 @@ async function rebuildRecallGenerationUnderOwnership<Result, BuildSnapshot = und
   }
   return {
     result: buildResult,
-    previousGenerationId,
+    previousGenerationId: activation.previousGenerationId,
     activeGenerationId: generationId,
     replayMarkerWatermark: readyWatermark,
   };

@@ -1,7 +1,7 @@
 {
   "version": 1,
   "releaseDecision": "approved-explicit-fallback",
-  "recordedAgainstCommit": "52b84c8be6a8425fefb149144a5da2143a66e030",
+  "recordedAgainstCommit": "feeb18b3d89544210a167be65d05fb9b29b219bb",
   "approvedSearchMode": "query-planned",
   "defaultSearchMode": "hybrid",
   "committedCorpus": [
@@ -69,7 +69,7 @@
           "rerankerConformanceFixtureIdentity": "live-query-planned-reranker-conformance-fixture-v1:6d78e2775446350ffc2606be15392ccdc2eb66137b249a40bcffa9ddb769cf3a"
         },
         "software": {
-          "repositoryCommit": "52b84c8be6a8425fefb149144a5da2143a66e030",
+          "repositoryCommit": "feeb18b3d89544210a167be65d05fb9b29b219bb",
           "backendVersion": "node-llama-cpp@3.18.1 / llama.cpp b8390",
           "nodeVersion": "v24.16.0",
           "platform": "linux",
@@ -172,7 +172,7 @@
             "lexQueryCount": 1,
             "vecQueryCount": 1,
             "hydeQueryCount": 1,
-            "planningMilliseconds": 2345.801249
+            "planningMilliseconds": 2264.9161380000005
           }
         },
         "reranking": {
@@ -206,20 +206,20 @@
           "measurement": {
             "queryCount": 1,
             "documentCount": 2,
-            "rerankingMilliseconds": 381.44801499999994
+            "rerankingMilliseconds": 385.7987520000006
           }
         }
       },
       "latency": {
-        "coldPlanningMilliseconds": 2345.801249,
-        "warmPlanningMilliseconds": 2106.784616000001,
+        "coldPlanningMilliseconds": 2264.9161380000005,
+        "warmPlanningMilliseconds": 2574.3693639999983,
         "warmPlanningSucceeded": true,
-        "coldRerankingMilliseconds": 381.44801499999994,
-        "warmRerankingMilliseconds": 378.30160700000124,
+        "coldRerankingMilliseconds": 385.7987520000006,
+        "warmRerankingMilliseconds": 377.5224190000008,
         "totalSearchMilliseconds": {
-          "minimum": 51285.06770500005,
-          "median": 59267.98347549996,
-          "maximum": 129312.50671899994
+          "minimum": 40566.23217999982,
+          "median": 61187.71087249997,
+          "maximum": 128147.7946990002
         }
       },
       "cases": [
@@ -235,19 +235,19 @@
             },
             {
               "type": "lex",
-              "querySha256": "2c6d0f7a5878adc6b80ffb7091a165ac788e70d8f5ad87898dcc5ff74cd108d1"
+              "querySha256": "92533c9d64bb232f098277ef78d557549e4a278e7dd0c93615cb0925834eeb64"
             },
             {
               "type": "vec",
-              "querySha256": "93c4a05adb80a75e38c6fffaf99793554bb4d64658e479e0be851d95963841d8"
+              "querySha256": "37f4d271af8e97a78605dde1c3d97a9abb2bb0740dfb3163c8b7417a37e3c0fa"
             },
             {
               "type": "vec",
-              "querySha256": "cd16e4964239fdf8df65a18980cd9df0b9b45b6a330abc3a4717a82ffc35982a"
+              "querySha256": "b5ca8dded9d40da1b8011c23e401fb824456213864ef82db40e42226417379d4"
             },
             {
               "type": "hyde",
-              "querySha256": "1c57ff01ab50c21bedd91838fa5679cdd071a26ca74dc44f15ae9fe130cad99d"
+              "querySha256": "45a35c6dd8106efb5db226cdabff8bafacf965fa7cfe6e3bd6cdc765db959342"
             }
           ],
           "normal": {
@@ -391,9 +391,9 @@
             "rankingProviderPolicy": "live-profile-v1",
             "candidateAdmissionBoundaryPolicy": "fused-candidate-pool-v1"
           },
-          "planningMilliseconds": 11178.119645999977,
-          "rerankingMilliseconds": 49887.033673000056,
-          "totalSearchMilliseconds": 61214.21240800002,
+          "planningMilliseconds": 14746.532146999962,
+          "rerankingMilliseconds": 55658.73337400006,
+          "totalSearchMilliseconds": 70546.25183600001,
           "contribution": {
             "newCandidateAdmission": false,
             "rankingOnlyPromotion": false,
@@ -409,23 +409,23 @@
           "plannedQueries": [
             {
               "type": "lex",
-              "querySha256": "fc59d51b22ae3387d709993011c151cc1f8888397df08080ed39e18bf8c8d6a2"
+              "querySha256": "3e3291a857cb32e944df6f6d9abde243153705f61798f7d56e8afbfd4b211ce3"
             },
             {
               "type": "lex",
-              "querySha256": "a536cfdfd7284d260328046424a43038c3c1b7ed5e087b2e463f60d6a4123225"
+              "querySha256": "aedeffc3836835c307b256e04d4b5739c42ef893273bc5b33df7b04a08dcaf52"
             },
             {
               "type": "vec",
-              "querySha256": "d41de674bd06a9cadb580d44a0a025acca19540e32d3e91eda3b6370621e929f"
+              "querySha256": "90eab19151163a8fb5cd4d603b9af6065f8d7b041532c755158421ecbb5aa117"
             },
             {
               "type": "vec",
-              "querySha256": "064c634ec68bf1c8376c4a29058e1bc5452e533bdd2a48b4172b65d7be8b51cd"
+              "querySha256": "730d085832da3f29f459cb53e5868d50d609c8e330a48a9b6494dc26b489359c"
             },
             {
               "type": "hyde",
-              "querySha256": "44197e7f184e2414899dc7b354e98837fbc134055d85cec6d6cebbb8a8fcfc96"
+              "querySha256": "cbe92919847c5cac59a5496f76aa9855e319d29d031c80a9d4cef6924a8a831d"
             }
           ],
           "normal": {
@@ -569,9 +569,9 @@
             "rankingProviderPolicy": "live-profile-v1",
             "candidateAdmissionBoundaryPolicy": "fused-candidate-pool-v1"
           },
-          "planningMilliseconds": 2918.1334620001744,
-          "rerankingMilliseconds": 50643.88679099991,
-          "totalSearchMilliseconds": 53737.63335699984,
+          "planningMilliseconds": 2895.7744799999055,
+          "rerankingMilliseconds": 51388.34049199988,
+          "totalSearchMilliseconds": 54422.06935999985,
           "contribution": {
             "newCandidateAdmission": false,
             "rankingOnlyPromotion": false,
@@ -587,23 +587,23 @@
           "plannedQueries": [
             {
               "type": "lex",
-              "querySha256": "af7a032bfa3ae764b14c8fde1cf2a9724b2fdcf9c858655c2e06db3cc753b8f1"
+              "querySha256": "30abede13d0801670dfe6d3cabc0a80c518b24d5451e466b36e57d0e3dca4004"
             },
             {
               "type": "lex",
-              "querySha256": "7f4512dc6d720f99d7b86d876a31223dad67562aaf2a14e1d493f769032a1fd0"
+              "querySha256": "79f65c07ff31a3dcc6907d398056f4041564b116dc898bb709439ed2e8b53ca4"
             },
             {
               "type": "vec",
-              "querySha256": "af7a032bfa3ae764b14c8fde1cf2a9724b2fdcf9c858655c2e06db3cc753b8f1"
+              "querySha256": "ca6830cd9f899b29588fb23340ef7c39ba54487b627a7f36534050474316ff96"
             },
             {
               "type": "vec",
-              "querySha256": "125eda8f4b23ee9621f7780b36d62dc9bd4201e72a4c69f405940c5b6cfd5861"
+              "querySha256": "f79eff49c092404c9a0052cb5512b51406de111cd7f2a7b2d6357777ebc45b22"
             },
             {
               "type": "hyde",
-              "querySha256": "c3c5ed0f30a9d5903942102d9b1f16a6f4b4c9e235b534cfc69feda2ddb3ddc7"
+              "querySha256": "15fa687f0fa6a93a8a6ff9cf5fb038f911f013e7d15254545656382bbf97a01b"
             }
           ],
           "normal": {
@@ -647,7 +647,7 @@
           "queryPlanned": {
             "outcome": "success",
             "expectedSourceRanks": [3],
-            "candidateAdmissionSourceRanks": [19],
+            "candidateAdmissionSourceRanks": [23],
             "candidateAdmissionVerified": true,
             "sourceProvenance": [
               {
@@ -747,9 +747,9 @@
             "rankingProviderPolicy": "live-profile-v1",
             "candidateAdmissionBoundaryPolicy": "fused-candidate-pool-v1"
           },
-          "planningMilliseconds": 3811.6648650001734,
-          "rerankingMilliseconds": 47298.21182999994,
-          "totalSearchMilliseconds": 51285.06770500005,
+          "planningMilliseconds": 3711.9426489998586,
+          "rerankingMilliseconds": 36710.43858900014,
+          "totalSearchMilliseconds": 40566.23217999982,
           "contribution": {
             "newCandidateAdmission": false,
             "rankingOnlyPromotion": true,
@@ -773,15 +773,15 @@
             },
             {
               "type": "vec",
-              "querySha256": "90bc354dbad46a1cc2e2379d86398921a3c91080b1f273f6ee0e40d1987c5dcb"
+              "querySha256": "98a9b65287bdfbeadd30a4f34775c9956de74496a5e65ffe9dd251d2cd8fc4e9"
             },
             {
               "type": "vec",
-              "querySha256": "8a5b513ce76b01bea70df04b2618651e102f9dc624bd1602b554f4e58dd64d5a"
+              "querySha256": "26c66332b61d59fcd3a54f5403726996ccce59170c25b8ce4bc7de34a875e17c"
             },
             {
               "type": "hyde",
-              "querySha256": "f1affd801faa9e61d7fe5daa401256a3b2754b0c85cfb2dc1d9be1ef4c3c66f8"
+              "querySha256": "4b5c5894618d6be3dbf32818836ca3f71ccfbdf88adc02aafee03cd82e0562cd"
             }
           ],
           "normal": {
@@ -925,9 +925,9 @@
             "rankingProviderPolicy": "live-profile-v1",
             "candidateAdmissionBoundaryPolicy": "fused-candidate-pool-v1"
           },
-          "planningMilliseconds": 4512.959309999831,
-          "rerankingMilliseconds": 124603.7916900001,
-          "totalSearchMilliseconds": 129312.50671899994,
+          "planningMilliseconds": 6717.942620999878,
+          "rerankingMilliseconds": 121274.43203000003,
+          "totalSearchMilliseconds": 128147.7946990002,
           "contribution": {
             "newCandidateAdmission": false,
             "rankingOnlyPromotion": false,
@@ -943,15 +943,15 @@
           "plannedQueries": [
             {
               "type": "lex",
-              "querySha256": "112687a5df1935bdbc24aaf205dc311cd309d6f0a56cb2b400d1add43902e3b2"
+              "querySha256": "bcc2d62a869361c878d9081fbc972e0294d3a384cfda73be83f7f70bc840f6f0"
             },
             {
               "type": "vec",
-              "querySha256": "be3727092a4e89767d7ea8d7bf4b1291fbe9565f39f49fb56a9e51e689c981ea"
+              "querySha256": "2212c0c817146c583aea95e048b9a38b734b9614a908ed219a50efa19f8873ac"
             },
             {
               "type": "hyde",
-              "querySha256": "2dafae9a4a70521f4804893ad99aed2a97144f246e3f1feb944a7ead57a8d79a"
+              "querySha256": "a3d2cb32133af8d77617d1267541bef61e5cddab0c0ef615cef1c2d552c3bb68"
             }
           ],
           "normal": {
@@ -1083,9 +1083,9 @@
             "rankingProviderPolicy": "live-profile-v1",
             "candidateAdmissionBoundaryPolicy": "fused-candidate-pool-v1"
           },
-          "planningMilliseconds": 2959.2347260001116,
-          "rerankingMilliseconds": 58329.796361000044,
-          "totalSearchMilliseconds": 61464.32738299994,
+          "planningMilliseconds": 2561.051588000035,
+          "rerankingMilliseconds": 69437.60953200003,
+          "totalSearchMilliseconds": 72134.49634299986,
           "contribution": {
             "newCandidateAdmission": false,
             "rankingOnlyPromotion": false,
@@ -1101,7 +1101,7 @@
           "plannedQueries": [
             {
               "type": "lex",
-              "querySha256": "6abefc00bb120e2f48bb9756020502035cc6c33f6e30a98a0523745b47711d10"
+              "querySha256": "c924a68cda0987c3566223a73ce72c935c694564aab7ad3e935ace484dfb1a3b"
             },
             {
               "type": "lex",
@@ -1109,15 +1109,15 @@
             },
             {
               "type": "vec",
-              "querySha256": "c3afc6286fd09fc407d86346a4ac85df1d7c6eea19f711493734add692848dc6"
+              "querySha256": "739f7ba69c68b33de99278d259d6c7edfa3e61b7e8264af3cb66918f55c75794"
             },
             {
               "type": "vec",
-              "querySha256": "3705147f34495fd030be0ce6c0305f949bdc81b105112f7688f83baccbb64d78"
+              "querySha256": "75d371b60bda0ee30e1b313d0c979f3279e6305f0f29b73e7aac0cf05a141353"
             },
             {
               "type": "hyde",
-              "querySha256": "a3a3a7343ca44cefa8cf09b525d24b34a70df5b97ecae56db01c0c425d9ae3c2"
+              "querySha256": "63316e4ebb0667ad2d60c327c4a629f8b80c827646a44baa1ed9b7ad94076acd"
             }
           ],
           "normal": {
@@ -1261,9 +1261,9 @@
             "rankingProviderPolicy": "live-profile-v1",
             "candidateAdmissionBoundaryPolicy": "fused-candidate-pool-v1"
           },
-          "planningMilliseconds": 4394.563797999872,
-          "rerankingMilliseconds": 46773.56390099996,
-          "totalSearchMilliseconds": 51341.54373500007,
+          "planningMilliseconds": 3246.382419000147,
+          "rerankingMilliseconds": 44874.24952700012,
+          "totalSearchMilliseconds": 48253.53388600005,
           "contribution": {
             "newCandidateAdmission": false,
             "rankingOnlyPromotion": false,
@@ -1287,7 +1287,7 @@
             },
             {
               "type": "vec",
-              "querySha256": "fcc594083aa4cc392ef314045cf3ce245be4828d4d07640553eee78a516abb24"
+              "querySha256": "0176e00eadbccdd4c9eca96f2369104f1d3863361881312b4da0d82f9d29412f"
             },
             {
               "type": "vec",
@@ -1295,7 +1295,7 @@
             },
             {
               "type": "hyde",
-              "querySha256": "3257bc2eae9d21905b6cf9250b849c7c37e31123922acfdf7a13b7a705c78e83"
+              "querySha256": "a0d67b30f1a8ed63e45836377eeed735e709ddbafdfc5241a4484ce8cd44bbf6"
             }
           ],
           "normal": {
@@ -1337,13 +1337,13 @@
             "reciprocalRankConstant": 60
           },
           "queryPlanned": {
-            "outcome": "final_rank_miss",
-            "expectedSourceRanks": [null],
-            "candidateAdmissionSourceRanks": [25],
+            "outcome": "success",
+            "expectedSourceRanks": [4],
+            "candidateAdmissionSourceRanks": [21],
             "candidateAdmissionVerified": true,
             "sourceProvenance": [
               {
-                "selectedFrom": "candidate_admission",
+                "selectedFrom": "ranked_result",
                 "passed": true
               }
             ],
@@ -1439,14 +1439,14 @@
             "rankingProviderPolicy": "live-profile-v1",
             "candidateAdmissionBoundaryPolicy": "fused-candidate-pool-v1"
           },
-          "planningMilliseconds": 4047.489636000013,
-          "rerankingMilliseconds": 53096.325115999905,
-          "totalSearchMilliseconds": 57321.7545429999,
+          "planningMilliseconds": 2972.212220000103,
+          "rerankingMilliseconds": 50942.62526599993,
+          "totalSearchMilliseconds": 54052.72270499985,
           "contribution": {
             "newCandidateAdmission": false,
             "rankingOnlyPromotion": false,
-            "preservedExistingSuccess": false,
-            "noImprovement": true
+            "preservedExistingSuccess": true,
+            "noImprovement": false
           }
         },
         {
@@ -1457,23 +1457,23 @@
           "plannedQueries": [
             {
               "type": "lex",
-              "querySha256": "a6bea42e85006f8f9bac590d345744dab8e82e39a34cea86b00553a9cdbb2dfd"
+              "querySha256": "5694d08a2e53ffcae0c3103e5ad6f6076abd960eb1f8a56577040bc1028f702b"
             },
             {
               "type": "lex",
-              "querySha256": "adc4af6da65c1fe9fd301a631bc60c4f6de44a69952d1674000dec2fbc850bdc"
+              "querySha256": "da31012c40330e7e21538e7dd57503b16e8a0839159e96137090cccc9910b171"
             },
             {
               "type": "vec",
-              "querySha256": "a6bea42e85006f8f9bac590d345744dab8e82e39a34cea86b00553a9cdbb2dfd"
+              "querySha256": "5694d08a2e53ffcae0c3103e5ad6f6076abd960eb1f8a56577040bc1028f702b"
             },
             {
               "type": "vec",
-              "querySha256": "adc4af6da65c1fe9fd301a631bc60c4f6de44a69952d1674000dec2fbc850bdc"
+              "querySha256": "da31012c40330e7e21538e7dd57503b16e8a0839159e96137090cccc9910b171"
             },
             {
               "type": "hyde",
-              "querySha256": "ce7ab4a442caf546e21ab0f721918abacf7c0740a8af3e7aa49c03d7d29c429e"
+              "querySha256": "a84a325842f2b57a0befb310552a81275902b0101e393ec1f50e5a5519dc7d69"
             }
           ],
           "normal": {
@@ -1617,9 +1617,9 @@
             "rankingProviderPolicy": "live-profile-v1",
             "candidateAdmissionBoundaryPolicy": "fused-candidate-pool-v1"
           },
-          "planningMilliseconds": 3283.8461570001673,
-          "rerankingMilliseconds": 69842.09332500002,
-          "totalSearchMilliseconds": 73303.00158499996,
+          "planningMilliseconds": 2532.8319339999,
+          "rerankingMilliseconds": 65283.99877299997,
+          "totalSearchMilliseconds": 67953.3523850001,
           "contribution": {
             "newCandidateAdmission": false,
             "rankingOnlyPromotion": false,
@@ -1631,8 +1631,31 @@
       "quality": {
         "newCandidateAdmissionCount": 0,
         "rankingOnlyPromotionCount": 1,
-        "preservedExistingSuccessCount": 1,
+        "preservedExistingSuccessCount": 2,
+        "noImprovementCount": 5,
         "plannerFallbackCount": 0
+      },
+      "committedCorpus": {
+        "corpusId": "recall-quality-project-scoped-bounded-v3",
+        "specificationSha256": "6208cfc632c8ff53815567dd5385297bb6cc513f62e3d50a5bfa8ae687c34439",
+        "caseCount": 17,
+        "qualityPassed": true,
+        "candidatePoolRecall": 1,
+        "finalRecall": 1,
+        "contextUsefulness": 1,
+        "sourceOccurrencePreservation": 1,
+        "sessionOriginVerification": 1,
+        "evidenceRelationVerification": 1,
+        "contributingEntryVerification": 1,
+        "branchVerification": 1,
+        "policyFailureCaseIds": [],
+        "queryLatencyMilliseconds": {
+          "median": 14642.292546000099,
+          "p95": 22036.434051000047
+        },
+        "executedSearchRequests": 18,
+        "plannerRequests": 17,
+        "rerankerRequests": 17
       }
     },
     {
@@ -1670,7 +1693,7 @@
           "rerankerConformanceFixtureIdentity": "live-query-planned-reranker-conformance-fixture-v1:6d78e2775446350ffc2606be15392ccdc2eb66137b249a40bcffa9ddb769cf3a"
         },
         "software": {
-          "repositoryCommit": "52b84c8be6a8425fefb149144a5da2143a66e030",
+          "repositoryCommit": "feeb18b3d89544210a167be65d05fb9b29b219bb",
           "backendVersion": "node-llama-cpp@3.18.1 / llama.cpp b8390",
           "nodeVersion": "v24.16.0",
           "platform": "linux",
@@ -1764,7 +1787,7 @@
             "lexQueryCount": 1,
             "vecQueryCount": 1,
             "hydeQueryCount": 1,
-            "planningMilliseconds": 2256.636111000087
+            "planningMilliseconds": 2187.1611490000505
           }
         },
         "reranking": {
@@ -1795,20 +1818,20 @@
           "measurement": {
             "queryCount": 1,
             "documentCount": 2,
-            "rerankingMilliseconds": 155.24825399997644
+            "rerankingMilliseconds": 155.18624599999748
           }
         }
       },
       "latency": {
-        "coldPlanningMilliseconds": 2256.636111000087,
-        "warmPlanningMilliseconds": 2169.2121690001804,
+        "coldPlanningMilliseconds": 2187.1611490000505,
+        "warmPlanningMilliseconds": 2326.987072000047,
         "warmPlanningSucceeded": true,
-        "coldRerankingMilliseconds": 155.24825399997644,
-        "warmRerankingMilliseconds": 147.61540200002491,
+        "coldRerankingMilliseconds": 155.18624599999748,
+        "warmRerankingMilliseconds": 144.7898620001506,
         "totalSearchMilliseconds": {
-          "minimum": 12728.755340000149,
-          "median": 15208.848718999885,
-          "maximum": 26684.398437999655
+          "minimum": 12542.150406000204,
+          "median": 14922.560870999936,
+          "maximum": 29276.689987000078
         }
       },
       "cases": [
@@ -1820,23 +1843,23 @@
           "plannedQueries": [
             {
               "type": "lex",
-              "querySha256": "92533c9d64bb232f098277ef78d557549e4a278e7dd0c93615cb0925834eeb64"
+              "querySha256": "36f8470cfdd99281364f99ddc351a5eed790a9b75ddbdb1ede240aa08be0db32"
             },
             {
               "type": "lex",
-              "querySha256": "b923845b0f15172457b449210ea4f78b37eac47d36785314000f1ff6f0f3e83c"
+              "querySha256": "92533c9d64bb232f098277ef78d557549e4a278e7dd0c93615cb0925834eeb64"
             },
             {
               "type": "vec",
-              "querySha256": "5b19cb295c93019aadd3cf8fbd8a466431bc91e5dc4379004f10b07339f0b69b"
+              "querySha256": "93c4a05adb80a75e38c6fffaf99793554bb4d64658e479e0be851d95963841d8"
             },
             {
               "type": "vec",
-              "querySha256": "133dc40d387ec900de80325e4675af80db89945ac728a1c2cca0ca47814526c4"
+              "querySha256": "5d90f95d720798704a1efad254272ada8dd6f14e04d95cefdd250303e6a03c13"
             },
             {
               "type": "hyde",
-              "querySha256": "5b1e7f0956ea36bb36583ce36f0716fc9afe8b75ca8e7169e8ecbf5a22c3958e"
+              "querySha256": "552c6194dcf850634c8e1744bf1b65bd010e703c7cb5520231d50d058f6c2e0f"
             }
           ],
           "normal": {
@@ -1980,9 +2003,9 @@
             "rankingProviderPolicy": "live-profile-v1",
             "candidateAdmissionBoundaryPolicy": "fused-candidate-pool-v1"
           },
-          "planningMilliseconds": 10236.405010999646,
-          "rerankingMilliseconds": 15356.652180999983,
-          "totalSearchMilliseconds": 25743.711528000422,
+          "planningMilliseconds": 10352.524546000175,
+          "rerankingMilliseconds": 16346.853362000082,
+          "totalSearchMilliseconds": 26846.967724000104,
           "contribution": {
             "newCandidateAdmission": false,
             "rankingOnlyPromotion": false,
@@ -1998,23 +2021,23 @@
           "plannedQueries": [
             {
               "type": "lex",
-              "querySha256": "d24e2b722353da20c8f9a8942a3977ea3c02cc136ec0f299b29d66bec449847b"
+              "querySha256": "3e3291a857cb32e944df6f6d9abde243153705f61798f7d56e8afbfd4b211ce3"
             },
             {
               "type": "lex",
-              "querySha256": "82c1088955860c6c8c7892d8cd4fdaf290c5f959de2d5f9fe88564c1dd5c3429"
+              "querySha256": "d24e2b722353da20c8f9a8942a3977ea3c02cc136ec0f299b29d66bec449847b"
             },
             {
               "type": "vec",
-              "querySha256": "b9ea6ec927a3693f4c3afe50b42852844b7e710ed2d49c81fc1c8640f0ebcb02"
+              "querySha256": "723d909f86ceca65963246201c9b6825f59ad3519de16c1d1b2886583412e8c1"
             },
             {
               "type": "vec",
-              "querySha256": "d201ae6e2d583765204b0359da1e7f66387357d5d91aa0378436328cd320b60a"
+              "querySha256": "d4b488f2e6d7d72276e3376f9414da9f45e17b44cc31a0b1d524fe457dad85e0"
             },
             {
               "type": "hyde",
-              "querySha256": "44197e7f184e2414899dc7b354e98837fbc134055d85cec6d6cebbb8a8fcfc96"
+              "querySha256": "e41b5c3287df3581c1d4aeb41a9d22941e850cb2048c43e66590e7c21fad2d3f"
             }
           ],
           "normal": {
@@ -2158,9 +2181,9 @@
             "rankingProviderPolicy": "live-profile-v1",
             "candidateAdmissionBoundaryPolicy": "fused-candidate-pool-v1"
           },
-          "planningMilliseconds": 2538.135048000142,
-          "rerankingMilliseconds": 10039.260575000197,
-          "totalSearchMilliseconds": 12728.755340000149,
+          "planningMilliseconds": 2375.235730000306,
+          "rerankingMilliseconds": 10084.72810800001,
+          "totalSearchMilliseconds": 12609.646544999909,
           "contribution": {
             "newCandidateAdmission": false,
             "rankingOnlyPromotion": false,
@@ -2176,23 +2199,23 @@
           "plannedQueries": [
             {
               "type": "lex",
-              "querySha256": "af7a032bfa3ae764b14c8fde1cf2a9724b2fdcf9c858655c2e06db3cc753b8f1"
+              "querySha256": "91eae65fcfc471a633c2a24e2fdf0e0bcee7216439ee3a601267dd2749d9f4c5"
             },
             {
               "type": "lex",
-              "querySha256": "69e02f58f9bd232519442d75dbea7a6f7b6a22b4c6b6f17fc49b62a0f5f6f154"
+              "querySha256": "3e478ec6b3f3107e46ee6fb0f1eb353d14a9a297e7a91cb7b21d243d537d53d8"
             },
             {
               "type": "vec",
-              "querySha256": "af7a032bfa3ae764b14c8fde1cf2a9724b2fdcf9c858655c2e06db3cc753b8f1"
+              "querySha256": "77d97c120d91debb48ea69263a936ef4d283b36649f0aae3b2c6a0ce4fa6e545"
             },
             {
               "type": "vec",
-              "querySha256": "3ef026bb65c70d585fef0da001dd68098cd80afa73193dc212f9aed5b9dd5812"
+              "querySha256": "d24c0fe664c753f06254c19db9083fbeffd83205925a0fed77dfd29457091696"
             },
             {
               "type": "hyde",
-              "querySha256": "a17c6af15d33e25c853b5217811c297569f9733f0973eebc91c2384754d5eb2b"
+              "querySha256": "02391a12bd13c4b87e4b7a0fb1202bdf687893aea361b991c87ecc206beb84a0"
             }
           ],
           "normal": {
@@ -2236,7 +2259,7 @@
           "queryPlanned": {
             "outcome": "success",
             "expectedSourceRanks": [3],
-            "candidateAdmissionSourceRanks": [22],
+            "candidateAdmissionSourceRanks": [23],
             "candidateAdmissionVerified": true,
             "sourceProvenance": [
               {
@@ -2336,9 +2359,9 @@
             "rankingProviderPolicy": "live-profile-v1",
             "candidateAdmissionBoundaryPolicy": "fused-candidate-pool-v1"
           },
-          "planningMilliseconds": 3188.0190719999373,
-          "rerankingMilliseconds": 9708.968520000111,
-          "totalSearchMilliseconds": 13027.236320000142,
+          "planningMilliseconds": 2709.4783600000665,
+          "rerankingMilliseconds": 9681.450549999718,
+          "totalSearchMilliseconds": 12542.150406000204,
           "contribution": {
             "newCandidateAdmission": false,
             "rankingOnlyPromotion": true,
@@ -2354,23 +2377,23 @@
           "plannedQueries": [
             {
               "type": "lex",
-              "querySha256": "b53e3fc70fb894e86e8c37bba88fb9765d90c0d62a544d9c59d73a3b0b486ed0"
+              "querySha256": "1b75adb3f93b4464cfd74b0c25ae4f326fd85f18de5c976f8a643f5861047bd9"
             },
             {
               "type": "lex",
-              "querySha256": "910d1cbdc89a2704be751853e179d5dc1a289bd92a269bbefee1c7482bcaec59"
+              "querySha256": "283b314abcc850a3338a186800f4bfaaae893fdb3eca31c0ff54eb1eec63fa04"
             },
             {
               "type": "vec",
-              "querySha256": "1fd68c817a710df68f0bff9d3bfb867c721f98f83e7cb14e4c8eaf6c7e130d2e"
+              "querySha256": "86cbeff1dd196f55cd43151d1251c42a8ff5b58771d4bbfd2ee2d9404af277c2"
             },
             {
               "type": "vec",
-              "querySha256": "910d1cbdc89a2704be751853e179d5dc1a289bd92a269bbefee1c7482bcaec59"
+              "querySha256": "b77dd39306bd672fdfeae2d24201bd69b57df9ad20eb5809be41388cf0b46b30"
             },
             {
               "type": "hyde",
-              "querySha256": "eb45f70bc234a34fa3296fd17f3a29fcaf443835ac9efa24588a7577dd71e37f"
+              "querySha256": "25ae09a026eee9c587cfda26c437e52b5d4a37db994c1cdcf6a407795d51c966"
             }
           ],
           "normal": {
@@ -2514,9 +2537,9 @@
             "rankingProviderPolicy": "live-profile-v1",
             "candidateAdmissionBoundaryPolicy": "fused-candidate-pool-v1"
           },
-          "planningMilliseconds": 5588.7010840000585,
-          "rerankingMilliseconds": 20950.380495000165,
-          "totalSearchMilliseconds": 26684.398437999655,
+          "planningMilliseconds": 6204.466039999854,
+          "rerankingMilliseconds": 22908.941108,
+          "totalSearchMilliseconds": 29276.689987000078,
           "contribution": {
             "newCandidateAdmission": false,
             "rankingOnlyPromotion": false,
@@ -2532,1570 +2555,23 @@
           "plannedQueries": [
             {
               "type": "lex",
-              "querySha256": "36f0d672e43181950bef9e51c563205b84765ebe36ba42bcb56bc81edf79c795"
+              "querySha256": "c6fbc615aaa48e48c0384106b476165f6c90779d0f77b55dc5c0f47b5bcfe1ab"
+            },
+            {
+              "type": "lex",
+              "querySha256": "3c45910cf7e2f1df5130c1a62f31e15daab9c99da029d102dff63525ce1d6ac4"
             },
             {
               "type": "vec",
-              "querySha256": "18612b6df615814ca73d5204e1c612d98854a5612579fad0b5ce89d744a65acf"
+              "querySha256": "1864e3aa5a1783f512ad157508d4e6bb0fc02d3e35912234d88df56301687a46"
+            },
+            {
+              "type": "vec",
+              "querySha256": "606879ca51b83ac995deeb4c80c1325a68bdadbb0dd501b1d3d28c6c24a91a4f"
             },
             {
               "type": "hyde",
-              "querySha256": "61ecebdfb90a6a1ad590f43bf9f708f54bc1f4a754df401e8039f691e48fdc5a"
-            }
-          ],
-          "normal": {
-            "outcome": "candidate_union_miss",
-            "expectedSourceRanks": [null],
-            "highestRelevantDistractorRank": null,
-            "provenancePassed": false,
-            "listLimits": {
-              "dense": 8,
-              "lexical": 8,
-              "identifier": 8
-            },
-            "totalCandidatesExamined": 19,
-            "uniqueCandidatesAdmitted": 13,
-            "finalResultCount": 5,
-            "fusedPoolLimit": 24,
-            "rerankPoolLimit": 24,
-            "rankingMode": "hybrid",
-            "rankFusionVersion": 2,
-            "reciprocalRankConstant": 60
-          },
-          "retrievalWorkMatched": {
-            "outcome": "candidate_union_miss",
-            "expectedSourceRanks": [null],
-            "highestRelevantDistractorRank": null,
-            "provenancePassed": false,
-            "listLimits": {
-              "dense": 40,
-              "lexical": 40,
-              "identifier": 40
-            },
-            "totalCandidatesExamined": 83,
-            "uniqueCandidatesAdmitted": 70,
-            "finalResultCount": 5,
-            "fusedPoolLimit": 120,
-            "rerankPoolLimit": 120,
-            "rankingMode": "hybrid",
-            "rankFusionVersion": 2,
-            "reciprocalRankConstant": 60
-          },
-          "queryPlanned": {
-            "outcome": "candidate_union_miss",
-            "expectedSourceRanks": [null],
-            "candidateAdmissionSourceRanks": [null],
-            "candidateAdmissionVerified": false,
-            "sourceProvenance": [
-              {
-                "selectedFrom": "missing",
-                "passed": false
-              }
-            ],
-            "provenancePassed": false,
-            "listWork": [
-              {
-                "source": "dense",
-                "weight": 2,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "lexical",
-                "weight": 2,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "identifier",
-                "weight": 2,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 3
-              },
-              {
-                "source": "planned_lex",
-                "weight": 1,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "planned_vec",
-                "weight": 1,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "planned_hyde",
-                "weight": 1,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              }
-            ],
-            "totalCandidatesExamined": 103,
-            "rerankCandidatesExamined": 40,
-            "finalResultCount": 5,
-            "fusedPoolLimit": 120,
-            "rerankPoolLimit": 40,
-            "finalResultLimit": 5,
-            "rankFusionVersion": 2,
-            "reciprocalRankConstant": 60,
-            "fusionPolicy": {
-              "submittedQueryListWeight": 2,
-              "plannedQueryListWeight": 1,
-              "rankOneBonus": 0.05,
-              "rankTwoOrThreeBonus": 0.02
-            },
-            "rerankerPolicy": {
-              "version": 2,
-              "activeBranchPrior": 0.01,
-              "fusedRankBlend": [
-                {
-                  "firstRank": 1,
-                  "lastRank": 3,
-                  "retrievalWeight": 0.75,
-                  "rerankerWeight": 0.25
-                },
-                {
-                  "firstRank": 4,
-                  "lastRank": 10,
-                  "retrievalWeight": 0.6,
-                  "rerankerWeight": 0.4
-                },
-                {
-                  "firstRank": 11,
-                  "lastRank": null,
-                  "retrievalWeight": 0.4,
-                  "rerankerWeight": 0.6
-                }
-              ]
-            },
-            "rankingProviderPolicy": "live-profile-v1",
-            "candidateAdmissionBoundaryPolicy": "fused-candidate-pool-v1"
-          },
-          "planningMilliseconds": 6136.234980000183,
-          "rerankingMilliseconds": 11972.554772999603,
-          "totalSearchMilliseconds": 18238.999569999985,
-          "contribution": {
-            "newCandidateAdmission": false,
-            "rankingOnlyPromotion": false,
-            "preservedExistingSuccess": false,
-            "noImprovement": true
-          }
-        },
-        {
-          "caseId": "case-006",
-          "category": "branch_competition",
-          "controlKind": "difficult_case",
-          "planSource": "planner",
-          "plannedQueries": [
-            {
-              "type": "lex",
-              "querySha256": "876b5dc3e98c81ea313d6f426b6fc88a4d08b4b321c2036443a7a35fef86019f"
-            },
-            {
-              "type": "lex",
-              "querySha256": "4a84f238af0b532fb70e4d6b6d4deef6579ce1d1047b93a3d4c8be8cac98bd6a"
-            },
-            {
-              "type": "vec",
-              "querySha256": "8624f4bef86b5e63b22f16bca670fa7182bd6c9fdcfcbdb9631a5773d4284f5e"
-            },
-            {
-              "type": "vec",
-              "querySha256": "ae664affd3a099e440119818b74fc961b60d5f85dd33c84eaa24a5eb193b5e20"
-            },
-            {
-              "type": "hyde",
-              "querySha256": "523118684480b6bafdecb7b4d7ab56268b797e2ccdd36c52dfd6a4a40a74d80e"
-            }
-          ],
-          "normal": {
-            "outcome": "candidate_union_miss",
-            "expectedSourceRanks": [null],
-            "highestRelevantDistractorRank": null,
-            "provenancePassed": false,
-            "listLimits": {
-              "dense": 8,
-              "lexical": 8,
-              "identifier": 8
-            },
-            "totalCandidatesExamined": 18,
-            "uniqueCandidatesAdmitted": 15,
-            "finalResultCount": 5,
-            "fusedPoolLimit": 24,
-            "rerankPoolLimit": 24,
-            "rankingMode": "hybrid",
-            "rankFusionVersion": 2,
-            "reciprocalRankConstant": 60
-          },
-          "retrievalWorkMatched": {
-            "outcome": "candidate_union_miss",
-            "expectedSourceRanks": [null],
-            "highestRelevantDistractorRank": null,
-            "provenancePassed": false,
-            "listLimits": {
-              "dense": 54,
-              "lexical": 53,
-              "identifier": 53
-            },
-            "totalCandidatesExamined": 109,
-            "uniqueCandidatesAdmitted": 104,
-            "finalResultCount": 5,
-            "fusedPoolLimit": 160,
-            "rerankPoolLimit": 160,
-            "rankingMode": "hybrid",
-            "rankFusionVersion": 2,
-            "reciprocalRankConstant": 60
-          },
-          "queryPlanned": {
-            "outcome": "candidate_union_miss",
-            "expectedSourceRanks": [null],
-            "candidateAdmissionSourceRanks": [null],
-            "candidateAdmissionVerified": false,
-            "sourceProvenance": [
-              {
-                "selectedFrom": "missing",
-                "passed": false
-              }
-            ],
-            "provenancePassed": false,
-            "listWork": [
-              {
-                "source": "dense",
-                "weight": 2,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "lexical",
-                "weight": 2,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "identifier",
-                "weight": 2,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 2
-              },
-              {
-                "source": "planned_lex",
-                "weight": 1,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "planned_lex",
-                "weight": 1,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "planned_vec",
-                "weight": 1,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "planned_vec",
-                "weight": 1,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "planned_hyde",
-                "weight": 1,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              }
-            ],
-            "totalCandidatesExamined": 142,
-            "rerankCandidatesExamined": 40,
-            "finalResultCount": 5,
-            "fusedPoolLimit": 160,
-            "rerankPoolLimit": 40,
-            "finalResultLimit": 5,
-            "rankFusionVersion": 2,
-            "reciprocalRankConstant": 60,
-            "fusionPolicy": {
-              "submittedQueryListWeight": 2,
-              "plannedQueryListWeight": 1,
-              "rankOneBonus": 0.05,
-              "rankTwoOrThreeBonus": 0.02
-            },
-            "rerankerPolicy": {
-              "version": 2,
-              "activeBranchPrior": 0.01,
-              "fusedRankBlend": [
-                {
-                  "firstRank": 1,
-                  "lastRank": 3,
-                  "retrievalWeight": 0.75,
-                  "rerankerWeight": 0.25
-                },
-                {
-                  "firstRank": 4,
-                  "lastRank": 10,
-                  "retrievalWeight": 0.6,
-                  "rerankerWeight": 0.4
-                },
-                {
-                  "firstRank": 11,
-                  "lastRank": null,
-                  "retrievalWeight": 0.4,
-                  "rerankerWeight": 0.6
-                }
-              ]
-            },
-            "rankingProviderPolicy": "live-profile-v1",
-            "candidateAdmissionBoundaryPolicy": "fused-candidate-pool-v1"
-          },
-          "planningMilliseconds": 2929.265103999991,
-          "rerankingMilliseconds": 10526.916506000329,
-          "totalSearchMilliseconds": 13583.628253000323,
-          "contribution": {
-            "newCandidateAdmission": false,
-            "rankingOnlyPromotion": false,
-            "preservedExistingSuccess": false,
-            "noImprovement": true
-          }
-        },
-        {
-          "caseId": "case-007",
-          "category": "current_versus_obsolete_summary",
-          "controlKind": "difficult_case",
-          "planSource": "planner",
-          "plannedQueries": [
-            {
-              "type": "lex",
-              "querySha256": "88e6d8c5f3af4a7af41b9c9ebe848dbaea14694cc8b021e782f1b48d4246400c"
-            },
-            {
-              "type": "lex",
-              "querySha256": "d39146635c922ef0701a68cc2b8431c092c92e62f1c36d6fe9b6ee29b836c94a"
-            },
-            {
-              "type": "vec",
-              "querySha256": "0637744ec800cc12cccc368e180e90c4b7a5dcdf297d8513e4be82fcbe85d609"
-            },
-            {
-              "type": "vec",
-              "querySha256": "588cc1f1ea55467208531a059cb4042297637043bece9edaca336038364004fa"
-            },
-            {
-              "type": "hyde",
-              "querySha256": "d7ee9da3d50c895d2ec6866991f22a7ea1c358e46fb93b87dad8dab885c65973"
-            }
-          ],
-          "normal": {
-            "outcome": "success",
-            "expectedSourceRanks": [5],
-            "highestRelevantDistractorRank": null,
-            "provenancePassed": true,
-            "listLimits": {
-              "dense": 8,
-              "lexical": 8,
-              "identifier": 8
-            },
-            "totalCandidatesExamined": 18,
-            "uniqueCandidatesAdmitted": 14,
-            "finalResultCount": 5,
-            "fusedPoolLimit": 24,
-            "rerankPoolLimit": 24,
-            "rankingMode": "hybrid",
-            "rankFusionVersion": 2,
-            "reciprocalRankConstant": 60
-          },
-          "retrievalWorkMatched": {
-            "outcome": "success",
-            "expectedSourceRanks": [5],
-            "highestRelevantDistractorRank": null,
-            "provenancePassed": true,
-            "listLimits": {
-              "dense": 54,
-              "lexical": 53,
-              "identifier": 53
-            },
-            "totalCandidatesExamined": 109,
-            "uniqueCandidatesAdmitted": 96,
-            "finalResultCount": 5,
-            "fusedPoolLimit": 160,
-            "rerankPoolLimit": 160,
-            "rankingMode": "hybrid",
-            "rankFusionVersion": 2,
-            "reciprocalRankConstant": 60
-          },
-          "queryPlanned": {
-            "outcome": "success",
-            "expectedSourceRanks": [5],
-            "candidateAdmissionSourceRanks": [32],
-            "candidateAdmissionVerified": true,
-            "sourceProvenance": [
-              {
-                "selectedFrom": "ranked_result",
-                "passed": true
-              }
-            ],
-            "provenancePassed": true,
-            "listWork": [
-              {
-                "source": "dense",
-                "weight": 2,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "lexical",
-                "weight": 2,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "identifier",
-                "weight": 2,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 2
-              },
-              {
-                "source": "planned_lex",
-                "weight": 1,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "planned_lex",
-                "weight": 1,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "planned_vec",
-                "weight": 1,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "planned_vec",
-                "weight": 1,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "planned_hyde",
-                "weight": 1,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              }
-            ],
-            "totalCandidatesExamined": 142,
-            "rerankCandidatesExamined": 40,
-            "finalResultCount": 5,
-            "fusedPoolLimit": 160,
-            "rerankPoolLimit": 40,
-            "finalResultLimit": 5,
-            "rankFusionVersion": 2,
-            "reciprocalRankConstant": 60,
-            "fusionPolicy": {
-              "submittedQueryListWeight": 2,
-              "plannedQueryListWeight": 1,
-              "rankOneBonus": 0.05,
-              "rankTwoOrThreeBonus": 0.02
-            },
-            "rerankerPolicy": {
-              "version": 2,
-              "activeBranchPrior": 0.01,
-              "fusedRankBlend": [
-                {
-                  "firstRank": 1,
-                  "lastRank": 3,
-                  "retrievalWeight": 0.75,
-                  "rerankerWeight": 0.25
-                },
-                {
-                  "firstRank": 4,
-                  "lastRank": 10,
-                  "retrievalWeight": 0.6,
-                  "rerankerWeight": 0.4
-                },
-                {
-                  "firstRank": 11,
-                  "lastRank": null,
-                  "retrievalWeight": 0.4,
-                  "rerankerWeight": 0.6
-                }
-              ]
-            },
-            "rankingProviderPolicy": "live-profile-v1",
-            "candidateAdmissionBoundaryPolicy": "fused-candidate-pool-v1"
-          },
-          "planningMilliseconds": 3775.8932949998416,
-          "rerankingMilliseconds": 10331.326517999638,
-          "totalSearchMilliseconds": 14240.60277199978,
-          "contribution": {
-            "newCandidateAdmission": false,
-            "rankingOnlyPromotion": false,
-            "preservedExistingSuccess": true,
-            "noImprovement": false
-          }
-        },
-        {
-          "caseId": "case-008",
-          "category": "exact_identifier",
-          "controlKind": "successful_baseline_control",
-          "planSource": "planner",
-          "plannedQueries": [
-            {
-              "type": "lex",
-              "querySha256": "4e39427638ff623d6cde9fd6f4bd4d0dd0a82111d87445a7bc7f4654add81824"
-            },
-            {
-              "type": "lex",
-              "querySha256": "b2ad4af479f67c79d119038b7423546b1a3174729a58d8bea4858ec52cc28c7b"
-            },
-            {
-              "type": "vec",
-              "querySha256": "4e39427638ff623d6cde9fd6f4bd4d0dd0a82111d87445a7bc7f4654add81824"
-            },
-            {
-              "type": "vec",
-              "querySha256": "b2ad4af479f67c79d119038b7423546b1a3174729a58d8bea4858ec52cc28c7b"
-            },
-            {
-              "type": "hyde",
-              "querySha256": "a86f11ccb571ba42cbed29203cde5869fe83d653a3d0e33c444d3546fec87eaa"
-            }
-          ],
-          "normal": {
-            "outcome": "success",
-            "expectedSourceRanks": [1],
-            "highestRelevantDistractorRank": null,
-            "provenancePassed": true,
-            "listLimits": {
-              "dense": 8,
-              "lexical": 8,
-              "identifier": 8
-            },
-            "totalCandidatesExamined": 24,
-            "uniqueCandidatesAdmitted": 16,
-            "finalResultCount": 5,
-            "fusedPoolLimit": 24,
-            "rerankPoolLimit": 24,
-            "rankingMode": "hybrid",
-            "rankFusionVersion": 2,
-            "reciprocalRankConstant": 60
-          },
-          "retrievalWorkMatched": {
-            "outcome": "success",
-            "expectedSourceRanks": [1],
-            "highestRelevantDistractorRank": null,
-            "provenancePassed": true,
-            "listLimits": {
-              "dense": 54,
-              "lexical": 53,
-              "identifier": 53
-            },
-            "totalCandidatesExamined": 143,
-            "uniqueCandidatesAdmitted": 107,
-            "finalResultCount": 5,
-            "fusedPoolLimit": 160,
-            "rerankPoolLimit": 160,
-            "rankingMode": "hybrid",
-            "rankFusionVersion": 2,
-            "reciprocalRankConstant": 60
-          },
-          "queryPlanned": {
-            "outcome": "success",
-            "expectedSourceRanks": [1],
-            "candidateAdmissionSourceRanks": [1],
-            "candidateAdmissionVerified": true,
-            "sourceProvenance": [
-              {
-                "selectedFrom": "ranked_result",
-                "passed": true
-              }
-            ],
-            "provenancePassed": true,
-            "listWork": [
-              {
-                "source": "dense",
-                "weight": 2,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "lexical",
-                "weight": 2,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "identifier",
-                "weight": 2,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "planned_lex",
-                "weight": 1,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "planned_lex",
-                "weight": 1,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "planned_vec",
-                "weight": 1,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "planned_vec",
-                "weight": 1,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "planned_hyde",
-                "weight": 1,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              }
-            ],
-            "totalCandidatesExamined": 160,
-            "rerankCandidatesExamined": 40,
-            "finalResultCount": 5,
-            "fusedPoolLimit": 160,
-            "rerankPoolLimit": 40,
-            "finalResultLimit": 5,
-            "rankFusionVersion": 2,
-            "reciprocalRankConstant": 60,
-            "fusionPolicy": {
-              "submittedQueryListWeight": 2,
-              "plannedQueryListWeight": 1,
-              "rankOneBonus": 0.05,
-              "rankTwoOrThreeBonus": 0.02
-            },
-            "rerankerPolicy": {
-              "version": 2,
-              "activeBranchPrior": 0.01,
-              "fusedRankBlend": [
-                {
-                  "firstRank": 1,
-                  "lastRank": 3,
-                  "retrievalWeight": 0.75,
-                  "rerankerWeight": 0.25
-                },
-                {
-                  "firstRank": 4,
-                  "lastRank": 10,
-                  "retrievalWeight": 0.6,
-                  "rerankerWeight": 0.4
-                },
-                {
-                  "firstRank": 11,
-                  "lastRank": null,
-                  "retrievalWeight": 0.4,
-                  "rerankerWeight": 0.6
-                }
-              ]
-            },
-            "rankingProviderPolicy": "live-profile-v1",
-            "candidateAdmissionBoundaryPolicy": "fused-candidate-pool-v1"
-          },
-          "planningMilliseconds": 5056.248710999731,
-          "rerankingMilliseconds": 10988.062179999892,
-          "totalSearchMilliseconds": 16177.09466599999,
-          "contribution": {
-            "newCandidateAdmission": false,
-            "rankingOnlyPromotion": false,
-            "preservedExistingSuccess": true,
-            "noImprovement": false
-          }
-        }
-      ],
-      "quality": {
-        "newCandidateAdmissionCount": 0,
-        "rankingOnlyPromotionCount": 1,
-        "preservedExistingSuccessCount": 2,
-        "plannerFallbackCount": 0
-      }
-    },
-    {
-      "version": 1,
-      "profileRun": {
-        "id": "http-cpu",
-        "backend": "llama-cpp-http",
-        "deviceClass": "cpu",
-        "device": "AMD Ryzen 7 8845HS CPU",
-        "backendVersion": "llama.cpp b8390 bundle b10e98a CPU planner-ctx-2048 reranker-ctx-8192 batch-2048"
-      },
-      "corpus": {
-        "id": "query-planned-real-recall-v1",
-        "privateManifestSha256": "4b3fb8573bcd52a26d66a2f8e60f5bbba57b098530791b23f55505d3e9a1187e",
-        "snapshotCount": 8,
-        "snapshotSha256": [
-          "df69bfa20acfb033175717f9070eb761e405ed9d9f8a49b011e6ddad92db2b35",
-          "880f5ae1cfcdf9d94b537cdf6c76e0e2581e9d7aa23b673947905149e51f5653",
-          "cc2b50fd0b09b76fe9260cd163df2fe004af2b3c41c3a568ad9bc75ef743579a",
-          "9f5f40459c3b3e593dcdf407ccb54c05c501b4d512f95c53e6285e23b84325b3",
-          "fc8cdf518cb6abe5f84a7b4a7474faf5cf886f2e4a479bcfbf9e4fac8703e5b7",
-          "1e7b95d66176ece794135d31f3a406a2d76a5324cc0bceca302fce9feb66b330",
-          "068100f8111d17867b2e1ef656ed11a300e14b62007a52225fd74b617bbdc54b",
-          "f5d53b87e3ee71085d7b075b5d0195b090a752a7374c4ff98f3e711820b2b6dd"
-        ],
-        "indexedDocumentCount": 44521,
-        "caseCount": 8
-      },
-      "profileIdentity": {
-        "embeddingPolicy": "deterministic-token-hash-v1",
-        "embeddingDimensions": 256,
-        "evaluationConfiguration": {
-          "version": 1,
-          "effectiveConfigurationIdentity": "live-query-planned-effective-evaluation-config-v1:30a786261e7b53d3796928c4485897990f2faefe56030379b35307e15d522863",
-          "rerankerConformanceFixtureIdentity": "live-query-planned-reranker-conformance-fixture-v1:6d78e2775446350ffc2606be15392ccdc2eb66137b249a40bcffa9ddb769cf3a"
-        },
-        "software": {
-          "repositoryCommit": "52b84c8be6a8425fefb149144a5da2143a66e030",
-          "backendVersion": "llama.cpp b8390 bundle b10e98a CPU planner-ctx-2048 reranker-ctx-8192 batch-2048",
-          "nodeVersion": "v24.16.0",
-          "platform": "linux",
-          "architecture": "x64"
-        },
-        "queryPlanning": {
-          "profileId": "qmd-query-expansion-1.7b-q4-k-m-v1",
-          "model": "qmd-query-expansion-1.7B-q4_k_m",
-          "promptPolicy": "qmd-query-expansion-no-think-v1",
-          "grammarVersion": "qmd-bounded-query-plan-v2",
-          "executionIdentity": {
-            "adapterId": "llama-cpp-http-query-planning-v1",
-            "adapterVersion": "1",
-            "adapterConfigurationIdentity": "llama-cpp-http-query-planning-config-v1:5f2853af5893072504f744841689d083a5ca40765660fbe0d06403538e50e461",
-            "backend": "llama-cpp-http",
-            "cacheIdentity": "recall-query-planning-execution-v1:e243afb617d6c1ad6559c5553a6d3a6f50bd891c6c9eb796028717ec5a15d38c",
-            "modelProfileId": "qmd-query-expansion-1.7b-q4-k-m-v1",
-            "modelProfileIdentity": "recall-query-planning-model-profile-v1:b2bfd3f93c8ff05d49dd357b2bb0ecf3f8e472ad214108120922609804a7c6d6",
-            "promptPolicy": "qmd-query-expansion-no-think-v1",
-            "grammarVersion": "qmd-bounded-query-plan-v2",
-            "requestTimeoutMilliseconds": 300000
-          }
-        },
-        "reranking": {
-          "profileId": "qwen3-reranker-0.6b-q8-0-v1",
-          "model": "qwen3-reranker-0.6b-q8_0",
-          "scorePolicy": "llama-cpp-qwen3-rank-probability-v1",
-          "executionIdentity": {
-            "adapterId": "llama-cpp-http-reranking-v1",
-            "adapterVersion": "1",
-            "adapterConfigurationIdentity": "llama-cpp-http-reranking-config-v1:ae11b3dea8efa59dff5aa63d451010d60a70ed7fe412fbb31fc28c135c9bd5ee",
-            "backend": "llama-cpp-http",
-            "cacheIdentity": "recall-reranking-execution-v1:edc7fdb55224fbc9e0d3b90dbd5c8bda821ad5835929a1df1e964c6ac8cf8502",
-            "modelProfileId": "qwen3-reranker-0.6b-q8-0-v1",
-            "modelProfileIdentity": "recall-reranking-model-profile-v1:c7d9d2da2c03edd04fc1468cb467f1c087a4d181d35cfb571266c621166d2025",
-            "requestTimeoutMilliseconds": 300000
-          }
-        }
-      },
-      "capabilityConformance": {
-        "queryPlanning": {
-          "profileId": "qmd-query-expansion-1.7b-q4-k-m-v1",
-          "model": "qmd-query-expansion-1.7B-q4_k_m",
-          "promptPolicy": "qmd-query-expansion-no-think-v1",
-          "grammarVersion": "qmd-bounded-query-plan-v2",
-          "executionIdentity": {
-            "adapterId": "llama-cpp-http-query-planning-v1",
-            "adapterVersion": "1",
-            "adapterConfigurationIdentity": "llama-cpp-http-query-planning-config-v1:5f2853af5893072504f744841689d083a5ca40765660fbe0d06403538e50e461",
-            "backend": "llama-cpp-http",
-            "cacheIdentity": "recall-query-planning-execution-v1:e243afb617d6c1ad6559c5553a6d3a6f50bd891c6c9eb796028717ec5a15d38c",
-            "modelProfileId": "qmd-query-expansion-1.7b-q4-k-m-v1",
-            "modelProfileIdentity": "recall-query-planning-model-profile-v1:b2bfd3f93c8ff05d49dd357b2bb0ecf3f8e472ad214108120922609804a7c6d6",
-            "promptPolicy": "qmd-query-expansion-no-think-v1",
-            "grammarVersion": "qmd-bounded-query-plan-v2",
-            "requestTimeoutMilliseconds": 300000
-          },
-          "measurement": {
-            "plannedQueryCount": 3,
-            "lexQueryCount": 1,
-            "vecQueryCount": 1,
-            "hydeQueryCount": 1,
-            "planningMilliseconds": 1049.3661420000717
-          }
-        },
-        "reranking": {
-          "profileId": "qwen3-reranker-0.6b-q8-0-v1",
-          "model": "qwen3-reranker-0.6b-q8_0",
-          "scorePolicy": "llama-cpp-qwen3-rank-probability-v1",
-          "executionIdentity": {
-            "adapterId": "llama-cpp-http-reranking-v1",
-            "adapterVersion": "1",
-            "adapterConfigurationIdentity": "llama-cpp-http-reranking-config-v1:ae11b3dea8efa59dff5aa63d451010d60a70ed7fe412fbb31fc28c135c9bd5ee",
-            "backend": "llama-cpp-http",
-            "cacheIdentity": "recall-reranking-execution-v1:edc7fdb55224fbc9e0d3b90dbd5c8bda821ad5835929a1df1e964c6ac8cf8502",
-            "modelProfileId": "qwen3-reranker-0.6b-q8-0-v1",
-            "modelProfileIdentity": "recall-reranking-model-profile-v1:c7d9d2da2c03edd04fc1468cb467f1c087a4d181d35cfb571266c621166d2025",
-            "requestTimeoutMilliseconds": 300000
-          },
-          "measurement": {
-            "queryCount": 1,
-            "documentCount": 2,
-            "rerankingMilliseconds": 282.16995700029656
-          }
-        }
-      },
-      "latency": {
-        "coldPlanningMilliseconds": 1049.3661420000717,
-        "warmPlanningMilliseconds": 1074.3917000000365,
-        "warmPlanningSucceeded": true,
-        "coldRerankingMilliseconds": 282.16995700029656,
-        "warmRerankingMilliseconds": 265.4521539998241,
-        "totalSearchMilliseconds": {
-          "minimum": 32665.09191299975,
-          "median": 41345.11006799992,
-          "maximum": 90803.99817099981
-        }
-      },
-      "cases": [
-        {
-          "caseId": "case-001",
-          "category": "ambiguous_decision",
-          "controlKind": "difficult_case",
-          "planSource": "planner",
-          "plannedQueries": [
-            {
-              "type": "lex",
-              "querySha256": "4a84f238af0b532fb70e4d6b6d4deef6579ce1d1047b93a3d4c8be8cac98bd6a"
-            },
-            {
-              "type": "lex",
-              "querySha256": "48dff868c2d1b9753792cbee08ac303798c25385a4759df95a17d0cbe09f323b"
-            },
-            {
-              "type": "vec",
-              "querySha256": "dfd210318177eaa720ab6e45d4d347a1413ef7348dbab87c1c0cdf02e3d3698d"
-            },
-            {
-              "type": "vec",
-              "querySha256": "1dce5f7e215154c3604874e0090c32fce413b4985c424be983e8ba67c0ce906b"
-            },
-            {
-              "type": "hyde",
-              "querySha256": "bd880fdecf362abb908c4f4563605e142ee540fb9184bab5feb5641f2206bb3c"
-            }
-          ],
-          "normal": {
-            "outcome": "candidate_union_miss",
-            "expectedSourceRanks": [null],
-            "highestRelevantDistractorRank": null,
-            "provenancePassed": false,
-            "listLimits": {
-              "dense": 8,
-              "lexical": 8,
-              "identifier": 8
-            },
-            "totalCandidatesExamined": 24,
-            "uniqueCandidatesAdmitted": 20,
-            "finalResultCount": 5,
-            "fusedPoolLimit": 24,
-            "rerankPoolLimit": 24,
-            "rankingMode": "hybrid",
-            "rankFusionVersion": 2,
-            "reciprocalRankConstant": 60
-          },
-          "retrievalWorkMatched": {
-            "outcome": "candidate_union_miss",
-            "expectedSourceRanks": [null],
-            "highestRelevantDistractorRank": null,
-            "provenancePassed": false,
-            "listLimits": {
-              "dense": 54,
-              "lexical": 53,
-              "identifier": 53
-            },
-            "totalCandidatesExamined": 119,
-            "uniqueCandidatesAdmitted": 108,
-            "finalResultCount": 5,
-            "fusedPoolLimit": 160,
-            "rerankPoolLimit": 160,
-            "rankingMode": "hybrid",
-            "rankFusionVersion": 2,
-            "reciprocalRankConstant": 60
-          },
-          "queryPlanned": {
-            "outcome": "candidate_union_miss",
-            "expectedSourceRanks": [null],
-            "candidateAdmissionSourceRanks": [null],
-            "candidateAdmissionVerified": false,
-            "sourceProvenance": [
-              {
-                "selectedFrom": "missing",
-                "passed": false
-              }
-            ],
-            "provenancePassed": false,
-            "listWork": [
-              {
-                "source": "dense",
-                "weight": 2,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "lexical",
-                "weight": 2,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "identifier",
-                "weight": 2,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 12
-              },
-              {
-                "source": "planned_lex",
-                "weight": 1,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "planned_lex",
-                "weight": 1,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "planned_vec",
-                "weight": 1,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "planned_vec",
-                "weight": 1,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "planned_hyde",
-                "weight": 1,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              }
-            ],
-            "totalCandidatesExamined": 152,
-            "rerankCandidatesExamined": 40,
-            "finalResultCount": 5,
-            "fusedPoolLimit": 160,
-            "rerankPoolLimit": 40,
-            "finalResultLimit": 5,
-            "rankFusionVersion": 2,
-            "reciprocalRankConstant": 60,
-            "fusionPolicy": {
-              "submittedQueryListWeight": 2,
-              "plannedQueryListWeight": 1,
-              "rankOneBonus": 0.05,
-              "rankTwoOrThreeBonus": 0.02
-            },
-            "rerankerPolicy": {
-              "version": 2,
-              "activeBranchPrior": 0.01,
-              "fusedRankBlend": [
-                {
-                  "firstRank": 1,
-                  "lastRank": 3,
-                  "retrievalWeight": 0.75,
-                  "rerankerWeight": 0.25
-                },
-                {
-                  "firstRank": 4,
-                  "lastRank": 10,
-                  "retrievalWeight": 0.6,
-                  "rerankerWeight": 0.4
-                },
-                {
-                  "firstRank": 11,
-                  "lastRank": null,
-                  "retrievalWeight": 0.4,
-                  "rerankerWeight": 0.6
-                }
-              ]
-            },
-            "rankingProviderPolicy": "live-profile-v1",
-            "candidateAdmissionBoundaryPolicy": "fused-candidate-pool-v1"
-          },
-          "planningMilliseconds": 1438.3772060000338,
-          "rerankingMilliseconds": 33549.133684,
-          "totalSearchMilliseconds": 35122.773668999784,
-          "contribution": {
-            "newCandidateAdmission": false,
-            "rankingOnlyPromotion": false,
-            "preservedExistingSuccess": false,
-            "noImprovement": true
-          }
-        },
-        {
-          "caseId": "case-002",
-          "category": "symptom_to_mechanism",
-          "controlKind": "difficult_case",
-          "planSource": "planner",
-          "plannedQueries": [
-            {
-              "type": "lex",
-              "querySha256": "d24e2b722353da20c8f9a8942a3977ea3c02cc136ec0f299b29d66bec449847b"
-            },
-            {
-              "type": "lex",
-              "querySha256": "3e3291a857cb32e944df6f6d9abde243153705f61798f7d56e8afbfd4b211ce3"
-            },
-            {
-              "type": "vec",
-              "querySha256": "b6575311e906042731e07518f4aaa007d17dcac5e44a777af5677aed7104b1e6"
-            },
-            {
-              "type": "vec",
-              "querySha256": "688dbe9af76183df83e523179de69f3902144295f5895e14e9ec4cd46eb5d38c"
-            },
-            {
-              "type": "hyde",
-              "querySha256": "e91904fb0bb89d29627e82e4ff9ead90dbed0a8209926fb78a132c7fe57e1ddb"
-            }
-          ],
-          "normal": {
-            "outcome": "candidate_union_miss",
-            "expectedSourceRanks": [null],
-            "highestRelevantDistractorRank": null,
-            "provenancePassed": false,
-            "listLimits": {
-              "dense": 8,
-              "lexical": 8,
-              "identifier": 8
-            },
-            "totalCandidatesExamined": 24,
-            "uniqueCandidatesAdmitted": 19,
-            "finalResultCount": 5,
-            "fusedPoolLimit": 24,
-            "rerankPoolLimit": 24,
-            "rankingMode": "hybrid",
-            "rankFusionVersion": 2,
-            "reciprocalRankConstant": 60
-          },
-          "retrievalWorkMatched": {
-            "outcome": "final_rank_miss",
-            "expectedSourceRanks": [45],
-            "highestRelevantDistractorRank": null,
-            "provenancePassed": true,
-            "listLimits": {
-              "dense": 54,
-              "lexical": 53,
-              "identifier": 53
-            },
-            "totalCandidatesExamined": 145,
-            "uniqueCandidatesAdmitted": 121,
-            "finalResultCount": 5,
-            "fusedPoolLimit": 160,
-            "rerankPoolLimit": 160,
-            "rankingMode": "hybrid",
-            "rankFusionVersion": 2,
-            "reciprocalRankConstant": 60
-          },
-          "queryPlanned": {
-            "outcome": "candidate_union_miss",
-            "expectedSourceRanks": [null],
-            "candidateAdmissionSourceRanks": [null],
-            "candidateAdmissionVerified": false,
-            "sourceProvenance": [
-              {
-                "selectedFrom": "missing",
-                "passed": false
-              }
-            ],
-            "provenancePassed": false,
-            "listWork": [
-              {
-                "source": "dense",
-                "weight": 2,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "lexical",
-                "weight": 2,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "identifier",
-                "weight": 2,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "planned_lex",
-                "weight": 1,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "planned_lex",
-                "weight": 1,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "planned_vec",
-                "weight": 1,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "planned_vec",
-                "weight": 1,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "planned_hyde",
-                "weight": 1,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              }
-            ],
-            "totalCandidatesExamined": 160,
-            "rerankCandidatesExamined": 40,
-            "finalResultCount": 5,
-            "fusedPoolLimit": 160,
-            "rerankPoolLimit": 40,
-            "finalResultLimit": 5,
-            "rankFusionVersion": 2,
-            "reciprocalRankConstant": 60,
-            "fusionPolicy": {
-              "submittedQueryListWeight": 2,
-              "plannedQueryListWeight": 1,
-              "rankOneBonus": 0.05,
-              "rankTwoOrThreeBonus": 0.02
-            },
-            "rerankerPolicy": {
-              "version": 2,
-              "activeBranchPrior": 0.01,
-              "fusedRankBlend": [
-                {
-                  "firstRank": 1,
-                  "lastRank": 3,
-                  "retrievalWeight": 0.75,
-                  "rerankerWeight": 0.25
-                },
-                {
-                  "firstRank": 4,
-                  "lastRank": 10,
-                  "retrievalWeight": 0.6,
-                  "rerankerWeight": 0.4
-                },
-                {
-                  "firstRank": 11,
-                  "lastRank": null,
-                  "retrievalWeight": 0.4,
-                  "rerankerWeight": 0.6
-                }
-              ]
-            },
-            "rankingProviderPolicy": "live-profile-v1",
-            "candidateAdmissionBoundaryPolicy": "fused-candidate-pool-v1"
-          },
-          "planningMilliseconds": 1297.5279649998993,
-          "rerankingMilliseconds": 37074.24268499995,
-          "totalSearchMilliseconds": 38504.17274199985,
-          "contribution": {
-            "newCandidateAdmission": false,
-            "rankingOnlyPromotion": false,
-            "preservedExistingSuccess": false,
-            "noImprovement": true
-          }
-        },
-        {
-          "caseId": "case-003",
-          "category": "vocabulary_drift",
-          "controlKind": "successful_baseline_control",
-          "planSource": "planner",
-          "plannedQueries": [
-            {
-              "type": "lex",
-              "querySha256": "8ed8091aa4cfb6a0b2514455fa56408a927fb0c40d2a44e644e9fbe5294b6c6f"
-            },
-            {
-              "type": "lex",
-              "querySha256": "8e0dc4ee1d69a1996112fae95dc8ae6e2b171c49f1303e0da4cc10fb3f23da6c"
-            },
-            {
-              "type": "vec",
-              "querySha256": "4677914d2f69ccd27c1bbae626a7be07d831ac26f219105e2019be9c7ecf7b8f"
-            },
-            {
-              "type": "vec",
-              "querySha256": "70a3f4e2b831164efd21d88600c5929bb631ea6aeefc4c5028ad0dc6706409b7"
-            },
-            {
-              "type": "hyde",
-              "querySha256": "d5cd983f7b079e0a03dad7b4dcc0284640dd98af4337faa68f7386495bda08b6"
-            }
-          ],
-          "normal": {
-            "outcome": "final_rank_miss",
-            "expectedSourceRanks": [8],
-            "highestRelevantDistractorRank": null,
-            "provenancePassed": true,
-            "listLimits": {
-              "dense": 8,
-              "lexical": 8,
-              "identifier": 8
-            },
-            "totalCandidatesExamined": 18,
-            "uniqueCandidatesAdmitted": 13,
-            "finalResultCount": 5,
-            "fusedPoolLimit": 24,
-            "rerankPoolLimit": 24,
-            "rankingMode": "hybrid",
-            "rankFusionVersion": 2,
-            "reciprocalRankConstant": 60
-          },
-          "retrievalWorkMatched": {
-            "outcome": "final_rank_miss",
-            "expectedSourceRanks": [6],
-            "highestRelevantDistractorRank": null,
-            "provenancePassed": true,
-            "listLimits": {
-              "dense": 54,
-              "lexical": 53,
-              "identifier": 53
-            },
-            "totalCandidatesExamined": 109,
-            "uniqueCandidatesAdmitted": 96,
-            "finalResultCount": 5,
-            "fusedPoolLimit": 160,
-            "rerankPoolLimit": 160,
-            "rankingMode": "hybrid",
-            "rankFusionVersion": 2,
-            "reciprocalRankConstant": 60
-          },
-          "queryPlanned": {
-            "outcome": "success",
-            "expectedSourceRanks": [2],
-            "candidateAdmissionSourceRanks": [13],
-            "candidateAdmissionVerified": true,
-            "sourceProvenance": [
-              {
-                "selectedFrom": "ranked_result",
-                "passed": true
-              }
-            ],
-            "provenancePassed": true,
-            "listWork": [
-              {
-                "source": "dense",
-                "weight": 2,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "lexical",
-                "weight": 2,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "identifier",
-                "weight": 2,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 2
-              },
-              {
-                "source": "planned_lex",
-                "weight": 1,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "planned_lex",
-                "weight": 1,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "planned_vec",
-                "weight": 1,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "planned_vec",
-                "weight": 1,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "planned_hyde",
-                "weight": 1,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              }
-            ],
-            "totalCandidatesExamined": 142,
-            "rerankCandidatesExamined": 40,
-            "finalResultCount": 5,
-            "fusedPoolLimit": 160,
-            "rerankPoolLimit": 40,
-            "finalResultLimit": 5,
-            "rankFusionVersion": 2,
-            "reciprocalRankConstant": 60,
-            "fusionPolicy": {
-              "submittedQueryListWeight": 2,
-              "plannedQueryListWeight": 1,
-              "rankOneBonus": 0.05,
-              "rankTwoOrThreeBonus": 0.02
-            },
-            "rerankerPolicy": {
-              "version": 2,
-              "activeBranchPrior": 0.01,
-              "fusedRankBlend": [
-                {
-                  "firstRank": 1,
-                  "lastRank": 3,
-                  "retrievalWeight": 0.75,
-                  "rerankerWeight": 0.25
-                },
-                {
-                  "firstRank": 4,
-                  "lastRank": 10,
-                  "retrievalWeight": 0.6,
-                  "rerankerWeight": 0.4
-                },
-                {
-                  "firstRank": 11,
-                  "lastRank": null,
-                  "retrievalWeight": 0.4,
-                  "rerankerWeight": 0.6
-                }
-              ]
-            },
-            "rankingProviderPolicy": "live-profile-v1",
-            "candidateAdmissionBoundaryPolicy": "fused-candidate-pool-v1"
-          },
-          "planningMilliseconds": 2425.608006000053,
-          "rerankingMilliseconds": 30238.335868000053,
-          "totalSearchMilliseconds": 32800.15009600017,
-          "contribution": {
-            "newCandidateAdmission": false,
-            "rankingOnlyPromotion": true,
-            "preservedExistingSuccess": false,
-            "noImprovement": false
-          }
-        },
-        {
-          "caseId": "case-004",
-          "category": "lexical_only_tool_evidence",
-          "controlKind": "difficult_case",
-          "planSource": "planner",
-          "plannedQueries": [
-            {
-              "type": "lex",
-              "querySha256": "195e011e778e67cdaddc280568be1fb4b32b2247eed2323b7c4313f978a53a76"
-            },
-            {
-              "type": "lex",
-              "querySha256": "2134d2b6228f9fce80e503b2e2074212fffb67a406ed69cf010986d6dcca9244"
-            },
-            {
-              "type": "vec",
-              "querySha256": "1bf87ec5ee722ffd1672fdbc504e040e0a3f512399f0065d7147122ac44c51b7"
-            },
-            {
-              "type": "vec",
-              "querySha256": "15bccd631cc48703216a784a5555e3d46420d45f629d833c78e4dcefef36bd87"
-            },
-            {
-              "type": "hyde",
-              "querySha256": "7e9056dbf6260af3ac15a67d69facd1ff564224c5374953ae5b4a1a27ca4c581"
-            }
-          ],
-          "normal": {
-            "outcome": "candidate_union_miss",
-            "expectedSourceRanks": [null],
-            "highestRelevantDistractorRank": null,
-            "provenancePassed": false,
-            "listLimits": {
-              "dense": 8,
-              "lexical": 8,
-              "identifier": 8
-            },
-            "totalCandidatesExamined": 19,
-            "uniqueCandidatesAdmitted": 11,
-            "finalResultCount": 5,
-            "fusedPoolLimit": 24,
-            "rerankPoolLimit": 24,
-            "rankingMode": "hybrid",
-            "rankFusionVersion": 2,
-            "reciprocalRankConstant": 60
-          },
-          "retrievalWorkMatched": {
-            "outcome": "candidate_union_miss",
-            "expectedSourceRanks": [null],
-            "highestRelevantDistractorRank": null,
-            "provenancePassed": false,
-            "listLimits": {
-              "dense": 54,
-              "lexical": 53,
-              "identifier": 53
-            },
-            "totalCandidatesExamined": 110,
-            "uniqueCandidatesAdmitted": 100,
-            "finalResultCount": 5,
-            "fusedPoolLimit": 160,
-            "rerankPoolLimit": 160,
-            "rankingMode": "hybrid",
-            "rankFusionVersion": 2,
-            "reciprocalRankConstant": 60
-          },
-          "queryPlanned": {
-            "outcome": "candidate_union_miss",
-            "expectedSourceRanks": [null],
-            "candidateAdmissionSourceRanks": [null],
-            "candidateAdmissionVerified": false,
-            "sourceProvenance": [
-              {
-                "selectedFrom": "missing",
-                "passed": false
-              }
-            ],
-            "provenancePassed": false,
-            "listWork": [
-              {
-                "source": "dense",
-                "weight": 2,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "lexical",
-                "weight": 2,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "identifier",
-                "weight": 2,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 3
-              },
-              {
-                "source": "planned_lex",
-                "weight": 1,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "planned_lex",
-                "weight": 1,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "planned_vec",
-                "weight": 1,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "planned_vec",
-                "weight": 1,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "planned_hyde",
-                "weight": 1,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              }
-            ],
-            "totalCandidatesExamined": 143,
-            "rerankCandidatesExamined": 40,
-            "finalResultCount": 5,
-            "fusedPoolLimit": 160,
-            "rerankPoolLimit": 40,
-            "finalResultLimit": 5,
-            "rankFusionVersion": 2,
-            "reciprocalRankConstant": 60,
-            "fusionPolicy": {
-              "submittedQueryListWeight": 2,
-              "plannedQueryListWeight": 1,
-              "rankOneBonus": 0.05,
-              "rankTwoOrThreeBonus": 0.02
-            },
-            "rerankerPolicy": {
-              "version": 2,
-              "activeBranchPrior": 0.01,
-              "fusedRankBlend": [
-                {
-                  "firstRank": 1,
-                  "lastRank": 3,
-                  "retrievalWeight": 0.75,
-                  "rerankerWeight": 0.25
-                },
-                {
-                  "firstRank": 4,
-                  "lastRank": 10,
-                  "retrievalWeight": 0.6,
-                  "rerankerWeight": 0.4
-                },
-                {
-                  "firstRank": 11,
-                  "lastRank": null,
-                  "retrievalWeight": 0.4,
-                  "rerankerWeight": 0.6
-                }
-              ]
-            },
-            "rankingProviderPolicy": "live-profile-v1",
-            "candidateAdmissionBoundaryPolicy": "fused-candidate-pool-v1"
-          },
-          "planningMilliseconds": 4198.849682,
-          "rerankingMilliseconds": 86453.1423510001,
-          "totalSearchMilliseconds": 90803.99817099981,
-          "contribution": {
-            "newCandidateAdmission": false,
-            "rankingOnlyPromotion": false,
-            "preservedExistingSuccess": false,
-            "noImprovement": true
-          }
-        },
-        {
-          "caseId": "case-005",
-          "category": "outcome_to_component",
-          "controlKind": "difficult_case",
-          "planSource": "planner",
-          "plannedQueries": [
-            {
-              "type": "lex",
-              "querySha256": "b87a8d575cfdc4caa41b3088df20fbfe7146fd3565d8b4dd33947966bb0938b0"
-            },
-            {
-              "type": "lex",
-              "querySha256": "3b62ec85a3ed7bc78bb502d64dd7875251edce8d3046201ca6b79dfd9ec4b438"
-            },
-            {
-              "type": "vec",
-              "querySha256": "08f8ea63376ff8cffa795c6b8db940e203f3833bd47297c50c9372cbc9fa2d01"
-            },
-            {
-              "type": "vec",
-              "querySha256": "bcecc024cff0623bcb13fc1bedd0e11a7a4ad93467daf39b49535c7601f3d62e"
-            },
-            {
-              "type": "hyde",
-              "querySha256": "4ffeacfd7cf6931c2d92bd9641f552becf1bd33b58bc013260010cead467aa31"
+              "querySha256": "99e96b40f407254ad3e1a8fa0bc0901e7f81fed63ac8cf3324f28e042d644ff4"
             }
           ],
           "normal": {
@@ -4239,9 +2715,9 @@
             "rankingProviderPolicy": "live-profile-v1",
             "candidateAdmissionBoundaryPolicy": "fused-candidate-pool-v1"
           },
-          "planningMilliseconds": 2075.8725729999132,
-          "rerankingMilliseconds": 43539.45348699996,
-          "totalSearchMilliseconds": 45754.09643699974,
+          "planningMilliseconds": 6283.191103999969,
+          "rerankingMilliseconds": 11944.041722999886,
+          "totalSearchMilliseconds": 18376.778667000122,
           "contribution": {
             "newCandidateAdmission": false,
             "rankingOnlyPromotion": false,
@@ -4257,23 +2733,15 @@
           "plannedQueries": [
             {
               "type": "lex",
-              "querySha256": "c57966addac4b89cb7f2a778270af0c35b066892c4838ce028c7bfa49c7e4961"
-            },
-            {
-              "type": "lex",
-              "querySha256": "d0eec15bced48387a9b46ef663abd4f6aad48efcbaa4859df8ade22fdd82273c"
+              "querySha256": "c924a68cda0987c3566223a73ce72c935c694564aab7ad3e935ace484dfb1a3b"
             },
             {
               "type": "vec",
-              "querySha256": "c57966addac4b89cb7f2a778270af0c35b066892c4838ce028c7bfa49c7e4961"
-            },
-            {
-              "type": "vec",
-              "querySha256": "d0eec15bced48387a9b46ef663abd4f6aad48efcbaa4859df8ade22fdd82273c"
+              "querySha256": "31f173f7ba5f2beeba77075a0e2535bed46b2670a2e312d21d66f5187038cc60"
             },
             {
               "type": "hyde",
-              "querySha256": "44af4977a6a56b5bf48c76a5abdd3e1231cb658f4a83ff8926744a831fae884d"
+              "querySha256": "1a29d15b2eebbf71dd8370c4d5814ccd091df1c28117c08d0e951bb17f701aa3"
             }
           ],
           "normal": {
@@ -4301,15 +2769,15 @@
             "highestRelevantDistractorRank": null,
             "provenancePassed": false,
             "listLimits": {
-              "dense": 54,
-              "lexical": 53,
-              "identifier": 53
+              "dense": 40,
+              "lexical": 40,
+              "identifier": 40
             },
-            "totalCandidatesExamined": 109,
-            "uniqueCandidatesAdmitted": 104,
+            "totalCandidatesExamined": 82,
+            "uniqueCandidatesAdmitted": 77,
             "finalResultCount": 5,
-            "fusedPoolLimit": 160,
-            "rerankPoolLimit": 160,
+            "fusedPoolLimit": 120,
+            "rerankPoolLimit": 120,
             "rankingMode": "hybrid",
             "rankFusionVersion": 2,
             "reciprocalRankConstant": 60
@@ -4352,18 +2820,6 @@
                 "admittedCandidateCount": 20
               },
               {
-                "source": "planned_lex",
-                "weight": 1,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
-                "source": "planned_vec",
-                "weight": 1,
-                "candidateLimit": 20,
-                "admittedCandidateCount": 20
-              },
-              {
                 "source": "planned_vec",
                 "weight": 1,
                 "candidateLimit": 20,
@@ -4376,10 +2832,10 @@
                 "admittedCandidateCount": 20
               }
             ],
-            "totalCandidatesExamined": 142,
+            "totalCandidatesExamined": 102,
             "rerankCandidatesExamined": 40,
             "finalResultCount": 5,
-            "fusedPoolLimit": 160,
+            "fusedPoolLimit": 120,
             "rerankPoolLimit": 40,
             "finalResultLimit": 5,
             "rankFusionVersion": 2,
@@ -4417,9 +2873,9 @@
             "rankingProviderPolicy": "live-profile-v1",
             "candidateAdmissionBoundaryPolicy": "fused-candidate-pool-v1"
           },
-          "planningMilliseconds": 1269.0967890000902,
-          "rerankingMilliseconds": 31264.384423000272,
-          "totalSearchMilliseconds": 32665.09191299975,
+          "planningMilliseconds": 1972.5878850002773,
+          "rerankingMilliseconds": 10731.70621799957,
+          "totalSearchMilliseconds": 12848.384418999776,
           "contribution": {
             "newCandidateAdmission": false,
             "rankingOnlyPromotion": false,
@@ -4435,23 +2891,23 @@
           "plannedQueries": [
             {
               "type": "lex",
-              "querySha256": "2f32a0e9d496b83ed4d6de6252735f5e6c8551a27367a004b0dfb834dca68cc8"
+              "querySha256": "98a6f5c368bf27a9cb684aec9ecfc78337dfe443347ed159df36ac3fb2781fbc"
             },
             {
               "type": "lex",
-              "querySha256": "c0d2de62e4a066a8438d798870edc17063a5c2af513caf9242197f6072f5f524"
+              "querySha256": "5a81deb9f5e2cff5b683c7ba8bfb507a6b62f60923f89d7f00cd1cd647e5fc29"
             },
             {
               "type": "vec",
-              "querySha256": "19b9eeecda4a8c51a7dea828b587b374a208b76057ea72f1470885b0002dbebf"
+              "querySha256": "2b305dd27f4e3e8e2d771639140d2b6954ede2bb8bfa911d264ec29a754d5732"
             },
             {
               "type": "vec",
-              "querySha256": "09627e56548f50c33d8bc3deb0d01fbc98f6edad32b61fa0e88f75f6ca7878ba"
+              "querySha256": "ce80056a41c3c74af018f2de4c032fbedb88d373c136169be8db0261a6a37713"
             },
             {
               "type": "hyde",
-              "querySha256": "72e8a524cefbb050b969c475015b58ebf5f201a39c5615017aa5666fa70132e9"
+              "querySha256": "5e8ddbffe215138799e74f99379ac66c4fc36b3c82dde89ec174535d49b663b0"
             }
           ],
           "normal": {
@@ -4493,13 +2949,13 @@
             "reciprocalRankConstant": 60
           },
           "queryPlanned": {
-            "outcome": "success",
-            "expectedSourceRanks": [5],
-            "candidateAdmissionSourceRanks": [31],
+            "outcome": "final_rank_miss",
+            "expectedSourceRanks": [null],
+            "candidateAdmissionSourceRanks": [26],
             "candidateAdmissionVerified": true,
             "sourceProvenance": [
               {
-                "selectedFrom": "ranked_result",
+                "selectedFrom": "candidate_admission",
                 "passed": true
               }
             ],
@@ -4595,14 +3051,14 @@
             "rankingProviderPolicy": "live-profile-v1",
             "candidateAdmissionBoundaryPolicy": "fused-candidate-pool-v1"
           },
-          "planningMilliseconds": 2436.5929939998314,
-          "rerankingMilliseconds": 41615.657081999816,
-          "totalSearchMilliseconds": 44186.047393999994,
+          "planningMilliseconds": 4402.010458999779,
+          "rerankingMilliseconds": 9158.004763999954,
+          "totalSearchMilliseconds": 13708.93079400016,
           "contribution": {
             "newCandidateAdmission": false,
             "rankingOnlyPromotion": false,
-            "preservedExistingSuccess": true,
-            "noImprovement": false
+            "preservedExistingSuccess": false,
+            "noImprovement": true
           }
         },
         {
@@ -4613,23 +3069,23 @@
           "plannedQueries": [
             {
               "type": "lex",
-              "querySha256": "adc4af6da65c1fe9fd301a631bc60c4f6de44a69952d1674000dec2fbc850bdc"
+              "querySha256": "9ff52e07af2ca83b40651330a7ed65bf7de89142c0a013ace432a93429de6055"
             },
             {
               "type": "lex",
-              "querySha256": "6960431a4bb86af11b365a25dc4b518d44576dbf9e3a736d9fa4646432d2e501"
+              "querySha256": "c49124d74fd6a5ffe3613ce72d4aa9898dd856385b03fb9a55edf7815f3935bc"
             },
             {
               "type": "vec",
-              "querySha256": "adc4af6da65c1fe9fd301a631bc60c4f6de44a69952d1674000dec2fbc850bdc"
+              "querySha256": "9ff52e07af2ca83b40651330a7ed65bf7de89142c0a013ace432a93429de6055"
             },
             {
               "type": "vec",
-              "querySha256": "6960431a4bb86af11b365a25dc4b518d44576dbf9e3a736d9fa4646432d2e501"
+              "querySha256": "c49124d74fd6a5ffe3613ce72d4aa9898dd856385b03fb9a55edf7815f3935bc"
             },
             {
               "type": "hyde",
-              "querySha256": "45f5e6e16887be7bfd5d9320ddc0a174bde9987ad91bcbfdfaa3dd79d8ec105c"
+              "querySha256": "e723a8109440388f92ad4ba94cbf18ac48864274640c4133118406161c6dc259"
             }
           ],
           "normal": {
@@ -4773,9 +3229,1599 @@
             "rankingProviderPolicy": "live-profile-v1",
             "candidateAdmissionBoundaryPolicy": "fused-candidate-pool-v1"
           },
-          "planningMilliseconds": 1654.3292100001127,
-          "rerankingMilliseconds": 49827.97101299977,
-          "totalSearchMilliseconds": 51616.955908,
+          "planningMilliseconds": 2693.1408529998735,
+          "rerankingMilliseconds": 13296.207241000142,
+          "totalSearchMilliseconds": 16136.190947999712,
+          "contribution": {
+            "newCandidateAdmission": false,
+            "rankingOnlyPromotion": false,
+            "preservedExistingSuccess": true,
+            "noImprovement": false
+          }
+        }
+      ],
+      "quality": {
+        "newCandidateAdmissionCount": 0,
+        "rankingOnlyPromotionCount": 1,
+        "preservedExistingSuccessCount": 1,
+        "noImprovementCount": 6,
+        "plannerFallbackCount": 0
+      },
+      "committedCorpus": {
+        "corpusId": "recall-quality-project-scoped-bounded-v3",
+        "specificationSha256": "6208cfc632c8ff53815567dd5385297bb6cc513f62e3d50a5bfa8ae687c34439",
+        "caseCount": 17,
+        "qualityPassed": true,
+        "candidatePoolRecall": 1,
+        "finalRecall": 1,
+        "contextUsefulness": 1,
+        "sourceOccurrencePreservation": 1,
+        "sessionOriginVerification": 1,
+        "evidenceRelationVerification": 1,
+        "contributingEntryVerification": 1,
+        "branchVerification": 1,
+        "policyFailureCaseIds": [],
+        "queryLatencyMilliseconds": {
+          "median": 5915.486573999748,
+          "p95": 7872.931304000318
+        },
+        "executedSearchRequests": 18,
+        "plannerRequests": 17,
+        "rerankerRequests": 17
+      }
+    },
+    {
+      "version": 1,
+      "profileRun": {
+        "id": "http-cpu",
+        "backend": "llama-cpp-http",
+        "deviceClass": "cpu",
+        "device": "AMD Ryzen 7 8845HS CPU",
+        "backendVersion": "llama.cpp b8390 bundle b10e98a CPU planner-ctx-2048 reranker-ctx-8192 batch-2048"
+      },
+      "corpus": {
+        "id": "query-planned-real-recall-v1",
+        "privateManifestSha256": "4b3fb8573bcd52a26d66a2f8e60f5bbba57b098530791b23f55505d3e9a1187e",
+        "snapshotCount": 8,
+        "snapshotSha256": [
+          "df69bfa20acfb033175717f9070eb761e405ed9d9f8a49b011e6ddad92db2b35",
+          "880f5ae1cfcdf9d94b537cdf6c76e0e2581e9d7aa23b673947905149e51f5653",
+          "cc2b50fd0b09b76fe9260cd163df2fe004af2b3c41c3a568ad9bc75ef743579a",
+          "9f5f40459c3b3e593dcdf407ccb54c05c501b4d512f95c53e6285e23b84325b3",
+          "fc8cdf518cb6abe5f84a7b4a7474faf5cf886f2e4a479bcfbf9e4fac8703e5b7",
+          "1e7b95d66176ece794135d31f3a406a2d76a5324cc0bceca302fce9feb66b330",
+          "068100f8111d17867b2e1ef656ed11a300e14b62007a52225fd74b617bbdc54b",
+          "f5d53b87e3ee71085d7b075b5d0195b090a752a7374c4ff98f3e711820b2b6dd"
+        ],
+        "indexedDocumentCount": 44521,
+        "caseCount": 8
+      },
+      "profileIdentity": {
+        "embeddingPolicy": "deterministic-token-hash-v1",
+        "embeddingDimensions": 256,
+        "evaluationConfiguration": {
+          "version": 1,
+          "effectiveConfigurationIdentity": "live-query-planned-effective-evaluation-config-v1:30a786261e7b53d3796928c4485897990f2faefe56030379b35307e15d522863",
+          "rerankerConformanceFixtureIdentity": "live-query-planned-reranker-conformance-fixture-v1:6d78e2775446350ffc2606be15392ccdc2eb66137b249a40bcffa9ddb769cf3a"
+        },
+        "software": {
+          "repositoryCommit": "feeb18b3d89544210a167be65d05fb9b29b219bb",
+          "backendVersion": "llama.cpp b8390 bundle b10e98a CPU planner-ctx-2048 reranker-ctx-8192 batch-2048",
+          "nodeVersion": "v24.16.0",
+          "platform": "linux",
+          "architecture": "x64"
+        },
+        "queryPlanning": {
+          "profileId": "qmd-query-expansion-1.7b-q4-k-m-v1",
+          "model": "qmd-query-expansion-1.7B-q4_k_m",
+          "promptPolicy": "qmd-query-expansion-no-think-v1",
+          "grammarVersion": "qmd-bounded-query-plan-v2",
+          "executionIdentity": {
+            "adapterId": "llama-cpp-http-query-planning-v1",
+            "adapterVersion": "1",
+            "adapterConfigurationIdentity": "llama-cpp-http-query-planning-config-v1:5f2853af5893072504f744841689d083a5ca40765660fbe0d06403538e50e461",
+            "backend": "llama-cpp-http",
+            "cacheIdentity": "recall-query-planning-execution-v1:e243afb617d6c1ad6559c5553a6d3a6f50bd891c6c9eb796028717ec5a15d38c",
+            "modelProfileId": "qmd-query-expansion-1.7b-q4-k-m-v1",
+            "modelProfileIdentity": "recall-query-planning-model-profile-v1:b2bfd3f93c8ff05d49dd357b2bb0ecf3f8e472ad214108120922609804a7c6d6",
+            "promptPolicy": "qmd-query-expansion-no-think-v1",
+            "grammarVersion": "qmd-bounded-query-plan-v2",
+            "requestTimeoutMilliseconds": 300000
+          }
+        },
+        "reranking": {
+          "profileId": "qwen3-reranker-0.6b-q8-0-v1",
+          "model": "qwen3-reranker-0.6b-q8_0",
+          "scorePolicy": "llama-cpp-qwen3-rank-probability-v1",
+          "executionIdentity": {
+            "adapterId": "llama-cpp-http-reranking-v1",
+            "adapterVersion": "1",
+            "adapterConfigurationIdentity": "llama-cpp-http-reranking-config-v1:ae11b3dea8efa59dff5aa63d451010d60a70ed7fe412fbb31fc28c135c9bd5ee",
+            "backend": "llama-cpp-http",
+            "cacheIdentity": "recall-reranking-execution-v1:edc7fdb55224fbc9e0d3b90dbd5c8bda821ad5835929a1df1e964c6ac8cf8502",
+            "modelProfileId": "qwen3-reranker-0.6b-q8-0-v1",
+            "modelProfileIdentity": "recall-reranking-model-profile-v1:c7d9d2da2c03edd04fc1468cb467f1c087a4d181d35cfb571266c621166d2025",
+            "requestTimeoutMilliseconds": 300000
+          }
+        }
+      },
+      "capabilityConformance": {
+        "queryPlanning": {
+          "profileId": "qmd-query-expansion-1.7b-q4-k-m-v1",
+          "model": "qmd-query-expansion-1.7B-q4_k_m",
+          "promptPolicy": "qmd-query-expansion-no-think-v1",
+          "grammarVersion": "qmd-bounded-query-plan-v2",
+          "executionIdentity": {
+            "adapterId": "llama-cpp-http-query-planning-v1",
+            "adapterVersion": "1",
+            "adapterConfigurationIdentity": "llama-cpp-http-query-planning-config-v1:5f2853af5893072504f744841689d083a5ca40765660fbe0d06403538e50e461",
+            "backend": "llama-cpp-http",
+            "cacheIdentity": "recall-query-planning-execution-v1:e243afb617d6c1ad6559c5553a6d3a6f50bd891c6c9eb796028717ec5a15d38c",
+            "modelProfileId": "qmd-query-expansion-1.7b-q4-k-m-v1",
+            "modelProfileIdentity": "recall-query-planning-model-profile-v1:b2bfd3f93c8ff05d49dd357b2bb0ecf3f8e472ad214108120922609804a7c6d6",
+            "promptPolicy": "qmd-query-expansion-no-think-v1",
+            "grammarVersion": "qmd-bounded-query-plan-v2",
+            "requestTimeoutMilliseconds": 300000
+          },
+          "measurement": {
+            "plannedQueryCount": 3,
+            "lexQueryCount": 1,
+            "vecQueryCount": 1,
+            "hydeQueryCount": 1,
+            "planningMilliseconds": 1195.2957770000212
+          }
+        },
+        "reranking": {
+          "profileId": "qwen3-reranker-0.6b-q8-0-v1",
+          "model": "qwen3-reranker-0.6b-q8_0",
+          "scorePolicy": "llama-cpp-qwen3-rank-probability-v1",
+          "executionIdentity": {
+            "adapterId": "llama-cpp-http-reranking-v1",
+            "adapterVersion": "1",
+            "adapterConfigurationIdentity": "llama-cpp-http-reranking-config-v1:ae11b3dea8efa59dff5aa63d451010d60a70ed7fe412fbb31fc28c135c9bd5ee",
+            "backend": "llama-cpp-http",
+            "cacheIdentity": "recall-reranking-execution-v1:edc7fdb55224fbc9e0d3b90dbd5c8bda821ad5835929a1df1e964c6ac8cf8502",
+            "modelProfileId": "qwen3-reranker-0.6b-q8-0-v1",
+            "modelProfileIdentity": "recall-reranking-model-profile-v1:c7d9d2da2c03edd04fc1468cb467f1c087a4d181d35cfb571266c621166d2025",
+            "requestTimeoutMilliseconds": 300000
+          },
+          "measurement": {
+            "queryCount": 1,
+            "documentCount": 2,
+            "rerankingMilliseconds": 303.42913499986753
+          }
+        }
+      },
+      "latency": {
+        "coldPlanningMilliseconds": 1195.2957770000212,
+        "warmPlanningMilliseconds": 1052.0576550001279,
+        "warmPlanningSucceeded": true,
+        "coldRerankingMilliseconds": 303.42913499986753,
+        "warmRerankingMilliseconds": 270.78080700011924,
+        "totalSearchMilliseconds": {
+          "minimum": 30354.340063000098,
+          "median": 36020.36892499984,
+          "maximum": 87774.24940599967
+        }
+      },
+      "cases": [
+        {
+          "caseId": "case-001",
+          "category": "ambiguous_decision",
+          "controlKind": "difficult_case",
+          "planSource": "planner",
+          "plannedQueries": [
+            {
+              "type": "lex",
+              "querySha256": "4a84f238af0b532fb70e4d6b6d4deef6579ce1d1047b93a3d4c8be8cac98bd6a"
+            },
+            {
+              "type": "lex",
+              "querySha256": "48dff868c2d1b9753792cbee08ac303798c25385a4759df95a17d0cbe09f323b"
+            },
+            {
+              "type": "vec",
+              "querySha256": "dfd210318177eaa720ab6e45d4d347a1413ef7348dbab87c1c0cdf02e3d3698d"
+            },
+            {
+              "type": "vec",
+              "querySha256": "f6fd7400450199794ea0d1fef7bff9b6c198289e56d1b4dee669769bab37db99"
+            },
+            {
+              "type": "hyde",
+              "querySha256": "b99a733295d8cd9f5ae558083162347fd482e6079a61132aad740f598d673dbc"
+            }
+          ],
+          "normal": {
+            "outcome": "candidate_union_miss",
+            "expectedSourceRanks": [null],
+            "highestRelevantDistractorRank": null,
+            "provenancePassed": false,
+            "listLimits": {
+              "dense": 8,
+              "lexical": 8,
+              "identifier": 8
+            },
+            "totalCandidatesExamined": 24,
+            "uniqueCandidatesAdmitted": 20,
+            "finalResultCount": 5,
+            "fusedPoolLimit": 24,
+            "rerankPoolLimit": 24,
+            "rankingMode": "hybrid",
+            "rankFusionVersion": 2,
+            "reciprocalRankConstant": 60
+          },
+          "retrievalWorkMatched": {
+            "outcome": "candidate_union_miss",
+            "expectedSourceRanks": [null],
+            "highestRelevantDistractorRank": null,
+            "provenancePassed": false,
+            "listLimits": {
+              "dense": 54,
+              "lexical": 53,
+              "identifier": 53
+            },
+            "totalCandidatesExamined": 119,
+            "uniqueCandidatesAdmitted": 108,
+            "finalResultCount": 5,
+            "fusedPoolLimit": 160,
+            "rerankPoolLimit": 160,
+            "rankingMode": "hybrid",
+            "rankFusionVersion": 2,
+            "reciprocalRankConstant": 60
+          },
+          "queryPlanned": {
+            "outcome": "candidate_union_miss",
+            "expectedSourceRanks": [null],
+            "candidateAdmissionSourceRanks": [null],
+            "candidateAdmissionVerified": false,
+            "sourceProvenance": [
+              {
+                "selectedFrom": "missing",
+                "passed": false
+              }
+            ],
+            "provenancePassed": false,
+            "listWork": [
+              {
+                "source": "dense",
+                "weight": 2,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "lexical",
+                "weight": 2,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "identifier",
+                "weight": 2,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 12
+              },
+              {
+                "source": "planned_lex",
+                "weight": 1,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "planned_lex",
+                "weight": 1,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "planned_vec",
+                "weight": 1,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "planned_vec",
+                "weight": 1,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "planned_hyde",
+                "weight": 1,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              }
+            ],
+            "totalCandidatesExamined": 152,
+            "rerankCandidatesExamined": 40,
+            "finalResultCount": 5,
+            "fusedPoolLimit": 160,
+            "rerankPoolLimit": 40,
+            "finalResultLimit": 5,
+            "rankFusionVersion": 2,
+            "reciprocalRankConstant": 60,
+            "fusionPolicy": {
+              "submittedQueryListWeight": 2,
+              "plannedQueryListWeight": 1,
+              "rankOneBonus": 0.05,
+              "rankTwoOrThreeBonus": 0.02
+            },
+            "rerankerPolicy": {
+              "version": 2,
+              "activeBranchPrior": 0.01,
+              "fusedRankBlend": [
+                {
+                  "firstRank": 1,
+                  "lastRank": 3,
+                  "retrievalWeight": 0.75,
+                  "rerankerWeight": 0.25
+                },
+                {
+                  "firstRank": 4,
+                  "lastRank": 10,
+                  "retrievalWeight": 0.6,
+                  "rerankerWeight": 0.4
+                },
+                {
+                  "firstRank": 11,
+                  "lastRank": null,
+                  "retrievalWeight": 0.4,
+                  "rerankerWeight": 0.6
+                }
+              ]
+            },
+            "rankingProviderPolicy": "live-profile-v1",
+            "candidateAdmissionBoundaryPolicy": "fused-candidate-pool-v1"
+          },
+          "planningMilliseconds": 3097.140043000225,
+          "rerankingMilliseconds": 32589.93324299995,
+          "totalSearchMilliseconds": 35801.75362400012,
+          "contribution": {
+            "newCandidateAdmission": false,
+            "rankingOnlyPromotion": false,
+            "preservedExistingSuccess": false,
+            "noImprovement": true
+          }
+        },
+        {
+          "caseId": "case-002",
+          "category": "symptom_to_mechanism",
+          "controlKind": "difficult_case",
+          "planSource": "planner",
+          "plannedQueries": [
+            {
+              "type": "lex",
+              "querySha256": "3e3291a857cb32e944df6f6d9abde243153705f61798f7d56e8afbfd4b211ce3"
+            },
+            {
+              "type": "lex",
+              "querySha256": "d24e2b722353da20c8f9a8942a3977ea3c02cc136ec0f299b29d66bec449847b"
+            },
+            {
+              "type": "vec",
+              "querySha256": "723d909f86ceca65963246201c9b6825f59ad3519de16c1d1b2886583412e8c1"
+            },
+            {
+              "type": "vec",
+              "querySha256": "a8b75bd84a287a29ac1c44731227b83828df93d9c97ef1614ea643788f9b369a"
+            },
+            {
+              "type": "hyde",
+              "querySha256": "5a41f24a543e0bfeb10ae48f74cfa185d425740ddb3a037c2eb61650094f966c"
+            }
+          ],
+          "normal": {
+            "outcome": "candidate_union_miss",
+            "expectedSourceRanks": [null],
+            "highestRelevantDistractorRank": null,
+            "provenancePassed": false,
+            "listLimits": {
+              "dense": 8,
+              "lexical": 8,
+              "identifier": 8
+            },
+            "totalCandidatesExamined": 24,
+            "uniqueCandidatesAdmitted": 19,
+            "finalResultCount": 5,
+            "fusedPoolLimit": 24,
+            "rerankPoolLimit": 24,
+            "rankingMode": "hybrid",
+            "rankFusionVersion": 2,
+            "reciprocalRankConstant": 60
+          },
+          "retrievalWorkMatched": {
+            "outcome": "final_rank_miss",
+            "expectedSourceRanks": [45],
+            "highestRelevantDistractorRank": null,
+            "provenancePassed": true,
+            "listLimits": {
+              "dense": 54,
+              "lexical": 53,
+              "identifier": 53
+            },
+            "totalCandidatesExamined": 145,
+            "uniqueCandidatesAdmitted": 121,
+            "finalResultCount": 5,
+            "fusedPoolLimit": 160,
+            "rerankPoolLimit": 160,
+            "rankingMode": "hybrid",
+            "rankFusionVersion": 2,
+            "reciprocalRankConstant": 60
+          },
+          "queryPlanned": {
+            "outcome": "candidate_union_miss",
+            "expectedSourceRanks": [null],
+            "candidateAdmissionSourceRanks": [null],
+            "candidateAdmissionVerified": false,
+            "sourceProvenance": [
+              {
+                "selectedFrom": "missing",
+                "passed": false
+              }
+            ],
+            "provenancePassed": false,
+            "listWork": [
+              {
+                "source": "dense",
+                "weight": 2,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "lexical",
+                "weight": 2,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "identifier",
+                "weight": 2,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "planned_lex",
+                "weight": 1,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "planned_lex",
+                "weight": 1,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "planned_vec",
+                "weight": 1,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "planned_vec",
+                "weight": 1,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "planned_hyde",
+                "weight": 1,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              }
+            ],
+            "totalCandidatesExamined": 160,
+            "rerankCandidatesExamined": 40,
+            "finalResultCount": 5,
+            "fusedPoolLimit": 160,
+            "rerankPoolLimit": 40,
+            "finalResultLimit": 5,
+            "rankFusionVersion": 2,
+            "reciprocalRankConstant": 60,
+            "fusionPolicy": {
+              "submittedQueryListWeight": 2,
+              "plannedQueryListWeight": 1,
+              "rankOneBonus": 0.05,
+              "rankTwoOrThreeBonus": 0.02
+            },
+            "rerankerPolicy": {
+              "version": 2,
+              "activeBranchPrior": 0.01,
+              "fusedRankBlend": [
+                {
+                  "firstRank": 1,
+                  "lastRank": 3,
+                  "retrievalWeight": 0.75,
+                  "rerankerWeight": 0.25
+                },
+                {
+                  "firstRank": 4,
+                  "lastRank": 10,
+                  "retrievalWeight": 0.6,
+                  "rerankerWeight": 0.4
+                },
+                {
+                  "firstRank": 11,
+                  "lastRank": null,
+                  "retrievalWeight": 0.4,
+                  "rerankerWeight": 0.6
+                }
+              ]
+            },
+            "rankingProviderPolicy": "live-profile-v1",
+            "candidateAdmissionBoundaryPolicy": "fused-candidate-pool-v1"
+          },
+          "planningMilliseconds": 1158.572427999694,
+          "rerankingMilliseconds": 33516.26814799989,
+          "totalSearchMilliseconds": 34787.97650000034,
+          "contribution": {
+            "newCandidateAdmission": false,
+            "rankingOnlyPromotion": false,
+            "preservedExistingSuccess": false,
+            "noImprovement": true
+          }
+        },
+        {
+          "caseId": "case-003",
+          "category": "vocabulary_drift",
+          "controlKind": "successful_baseline_control",
+          "planSource": "planner",
+          "plannedQueries": [
+            {
+              "type": "lex",
+              "querySha256": "4d8146eabcd49459f8aa09a71a0fb74330b11553037817976862f66b0de72d75"
+            },
+            {
+              "type": "lex",
+              "querySha256": "8e0dc4ee1d69a1996112fae95dc8ae6e2b171c49f1303e0da4cc10fb3f23da6c"
+            },
+            {
+              "type": "vec",
+              "querySha256": "46cae32f4a8b33a1439af24724ad0ce88e10c48de9ae3961165d777a3ea42d08"
+            },
+            {
+              "type": "vec",
+              "querySha256": "f99520c15b000c032adb6f95242f73c241d3cfa7663dda02f99dcf0409bb71c5"
+            },
+            {
+              "type": "hyde",
+              "querySha256": "054e5324d8d267a85c396626018c2e9f8c476a24e60918da5e123e0da9f8a420"
+            }
+          ],
+          "normal": {
+            "outcome": "final_rank_miss",
+            "expectedSourceRanks": [8],
+            "highestRelevantDistractorRank": null,
+            "provenancePassed": true,
+            "listLimits": {
+              "dense": 8,
+              "lexical": 8,
+              "identifier": 8
+            },
+            "totalCandidatesExamined": 18,
+            "uniqueCandidatesAdmitted": 13,
+            "finalResultCount": 5,
+            "fusedPoolLimit": 24,
+            "rerankPoolLimit": 24,
+            "rankingMode": "hybrid",
+            "rankFusionVersion": 2,
+            "reciprocalRankConstant": 60
+          },
+          "retrievalWorkMatched": {
+            "outcome": "final_rank_miss",
+            "expectedSourceRanks": [6],
+            "highestRelevantDistractorRank": null,
+            "provenancePassed": true,
+            "listLimits": {
+              "dense": 54,
+              "lexical": 53,
+              "identifier": 53
+            },
+            "totalCandidatesExamined": 109,
+            "uniqueCandidatesAdmitted": 96,
+            "finalResultCount": 5,
+            "fusedPoolLimit": 160,
+            "rerankPoolLimit": 160,
+            "rankingMode": "hybrid",
+            "rankFusionVersion": 2,
+            "reciprocalRankConstant": 60
+          },
+          "queryPlanned": {
+            "outcome": "success",
+            "expectedSourceRanks": [3],
+            "candidateAdmissionSourceRanks": [27],
+            "candidateAdmissionVerified": true,
+            "sourceProvenance": [
+              {
+                "selectedFrom": "ranked_result",
+                "passed": true
+              }
+            ],
+            "provenancePassed": true,
+            "listWork": [
+              {
+                "source": "dense",
+                "weight": 2,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "lexical",
+                "weight": 2,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "identifier",
+                "weight": 2,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 2
+              },
+              {
+                "source": "planned_lex",
+                "weight": 1,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "planned_lex",
+                "weight": 1,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "planned_vec",
+                "weight": 1,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "planned_vec",
+                "weight": 1,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "planned_hyde",
+                "weight": 1,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              }
+            ],
+            "totalCandidatesExamined": 142,
+            "rerankCandidatesExamined": 40,
+            "finalResultCount": 5,
+            "fusedPoolLimit": 160,
+            "rerankPoolLimit": 40,
+            "finalResultLimit": 5,
+            "rankFusionVersion": 2,
+            "reciprocalRankConstant": 60,
+            "fusionPolicy": {
+              "submittedQueryListWeight": 2,
+              "plannedQueryListWeight": 1,
+              "rankOneBonus": 0.05,
+              "rankTwoOrThreeBonus": 0.02
+            },
+            "rerankerPolicy": {
+              "version": 2,
+              "activeBranchPrior": 0.01,
+              "fusedRankBlend": [
+                {
+                  "firstRank": 1,
+                  "lastRank": 3,
+                  "retrievalWeight": 0.75,
+                  "rerankerWeight": 0.25
+                },
+                {
+                  "firstRank": 4,
+                  "lastRank": 10,
+                  "retrievalWeight": 0.6,
+                  "rerankerWeight": 0.4
+                },
+                {
+                  "firstRank": 11,
+                  "lastRank": null,
+                  "retrievalWeight": 0.4,
+                  "rerankerWeight": 0.6
+                }
+              ]
+            },
+            "rankingProviderPolicy": "live-profile-v1",
+            "candidateAdmissionBoundaryPolicy": "fused-candidate-pool-v1"
+          },
+          "planningMilliseconds": 1832.6732919998467,
+          "rerankingMilliseconds": 28407.714693000074,
+          "totalSearchMilliseconds": 30354.340063000098,
+          "contribution": {
+            "newCandidateAdmission": false,
+            "rankingOnlyPromotion": true,
+            "preservedExistingSuccess": false,
+            "noImprovement": false
+          }
+        },
+        {
+          "caseId": "case-004",
+          "category": "lexical_only_tool_evidence",
+          "controlKind": "difficult_case",
+          "planSource": "planner",
+          "plannedQueries": [
+            {
+              "type": "lex",
+              "querySha256": "6411ba5984580d199365e94b0f313acc401e16c0438babe50c26682f37eee191"
+            },
+            {
+              "type": "lex",
+              "querySha256": "9fafc37bdd2f3d8a1cab9649889ad8883291f62585b3efe7bdc4cac8efd93a7f"
+            },
+            {
+              "type": "vec",
+              "querySha256": "165eb891a0f1ccb81d7578367990d6924e19747184cb22891b26c1f4517b3d27"
+            },
+            {
+              "type": "vec",
+              "querySha256": "8e0054b62c7d6eedf1be71aec06d9f8986f8da5d4cf65f38ec7ffc8770662793"
+            },
+            {
+              "type": "hyde",
+              "querySha256": "58ba90a5b72ad395467c4b6ad2ad3014417be9c6642c82e59dbd09906dd285b0"
+            }
+          ],
+          "normal": {
+            "outcome": "candidate_union_miss",
+            "expectedSourceRanks": [null],
+            "highestRelevantDistractorRank": null,
+            "provenancePassed": false,
+            "listLimits": {
+              "dense": 8,
+              "lexical": 8,
+              "identifier": 8
+            },
+            "totalCandidatesExamined": 19,
+            "uniqueCandidatesAdmitted": 11,
+            "finalResultCount": 5,
+            "fusedPoolLimit": 24,
+            "rerankPoolLimit": 24,
+            "rankingMode": "hybrid",
+            "rankFusionVersion": 2,
+            "reciprocalRankConstant": 60
+          },
+          "retrievalWorkMatched": {
+            "outcome": "candidate_union_miss",
+            "expectedSourceRanks": [null],
+            "highestRelevantDistractorRank": null,
+            "provenancePassed": false,
+            "listLimits": {
+              "dense": 54,
+              "lexical": 53,
+              "identifier": 53
+            },
+            "totalCandidatesExamined": 110,
+            "uniqueCandidatesAdmitted": 100,
+            "finalResultCount": 5,
+            "fusedPoolLimit": 160,
+            "rerankPoolLimit": 160,
+            "rankingMode": "hybrid",
+            "rankFusionVersion": 2,
+            "reciprocalRankConstant": 60
+          },
+          "queryPlanned": {
+            "outcome": "candidate_union_miss",
+            "expectedSourceRanks": [null],
+            "candidateAdmissionSourceRanks": [null],
+            "candidateAdmissionVerified": false,
+            "sourceProvenance": [
+              {
+                "selectedFrom": "missing",
+                "passed": false
+              }
+            ],
+            "provenancePassed": false,
+            "listWork": [
+              {
+                "source": "dense",
+                "weight": 2,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "lexical",
+                "weight": 2,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "identifier",
+                "weight": 2,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 3
+              },
+              {
+                "source": "planned_lex",
+                "weight": 1,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "planned_lex",
+                "weight": 1,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "planned_vec",
+                "weight": 1,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "planned_vec",
+                "weight": 1,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "planned_hyde",
+                "weight": 1,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              }
+            ],
+            "totalCandidatesExamined": 143,
+            "rerankCandidatesExamined": 40,
+            "finalResultCount": 5,
+            "fusedPoolLimit": 160,
+            "rerankPoolLimit": 40,
+            "finalResultLimit": 5,
+            "rankFusionVersion": 2,
+            "reciprocalRankConstant": 60,
+            "fusionPolicy": {
+              "submittedQueryListWeight": 2,
+              "plannedQueryListWeight": 1,
+              "rankOneBonus": 0.05,
+              "rankTwoOrThreeBonus": 0.02
+            },
+            "rerankerPolicy": {
+              "version": 2,
+              "activeBranchPrior": 0.01,
+              "fusedRankBlend": [
+                {
+                  "firstRank": 1,
+                  "lastRank": 3,
+                  "retrievalWeight": 0.75,
+                  "rerankerWeight": 0.25
+                },
+                {
+                  "firstRank": 4,
+                  "lastRank": 10,
+                  "retrievalWeight": 0.6,
+                  "rerankerWeight": 0.4
+                },
+                {
+                  "firstRank": 11,
+                  "lastRank": null,
+                  "retrievalWeight": 0.4,
+                  "rerankerWeight": 0.6
+                }
+              ]
+            },
+            "rankingProviderPolicy": "live-profile-v1",
+            "candidateAdmissionBoundaryPolicy": "fused-candidate-pool-v1"
+          },
+          "planningMilliseconds": 6431.405943999998,
+          "rerankingMilliseconds": 81213.41264700005,
+          "totalSearchMilliseconds": 87774.24940599967,
+          "contribution": {
+            "newCandidateAdmission": false,
+            "rankingOnlyPromotion": false,
+            "preservedExistingSuccess": false,
+            "noImprovement": true
+          }
+        },
+        {
+          "caseId": "case-005",
+          "category": "outcome_to_component",
+          "controlKind": "difficult_case",
+          "planSource": "planner",
+          "plannedQueries": [
+            {
+              "type": "lex",
+              "querySha256": "b87a8d575cfdc4caa41b3088df20fbfe7146fd3565d8b4dd33947966bb0938b0"
+            },
+            {
+              "type": "lex",
+              "querySha256": "f8dca91b79125531193180527b3c41d9e22dafe6aa249d73aaa87a3bb12eedf9"
+            },
+            {
+              "type": "vec",
+              "querySha256": "b7b721fa8251c4ee0447b319d19d2e0e5074abb41e05f8aeb7b97a99d999d161"
+            },
+            {
+              "type": "vec",
+              "querySha256": "e9801e94fdd395a58258430e6262c07fa0f497277c87f06d8f8a8ebfeb99e47c"
+            },
+            {
+              "type": "hyde",
+              "querySha256": "94d6c18d8512dd4017d45fa3eb00266cc11c5214d06cef98e02f35d704acda16"
+            }
+          ],
+          "normal": {
+            "outcome": "candidate_union_miss",
+            "expectedSourceRanks": [null],
+            "highestRelevantDistractorRank": null,
+            "provenancePassed": false,
+            "listLimits": {
+              "dense": 8,
+              "lexical": 8,
+              "identifier": 8
+            },
+            "totalCandidatesExamined": 19,
+            "uniqueCandidatesAdmitted": 13,
+            "finalResultCount": 5,
+            "fusedPoolLimit": 24,
+            "rerankPoolLimit": 24,
+            "rankingMode": "hybrid",
+            "rankFusionVersion": 2,
+            "reciprocalRankConstant": 60
+          },
+          "retrievalWorkMatched": {
+            "outcome": "candidate_union_miss",
+            "expectedSourceRanks": [null],
+            "highestRelevantDistractorRank": null,
+            "provenancePassed": false,
+            "listLimits": {
+              "dense": 54,
+              "lexical": 53,
+              "identifier": 53
+            },
+            "totalCandidatesExamined": 110,
+            "uniqueCandidatesAdmitted": 90,
+            "finalResultCount": 5,
+            "fusedPoolLimit": 160,
+            "rerankPoolLimit": 160,
+            "rankingMode": "hybrid",
+            "rankFusionVersion": 2,
+            "reciprocalRankConstant": 60
+          },
+          "queryPlanned": {
+            "outcome": "candidate_union_miss",
+            "expectedSourceRanks": [null],
+            "candidateAdmissionSourceRanks": [null],
+            "candidateAdmissionVerified": false,
+            "sourceProvenance": [
+              {
+                "selectedFrom": "missing",
+                "passed": false
+              }
+            ],
+            "provenancePassed": false,
+            "listWork": [
+              {
+                "source": "dense",
+                "weight": 2,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "lexical",
+                "weight": 2,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "identifier",
+                "weight": 2,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 3
+              },
+              {
+                "source": "planned_lex",
+                "weight": 1,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "planned_lex",
+                "weight": 1,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "planned_vec",
+                "weight": 1,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "planned_vec",
+                "weight": 1,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "planned_hyde",
+                "weight": 1,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              }
+            ],
+            "totalCandidatesExamined": 143,
+            "rerankCandidatesExamined": 40,
+            "finalResultCount": 5,
+            "fusedPoolLimit": 160,
+            "rerankPoolLimit": 40,
+            "finalResultLimit": 5,
+            "rankFusionVersion": 2,
+            "reciprocalRankConstant": 60,
+            "fusionPolicy": {
+              "submittedQueryListWeight": 2,
+              "plannedQueryListWeight": 1,
+              "rankOneBonus": 0.05,
+              "rankTwoOrThreeBonus": 0.02
+            },
+            "rerankerPolicy": {
+              "version": 2,
+              "activeBranchPrior": 0.01,
+              "fusedRankBlend": [
+                {
+                  "firstRank": 1,
+                  "lastRank": 3,
+                  "retrievalWeight": 0.75,
+                  "rerankerWeight": 0.25
+                },
+                {
+                  "firstRank": 4,
+                  "lastRank": 10,
+                  "retrievalWeight": 0.6,
+                  "rerankerWeight": 0.4
+                },
+                {
+                  "firstRank": 11,
+                  "lastRank": null,
+                  "retrievalWeight": 0.4,
+                  "rerankerWeight": 0.6
+                }
+              ]
+            },
+            "rankingProviderPolicy": "live-profile-v1",
+            "candidateAdmissionBoundaryPolicy": "fused-candidate-pool-v1"
+          },
+          "planningMilliseconds": 2640.5406759995967,
+          "rerankingMilliseconds": 41227.77420999948,
+          "totalSearchMilliseconds": 43988.10264299996,
+          "contribution": {
+            "newCandidateAdmission": false,
+            "rankingOnlyPromotion": false,
+            "preservedExistingSuccess": false,
+            "noImprovement": true
+          }
+        },
+        {
+          "caseId": "case-006",
+          "category": "branch_competition",
+          "controlKind": "difficult_case",
+          "planSource": "planner",
+          "plannedQueries": [
+            {
+              "type": "lex",
+              "querySha256": "7ac26890a03397ebd05185f71fe62b14b018e13d6dfa59ca126318a71866ae3c"
+            },
+            {
+              "type": "lex",
+              "querySha256": "48897dd3c4280236e22445234e78762ce0c660e83984137b7d2469373fc44135"
+            },
+            {
+              "type": "vec",
+              "querySha256": "7ac26890a03397ebd05185f71fe62b14b018e13d6dfa59ca126318a71866ae3c"
+            },
+            {
+              "type": "vec",
+              "querySha256": "48897dd3c4280236e22445234e78762ce0c660e83984137b7d2469373fc44135"
+            },
+            {
+              "type": "hyde",
+              "querySha256": "dc776c21bdc59bb00bd457f8f072054e855304b660a60a2cc92d417a730f8b0e"
+            }
+          ],
+          "normal": {
+            "outcome": "candidate_union_miss",
+            "expectedSourceRanks": [null],
+            "highestRelevantDistractorRank": null,
+            "provenancePassed": false,
+            "listLimits": {
+              "dense": 8,
+              "lexical": 8,
+              "identifier": 8
+            },
+            "totalCandidatesExamined": 18,
+            "uniqueCandidatesAdmitted": 15,
+            "finalResultCount": 5,
+            "fusedPoolLimit": 24,
+            "rerankPoolLimit": 24,
+            "rankingMode": "hybrid",
+            "rankFusionVersion": 2,
+            "reciprocalRankConstant": 60
+          },
+          "retrievalWorkMatched": {
+            "outcome": "candidate_union_miss",
+            "expectedSourceRanks": [null],
+            "highestRelevantDistractorRank": null,
+            "provenancePassed": false,
+            "listLimits": {
+              "dense": 54,
+              "lexical": 53,
+              "identifier": 53
+            },
+            "totalCandidatesExamined": 109,
+            "uniqueCandidatesAdmitted": 104,
+            "finalResultCount": 5,
+            "fusedPoolLimit": 160,
+            "rerankPoolLimit": 160,
+            "rankingMode": "hybrid",
+            "rankFusionVersion": 2,
+            "reciprocalRankConstant": 60
+          },
+          "queryPlanned": {
+            "outcome": "candidate_union_miss",
+            "expectedSourceRanks": [null],
+            "candidateAdmissionSourceRanks": [null],
+            "candidateAdmissionVerified": false,
+            "sourceProvenance": [
+              {
+                "selectedFrom": "missing",
+                "passed": false
+              }
+            ],
+            "provenancePassed": false,
+            "listWork": [
+              {
+                "source": "dense",
+                "weight": 2,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "lexical",
+                "weight": 2,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "identifier",
+                "weight": 2,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 2
+              },
+              {
+                "source": "planned_lex",
+                "weight": 1,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "planned_lex",
+                "weight": 1,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "planned_vec",
+                "weight": 1,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "planned_vec",
+                "weight": 1,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "planned_hyde",
+                "weight": 1,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              }
+            ],
+            "totalCandidatesExamined": 142,
+            "rerankCandidatesExamined": 40,
+            "finalResultCount": 5,
+            "fusedPoolLimit": 160,
+            "rerankPoolLimit": 40,
+            "finalResultLimit": 5,
+            "rankFusionVersion": 2,
+            "reciprocalRankConstant": 60,
+            "fusionPolicy": {
+              "submittedQueryListWeight": 2,
+              "plannedQueryListWeight": 1,
+              "rankOneBonus": 0.05,
+              "rankTwoOrThreeBonus": 0.02
+            },
+            "rerankerPolicy": {
+              "version": 2,
+              "activeBranchPrior": 0.01,
+              "fusedRankBlend": [
+                {
+                  "firstRank": 1,
+                  "lastRank": 3,
+                  "retrievalWeight": 0.75,
+                  "rerankerWeight": 0.25
+                },
+                {
+                  "firstRank": 4,
+                  "lastRank": 10,
+                  "retrievalWeight": 0.6,
+                  "rerankerWeight": 0.4
+                },
+                {
+                  "firstRank": 11,
+                  "lastRank": null,
+                  "retrievalWeight": 0.4,
+                  "rerankerWeight": 0.6
+                }
+              ]
+            },
+            "rankingProviderPolicy": "live-profile-v1",
+            "candidateAdmissionBoundaryPolicy": "fused-candidate-pool-v1"
+          },
+          "planningMilliseconds": 1370.3263260005042,
+          "rerankingMilliseconds": 34759.18124900013,
+          "totalSearchMilliseconds": 36238.984225999564,
+          "contribution": {
+            "newCandidateAdmission": false,
+            "rankingOnlyPromotion": false,
+            "preservedExistingSuccess": false,
+            "noImprovement": true
+          }
+        },
+        {
+          "caseId": "case-007",
+          "category": "current_versus_obsolete_summary",
+          "controlKind": "difficult_case",
+          "planSource": "planner",
+          "plannedQueries": [
+            {
+              "type": "lex",
+              "querySha256": "df373ae12384700d0bfa80d738ca16653431d70a455adddcfa8fc2b21fca17c2"
+            },
+            {
+              "type": "lex",
+              "querySha256": "ff72e0cd20e4455a4821c38b33d232d89a0cbc54c77887b34a2faf9572aa4b32"
+            },
+            {
+              "type": "vec",
+              "querySha256": "3b294b0ea4ebbc7f4c5eabecc22c3661ea64ad33479afb39525ec6fe1f68004d"
+            },
+            {
+              "type": "vec",
+              "querySha256": "50ce138ee79e63454ccbed7ee5771a65c1e07e2ba4702606cb28e97e2b0565c2"
+            },
+            {
+              "type": "hyde",
+              "querySha256": "7a7dc97b261a1ce8f009af3d8ce744de5d18e8018502dda5565e2624e04d3446"
+            }
+          ],
+          "normal": {
+            "outcome": "success",
+            "expectedSourceRanks": [5],
+            "highestRelevantDistractorRank": null,
+            "provenancePassed": true,
+            "listLimits": {
+              "dense": 8,
+              "lexical": 8,
+              "identifier": 8
+            },
+            "totalCandidatesExamined": 18,
+            "uniqueCandidatesAdmitted": 14,
+            "finalResultCount": 5,
+            "fusedPoolLimit": 24,
+            "rerankPoolLimit": 24,
+            "rankingMode": "hybrid",
+            "rankFusionVersion": 2,
+            "reciprocalRankConstant": 60
+          },
+          "retrievalWorkMatched": {
+            "outcome": "success",
+            "expectedSourceRanks": [5],
+            "highestRelevantDistractorRank": null,
+            "provenancePassed": true,
+            "listLimits": {
+              "dense": 54,
+              "lexical": 53,
+              "identifier": 53
+            },
+            "totalCandidatesExamined": 109,
+            "uniqueCandidatesAdmitted": 96,
+            "finalResultCount": 5,
+            "fusedPoolLimit": 160,
+            "rerankPoolLimit": 160,
+            "rankingMode": "hybrid",
+            "rankFusionVersion": 2,
+            "reciprocalRankConstant": 60
+          },
+          "queryPlanned": {
+            "outcome": "success",
+            "expectedSourceRanks": [3],
+            "candidateAdmissionSourceRanks": [16],
+            "candidateAdmissionVerified": true,
+            "sourceProvenance": [
+              {
+                "selectedFrom": "ranked_result",
+                "passed": true
+              }
+            ],
+            "provenancePassed": true,
+            "listWork": [
+              {
+                "source": "dense",
+                "weight": 2,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "lexical",
+                "weight": 2,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "identifier",
+                "weight": 2,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 2
+              },
+              {
+                "source": "planned_lex",
+                "weight": 1,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "planned_lex",
+                "weight": 1,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "planned_vec",
+                "weight": 1,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "planned_vec",
+                "weight": 1,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "planned_hyde",
+                "weight": 1,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              }
+            ],
+            "totalCandidatesExamined": 142,
+            "rerankCandidatesExamined": 40,
+            "finalResultCount": 5,
+            "fusedPoolLimit": 160,
+            "rerankPoolLimit": 40,
+            "finalResultLimit": 5,
+            "rankFusionVersion": 2,
+            "reciprocalRankConstant": 60,
+            "fusionPolicy": {
+              "submittedQueryListWeight": 2,
+              "plannedQueryListWeight": 1,
+              "rankOneBonus": 0.05,
+              "rankTwoOrThreeBonus": 0.02
+            },
+            "rerankerPolicy": {
+              "version": 2,
+              "activeBranchPrior": 0.01,
+              "fusedRankBlend": [
+                {
+                  "firstRank": 1,
+                  "lastRank": 3,
+                  "retrievalWeight": 0.75,
+                  "rerankerWeight": 0.25
+                },
+                {
+                  "firstRank": 4,
+                  "lastRank": 10,
+                  "retrievalWeight": 0.6,
+                  "rerankerWeight": 0.4
+                },
+                {
+                  "firstRank": 11,
+                  "lastRank": null,
+                  "retrievalWeight": 0.4,
+                  "rerankerWeight": 0.6
+                }
+              ]
+            },
+            "rankingProviderPolicy": "live-profile-v1",
+            "candidateAdmissionBoundaryPolicy": "fused-candidate-pool-v1"
+          },
+          "planningMilliseconds": 2667.3155020000413,
+          "rerankingMilliseconds": 31076.15595899988,
+          "totalSearchMilliseconds": 33858.5728090005,
+          "contribution": {
+            "newCandidateAdmission": false,
+            "rankingOnlyPromotion": false,
+            "preservedExistingSuccess": true,
+            "noImprovement": false
+          }
+        },
+        {
+          "caseId": "case-008",
+          "category": "exact_identifier",
+          "controlKind": "successful_baseline_control",
+          "planSource": "planner",
+          "plannedQueries": [
+            {
+              "type": "lex",
+              "querySha256": "f9e39f39c7d294a5444ebbc8c5cf062916b5e3c8299816f3776101d08671472e"
+            },
+            {
+              "type": "lex",
+              "querySha256": "fe58ce2cdcf545562fea97618bf149502b1626ff7fc5140efffb066360f4783c"
+            },
+            {
+              "type": "vec",
+              "querySha256": "f9e39f39c7d294a5444ebbc8c5cf062916b5e3c8299816f3776101d08671472e"
+            },
+            {
+              "type": "vec",
+              "querySha256": "fe58ce2cdcf545562fea97618bf149502b1626ff7fc5140efffb066360f4783c"
+            },
+            {
+              "type": "hyde",
+              "querySha256": "5b9abc5cdd72c6577ccdf80c4e0a772672fd065c548248c01f0b32584407c9cb"
+            }
+          ],
+          "normal": {
+            "outcome": "success",
+            "expectedSourceRanks": [1],
+            "highestRelevantDistractorRank": null,
+            "provenancePassed": true,
+            "listLimits": {
+              "dense": 8,
+              "lexical": 8,
+              "identifier": 8
+            },
+            "totalCandidatesExamined": 24,
+            "uniqueCandidatesAdmitted": 16,
+            "finalResultCount": 5,
+            "fusedPoolLimit": 24,
+            "rerankPoolLimit": 24,
+            "rankingMode": "hybrid",
+            "rankFusionVersion": 2,
+            "reciprocalRankConstant": 60
+          },
+          "retrievalWorkMatched": {
+            "outcome": "success",
+            "expectedSourceRanks": [1],
+            "highestRelevantDistractorRank": null,
+            "provenancePassed": true,
+            "listLimits": {
+              "dense": 54,
+              "lexical": 53,
+              "identifier": 53
+            },
+            "totalCandidatesExamined": 143,
+            "uniqueCandidatesAdmitted": 107,
+            "finalResultCount": 5,
+            "fusedPoolLimit": 160,
+            "rerankPoolLimit": 160,
+            "rankingMode": "hybrid",
+            "rankFusionVersion": 2,
+            "reciprocalRankConstant": 60
+          },
+          "queryPlanned": {
+            "outcome": "success",
+            "expectedSourceRanks": [1],
+            "candidateAdmissionSourceRanks": [1],
+            "candidateAdmissionVerified": true,
+            "sourceProvenance": [
+              {
+                "selectedFrom": "ranked_result",
+                "passed": true
+              }
+            ],
+            "provenancePassed": true,
+            "listWork": [
+              {
+                "source": "dense",
+                "weight": 2,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "lexical",
+                "weight": 2,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "identifier",
+                "weight": 2,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "planned_lex",
+                "weight": 1,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "planned_lex",
+                "weight": 1,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "planned_vec",
+                "weight": 1,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "planned_vec",
+                "weight": 1,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              },
+              {
+                "source": "planned_hyde",
+                "weight": 1,
+                "candidateLimit": 20,
+                "admittedCandidateCount": 20
+              }
+            ],
+            "totalCandidatesExamined": 160,
+            "rerankCandidatesExamined": 40,
+            "finalResultCount": 5,
+            "fusedPoolLimit": 160,
+            "rerankPoolLimit": 40,
+            "finalResultLimit": 5,
+            "rankFusionVersion": 2,
+            "reciprocalRankConstant": 60,
+            "fusionPolicy": {
+              "submittedQueryListWeight": 2,
+              "plannedQueryListWeight": 1,
+              "rankOneBonus": 0.05,
+              "rankTwoOrThreeBonus": 0.02
+            },
+            "rerankerPolicy": {
+              "version": 2,
+              "activeBranchPrior": 0.01,
+              "fusedRankBlend": [
+                {
+                  "firstRank": 1,
+                  "lastRank": 3,
+                  "retrievalWeight": 0.75,
+                  "rerankerWeight": 0.25
+                },
+                {
+                  "firstRank": 4,
+                  "lastRank": 10,
+                  "retrievalWeight": 0.6,
+                  "rerankerWeight": 0.4
+                },
+                {
+                  "firstRank": 11,
+                  "lastRank": null,
+                  "retrievalWeight": 0.4,
+                  "rerankerWeight": 0.6
+                }
+              ]
+            },
+            "rankingProviderPolicy": "live-profile-v1",
+            "candidateAdmissionBoundaryPolicy": "fused-candidate-pool-v1"
+          },
+          "planningMilliseconds": 1534.0771559998393,
+          "rerankingMilliseconds": 42693.911511000246,
+          "totalSearchMilliseconds": 44343.11779600009,
           "contribution": {
             "newCandidateAdmission": false,
             "rankingOnlyPromotion": false,
@@ -4788,7 +4834,30 @@
         "newCandidateAdmissionCount": 0,
         "rankingOnlyPromotionCount": 1,
         "preservedExistingSuccessCount": 2,
+        "noImprovementCount": 5,
         "plannerFallbackCount": 0
+      },
+      "committedCorpus": {
+        "corpusId": "recall-quality-project-scoped-bounded-v3",
+        "specificationSha256": "6208cfc632c8ff53815567dd5385297bb6cc513f62e3d50a5bfa8ae687c34439",
+        "caseCount": 17,
+        "qualityPassed": true,
+        "candidatePoolRecall": 1,
+        "finalRecall": 1,
+        "contextUsefulness": 1,
+        "sourceOccurrencePreservation": 1,
+        "sessionOriginVerification": 1,
+        "evidenceRelationVerification": 1,
+        "contributingEntryVerification": 1,
+        "branchVerification": 1,
+        "policyFailureCaseIds": [],
+        "queryLatencyMilliseconds": {
+          "median": 11978.788410000503,
+          "p95": 15973.329337999225
+        },
+        "executedSearchRequests": 18,
+        "plannerRequests": 17,
+        "rerankerRequests": 17
       }
     }
   ],
@@ -4805,16 +4874,18 @@
     "newCandidateAdmissionCount": 0,
     "rankingOnlyPromotionCount": 3,
     "preservedExistingSuccessCount": 5,
+    "noImprovementCount": 16,
     "plannerFallbackCount": 0
   },
   "fallbackCharacterization": {
     "liveNewCandidateAdmissionObserved": false,
     "existingSuccessPreservedAcrossProfiles": false,
-    "existingSuccessRegressionProfileRunIds": ["embedded-cpu"]
+    "existingSuccessRegressionProfileRunIds": ["embedded-vulkan"]
   },
   "limitations": [
     "Approval applies only as an explicit fallback after hybrid recall misses, with the accepted committed hybrid baseline and recorded planner, reranker, adapter, grammar, score, and search-policy identities.",
     "Live candidate admissions and preservation of queries already answered by hybrid are reported as fallback characterization, not release gates.",
+    "Committed-corpus query-planned correctness must pass; its latency is recorded as explicit-fallback characterization rather than compared with the hybrid latency gate.",
     "EmbeddingGemma live candidates remain separate and are not approved when their committed-corpus quality gate fails.",
     "The committed corpus is synthetic-but-session-shaped; the private corpus is bounded and does not establish broad superiority.",
     "Private queries, plans, source text, session paths, and model artifacts remain outside Git.",

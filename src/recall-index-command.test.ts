@@ -21,6 +21,15 @@ const BACKGROUND_STARTING_STATUS = {
 };
 
 const UNUSED_BACKGROUND_INDEX_CONTROLS = {
+  async adoptLegacy() {
+    throw new Error('legacy adoption not expected');
+  },
+  async collectRetired() {
+    throw new Error('retired generation collection not expected');
+  },
+  async rollback() {
+    throw new Error('rollback not expected');
+  },
   async startBackgroundIndexGeneration() {
     throw new Error('background start not expected');
   },
@@ -111,6 +120,7 @@ void test('recall index command attributes explicit incremental maintenance', as
     },
   });
 
+  assert.equal(receivedOptions?.optimize, true);
   assert.equal(
     receivedOptions?.manualMaintenanceTrigger,
     RecallManualMaintenanceTrigger.MANUAL_INCREMENTAL_INDEX,
@@ -241,4 +251,45 @@ void test('recall index command routes stop, resume, and discard explicitly', as
   await runRecallIndexCommand({ argumentsText: '--discard', qualityGateDecision, service, ui });
 
   assert.deepEqual(calls, ['stop', 'resume', 'discard']);
+});
+
+void test('recall index command performs explicit rollback without rerunning the backfill gate', async () => {
+  let rollbackCalls = 0;
+  let indexCalls = 0;
+  const statusUpdates: Array<string | undefined> = [];
+  const notifications: string[] = [];
+
+  await runRecallIndexCommand({
+    argumentsText: '--rollback',
+    qualityGateDecision: {
+      automatedGatePassed: false,
+      selectedPolicy: null,
+      blockers: ['quality evidence is irrelevant to pointer rollback'],
+    },
+    service: {
+      ...UNUSED_BACKGROUND_INDEX_CONTROLS,
+      async index() {
+        indexCalls += 1;
+        throw new Error('rollback must not index');
+      },
+      async rollback() {
+        rollbackCalls += 1;
+      },
+    },
+    ui: {
+      setStatus(status) {
+        statusUpdates.push(status);
+      },
+      notify(message) {
+        notifications.push(message);
+      },
+    },
+  });
+
+  assert.equal(rollbackCalls, 1);
+  assert.equal(indexCalls, 0);
+  assert.deepEqual(statusUpdates, ['rolling back recall generation…', undefined]);
+  assert.deepEqual(notifications, [
+    'Recall generation rolled back; retained markers are pending replay',
+  ]);
 });

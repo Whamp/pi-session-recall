@@ -5,94 +5,32 @@ import { RecallInferenceBackend } from './enums.js';
 import {
   createRecallQueryPlanningExecutionIdentity,
   createRecallRerankingExecutionIdentity,
-  normalizeRecallPhysicalDeviceIdentity,
-  resolveRecallCpuPhysicalDeviceIdentity,
 } from './recall-inference-capabilities.js';
-import {
-  createRecommendedQmdQueryPlanningModelProfile,
-  createRecommendedQwenRerankingModelProfile,
-} from './recall-model-profiles.js';
+import { createRecommendedQmdQueryPlanningModelProfile } from './recall-model-profiles.js';
 
 void test('capability identities include adapter policy without changing model profile identity', () => {
   const plannerProfile = createRecommendedQmdQueryPlanningModelProfile();
 
-  const rerankerIdentity = createRecallRerankingExecutionIdentity(
-    createRecommendedQwenRerankingModelProfile(),
-    'custom-reranker-v1',
-    'custom-reranker-configuration-v1',
-    RecallInferenceBackend.CUSTOM,
-    1_000,
-  );
-  assert.equal(rerankerIdentity.adapterId, 'custom-reranker-v1');
-  assert.equal(rerankerIdentity.backend, RecallInferenceBackend.CUSTOM);
-  assert.match(rerankerIdentity.cacheIdentity, /recall-reranking-execution-v1/u);
-  const changedRerankerAdapterVersionIdentity = createRecallRerankingExecutionIdentity(
-    createRecommendedQwenRerankingModelProfile(),
-    'custom-reranker-v1',
-    'custom-reranker-configuration-v1',
-    RecallInferenceBackend.CUSTOM,
-    1_000,
-    '2',
-  );
-  assert.notEqual(
-    rerankerIdentity.cacheIdentity,
-    changedRerankerAdapterVersionIdentity.cacheIdentity,
-  );
-  const changedRerankerProfileIdentity = createRecallRerankingExecutionIdentity(
+  assert.deepEqual(
+    createRecallRerankingExecutionIdentity(
+      'reranker-profile',
+      'custom-reranker-v1',
+      RecallInferenceBackend.CUSTOM,
+    ),
     {
-      ...createRecommendedQwenRerankingModelProfile(),
-      scoreRange: { minimum: 0.1, maximum: 1 },
+      adapterId: 'custom-reranker-v1',
+      backend: RecallInferenceBackend.CUSTOM,
+      cacheIdentity: 'reranker-profile:custom-reranker-v1',
+      modelProfileId: 'reranker-profile',
     },
-    'custom-reranker-v1',
-    'custom-reranker-configuration-v1',
-    RecallInferenceBackend.CUSTOM,
-    1_000,
   );
-  assert.notEqual(
-    rerankerIdentity.modelProfileIdentity,
-    changedRerankerProfileIdentity.modelProfileIdentity,
-  );
-  const plannerIdentity = createRecallQueryPlanningExecutionIdentity(
-    plannerProfile,
-    'custom-planner-v1',
-    'custom-planner-configuration-v1',
-    RecallInferenceBackend.CUSTOM,
-    1_000,
-  );
-  assert.match(plannerIdentity.cacheIdentity, /^recall-query-planning-execution-v1:[a-f0-9]{64}$/u);
-  assert.equal(plannerIdentity.adapterVersion, 'custom-planner-v1');
-  assert.match(plannerIdentity.modelProfileIdentity, /^recall-query-planning-model-profile-v1:/u);
-});
-
-void test('physical device identity normalizes case, whitespace, duplicates, and order', () => {
-  assert.deepEqual(normalizeRecallPhysicalDeviceIdentity(['  NVIDIA   RTX 4090 ', 'cpu', 'CPU']), [
-    'cpu',
-    'nvidia rtx 4090',
-  ]);
-});
-
-void test('CPU physical device identity binds model names and logical processor count', () => {
-  const first = resolveRecallCpuPhysicalDeviceIdentity([
-    { model: ' Fixture CPU 9000 ' },
-    { model: 'Fixture CPU 9000' },
-  ]);
-  const equivalent = resolveRecallCpuPhysicalDeviceIdentity([
-    { model: 'fixture   cpu 9000' },
-    { model: 'FIXTURE CPU 9000' },
-  ]);
-  const replacementModel = resolveRecallCpuPhysicalDeviceIdentity([
-    { model: 'Fixture CPU 9100' },
-    { model: 'Fixture CPU 9100' },
-  ]);
-  const replacementProcessorCount = resolveRecallCpuPhysicalDeviceIdentity([
-    { model: 'Fixture CPU 9000' },
-  ]);
-
-  assert.deepEqual(first.deviceNames, ['Fixture CPU 9000']);
-  assert.deepEqual(first.physicalDeviceIdentity, equivalent.physicalDeviceIdentity);
-  assert.notDeepEqual(first.physicalDeviceIdentity, replacementModel.physicalDeviceIdentity);
-  assert.notDeepEqual(
-    first.physicalDeviceIdentity,
-    replacementProcessorCount.physicalDeviceIdentity,
+  assert.match(
+    createRecallQueryPlanningExecutionIdentity(
+      plannerProfile,
+      'custom-planner-v1',
+      RecallInferenceBackend.CUSTOM,
+      1_000,
+    ).cacheIdentity,
+    /custom-planner-v1.*qmd-query-expansion-no-think-v1/u,
   );
 });

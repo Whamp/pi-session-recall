@@ -229,6 +229,7 @@ export function formatRecallQualityReport(
     '',
     '## Evaluation identity',
     '',
+    `- Storage: conversation schema v${result.storageIdentity.conversationSchemaVersion}, zvec schema v${result.storageIdentity.zvecSchemaVersion}, manifest v${result.storageIdentity.indexManifestVersion}, incremental eligibility policy v${result.storageIdentity.incrementalEligibilityPolicyVersion}`,
     `- Default scope: \`${result.evaluationIdentity.defaultScope}\` (policy v${result.evaluationIdentity.projectScopePolicyVersion})`,
     `- Project identity policy: v${result.evaluationIdentity.projectIdentityPolicyVersion}; metadata schema v${result.evaluationIdentity.projectIdentityMetadataSchemaVersion}`,
     `- Project lineage policy: v${result.evaluationIdentity.lineagePolicyVersion}; digest \`${result.evaluationIdentity.lineageDigest}\``,
@@ -342,6 +343,7 @@ export function formatRecallQualityReport(
     '## Limits of this evidence',
     '',
     '- The corpus is a committed synthetic-but-session-shaped fixture, not a sample of private production logs. It covers the required retrieval and project-identity classes but cannot estimate all real-corpus failure modes.',
+    '- Deterministic fixture embeddings prove retrieval plumbing, channel fusion, evidence shaping, and scope policy. They do not measure production embedding-model semantics.',
     ...(hasNoDiscriminatingRecallQualityVariance(result.selection.combinations)
       ? [
           '- The measured grid has no discriminating quality variance across gated recall, context, source-preservation, and visible-duplicate metrics; it can identify the smallest passing candidate pool but cannot rank quality among passing pools.',

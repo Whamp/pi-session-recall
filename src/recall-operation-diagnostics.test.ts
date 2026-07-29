@@ -1,5 +1,16 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import {
+  appendFile,
+  mkdir,
+  mkdtemp,
+  open,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -9,32 +20,22 @@ import {
   RecallDiagnosticOperationKind,
   RecallDiagnosticStatus,
   RecallDiagnosticsMode,
-  RecallLifecycleTrigger,
   RecallManualMaintenanceTrigger,
   RecallSearchScope,
 } from './enums.js';
 import { isUnknownRecord } from './is-unknown-record.js';
 import {
+  createRecallIncrementalDiagnosticMetrics,
   createRecallIndexMetrics,
   createRecallOperationDiagnostics,
   createRecallSearchDiagnosticMetrics,
-  type RecallDiagnosticsClock,
-  type RecallLiveSessionDiagnosticOperation,
+  readRecallOperationDiagnosticRecords,
+  type RecallIndexDiagnosticCompletion,
+  type RecallOperationDiagnosticsFilesystem,
 } from './recall-operation-diagnostics.js';
 
-function readTestDiagnosticString(
-  record: Record<string, unknown> | undefined,
-  propertyName: string,
-): string {
-  const value = record?.[propertyName];
-  if (typeof value !== 'string') {
-    assert.fail(`Expected diagnostic ${propertyName} to be a string`);
-  }
-  return value;
-}
-
 function completeTestDiagnosticOperation(
-  operation: RecallLiveSessionDiagnosticOperation,
+  operation: { complete(completion: RecallIndexDiagnosticCompletion): void },
   status: RecallDiagnosticStatus,
   errorCategory?: RecallDiagnosticErrorCategory,
 ): void {
@@ -54,203 +55,173 @@ function completeTestDiagnosticOperation(
   });
 }
 
-void test('all diagnostics mode writes live reconciliation start and completion records', async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), 'recall-operation-diagnostics-'));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  let monotonicMilliseconds = 100;
-  let wallClockSequence = 0;
-  const clock: RecallDiagnosticsClock = {
-    monotonicMilliseconds: () => monotonicMilliseconds,
-    wallClockIsoTimestamp: () => `2026-07-27T10:00:0${wallClockSequence++}.000Z`,
+type RecallDiagnosticFilesystemFault =
+  | 'file-open'
+  | 'file-write'
+  | 'file-sync'
+  | 'file-close'
+  | 'directory-sync';
+
+interface FaultingRecallDiagnosticFilesystemOptions {
+  events: string[];
+  fault?: RecallDiagnosticFilesystemFault;
+  reportCreated?: boolean;
+}
+
+function createFaultingRecallDiagnosticFilesystem(
+  options: FaultingRecallDiagnosticFilesystemOptions,
+): RecallOperationDiagnosticsFilesystem {
+  return {
+    async createDirectory(path) {
+      await mkdir(path, { recursive: true });
+    },
+    async getFileSize(path) {
+      return (await stat(path)).size;
+    },
+    async removeFile(path) {
+      options.events.push('remove-file');
+      await rm(path, { force: true });
+    },
+    async renameFile(sourcePath, destinationPath) {
+      options.events.push('rename-file');
+      await rename(sourcePath, destinationPath);
+    },
+    async appendFile(path, content) {
+      options.events.push('ordinary-append');
+      await appendFile(path, content, 'utf8');
+    },
+    async openAppendFile(path) {
+      options.events.push('file-open');
+      if (options.fault === 'file-open') {
+        throw new Error('injected diagnostic file open failure');
+      }
+      const openedFile = await (async () => {
+        try {
+          return { file: await open(path, 'ax', 0o600), created: true };
+        } catch (error) {
+          if (!isUnknownRecord(error) || error.code !== 'EEXIST') {
+            throw error;
+          }
+          return { file: await open(path, 'a', 0o600), created: false };
+        }
+      })();
+      return {
+        created: options.reportCreated ?? openedFile.created,
+        file: {
+          async appendFile(content) {
+            options.events.push('file-write');
+            if (options.fault === 'file-write') {
+              throw new Error('injected diagnostic file write failure');
+            }
+            await openedFile.file.appendFile(content, 'utf8');
+          },
+          async sync() {
+            options.events.push('file-sync');
+            if (options.fault === 'file-sync') {
+              throw new Error('injected diagnostic file sync failure');
+            }
+            await openedFile.file.sync();
+          },
+          async close() {
+            options.events.push('file-close');
+            await openedFile.file.close();
+            if (options.fault === 'file-close') {
+              throw new Error('injected diagnostic file close failure');
+            }
+          },
+        },
+      };
+    },
+    async syncDirectory(path) {
+      options.events.push('directory-sync');
+      if (options.fault === 'directory-sync') {
+        throw new Error('injected diagnostic directory sync failure');
+      }
+      const directory = await open(path, 'r');
+      try {
+        await directory.sync();
+      } finally {
+        await directory.close();
+      }
+    },
   };
+}
+
+function recordTestDurableIncrementalFailure(
+  diagnostics: ReturnType<typeof createRecallOperationDiagnostics>,
+): void {
+  diagnostics.recordDurableIncrementalFailure({
+    operationKind: RecallDiagnosticOperationKind.INCREMENTAL_WORKER,
+    status: RecallDiagnosticStatus.FAILED,
+    metrics: createRecallIncrementalDiagnosticMetrics(),
+    errorCategory: RecallDiagnosticErrorCategory.OPERATION_FAILED,
+  });
+}
+
+void test('incremental diagnostics persist versioned scalar worker and write-window evidence', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-incremental-diagnostics-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
   const activeLogPath = join(directory, 'diagnostics.jsonl');
   const diagnostics = createRecallOperationDiagnostics({
     mode: RecallDiagnosticsMode.ALL,
     activeLogPath,
     retainedLogPath: join(directory, 'diagnostics.previous.jsonl'),
-    clock,
     notifyWarning() {
-      assert.fail('successful diagnostic writes must not warn');
+      assert.fail('successful incremental diagnostics must not warn');
     },
   });
-  const operation = diagnostics.startLiveSessionReconciliation({
-    lifecycleTrigger: RecallLifecycleTrigger.AGENT_SETTLED,
-    sessionPath: '/sessions/active.jsonl',
+  const metrics = createRecallIncrementalDiagnosticMetrics();
+  Object.assign(metrics, {
+    markerAgeMilliseconds: 7,
+    metadataSweepScannedFileCount: 10_000,
+    metadataSweepObservedSessionCount: 9_000,
+    metadataSweepElapsedMilliseconds: 450,
+    appendedByteCount: 4_096,
+    parsedEntryCount: 12,
+    eligibleDocumentCount: 8,
+    tokenizerMilliseconds: 5,
+    embeddingCacheHitCount: 6,
+    embeddingCacheMissCount: 2,
+    embeddingRequestCount: 1,
+    lockWaitMilliseconds: 3,
+    evidenceOpenMilliseconds: 4,
+    evidenceWriteMilliseconds: 5,
+    projectionOpenMilliseconds: 6,
+    projectionCommitMilliseconds: 7,
+    closeMilliseconds: 8,
+    checkpointObservationMilliseconds: 9,
+    markerAcknowledgementMilliseconds: 10,
+    generationId: 'generation_acceptance',
+    generationState: 'active',
+    recoveryCategory: 'writer_reopen',
+    deletionSafeguardCategory: 'mass_loss_suppressed',
+    backlogPendingEligibleSessionCount: 11,
+    backlogOldestEligibleMarkerAgeMilliseconds: 12,
+    backlogFailureCategory: 'write_failed',
   });
-  const metrics = createRecallIndexMetrics();
-  metrics.sourceByteSize = 512;
-  metrics.changed = true;
-  metrics.skipped = false;
-  metrics.physicalSessionPreparationMilliseconds = 4;
-  metrics.embeddingCacheResolutionMilliseconds = 5;
-  metrics.embeddingServerRequestMilliseconds = 6;
-  metrics.databaseWriteMilliseconds = 3;
-  metrics.indexStateCheckpointMilliseconds = 2;
-  metrics.upsertedDocumentCount = 7;
-  monotonicMilliseconds = 125;
-  operation.complete({
+  diagnostics.recordIncrementalOperation({
+    operationKind: RecallDiagnosticOperationKind.INCREMENTAL_WORKER,
     status: RecallDiagnosticStatus.SUCCEEDED,
     metrics,
-    scannedSessionCount: 1,
-    indexedSessionCount: 1,
-    removedSessionCount: 0,
-    failedSessionCount: 0,
-    cacheHitCount: 2,
-    newEmbeddingCount: 5,
-    embeddingRequestCount: 1,
-    deletedDocumentCount: 0,
-    totalDocumentCount: 7,
   });
   await diagnostics.flush();
 
-  const records = (await readFile(activeLogPath, 'utf8'))
-    .trimEnd()
-    .split('\n')
-    .map((line): unknown => JSON.parse(line));
-  assert.ok(records.every(isUnknownRecord));
-  assert.equal(records.length, 2);
-  assert.equal(records[0]?.status, RecallDiagnosticStatus.STARTED);
-  assert.equal(records[1]?.status, RecallDiagnosticStatus.SUCCEEDED);
-  const operationId = readTestDiagnosticString(records[0], 'operationId');
-  assert.equal(operationId, records[1]?.operationId);
-  assert.match(operationId, /^[0-9a-f-]{36}$/u);
-  assert.equal(
-    records[1]?.operationKind,
-    RecallDiagnosticOperationKind.LIVE_SESSION_RECONCILIATION,
-  );
-  assert.equal(records[1]?.lifecycleTrigger, RecallLifecycleTrigger.AGENT_SETTLED);
-  assert.equal(records[1]?.processId, process.pid);
-  assert.equal(records[1]?.sessionPath, '/sessions/active.jsonl');
-  assert.equal(records[1]?.sourceByteSize, 512);
-  assert.equal(records[1]?.changed, true);
-  assert.equal(records[1]?.skipped, false);
-  assert.equal(records[1]?.elapsedMilliseconds, 25);
-  assert.equal(records[1]?.physicalSessionPreparationMilliseconds, 4);
-  assert.equal(records[1]?.embeddingCacheResolutionMilliseconds, 5);
-  assert.equal(records[1]?.embeddingServerRequestMilliseconds, 6);
-  assert.equal(records[1]?.databaseWriteMilliseconds, 3);
-  assert.equal(records[1]?.indexStateCheckpointMilliseconds, 2);
-  assert.equal(records[1]?.unattributedMilliseconds, 5);
-  assert.equal(records[1]?.upsertedDocumentCount, 7);
-  assert.equal(records[1]?.totalDocumentCount, 7);
-});
-
-void test('slow diagnostics mode retains the threshold boundary and failures only', async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), 'recall-slow-diagnostics-'));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  let monotonicMilliseconds = 0;
-  const activeLogPath = join(directory, 'diagnostics.jsonl');
-  const diagnostics = createRecallOperationDiagnostics({
-    mode: RecallDiagnosticsMode.SLOW,
-    activeLogPath,
-    retainedLogPath: join(directory, 'diagnostics.previous.jsonl'),
-    clock: {
-      monotonicMilliseconds: () => monotonicMilliseconds,
-      wallClockIsoTimestamp: () => '2026-07-27T10:00:00.000Z',
-    },
-    notifyWarning() {
-      assert.fail('successful diagnostic writes must not warn');
-    },
-  });
-
-  const fast = diagnostics.startLiveSessionReconciliation({
-    lifecycleTrigger: RecallLifecycleTrigger.AGENT_SETTLED,
-    sessionPath: '/sessions/fast.jsonl',
-  });
-  monotonicMilliseconds = 999;
-  completeTestDiagnosticOperation(fast, RecallDiagnosticStatus.SUCCEEDED);
-  await diagnostics.flush();
-  await assert.rejects(() => readFile(activeLogPath), { code: 'ENOENT' });
-
-  const threshold = diagnostics.startLiveSessionReconciliation({
-    lifecycleTrigger: RecallLifecycleTrigger.SESSION_SHUTDOWN,
-    sessionPath: '/sessions/threshold.jsonl',
-  });
-  monotonicMilliseconds = 1_999;
-  completeTestDiagnosticOperation(threshold, RecallDiagnosticStatus.SUCCEEDED);
-  await diagnostics.flush();
-
-  const failed = diagnostics.startLiveSessionReconciliation({
-    lifecycleTrigger: RecallLifecycleTrigger.AGENT_SETTLED,
-    sessionPath: '/sessions/failed.jsonl',
-  });
-  monotonicMilliseconds = 2_000;
-  completeTestDiagnosticOperation(
-    failed,
-    RecallDiagnosticStatus.FAILED,
-    RecallDiagnosticErrorCategory.OPERATION_FAILED,
-  );
-  await diagnostics.flush();
-
-  const records = (await readFile(activeLogPath, 'utf8'))
-    .trimEnd()
-    .split('\n')
-    .map((line): unknown => JSON.parse(line));
-  assert.ok(records.every(isUnknownRecord));
+  const records = await readRecallOperationDiagnosticRecords(activeLogPath);
+  assert.equal(records.length, 1);
   assert.deepEqual(
-    records.map((record) => ({
-      sessionPath: record.sessionPath,
-      status: record.status,
-      elapsedMilliseconds: record.elapsedMilliseconds,
-    })),
-    [
-      {
-        sessionPath: '/sessions/threshold.jsonl',
-        status: RecallDiagnosticStatus.SUCCEEDED,
-        elapsedMilliseconds: 1_000,
-      },
-      {
-        sessionPath: '/sessions/failed.jsonl',
-        status: RecallDiagnosticStatus.FAILED,
-        elapsedMilliseconds: 1,
-      },
-    ],
+    Object.fromEntries(
+      Object.keys(metrics).map((field) => [field, Reflect.get(records[0] ?? {}, field)]),
+    ),
+    metrics,
   );
-});
+  assert.equal(records[0]?.version, 3);
 
-void test('slow diagnostics omit fast cancelled live reconciliations and searches', async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), 'recall-slow-cancelled-top-level-'));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  let monotonicMilliseconds = 0;
-  const activeLogPath = join(directory, 'diagnostics.jsonl');
-  const diagnostics = createRecallOperationDiagnostics({
-    mode: RecallDiagnosticsMode.SLOW,
+  await writeFile(
     activeLogPath,
-    retainedLogPath: join(directory, 'diagnostics.previous.jsonl'),
-    clock: {
-      monotonicMilliseconds: () => monotonicMilliseconds,
-      wallClockIsoTimestamp: () => '2026-07-27T10:00:00.000Z',
-    },
-    notifyWarning() {
-      assert.fail('filtered fast cancellations must not warn');
-    },
-  });
-
-  const liveOperation = diagnostics.startLiveSessionReconciliation({
-    lifecycleTrigger: RecallLifecycleTrigger.AGENT_SETTLED,
-    sessionPath: '/sessions/cancelled-live.jsonl',
-  });
-  monotonicMilliseconds = 1;
-  completeTestDiagnosticOperation(
-    liveOperation,
-    RecallDiagnosticStatus.CANCELLED,
-    RecallDiagnosticErrorCategory.OPERATION_CANCELLED,
+    `${JSON.stringify({ version: 2, operationKind: 'search', status: 'succeeded' })}\n`,
   );
-
-  const searchOperation = diagnostics.startRecallSearch({
-    searchMode: 'hybrid',
-    recallScope: RecallSearchScope.GLOBAL,
-  });
-  monotonicMilliseconds = 2;
-  searchOperation.complete({
-    status: RecallDiagnosticStatus.CANCELLED,
-    errorCategory: RecallDiagnosticErrorCategory.OPERATION_CANCELLED,
-    metrics: createRecallSearchDiagnosticMetrics(),
-    totalDocumentCount: null,
-  });
-  await diagnostics.flush();
-
-  await assert.rejects(() => readFile(activeLogPath), { code: 'ENOENT' });
+  const legacyRecords = await readRecallOperationDiagnosticRecords(activeLogPath);
+  assert.equal(legacyRecords[0]?.version, 2);
 });
 
 void test('slow diagnostics omit fast cancelled physical session checks', async (t) => {
@@ -317,12 +288,16 @@ void test('diagnostic persistence rotates at its cap and retains one predecessor
   });
 
   for (let index = 0; index < 4; index += 1) {
-    const operation = diagnostics.startLiveSessionReconciliation({
-      lifecycleTrigger: RecallLifecycleTrigger.AGENT_SETTLED,
-      sessionPath: `/sessions/rotation-${index}.jsonl`,
+    const operation = diagnostics.startRecallSearch({
+      searchMode: 'hybrid',
+      recallScope: RecallSearchScope.GLOBAL,
     });
     monotonicMilliseconds += 1;
-    completeTestDiagnosticOperation(operation, RecallDiagnosticStatus.SUCCEEDED);
+    operation.complete({
+      status: RecallDiagnosticStatus.SUCCEEDED,
+      metrics: createRecallSearchDiagnosticMetrics(),
+      totalDocumentCount: index,
+    });
   }
   await diagnostics.flush();
 
@@ -335,35 +310,6 @@ void test('diagnostic persistence rotates at its cap and retains one predecessor
     'diagnostics.jsonl',
     'diagnostics.previous.jsonl',
   ]);
-});
-
-void test('diagnostic operation IDs and records remain bounded for an oversized session path', async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), 'recall-bounded-diagnostics-'));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const activeLogPath = join(directory, 'diagnostics.jsonl');
-  const diagnostics = createRecallOperationDiagnostics({
-    mode: RecallDiagnosticsMode.ALL,
-    activeLogPath,
-    retainedLogPath: join(directory, 'diagnostics.previous.jsonl'),
-    notifyWarning() {
-      assert.fail('bounded diagnostic writes must not warn');
-    },
-  });
-  const operation = diagnostics.startLiveSessionReconciliation({
-    lifecycleTrigger: RecallLifecycleTrigger.AGENT_SETTLED,
-    sessionPath: `/sessions/${'oversized-private-path'.repeat(100_000)}.jsonl`,
-  });
-  completeTestDiagnosticOperation(operation, RecallDiagnosticStatus.SUCCEEDED);
-  await diagnostics.flush();
-
-  const lines = (await readFile(activeLogPath, 'utf8')).trimEnd().split('\n');
-  assert.equal(lines.length, 2);
-  assert.ok(lines.every((line) => Buffer.byteLength(line) < 8 * 1_024));
-  const records = lines.map((line): unknown => JSON.parse(line));
-  assert.ok(records.every(isUnknownRecord));
-  assert.equal(readTestDiagnosticString(records[0], 'operationId').length, 36);
-  assert.equal(readTestDiagnosticString(records[1], 'operationId').length, 36);
-  assert.equal(readTestDiagnosticString(records[1], 'sessionPath').length, 4_096);
 });
 
 void test('off diagnostics mode performs no diagnostic filesystem operations', async (t) => {
@@ -380,11 +326,6 @@ void test('off diagnostics mode performs no diagnostic filesystem operations', a
     },
   });
 
-  const operation = diagnostics.startLiveSessionReconciliation({
-    lifecycleTrigger: RecallLifecycleTrigger.AGENT_SETTLED,
-    sessionPath: '/sessions/off.jsonl',
-  });
-  completeTestDiagnosticOperation(operation, RecallDiagnosticStatus.SUCCEEDED);
   const searchOperation = diagnostics.startRecallSearch({
     searchMode: 'hybrid',
     recallScope: RecallSearchScope.GLOBAL,
@@ -413,6 +354,237 @@ void test('off diagnostics mode performs no diagnostic filesystem operations', a
   assert.equal(await readFile(filesystemBlocker, 'utf8'), 'unchanged');
 });
 
+void test('durable diagnostic file sync failure uses the scalar backlog fallback', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-diagnostic-file-sync-failure-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const activeLogPath = join(directory, 'incremental-diagnostics.jsonl');
+  const events: string[] = [];
+  const diagnostics = createRecallOperationDiagnostics({
+    mode: RecallDiagnosticsMode.OFF,
+    activeLogPath,
+    retainedLogPath: join(directory, 'incremental-diagnostics.previous.jsonl'),
+    persistenceState: { disabled: false, persistenceFailureHandled: false },
+    filesystem: createFaultingRecallDiagnosticFilesystem({
+      events,
+      fault: 'file-sync',
+    }),
+    async onPersistenceFailure() {
+      events.push('backlog-fallback');
+    },
+    notifyWarning() {
+      assert.fail('successful scalar backlog fallback must suppress warning');
+    },
+  });
+  recordTestDurableIncrementalFailure(diagnostics);
+  await diagnostics.flush();
+
+  assert.deepEqual(events, [
+    'file-open',
+    'file-write',
+    'file-sync',
+    'file-close',
+    'backlog-fallback',
+  ]);
+});
+
+void test('durable diagnostic open, write, and close failures use the scalar backlog fallback', async (t) => {
+  for (const fault of ['file-open', 'file-write', 'file-close'] as const) {
+    const directory = await mkdtemp(join(tmpdir(), `recall-diagnostic-${fault}-failure-`));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const events: string[] = [];
+    const diagnostics = createRecallOperationDiagnostics({
+      mode: RecallDiagnosticsMode.OFF,
+      activeLogPath: join(directory, 'incremental-diagnostics.jsonl'),
+      retainedLogPath: join(directory, 'incremental-diagnostics.previous.jsonl'),
+      persistenceState: { disabled: false, persistenceFailureHandled: false },
+      filesystem: createFaultingRecallDiagnosticFilesystem({ events, fault }),
+      async onPersistenceFailure() {
+        events.push('backlog-fallback');
+      },
+      notifyWarning() {
+        assert.fail('successful scalar backlog fallback must suppress warning');
+      },
+    });
+    recordTestDurableIncrementalFailure(diagnostics);
+    await diagnostics.flush();
+
+    const expectedEvents =
+      fault === 'file-open'
+        ? ['file-open', 'backlog-fallback']
+        : fault === 'file-write'
+          ? ['file-open', 'file-write', 'file-close', 'backlog-fallback']
+          : ['file-open', 'file-write', 'file-sync', 'file-close', 'backlog-fallback'];
+    assert.deepEqual(events, expectedEvents);
+  }
+});
+
+void test('durable diagnostic creation sync failure uses the scalar backlog fallback', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-diagnostic-create-sync-failure-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const events: string[] = [];
+  const diagnostics = createRecallOperationDiagnostics({
+    mode: RecallDiagnosticsMode.OFF,
+    activeLogPath: join(directory, 'incremental-diagnostics.jsonl'),
+    retainedLogPath: join(directory, 'incremental-diagnostics.previous.jsonl'),
+    persistenceState: { disabled: false, persistenceFailureHandled: false },
+    filesystem: createFaultingRecallDiagnosticFilesystem({
+      events,
+      fault: 'directory-sync',
+    }),
+    async onPersistenceFailure() {
+      events.push('backlog-fallback');
+    },
+    notifyWarning() {
+      assert.fail('successful scalar backlog fallback must suppress warning');
+    },
+  });
+  recordTestDurableIncrementalFailure(diagnostics);
+  await diagnostics.flush();
+
+  assert.deepEqual(events, [
+    'file-open',
+    'file-write',
+    'file-sync',
+    'file-close',
+    'directory-sync',
+    'backlog-fallback',
+  ]);
+});
+
+void test('durable diagnostic rotation sync failure uses the scalar backlog fallback', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-diagnostic-rotation-sync-failure-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const activeLogPath = join(directory, 'incremental-diagnostics.jsonl');
+  const retainedLogPath = join(directory, 'incremental-diagnostics.previous.jsonl');
+  await writeFile(activeLogPath, 'retained predecessor');
+  const events: string[] = [];
+  const diagnostics = createRecallOperationDiagnostics({
+    mode: RecallDiagnosticsMode.OFF,
+    activeLogPath,
+    retainedLogPath,
+    maximumLogBytes: 1,
+    persistenceState: { disabled: false, persistenceFailureHandled: false },
+    filesystem: createFaultingRecallDiagnosticFilesystem({
+      events,
+      fault: 'directory-sync',
+      reportCreated: false,
+    }),
+    async onPersistenceFailure() {
+      events.push('backlog-fallback');
+    },
+    notifyWarning() {
+      assert.fail('successful scalar backlog fallback must suppress warning');
+    },
+  });
+  recordTestDurableIncrementalFailure(diagnostics);
+  await diagnostics.flush();
+
+  assert.deepEqual(events, [
+    'remove-file',
+    'rename-file',
+    'file-open',
+    'file-write',
+    'file-sync',
+    'file-close',
+    'directory-sync',
+    'backlog-fallback',
+  ]);
+  assert.equal(await readFile(retainedLogPath, 'utf8'), 'retained predecessor');
+});
+
+void test('durable diagnostics warn once when local and scalar backlog persistence both fail', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-diagnostic-dual-sink-failure-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const events: string[] = [];
+  const persistenceState = { disabled: false, persistenceFailureHandled: false };
+  const diagnostics = createRecallOperationDiagnostics({
+    mode: RecallDiagnosticsMode.OFF,
+    activeLogPath: join(directory, 'incremental-diagnostics.jsonl'),
+    retainedLogPath: join(directory, 'incremental-diagnostics.previous.jsonl'),
+    persistenceState,
+    filesystem: createFaultingRecallDiagnosticFilesystem({
+      events,
+      fault: 'file-sync',
+    }),
+    async onPersistenceFailure() {
+      events.push('backlog-fallback');
+      throw new Error('injected scalar backlog fallback failure');
+    },
+    notifyWarning(message) {
+      events.push(message);
+      throw new Error('injected warning delivery failure');
+    },
+  });
+  recordTestDurableIncrementalFailure(diagnostics);
+  recordTestDurableIncrementalFailure(diagnostics);
+  await diagnostics.flush();
+
+  assert.deepEqual(events, [
+    'file-open',
+    'file-write',
+    'file-sync',
+    'file-close',
+    'backlog-fallback',
+    'Recall diagnostics disabled after local log and fallback persistence failed.',
+  ]);
+  assert.deepEqual(persistenceState, { disabled: true, persistenceFailureHandled: true });
+});
+
+void test('ordinary diagnostic timing records retain the unsynced append path', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-diagnostic-ordinary-append-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const activeLogPath = join(directory, 'incremental-diagnostics.jsonl');
+  const events: string[] = [];
+  const diagnostics = createRecallOperationDiagnostics({
+    mode: RecallDiagnosticsMode.ALL,
+    activeLogPath,
+    retainedLogPath: join(directory, 'incremental-diagnostics.previous.jsonl'),
+    persistenceState: { disabled: false, persistenceFailureHandled: false },
+    filesystem: createFaultingRecallDiagnosticFilesystem({
+      events,
+      fault: 'file-sync',
+    }),
+    notifyWarning() {
+      assert.fail('ordinary append must not reach durable file sync');
+    },
+  });
+  diagnostics.recordIncrementalOperation({
+    operationKind: RecallDiagnosticOperationKind.INCREMENTAL_WORKER,
+    status: RecallDiagnosticStatus.SUCCEEDED,
+    metrics: createRecallIncrementalDiagnosticMetrics(),
+  });
+  await diagnostics.flush();
+
+  assert.deepEqual(events, ['ordinary-append']);
+  const [record] = await readRecallOperationDiagnosticRecords(activeLogPath);
+  assert.equal(record?.status, RecallDiagnosticStatus.SUCCEEDED);
+});
+
+void test('off diagnostics mode still persists mandatory detached-worker failures', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-off-durable-worker-failure-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const activeLogPath = join(directory, 'incremental-diagnostics.jsonl');
+  const diagnostics = createRecallOperationDiagnostics({
+    mode: RecallDiagnosticsMode.OFF,
+    activeLogPath,
+    retainedLogPath: join(directory, 'incremental-diagnostics.previous.jsonl'),
+    notifyWarning() {
+      assert.fail('successful mandatory failure persistence must not warn');
+    },
+  });
+  diagnostics.recordDurableIncrementalFailure({
+    operationKind: RecallDiagnosticOperationKind.INCREMENTAL_WORKER,
+    status: RecallDiagnosticStatus.FAILED,
+    metrics: createRecallIncrementalDiagnosticMetrics(),
+    errorCategory: RecallDiagnosticErrorCategory.OPERATION_FAILED,
+  });
+  await diagnostics.flush();
+
+  const [record] = await readRecallOperationDiagnosticRecords(activeLogPath);
+  assert.equal(record?.operationKind, RecallDiagnosticOperationKind.INCREMENTAL_WORKER);
+  assert.equal(record?.status, RecallDiagnosticStatus.FAILED);
+});
+
 void test('diagnostic persistence failure warns once and disables later writes', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'recall-failed-diagnostics-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -430,16 +602,20 @@ void test('diagnostic persistence failure warns once and disables later writes',
         throw new Error('warning delivery failed');
       },
     });
-    const operation = diagnostics.startLiveSessionReconciliation({
-      lifecycleTrigger: RecallLifecycleTrigger.AGENT_SETTLED,
-      sessionPath: `/sessions/failure-${index}.jsonl`,
+    const operation = diagnostics.startRecallSearch({
+      searchMode: 'hybrid',
+      recallScope: RecallSearchScope.GLOBAL,
     });
-    completeTestDiagnosticOperation(operation, RecallDiagnosticStatus.SUCCEEDED);
+    operation.complete({
+      status: RecallDiagnosticStatus.SUCCEEDED,
+      metrics: createRecallSearchDiagnosticMetrics(),
+      totalDocumentCount: index,
+    });
     await diagnostics.flush();
   }
 
   assert.deepEqual(warnings, [
-    'Recall diagnostics disabled after local log persistence failed; recall behavior is unchanged.',
+    'Recall diagnostics disabled after local log and fallback persistence failed.',
   ]);
   assert.equal(await readFile(filesystemBlocker, 'utf8'), 'unchanged');
 });

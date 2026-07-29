@@ -8,16 +8,16 @@ Recorded 2026-07-27 for issue #44.
 
 The machine-readable ledger is [`embedded-profile-acceptance.json`](embedded-profile-acceptance.json).
 
-## Existing Octen evidence
+## Quality artifacts and Octen evidence
 
-The accepted Octen report remains separate and unchanged:
+Issue #44 accepted Octen-profile evidence for these paths. The committed artifacts were later regenerated under `deterministic-fixture-v1` (64 dimensions) in #57, so they no longer attest that Octen pass. Current fingerprints:
 
 | File                                                         | SHA-256                                                            |
 | ------------------------------------------------------------ | ------------------------------------------------------------------ |
-| [`recall-quality-report.md`](recall-quality-report.md)       | `86cfdfa3c1a71c2caf7938f796eea56ff1e050f2edc17581ae87565aecde26a1` |
-| [`recall-quality-results.json`](recall-quality-results.json) | `7072048c691a744bbfcffb8423d22e9cb74e046b27ef8acfa0f05b560f49b324` |
+| [`recall-quality-report.md`](recall-quality-report.md)       | `4965b741e66bcb1c0a9f6bb9e4d290415495e13594b61e706ba908be7ab425c5` |
+| [`recall-quality-results.json`](recall-quality-results.json) | `390e76e73d9225404536e96ea17732a85cf79d23a64fc10d260ee76d121f1800` |
 
-That result belongs only to `octen-embed` / `Octen/Octen-Embedding-4B` at 2,560 dimensions. It does not support EmbeddingGemma.
+The ledger marks Octen evidence as superseded. The frozen hybrid candidate policy from that Octen run is still reused for EmbeddingGemma evidence; it does not make these artifacts an Octen quality pass.
 
 ## Deterministic evidence
 

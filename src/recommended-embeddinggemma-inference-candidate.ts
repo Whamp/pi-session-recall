@@ -110,6 +110,7 @@ export function createRecommendedEmbeddingGemmaInferenceCandidate(
           adapterId: runtime.executionIdentity.adapter,
           backend: RecallInferenceBackend.EMBEDDED,
           cacheIdentity: verification.embeddingProfileId,
+          embeddingProfileId: verification.embeddingProfileId,
           measurement: { capabilityVerificationCount: 1 },
         };
       });
@@ -211,6 +212,7 @@ export function createRecommendedEmbeddingGemmaHttpInferenceCandidate(
           adapterId: 'llama-cpp-http-embedding-v1',
           backend: RecallInferenceBackend.LLAMA_CPP_HTTP,
           cacheIdentity: verification.embeddingProfileId,
+          embeddingProfileId: verification.embeddingProfileId,
           measurement: { capabilityVerificationCount: 1 },
         };
       });

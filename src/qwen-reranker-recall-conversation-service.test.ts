@@ -36,7 +36,18 @@ const TOKENIZER: ConversationTextTokenizer = {
 function createQwenServiceTestConfig(directory: string, sessionsDirectory: string) {
   return {
     sessionsDirectory,
+    dataDirectory: directory,
     databasePath: join(directory, 'zvec'),
+    projectionDatabasePath: join(directory, 'session-projections'),
+    markerSpoolDirectory: join(directory, 'markers', 'pending'),
+    markerQuarantineDirectory: join(directory, 'markers', 'quarantine'),
+    markerControlDirectory: join(directory, 'markers', 'control'),
+    workerOwnershipLockPath: join(directory, 'incremental-worker.lock'),
+    generationRootDirectory: join(directory, 'generations'),
+    activeGenerationPointerPath: join(directory, 'active-generation.json'),
+    generationRegistryPath: join(directory, 'generation-registry.json'),
+    backlogSummaryPath: join(directory, 'backlog-summary.json'),
+    incrementalDiagnosticLogPath: join(directory, 'incremental-diagnostics.jsonl'),
     statePath: join(directory, 'index-state.json'),
     manifestPath: join(directory, 'index-manifest.json'),
     tokenizerCacheDirectory: join(directory, 'tokenizers'),
@@ -55,6 +66,9 @@ function createQwenServiceTestConfig(directory: string, sessionsDirectory: strin
     embeddingBatchSize: 8,
     rerankerBaseUrl: 'http://unused-reranker.test/v1',
     rerankerModel: 'unused-reranker',
+    searchWriteWindowWaitMilliseconds: 500,
+    confirmedDeletionMaxMissingSourceCount: 1,
+    confirmedDeletionMaxMissingSourceRatio: 0.1,
     projectLineages: normalizeRecallProjectLineages({}),
     searchCandidateLimits: { dense: 2, lexical: 2, identifier: 2 },
   };
@@ -160,7 +174,7 @@ void test('deep-rerank works end to end with built-in HTTP and embedded Qwen ada
     documents: [fusionFavorite, rerankerFavorite],
     expectedScores: [0.1, 0.9],
   });
-  await httpService.index();
+  await httpService.index({ rebuild: true });
 
   assert.equal(httpVerification.profileId, profile.profileId);
   assert.deepEqual(httpVerification.executionIdentity, httpProvider.executionIdentity);
@@ -181,7 +195,7 @@ void test('deep-rerank works end to end with built-in HTTP and embedded Qwen ada
   assert.deepEqual(httpSearch.searchPolicy.rerankerIdentity, {
     profileId: profile.profileId,
     adapterId: 'llama-cpp-http-reranking-v1',
-    cacheIdentity: httpProvider.executionIdentity.cacheIdentity,
+    cacheIdentity: `${profile.profileId}:llama-cpp-http-reranking-v1`,
   });
 
   const embeddedProvider = createEmbeddedQwenRerankingProvider(profile, {
@@ -239,7 +253,7 @@ void test('deep-rerank works end to end with built-in HTTP and embedded Qwen ada
   assert.deepEqual(embeddedSearch.searchPolicy.rerankerIdentity, {
     profileId: profile.profileId,
     adapterId: 'node-llama-cpp-qwen-reranking-logit-recovery-v1',
-    cacheIdentity: embeddedProvider.executionIdentity.cacheIdentity,
+    cacheIdentity: `${profile.profileId}:node-llama-cpp-qwen-reranking-logit-recovery-v1`,
   });
 
   const replacementProfile = createQwenRerankingModelProfile('replacement-qwen-reranker');
@@ -262,7 +276,7 @@ void test('deep-rerank works end to end with built-in HTTP and embedded Qwen ada
   assert.deepEqual(replacementSearch.searchPolicy.rerankerIdentity, {
     profileId: 'qwen-reranking:replacement-qwen-reranker',
     adapterId: 'llama-cpp-http-reranking-v1',
-    cacheIdentity: replacementHttpProvider.executionIdentity.cacheIdentity,
+    cacheIdentity: 'qwen-reranking:replacement-qwen-reranker:llama-cpp-http-reranking-v1',
   });
 
   const embeddingOnlyService = createRecallConversationService(config, {
@@ -284,14 +298,5 @@ void test('deep-rerank works end to end with built-in HTTP and embedded Qwen ada
         scope: RecallSearchScope.GLOBAL,
       }),
     /Recall reranking is not configured/u,
-  );
-  assert.throws(
-    () =>
-      embeddingOnlyService.search('fusion favorite', 1, {
-        mode: 'query-planned',
-        scope: RecallSearchScope.GLOBAL,
-        plan: [{ type: 'vec', query: 'reranker favorite' }],
-      }),
-    /Recall reranking is not configured.*before query-planned search/u,
   );
 });

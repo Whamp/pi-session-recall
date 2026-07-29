@@ -244,6 +244,7 @@ export function createRecommendedOptionalInferenceCandidates(
           adapterId: verification.executionIdentity.adapterId,
           backend: verification.executionIdentity.backend,
           cacheIdentity: verification.executionIdentity.cacheIdentity,
+          embeddingProfileId: null,
           measurement: { ...verification.measurement },
         };
       } finally {
@@ -280,6 +281,7 @@ export function createRecommendedOptionalInferenceCandidates(
         adapterId: verification.executionIdentity.adapterId,
         backend: verification.executionIdentity.backend,
         cacheIdentity: verification.executionIdentity.cacheIdentity,
+        embeddingProfileId: null,
         measurement: { ...verification.measurement },
       };
     },
@@ -312,6 +314,7 @@ export function createRecommendedOptionalInferenceCandidates(
           adapterId: verification.executionIdentity.adapterId,
           backend: verification.executionIdentity.backend,
           cacheIdentity: verification.executionIdentity.cacheIdentity,
+          embeddingProfileId: null,
           measurement: { ...verification.measurement },
         };
       } finally {
@@ -343,6 +346,7 @@ export function createRecommendedOptionalInferenceCandidates(
         adapterId: verification.executionIdentity.adapterId,
         backend: verification.executionIdentity.backend,
         cacheIdentity: verification.executionIdentity.cacheIdentity,
+        embeddingProfileId: null,
         measurement: { ...verification.measurement },
       };
     },

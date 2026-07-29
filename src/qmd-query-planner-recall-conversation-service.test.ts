@@ -51,7 +51,18 @@ void test('conversation service verifies replacement planners without rebuilding
   );
   const config = {
     sessionsDirectory,
+    dataDirectory: directory,
     databasePath: join(directory, 'zvec'),
+    projectionDatabasePath: join(directory, 'session-projections'),
+    markerSpoolDirectory: join(directory, 'markers', 'pending'),
+    markerQuarantineDirectory: join(directory, 'markers', 'quarantine'),
+    markerControlDirectory: join(directory, 'markers', 'control'),
+    workerOwnershipLockPath: join(directory, 'incremental-worker.lock'),
+    generationRootDirectory: join(directory, 'generations'),
+    activeGenerationPointerPath: join(directory, 'active-generation.json'),
+    generationRegistryPath: join(directory, 'generation-registry.json'),
+    backlogSummaryPath: join(directory, 'backlog-summary.json'),
+    incrementalDiagnosticLogPath: join(directory, 'incremental-diagnostics.jsonl'),
     statePath: join(directory, 'index-state.json'),
     manifestPath: join(directory, 'index-manifest.json'),
     tokenizerCacheDirectory: join(directory, 'tokenizers'),
@@ -70,6 +81,9 @@ void test('conversation service verifies replacement planners without rebuilding
     embeddingBatchSize: 8,
     rerankerBaseUrl: 'http://unused-reranker.test/v1',
     rerankerModel: 'unused-reranker',
+    searchWriteWindowWaitMilliseconds: 500,
+    confirmedDeletionMaxMissingSourceCount: 1,
+    confirmedDeletionMaxMissingSourceRatio: 0.1,
     projectLineages: normalizeRecallProjectLineages({}),
     searchCandidateLimits: { dense: 2, lexical: 2, identifier: 2 },
   };
@@ -88,15 +102,14 @@ void test('conversation service verifies replacement planners without rebuilding
     executionIdentity: createRecallQueryPlanningExecutionIdentity(
       recommendedProfile,
       firstAdapterId,
-      'first-planner-configuration',
       RecallInferenceBackend.CUSTOM,
       7_000,
     ),
     async planRecallQuery() {
       firstPlannerCalls += 1;
       return [
-        { type: 'lex' as const, query: 'Copper Finch evidence' },
-        { type: 'vec' as const, query: 'how Copper Finch is retained' },
+        { type: 'lex' as const, query: 'source provenance evidence' },
+        { type: 'vec' as const, query: 'how source provenance is retained' },
       ];
     },
   };
@@ -106,7 +119,7 @@ void test('conversation service verifies replacement planners without rebuilding
     queryPlanner: firstPlanner,
     loadTokenizer: async () => TOKENIZER,
   });
-  await firstService.index();
+  await firstService.index({ rebuild: true });
 
   const firstVerification = await firstService.verifyQueryPlanningCapability();
   const firstSearch = await firstService.search('source provenance', 1, {
@@ -131,14 +144,13 @@ void test('conversation service verifies replacement planners without rebuilding
     executionIdentity: createRecallQueryPlanningExecutionIdentity(
       recommendedProfile,
       adapterOnlyId,
-      'adapter-only-planner-configuration',
       RecallInferenceBackend.CUSTOM,
       7_500,
     ),
     async planRecallQuery() {
       return [
-        { type: 'lex' as const, query: 'Copper Finch records' },
-        { type: 'vec' as const, query: 'how Finch connects recovery evidence' },
+        { type: 'lex' as const, query: 'source provenance records' },
+        { type: 'vec' as const, query: 'how provenance connects source evidence' },
       ];
     },
   };
@@ -173,15 +185,14 @@ void test('conversation service verifies replacement planners without rebuilding
     executionIdentity: createRecallQueryPlanningExecutionIdentity(
       replacementProfile,
       replacementAdapterId,
-      'replacement-planner-configuration',
       RecallInferenceBackend.CUSTOM,
       8_000,
     ),
     async planRecallQuery() {
       replacementPlannerCalls += 1;
       return [
-        { type: 'lex' as const, query: 'Copper Finch records' },
-        { type: 'vec' as const, query: 'where Finch records connect to recovery evidence' },
+        { type: 'lex' as const, query: 'source provenance records' },
+        { type: 'vec' as const, query: 'where provenance records connect to source evidence' },
       ];
     },
   };
@@ -204,7 +215,7 @@ void test('conversation service verifies replacement planners without rebuilding
   assert.equal(replacementVerification.profileId, replacementProfile.profileId);
   assert.equal(
     replacementVerification.executionIdentity.cacheIdentity,
-    replacementPlanner.executionIdentity.cacheIdentity,
+    'replacement-query-planner-v2:replacement-query-planning-v2:qmd-query-expansion-no-think-v1:qmd-typed-query-plan-v1',
   );
   assert.equal(replacementSearch.searchPolicy.rankingMode, 'hybrid');
 });

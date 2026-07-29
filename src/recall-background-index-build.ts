@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
@@ -10,16 +10,12 @@ import { Value } from 'typebox/value';
 
 import type { RecallConversationConfig } from './recall-conversation-config.js';
 import { RecallBackgroundIndexProcessState, RecallDiagnosticsMode } from './enums.js';
-import { isUnknownRecord } from './is-unknown-record.js';
 import type {
   ConversationIndexCheckpoint,
   ConversationIndexProgress,
 } from './incremental-session-indexer.js';
-import {
-  preserveStagingRecallIndexGeneration,
-  readRecallIndexGenerationStatus,
-  type RecallIndexGenerationCoordinatorConfig,
-} from './recall-index-generations.js';
+import { readRecallInferenceConfiguration } from './recall-inference-configuration.js';
+import { tryAcquireRecallRebuildOwnershipLock } from './recall-rebuild-ownership-lock.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
 import { normalizeRecallProjectLineages } from './resolve-project-identity.js';
 
@@ -75,15 +71,23 @@ const BACKGROUND_INDEX_STATUS_SCHEMA = Type.Object(
 const BACKGROUND_INDEX_SERVICE_CONFIG_SCHEMA = Type.Object(
   {
     sessionsDirectory: Type.String({ minLength: 1 }),
+    dataDirectory: Type.String({ minLength: 1 }),
     databasePath: Type.String({ minLength: 1 }),
+    projectionDatabasePath: Type.String({ minLength: 1 }),
     statePath: Type.String({ minLength: 1 }),
     manifestPath: Type.String({ minLength: 1 }),
     tokenizerCacheDirectory: Type.String({ minLength: 1 }),
     embeddingCacheDirectory: Type.String({ minLength: 1 }),
     lockPath: Type.String({ minLength: 1 }),
-    generationsDirectory: Type.Optional(Type.String({ minLength: 1 })),
-    activeGenerationPath: Type.Optional(Type.String({ minLength: 1 })),
-    stagingGenerationPath: Type.Optional(Type.String({ minLength: 1 })),
+    markerSpoolDirectory: Type.String({ minLength: 1 }),
+    markerQuarantineDirectory: Type.String({ minLength: 1 }),
+    markerControlDirectory: Type.String({ minLength: 1 }),
+    workerOwnershipLockPath: Type.String({ minLength: 1 }),
+    generationRootDirectory: Type.String({ minLength: 1 }),
+    activeGenerationPointerPath: Type.String({ minLength: 1 }),
+    generationRegistryPath: Type.String({ minLength: 1 }),
+    backlogSummaryPath: Type.String({ minLength: 1 }),
+    incrementalDiagnosticLogPath: Type.String({ minLength: 1 }),
     backgroundIndexStatusPath: Type.Optional(Type.String({ minLength: 1 })),
     backgroundIndexRequestPath: Type.Optional(Type.String({ minLength: 1 })),
     diagnosticsMode: Type.Enum(RecallDiagnosticsMode),
@@ -100,6 +104,9 @@ const BACKGROUND_INDEX_SERVICE_CONFIG_SCHEMA = Type.Object(
     rerankerBaseUrl: Type.String({ minLength: 1 }),
     rerankerModel: Type.String({ minLength: 1 }),
     queryPlannerBaseUrl: Type.Optional(Type.String({ minLength: 1 })),
+    searchWriteWindowWaitMilliseconds: Type.Integer({ minimum: 1 }),
+    confirmedDeletionMaxMissingSourceCount: Type.Integer({ minimum: 1 }),
+    confirmedDeletionMaxMissingSourceRatio: Type.Number({ exclusiveMinimum: 0, maximum: 1 }),
     projectLineages: Type.Record(Type.String(), Type.Array(Type.String())),
     searchCandidateLimits: Type.Object(
       {
@@ -127,6 +134,7 @@ const BACKGROUND_INDEX_WORKER_REQUEST_SCHEMA = Type.Object(
     version: Type.Literal(1),
     buildId: Type.String({ minLength: 1 }),
     statusPath: Type.String({ minLength: 1 }),
+    generationId: Type.Union([Type.String({ minLength: 1 }), Type.Null()]),
     serviceConfig: BACKGROUND_INDEX_SERVICE_CONFIG_SCHEMA,
     serviceFactory: Type.Object(
       {
@@ -166,14 +174,27 @@ export interface RecallBackgroundIndexWorkerRequest {
   version: 1;
   buildId: string;
   statusPath: string;
+  generationId: string | null;
   serviceConfig: RecallConversationConfig;
   serviceFactory: RecallBackgroundIndexServiceFactory;
 }
 
-/** Paths and semantic identity needed to control one background staging build. */
+/** Minimal #59 generation registry projection required by detached-build control. */
+export interface RecallBackgroundIndexGenerationControl {
+  readIndexGenerationStatus(): Promise<{
+    active: { generationId: string } | null;
+    staging: {
+      generationId: string;
+      embeddingProfileId: string;
+      status: 'building' | 'resumable';
+    } | null;
+  }>;
+}
+
+/** Paths and semantic identity needed to control one background replacement build. */
 export interface RecallBackgroundIndexCoordinatorConfig {
   serviceConfig: RecallConversationConfig;
-  generationCoordinatorConfig: RecallIndexGenerationCoordinatorConfig;
+  generationService: RecallBackgroundIndexGenerationControl;
   statusPath: string;
   requestPath: string;
   embeddingProfileId: string;
@@ -182,6 +203,29 @@ export interface RecallBackgroundIndexCoordinatorConfig {
 
 function truncateBackgroundStatusText(value: string): string {
   return value.slice(0, MAX_RECALL_BACKGROUND_STATUS_TEXT_LENGTH);
+}
+
+/** Prefers a pending embedding replacement identity for staging start/resume gates. */
+export async function resolveBackgroundIndexEmbeddingProfileId(
+  config: RecallBackgroundIndexCoordinatorConfig,
+): Promise<string> {
+  try {
+    const configuration = await readRecallInferenceConfiguration(
+      join(dirname(config.serviceConfig.manifestPath), 'inference-configuration.json'),
+      {
+        generationRegistryPath: config.serviceConfig.generationRegistryPath,
+      },
+    );
+    const pendingProfileId = configuration.pendingEmbeddingReplacement?.embeddingProfileId;
+    if (pendingProfileId) {
+      return pendingProfileId;
+    }
+  } catch (error) {
+    if (readNodeErrorCode(error) !== 'ENOENT') {
+      throw error;
+    }
+  }
+  return config.embeddingProfileId;
 }
 
 function isProcessAlive(processId: number): boolean {
@@ -198,6 +242,14 @@ async function writeAtomicJson(path: string, value: unknown): Promise<void> {
   const temporaryPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
   await writeFile(temporaryPath, `${JSON.stringify(value)}\n`, 'utf8');
   await rename(temporaryPath, path);
+}
+
+/** Derives one build-scoped worker request path from the configured request base path. */
+export function recallBackgroundIndexWorkerRequestPath(
+  baseRequestPath: string,
+  buildId: string,
+): string {
+  return `${baseRequestPath}.${buildId}`;
 }
 
 /** Reads one validated background worker request written by the conversation service. */
@@ -253,52 +305,12 @@ async function writeRecallBackgroundIndexStatusRecord(
 
 async function acquireBackgroundIndexControlLock(statusPath: string): Promise<() => Promise<void>> {
   const lockPath = `${statusPath}.control-lock`;
-  const ownerPath = `${lockPath}/owner.json`;
-  await mkdir(dirname(lockPath), { recursive: true });
-  let unreadableOwnerCount = 0;
   while (true) {
-    try {
-      await mkdir(lockPath);
-      await writeAtomicJson(ownerPath, { pid: process.pid });
-      return () => rm(lockPath, { recursive: true, force: true });
-    } catch (error) {
-      if (readNodeErrorCode(error) !== 'EEXIST') {
-        throw error;
-      }
-      let ownerProcessId: number | undefined;
-      try {
-        const ownerText = await readFile(ownerPath, 'utf8');
-        try {
-          const owner: unknown = JSON.parse(ownerText);
-          if (isUnknownRecord(owner)) {
-            const processId = owner.pid;
-            ownerProcessId =
-              typeof processId === 'number' && Number.isInteger(processId) ? processId : undefined;
-          }
-        } catch {
-          ownerProcessId = undefined;
-        }
-      } catch (readError) {
-        if (readNodeErrorCode(readError) !== 'ENOENT') {
-          throw readError;
-        }
-      }
-      if (ownerProcessId === undefined) {
-        unreadableOwnerCount += 1;
-        if (unreadableOwnerCount >= 4) {
-          await rm(lockPath, { recursive: true, force: true });
-          unreadableOwnerCount = 0;
-          continue;
-        }
-      } else if (!isProcessAlive(ownerProcessId)) {
-        await rm(lockPath, { recursive: true, force: true });
-        unreadableOwnerCount = 0;
-        continue;
-      } else {
-        unreadableOwnerCount = 0;
-      }
-      await sleep(25);
+    const ownership = await tryAcquireRecallRebuildOwnershipLock(lockPath);
+    if (ownership) {
+      return () => ownership.release();
     }
+    await sleep(25);
   }
 }
 
@@ -328,9 +340,7 @@ async function refreshBackgroundIndexStatus(
   if (!status) {
     return null;
   }
-  const generationStatus = await readRecallIndexGenerationStatus(
-    config.generationCoordinatorConfig,
-  );
+  const generationStatus = await config.generationService.readIndexGenerationStatus();
   const selectedGenerationId =
     generationStatus.staging?.generationId ??
     (status.processState === RecallBackgroundIndexProcessState.SUCCEEDED
@@ -345,12 +355,6 @@ async function refreshBackgroundIndexStatus(
     ACTIVE_BACKGROUND_INDEX_PROCESS_STATES.has(refreshed.processState) &&
     !isProcessAlive(refreshed.processId)
   ) {
-    if (generationStatus.staging) {
-      await preserveStagingRecallIndexGeneration(
-        config.generationCoordinatorConfig,
-        generationStatus.staging.generationId,
-      );
-    }
     const completedAt = new Date().toISOString();
     refreshed = {
       ...refreshed,
@@ -373,21 +377,25 @@ async function spawnBackgroundIndexWorker(
   config: RecallBackgroundIndexCoordinatorConfig,
   generationId: string | null,
 ): Promise<RecallBackgroundIndexGenerationStatus> {
+  const embeddingProfileId = await resolveBackgroundIndexEmbeddingProfileId(config);
   const buildId = randomUUID();
+  const requestPath = recallBackgroundIndexWorkerRequestPath(config.requestPath, buildId);
   const request = {
     version: 1,
     buildId,
     statusPath: config.statusPath,
+    generationId,
     serviceConfig: {
       ...config.serviceConfig,
       projectLineages: Object.fromEntries(config.serviceConfig.projectLineages),
     },
     serviceFactory: config.serviceFactory,
   };
-  await writeAtomicJson(config.requestPath, request);
+  await writeAtomicJson(requestPath, request);
 
   const workerPath = fileURLToPath(new URL('./recall-background-index-worker.ts', import.meta.url));
-  const child = spawn(process.execPath, ['--import', 'tsx', workerPath, config.requestPath], {
+  const child = spawn(process.execPath, ['--import', 'tsx', workerPath, requestPath], {
+    cwd: dirname(workerPath),
     detached: true,
     stdio: 'ignore',
   });
@@ -403,7 +411,7 @@ async function spawnBackgroundIndexWorker(
     version: RECALL_BACKGROUND_INDEX_STATUS_VERSION,
     buildId,
     generationId,
-    embeddingProfileId: config.embeddingProfileId,
+    embeddingProfileId,
     processId: child.pid,
     processState: RecallBackgroundIndexProcessState.STARTING,
     startedAt,
@@ -430,9 +438,7 @@ export async function startRecallBackgroundIndexGeneration(
         `Recall background index build already ${current.processState} in process ${current.processId}`,
       );
     }
-    const generationStatus = await readRecallIndexGenerationStatus(
-      config.generationCoordinatorConfig,
-    );
+    const generationStatus = await config.generationService.readIndexGenerationStatus();
     if (generationStatus.staging) {
       throw new Error(
         `Recall staging generation ${generationStatus.staging.generationId} already exists; resume or discard it explicitly`,
@@ -456,15 +462,14 @@ export async function resumeRecallBackgroundIndexGeneration(
         `Recall background index build already ${current.processState} in process ${current.processId}`,
       );
     }
-    const generationStatus = await readRecallIndexGenerationStatus(
-      config.generationCoordinatorConfig,
-    );
+    const generationStatus = await config.generationService.readIndexGenerationStatus();
     if (!generationStatus.staging) {
       throw new Error('Recall background index resume requires a staging generation');
     }
-    if (generationStatus.staging.embeddingProfileId !== config.embeddingProfileId) {
+    const embeddingProfileId = await resolveBackgroundIndexEmbeddingProfileId(config);
+    if (generationStatus.staging.embeddingProfileId !== embeddingProfileId) {
       throw new Error(
-        `Recall staging generation uses embedding profile ${generationStatus.staging.embeddingProfileId}, not ${config.embeddingProfileId}`,
+        `Recall staging generation uses embedding profile ${generationStatus.staging.embeddingProfileId}, not ${embeddingProfileId}`,
       );
     }
     return await spawnBackgroundIndexWorker(config, generationStatus.staging.generationId);
@@ -543,7 +548,7 @@ export async function markRecallBackgroundIndexGenerationDiscarded(
   }
 }
 
-/** Removes a worker request after a terminal state; status remains as bounded evidence. */
+/** Removes one build-scoped worker request after a terminal state; status remains as bounded evidence. */
 export async function removeRecallBackgroundIndexWorkerRequest(requestPath: string): Promise<void> {
   await rm(requestPath, { force: true });
 }

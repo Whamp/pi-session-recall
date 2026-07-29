@@ -14,14 +14,12 @@ Conversation Recall can configure and verify QMD's pinned Qwen3 1.7B query-expan
 | Byte size           | `1282438912`                                                       |
 | SHA-256             | `000dfb1c06efa6a049e9f64ba921c3740e2454f62abab6fa10e77bd30bb2bcc0` |
 | Prompt policy       | `qmd-query-expansion-no-think-v1`                                  |
-| Grammar version     | `qmd-bounded-query-plan-v2`                                        |
+| Grammar version     | `qmd-typed-query-plan-v1`                                          |
 | License metadata    | MIT                                                                |
 
 The download URL contains the immutable repository revision. Hugging Face's revision API and resolver headers report the same revision, filename, byte size, linked SHA-256, and MIT card metadata. That metadata check did not download or validate the complete GGUF.
 
-The profile carries QMD 2.6.3's `/no_think` prompt, sampling values, 2,048-token context, 600-token output limit, and `lex:`, `vec:`, `hyde:` vocabulary. Grammar revision `qmd-bounded-query-plan-v2` constrains generation to one to three lexical lines followed by one to three semantic lines and at most one final hypothetical-answer line. Each trimmed query may contain at most 512 Unicode code points. Post-generation validation independently enforces the same order, counts, and length limit plus unique nonblank single-line text and preservation of a protected original term during conformance.
-
-The bounded revision fixes a live llama.cpp HTTP defect found during issue #46 acceptance: the original open-ended `line+` grammar could keep one `hyde` line alive until the 600-token cap. The HTTP adapter also accepts typed non-thinking output from llama.cpp's `reasoning_content` field when `content` is empty. Both adapters remove a terminal Qwen `</think>` control marker and reject repeated typed lines rather than repairing generated output before validation. Capability conformance requires every protected entity term to appear somewhere across the complete plan, while sibling lexical and semantic lines may use different vocabulary. An invalid plan fails into the specified planner fallback. These changes are cache-identified by the grammar revision; they do not alter model, prompt, sampling, retrieval, or fallback policy.
+The profile carries QMD 2.6.3's `/no_think` prompt, sampling values, 2,048-token context, 600-token output limit, and `lex:`, `vec:`, `hyde:` grammar. Post-generation validation requires one to three `lex` queries, one to three `vec` queries, at most one `hyde` query, unique nonblank single-line text, and preservation of a protected original term during conformance.
 
 Recall intent is appended as a separate `Query intent:` line. It guides planning but is not itself a planned retrieval query.
 
@@ -61,15 +59,7 @@ Inject a `queryPlanningProfile` and identified `queryPlanner` into `createRecall
 
 The service rejects incomplete or profile-mismatched planner configuration. An unconfigured service remains valid for existing hybrid and deep-rerank behavior, but independent planner verification fails with a configuration error.
 
-Planner profile and adapter identity are not written to the embedding manifest. Replacing either planner leaves the active vector generation compatible.
-
-## Query-planned search
-
-`query-planned` search accepts an agent plan or invokes the configured planner when the agent omits one. Model-generated output must pass the profile's QMD grammar and one-to-three lexical, one-to-three semantic, and zero-or-one hypothetical-answer bounds before retrieval starts. Recall intent reaches planning and reranking but never creates a retrieval list.
-
-A request-specific planner cache identity hashes the submitted query, recall intent, complete model profile and prompt/grammar semantics, and adapter execution policy. Search output reports that identity, the planner profile and adapter, and the actual generated plan.
-
-A valid generated plan enters the same routed retrieval, bounded fusion, duplicate grouping, position-aware reranking, and result-formatting path as an agent plan. Model load, request, generation, parsing, grammar, bounds, or empty-plan failure emits one warning and uses submitted-query deep reranking with the same configured reranker. Cancellation still propagates, and reranker failure still fails the search. Search does not switch model profiles, backends, or adapters and does not bypass planning based on lexical signal.
+Planner profile and adapter identity are not written to the embedding manifest. Replacing either planner leaves the active vector generation compatible. Search still exposes only `hybrid` and `deep-rerank`; issue #29 owns query-planned retrieval, fallback, policy evidence, and ranking.
 
 ## Built-in execution adapters
 
@@ -98,7 +88,7 @@ node --import tsx --test \
   src/runRecallQmdQueryPlannerModelCommand.test.ts
 ```
 
-The same `measureRecallQueryPlanningProviderConformance` harness exercises the built-in HTTP and embedded adapters. Fixed providers prove ordered output, typed bounds, optional HyDE, recall-intent prompt transport, protected terms, profile/adapter/policy/cache identity, timeout, cancellation, wrong-model rejection, grammar failure, and automatic same-profile CPU fallback. The service tests build temporary real zvec generations, replace planner profiles and adapters without rebuilding vectors, invoke configured planning when an agent plan is absent, validate QMD output before retrieval, verify request-complete cache identity, and exercise the one-warning submitted-query fallback.
+The same `measureRecallQueryPlanningProviderConformance` harness exercises the built-in HTTP and embedded adapters. Fixed providers prove ordered output, typed bounds, optional HyDE, recall-intent prompt transport, protected terms, profile/adapter/policy/cache identity, timeout, cancellation, wrong-model rejection, grammar failure, and automatic same-profile CPU fallback. The service test builds one temporary real zvec generation, replaces planner profile and adapter, verifies both, and searches the unchanged generation in hybrid mode.
 
 ## External evidence still pending
 

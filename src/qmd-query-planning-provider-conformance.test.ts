@@ -8,62 +8,8 @@ import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 
 import { createQmdHttpQueryPlanningProvider } from './createQmdHttpQueryPlanningProvider.js';
-import {
-  createRecallQueryPlanningExecutionIdentity,
-  type RecallPlannedRetrievalQuery,
-} from './recall-inference-capabilities.js';
 import { measureRecallQueryPlanningProviderConformance } from './recall-inference-conformance.js';
-import {
-  createRecommendedQmdQueryPlanningModelProfile,
-  type RecallQueryPlanningModelProfile,
-} from './recall-model-profiles.js';
-
-interface InvalidConformanceQueryPlanCase {
-  name: string;
-  plan: RecallPlannedRetrievalQuery[];
-}
-
-const INVALID_CONFORMANCE_QUERY_PLAN_CASES: readonly InvalidConformanceQueryPlanCase[] = [
-  {
-    name: 'vector before the first lexical query',
-    plan: [
-      { type: 'vec', query: 'Copper Finch semantic evidence' },
-      { type: 'lex', query: 'Copper Finch evidence' },
-    ],
-  },
-  {
-    name: 'lexical query after a vector query',
-    plan: [
-      { type: 'lex', query: 'Copper Finch evidence' },
-      { type: 'vec', query: 'Copper Finch semantic evidence' },
-      { type: 'lex', query: 'retained Copper Finch records' },
-    ],
-  },
-  {
-    name: 'non-final hypothetical-answer query',
-    plan: [
-      { type: 'lex', query: 'Copper Finch evidence' },
-      { type: 'hyde', query: 'Copper Finch appears in retained evidence.' },
-      { type: 'vec', query: 'Copper Finch semantic evidence' },
-    ],
-  },
-  {
-    name: 'entry after a hypothetical-answer query',
-    plan: [
-      { type: 'lex', query: 'Copper Finch evidence' },
-      { type: 'vec', query: 'Copper Finch semantic evidence' },
-      { type: 'hyde', query: 'Copper Finch appears in retained evidence.' },
-      { type: 'vec', query: 'where Copper Finch was retained' },
-    ],
-  },
-  {
-    name: '513-code-point query content',
-    plan: [
-      { type: 'lex', query: 'x'.repeat(513) },
-      { type: 'vec', query: 'Copper Finch semantic evidence' },
-    ],
-  },
-];
+import { createRecommendedQmdQueryPlanningModelProfile } from './recall-model-profiles.js';
 
 const QUERY_PLANNING_REQUEST_SCHEMA = Type.Object({
   model: Type.String(),
@@ -83,45 +29,16 @@ const QUERY_PLANNING_REQUEST_SCHEMA = Type.Object({
   stream: Type.Literal(false),
 });
 
-function createCustomQueryPlanningProvider(
-  profile: RecallQueryPlanningModelProfile,
-  plan: readonly RecallPlannedRetrievalQuery[],
-) {
-  const adapterId = 'custom-query-planning-conformance-v1';
-  return {
-    executionIdentity: createRecallQueryPlanningExecutionIdentity(
-      profile,
-      adapterId,
-      'custom-query-planning-conformance-configuration-v1',
-      RecallInferenceBackend.CUSTOM,
-      1_000,
-    ),
-    async planRecallQuery() {
-      return plan.map(({ type, query }) => ({ type, query }));
-    },
-  };
-}
-
 void test('QMD HTTP query planner passes shared bounded-plan conformance with recall intent', async (t) => {
   const requests: Array<ReturnType<typeof Value.Parse<typeof QUERY_PLANNING_REQUEST_SCHEMA>>> = [];
   const profile = createRecommendedQmdQueryPlanningModelProfile();
-  const generatedPlan: RecallPlannedRetrievalQuery[] = [
-    { type: 'lex', query: 'recovery session evidence' },
-    { type: 'lex', query: 'retained Finch recovery records' },
-    {
-      type: 'vec',
-      query: 'how Copper Finch is retained for recalled conversation evidence',
-    },
-    {
-      type: 'vec',
-      query: 'where Finch recovery evidence connects to its original Pi session',
-    },
-    {
-      type: 'hyde',
-      query: 'Copper Finch records connect recalled recovery evidence to its Pi session location.',
-    },
-  ];
-  const generatedOutput = generatedPlan.map(({ type, query }) => `${type}: ${query}`).join('\n');
+  const generatedOutput = [
+    'hyde: Source provenance records connect recalled evidence to its Pi session location.',
+    'lex: source provenance session evidence',
+    'lex: retained provenance records',
+    'vec: how source provenance is retained for recalled conversation evidence',
+    'vec: where provenance connects recalled text to its original Pi session',
+  ].join('\n');
   const server = createServer((request, response) => {
     let body = '';
     request.setEncoding('utf8');
@@ -134,15 +51,7 @@ void test('QMD HTTP query planner passes shared bounded-plan conformance with re
       response.end(
         JSON.stringify({
           model: profile.model,
-          choices: [
-            {
-              message: {
-                role: 'assistant',
-                content: '',
-                reasoning_content: generatedOutput,
-              },
-            },
-          ],
+          choices: [{ message: { role: 'assistant', content: generatedOutput } }],
           usage: { prompt_tokens: 28, completion_tokens: 52, total_tokens: 80 },
         }),
       );
@@ -166,7 +75,22 @@ void test('QMD HTTP query planner passes shared bounded-plan conformance with re
     query: profile.conformanceCanary.query,
     recallIntent: profile.conformanceCanary.recallIntent,
     protectedTerms: profile.conformanceCanary.protectedTerms,
-    expectedPlan: generatedPlan,
+    expectedPlan: [
+      {
+        type: 'hyde',
+        query: 'Source provenance records connect recalled evidence to its Pi session location.',
+      },
+      { type: 'lex', query: 'source provenance session evidence' },
+      { type: 'lex', query: 'retained provenance records' },
+      {
+        type: 'vec',
+        query: 'how source provenance is retained for recalled conversation evidence',
+      },
+      {
+        type: 'vec',
+        query: 'where provenance connects recalled text to its original Pi session',
+      },
+    ],
     monotonicMilliseconds() {
       const value = clockValues.shift();
       assert.notEqual(value, undefined);
@@ -174,19 +98,12 @@ void test('QMD HTTP query planner passes shared bounded-plan conformance with re
     },
   });
 
-  const { adapterConfigurationIdentity, cacheIdentity, ...executionIdentity } =
-    provider.executionIdentity;
-  assert.match(
-    adapterConfigurationIdentity,
-    /^llama-cpp-http-query-planning-config-v1:[a-f0-9]{64}$/u,
-  );
-  assert.match(cacheIdentity, /^recall-query-planning-execution-v1:[a-f0-9]{64}$/u);
-  assert.deepEqual(executionIdentity, {
+  assert.deepEqual(provider.executionIdentity, {
     adapterId: 'llama-cpp-http-query-planning-v1',
-    adapterVersion: '1',
     backend: 'llama-cpp-http',
+    cacheIdentity:
+      'qmd-query-expansion-1.7b-q4-k-m-v1:llama-cpp-http-query-planning-v1:qmd-query-expansion-no-think-v1:qmd-typed-query-plan-v1',
     modelProfileId: profile.profileId,
-    modelProfileIdentity: provider.executionIdentity.modelProfileIdentity,
     promptPolicy: profile.promptPolicy,
     grammarVersion: profile.grammarVersion,
     requestTimeoutMilliseconds: 12_345,
@@ -198,7 +115,7 @@ void test('QMD HTTP query planner passes shared bounded-plan conformance with re
         {
           role: 'user',
           content:
-            '/no_think Expand this search query: Copper Finch\nQuery intent: Find Pi conversation evidence about the exact Copper Finch recovery entity.',
+            '/no_think Expand this search query: source provenance\nQuery intent: Find Pi conversation evidence about retained source provenance.',
         },
       ],
       grammar: profile.grammar,
@@ -222,13 +139,7 @@ void test('QMD HTTP query planner passes shared bounded-plan conformance with re
 
 void test('QMD HTTP query planner fails closed on model, grammar, timeout, and cancellation', async (t) => {
   const profile = createRecommendedQmdQueryPlanningModelProfile();
-  let responseMode:
-    | 'wrong-model'
-    | 'invalid-grammar'
-    | 'invalid-plan'
-    | 'invalid-generated-output'
-    | 'pending' = 'wrong-model';
-  let invalidGeneratedOutput = '';
+  let responseMode: 'wrong-model' | 'invalid-grammar' | 'invalid-plan' | 'pending' = 'wrong-model';
   const server = createServer((request, response) => {
     request.resume();
     request.on('end', () => {
@@ -248,9 +159,7 @@ void test('QMD HTTP query planner fails closed on model, grammar, timeout, and c
                     ? 'source provenance without a typed prefix'
                     : responseMode === 'invalid-plan'
                       ? 'lex: source provenance only'
-                      : responseMode === 'invalid-generated-output'
-                        ? invalidGeneratedOutput
-                        : 'lex: source provenance\nvec: source provenance evidence',
+                      : 'lex: source provenance\nvec: source provenance evidence',
               },
             },
           ],
@@ -294,17 +203,6 @@ void test('QMD HTTP query planner fails closed on model, grammar, timeout, and c
     /Recall query planning output bounds invalid/u,
   );
 
-  responseMode = 'invalid-generated-output';
-  for (const invalidCase of INVALID_CONFORMANCE_QUERY_PLAN_CASES) {
-    invalidGeneratedOutput = invalidCase.plan
-      .map(({ type, query }) => `${type}: ${query}`)
-      .join('\n');
-    await assert.rejects(
-      () => provider.planRecallQuery({ query: profile.conformanceCanary.query }),
-      /Recall query planning output/u,
-    );
-  }
-
   responseMode = 'pending';
   const timeoutProvider = createQmdHttpQueryPlanningProvider(profile, {
     baseUrl,
@@ -332,57 +230,6 @@ void test('QMD HTTP query planner fails closed on model, grammar, timeout, and c
   );
 });
 
-void test('query planning conformance accepts minimum and maximum ordered plan boundaries', async () => {
-  const profile = createRecommendedQmdQueryPlanningModelProfile();
-  const validBoundaryPlans: readonly RecallPlannedRetrievalQuery[][] = [
-    [
-      { type: 'lex', query: 'Copper Finch evidence' },
-      { type: 'vec', query: 'semantic Copper Finch evidence' },
-    ],
-    [
-      { type: 'lex', query: 'Copper Finch evidence' },
-      { type: 'lex', query: 'Copper records' },
-      { type: 'lex', query: 'Finch records' },
-      { type: 'vec', query: 'semantic Copper Finch evidence' },
-      { type: 'vec', query: 'where Copper was retained' },
-      { type: 'vec', query: 'where Finch was retained' },
-      { type: 'hyde', query: 'Copper Finch appears in retained session evidence.' },
-    ],
-  ];
-
-  for (const plan of validBoundaryPlans) {
-    const measurement = await measureRecallQueryPlanningProviderConformance({
-      provider: createCustomQueryPlanningProvider(profile, plan),
-      profile,
-      query: profile.conformanceCanary.query,
-      recallIntent: profile.conformanceCanary.recallIntent,
-      protectedTerms: profile.conformanceCanary.protectedTerms,
-      expectedPlan: plan,
-    });
-
-    assert.equal(measurement.plannedQueryCount, plan.length);
-  }
-});
-
-for (const invalidCase of INVALID_CONFORMANCE_QUERY_PLAN_CASES) {
-  void test(`query planning conformance rejects ${invalidCase.name} when the expected fixture matches`, async () => {
-    const profile = createRecommendedQmdQueryPlanningModelProfile();
-
-    await assert.rejects(
-      () =>
-        measureRecallQueryPlanningProviderConformance({
-          provider: createCustomQueryPlanningProvider(profile, invalidCase.plan),
-          profile,
-          query: profile.conformanceCanary.query,
-          recallIntent: profile.conformanceCanary.recallIntent,
-          protectedTerms: profile.conformanceCanary.protectedTerms,
-          expectedPlan: invalidCase.plan,
-        }),
-      /Recall query planning/u,
-    );
-  });
-}
-
 void test('query planning conformance rejects missing protected terms from a custom adapter', async () => {
   const profile = createRecommendedQmdQueryPlanningModelProfile();
   const adapterId = 'unprotected-query-planning-v1';
@@ -390,13 +237,15 @@ void test('query planning conformance rejects missing protected terms from a cus
     () =>
       measureRecallQueryPlanningProviderConformance({
         provider: {
-          executionIdentity: createRecallQueryPlanningExecutionIdentity(
-            profile,
+          executionIdentity: {
             adapterId,
-            'unprotected-query-planning-configuration-v1',
-            RecallInferenceBackend.CUSTOM,
-            1_000,
-          ),
+            backend: RecallInferenceBackend.CUSTOM,
+            cacheIdentity: `${profile.profileId}:${adapterId}:${profile.promptPolicy}:${profile.grammarVersion}`,
+            modelProfileId: profile.profileId,
+            promptPolicy: profile.promptPolicy,
+            grammarVersion: profile.grammarVersion,
+            requestTimeoutMilliseconds: 1_000,
+          },
           async planRecallQuery() {
             return [
               { type: 'lex', query: 'unrelated keywords' },
@@ -409,6 +258,6 @@ void test('query planning conformance rejects missing protected terms from a cus
         recallIntent: profile.conformanceCanary.recallIntent,
         protectedTerms: profile.conformanceCanary.protectedTerms,
       }),
-    /Recall query planning conformance protected terms missing from plan/u,
+    /Recall query planning conformance protected term missing at index 0/u,
   );
 });

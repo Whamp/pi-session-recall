@@ -36,15 +36,23 @@ function createSetupCommandTestConfig(root: string): RecallConversationConfig {
   const dataDirectory = join(root, 'data');
   return {
     sessionsDirectory: join(root, 'sessions'),
+    dataDirectory,
     databasePath: join(dataDirectory, 'zvec'),
+    projectionDatabasePath: join(dataDirectory, 'session-projections'),
     statePath: join(dataDirectory, 'index-state.json'),
     manifestPath: join(dataDirectory, 'index-manifest.json'),
     tokenizerCacheDirectory: join(dataDirectory, 'tokenizers'),
     embeddingCacheDirectory: join(dataDirectory, 'embedding-cache'),
     lockPath: join(dataDirectory, 'operation.lock'),
-    generationsDirectory: join(dataDirectory, 'index-generations'),
-    activeGenerationPath: join(dataDirectory, 'active-generation.json'),
-    stagingGenerationPath: join(dataDirectory, 'staging-generation.json'),
+    markerSpoolDirectory: join(dataDirectory, 'markers', 'pending'),
+    markerQuarantineDirectory: join(dataDirectory, 'markers', 'quarantine'),
+    markerControlDirectory: join(dataDirectory, 'markers', 'control'),
+    workerOwnershipLockPath: join(dataDirectory, 'incremental-worker.lock'),
+    generationRootDirectory: join(dataDirectory, 'generations'),
+    activeGenerationPointerPath: join(dataDirectory, 'active-generation.json'),
+    generationRegistryPath: join(dataDirectory, 'generation-registry.json'),
+    backlogSummaryPath: join(dataDirectory, 'backlog-summary.json'),
+    incrementalDiagnosticLogPath: join(dataDirectory, 'incremental-diagnostics.jsonl'),
     backgroundIndexStatusPath: join(dataDirectory, 'background-index-status.json'),
     backgroundIndexRequestPath: join(dataDirectory, 'background-index-request.json'),
     diagnosticsMode: RecallDiagnosticsMode.OFF,
@@ -60,16 +68,20 @@ function createSetupCommandTestConfig(root: string): RecallConversationConfig {
     embeddingBatchSize: 8,
     rerankerBaseUrl: 'http://unused.test/v1',
     rerankerModel: 'unused',
+    searchWriteWindowWaitMilliseconds: 500,
+    confirmedDeletionMaxMissingSourceCount: 1,
+    confirmedDeletionMaxMissingSourceRatio: 0.1,
     projectLineages: normalizeRecallProjectLineages({}),
     searchCandidateLimits: { dense: 8, lexical: 8, identifier: 8 },
   };
 }
 
-void test('first-index setup requires consent and uses the authoritative configured runtime after selection', async (t) => {
+void test('first-index setup preserves a concurrent inference selection after model verification', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'recall-first-index-command-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const config = createSetupCommandTestConfig(root);
   const statePath = join(root, 'data', 'first-index-setup.json');
+  const inferenceConfigurationPath = join(root, 'data', 'inference-configuration.json');
   const profile = createRecommendedEmbeddingGemmaModelProfile();
   const artifactPath = join(root, 'models', profile.source.artifact);
   let downloadCount = 0;
@@ -176,6 +188,32 @@ void test('first-index setup requires consent and uses the authoritative configu
     },
     async downloadArtifact() {
       downloadCount += 1;
+      await configureRecallInferenceCapability(inferenceConfigurationPath, {
+        capability: RecallInferenceCapability.RERANKING,
+        candidateId: 'concurrent-reranking',
+        profileId: 'concurrent-reranking-profile-v1',
+        backend: RecallInferenceBackend.LLAMA_CPP_HTTP,
+        adapterId: 'concurrent-reranking-adapter-v1',
+        endpoint: 'http://reranking.test/v1',
+        device: null,
+        artifact: null,
+        async inspectHealth() {
+          return {
+            artifactState: RecallInferenceArtifactState.NOT_REQUIRED,
+            requiredRepair: null,
+          };
+        },
+        async verifyCapabilityConformance() {
+          return {
+            profileId: 'concurrent-reranking-profile-v1',
+            adapterId: 'concurrent-reranking-adapter-v1',
+            backend: RecallInferenceBackend.LLAMA_CPP_HTTP,
+            cacheIdentity: 'concurrent-reranking-profile-v1:concurrent-reranking-adapter-v1',
+            embeddingProfileId: null,
+            measurement: { fixtureOperations: 1 },
+          };
+        },
+      });
       return {
         state: 'valid' as const,
         artifactPath,
@@ -267,13 +305,11 @@ void test('first-index setup requires consent and uses the authoritative configu
   assert.equal(downloadCount, 1);
   assert.equal(verificationCount, 1);
   assert.equal(disposeCount, 1);
-  const inferenceConfiguration = await readRecallInferenceConfiguration(
-    join(root, 'data', 'inference-configuration.json'),
-  );
+  const inferenceConfiguration = await readRecallInferenceConfiguration(inferenceConfigurationPath);
   assert.equal(inferenceConfiguration.embedding?.profileId, profile.profileId);
   assert.equal(inferenceConfiguration.embedding?.backend, 'embedded');
   assert.equal(inferenceConfiguration.embedding?.artifact?.state, 'valid');
-  assert.equal(inferenceConfiguration.reranking, null);
+  assert.equal(inferenceConfiguration.reranking?.profileId, 'concurrent-reranking-profile-v1');
   assert.equal(inferenceConfiguration.queryPlanning, null);
 
   await runRecallFirstIndexSetupCommand(['estimate'], options);
@@ -360,12 +396,13 @@ void test('first-index measurement accepts an independently configured HTTP embe
   const config = createSetupCommandTestConfig(root);
   const inferenceConfigurationPath = join(root, 'data', 'inference-configuration.json');
   const profile = createRecommendedEmbeddingGemmaModelProfile();
+  const configuredProfileId = 'independent-http-embedding-profile-v1';
   const httpCandidate: RecallInferenceConfigurationCandidate = {
     capability: RecallInferenceCapability.EMBEDDING,
-    candidateId: 'recommended-embeddinggemma-http',
-    profileId: profile.profileId,
+    candidateId: 'independent-http-embedding',
+    profileId: configuredProfileId,
     backend: RecallInferenceBackend.LLAMA_CPP_HTTP,
-    adapterId: 'llama-cpp-http-embedding-v1',
+    adapterId: 'independent-http-embedding-v1',
     endpoint: 'http://embedding.test/v1',
     device: null,
     artifact: null,
@@ -374,10 +411,11 @@ void test('first-index measurement accepts an independently configured HTTP embe
     },
     async verifyCapabilityConformance() {
       return {
-        profileId: profile.profileId,
-        adapterId: 'llama-cpp-http-embedding-v1',
+        profileId: configuredProfileId,
+        adapterId: 'independent-http-embedding-v1',
         backend: RecallInferenceBackend.LLAMA_CPP_HTTP,
-        cacheIdentity: profile.profileId,
+        cacheIdentity: `${configuredProfileId}:independent-http-embedding-v1`,
+        embeddingProfileId: configuredProfileId,
         measurement: { fixtureOperations: 1 },
       };
     },
@@ -420,37 +458,52 @@ void test('first-index measurement accepts an independently configured HTTP embe
     },
   };
   const artifactPath = join(root, 'models', profile.source.artifact);
+  let artifactDownloadCount = 0;
+  const artifactCache = {
+    async inspectArtifact() {
+      return {
+        profile,
+        status: {
+          state: 'missing' as const,
+          artifactPath,
+          partialPaths: [],
+          repair: 'not required for this HTTP setup fixture',
+        },
+      };
+    },
+    async verifyArtifact() {
+      throw new Error('HTTP setup fixture does not verify a local artifact');
+    },
+    async diagnoseArtifact() {
+      throw new Error('HTTP setup fixture does not diagnose a local artifact');
+    },
+    async downloadArtifact() {
+      artifactDownloadCount += 1;
+      throw new Error('HTTP setup fixture does not download a local artifact');
+    },
+    async repairArtifact() {
+      throw new Error('HTTP setup fixture does not repair a local artifact');
+    },
+    async removeArtifact() {
+      throw new Error('HTTP setup fixture does not remove a local artifact');
+    },
+  };
+  await assert.rejects(
+    () =>
+      runRecallFirstIndexSetupCommand(['select-embeddinggemma', '--approve-download'], {
+        config,
+        inferenceConfigurationPath,
+        artifactCache,
+        writeOutput() {},
+      }),
+    /different embedding profile.*inference configure/u,
+  );
+  assert.equal(artifactDownloadCount, 0);
+
   await runRecallFirstIndexSetupCommand(['estimate', '--measure'], {
     config,
     inferenceConfigurationPath,
-    artifactCache: {
-      async inspectArtifact() {
-        return {
-          profile,
-          status: {
-            state: 'missing',
-            artifactPath,
-            partialPaths: [],
-            repair: 'not required for this HTTP setup fixture',
-          },
-        };
-      },
-      async verifyArtifact() {
-        throw new Error('HTTP setup fixture does not verify a local artifact');
-      },
-      async diagnoseArtifact() {
-        throw new Error('HTTP setup fixture does not diagnose a local artifact');
-      },
-      async downloadArtifact() {
-        throw new Error('HTTP setup fixture does not download a local artifact');
-      },
-      async repairArtifact() {
-        throw new Error('HTTP setup fixture does not repair a local artifact');
-      },
-      async removeArtifact() {
-        throw new Error('HTTP setup fixture does not remove a local artifact');
-      },
-    },
+    artifactCache,
     metadataService: service,
     createConfiguredServiceRuntime() {
       return { service, async dispose() {} };

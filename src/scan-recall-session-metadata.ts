@@ -1,0 +1,525 @@
+import { randomUUID } from 'node:crypto';
+import { lstat, mkdir, open, readFile, readdir, rename, rm } from 'node:fs/promises';
+import { extname, join } from 'node:path';
+
+import { Type } from 'typebox';
+import { Value } from 'typebox/value';
+
+import { RecallMetadataSweepStatus } from './enums.js';
+import { readNodeErrorCode } from './read-node-error-code.js';
+import { syncRecallDirectory } from './sync-recall-directory.js';
+
+/** Maximum files examined by one metadata recovery sweep slice. */
+export const RECALL_METADATA_SWEEP_MAX_FILES = 10_000;
+
+/** Maximum monotonic elapsed time allowed for one metadata recovery sweep slice. */
+export const RECALL_METADATA_SWEEP_MAX_ELAPSED_MILLISECONDS = 500;
+
+/** Current strict scalar continuation version for metadata recovery sweeps. */
+export const RECALL_METADATA_SWEEP_CONTINUATION_VERSION = 3;
+
+/** Filename of the strict scalar metadata sweep continuation under the marker control directory. */
+export const RECALL_METADATA_SWEEP_CONTINUATION_FILENAME = 'metadata-sweep-continuation.json';
+
+/** Scalar metadata returned for one observed physical session file without reading its body. */
+export interface ObservedRecallSessionMetadata {
+  physicalSessionId: string | null;
+  relativePath: string;
+  sizeBytes: number;
+  modifiedAtEpochMilliseconds: number;
+  sourceDevice: string;
+  sourceInode: string;
+}
+
+/** Stable source identity retained across bounded metadata sweep slices. */
+export interface ObservedKnownRecallSourceIdentity {
+  physicalSessionId: string;
+  sourceDevice: string;
+  sourceInode: string;
+}
+
+/** Known physical-session identity used only to classify source-missing observations. */
+export interface KnownRecallSessionMetadataSource {
+  physicalSessionId: string;
+  relativePath: string;
+}
+
+/** File kind and scalar stat fields needed by metadata-only traversal. */
+export interface RecallSessionMetadataStat {
+  isDirectory: boolean;
+  isFile: boolean;
+  sizeBytes: number;
+  modifiedAtEpochMilliseconds: number;
+  sourceDevice: string;
+  sourceInode: string;
+}
+
+/** Injectable directory-entry and stat-only boundary for session metadata recovery. */
+export interface RecallSessionMetadataFilesystem {
+  readDirectory: (path: string) => Promise<string[]>;
+  statPath: (path: string) => Promise<RecallSessionMetadataStat>;
+}
+
+/** Durable names already examined in one directory during a metadata sweep. */
+export interface RecallMetadataSweepDirectoryCheckpoint {
+  relativeDirectory: string;
+  processedEntryNames: string[];
+}
+
+/** Strict scalar state that resumes one bounded metadata sweep without session content. */
+export interface RecallMetadataSweepContinuation {
+  version: 3;
+  sweepId: string;
+  currentRelativeDirectory: string;
+  directoryCheckpoints: RecallMetadataSweepDirectoryCheckpoint[];
+  pendingRelativeDirectories: string[];
+  rescanStarted: boolean;
+  observedPhysicalSessionIds: string[];
+  observedKnownSourceIdentities: ObservedKnownRecallSourceIdentity[];
+  observedSessionFileCount: number;
+}
+
+/** Durable continuation capability separated from session-directory traversal. */
+export interface RecallMetadataSweepContinuationStore {
+  readContinuation(): Promise<RecallMetadataSweepContinuation | null>;
+  writeContinuation(continuation: RecallMetadataSweepContinuation): Promise<void>;
+  clearContinuation(): Promise<void>;
+}
+
+/** Scalar and metadata-only result of one bounded recovery sweep slice. */
+export interface RecallSessionMetadataSweepResult {
+  sweepId: string;
+  status: RecallMetadataSweepStatus;
+  rootHealthy: boolean;
+  deletionConfirmationSuppressed: boolean;
+  scannedFileCount: number;
+  observedSessionFileCount: number;
+  observedSessionMetadata: ObservedRecallSessionMetadata[];
+  observedKnownSourceIdentities: ObservedKnownRecallSourceIdentity[];
+  missingPhysicalSessionIds: string[];
+  continuationPersisted: boolean;
+  elapsedMilliseconds: number;
+}
+
+/** Bounds, policies, and injectable capabilities for metadata-only session recovery. */
+export interface ScanRecallSessionMetadataOptions {
+  sessionRootDirectory: string;
+  controlDirectory: string;
+  knownSources?: readonly KnownRecallSessionMetadataSource[];
+  confirmedDeletionMaxMissingSourceCount?: number;
+  confirmedDeletionMaxMissingSourceRatio?: number;
+  maxFiles?: number;
+  maxElapsedMilliseconds?: number;
+  monotonicNowMilliseconds?: () => number;
+  filesystem?: RecallSessionMetadataFilesystem;
+  continuationStore?: RecallMetadataSweepContinuationStore;
+  createSweepId?: () => string;
+}
+
+const relativeDirectorySchema = Type.String({
+  pattern: '^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).*$',
+});
+const entryNameSchema = Type.String({ minLength: 1, pattern: '^[^/]+$' });
+const recallMetadataSweepContinuationSchema = Type.Object(
+  {
+    version: Type.Literal(RECALL_METADATA_SWEEP_CONTINUATION_VERSION),
+    sweepId: Type.String({ minLength: 1 }),
+    currentRelativeDirectory: relativeDirectorySchema,
+    directoryCheckpoints: Type.Array(
+      Type.Object(
+        {
+          relativeDirectory: relativeDirectorySchema,
+          processedEntryNames: Type.Array(entryNameSchema),
+        },
+        { additionalProperties: false },
+      ),
+    ),
+    pendingRelativeDirectories: Type.Array(relativeDirectorySchema),
+    rescanStarted: Type.Boolean(),
+    observedPhysicalSessionIds: Type.Array(Type.String({ minLength: 1 })),
+    observedKnownSourceIdentities: Type.Array(
+      Type.Object(
+        {
+          physicalSessionId: Type.String({ minLength: 1 }),
+          sourceDevice: Type.String({ minLength: 1 }),
+          sourceInode: Type.String({ minLength: 1 }),
+        },
+        { additionalProperties: false },
+      ),
+    ),
+    observedSessionFileCount: Type.Integer({ minimum: 0 }),
+  },
+  { additionalProperties: false },
+);
+
+async function statRecallSessionMetadata(path: string): Promise<RecallSessionMetadataStat> {
+  const metadata = await lstat(path);
+  return {
+    isDirectory: metadata.isDirectory(),
+    isFile: metadata.isFile(),
+    sizeBytes: metadata.size,
+    modifiedAtEpochMilliseconds: metadata.mtimeMs,
+    sourceDevice: String(metadata.dev),
+    sourceInode: String(metadata.ino),
+  };
+}
+
+function createRecallMetadataSweepContinuationStore(
+  controlDirectory: string,
+): RecallMetadataSweepContinuationStore {
+  const continuationPath = join(controlDirectory, RECALL_METADATA_SWEEP_CONTINUATION_FILENAME);
+  return {
+    async readContinuation() {
+      let source: string;
+      try {
+        source = await readFile(continuationPath, 'utf8');
+      } catch (error) {
+        if (readNodeErrorCode(error) === 'ENOENT') {
+          return null;
+        }
+        throw error;
+      }
+      let value: unknown;
+      try {
+        value = JSON.parse(source);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`Recall metadata sweep continuation unreadable: ${message}`, {
+          cause: error,
+        });
+      }
+      try {
+        return Value.Parse(recallMetadataSweepContinuationSchema, value);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`Recall metadata sweep continuation invalid: ${message}`, {
+          cause: error,
+        });
+      }
+    },
+    async writeContinuation(continuation) {
+      const parsed = Value.Parse(recallMetadataSweepContinuationSchema, continuation);
+      await mkdir(controlDirectory, { recursive: true });
+      const temporaryPath = join(
+        controlDirectory,
+        `.${RECALL_METADATA_SWEEP_CONTINUATION_FILENAME}.${randomUUID()}.tmp`,
+      );
+      const temporaryFile = await open(temporaryPath, 'wx', 0o600);
+      try {
+        await temporaryFile.writeFile(`${JSON.stringify(parsed)}\n`);
+        await temporaryFile.sync();
+      } finally {
+        await temporaryFile.close();
+      }
+      try {
+        await rename(temporaryPath, continuationPath);
+        await syncRecallDirectory(controlDirectory);
+      } catch (error) {
+        await rm(temporaryPath, { force: true });
+        throw error;
+      }
+    },
+    async clearContinuation() {
+      try {
+        await rm(continuationPath);
+      } catch (error) {
+        if (readNodeErrorCode(error) === 'ENOENT') {
+          return;
+        }
+        throw error;
+      }
+      await syncRecallDirectory(controlDirectory);
+    },
+  };
+}
+
+function createInitialRecallMetadataSweepContinuation(
+  sweepId: string,
+): RecallMetadataSweepContinuation {
+  return {
+    version: RECALL_METADATA_SWEEP_CONTINUATION_VERSION,
+    sweepId,
+    currentRelativeDirectory: '',
+    directoryCheckpoints: [],
+    pendingRelativeDirectories: [],
+    rescanStarted: false,
+    observedPhysicalSessionIds: [],
+    observedKnownSourceIdentities: [],
+    observedSessionFileCount: 0,
+  };
+}
+
+function validatePositiveRecallMetadataBound(value: number, name: string): void {
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error(`Recall metadata sweep ${name} must be positive`);
+  }
+}
+
+function validateConfirmedDeletionMassLossLimits(maxCount: number, maxRatio: number): void {
+  if (!Number.isSafeInteger(maxCount) || maxCount < 1) {
+    throw new Error(
+      'Recall metadata sweep confirmed deletion missing-source count must be a positive integer',
+    );
+  }
+  if (!Number.isFinite(maxRatio) || maxRatio <= 0 || maxRatio > 1) {
+    throw new Error(
+      'Recall metadata sweep confirmed deletion missing-source ratio must be greater than zero and at most one',
+    );
+  }
+}
+
+function classifyRecallMetadataTraversalFailure(error: unknown): RecallMetadataSweepStatus | null {
+  switch (readNodeErrorCode(error)) {
+    case 'EACCES':
+    case 'EPERM':
+      return RecallMetadataSweepStatus.PERMISSION_DENIED;
+    case 'EIO':
+    case 'ENODEV':
+    case 'ENOENT':
+    case 'ENOTDIR':
+    case 'ESTALE':
+      return RecallMetadataSweepStatus.ROOT_UNAVAILABLE;
+    default:
+      return null;
+  }
+}
+
+function createRecallMetadataSweepResult(
+  sweepId: string,
+  status: RecallMetadataSweepStatus,
+  startMilliseconds: number,
+  monotonicNowMilliseconds: () => number,
+  scannedFileCount: number,
+  observedSessionFileCount: number,
+  observedSessionMetadata: ObservedRecallSessionMetadata[],
+  observedKnownSourceIdentities: ObservedKnownRecallSourceIdentity[],
+  missingPhysicalSessionIds: string[],
+  continuationPersisted: boolean,
+): RecallSessionMetadataSweepResult {
+  const rootHealthy =
+    status !== RecallMetadataSweepStatus.ROOT_UNAVAILABLE &&
+    status !== RecallMetadataSweepStatus.PERMISSION_DENIED;
+  return {
+    sweepId,
+    status,
+    rootHealthy,
+    deletionConfirmationSuppressed: status !== RecallMetadataSweepStatus.COMPLETE,
+    scannedFileCount,
+    observedSessionFileCount,
+    observedSessionMetadata,
+    observedKnownSourceIdentities,
+    missingPhysicalSessionIds,
+    continuationPersisted,
+    elapsedMilliseconds: Math.max(0, monotonicNowMilliseconds() - startMilliseconds),
+  };
+}
+
+function hasRemainingRecallMetadataWork(
+  entryIndex: number,
+  entryCount: number,
+  continuation: RecallMetadataSweepContinuation,
+): boolean {
+  return entryIndex + 1 < entryCount || continuation.pendingRelativeDirectories.length > 0;
+}
+
+/** Scans only directory entries and file metadata, persisting continuation at either hard bound. */
+export async function scanRecallSessionMetadata(
+  options: ScanRecallSessionMetadataOptions,
+): Promise<RecallSessionMetadataSweepResult> {
+  const maxFiles = options.maxFiles ?? RECALL_METADATA_SWEEP_MAX_FILES;
+  const maxElapsedMilliseconds =
+    options.maxElapsedMilliseconds ?? RECALL_METADATA_SWEEP_MAX_ELAPSED_MILLISECONDS;
+  validatePositiveRecallMetadataBound(maxFiles, 'file bound');
+  validatePositiveRecallMetadataBound(maxElapsedMilliseconds, 'elapsed-time bound');
+  const monotonicNowMilliseconds =
+    options.monotonicNowMilliseconds ?? performance.now.bind(performance);
+  const startMilliseconds = monotonicNowMilliseconds();
+  const readDirectory = options.filesystem?.readDirectory ?? readdir;
+  const statPath = options.filesystem?.statPath ?? statRecallSessionMetadata;
+  const continuationStore =
+    options.continuationStore ??
+    createRecallMetadataSweepContinuationStore(options.controlDirectory);
+  const continuation =
+    (await continuationStore.readContinuation()) ??
+    createInitialRecallMetadataSweepContinuation((options.createSweepId ?? randomUUID)());
+  const observedPhysicalSessionIds = new Set(continuation.observedPhysicalSessionIds);
+  const observedKnownSourceIdentityByPhysicalSessionId = new Map(
+    continuation.observedKnownSourceIdentities.map((identity) => [
+      identity.physicalSessionId,
+      identity,
+    ]),
+  );
+  const knownSourceIdByRelativePath = new Map(
+    (options.knownSources ?? []).map(({ physicalSessionId, relativePath }) => [
+      relativePath,
+      physicalSessionId,
+    ]),
+  );
+  const observedSessionMetadata: ObservedRecallSessionMetadata[] = [];
+  let scannedFileCount = 0;
+
+  async function persistRecallMetadataSweepResult(
+    status: RecallMetadataSweepStatus,
+  ): Promise<RecallSessionMetadataSweepResult> {
+    continuation.observedPhysicalSessionIds = [...observedPhysicalSessionIds].toSorted();
+    continuation.observedKnownSourceIdentities = [
+      ...observedKnownSourceIdentityByPhysicalSessionId.values(),
+    ].toSorted((left, right) => left.physicalSessionId.localeCompare(right.physicalSessionId));
+    await continuationStore.writeContinuation(continuation);
+    return createRecallMetadataSweepResult(
+      continuation.sweepId,
+      status,
+      startMilliseconds,
+      monotonicNowMilliseconds,
+      scannedFileCount,
+      continuation.observedSessionFileCount,
+      observedSessionMetadata,
+      continuation.observedKnownSourceIdentities,
+      [],
+      true,
+    );
+  }
+
+  while (true) {
+    const directoryPath = join(options.sessionRootDirectory, continuation.currentRelativeDirectory);
+    let entryNames: string[];
+    try {
+      entryNames = (await readDirectory(directoryPath)).toSorted();
+    } catch (error) {
+      const failureStatus = classifyRecallMetadataTraversalFailure(error);
+      if (failureStatus === null) {
+        throw error;
+      }
+      return persistRecallMetadataSweepResult(failureStatus);
+    }
+
+    let directoryCheckpoint = continuation.directoryCheckpoints.find(
+      ({ relativeDirectory }) => relativeDirectory === continuation.currentRelativeDirectory,
+    );
+    if (directoryCheckpoint === undefined) {
+      directoryCheckpoint = {
+        relativeDirectory: continuation.currentRelativeDirectory,
+        processedEntryNames: [],
+      };
+      continuation.directoryCheckpoints.push(directoryCheckpoint);
+      continuation.directoryCheckpoints.sort((left, right) =>
+        left.relativeDirectory.localeCompare(right.relativeDirectory),
+      );
+    }
+    const processedEntryNames = new Set(directoryCheckpoint.processedEntryNames);
+    const remainingEntryNames = entryNames.filter((name) => !processedEntryNames.has(name));
+    for (const [entryIndex, entryName] of remainingEntryNames.entries()) {
+      if (!Value.Check(entryNameSchema, entryName)) {
+        throw new Error('Recall metadata sweep directory returned an invalid entry name');
+      }
+      const elapsedBeforeStat = monotonicNowMilliseconds() - startMilliseconds;
+      if (elapsedBeforeStat >= maxElapsedMilliseconds) {
+        return persistRecallMetadataSweepResult(RecallMetadataSweepStatus.CONTINUATION_REQUIRED);
+      }
+      const relativePath =
+        continuation.currentRelativeDirectory === ''
+          ? entryName
+          : join(continuation.currentRelativeDirectory, entryName);
+      let metadata: RecallSessionMetadataStat;
+      try {
+        metadata = await statPath(join(options.sessionRootDirectory, relativePath));
+      } catch (error) {
+        const failureStatus = classifyRecallMetadataTraversalFailure(error);
+        if (failureStatus === null) {
+          throw error;
+        }
+        return persistRecallMetadataSweepResult(failureStatus);
+      }
+      directoryCheckpoint.processedEntryNames.push(entryName);
+      if (metadata.isDirectory) {
+        continuation.pendingRelativeDirectories.push(relativePath);
+        continuation.pendingRelativeDirectories.sort();
+      } else if (metadata.isFile) {
+        scannedFileCount += 1;
+        if (extname(entryName) === '.jsonl') {
+          continuation.observedSessionFileCount += 1;
+          const physicalSessionId = knownSourceIdByRelativePath.get(relativePath) ?? null;
+          observedSessionMetadata.push({
+            physicalSessionId,
+            relativePath,
+            sizeBytes: metadata.sizeBytes,
+            modifiedAtEpochMilliseconds: metadata.modifiedAtEpochMilliseconds,
+            sourceDevice: metadata.sourceDevice,
+            sourceInode: metadata.sourceInode,
+          });
+          if (physicalSessionId !== null) {
+            observedPhysicalSessionIds.add(physicalSessionId);
+            observedKnownSourceIdentityByPhysicalSessionId.set(physicalSessionId, {
+              physicalSessionId,
+              sourceDevice: metadata.sourceDevice,
+              sourceInode: metadata.sourceInode,
+            });
+          }
+        }
+      }
+      const moreWork = hasRemainingRecallMetadataWork(
+        entryIndex,
+        remainingEntryNames.length,
+        continuation,
+      );
+      const elapsedAfterStat = monotonicNowMilliseconds() - startMilliseconds;
+      if (
+        moreWork &&
+        (scannedFileCount >= maxFiles || elapsedAfterStat >= maxElapsedMilliseconds)
+      ) {
+        return persistRecallMetadataSweepResult(RecallMetadataSweepStatus.CONTINUATION_REQUIRED);
+      }
+    }
+
+    let nextRelativeDirectory = continuation.pendingRelativeDirectories.shift();
+    if (nextRelativeDirectory === undefined && !continuation.rescanStarted) {
+      continuation.rescanStarted = true;
+      continuation.pendingRelativeDirectories = continuation.directoryCheckpoints
+        .map(({ relativeDirectory }) => relativeDirectory)
+        .toSorted();
+      nextRelativeDirectory = continuation.pendingRelativeDirectories.shift();
+    }
+    if (nextRelativeDirectory === undefined) {
+      break;
+    }
+    continuation.currentRelativeDirectory = nextRelativeDirectory;
+  }
+
+  await continuationStore.clearContinuation();
+  const missingPhysicalSessionIds = (options.knownSources ?? [])
+    .filter(({ physicalSessionId }) => !observedPhysicalSessionIds.has(physicalSessionId))
+    .map(({ physicalSessionId }) => physicalSessionId)
+    .toSorted();
+  const confirmedDeletionMaxMissingSourceCount =
+    options.confirmedDeletionMaxMissingSourceCount ?? 1;
+  const confirmedDeletionMaxMissingSourceRatio =
+    options.confirmedDeletionMaxMissingSourceRatio ?? 0.1;
+  validateConfirmedDeletionMassLossLimits(
+    confirmedDeletionMaxMissingSourceCount,
+    confirmedDeletionMaxMissingSourceRatio,
+  );
+  const knownSourceCount = options.knownSources?.length ?? 0;
+  const missingSourceRatio =
+    knownSourceCount === 0 ? 0 : missingPhysicalSessionIds.length / knownSourceCount;
+  const suspiciousMassLoss =
+    missingPhysicalSessionIds.length > confirmedDeletionMaxMissingSourceCount ||
+    missingSourceRatio > confirmedDeletionMaxMissingSourceRatio;
+  const status = suspiciousMassLoss
+    ? RecallMetadataSweepStatus.SUSPICIOUS_MASS_LOSS
+    : RecallMetadataSweepStatus.COMPLETE;
+  const observedKnownSourceIdentities = [
+    ...observedKnownSourceIdentityByPhysicalSessionId.values(),
+  ].toSorted((left, right) => left.physicalSessionId.localeCompare(right.physicalSessionId));
+  return createRecallMetadataSweepResult(
+    continuation.sweepId,
+    status,
+    startMilliseconds,
+    monotonicNowMilliseconds,
+    scannedFileCount,
+    continuation.observedSessionFileCount,
+    observedSessionMetadata,
+    observedKnownSourceIdentities,
+    missingPhysicalSessionIds,
+    false,
+  );
+}

@@ -7,7 +7,6 @@ import { RecallInferenceBackend } from './enums.js';
 import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 
-import { createRecallRerankingExecutionIdentity } from './recall-inference-capabilities.js';
 import {
   measureRecallEmbeddingProviderConformance,
   measureRecallRerankingProviderConformance,
@@ -217,18 +216,12 @@ void test('Qwen HTTP reranking provider passes shared ordered-score conformance'
   });
   const clockValues = [0, 13];
 
-  assert.equal(provider.executionIdentity.adapterId, 'llama-cpp-http-reranking-v1');
-  assert.equal(provider.executionIdentity.adapterVersion, '1');
-  assert.equal(provider.executionIdentity.backend, 'llama-cpp-http');
-  assert.equal(provider.executionIdentity.modelProfileId, 'qwen-reranking:qwen3-rerank');
-  assert.match(
-    provider.executionIdentity.adapterConfigurationIdentity,
-    /^llama-cpp-http-reranking-config-v1:[a-f0-9]{64}$/u,
-  );
-  assert.match(
-    provider.executionIdentity.cacheIdentity,
-    /^recall-reranking-execution-v1:[a-f0-9]{64}$/u,
-  );
+  assert.deepEqual(provider.executionIdentity, {
+    adapterId: 'llama-cpp-http-reranking-v1',
+    backend: 'llama-cpp-http',
+    cacheIdentity: 'qwen-reranking:qwen3-rerank:llama-cpp-http-reranking-v1',
+    modelProfileId: 'qwen-reranking:qwen3-rerank',
+  });
   const measurement = await measureRecallRerankingProviderConformance({
     provider,
     profile,
@@ -406,13 +399,12 @@ void test('reranking conformance rejects a non-finite relevance score', async ()
       measureRecallRerankingProviderConformance({
         profile,
         provider: {
-          executionIdentity: createRecallRerankingExecutionIdentity(
-            profile,
-            'fixture-reranking-v1',
-            'fixture-reranking-config-v1',
-            RecallInferenceBackend.CUSTOM,
-            1_000,
-          ),
+          executionIdentity: {
+            adapterId: 'fixture-reranking-v1',
+            backend: RecallInferenceBackend.CUSTOM,
+            cacheIdentity: `${profile.profileId}:fixture-reranking-v1`,
+            modelProfileId: profile.profileId,
+          },
           async rerankDocuments() {
             return [Number.NaN];
           },
@@ -435,13 +427,12 @@ void test('reranking conformance rejects double-sigmoid fixture scores', async (
       measureRecallRerankingProviderConformance({
         profile,
         provider: {
-          executionIdentity: createRecallRerankingExecutionIdentity(
-            profile,
-            'known-double-sigmoid-v1',
-            'known-double-sigmoid-config-v1',
-            RecallInferenceBackend.CUSTOM,
-            1_000,
-          ),
+          executionIdentity: {
+            adapterId: 'known-double-sigmoid-v1',
+            backend: RecallInferenceBackend.CUSTOM,
+            cacheIdentity: `${profile.profileId}:known-double-sigmoid-v1`,
+            modelProfileId: profile.profileId,
+          },
           async rerankDocuments() {
             return doubleSigmoidScores;
           },
@@ -463,13 +454,12 @@ void test('reranking conformance rejects scores outside the profile range', asyn
       measureRecallRerankingProviderConformance({
         profile,
         provider: {
-          executionIdentity: createRecallRerankingExecutionIdentity(
-            profile,
-            'fixture-reranking-v1',
-            'fixture-reranking-config-v1',
-            RecallInferenceBackend.CUSTOM,
-            1_000,
-          ),
+          executionIdentity: {
+            adapterId: 'fixture-reranking-v1',
+            backend: RecallInferenceBackend.CUSTOM,
+            cacheIdentity: `${profile.profileId}:fixture-reranking-v1`,
+            modelProfileId: profile.profileId,
+          },
           async rerankDocuments() {
             return [1.01];
           },

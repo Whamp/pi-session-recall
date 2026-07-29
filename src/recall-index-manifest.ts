@@ -5,6 +5,7 @@ import { dirname } from 'node:path';
 import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 
+import { RECALL_INDEX_MANIFEST_VERSION } from './enums.js';
 import {
   EMBEDDING_TEXT_NORMALIZATION_VERSION,
   EMBEDDING_VECTOR_CACHE_VERSION,
@@ -16,6 +17,8 @@ import {
   type ConversationTokenizerAssetIdentity,
 } from './octen-conversation-tokenizer.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
+import { RECALL_SESSION_PROJECTION_SCHEMA_VERSION } from './recall-session-projection.js';
+import { RECALL_WORK_MARKER_VERSION } from './recall-work-marker.js';
 import {
   createLineageDigest,
   normalizeRecallProjectLineages,
@@ -34,8 +37,7 @@ import {
   ZVEC_HNSW_M,
 } from './zvec-conversation-store.js';
 
-/** Version of the index-manifest file format, independent from document and zvec schemas. */
-export const RECALL_INDEX_MANIFEST_VERSION = 5;
+export { RECALL_INDEX_MANIFEST_VERSION } from './enums.js';
 
 /** Lowest accepted cosine similarity across parallel slots serving the same embedding model. */
 export const RECALL_EMBEDDING_CANARY_MINIMUM_COSINE_SIMILARITY = 0.9995;
@@ -84,10 +86,12 @@ export interface RecallIndexEmbeddingCanaryIdentity {
 
 /** Versioned identity required before one zvec index generation can be read or updated. */
 export interface RecallIndexManifest {
-  manifestVersion: 5;
+  manifestVersion: 6;
   importPolicy: {
     version: number;
   };
+  markerSchemaVersion: number;
+  sessionProjectionSchemaVersion: number;
   embedding: {
     requestModel: string;
     servedModelId: string;
@@ -132,6 +136,14 @@ export interface RecallIndexManifest {
   };
 }
 
+/** Exact read-only manifest contract accepted only for explicit version-5 layout adoption. */
+export interface LegacyRecallIndexManifestV5 extends Omit<
+  RecallIndexManifest,
+  'manifestVersion' | 'markerSchemaVersion' | 'sessionProjectionSchemaVersion'
+> {
+  manifestVersion: 5;
+}
+
 interface RecoveredRecallEmbeddingCanary {
   dimensions: number;
   canaryVector: number[];
@@ -165,13 +177,15 @@ const manifestAssetSchema = Type.Object(
 
 const recallIndexManifestSchema = Type.Object(
   {
-    manifestVersion: Type.Literal(5),
+    manifestVersion: Type.Literal(RECALL_INDEX_MANIFEST_VERSION),
     importPolicy: Type.Object(
       {
         version: Type.Literal(SESSION_IMPORT_POLICY_VERSION),
       },
       { additionalProperties: false },
     ),
+    markerSchemaVersion: Type.Literal(RECALL_WORK_MARKER_VERSION),
+    sessionProjectionSchemaVersion: Type.Literal(RECALL_SESSION_PROJECTION_SCHEMA_VERSION),
     embedding: Type.Object(
       {
         requestModel: Type.String({ minLength: 1 }),
@@ -190,9 +204,7 @@ const recallIndexManifestSchema = Type.Object(
         canaryProbe: Type.String({ minLength: 1 }),
         canaryFingerprint: Type.String({ pattern: '^[a-f0-9]{64}$' }),
         canaryVector: Type.Array(Type.Number(), { minItems: 1 }),
-        canaryMinimumCosineSimilarity: Type.Literal(
-          RECALL_EMBEDDING_CANARY_MINIMUM_COSINE_SIMILARITY,
-        ),
+        canaryMinimumCosineSimilarity: Type.Number({ minimum: 0, maximum: 1 }),
       },
       { additionalProperties: false },
     ),
@@ -252,6 +264,15 @@ const recallIndexManifestSchema = Type.Object(
       { additionalProperties: false },
     ),
   },
+  { additionalProperties: false },
+);
+const legacyRecallIndexManifestV5Fields = Type.Omit(recallIndexManifestSchema, [
+  'manifestVersion',
+  'markerSchemaVersion',
+  'sessionProjectionSchemaVersion',
+]);
+const legacyRecallIndexManifestV5Schema = Type.Object(
+  { ...legacyRecallIndexManifestV5Fields.properties, manifestVersion: Type.Literal(5) },
   { additionalProperties: false },
 );
 
@@ -371,6 +392,8 @@ export function createRecallIndexManifest(options: {
     importPolicy: {
       version: SESSION_IMPORT_POLICY_VERSION,
     },
+    markerSchemaVersion: RECALL_WORK_MARKER_VERSION,
+    sessionProjectionSchemaVersion: RECALL_SESSION_PROJECTION_SCHEMA_VERSION,
     embedding: {
       ...options.embeddingIdentity,
       ...(options.embeddingCanary ? { canaryOperation: options.embeddingCanary.operation } : {}),
@@ -541,6 +564,69 @@ function readRecallIndexManifestVersion(value: unknown): number | undefined {
     return undefined;
   }
   return value.manifestVersion;
+}
+
+/** Reads and strictly validates the exact version-5 manifest used by explicit legacy adoption. */
+export async function readLegacyRecallIndexManifestV5(
+  manifestPath: string,
+): Promise<LegacyRecallIndexManifestV5> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(await readFile(manifestPath, 'utf8'));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Recall legacy index manifest unreadable at ${manifestPath}: ${message}`, {
+      cause: error,
+    });
+  }
+  try {
+    const manifest = Value.Parse(legacyRecallIndexManifestV5Schema, parsed);
+    assertRecallIndexManifestCanaryIntegrity({
+      ...manifest,
+      manifestVersion: RECALL_INDEX_MANIFEST_VERSION,
+      markerSchemaVersion: RECALL_WORK_MARKER_VERSION,
+      sessionProjectionSchemaVersion: RECALL_SESSION_PROJECTION_SCHEMA_VERSION,
+    });
+    return manifest;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Recall legacy index manifest invalid at ${manifestPath}: ${message}`, {
+      cause: error,
+    });
+  }
+}
+
+/** Reads current or adopted version-5 manifest identity without mutating the selected generation. */
+export async function readRecallSearchManifest(
+  manifestPath: string,
+): Promise<RecallIndexManifest | null> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(await readFile(manifestPath, 'utf8'));
+  } catch (error) {
+    if (readNodeErrorCode(error) === 'ENOENT') {
+      return null;
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Recall index manifest unreadable at ${manifestPath}: ${message}`, {
+      cause: error,
+    });
+  }
+  if (
+    typeof parsed === 'object' &&
+    parsed !== null &&
+    'manifestVersion' in parsed &&
+    parsed.manifestVersion === 5
+  ) {
+    const legacy = await readLegacyRecallIndexManifestV5(manifestPath);
+    return {
+      ...legacy,
+      manifestVersion: RECALL_INDEX_MANIFEST_VERSION,
+      markerSchemaVersion: RECALL_WORK_MARKER_VERSION,
+      sessionProjectionSchemaVersion: RECALL_SESSION_PROJECTION_SCHEMA_VERSION,
+    };
+  }
+  return readRecallIndexManifest(manifestPath);
 }
 
 /** Reads and validates an index manifest, returning null only when the file is absent. */

@@ -90,6 +90,7 @@ async function runRecallBackgroundIndexWorker(REQUEST_PATH: string): Promise<voi
       rebuild: true,
       manualMaintenanceTrigger: RecallManualMaintenanceTrigger.MANUAL_REBUILD,
       optimize: true,
+      ...(request.generationId ? { resumeGenerationId: request.generationId } : {}),
       signal: cancellation.signal,
       onProgress(progress) {
         queueStatusUpdate((current) => ({

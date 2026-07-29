@@ -12,21 +12,27 @@ interface RecallIndexCommandUi {
 
 type RecallIndexCommandService = Pick<
   RecallConversationService,
-  | 'index'
-  | 'startBackgroundIndexGeneration'
-  | 'resumeBackgroundIndexGeneration'
-  | 'readBackgroundIndexGenerationStatus'
-  | 'stopBackgroundIndexGeneration'
+  | 'adoptLegacy'
+  | 'collectRetired'
   | 'discardStagingIndexGeneration'
+  | 'index'
+  | 'readBackgroundIndexGenerationStatus'
+  | 'resumeBackgroundIndexGeneration'
+  | 'rollback'
+  | 'startBackgroundIndexGeneration'
+  | 'stopBackgroundIndexGeneration'
 >;
 
 type RecallIndexCommandAction =
+  | 'adopt-legacy'
+  | 'collect-retired'
+  | 'discard'
   | 'incremental'
   | 'rebuild'
-  | 'status'
-  | 'stop'
   | 'resume'
-  | 'discard';
+  | 'rollback'
+  | 'status'
+  | 'stop';
 
 /** Guarded inputs for the production conversation-index slash command. */
 export interface RecallIndexCommandOptions {
@@ -42,18 +48,21 @@ function readRecallIndexCommandAction(argumentsText: string): RecallIndexCommand
     return 'incremental';
   }
   const actions: Readonly<Record<string, RecallIndexCommandAction>> = {
+    '--adopt-legacy': 'adopt-legacy',
+    '--collect-retired': 'collect-retired',
+    '--discard': 'discard',
     '--rebuild': 'rebuild',
+    '--resume': 'resume',
+    '--rollback': 'rollback',
     '--status': 'status',
     '--stop': 'stop',
-    '--resume': 'resume',
-    '--discard': 'discard',
   };
   const action = actions[args];
   if (action) {
     return action;
   }
   throw new Error(
-    `Recall index command arguments invalid: ${args}; usage: /pi-session-recall-index [--rebuild|--status|--stop|--resume|--discard]`,
+    `Recall index command arguments invalid: ${args}; usage: /pi-session-recall-index [--rebuild|--status|--stop|--resume|--discard|--rollback|--adopt-legacy|--collect-retired]`,
   );
 }
 
@@ -91,9 +100,10 @@ function formatBackgroundIndexStatus(
   return parts.filter((part) => part !== undefined).join(' · ');
 }
 
-/** Runs explicit incremental maintenance or controls one detached staging generation. */
+/** Runs incremental maintenance, detached rebuild control, or explicit generation recovery. */
 export async function runRecallIndexCommand(options: RecallIndexCommandOptions): Promise<void> {
   const action = readRecallIndexCommandAction(options.argumentsText);
+
   if (action === 'status') {
     const status = await options.service.readBackgroundIndexGenerationStatus();
     options.ui.notify(
@@ -115,6 +125,42 @@ export async function runRecallIndexCommand(options: RecallIndexCommandOptions):
         : 'Recall staging generation: nothing to discard',
       'info',
     );
+    return;
+  }
+  if (action === 'rollback') {
+    options.ui.setStatus('rolling back recall generation…');
+    try {
+      await options.service.rollback();
+      options.ui.notify(
+        'Recall generation rolled back; retained markers are pending replay',
+        'warning',
+      );
+    } finally {
+      options.ui.setStatus();
+    }
+    return;
+  }
+  if (action === 'collect-retired') {
+    options.ui.setStatus('collecting retired recall generations…');
+    try {
+      await options.service.collectRetired();
+      options.ui.notify('Expired recall generations collected', 'info');
+    } finally {
+      options.ui.setStatus();
+    }
+    return;
+  }
+  if (action === 'adopt-legacy') {
+    options.ui.setStatus('adopting legacy recall generation…');
+    try {
+      await options.service.adoptLegacy();
+      options.ui.notify(
+        'Legacy recall generation adopted read-only; run --rebuild next',
+        'warning',
+      );
+    } finally {
+      options.ui.setStatus();
+    }
     return;
   }
 

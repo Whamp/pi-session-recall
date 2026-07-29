@@ -9,17 +9,11 @@ import {
   type RecallInferenceConfigurationCandidate,
 } from './recall-inference-configuration.js';
 import { runRecallInferenceSetupCommand } from './runRecallInferenceSetupCommand.js';
-import {
-  createRecommendedEmbeddingGemmaHttpInferenceCandidate,
-  createRecommendedEmbeddingGemmaInferenceCandidate,
-} from './recommended-embeddinggemma-inference-candidate.js';
 import { createRecommendedEmbeddingGemmaConversationRuntime } from './recommended-embeddinggemma-conversation-service.js';
-import {
-  createRecommendedOptionalInferenceCandidates,
-  readRecommendedOptionalInferenceConformance,
-} from './createRecommendedOptionalInferenceCandidates.js';
+import { readRecommendedOptionalInferenceConformance } from './createRecommendedOptionalInferenceCandidates.js';
 import {
   createConfiguredRecallInferenceRuntime,
+  createRecommendedRecallInferenceAdapterRegistry,
   resolveRecallInferenceConfigurationPath,
   type RecallInferenceAdapterRegistry,
 } from './configured-recall-inference-runtime.js';
@@ -43,12 +37,15 @@ export async function runRecallFirstIndexSetupCli(
     );
     await runRecallInferenceSetupCommand(argumentsList.slice(1), {
       statePath: resolveRecallInferenceConfigurationPath(config),
-      candidates: inferenceCandidates ?? [
-        createRecommendedEmbeddingGemmaInferenceCandidate(config),
-        createRecommendedEmbeddingGemmaHttpInferenceCandidate(config),
-        ...createRecommendedOptionalInferenceCandidates(config, optionalConformance),
-        ...adapterRegistries.flatMap((registry) => registry.candidates),
-      ],
+      ...(config.generationRegistryPath
+        ? { generationRegistryPath: config.generationRegistryPath }
+        : {}),
+      candidates:
+        inferenceCandidates ??
+        [
+          createRecommendedRecallInferenceAdapterRegistry(config, optionalConformance),
+          ...adapterRegistries,
+        ].flatMap((registry) => registry.registrations.map(({ candidate }) => candidate)),
     });
     return;
   }
@@ -57,6 +54,11 @@ export async function runRecallFirstIndexSetupCli(
     async createConfiguredServiceRuntime() {
       const inferenceConfiguration = await readRecallInferenceConfiguration(
         resolveRecallInferenceConfigurationPath(config),
+        {
+          ...(config.generationRegistryPath
+            ? { generationRegistryPath: config.generationRegistryPath }
+            : {}),
+        },
       );
       return inferenceConfiguration.embedding
         ? createConfiguredRecallInferenceRuntime(config, { adapterRegistries })

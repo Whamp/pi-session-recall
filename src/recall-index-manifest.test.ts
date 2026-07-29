@@ -41,8 +41,10 @@ void test('index manifest round-trips the complete reproducibility identity atom
 
   assert.deepEqual(await readRecallIndexManifest(manifestPath), manifest);
   assert.deepEqual(await readdir(directory), ['index-manifest.json']);
-  assert.equal(manifest.manifestVersion, 5);
+  assert.equal(manifest.manifestVersion, 6);
   assert.deepEqual(manifest.importPolicy, { version: 3 });
+  assert.equal(manifest.markerSchemaVersion, 1);
+  assert.equal(manifest.sessionProjectionSchemaVersion, 3);
   assert.equal(Object.hasOwn(createEmbeddingVectorCacheIdentity(manifest), 'importPolicy'), false);
   assert.equal(
     manifest.embedding.canaryFingerprint,
@@ -59,8 +61,8 @@ void test('index manifest round-trips the complete reproducibility identity atom
     boundaryAlgorithm: 'markdown-structure-v1',
     normalization: 'unicode-nfc-v1',
   });
-  assert.equal(manifest.conversationSchemaVersion, 8);
-  assert.equal(manifest.provenanceSchemaVersion, 8);
+  assert.equal(manifest.conversationSchemaVersion, 9);
+  assert.equal(manifest.provenanceSchemaVersion, 9);
   assert.equal(PROJECT_IDENTITY_METADATA_SCHEMA_VERSION, 3);
   assert.deepEqual(manifest.projectIdentity, {
     policyVersion: 4,
@@ -68,11 +70,32 @@ void test('index manifest round-trips the complete reproducibility identity atom
     lineagePolicyVersion: 1,
     lineageDigest: '44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a',
   });
-  assert.equal(manifest.zvec.schemaVersion, 7);
+  assert.equal(manifest.zvec.schemaVersion, 8);
   assert.equal(manifest.zvec.ftsConfigurationVersion, 2);
 });
 
-void test('index manifest records complete EmbeddingGemma semantics without changing Octen format', () => {
+void test('index manifest round-trips a profile-specific canary threshold', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-manifest-profile-canary-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const manifestPath = join(directory, 'index-manifest.json');
+  const manifest = createRecallIndexManifest({
+    embeddingIdentity,
+    canaryEmbedding: [0.25, -0.5, 1],
+    embeddingCanary: {
+      operation: 'query',
+      query: 'profile-specific canary',
+      minimumRepeatCosineSimilarity: 0.998,
+    },
+  });
+
+  await writeRecallIndexManifest(manifestPath, manifest);
+
+  const roundTrippedManifest = await readRecallIndexManifest(manifestPath);
+  assert.ok(roundTrippedManifest);
+  assert.equal(roundTrippedManifest.embedding.canaryMinimumCosineSimilarity, 0.998);
+});
+
+void test('index manifest records complete EmbeddingGemma semantics in the incremental manifest', () => {
   const profile = createRecommendedEmbeddingGemmaModelProfile();
   const manifest = createRecallIndexManifest({
     embeddingIdentity: profile.identity,
@@ -81,7 +104,7 @@ void test('index manifest records complete EmbeddingGemma semantics without chan
     tokenizerIdentity: createEmbeddingGemmaTokenizerManifestIdentity(profile),
   });
 
-  assert.equal(manifest.manifestVersion, 5);
+  assert.equal(manifest.manifestVersion, 6);
   assert.deepEqual(manifest.embedding, {
     requestModel: 'embeddinggemma-300M-Q8_0',
     servedModelId: 'google/embeddinggemma-300M',
@@ -207,6 +230,8 @@ void test('index manifest incompatibility reports every mismatch with the rebuil
   actual.tokenizer.revision = 'mutable-main';
   actual.chunkPolicy.maxTokens = 512;
   actual.conversationSchemaVersion = 1;
+  actual.markerSchemaVersion = 99;
+  actual.sessionProjectionSchemaVersion = 99;
   actual.projectIdentity.policyVersion = 1;
   actual.projectIdentity.metadataSchemaVersion = 1;
   actual.projectIdentity.lineagePolicyVersion = 99;
@@ -222,6 +247,8 @@ void test('index manifest incompatibility reports every mismatch with the rebuil
       assert.match(error.message, /tokenizer\.revision/);
       assert.match(error.message, /chunkPolicy\.maxTokens/);
       assert.match(error.message, /conversationSchemaVersion/);
+      assert.match(error.message, /markerSchemaVersion/);
+      assert.match(error.message, /sessionProjectionSchemaVersion/);
       assert.match(error.message, /projectIdentity\.policyVersion/);
       assert.match(error.message, /projectIdentity\.metadataSchemaVersion/);
       assert.match(error.message, /projectIdentity\.lineagePolicyVersion/);

@@ -1,10 +1,14 @@
 import {
-  acquireSharedEmbeddedLlamaRuntime,
-  mapNodeLlamaCppComputeBackend,
-  writeEmbeddedLlamaLog,
+  acquireEmbeddedLlamaRuntimeForBackend,
+  initializeEmbeddedProviderResources,
+  resolveEmbeddedModelGpuLayers,
   type NodeLlamaCppGpuBackend,
 } from './acquireSharedEmbeddedLlamaRuntime.js';
-import { EmbeddedInferenceComputeBackend, EmbeddedInferenceDevicePolicy } from './enums.js';
+import {
+  createEmbeddedProviderResourceLifecycle,
+  disposeEmbeddedProviderResourceLayers,
+} from './embedded-provider-resource-lifecycle.js';
+import { EmbeddedInferenceDevicePolicy, type EmbeddedInferenceComputeBackend } from './enums.js';
 import type { RecallEmbeddingProvider } from './recall-inference-capabilities.js';
 import type { RecallTokenizerManifestIdentity } from './recall-index-manifest.js';
 import { createRecallModelArtifactCache } from './recall-model-artifact-cache.js';
@@ -251,14 +255,7 @@ export function createEmbeddedEmbeddingGemmaProvider(
   const loadNodeLlamaCpp = options.loadNodeLlamaCpp ?? loadInstalledNodeLlamaCpp;
   const writeWarning =
     options.onWarning ?? ((warning: string) => process.stderr.write(`${warning}\n`));
-  let resources: LoadedEmbeddingGemmaResources | undefined;
   let tokenizerResources: LoadedEmbeddingGemmaResources | undefined;
-  let resourcesLoadPromise: Promise<LoadedEmbeddingGemmaResources> | undefined;
-  let resourcesDisposalPromise: Promise<void> | undefined;
-  let idleDisposalTimer: ReturnType<typeof setTimeout> | undefined;
-  let activeOperationCount = 0;
-  let disposed = false;
-  let cpuFallbackWarningEmitted = false;
   let executionIdentity: Readonly<EmbeddedEmbeddingGemmaExecutionIdentity> = Object.freeze({
     adapter: 'node-llama-cpp-embedded-v2',
     backend: 'embedded',
@@ -272,54 +269,35 @@ export function createEmbeddedEmbeddingGemmaProvider(
     profileId: profile.profileId,
   });
 
+  async function disposeEmbeddingGemmaResourceLayers(options: {
+    contextOperations: readonly Promise<void>[];
+    contexts: readonly EmbeddingGemmaLlamaEmbeddingContext[];
+    model: EmbeddingGemmaLlamaModel | undefined;
+    releaseRuntime: (() => Promise<void>) | undefined;
+  }): Promise<void> {
+    await disposeEmbeddedProviderResourceLayers({
+      failureMessage: 'Recall embedded EmbeddingGemma resource disposal failed',
+      layers: [
+        options.contextOperations.map((operation) => async () => {
+          await operation;
+        }),
+        options.contexts.map((context) => () => context.dispose()),
+        [
+          async () => {
+            await options.model?.dispose();
+          },
+        ],
+        [
+          async () => {
+            await options.releaseRuntime?.();
+          },
+        ],
+      ],
+    });
+  }
+
   async function disposeLoadedResources(loaded: LoadedEmbeddingGemmaResources): Promise<void> {
-    await Promise.all(loaded.contextOperations);
-    for (const context of loaded.contexts) {
-      await context.dispose();
-    }
-    await loaded.model.dispose();
-    await loaded.releaseRuntime();
-  }
-
-  function clearIdleResourceDisposal(): void {
-    if (idleDisposalTimer) {
-      clearTimeout(idleDisposalTimer);
-      idleDisposalTimer = undefined;
-    }
-  }
-
-  function scheduleIdleResourceDisposal(loaded: LoadedEmbeddingGemmaResources): void {
-    if (
-      disposed ||
-      idleTimeoutMilliseconds === 0 ||
-      activeOperationCount !== 0 ||
-      tokenizerResources === loaded
-    ) {
-      return;
-    }
-    clearIdleResourceDisposal();
-    idleDisposalTimer = setTimeout(() => {
-      idleDisposalTimer = undefined;
-      if (disposed || activeOperationCount !== 0 || resources !== loaded) {
-        return;
-      }
-      resources = undefined;
-      resourcesLoadPromise = undefined;
-      const disposal = disposeLoadedResources(loaded);
-      resourcesDisposalPromise = disposal;
-      void disposal
-        .catch((error: unknown) => {
-          writeWarning(
-            `Recall embedded EmbeddingGemma idle disposal failed: ${readEmbeddingErrorMessage(error)}`,
-          );
-        })
-        .finally(() => {
-          if (resourcesDisposalPromise === disposal) {
-            resourcesDisposalPromise = undefined;
-          }
-        });
-    }, idleTimeoutMilliseconds);
-    idleDisposalTimer.unref();
+    await disposeEmbeddingGemmaResourceLayers(loaded);
   }
 
   async function loadResourcesForBackend(
@@ -327,51 +305,26 @@ export function createEmbeddedEmbeddingGemmaProvider(
     modelPath: string,
     computeBackend: EmbeddedInferenceComputeBackend,
   ): Promise<LoadedEmbeddingGemmaResources> {
-    let runtime: EmbeddingGemmaLlamaRuntime | undefined;
     let releaseRuntime: (() => Promise<void>) | undefined;
     let model: EmbeddingGemmaLlamaModel | undefined;
     const contexts: EmbeddingGemmaLlamaEmbeddingContext[] = [];
-    try {
-      const requestedGpu =
-        computeBackend === EmbeddedInferenceComputeBackend.CPU ? false : computeBackend;
-      const loadRuntime = () =>
-        nodeLlamaCpp.getLlama({
-          build: 'never',
-          debug: false,
-          gpu: requestedGpu,
-          logger: writeEmbeddedLlamaLog,
-          logLevel: nodeLlamaCpp.LlamaLogLevel.error,
-          progressLogs: false,
-          skipDownload: true,
-        });
-      if (nodeLlamaCpp.runtimePoolIdentity) {
-        const lease = await acquireSharedEmbeddedLlamaRuntime(
-          nodeLlamaCpp.runtimePoolIdentity,
-          `${nodeLlamaCpp.version}:${computeBackend}`,
-          loadRuntime,
-          isEmbeddingGemmaLlamaRuntime,
-          (sharedRuntime) => sharedRuntime.dispose(),
-        );
-        runtime = lease.runtime;
-        releaseRuntime = () => lease.release();
-      } else {
-        runtime = await loadRuntime();
-        releaseRuntime = () => runtime?.dispose() ?? Promise.resolve();
-      }
-      if (runtime.gpu !== requestedGpu) {
-        throw new Error(
-          `Recall embedded EmbeddingGemma compute backend mismatch: requested ${computeBackend}, received ${runtime.gpu === false ? 'cpu' : runtime.gpu}`,
-        );
-      }
+    const initializeResources = async (): Promise<LoadedEmbeddingGemmaResources> => {
+      const acquired = await acquireEmbeddedLlamaRuntimeForBackend({
+        capabilityLabel: 'EmbeddingGemma',
+        computeBackend,
+        nodeLlamaCpp,
+        isRuntime: (value): value is EmbeddingGemmaLlamaRuntime =>
+          isEmbeddingGemmaLlamaRuntime(value),
+      });
+      const { runtime } = acquired;
+      releaseRuntime = () => acquired.releaseRuntime();
       model = await runtime.loadModel({
         modelPath,
-        gpuLayers:
-          computeBackend === EmbeddedInferenceComputeBackend.CPU
-            ? 0
-            : {
-                fitContext: { contextSize, embeddingContext: true },
-                max: EMBEDDING_GEMMA_MAX_GPU_LAYERS,
-              },
+        gpuLayers: resolveEmbeddedModelGpuLayers({
+          computeBackend,
+          maxGpuLayers: EMBEDDING_GEMMA_MAX_GPU_LAYERS,
+          fitContext: { contextSize, embeddingContext: true },
+        }),
       });
       if (model.embeddingVectorSize !== profile.identity.dimensions) {
         throw new Error(
@@ -394,109 +347,69 @@ export function createEmbeddedEmbeddingGemmaProvider(
         contextOperations: contexts.map(() => Promise.resolve()),
         nextContextIndex: 0,
       };
-    } catch (error) {
-      for (const context of contexts) {
-        await context.dispose();
-      }
-      await model?.dispose();
-      await releaseRuntime?.();
-      throw error;
-    }
-  }
-
-  async function loadResources(): Promise<LoadedEmbeddingGemmaResources> {
-    clearIdleResourceDisposal();
-    if (disposed) {
-      throw new Error('Recall embedded EmbeddingGemma provider disposed');
-    }
-    await resourcesDisposalPromise;
-    if (disposed) {
-      throw new Error('Recall embedded EmbeddingGemma provider disposed');
-    }
-    if (resources) {
-      return resources;
-    }
-    resourcesLoadPromise ??= (async () => {
-      const modelPath = await verifyModelArtifact();
-      const nodeLlamaCpp = await loadNodeLlamaCpp();
-      if (nodeLlamaCpp.version !== EMBEDDED_NODE_LLAMA_CPP_VERSION) {
-        throw new Error(
-          `Recall embedded EmbeddingGemma runtime version mismatch: expected ${EMBEDDED_NODE_LLAMA_CPP_VERSION}, received ${nodeLlamaCpp.version}`,
-        );
-      }
-      const probedComputeBackends =
-        devicePolicy === EmbeddedInferenceDevicePolicy.AUTO && nodeLlamaCpp.getLlamaGpuTypes
-          ? (await nodeLlamaCpp.getLlamaGpuTypes('supported'))
-              .filter(
-                (backend): backend is Exclude<NodeLlamaCppGpuBackend, false> => backend !== false,
-              )
-              .map(mapNodeLlamaCppComputeBackend)
-          : [];
-      const requestedComputeBackend: EmbeddedInferenceComputeBackend =
-        devicePolicy === EmbeddedInferenceDevicePolicy.AUTO
-          ? (probedComputeBackends[0] ?? EmbeddedInferenceComputeBackend.CPU)
-          : devicePolicy === EmbeddedInferenceDevicePolicy.CPU
-            ? EmbeddedInferenceComputeBackend.CPU
-            : devicePolicy === EmbeddedInferenceDevicePolicy.METAL
-              ? EmbeddedInferenceComputeBackend.METAL
-              : devicePolicy === EmbeddedInferenceDevicePolicy.CUDA
-                ? EmbeddedInferenceComputeBackend.CUDA
-                : EmbeddedInferenceComputeBackend.VULKAN;
-      let selectedComputeBackend = requestedComputeBackend;
-      let fallbackFromComputeBackend:
-        | EmbeddedInferenceComputeBackend.METAL
-        | EmbeddedInferenceComputeBackend.CUDA
-        | EmbeddedInferenceComputeBackend.VULKAN
-        | null = null;
-      try {
-        resources = await loadResourcesForBackend(nodeLlamaCpp, modelPath, requestedComputeBackend);
-      } catch (error) {
-        if (
-          devicePolicy !== EmbeddedInferenceDevicePolicy.AUTO ||
-          requestedComputeBackend === EmbeddedInferenceComputeBackend.CPU
-        ) {
-          throw error;
-        }
-        fallbackFromComputeBackend = requestedComputeBackend;
-        selectedComputeBackend = EmbeddedInferenceComputeBackend.CPU;
-        if (!cpuFallbackWarningEmitted) {
-          cpuFallbackWarningEmitted = true;
-          writeWarning(
-            `Recall embedded EmbeddingGemma accelerator initialization failed for ${requestedComputeBackend}; retrying the same profile ${profile.profileId} on CPU: ${readEmbeddingErrorMessage(error)}`,
+    };
+    return initializeResources().then(
+      (loaded) => loaded,
+      async (error: unknown) => {
+        const [disposalResult] = await Promise.allSettled([
+          disposeEmbeddingGemmaResourceLayers({
+            contextOperations: [],
+            contexts,
+            model,
+            releaseRuntime,
+          }),
+        ]);
+        if (disposalResult?.status === 'rejected') {
+          throw new AggregateError(
+            [error, disposalResult.reason],
+            'Recall embedded EmbeddingGemma initialization cleanup failed',
           );
         }
-        resources = await loadResourcesForBackend(
-          nodeLlamaCpp,
-          modelPath,
-          EmbeddedInferenceComputeBackend.CPU,
-        );
-      }
-      const deviceNames =
-        selectedComputeBackend === EmbeddedInferenceComputeBackend.CPU
-          ? ['CPU']
-          : ((await resources.runtime.getGpuDeviceNames?.()) ?? [selectedComputeBackend]);
+        throw error;
+      },
+    );
+  }
+
+  const resourceLifecycle = createEmbeddedProviderResourceLifecycle<LoadedEmbeddingGemmaResources>({
+    disposedErrorMessage: 'Recall embedded EmbeddingGemma provider disposed',
+    idleTimeoutMilliseconds,
+    async loadResources(fallbackWarningAlreadyEmitted) {
+      const initialized = await initializeEmbeddedProviderResources({
+        capabilityLabel: 'EmbeddingGemma',
+        devicePolicy,
+        expectedNodeLlamaCppVersion: EMBEDDED_NODE_LLAMA_CPP_VERSION,
+        fallbackWarningAlreadyEmitted,
+        verifyModelArtifact,
+        loadNodeLlamaCpp,
+        initializeForBackend: loadResourcesForBackend,
+        disposeResources: disposeLoadedResources,
+        writeFallbackWarning: (fallbackFromComputeBackend, error) => {
+          writeWarning(
+            `Recall embedded EmbeddingGemma accelerator initialization failed for ${fallbackFromComputeBackend}; retrying the same profile ${profile.profileId} on CPU: ${readEmbeddingErrorMessage(error)}`,
+          );
+        },
+      });
       executionIdentity = Object.freeze({
         adapter: 'node-llama-cpp-embedded-v2',
         backend: 'embedded',
-        computeBackend: selectedComputeBackend,
-        deviceNames: Object.freeze([...deviceNames]),
+        computeBackend: initialized.selectedComputeBackend,
+        deviceNames: Object.freeze([...initialized.deviceNames]),
         devicePolicy,
-        fallbackFromComputeBackend,
+        fallbackFromComputeBackend: initialized.fallbackFromComputeBackend,
         nodeLlamaCppVersion: EMBEDDED_NODE_LLAMA_CPP_VERSION,
         parallelism,
-        probedComputeBackends: Object.freeze([...probedComputeBackends]),
+        probedComputeBackends: Object.freeze([...initialized.probedComputeBackends]),
         profileId: profile.profileId,
       });
-      return resources;
-    })();
-    try {
-      return await resourcesLoadPromise;
-    } finally {
-      if (!resources) {
-        resourcesLoadPromise = undefined;
-      }
-    }
-  }
+      return initialized;
+    },
+    canDisposeResourcesWhenIdle: (loaded) => tokenizerResources !== loaded,
+    writeIdleDisposalWarning(error) {
+      writeWarning(
+        `Recall embedded EmbeddingGemma idle disposal failed: ${readEmbeddingErrorMessage(error)}`,
+      );
+    },
+  });
 
   async function runWithEmbeddingContext<T>(
     loaded: LoadedEmbeddingGemmaResources,
@@ -520,23 +433,16 @@ export function createEmbeddedEmbeddingGemmaProvider(
   }
 
   async function embedInput(input: string, signal?: AbortSignal): Promise<number[]> {
-    activeOperationCount += 1;
-    let loaded: LoadedEmbeddingGemmaResources | undefined;
-    try {
+    throwIfEmbeddingAborted(signal);
+    return resourceLifecycle.runWithResources(async (loaded) => {
       throwIfEmbeddingAborted(signal);
-      loaded = await loadResources();
-      return await runWithEmbeddingContext(loaded, async (context) => {
+      return runWithEmbeddingContext(loaded, async (context) => {
         throwIfEmbeddingAborted(signal);
         const embedding = await context.getEmbeddingFor(input);
         throwIfEmbeddingAborted(signal);
         return normalizeEmbeddingGemmaVector(embedding.vector, profile.identity.dimensions);
       });
-    } finally {
-      activeOperationCount -= 1;
-      if (loaded) {
-        scheduleIdleResourceDisposal(loaded);
-      }
-    }
+    });
   }
 
   return {
@@ -554,10 +460,7 @@ export function createEmbeddedEmbeddingGemmaProvider(
       );
     },
     async loadConversationTokenizer() {
-      activeOperationCount += 1;
-      let loaded: LoadedEmbeddingGemmaResources | undefined;
-      try {
-        loaded = await loadResources();
+      return resourceLifecycle.runWithResources(async (loaded) => {
         tokenizerResources = loaded;
         const tokenizerModel = loaded.model;
         return {
@@ -565,27 +468,11 @@ export function createEmbeddedEmbeddingGemmaProvider(
             return { ids: [...tokenizerModel.tokenize(text, false)] };
           },
         };
-      } finally {
-        activeOperationCount -= 1;
-        if (loaded) {
-          scheduleIdleResourceDisposal(loaded);
-        }
-      }
+      });
     },
     async dispose() {
-      if (disposed) {
-        return;
-      }
-      disposed = true;
-      clearIdleResourceDisposal();
-      await resourcesDisposalPromise;
-      const loaded = resources ?? (await resourcesLoadPromise);
-      resources = undefined;
       tokenizerResources = undefined;
-      resourcesLoadPromise = undefined;
-      if (loaded) {
-        await disposeLoadedResources(loaded);
-      }
+      await resourceLifecycle.dispose();
     },
   };
 }

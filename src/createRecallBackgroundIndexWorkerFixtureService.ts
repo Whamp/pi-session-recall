@@ -58,7 +58,13 @@ export function createRecallBackgroundIndexWorkerFixtureService(
         return [1, 0, 0];
       },
       async embedDocuments(documents, signal) {
-        if (documents.some((document) => document.includes('background replacement evidence'))) {
+        const containsCorpusDocument = documents.some(
+          (document) => document !== RECALL_EMBEDDING_CANARY_TEXT,
+        );
+        if (
+          documents.some((document) => document.includes('background replacement evidence')) ||
+          (containsCorpusDocument && existsSync(join(dataDirectory, 'fixture-pause-embedding')))
+        ) {
           await writeFile(startedPath, 'started\n', 'utf8');
           await waitForFixtureRelease(releasePath, signal);
         }

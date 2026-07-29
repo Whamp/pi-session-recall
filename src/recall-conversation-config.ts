@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 
 import { Type } from 'typebox';
 import { Value } from 'typebox/value';
@@ -12,9 +12,17 @@ import {
   normalizeRecallProjectLineages,
   type RecallProjectLineages,
 } from './resolve-project-identity.js';
+import {
+  isCanonicalPathWithinBoundary,
+  resolveCanonicalPathBoundary,
+} from './trusted-path-boundary.js';
 
 const DEFAULT_RECALL_CHANNEL_CANDIDATE_LIMIT = 40;
 const MAX_RECALL_CHANNEL_CANDIDATE_LIMIT = 200;
+const DEFAULT_RECALL_SEARCH_WRITE_WINDOW_WAIT_MILLISECONDS = 500;
+const MAX_RECALL_SEARCH_WRITE_WINDOW_WAIT_MILLISECONDS = 500;
+const DEFAULT_CONFIRMED_DELETION_MAX_MISSING_SOURCE_COUNT = 1;
+const DEFAULT_CONFIRMED_DELETION_MAX_MISSING_SOURCE_RATIO = 0.1;
 
 const recallConfigFileSchema = Type.Object(
   {
@@ -41,6 +49,13 @@ const recallConfigFileSchema = Type.Object(
     identifierCandidateLimit: Type.Optional(
       Type.Integer({ minimum: 1, maximum: MAX_RECALL_CHANNEL_CANDIDATE_LIMIT }),
     ),
+    searchWriteWindowWaitMilliseconds: Type.Optional(
+      Type.Integer({ minimum: 1, maximum: MAX_RECALL_SEARCH_WRITE_WINDOW_WAIT_MILLISECONDS }),
+    ),
+    confirmedDeletionMaxMissingSourceCount: Type.Optional(Type.Integer({ minimum: 1 })),
+    confirmedDeletionMaxMissingSourceRatio: Type.Optional(
+      Type.Number({ exclusiveMinimum: 0, maximum: 1 }),
+    ),
     projectLineages: Type.Optional(
       Type.Record(
         Type.String({ minLength: 1 }),
@@ -58,28 +73,33 @@ export interface RecallSearchCandidateLimits {
   identifier: number;
 }
 
-/** Runtime paths, bounded retrieval channels, and local embedding plus reranker identity. */
+/** Runtime paths, generation coordination, and configured local inference identity. */
 export interface RecallConversationConfig {
   sessionsDirectory: string;
+  dataDirectory: string;
   databasePath: string;
+  projectionDatabasePath: string;
   statePath: string;
   manifestPath: string;
   tokenizerCacheDirectory: string;
   embeddingCacheDirectory: string;
   lockPath: string;
-  /** Managed index generation directories; defaults beside the legacy manifest. */
-  generationsDirectory?: string;
-  /** Atomic active-generation selection file; defaults beside the legacy manifest. */
-  activeGenerationPath?: string;
-  /** Resumable staging-generation selection file; defaults beside the legacy manifest. */
-  stagingGenerationPath?: string;
-  /** One bounded detached-build status record; defaults beside the legacy manifest. */
-  backgroundIndexStatusPath?: string;
-  /** Ephemeral detached-worker request; defaults beside the legacy manifest. */
-  backgroundIndexRequestPath?: string;
   diagnosticsMode: RecallDiagnosticsMode;
   diagnosticLogPath: string;
   retainedDiagnosticLogPath: string;
+  markerSpoolDirectory: string;
+  markerQuarantineDirectory: string;
+  markerControlDirectory: string;
+  workerOwnershipLockPath: string;
+  generationRootDirectory: string;
+  activeGenerationPointerPath: string;
+  generationRegistryPath: string;
+  backlogSummaryPath: string;
+  incrementalDiagnosticLogPath: string;
+  /** One bounded detached-build status record outside any recall generation. */
+  backgroundIndexStatusPath?: string;
+  /** Ephemeral detached-worker request outside any recall generation. */
+  backgroundIndexRequestPath?: string;
   embeddingBaseUrl: string;
   embeddingModel: string;
   embeddingServedModelId: string;
@@ -93,10 +113,9 @@ export interface RecallConversationConfig {
   queryPlannerBaseUrl?: string;
   projectLineages: RecallProjectLineages;
   searchCandidateLimits: RecallSearchCandidateLimits;
-  /** Maximum fused candidates admitted before duplicate grouping in hybrid and deep-rerank modes. */
-  fusedPoolLimit?: number;
-  /** Maximum duplicate evidence groups admitted to deep reranking. */
-  rerankPoolLimit?: number;
+  searchWriteWindowWaitMilliseconds: number;
+  confirmedDeletionMaxMissingSourceCount: number;
+  confirmedDeletionMaxMissingSourceRatio: number;
   chunkPolicy?: RecallChunkPolicy;
 }
 
@@ -125,6 +144,26 @@ function parseRecallCandidateLimit(value: string, settingName: string): number {
   return parsed;
 }
 
+function parseConfirmedDeletionMissingSourceRatio(value: string): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0 || parsed > 1) {
+    throw new Error(
+      `Recall configuration invalid ratio for PI_RECALL_CONFIRMED_DELETION_MAX_MISSING_SOURCE_RATIO: ${value}`,
+    );
+  }
+  return parsed;
+}
+
+function parseRecallSearchWriteWindowWait(value: string): number {
+  const parsed = parsePositiveInteger(value, 'PI_RECALL_SEARCH_WRITE_WINDOW_WAIT_MILLISECONDS');
+  if (parsed > MAX_RECALL_SEARCH_WRITE_WINDOW_WAIT_MILLISECONDS) {
+    throw new Error(
+      `Recall configuration search write-window wait exceeds ${MAX_RECALL_SEARCH_WRITE_WINDOW_WAIT_MILLISECONDS}: ${value}`,
+    );
+  }
+  return parsed;
+}
+
 function resolveRecallCandidateLimit(
   settingName: string,
   environmentValue?: string,
@@ -133,6 +172,33 @@ function resolveRecallCandidateLimit(
   return environmentValue === undefined
     ? (fileValue ?? DEFAULT_RECALL_CHANNEL_CANDIDATE_LIMIT)
     : parseRecallCandidateLimit(environmentValue, settingName);
+}
+
+async function assertRecallDataDirectoryIsolated(
+  dataDirectory: string,
+  sessionsDirectory: string,
+): Promise<void> {
+  if (!isAbsolute(dataDirectory)) {
+    throw new Error(`Recall configuration data directory must be absolute: ${dataDirectory}`);
+  }
+  if (!isAbsolute(sessionsDirectory)) {
+    throw new Error(
+      `Recall configuration session directory must be absolute: ${sessionsDirectory}`,
+    );
+  }
+  const [canonicalDataDirectory, canonicalSessionsDirectory] = await Promise.all([
+    resolveCanonicalPathBoundary(dataDirectory),
+    resolveCanonicalPathBoundary(sessionsDirectory),
+  ]);
+  if (
+    canonicalDataDirectory === canonicalSessionsDirectory ||
+    isCanonicalPathWithinBoundary(canonicalDataDirectory, canonicalSessionsDirectory) ||
+    isCanonicalPathWithinBoundary(canonicalSessionsDirectory, canonicalDataDirectory)
+  ) {
+    throw new Error(
+      `Recall configuration data directory must not overlap the session directory: ${dataDirectory}`,
+    );
+  }
 }
 
 async function readRecallConfigFile(
@@ -165,27 +231,37 @@ export async function loadRecallConversationConfig(
     environment.PI_RECALL_DATA_DIRECTORY ??
     file.dataDirectory ??
     join(homeDirectory, '.pi', 'agent', 'recall');
+  const sessionsDirectory =
+    environment.PI_RECALL_SESSIONS_DIRECTORY ??
+    file.sessionsDirectory ??
+    join(homeDirectory, '.pi', 'agent', 'sessions');
+  await assertRecallDataDirectoryIsolated(dataDirectory, sessionsDirectory);
   const projectLineages = normalizeRecallProjectLineages(file.projectLineages ?? {});
 
   return {
-    sessionsDirectory:
-      environment.PI_RECALL_SESSIONS_DIRECTORY ??
-      file.sessionsDirectory ??
-      join(homeDirectory, '.pi', 'agent', 'sessions'),
+    sessionsDirectory,
+    dataDirectory,
     databasePath: join(dataDirectory, 'zvec'),
+    projectionDatabasePath: join(dataDirectory, 'session-projections'),
     statePath: join(dataDirectory, 'index-state.json'),
     manifestPath: join(dataDirectory, 'index-manifest.json'),
     tokenizerCacheDirectory: join(dataDirectory, 'tokenizers'),
     embeddingCacheDirectory: join(dataDirectory, 'embedding-cache'),
     lockPath: join(dataDirectory, 'operation.lock'),
-    generationsDirectory: join(dataDirectory, 'index-generations'),
-    activeGenerationPath: join(dataDirectory, 'active-generation.json'),
-    stagingGenerationPath: join(dataDirectory, 'staging-generation.json'),
     backgroundIndexStatusPath: join(dataDirectory, 'background-index-status.json'),
     backgroundIndexRequestPath: join(dataDirectory, 'background-index-request.json'),
     diagnosticsMode: file.diagnostics ?? RecallDiagnosticsMode.SLOW,
     diagnosticLogPath: join(dataDirectory, 'diagnostics.jsonl'),
     retainedDiagnosticLogPath: join(dataDirectory, 'diagnostics.previous.jsonl'),
+    markerSpoolDirectory: join(dataDirectory, 'markers', 'pending'),
+    markerQuarantineDirectory: join(dataDirectory, 'markers', 'quarantine'),
+    markerControlDirectory: join(dataDirectory, 'markers', 'control'),
+    workerOwnershipLockPath: join(dataDirectory, 'incremental-worker.lock'),
+    generationRootDirectory: join(dataDirectory, 'generations'),
+    activeGenerationPointerPath: join(dataDirectory, 'active-generation.json'),
+    generationRegistryPath: join(dataDirectory, 'generation-registry.json'),
+    backlogSummaryPath: join(dataDirectory, 'backlog-summary.json'),
+    incrementalDiagnosticLogPath: join(dataDirectory, 'incremental-diagnostics.jsonl'),
     embeddingBaseUrl:
       environment.PI_RECALL_EMBEDDING_BASE_URL ??
       file.embeddingBaseUrl ??
@@ -224,6 +300,27 @@ export async function loadRecallConversationConfig(
       file.queryPlannerBaseUrl ??
       'http://192.168.0.67:8092/v1',
     projectLineages,
+    searchWriteWindowWaitMilliseconds: environment.PI_RECALL_SEARCH_WRITE_WINDOW_WAIT_MILLISECONDS
+      ? parseRecallSearchWriteWindowWait(
+          environment.PI_RECALL_SEARCH_WRITE_WINDOW_WAIT_MILLISECONDS,
+        )
+      : (file.searchWriteWindowWaitMilliseconds ??
+        DEFAULT_RECALL_SEARCH_WRITE_WINDOW_WAIT_MILLISECONDS),
+    confirmedDeletionMaxMissingSourceCount:
+      environment.PI_RECALL_CONFIRMED_DELETION_MAX_MISSING_SOURCE_COUNT === undefined
+        ? (file.confirmedDeletionMaxMissingSourceCount ??
+          DEFAULT_CONFIRMED_DELETION_MAX_MISSING_SOURCE_COUNT)
+        : parsePositiveInteger(
+            environment.PI_RECALL_CONFIRMED_DELETION_MAX_MISSING_SOURCE_COUNT,
+            'PI_RECALL_CONFIRMED_DELETION_MAX_MISSING_SOURCE_COUNT',
+          ),
+    confirmedDeletionMaxMissingSourceRatio:
+      environment.PI_RECALL_CONFIRMED_DELETION_MAX_MISSING_SOURCE_RATIO === undefined
+        ? (file.confirmedDeletionMaxMissingSourceRatio ??
+          DEFAULT_CONFIRMED_DELETION_MAX_MISSING_SOURCE_RATIO)
+        : parseConfirmedDeletionMissingSourceRatio(
+            environment.PI_RECALL_CONFIRMED_DELETION_MAX_MISSING_SOURCE_RATIO,
+          ),
     searchCandidateLimits: {
       dense: resolveRecallCandidateLimit(
         'PI_RECALL_DENSE_CANDIDATE_LIMIT',

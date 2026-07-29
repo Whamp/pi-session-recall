@@ -1,8 +1,10 @@
 import { randomUUID } from 'node:crypto';
+import { lstatSync, realpathSync } from 'node:fs';
 import { mkdir, rename, rm, writeFile } from 'node:fs/promises';
-import { dirname, isAbsolute, relative, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 import { RecallDiagnosticsMode } from './enums.js';
+import { readNodeErrorCode } from './read-node-error-code.js';
 import type {
   RecallConversationConfig,
   RecallSearchCandidateLimits,
@@ -30,11 +32,66 @@ export interface PrivateRecallEvaluationEmbeddingIdentity {
 /** Inputs for a service config whose writable paths are owned only by one evaluation work area. */
 export interface PrivateRecallEvaluationConfigOptions {
   baseConfig: RecallConversationConfig;
+  evaluationRootDirectory: string;
   workDirectory: string;
   sessionsDirectory: string;
   immutableInputPaths: readonly string[];
   candidateLimits: RecallSearchCandidateLimits;
   embeddingIdentity?: PrivateRecallEvaluationEmbeddingIdentity;
+}
+
+function assertPrivateRecallEvaluationPathHasNoSymlinkAncestor(
+  evaluationRootDirectory: string,
+  workDirectory: string,
+): void {
+  const physicalEvaluationRoot = realpathSync(evaluationRootDirectory);
+  if (physicalEvaluationRoot !== evaluationRootDirectory) {
+    throw new Error('Private recall evaluation root contains a symbolic link');
+  }
+  let candidatePath = evaluationRootDirectory;
+  const workPathFromRoot = relative(evaluationRootDirectory, workDirectory);
+  for (const pathSegment of workPathFromRoot.split(sep)) {
+    candidatePath = join(candidatePath, pathSegment);
+    try {
+      if (lstatSync(candidatePath).isSymbolicLink()) {
+        throw new Error('Private recall evaluation work area contains a symbolic link');
+      }
+    } catch (error) {
+      if (readNodeErrorCode(error) === 'ENOENT') {
+        break;
+      }
+      throw error;
+    }
+  }
+}
+
+function readProductionRecallProtectedPaths(
+  config: RecallConversationConfig,
+): Readonly<Record<string, string>> {
+  const generationDataDirectory = dirname(config.manifestPath);
+  return {
+    sessionsDirectory: config.sessionsDirectory,
+    databasePath: config.databasePath,
+    statePath: config.statePath,
+    manifestPath: config.manifestPath,
+    tokenizerCacheDirectory: config.tokenizerCacheDirectory,
+    embeddingCacheDirectory: config.embeddingCacheDirectory,
+    lockPath: config.lockPath,
+    generationsDirectory:
+      config.generationsDirectory ?? join(generationDataDirectory, 'index-generations'),
+    activeGenerationPath:
+      config.activeGenerationPath ?? join(generationDataDirectory, 'active-generation.json'),
+    stagingGenerationPath:
+      config.stagingGenerationPath ?? join(generationDataDirectory, 'staging-generation.json'),
+    backgroundIndexStatusPath:
+      config.backgroundIndexStatusPath ??
+      join(generationDataDirectory, 'background-index-status.json'),
+    backgroundIndexRequestPath:
+      config.backgroundIndexRequestPath ??
+      join(generationDataDirectory, 'background-index-request.json'),
+    diagnosticLogPath: config.diagnosticLogPath,
+    retainedDiagnosticLogPath: config.retainedDiagnosticLogPath,
+  };
 }
 
 function assertPrivateRecallEvaluationWritablePaths(
@@ -63,7 +120,28 @@ function assertPrivateRecallEvaluationWritablePaths(
 export function createPrivateRecallEvaluationConfig(
   options: PrivateRecallEvaluationConfigOptions,
 ): RecallConversationConfig {
+  const evaluationRootDirectory = resolve(options.evaluationRootDirectory);
   const workDirectory = resolve(options.workDirectory);
+  if (
+    workDirectory === evaluationRootDirectory ||
+    !isPathInsideRecallEvaluationArea(evaluationRootDirectory, workDirectory)
+  ) {
+    throw new Error('Private recall evaluation work area escaped its validated evaluation root');
+  }
+  assertPrivateRecallEvaluationPathHasNoSymlinkAncestor(evaluationRootDirectory, workDirectory);
+  for (const [pathName, productionPath] of Object.entries(
+    readProductionRecallProtectedPaths(options.baseConfig),
+  )) {
+    const resolvedProductionPath = resolve(productionPath);
+    if (
+      isPathInsideRecallEvaluationArea(resolvedProductionPath, workDirectory) ||
+      isPathInsideRecallEvaluationArea(workDirectory, resolvedProductionPath)
+    ) {
+      throw new Error(
+        `Private recall evaluation work area overlaps a production path: ${pathName}`,
+      );
+    }
+  }
   const immutableInputPaths = options.immutableInputPaths.map((path) => resolve(path));
   for (const immutableInputPath of immutableInputPaths) {
     if (

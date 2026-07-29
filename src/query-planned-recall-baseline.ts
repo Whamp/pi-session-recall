@@ -504,6 +504,7 @@ function createPrivateBaselineConfig(
 ): RecallConversationConfig {
   return createPrivateRecallEvaluationConfig({
     baseConfig: options.baseConfig,
+    evaluationRootDirectory: dirname(options.corpus.manifestPath),
     workDirectory,
     sessionsDirectory: options.corpus.snapshotDirectory,
     immutableInputPaths: [options.corpus.snapshotDirectory, options.corpus.manifestPath],

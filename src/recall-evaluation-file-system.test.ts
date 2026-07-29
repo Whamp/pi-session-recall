@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -29,8 +29,10 @@ void test('private recall evaluation config replaces every production mutable an
   const directory = await mkdtemp(join(tmpdir(), 'private-recall-evaluation-config-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const productionDataDirectory = join(directory, 'production-recall');
-  const snapshotDirectory = join(directory, 'private-evaluation', 'snapshots');
-  const workDirectory = join(directory, 'private-evaluation', 'evaluation-work');
+  const evaluationRootDirectory = join(directory, 'private-evaluation');
+  const snapshotDirectory = join(evaluationRootDirectory, 'snapshots');
+  const workDirectory = join(evaluationRootDirectory, 'evaluation-work');
+  await mkdir(evaluationRootDirectory);
   const baseConfig = await loadRecallConversationConfig({
     homeDirectory: directory,
     environment: {
@@ -41,6 +43,7 @@ void test('private recall evaluation config replaces every production mutable an
 
   const privateConfig = createPrivateRecallEvaluationConfig({
     baseConfig,
+    evaluationRootDirectory,
     workDirectory,
     sessionsDirectory: snapshotDirectory,
     immutableInputPaths: [snapshotDirectory],
@@ -74,6 +77,7 @@ void test('private recall evaluation config replaces every production mutable an
     () =>
       createPrivateRecallEvaluationConfig({
         baseConfig,
+        evaluationRootDirectory,
         workDirectory: join(snapshotDirectory, 'unsafe-work'),
         sessionsDirectory: snapshotDirectory,
         immutableInputPaths: [snapshotDirectory],
@@ -85,11 +89,46 @@ void test('private recall evaluation config replaces every production mutable an
     () =>
       createPrivateRecallEvaluationConfig({
         baseConfig,
+        evaluationRootDirectory,
         workDirectory,
         sessionsDirectory: snapshotDirectory,
         immutableInputPaths: [join(workDirectory, 'plans.json')],
         candidateLimits: { dense: 8, lexical: 8, identifier: 8 },
       }),
     /work area overlaps an immutable input/u,
+  );
+
+  assert.throws(
+    () =>
+      createPrivateRecallEvaluationConfig({
+        baseConfig: {
+          ...baseConfig,
+          activeGenerationPath: join(workDirectory, 'production-active-generation.json'),
+        },
+        evaluationRootDirectory,
+        workDirectory,
+        sessionsDirectory: snapshotDirectory,
+        immutableInputPaths: [snapshotDirectory],
+        candidateLimits: { dense: 8, lexical: 8, identifier: 8 },
+      }),
+    /work area overlaps a production path/u,
+  );
+
+  const physicalPrivateDirectory = join(directory, 'physical-private-evaluation');
+  const externalDirectory = join(directory, 'external');
+  await mkdir(physicalPrivateDirectory, { recursive: true });
+  await mkdir(externalDirectory);
+  await symlink(externalDirectory, join(physicalPrivateDirectory, 'escape'), 'dir');
+  assert.throws(
+    () =>
+      createPrivateRecallEvaluationConfig({
+        baseConfig,
+        evaluationRootDirectory: physicalPrivateDirectory,
+        workDirectory: join(physicalPrivateDirectory, 'escape', 'evaluation-work'),
+        sessionsDirectory: snapshotDirectory,
+        immutableInputPaths: [snapshotDirectory],
+        candidateLimits: { dense: 8, lexical: 8, identifier: 8 },
+      }),
+    /symbolic link/u,
   );
 });

@@ -242,6 +242,10 @@ void test('fixed private plans prove new source admission through deterministic 
   });
   assert.equal(published.includes(lexicalPlanQuery), false);
   assert.equal(published.includes(semanticPlanQuery), false);
+  const immutablePrivateInputBytes = new Map<string, string>();
+  for (const path of [snapshotPath, manifestPath, plansPath]) {
+    immutablePrivateInputBytes.set(path, (await readFile(path)).toString('hex'));
+  }
 
   const productionSessionsDirectory = join(directory, 'production-sessions');
   const productionDataDirectory = join(directory, 'production-recall');
@@ -312,11 +316,20 @@ void test('fixed private plans prove new source admission through deterministic 
       createEvaluationContainmentTreeSha256(productionFilesAfterEvaluation),
       createEvaluationContainmentTreeSha256(productionFilesBeforeEvaluation),
     );
+    for (const [path, expectedBytes] of immutablePrivateInputBytes) {
+      assert.equal((await readFile(path)).toString('hex'), expectedBytes);
+    }
     const productionSearch = await productionService.search('Private mechanism phrase', 20, {
       scope: RecallSearchScope.GLOBAL,
     });
     assert.equal(
       productionSearch.results.some(({ content }) => content.includes('Private mechanism phrase')),
+      false,
+    );
+    assert.equal(
+      productionSearch.results
+        .flatMap((result) => [result, ...result.duplicateOccurrences])
+        .some(({ sessionPath }) => sessionPath === snapshotPath),
       false,
     );
     productionFilesBeforeEvaluation =

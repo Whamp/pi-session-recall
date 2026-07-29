@@ -358,6 +358,7 @@ function createPrivateQueryPlannedEvaluationConfig(
 ): RecallConversationConfig {
   return createPrivateRecallEvaluationConfig({
     baseConfig: options.baseConfig,
+    evaluationRootDirectory: dirname(options.corpus.manifestPath),
     workDirectory,
     sessionsDirectory: options.corpus.snapshotDirectory,
     immutableInputPaths: [

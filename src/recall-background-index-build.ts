@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
@@ -15,6 +15,7 @@ import type {
   ConversationIndexCheckpoint,
   ConversationIndexProgress,
 } from './incremental-session-indexer.js';
+import { readRecallInferenceConfiguration } from './recall-inference-configuration.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
 import { normalizeRecallProjectLineages } from './resolve-project-identity.js';
 
@@ -202,6 +203,29 @@ export interface RecallBackgroundIndexCoordinatorConfig {
 
 function truncateBackgroundStatusText(value: string): string {
   return value.slice(0, MAX_RECALL_BACKGROUND_STATUS_TEXT_LENGTH);
+}
+
+/** Prefers a pending embedding replacement identity for staging start/resume gates. */
+export async function resolveBackgroundIndexEmbeddingProfileId(
+  config: RecallBackgroundIndexCoordinatorConfig,
+): Promise<string> {
+  try {
+    const configuration = await readRecallInferenceConfiguration(
+      join(dirname(config.serviceConfig.manifestPath), 'inference-configuration.json'),
+      {
+        generationRegistryPath: config.serviceConfig.generationRegistryPath,
+      },
+    );
+    const pendingProfileId = configuration.pendingEmbeddingReplacement?.embeddingProfileId;
+    if (pendingProfileId) {
+      return pendingProfileId;
+    }
+  } catch (error) {
+    if (readNodeErrorCode(error) !== 'ENOENT') {
+      throw error;
+    }
+  }
+  return config.embeddingProfileId;
 }
 
 function isProcessAlive(processId: number): boolean {
@@ -393,6 +417,7 @@ async function spawnBackgroundIndexWorker(
   config: RecallBackgroundIndexCoordinatorConfig,
   generationId: string | null,
 ): Promise<RecallBackgroundIndexGenerationStatus> {
+  const embeddingProfileId = await resolveBackgroundIndexEmbeddingProfileId(config);
   const buildId = randomUUID();
   const requestPath = recallBackgroundIndexWorkerRequestPath(config.requestPath, buildId);
   const request = {
@@ -426,7 +451,7 @@ async function spawnBackgroundIndexWorker(
     version: RECALL_BACKGROUND_INDEX_STATUS_VERSION,
     buildId,
     generationId,
-    embeddingProfileId: config.embeddingProfileId,
+    embeddingProfileId,
     processId: child.pid,
     processState: RecallBackgroundIndexProcessState.STARTING,
     startedAt,
@@ -481,9 +506,10 @@ export async function resumeRecallBackgroundIndexGeneration(
     if (!generationStatus.staging) {
       throw new Error('Recall background index resume requires a staging generation');
     }
-    if (generationStatus.staging.embeddingProfileId !== config.embeddingProfileId) {
+    const embeddingProfileId = await resolveBackgroundIndexEmbeddingProfileId(config);
+    if (generationStatus.staging.embeddingProfileId !== embeddingProfileId) {
       throw new Error(
-        `Recall staging generation uses embedding profile ${generationStatus.staging.embeddingProfileId}, not ${config.embeddingProfileId}`,
+        `Recall staging generation uses embedding profile ${generationStatus.staging.embeddingProfileId}, not ${embeddingProfileId}`,
       );
     }
     return await spawnBackgroundIndexWorker(config, generationStatus.staging.generationId);

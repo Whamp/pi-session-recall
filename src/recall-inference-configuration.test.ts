@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { setTimeout as sleep } from 'node:timers/promises';
 
@@ -747,6 +747,104 @@ void test('configured runtime reconstructs registered custom adapters and reject
 
   assert.equal(customEmbeddingOperationCount, 1);
   assert.equal(customTokenizerOperationCount, 1);
+});
+
+void test('background runtime prefers pending embedding replacement over active embedding', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-inference-pending-runtime-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const config = await loadRecallConversationConfig({ homeDirectory: root, environment: {} });
+  const statePath = join(dirname(config.manifestPath), 'inference-configuration.json');
+  const active = createConformingCandidate(
+    RecallInferenceCapability.EMBEDDING,
+    'project-active-embedding',
+    'project-embedding-profile-v1',
+    RecallInferenceBackend.CUSTOM,
+    'project-active-adapter-v1',
+  );
+  const pending = createConformingCandidate(
+    RecallInferenceCapability.EMBEDDING,
+    'project-pending-embedding',
+    'project-embedding-profile-v2',
+    RecallInferenceBackend.CUSTOM,
+    'project-pending-adapter-v1',
+  );
+  await configureRecallInferenceCapability(statePath, active);
+  await writeRecallInferenceConfiguration(statePath, {
+    ...(await readRecallInferenceConfiguration(statePath)),
+    pendingEmbeddingReplacement: {
+      embeddingProfileId: 'embedding-profile-v2',
+      selection: {
+        capability: RecallInferenceCapability.EMBEDDING,
+        candidateId: pending.candidateId,
+        profileId: pending.profileId,
+        backend: pending.backend,
+        adapterId: pending.adapterId,
+        endpoint: pending.endpoint,
+        device: pending.device
+          ? {
+              policy: pending.device.policy,
+              computeBackend: pending.device.computeBackend,
+              names: [...pending.device.names],
+            }
+          : null,
+        artifact: pending.artifact
+          ? { ...pending.artifact, state: RecallInferenceArtifactState.NOT_REQUIRED }
+          : null,
+        conformance: {
+          verifiedAt: '2026-01-01T00:00:00.000Z',
+          cacheIdentity: 'embedding-profile-v2',
+          embeddingProfileId: 'embedding-profile-v2',
+          measurement: { verificationOperations: 1 },
+        },
+      },
+    },
+  });
+
+  let reconstructedCandidateId: string | null = null;
+  const registry = {
+    candidates: [active, pending],
+    async createConfiguredRuntime(
+      runtimeConfig: Awaited<ReturnType<typeof loadRecallConversationConfig>>,
+      configuration: Awaited<ReturnType<typeof readRecallInferenceConfiguration>>,
+    ) {
+      reconstructedCandidateId = configuration.embedding?.candidateId ?? null;
+      const embeddingProvider = {
+        async embedQuery() {
+          return Array<number>(runtimeConfig.embeddingDimensions).fill(0.03);
+        },
+        async embedDocuments(documents: readonly string[]) {
+          return documents.map(() => Array<number>(runtimeConfig.embeddingDimensions).fill(0.03));
+        },
+      };
+      const loadTokenizer = async () => FIXED_CONVERSATION_TOKENIZER;
+      return {
+        service: createRecallConversationService(runtimeConfig, {
+          embeddingProvider,
+          loadTokenizer,
+        }),
+        embeddingProvider,
+        loadTokenizer,
+        embeddingDimensions: runtimeConfig.embeddingDimensions,
+        async dispose() {},
+      };
+    },
+  };
+
+  const activeRuntime = await createConfiguredRecallInferenceRuntime(config, {
+    inferenceConfigurationPath: statePath,
+    adapterRegistries: [registry],
+  });
+  assert.equal(reconstructedCandidateId, 'project-active-embedding');
+  await activeRuntime.dispose();
+
+  reconstructedCandidateId = null;
+  const pendingRuntime = await createConfiguredRecallInferenceRuntime(config, {
+    inferenceConfigurationPath: statePath,
+    preferPendingEmbeddingReplacement: true,
+    adapterRegistries: [registry],
+  });
+  assert.equal(reconstructedCandidateId, 'project-pending-embedding');
+  await pendingRuntime.dispose();
 });
 
 void test('clearing pending embedding replacement cancels a discarded profile change', async (t) => {

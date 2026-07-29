@@ -213,9 +213,14 @@ export function reduceRecallEligibility(
       case RecallWorkMarkerTrigger.DEPARTURE: {
         const departureLeafEntryId = isBoundedRecallDepartureMarkerTrigger(marker.trigger)
           ? marker.trigger.leafEntryId
-          : runtimeLeafEntryIds.has(marker.runtimeInstanceId)
-            ? (runtimeLeafEntryIds.get(marker.runtimeInstanceId) ?? null)
-            : projection.effectiveLeafEntryId;
+          : (runtimeLeafEntryIds.get(marker.runtimeInstanceId) ?? null);
+        if (departureLeafEntryId === null) {
+          // Unbounded departures without a prior runtime leaf must not fall back to the
+          // projection's latest effective leaf: later appends from another runtime would
+          // inherit the shorter explicit-exit window.
+          malformed = true;
+          break;
+        }
         const activeContext = readProjectedActiveContextPath(departureLeafEntryId, entriesById);
         if (activeContext === null) {
           malformed = true;

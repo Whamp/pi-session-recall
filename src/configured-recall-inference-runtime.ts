@@ -59,6 +59,11 @@ export interface ConfiguredRecallInferenceRuntimeOptions {
   onWarning?: (warning: string) => void;
   inferenceConfigurationPath?: string;
   adapterRegistries?: readonly RecallInferenceAdapterRegistry[];
+  /**
+   * When true, reconstructs embedding from `pendingEmbeddingReplacement.selection` if present.
+   * Staging/background workers must prefer the pending profile during an approved replacement.
+   */
+  preferPendingEmbeddingReplacement?: boolean;
 }
 
 function readEmbeddedDevicePolicy(
@@ -165,6 +170,19 @@ export function resolveRecallInferenceConfigurationPath(config: RecallConversati
   return join(dirname(config.manifestPath), 'inference-configuration.json');
 }
 
+function resolveConfiguredRuntimeConfiguration(
+  configuration: RecallInferenceConfiguration,
+  preferPendingEmbeddingReplacement: boolean,
+): RecallInferenceConfiguration {
+  if (!preferPendingEmbeddingReplacement || !configuration.pendingEmbeddingReplacement) {
+    return configuration;
+  }
+  return {
+    ...configuration,
+    embedding: configuration.pendingEmbeddingReplacement.selection,
+  };
+}
+
 /** Creates a service from exact embedded/HTTP selections and keeps model profiles backend-neutral. */
 export async function createConfiguredRecallInferenceRuntime(
   config: RecallConversationConfig,
@@ -172,9 +190,13 @@ export async function createConfiguredRecallInferenceRuntime(
 ): Promise<ConfiguredRecallInferenceRuntime> {
   const configurationPath =
     options.inferenceConfigurationPath ?? resolveRecallInferenceConfigurationPath(config);
-  const configuration = await readRecallInferenceConfiguration(configurationPath, {
+  const persistedConfiguration = await readRecallInferenceConfiguration(configurationPath, {
     generationRegistryPath: config.generationRegistryPath,
   });
+  const configuration = resolveConfiguredRuntimeConfiguration(
+    persistedConfiguration,
+    options.preferPendingEmbeddingReplacement === true,
+  );
   const embeddingSelection = configuration.embedding;
   if (!embeddingSelection) {
     throw new Error(
@@ -400,5 +422,9 @@ function configureQueryPlanningCapability(
 export async function createConfiguredRecallBackgroundService(
   config: RecallConversationConfig,
 ): Promise<RecallConversationService> {
-  return (await createConfiguredRecallInferenceRuntime(config)).service;
+  return (
+    await createConfiguredRecallInferenceRuntime(config, {
+      preferPendingEmbeddingReplacement: true,
+    })
+  ).service;
 }

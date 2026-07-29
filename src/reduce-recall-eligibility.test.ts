@@ -157,6 +157,7 @@ interface ReducerScenario {
   markers?: RecallWorkMarker[];
   quiescenceObserved?: boolean;
   expected: string[];
+  expectedRepairState?: RecallProjectionRepairState;
 }
 
 const linear = [descriptor('e1', null), descriptor('e2', 'e1'), descriptor('e3', 'e2')];
@@ -259,6 +260,15 @@ const scenarios: ReducerScenario[] = [
     expected: ['e1', 'e2', 'e3'],
   },
   {
+    name: 'unbounded departure without a prior runtime leaf requires reconciliation',
+    projection: logical([...linear, descriptor('e4', 'e3')], 'e4'),
+    markers: [
+      marker('unbounded-departure', { kind: RecallWorkMarkerTrigger.DEPARTURE }, 'runtime-new'),
+    ],
+    expectedRepairState: RecallProjectionRepairState.REQUIRES_RECONCILIATION,
+    expected: [],
+  },
+  {
     name: 'arrival reload fork clone and import never admit a copied active tail',
     projection: logical(linear),
     markers: [marker('arrival', { kind: RecallWorkMarkerTrigger.ARRIVAL })],
@@ -285,6 +295,9 @@ for (const scenario of scenarios) {
       result.logicalProjection?.eligibleContributorEntryIds.toSorted(),
       scenario.expected,
     );
+    if (scenario.expectedRepairState !== undefined) {
+      assert.equal(result.logicalProjection?.repairState, scenario.expectedRepairState);
+    }
   });
 }
 

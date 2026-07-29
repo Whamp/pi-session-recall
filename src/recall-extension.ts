@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import { Type } from 'typebox';
 
 import { StringEnum } from '@earendil-works/pi-ai';
@@ -9,16 +11,40 @@ import {
   truncateHead,
 } from '@earendil-works/pi-coding-agent';
 
+import { applyRecallQualityPolicyToConversationConfig } from './applyRecallQualityPolicyToConversationConfig.js';
+import {
+  createConfiguredRecallInferenceRuntime,
+  type ConfiguredRecallInferenceRuntime,
+  resolveRecallInferenceConfigurationPath,
+} from './configured-recall-inference-runtime.js';
 import { RecallSearchScope } from './enums.js';
+import type { RecallDetachedWorkerSignal } from './create-recall-detached-worker-signal.js';
 import { formatRecallSearchResults } from './format-recall-search-results.js';
 import { loadRecallConversationConfig } from './recall-conversation-config.js';
 import {
+  readRecallFirstIndexSetupState,
+  resolveRecallFirstIndexSetupStatePath,
+} from './recall-first-index-setup-command.js';
+import {
   createRecallConversationService,
+  type RecallConversationConfig,
   type RecallConversationSearch,
   type RecallConversationService,
   type RecallSearchMode,
 } from './recall-conversation-service.js';
+import { publishRecallWorkMarker } from './publish-recall-work-marker.js';
+import {
+  registerRecallLifecycleMarkers,
+  type RecallLifecycleRuntimeFactory,
+} from './register-recall-lifecycle-markers.js';
 import { runRecallIndexCommand } from './recall-index-command.js';
+import { readRecallInferenceConfiguration } from './recall-inference-configuration.js';
+import { createRecommendedEmbeddingGemmaModelProfile } from './recall-model-profiles.js';
+import { createRecommendedEmbeddingGemmaConversationRuntime } from './recommended-embeddinggemma-conversation-service.js';
+import {
+  assertRecallInstallationConfigured,
+  resolveRecallInstallationMode,
+} from './resolveRecallInstallationMode.js';
 import {
   MAX_RECALL_FINAL_RESULT_COUNT,
   readRecallQualityGateDecision,
@@ -35,6 +61,13 @@ export interface PiRecallParameters {
 
 interface PiRecallInvocationContext {
   cwd: ExtensionContext['cwd'];
+}
+
+/** Explicit startup seams used by tests to avoid production recall paths and worker processes. */
+export interface RecallExtensionStartupOptions {
+  config?: RecallConversationConfig;
+  workerSignal?: RecallDetachedWorkerSignal;
+  lifecycleRuntimeFactory?: RecallLifecycleRuntimeFactory;
 }
 
 /** Applies trusted Pi tool context and project-default scope to one recall service search. */
@@ -55,32 +88,110 @@ export async function searchPiRecall(
 
 /** Registers hybrid recall of past Pi conversations. Pi requires extension factories to be default exports. */
 export default async function recallExtension(
-  pi: Pick<ExtensionAPI, 'registerTool' | 'registerCommand'>,
+  pi: Pick<ExtensionAPI, 'on' | 'registerTool' | 'registerCommand'>,
+  startupOptions: RecallExtensionStartupOptions = {},
 ): Promise<void> {
   const qualityGateDecision = await readRecallQualityGateDecision(RECALL_QUALITY_RESULTS_PATH);
-  const configured = await loadRecallConversationConfig();
-  const selectedPolicy = qualityGateDecision.selectedPolicy;
-  const config = selectedPolicy
-    ? {
-        ...configured,
-        chunkPolicy: {
-          maxTokens: selectedPolicy.chunkPolicy.maxTokens,
-          overlapTokens: selectedPolicy.chunkPolicy.overlapTokens,
-        },
-        searchCandidateLimits: {
-          dense: selectedPolicy.candidateCount,
-          lexical: selectedPolicy.candidateCount,
-          identifier: selectedPolicy.candidateCount,
-        },
-      }
-    : configured;
-  const defaultResultLimit = selectedPolicy?.finalCount ?? 5;
+  const configured = startupOptions.config ?? (await loadRecallConversationConfig());
+  const config = applyRecallQualityPolicyToConversationConfig(configured, qualityGateDecision);
+  const defaultResultLimit = qualityGateDecision.selectedPolicy?.finalCount ?? 5;
   let recallWarningHandler: ((message: string) => void) | undefined;
-  const service = createRecallConversationService(config, {
-    notifyWarning(message) {
-      recallWarningHandler?.(message);
+
+  const recommendedEmbeddingProfile = createRecommendedEmbeddingGemmaModelProfile();
+
+  // Lazy service resolution — recreated only when embedding selection changes.
+  let lastEmbeddingServiceKey: string | undefined;
+  let cachedService: RecallConversationService | undefined;
+  let cachedConfiguredRuntime: ConfiguredRecallInferenceRuntime | undefined;
+
+  async function resolveInstallationMode() {
+    return resolveRecallInstallationMode(config);
+  }
+
+  async function resolveService(): Promise<RecallConversationService> {
+    const [inferenceConfiguration, firstIndexSetupState] = await Promise.all([
+      readRecallInferenceConfiguration(resolveRecallInferenceConfigurationPath(config)),
+      readRecallFirstIndexSetupState(resolveRecallFirstIndexSetupStatePath(config)),
+    ]);
+
+    const selectedEmbeddingProfile = firstIndexSetupState.embedding?.profileId;
+
+    if (
+      !inferenceConfiguration.embedding &&
+      selectedEmbeddingProfile &&
+      selectedEmbeddingProfile !== recommendedEmbeddingProfile.profileId
+    ) {
+      throw new Error(
+        `Recall configured embedding profile unsupported: ${selectedEmbeddingProfile}; run setup:recall status instead of silently selecting another profile`,
+      );
+    }
+
+    const embeddingServiceKey = inferenceConfiguration.embedding
+      ? `configured:${inferenceConfiguration.embedding.candidateId}:${inferenceConfiguration.embedding.profileId}`
+      : (selectedEmbeddingProfile ?? 'basic');
+
+    if (embeddingServiceKey === lastEmbeddingServiceKey && cachedService !== undefined) {
+      return cachedService;
+    }
+
+    const previousRuntime = cachedConfiguredRuntime;
+    cachedConfiguredRuntime = undefined;
+    cachedService = undefined;
+    lastEmbeddingServiceKey = undefined;
+    if (previousRuntime) {
+      await previousRuntime.dispose();
+    }
+
+    let newService: RecallConversationService;
+    if (inferenceConfiguration.embedding) {
+      const runtime = await createConfiguredRecallInferenceRuntime(config, {
+        onWarning(message) {
+          recallWarningHandler?.(message);
+        },
+      });
+      cachedConfiguredRuntime = runtime;
+      newService = runtime.service;
+    } else if (selectedEmbeddingProfile) {
+      newService = createRecommendedEmbeddingGemmaConversationRuntime(config, {
+        onWarning(message) {
+          recallWarningHandler?.(message);
+        },
+      }).service;
+    } else {
+      newService = createRecallConversationService(config, {
+        notifyWarning(message) {
+          recallWarningHandler?.(message);
+        },
+        ...(startupOptions.workerSignal === undefined
+          ? {}
+          : { workerSignal: startupOptions.workerSignal }),
+      });
+    }
+
+    lastEmbeddingServiceKey = embeddingServiceKey;
+    cachedService = newService;
+    return newService;
+  }
+
+  registerRecallLifecycleMarkers(
+    pi,
+    {
+      async publishRecallWorkMarker(marker) {
+        await publishRecallWorkMarker(marker, {
+          markerSpoolDirectory: config.markerSpoolDirectory,
+          workerOwnershipLockPath: config.workerOwnershipLockPath,
+          trustedSessionRoots: [config.sessionsDirectory],
+          ...(startupOptions.workerSignal === undefined
+            ? {}
+            : { workerSignal: startupOptions.workerSignal }),
+        });
+      },
     },
-  });
+    startupOptions.lifecycleRuntimeFactory ?? {
+      createRuntimeInstanceId: randomUUID,
+      nowEpochMilliseconds: Date.now,
+    },
+  );
   pi.registerTool({
     name: 'pi-session-recall',
     label: 'Pi Session Recall',
@@ -123,6 +234,8 @@ export default async function recallExtension(
       void onUpdate;
       void toolCallId;
       recallWarningHandler = (message) => context.ui.notify(message, 'warning');
+      assertRecallInstallationConfigured(await resolveInstallationMode());
+      const service = await resolveService();
       const query = parameters.query.trim();
       if (!query) {
         throw new Error('Recall query must not be blank');
@@ -201,9 +314,11 @@ export default async function recallExtension(
 
   pi.registerCommand('pi-session-recall-index', {
     description:
-      'Index production sessions only after the committed quality gate passes; use --rebuild to replace an incompatible generation',
+      'Index production sessions after the quality gate; use --rebuild for detached replacement work and --status, --stop, --resume, or --discard to control it',
     async handler(argumentsText, context) {
       recallWarningHandler = (message) => context.ui.notify(message, 'warning');
+      assertRecallInstallationConfigured(await resolveInstallationMode());
+      const service = await resolveService();
       await runRecallIndexCommand({
         argumentsText,
         qualityGateDecision,

@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import { createEmbeddingVectorCacheIdentity } from './embedding-vector-cache.js';
+import { createEmbeddingGemmaTokenizerManifestIdentity } from './embedded-embeddinggemma-provider.js';
 import {
   assertRecallIndexManifestCompatible,
   createRecallEmbeddingCanaryFingerprint,
@@ -14,6 +15,7 @@ import {
   recoverRecallEmbeddingCanaryFromManifest,
   writeRecallIndexManifest,
 } from './recall-index-manifest.js';
+import { createRecommendedEmbeddingGemmaModelProfile } from './recall-model-profiles.js';
 import {
   normalizeRecallProjectLineages,
   PROJECT_IDENTITY_METADATA_SCHEMA_VERSION,
@@ -39,8 +41,10 @@ void test('index manifest round-trips the complete reproducibility identity atom
 
   assert.deepEqual(await readRecallIndexManifest(manifestPath), manifest);
   assert.deepEqual(await readdir(directory), ['index-manifest.json']);
-  assert.equal(manifest.manifestVersion, 5);
+  assert.equal(manifest.manifestVersion, 6);
   assert.deepEqual(manifest.importPolicy, { version: 3 });
+  assert.equal(manifest.markerSchemaVersion, 1);
+  assert.equal(manifest.sessionProjectionSchemaVersion, 3);
   assert.equal(Object.hasOwn(createEmbeddingVectorCacheIdentity(manifest), 'importPolicy'), false);
   assert.equal(
     manifest.embedding.canaryFingerprint,
@@ -57,8 +61,8 @@ void test('index manifest round-trips the complete reproducibility identity atom
     boundaryAlgorithm: 'markdown-structure-v1',
     normalization: 'unicode-nfc-v1',
   });
-  assert.equal(manifest.conversationSchemaVersion, 8);
-  assert.equal(manifest.provenanceSchemaVersion, 8);
+  assert.equal(manifest.conversationSchemaVersion, 9);
+  assert.equal(manifest.provenanceSchemaVersion, 9);
   assert.equal(PROJECT_IDENTITY_METADATA_SCHEMA_VERSION, 3);
   assert.deepEqual(manifest.projectIdentity, {
     policyVersion: 4,
@@ -66,8 +70,73 @@ void test('index manifest round-trips the complete reproducibility identity atom
     lineagePolicyVersion: 1,
     lineageDigest: '44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a',
   });
-  assert.equal(manifest.zvec.schemaVersion, 7);
+  assert.equal(manifest.zvec.schemaVersion, 8);
   assert.equal(manifest.zvec.ftsConfigurationVersion, 2);
+});
+
+void test('index manifest round-trips a profile-specific canary threshold', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-manifest-profile-canary-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const manifestPath = join(directory, 'index-manifest.json');
+  const manifest = createRecallIndexManifest({
+    embeddingIdentity,
+    canaryEmbedding: [0.25, -0.5, 1],
+    embeddingCanary: {
+      operation: 'query',
+      query: 'profile-specific canary',
+      minimumRepeatCosineSimilarity: 0.998,
+    },
+  });
+
+  await writeRecallIndexManifest(manifestPath, manifest);
+
+  const roundTrippedManifest = await readRecallIndexManifest(manifestPath);
+  assert.ok(roundTrippedManifest);
+  assert.equal(roundTrippedManifest.embedding.canaryMinimumCosineSimilarity, 0.998);
+});
+
+void test('index manifest records complete EmbeddingGemma semantics in the incremental manifest', () => {
+  const profile = createRecommendedEmbeddingGemmaModelProfile();
+  const manifest = createRecallIndexManifest({
+    embeddingIdentity: profile.identity,
+    canaryEmbedding: [1, ...Array<number>(767).fill(0)],
+    embeddingCanary: profile.canary,
+    tokenizerIdentity: createEmbeddingGemmaTokenizerManifestIdentity(profile),
+  });
+
+  assert.equal(manifest.manifestVersion, 6);
+  assert.deepEqual(manifest.embedding, {
+    requestModel: 'embeddinggemma-300M-Q8_0',
+    servedModelId: 'google/embeddinggemma-300M',
+    artifact: 'embeddinggemma-300M-Q8_0.gguf',
+    artifactRepository: 'ggml-org/embeddinggemma-300M-GGUF',
+    artifactRevision: '0f741b5a6585bd53aeb15cd1372c56f2a0f65e12',
+    artifactSha256: 'b5ce9d77a3fc4b3b39ccb5643c36777911cc4eb46a66962eadfa3f5f60490d63',
+    dimensions: 768,
+    quantization: 'Q8_0',
+    pooling: 'mean',
+    normalization: 'l2',
+    canaryOperation: 'query',
+    canaryProbe: 'Which session evidence explains the retained implementation decision?',
+    canaryFingerprint: createRecallEmbeddingCanaryFingerprint(
+      [1, ...Array<number>(767).fill(0)],
+      768,
+    ),
+    canaryVector: [1, ...Array<number>(767).fill(0)],
+    canaryMinimumCosineSimilarity: 0.9995,
+  });
+  assert.deepEqual(manifest.tokenizer, {
+    model: 'google/embeddinggemma-300M',
+    revision: '0f741b5a6585bd53aeb15cd1372c56f2a0f65e12',
+    library: { name: 'node-llama-cpp', version: '3.18.1' },
+    encodeOptions: { addSpecialTokens: false, returnTokenTypeIds: false },
+    assets: [
+      {
+        fileName: 'embeddinggemma-300M-Q8_0.gguf',
+        sha256: 'b5ce9d77a3fc4b3b39ccb5643c36777911cc4eb46a66962eadfa3f5f60490d63',
+      },
+    ],
+  });
 });
 
 void test('index manifest canonically digests project lineage and rejects changed lineage policy', () => {
@@ -161,6 +230,8 @@ void test('index manifest incompatibility reports every mismatch with the rebuil
   actual.tokenizer.revision = 'mutable-main';
   actual.chunkPolicy.maxTokens = 512;
   actual.conversationSchemaVersion = 1;
+  actual.markerSchemaVersion = 99;
+  actual.sessionProjectionSchemaVersion = 99;
   actual.projectIdentity.policyVersion = 1;
   actual.projectIdentity.metadataSchemaVersion = 1;
   actual.projectIdentity.lineagePolicyVersion = 99;
@@ -176,6 +247,8 @@ void test('index manifest incompatibility reports every mismatch with the rebuil
       assert.match(error.message, /tokenizer\.revision/);
       assert.match(error.message, /chunkPolicy\.maxTokens/);
       assert.match(error.message, /conversationSchemaVersion/);
+      assert.match(error.message, /markerSchemaVersion/);
+      assert.match(error.message, /sessionProjectionSchemaVersion/);
       assert.match(error.message, /projectIdentity\.policyVersion/);
       assert.match(error.message, /projectIdentity\.metadataSchemaVersion/);
       assert.match(error.message, /projectIdentity\.lineagePolicyVersion/);

@@ -108,7 +108,13 @@ void test('recall quality report records verdict, measured counts, sources, and 
     },
   };
   const result: RecallQualityEvaluationResult = {
-    version: 4,
+    version: 5,
+    storageIdentity: {
+      conversationSchemaVersion: 9,
+      zvecSchemaVersion: 8,
+      indexManifestVersion: 6,
+      incrementalEligibilityPolicyVersion: 1,
+    },
     evaluationIdentity: {
       defaultScope: RecallSearchScope.PROJECT,
       projectScopePolicyVersion: 1,

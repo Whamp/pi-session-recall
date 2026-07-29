@@ -1,11 +1,79 @@
+/** Current strict version for the recall index manifest contract. */
+export const RECALL_INDEX_MANIFEST_VERSION = 6;
+
+/** Supported execution backend for embedded model inference. */
+export enum EmbeddedInferenceComputeBackend {
+  CPU = 'cpu',
+  METAL = 'metal',
+  CUDA = 'cuda',
+  VULKAN = 'vulkan',
+}
+
+/** Operator policy for automatic or explicit embedded inference device selection. */
+export enum EmbeddedInferenceDevicePolicy {
+  AUTO = 'auto',
+  CPU = 'cpu',
+  METAL = 'metal',
+  CUDA = 'cuda',
+  VULKAN = 'vulkan',
+}
+
+/** Whether recall uses verified configured inference, proven legacy Octen, or no inference. */
+export enum RecallInstallationMode {
+  CONFIGURED = 'configured',
+  LEGACY_OCTEN = 'legacy-octen',
+  UNCONFIGURED = 'unconfigured',
+}
+
+/** Capability selected independently in one inference configuration. */
+export enum RecallInferenceCapability {
+  EMBEDDING = 'embedding',
+  RERANKING = 'reranking',
+  QUERY_PLANNING = 'query-planning',
+}
+
+/** Execution location selected without changing model-profile semantics. */
+export enum RecallInferenceBackend {
+  EMBEDDED = 'embedded',
+  LLAMA_CPP_HTTP = 'llama-cpp-http',
+  CUSTOM = 'custom',
+}
+
+/** Local model artifact health recorded for setup and repair. */
+export enum RecallInferenceArtifactState {
+  VALID = 'valid',
+  MISSING = 'missing',
+  CORRUPT = 'corrupt',
+  PARTIAL = 'partial',
+  INCOMPATIBLE = 'incompatible',
+  NOT_REQUIRED = 'not-required',
+}
+
+/** Lifecycle state of one detached staging index build process. */
+export enum RecallBackgroundIndexProcessState {
+  STARTING = 'starting',
+  RUNNING = 'running',
+  STOPPING = 'stopping',
+  STOPPED = 'stopped',
+  SUCCEEDED = 'succeeded',
+  FAILED = 'failed',
+  CRASHED = 'crashed',
+  DISCARDED = 'discarded',
+}
+
 /** Kind of bounded local recall operation diagnostic. */
 export enum RecallDiagnosticOperationKind {
-  LIVE_SESSION_RECONCILIATION = 'live_session_reconciliation',
   SEARCH = 'search',
   FULL_INDEX = 'full_index',
   REBUILD = 'rebuild',
   PHYSICAL_SESSION_CHECK = 'physical_session_check',
   OPTIMIZATION = 'optimization',
+  INCREMENTAL_WORKER = 'incremental_worker',
+  WRITE_WINDOW = 'write_window',
+  GENERATION_CUTOVER = 'generation_cutover',
+  RECOVERY = 'recovery',
+  DELETION_RECONCILIATION = 'deletion_reconciliation',
+  BACKLOG = 'backlog',
 }
 
 /** Lifecycle state recorded for one recall diagnostic operation. */
@@ -27,13 +95,6 @@ export enum RecallDiagnosticsMode {
   SLOW = 'slow',
   ALL = 'all',
   OFF = 'off',
-}
-
-/** Pi lifecycle event that requested one live session reconciliation. */
-export enum RecallLifecycleTrigger {
-  AGENT_SETTLED = 'agent_settled',
-  SESSION_SHUTDOWN = 'session_shutdown',
-  ACTIVE_SESSION_FRESHNESS = 'active_session_freshness',
 }
 
 /** Manual maintenance trigger distinguishing explicit incremental indexing from rebuilding. */
@@ -61,6 +122,145 @@ export enum SessionImportFormat {
 export enum SessionImportReplayOutcome {
   ACCEPTED = 'accepted',
   REJECTED = 'rejected',
+}
+
+/** Trigger kind persisted in one immutable recall work marker. */
+export enum RecallWorkMarkerTrigger {
+  ACTIVITY = 'activity',
+  COMPACTION = 'compaction',
+  BRANCH_EXIT = 'branch_exit',
+  DEPARTURE = 'departure',
+  ARRIVAL = 'arrival',
+}
+
+/** Privacy-safe reason an immutable recall work marker left the pending spool. */
+export enum RecallMarkerQuarantineCategory {
+  CORRUPT = 'corrupt',
+  UNSUPPORTED = 'unsupported',
+}
+
+/** Bounded outcome of one metadata-only session recovery sweep slice. */
+export enum RecallMetadataSweepStatus {
+  COMPLETE = 'complete',
+  CONTINUATION_REQUIRED = 'continuation_required',
+  ROOT_UNAVAILABLE = 'root_unavailable',
+  PERMISSION_DENIED = 'permission_denied',
+  SUSPICIOUS_MASS_LOSS = 'suspicious_mass_loss',
+}
+
+/** Record kind persisted in the scalar-only session projection collection. */
+export enum RecallSessionProjectionKind {
+  PHYSICAL_SESSION = 'physical_session',
+  LOGICAL_SESSION = 'logical_session',
+}
+
+/** Whether a session projection may continue incremental ingestion. */
+export enum RecallProjectionRepairState {
+  READY = 'ready',
+  REQUIRES_RECONCILIATION = 'requires_reconciliation',
+}
+
+/** Stable reason that a session projection requires explicit reconciliation. */
+export enum RecallProjectionRepairReason {
+  APPEND_CURSOR_MISSING = 'append_cursor_missing',
+  SOURCE_SHRANK = 'source_shrank',
+  SOURCE_IDENTITY_MISMATCH = 'source_identity_mismatch',
+  BOUNDARY_MISMATCH = 'boundary_mismatch',
+  UNSUPPORTED_LAYOUT = 'unsupported_layout',
+  MALFORMED_GRAPH = 'malformed_graph',
+  PROJECTION_OVERFLOW = 'projection_overflow',
+}
+
+/** Outcome of validating and framing one physical-session append delta. */
+export enum RecallAppendDeltaStatus {
+  APPENDED = 'appended',
+  REQUIRES_RECONCILIATION = 'requires_reconciliation',
+}
+
+/** Outcome of applying one append delta to physical and logical session projections. */
+export enum RecallAppendProjectionStatus {
+  PROJECTED = 'projected',
+  REQUIRES_RECONCILIATION = 'requires_reconciliation',
+}
+
+/** Measured quiet-period candidate selected for one incremental eligibility transfer. */
+export enum RecallEligibilityThreshold {
+  EXPLICIT_EXIT_QUIET = 'explicit_exit_quiet',
+  LARGE_PREPARED_TRANSFER = 'large_prepared_transfer',
+  CRASH_ONLY_QUIESCENCE = 'crash_only_quiescence',
+}
+
+/** Commit or durable deferral result from one incremental physical-session transfer. */
+export enum RecallIncrementalTransferOutcomeKind {
+  COMMITTED = 'committed',
+  DEFERRED = 'deferred',
+}
+
+/** Durable observation state for one physical session source. */
+export enum RecallSourceAvailability {
+  PRESENT = 'present',
+  SOURCE_MISSING = 'source_missing',
+  DELETION_CONFIRMED = 'deletion_confirmed',
+}
+
+/** Public action selected by the confirmed source deletion policy. */
+export enum RecallConfirmedDeletionDecisionKind {
+  NO_CHANGE = 'no_change',
+  RECORD_SOURCE_MISSING = 'record_source_missing',
+  CLEAR_SOURCE_MISSING = 'clear_source_missing',
+  CONFIRM_SOURCE_DELETION = 'confirm_source_deletion',
+  RESUME_CONFIRMED_DELETION = 'resume_confirmed_deletion',
+  HALT = 'halt',
+}
+
+/** Privacy-safe reason confirmed source deletion cannot proceed. */
+export enum RecallConfirmedDeletionHaltCategory {
+  ROOT_UNAVAILABLE = 'root_unavailable',
+  PERMISSION_DENIED = 'permission_denied',
+  SUSPICIOUS_MASS_LOSS = 'suspicious_mass_loss',
+  INCOMPLETE_SWEEP = 'incomplete_sweep',
+  SOURCE_IDENTITY_CHANGED = 'source_identity_changed',
+  SOURCE_REAPPEARED_DURING_DELETION = 'source_reappeared_during_deletion',
+  PROJECTION_REQUIRES_RECONCILIATION = 'projection_requires_reconciliation',
+  ACTIVE_GENERATION_CHANGED = 'active_generation_changed',
+  REBUILD_IN_PROGRESS = 'rebuild_in_progress',
+}
+
+/** Resumable destructive phase checkpointed in the physical session projection. */
+export enum RecallConfirmedDeletionPhase {
+  EVIDENCE = 'evidence',
+  LOGICAL_PROJECTIONS = 'logical_projections',
+  PHYSICAL_PROJECTION = 'physical_projection',
+}
+
+/** Outcome of encoding one bounded session projection candidate. */
+export enum RecallProjectionEncodingStatus {
+  ENCODED = 'encoded',
+  REQUIRES_RECONCILIATION = 'requires_reconciliation',
+}
+
+/** Durable generation registry state used by explicit side-by-side cutover. */
+export enum RecallGenerationCutoverState {
+  BUILDING = 'building',
+  READY = 'ready',
+  ACTIVE = 'active',
+  REPLAY_PENDING = 'replay_pending',
+  LEGACY_READ_ONLY = 'legacy_read_only',
+  ROLLBACK = 'rollback',
+  RETIRED = 'retired',
+  FAILED = 'failed',
+}
+
+/** Privacy-safe failure category exposed by the scalar material backlog summary. */
+export enum RecallBacklogFailureCategory {
+  MARKER_DECODE_FAILED = 'marker_decode_failed',
+  PROJECTION_RECONCILIATION_REQUIRED = 'projection_reconciliation_required',
+  WRITE_FAILED = 'write_failed',
+  RECOVERY_REQUIRED = 'recovery_required',
+  REBUILD_FAILED = 'rebuild_failed',
+  INCREMENTAL_WORKER_FAILED = 'incremental_worker_failed',
+  DIAGNOSTICS_PERSISTENCE_FAILED = 'diagnostics_persistence_failed',
+  CONFIRMED_DELETION_HALTED = 'confirmed_deletion_halted',
 }
 
 /** Version of trusted-invocation exact project filtering before every retrieval-channel limit. */

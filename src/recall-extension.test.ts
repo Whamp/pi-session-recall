@@ -1,23 +1,38 @@
 import assert from 'node:assert/strict';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 
 import { RecallSearchScope } from './enums.js';
+import { loadRecallConversationConfig } from './recall-conversation-config.js';
 import recallExtension, { searchPiRecall } from './recall-extension.js';
 import type {
   RecallConversationSearchOptions,
   RecallConversationService,
 } from './recall-conversation-service.js';
 
-void test('Pi session recall registers collision-free tool guidance and index command', async () => {
+async function createExtensionTestConfig(t: test.TestContext) {
+  const homeDirectory = await mkdtemp(join(tmpdir(), 'recall-extension-'));
+  t.after(() => rm(homeDirectory, { recursive: true, force: true }));
+  return loadRecallConversationConfig({
+    homeDirectory,
+    configPath: join(homeDirectory, 'missing-recall.json'),
+    environment: {},
+  });
+}
+
+void test('Pi session recall registers collision-free tool guidance and index command', async (t) => {
   const toolNames: string[] = [];
   const toolDescriptions: string[] = [];
   const toolGuidelines: string[] = [];
   const commandNames: string[] = [];
   const commandDescriptions: string[] = [];
   const toolParameterSchemas: string[] = [];
-  const registrar: Pick<ExtensionAPI, 'registerTool' | 'registerCommand'> = {
+  const registrar: Pick<ExtensionAPI, 'on' | 'registerTool' | 'registerCommand'> = {
+    on() {},
     registerTool(definition) {
       toolNames.push(definition.name);
       toolDescriptions.push(definition.description);
@@ -30,7 +45,7 @@ void test('Pi session recall registers collision-free tool guidance and index co
     },
   };
 
-  await recallExtension(registrar);
+  await recallExtension(registrar, { config: await createExtensionTestConfig(t) });
 
   assert.deepEqual(toolNames, ['pi-session-recall']);
   assert.deepEqual(commandNames, ['pi-session-recall-index']);
@@ -62,7 +77,7 @@ void test('Pi session recall registers collision-free tool guidance and index co
   );
 });
 
-void test('Pi recall runtime never registers automatic whole-session maintenance', async () => {
+void test('Pi recall runtime registers exactly the five marker-only lifecycle events', async (t) => {
   const lifecycleEvents: string[] = [];
   const registrar: Pick<ExtensionAPI, 'on' | 'registerTool' | 'registerCommand'> = {
     on(event) {
@@ -72,9 +87,15 @@ void test('Pi recall runtime never registers automatic whole-session maintenance
     registerCommand() {},
   };
 
-  await recallExtension(registrar);
+  await recallExtension(registrar, { config: await createExtensionTestConfig(t) });
 
-  assert.deepEqual(lifecycleEvents, []);
+  assert.deepEqual(lifecycleEvents, [
+    'agent_settled',
+    'session_compact',
+    'session_tree',
+    'session_shutdown',
+    'session_start',
+  ]);
 });
 
 void test('Pi recall tool adapter propagates trusted cwd with project default and explicit global scope', async () => {
@@ -84,6 +105,21 @@ void test('Pi recall tool adapter propagates trusted cwd with project default an
     options: RecallConversationSearchOptions;
   }> = [];
   const service: RecallConversationService = {
+    async verifyEmbeddingCapability() {
+      throw new Error('Pi recall adapter test does not verify embeddings');
+    },
+    async inspectConversationCorpus() {
+      throw new Error('Pi recall adapter test does not inspect the corpus');
+    },
+    async measureFirstIndexSample() {
+      throw new Error('Pi recall adapter test does not measure indexing');
+    },
+    async verifyRerankingCapability() {
+      throw new Error('Pi recall adapter test does not configure reranking');
+    },
+    async verifyQueryPlanningCapability() {
+      throw new Error('Pi recall adapter test does not configure query planning');
+    },
     async search(query, limit, options) {
       if (!options) {
         throw new Error('Pi recall adapter test expected search options');
@@ -100,6 +136,7 @@ void test('Pi recall tool adapter propagates trusted cwd with project default an
           reciprocalRankConstant: 60,
           rerankPolicyVersion: null,
           rerankerModel: null,
+          rerankerIdentity: null,
           activeBranchPrior: 0.01,
           candidateLimits: { dense: 8, lexical: 8, identifier: 8 },
         },
@@ -120,21 +157,27 @@ void test('Pi recall tool adapter propagates trusted cwd with project default an
         },
       };
     },
-    async reconcileSession() {
-      return {
-        totalChunks: 0,
-        indexSummary: {
-          scannedSessions: 1,
-          indexedSessions: 0,
-          removedSessions: 0,
-          cacheHits: 0,
-          newlyEmbeddedChunks: 0,
-          embeddingRequestCount: 0,
-          deletedChunks: 0,
-          failedSessions: [],
-        },
-      };
+    async startBackgroundIndexGeneration() {
+      throw new Error('Pi recall adapter test does not start background indexing');
     },
+    async resumeBackgroundIndexGeneration() {
+      throw new Error('Pi recall adapter test does not resume background indexing');
+    },
+    async readBackgroundIndexGenerationStatus() {
+      return null;
+    },
+    async stopBackgroundIndexGeneration() {
+      throw new Error('Pi recall adapter test does not stop background indexing');
+    },
+    async readIndexGenerationStatus() {
+      return { active: null, staging: null };
+    },
+    async discardStagingIndexGeneration() {
+      return false;
+    },
+    async rollback() {},
+    async adoptLegacy() {},
+    async collectRetired() {},
   };
   const context = {
     cwd: '/trusted/invocation',

@@ -9,7 +9,20 @@ import { createEmbeddedQwenRerankingProvider } from './embedded-qwen-reranking-p
 import { createLlamaCppHttpEmbeddingProvider } from './createLlamaCppHttpEmbeddingProvider.js';
 import { createQmdHttpQueryPlanningProvider } from './createQmdHttpQueryPlanningProvider.js';
 import { createQwenHttpRerankingProvider } from './createQwenHttpRerankingProvider.js';
-import { EmbeddedInferenceDevicePolicy, RecallInferenceBackend } from './enums.js';
+import {
+  createRecommendedOptionalInferenceCandidates,
+  type RecommendedOptionalInferenceCandidateOptions,
+} from './createRecommendedOptionalInferenceCandidates.js';
+import {
+  createRecommendedEmbeddingGemmaHttpInferenceCandidate,
+  createRecommendedEmbeddingGemmaInferenceCandidate,
+} from './recommended-embeddinggemma-inference-candidate.js';
+import {
+  EmbeddedInferenceDevicePolicy,
+  RecallInferenceBackend,
+  RecallInferenceCapability,
+} from './enums.js';
+import type { RecallBackgroundIndexServiceFactory } from './recall-background-index-build.js';
 import type { RecallConversationConfig } from './recall-conversation-config.js';
 import {
   createRecallConversationService,
@@ -21,20 +34,31 @@ import {
   type RecallInferenceConfiguration,
   type RecallInferenceConfigurationCandidate,
 } from './recall-inference-configuration.js';
-import type { RecallEmbeddingProvider } from './recall-inference-capabilities.js';
+import type {
+  RecallEmbeddingProvider,
+  RecallIdentifiedQueryPlanningProvider,
+  RecallIdentifiedRerankingProvider,
+} from './recall-inference-capabilities.js';
+import type { RecallTokenizerManifestIdentity } from './recall-index-manifest.js';
 import {
   createRecommendedEmbeddingGemmaModelProfile,
   createRecommendedQmdQueryPlanningModelProfile,
   createRecommendedQwenRerankingModelProfile,
+  type RecallEmbeddingModelProfile,
+  type RecallQueryPlanningModelProfile,
+  type RecallRerankingModelProfile,
 } from './recall-model-profiles.js';
 import type { ConversationTextTokenizer } from './session-conversation-index.js';
 
-const EMBEDDED_EMBEDDING_CANDIDATE_ID = 'recommended-embeddinggemma-embedded';
-const HTTP_EMBEDDING_CANDIDATE_ID = 'recommended-embeddinggemma-http';
-const EMBEDDED_RERANKING_CANDIDATE_ID = 'recommended-qwen-reranker-embedded';
-const HTTP_RERANKING_CANDIDATE_ID = 'recommended-qwen-reranker-http';
-const EMBEDDED_QUERY_PLANNING_CANDIDATE_ID = 'recommended-qmd-query-planner-embedded';
-const HTTP_QUERY_PLANNING_CANDIDATE_ID = 'recommended-qmd-query-planner-http';
+const EMBEDDED_DEVICE_POLICY_BY_NAME: Readonly<
+  Record<string, EmbeddedInferenceDevicePolicy | undefined>
+> = Object.freeze({
+  [EmbeddedInferenceDevicePolicy.AUTO]: EmbeddedInferenceDevicePolicy.AUTO,
+  [EmbeddedInferenceDevicePolicy.CPU]: EmbeddedInferenceDevicePolicy.CPU,
+  [EmbeddedInferenceDevicePolicy.METAL]: EmbeddedInferenceDevicePolicy.METAL,
+  [EmbeddedInferenceDevicePolicy.CUDA]: EmbeddedInferenceDevicePolicy.CUDA,
+  [EmbeddedInferenceDevicePolicy.VULKAN]: EmbeddedInferenceDevicePolicy.VULKAN,
+});
 
 /** Disposable conversation service reconstructed from exact verified inference selections. */
 export interface ConfiguredRecallInferenceRuntime {
@@ -45,13 +69,62 @@ export interface ConfiguredRecallInferenceRuntime {
   dispose(): Promise<void>;
 }
 
-/** Registered custom setup candidates plus the runtime factory that reconstructs them. */
+/** Reconstructed embedding capability with exact profile, provider, and tokenizer semantics. */
+export interface ConfiguredRecallEmbeddingCapability {
+  capability: RecallInferenceCapability.EMBEDDING;
+  profile: RecallEmbeddingModelProfile;
+  provider: RecallEmbeddingProvider;
+  tokenizerIdentity: RecallTokenizerManifestIdentity;
+  loadTokenizer(): Promise<ConversationTextTokenizer>;
+  embeddingDimensions: number;
+  backgroundIndexServiceFactory?: RecallBackgroundIndexServiceFactory;
+  dispose(): Promise<void>;
+}
+
+/** Reconstructed reranking capability with its exact profile and identified provider. */
+export interface ConfiguredRecallRerankingCapability {
+  capability: RecallInferenceCapability.RERANKING;
+  profile: RecallRerankingModelProfile;
+  provider: RecallIdentifiedRerankingProvider;
+  dispose(): Promise<void>;
+}
+
+/** Reconstructed query-planning capability with its exact profile and identified provider. */
+export interface ConfiguredRecallQueryPlanningCapability {
+  capability: RecallInferenceCapability.QUERY_PLANNING;
+  profile: RecallQueryPlanningModelProfile;
+  provider: RecallIdentifiedQueryPlanningProvider;
+  dispose(): Promise<void>;
+}
+
+/** One capability runtime reconstructed from an exact persisted inference selection. */
+export type ConfiguredRecallInferenceCapability =
+  | ConfiguredRecallEmbeddingCapability
+  | ConfiguredRecallRerankingCapability
+  | ConfiguredRecallQueryPlanningCapability;
+
+/** Optional runtime signals passed while reconstructing exact inference adapters. */
+export interface RecallInferenceAdapterFactoryOptions {
+  onWarning?: (warning: string) => void;
+}
+
+/** Configuration, persisted selection, and signals available to one adapter factory. */
+export interface RecallInferenceAdapterFactoryContext extends RecallInferenceAdapterFactoryOptions {
+  config: RecallConversationConfig;
+  selection: NonNullable<RecallInferenceConfiguration['embedding']>;
+}
+
+/** One setup candidate paired with its capability-specific runtime factory. */
+export interface RecallInferenceAdapterRegistration {
+  candidate: RecallInferenceConfigurationCandidate;
+  createConfiguredCapability(
+    context: RecallInferenceAdapterFactoryContext,
+  ): ConfiguredRecallInferenceCapability | Promise<ConfiguredRecallInferenceCapability>;
+}
+
+/** Registered setup candidates and capability factories resolved by exact persisted identity. */
 export interface RecallInferenceAdapterRegistry {
-  candidates: readonly RecallInferenceConfigurationCandidate[];
-  createConfiguredRuntime(
-    config: RecallConversationConfig,
-    configuration: RecallInferenceConfiguration,
-  ): ConfiguredRecallInferenceRuntime | Promise<ConfiguredRecallInferenceRuntime>;
+  registrations: readonly RecallInferenceAdapterRegistration[];
 }
 
 /** Optional warning sink, state path, and registered custom adapter reconstruction boundaries. */
@@ -70,20 +143,9 @@ function readEmbeddedDevicePolicy(
   capability: string,
   policy?: string,
 ): EmbeddedInferenceDevicePolicy {
-  if (policy === EmbeddedInferenceDevicePolicy.AUTO) {
-    return EmbeddedInferenceDevicePolicy.AUTO;
-  }
-  if (policy === EmbeddedInferenceDevicePolicy.CPU) {
-    return EmbeddedInferenceDevicePolicy.CPU;
-  }
-  if (policy === EmbeddedInferenceDevicePolicy.METAL) {
-    return EmbeddedInferenceDevicePolicy.METAL;
-  }
-  if (policy === EmbeddedInferenceDevicePolicy.CUDA) {
-    return EmbeddedInferenceDevicePolicy.CUDA;
-  }
-  if (policy === EmbeddedInferenceDevicePolicy.VULKAN) {
-    return EmbeddedInferenceDevicePolicy.VULKAN;
+  const configuredPolicy = policy ? EMBEDDED_DEVICE_POLICY_BY_NAME[policy] : undefined;
+  if (configuredPolicy) {
+    return configuredPolicy;
   }
   throw new Error(
     `Recall configured ${capability} device policy unsupported: ${policy ?? 'missing'}; no device was substituted`,
@@ -99,20 +161,6 @@ function readRequiredHttpEndpoint(capability: string, endpoint: string | null): 
   return endpoint;
 }
 
-function assertExactConfiguredAdapter(
-  capability: string,
-  actualProfileId: string,
-  expectedProfileId: string,
-  actualAdapterId: string,
-  expectedAdapterId: string,
-): void {
-  if (actualProfileId !== expectedProfileId || actualAdapterId !== expectedAdapterId) {
-    throw new Error(
-      `Recall configured ${capability} identity unsupported: expected ${expectedProfileId}/${expectedAdapterId}, received ${actualProfileId}/${actualAdapterId}; no model or adapter was substituted`,
-    );
-  }
-}
-
 function candidateMatchesSelection(
   candidate: RecallInferenceConfigurationCandidate,
   selection: NonNullable<RecallInferenceConfiguration['embedding']>,
@@ -126,43 +174,301 @@ function candidateMatchesSelection(
   );
 }
 
-function selectionUsesBuiltInAdapter(
+function formatConfiguredCapability(capability: RecallInferenceCapability): string {
+  return capability === RecallInferenceCapability.QUERY_PLANNING ? 'query planning' : capability;
+}
+
+function resolveExactInferenceAdapterRegistration(
+  registrations: readonly RecallInferenceAdapterRegistration[],
   selection: NonNullable<RecallInferenceConfiguration['embedding']>,
-): boolean {
-  return (
-    selection.candidateId === EMBEDDED_EMBEDDING_CANDIDATE_ID ||
-    selection.candidateId === HTTP_EMBEDDING_CANDIDATE_ID ||
-    selection.candidateId === EMBEDDED_RERANKING_CANDIDATE_ID ||
-    selection.candidateId === HTTP_RERANKING_CANDIDATE_ID ||
-    selection.candidateId === EMBEDDED_QUERY_PLANNING_CANDIDATE_ID ||
-    selection.candidateId === HTTP_QUERY_PLANNING_CANDIDATE_ID
+): RecallInferenceAdapterRegistration {
+  const exactMatches = registrations.filter(({ candidate }) =>
+    candidateMatchesSelection(candidate, selection),
   );
+  const [exactMatch] = exactMatches;
+  const capability = formatConfiguredCapability(selection.capability);
+  if (exactMatches.length > 1) {
+    throw new Error(
+      `Recall configured ${capability} adapter ambiguous: ${selection.candidateId}/${selection.profileId}/${selection.backend}/${selection.adapterId}`,
+    );
+  }
+  if (exactMatch) {
+    return exactMatch;
+  }
+
+  const candidateIdMatches = registrations.filter(
+    ({ candidate }) =>
+      candidate.capability === selection.capability &&
+      candidate.candidateId === selection.candidateId,
+  );
+  const [expectedRegistration] = candidateIdMatches;
+  if (!expectedRegistration) {
+    throw new Error(
+      `Recall configured ${capability} adapter unavailable: ${selection.candidateId}; no adapter was substituted`,
+    );
+  }
+  const identityMatch = candidateIdMatches.find(
+    ({ candidate }) =>
+      candidate.profileId === selection.profileId && candidate.adapterId === selection.adapterId,
+  );
+  if (!identityMatch) {
+    throw new Error(
+      `Recall configured ${capability} identity unsupported: expected ${expectedRegistration.candidate.profileId}/${expectedRegistration.candidate.adapterId}, received ${selection.profileId}/${selection.adapterId}; no model or adapter was substituted`,
+    );
+  }
+  throw new Error(
+    `Recall configured ${capability} backend mismatch for ${selection.candidateId}: ${selection.backend}`,
+  );
+}
+
+function findBuiltInInferenceCandidate(
+  candidates: readonly RecallInferenceConfigurationCandidate[],
+  capability: RecallInferenceCapability,
+  backend: RecallInferenceBackend,
+): RecallInferenceConfigurationCandidate {
+  const candidate = candidates.find(
+    (item) => item.capability === capability && item.backend === backend,
+  );
+  if (!candidate) {
+    throw new Error(
+      `Recall built-in ${capability} adapter registration missing for backend ${backend}`,
+    );
+  }
+  return candidate;
+}
+
+/** Creates the six built-in setup candidates and their exact capability runtime factories. */
+export function createRecommendedRecallInferenceAdapterRegistry(
+  config: RecallConversationConfig,
+  options: RecommendedOptionalInferenceCandidateOptions = {},
+): RecallInferenceAdapterRegistry {
+  const candidates = createRecommendedOptionalInferenceCandidates(config, options);
+  const embeddingProfile = createRecommendedEmbeddingGemmaModelProfile();
+  const rerankingProfile = createRecommendedQwenRerankingModelProfile();
+  const queryPlanningProfile = createRecommendedQmdQueryPlanningModelProfile();
+  const modelCacheDirectory = join(dirname(config.manifestPath), 'models');
+  return {
+    registrations: [
+      {
+        candidate: createRecommendedEmbeddingGemmaInferenceCandidate(config),
+        createConfiguredCapability({ selection, onWarning }) {
+          const provider = createEmbeddedEmbeddingGemmaProvider(embeddingProfile, {
+            modelCacheDirectory,
+            device: readEmbeddedDevicePolicy('embedding', selection.device?.policy),
+            ...(onWarning ? { onWarning } : {}),
+          });
+          return {
+            capability: RecallInferenceCapability.EMBEDDING,
+            profile: embeddingProfile,
+            provider,
+            tokenizerIdentity: createEmbeddingGemmaTokenizerManifestIdentity(embeddingProfile),
+            loadTokenizer: () => provider.loadConversationTokenizer(),
+            embeddingDimensions: embeddingProfile.identity.dimensions,
+            dispose: () => provider.dispose(),
+          };
+        },
+      },
+      {
+        candidate: createRecommendedEmbeddingGemmaHttpInferenceCandidate(config),
+        createConfiguredCapability({ selection, onWarning }) {
+          const tokenizerProvider = createEmbeddedEmbeddingGemmaProvider(embeddingProfile, {
+            modelCacheDirectory,
+            device: EmbeddedInferenceDevicePolicy.CPU,
+            ...(onWarning ? { onWarning } : {}),
+          });
+          return {
+            capability: RecallInferenceCapability.EMBEDDING,
+            profile: embeddingProfile,
+            provider: createLlamaCppHttpEmbeddingProvider(embeddingProfile, {
+              baseUrl: readRequiredHttpEndpoint('embedding', selection.endpoint),
+              batchSize: config.embeddingBatchSize,
+            }),
+            tokenizerIdentity: createEmbeddingGemmaTokenizerManifestIdentity(embeddingProfile),
+            loadTokenizer: () => tokenizerProvider.loadConversationTokenizer(),
+            embeddingDimensions: embeddingProfile.identity.dimensions,
+            dispose: () => tokenizerProvider.dispose(),
+          };
+        },
+      },
+      {
+        candidate: findBuiltInInferenceCandidate(
+          candidates,
+          RecallInferenceCapability.RERANKING,
+          RecallInferenceBackend.EMBEDDED,
+        ),
+        createConfiguredCapability({ selection, onWarning }) {
+          const provider = createEmbeddedQwenRerankingProvider(rerankingProfile, {
+            modelCacheDirectory,
+            device: readEmbeddedDevicePolicy('reranking', selection.device?.policy),
+            ...(onWarning ? { onWarning } : {}),
+          });
+          return {
+            capability: RecallInferenceCapability.RERANKING,
+            profile: rerankingProfile,
+            provider,
+            dispose: () => provider.dispose(),
+          };
+        },
+      },
+      {
+        candidate: findBuiltInInferenceCandidate(
+          candidates,
+          RecallInferenceCapability.RERANKING,
+          RecallInferenceBackend.LLAMA_CPP_HTTP,
+        ),
+        createConfiguredCapability({ selection }) {
+          return {
+            capability: RecallInferenceCapability.RERANKING,
+            profile: rerankingProfile,
+            provider: createQwenHttpRerankingProvider(rerankingProfile, {
+              baseUrl: readRequiredHttpEndpoint('reranking', selection.endpoint),
+            }),
+            async dispose() {},
+          };
+        },
+      },
+      {
+        candidate: findBuiltInInferenceCandidate(
+          candidates,
+          RecallInferenceCapability.QUERY_PLANNING,
+          RecallInferenceBackend.EMBEDDED,
+        ),
+        createConfiguredCapability({ selection, onWarning }) {
+          const provider = createEmbeddedQmdQueryPlanningProvider(queryPlanningProfile, {
+            modelCacheDirectory,
+            device: readEmbeddedDevicePolicy('query planning', selection.device?.policy),
+            ...(onWarning ? { onWarning } : {}),
+          });
+          return {
+            capability: RecallInferenceCapability.QUERY_PLANNING,
+            profile: queryPlanningProfile,
+            provider,
+            dispose: () => provider.dispose(),
+          };
+        },
+      },
+      {
+        candidate: findBuiltInInferenceCandidate(
+          candidates,
+          RecallInferenceCapability.QUERY_PLANNING,
+          RecallInferenceBackend.LLAMA_CPP_HTTP,
+        ),
+        createConfiguredCapability({ selection }) {
+          return {
+            capability: RecallInferenceCapability.QUERY_PLANNING,
+            profile: queryPlanningProfile,
+            provider: createQmdHttpQueryPlanningProvider(queryPlanningProfile, {
+              baseUrl: readRequiredHttpEndpoint('query planning', selection.endpoint),
+            }),
+            async dispose() {},
+          };
+        },
+      },
+    ],
+  };
+}
+
+function readConfiguredInferenceSelections(
+  configuration: RecallInferenceConfiguration,
+): Array<NonNullable<RecallInferenceConfiguration['embedding']>> {
+  const slots = [
+    {
+      capability: RecallInferenceCapability.EMBEDDING,
+      selection: configuration.embedding,
+    },
+    {
+      capability: RecallInferenceCapability.RERANKING,
+      selection: configuration.reranking,
+    },
+    {
+      capability: RecallInferenceCapability.QUERY_PLANNING,
+      selection: configuration.queryPlanning,
+    },
+  ];
+  const selections: Array<NonNullable<RecallInferenceConfiguration['embedding']>> = [];
+  for (const { capability, selection } of slots) {
+    if (!selection) {
+      continue;
+    }
+    if (selection.capability !== capability) {
+      throw new Error(
+        `Recall configured ${formatConfiguredCapability(capability)} capability mismatch: received ${formatConfiguredCapability(selection.capability)}`,
+      );
+    }
+    selections.push(selection);
+  }
+  return selections;
 }
 
 async function createRegisteredRecallInferenceRuntime(
   config: RecallConversationConfig,
   configuration: RecallInferenceConfiguration,
   registries: readonly RecallInferenceAdapterRegistry[],
-): Promise<ConfiguredRecallInferenceRuntime | undefined> {
-  const selections = [
-    configuration.embedding,
-    configuration.reranking,
-    configuration.queryPlanning,
-  ].filter((selection) => selection !== null);
-  const customSelections = selections.filter(
-    (selection) => !selectionUsesBuiltInAdapter(selection),
-  );
-  if (customSelections.length === 0) {
-    return undefined;
+  options: RecallInferenceAdapterFactoryOptions,
+): Promise<ConfiguredRecallInferenceRuntime> {
+  const selections = readConfiguredInferenceSelections(configuration);
+  const registrations = registries.flatMap((registry) => registry.registrations);
+  const selectedAdapters = selections.map((selection) => ({
+    selection,
+    registration: resolveExactInferenceAdapterRegistration(registrations, selection),
+  }));
+
+  const capabilities: ConfiguredRecallInferenceCapability[] = [];
+  for (const { selection, registration } of selectedAdapters) {
+    const capability = await registration.createConfiguredCapability({
+      config,
+      selection,
+      ...options,
+    });
+    if (capability.capability !== selection.capability) {
+      throw new Error(
+        `Recall configured ${formatConfiguredCapability(selection.capability)} adapter ${selection.candidateId} returned ${formatConfiguredCapability(capability.capability)} capability`,
+      );
+    }
+    capabilities.push(capability);
   }
-  const registry = registries.find((candidateRegistry) =>
-    customSelections.every((selection) =>
-      candidateRegistry.candidates.some((candidate) =>
-        candidateMatchesSelection(candidate, selection),
-      ),
-    ),
+  const embedding = capabilities.find(
+    (capability) => capability.capability === RecallInferenceCapability.EMBEDDING,
   );
-  return registry?.createConfiguredRuntime(config, configuration);
+  if (!embedding) {
+    throw new Error('Recall configured inference registry returned no embedding capability');
+  }
+  const reranking = capabilities.find(
+    (capability) => capability.capability === RecallInferenceCapability.RERANKING,
+  );
+  const queryPlanning = capabilities.find(
+    (capability) => capability.capability === RecallInferenceCapability.QUERY_PLANNING,
+  );
+  const dependencies: RecallConversationDependencies = {
+    embeddingProfile: embedding.profile,
+    embeddingProvider: embedding.provider,
+    tokenizerIdentity: embedding.tokenizerIdentity,
+    loadTokenizer: () => embedding.loadTokenizer(),
+    rerankingProfile: reranking?.profile ?? null,
+    reranker: reranking?.provider ?? null,
+    ...(queryPlanning
+      ? {
+          queryPlanningProfile: queryPlanning.profile,
+          queryPlanner: queryPlanning.provider,
+        }
+      : {}),
+    backgroundIndexServiceFactory: embedding.backgroundIndexServiceFactory ?? {
+      moduleUrl: import.meta.url,
+      exportName: 'createConfiguredRecallBackgroundService',
+    },
+  };
+  const service = createRecallConversationService(config, dependencies);
+  return {
+    service,
+    embeddingProvider: embedding.provider,
+    loadTokenizer: () => embedding.loadTokenizer(),
+    embeddingDimensions: embedding.embeddingDimensions,
+    async dispose() {
+      for (const capability of capabilities.reverse()) {
+        await capability.dispose();
+      }
+    },
+  };
 }
 
 /** Resolves the authoritative mixed inference configuration beside index-generation data. */
@@ -203,218 +509,11 @@ export async function createConfiguredRecallInferenceRuntime(
       'Recall configured inference runtime requires a verified embedding capability; run setup before recall',
     );
   }
-  const registeredRuntime = await createRegisteredRecallInferenceRuntime(
+  return createRegisteredRecallInferenceRuntime(
     config,
     configuration,
-    options.adapterRegistries ?? [],
-  );
-  if (registeredRuntime) {
-    return registeredRuntime;
-  }
-  const modelCacheDirectory = join(dirname(config.manifestPath), 'models');
-  const embeddingProfile = createRecommendedEmbeddingGemmaModelProfile();
-  const disposableProviders: Array<{ dispose(): Promise<void> }> = [];
-  const tokenizerProvider = createEmbeddedEmbeddingGemmaProvider(embeddingProfile, {
-    modelCacheDirectory,
-    device:
-      embeddingSelection.backend === RecallInferenceBackend.EMBEDDED
-        ? readEmbeddedDevicePolicy('embedding', embeddingSelection.device?.policy)
-        : EmbeddedInferenceDevicePolicy.CPU,
-    ...(options.onWarning ? { onWarning: options.onWarning } : {}),
-  });
-  disposableProviders.push(tokenizerProvider);
-
-  let embeddingProvider;
-  if (embeddingSelection.candidateId === EMBEDDED_EMBEDDING_CANDIDATE_ID) {
-    assertExactConfiguredAdapter(
-      'embedding',
-      embeddingSelection.profileId,
-      embeddingProfile.profileId,
-      embeddingSelection.adapterId,
-      'node-llama-cpp-embedded-v2',
-    );
-    if (embeddingSelection.backend !== RecallInferenceBackend.EMBEDDED) {
-      throw new Error(
-        `Recall configured embedding backend mismatch for ${embeddingSelection.candidateId}: ${embeddingSelection.backend}`,
-      );
-    }
-    embeddingProvider = tokenizerProvider;
-  } else if (embeddingSelection.candidateId === HTTP_EMBEDDING_CANDIDATE_ID) {
-    assertExactConfiguredAdapter(
-      'embedding',
-      embeddingSelection.profileId,
-      embeddingProfile.profileId,
-      embeddingSelection.adapterId,
-      'llama-cpp-http-embedding-v1',
-    );
-    if (embeddingSelection.backend !== RecallInferenceBackend.LLAMA_CPP_HTTP) {
-      throw new Error(
-        `Recall configured embedding backend mismatch for ${embeddingSelection.candidateId}: ${embeddingSelection.backend}`,
-      );
-    }
-    embeddingProvider = createLlamaCppHttpEmbeddingProvider(embeddingProfile, {
-      baseUrl: readRequiredHttpEndpoint('embedding', embeddingSelection.endpoint),
-      batchSize: config.embeddingBatchSize,
-    });
-  } else {
-    throw new Error(
-      `Recall configured embedding adapter unavailable: ${embeddingSelection.candidateId}; no adapter was substituted`,
-    );
-  }
-
-  const dependencies: RecallConversationDependencies = {
-    embeddingProfile,
-    embeddingProvider,
-    tokenizerIdentity: createEmbeddingGemmaTokenizerManifestIdentity(embeddingProfile),
-    loadTokenizer: () => tokenizerProvider.loadConversationTokenizer(),
-    backgroundIndexServiceFactory: {
-      moduleUrl: import.meta.url,
-      exportName: 'createConfiguredRecallBackgroundService',
-    },
-  };
-  configureRerankingCapability(
-    configuration,
-    modelCacheDirectory,
-    dependencies,
-    disposableProviders,
+    [createRecommendedRecallInferenceAdapterRegistry(config), ...(options.adapterRegistries ?? [])],
     options.onWarning ? { onWarning: options.onWarning } : {},
-  );
-  configureQueryPlanningCapability(
-    configuration,
-    modelCacheDirectory,
-    dependencies,
-    disposableProviders,
-    options.onWarning ? { onWarning: options.onWarning } : {},
-  );
-  const service = createRecallConversationService(config, dependencies);
-  return {
-    service,
-    embeddingProvider,
-    loadTokenizer: () => tokenizerProvider.loadConversationTokenizer(),
-    embeddingDimensions: embeddingProfile.identity.dimensions,
-    async dispose() {
-      for (const provider of disposableProviders.reverse()) {
-        await provider.dispose();
-      }
-    },
-  };
-}
-
-function configureRerankingCapability(
-  configuration: RecallInferenceConfiguration,
-  modelCacheDirectory: string,
-  dependencies: RecallConversationDependencies,
-  disposableProviders: Array<{ dispose(): Promise<void> }>,
-  options: { onWarning?: (warning: string) => void },
-): void {
-  const selection = configuration.reranking;
-  if (!selection) {
-    dependencies.rerankingProfile = null;
-    dependencies.reranker = null;
-    return;
-  }
-  const profile = createRecommendedQwenRerankingModelProfile();
-  dependencies.rerankingProfile = profile;
-  if (selection.candidateId === EMBEDDED_RERANKING_CANDIDATE_ID) {
-    assertExactConfiguredAdapter(
-      'reranking',
-      selection.profileId,
-      profile.profileId,
-      selection.adapterId,
-      'node-llama-cpp-qwen-reranking-logit-recovery-v1',
-    );
-    if (selection.backend !== RecallInferenceBackend.EMBEDDED) {
-      throw new Error(
-        `Recall configured reranking backend mismatch for ${selection.candidateId}: ${selection.backend}`,
-      );
-    }
-    const provider = createEmbeddedQwenRerankingProvider(profile, {
-      modelCacheDirectory,
-      device: readEmbeddedDevicePolicy('reranking', selection.device?.policy),
-      ...(options.onWarning ? { onWarning: options.onWarning } : {}),
-    });
-    dependencies.reranker = provider;
-    disposableProviders.push(provider);
-    return;
-  }
-  if (selection.candidateId === HTTP_RERANKING_CANDIDATE_ID) {
-    assertExactConfiguredAdapter(
-      'reranking',
-      selection.profileId,
-      profile.profileId,
-      selection.adapterId,
-      'llama-cpp-http-reranking-v1',
-    );
-    if (selection.backend !== RecallInferenceBackend.LLAMA_CPP_HTTP) {
-      throw new Error(
-        `Recall configured reranking backend mismatch for ${selection.candidateId}: ${selection.backend}`,
-      );
-    }
-    dependencies.reranker = createQwenHttpRerankingProvider(profile, {
-      baseUrl: readRequiredHttpEndpoint('reranking', selection.endpoint),
-    });
-    return;
-  }
-  throw new Error(
-    `Recall configured reranking adapter unavailable: ${selection.candidateId}; no adapter was substituted`,
-  );
-}
-
-function configureQueryPlanningCapability(
-  configuration: RecallInferenceConfiguration,
-  modelCacheDirectory: string,
-  dependencies: RecallConversationDependencies,
-  disposableProviders: Array<{ dispose(): Promise<void> }>,
-  options: { onWarning?: (warning: string) => void },
-): void {
-  const selection = configuration.queryPlanning;
-  if (!selection) {
-    return;
-  }
-  const profile = createRecommendedQmdQueryPlanningModelProfile();
-  dependencies.queryPlanningProfile = profile;
-  if (selection.candidateId === EMBEDDED_QUERY_PLANNING_CANDIDATE_ID) {
-    assertExactConfiguredAdapter(
-      'query planning',
-      selection.profileId,
-      profile.profileId,
-      selection.adapterId,
-      'node-llama-cpp-qmd-query-planning-v1',
-    );
-    if (selection.backend !== RecallInferenceBackend.EMBEDDED) {
-      throw new Error(
-        `Recall configured query planning backend mismatch for ${selection.candidateId}: ${selection.backend}`,
-      );
-    }
-    const provider = createEmbeddedQmdQueryPlanningProvider(profile, {
-      modelCacheDirectory,
-      device: readEmbeddedDevicePolicy('query planning', selection.device?.policy),
-      ...(options.onWarning ? { onWarning: options.onWarning } : {}),
-    });
-    dependencies.queryPlanner = provider;
-    disposableProviders.push(provider);
-    return;
-  }
-  if (selection.candidateId === HTTP_QUERY_PLANNING_CANDIDATE_ID) {
-    assertExactConfiguredAdapter(
-      'query planning',
-      selection.profileId,
-      profile.profileId,
-      selection.adapterId,
-      'llama-cpp-http-query-planning-v1',
-    );
-    if (selection.backend !== RecallInferenceBackend.LLAMA_CPP_HTTP) {
-      throw new Error(
-        `Recall configured query planning backend mismatch for ${selection.candidateId}: ${selection.backend}`,
-      );
-    }
-    dependencies.queryPlanner = createQmdHttpQueryPlanningProvider(profile, {
-      baseUrl: readRequiredHttpEndpoint('query planning', selection.endpoint),
-    });
-    return;
-  }
-  throw new Error(
-    `Recall configured query planning adapter unavailable: ${selection.candidateId}; no adapter was substituted`,
   );
 }
 

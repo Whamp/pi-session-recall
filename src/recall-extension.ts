@@ -78,8 +78,9 @@ export interface RecallExtensionStartupOptions {
   lifecycleRuntimeFactory?: RecallLifecycleRuntimeFactory;
   createServiceRuntime?: (
     inferenceConfiguration: RecallInferenceConfiguration,
-    selectedEmbeddingProfileId: string | undefined,
+    selectedEmbeddingProfileId?: string,
   ) => RecallExtensionServiceRuntime | Promise<RecallExtensionServiceRuntime>;
+  registerServiceRuntimeShutdown?: (disposeRuntime: () => Promise<void>) => void;
 }
 
 /** Applies trusted Pi tool context and project-default scope to one recall service search. */
@@ -114,6 +115,23 @@ export default async function recallExtension(
   // Lazy service resolution — recreated only when the effective inference configuration changes.
   let lastInferenceConfigurationKey: string | undefined;
   let cachedRuntime: RecallExtensionServiceRuntime | undefined;
+  let serviceRuntimeOperationQueue = Promise.resolve();
+
+  async function runSerializedServiceRuntimeOperation<Result>(
+    operation: () => Promise<Result>,
+  ): Promise<Result> {
+    const previousOperation = serviceRuntimeOperationQueue;
+    let completeOperation = (): void => {};
+    serviceRuntimeOperationQueue = new Promise<void>((resolve) => {
+      completeOperation = resolve;
+    });
+    await previousOperation;
+    try {
+      return await operation();
+    } finally {
+      completeOperation();
+    }
+  }
 
   async function resolveInstallationMode() {
     return resolveRecallInstallationMode(config);
@@ -121,7 +139,7 @@ export default async function recallExtension(
 
   async function createServiceRuntime(
     inferenceConfiguration: RecallInferenceConfiguration,
-    selectedEmbeddingProfileId: string | undefined,
+    selectedEmbeddingProfileId?: string,
   ): Promise<RecallExtensionServiceRuntime> {
     if (startupOptions.createServiceRuntime) {
       return startupOptions.createServiceRuntime(
@@ -131,6 +149,7 @@ export default async function recallExtension(
     }
     if (inferenceConfiguration.embedding) {
       return createConfiguredRecallInferenceRuntime(config, {
+        inferenceConfiguration,
         onWarning(message) {
           recallWarningHandler?.(message);
         },
@@ -156,7 +175,7 @@ export default async function recallExtension(
     };
   }
 
-  async function resolveService(): Promise<RecallConversationService> {
+  async function resolveServiceWithoutConcurrentReplacement(): Promise<RecallConversationService> {
     const [inferenceConfiguration, firstIndexSetupState] = await Promise.all([
       readRecallInferenceConfiguration(resolveRecallInferenceConfigurationPath(config)),
       readRecallFirstIndexSetupState(resolveRecallFirstIndexSetupStatePath(config)),
@@ -187,16 +206,32 @@ export default async function recallExtension(
     }
 
     const previousRuntime = cachedRuntime;
-    cachedRuntime = undefined;
-    lastInferenceConfigurationKey = undefined;
-    if (previousRuntime) {
+    if (previousRuntime !== undefined) {
       await previousRuntime.dispose();
+      cachedRuntime = undefined;
+      lastInferenceConfigurationKey = undefined;
     }
 
     const newRuntime = await createServiceRuntime(inferenceConfiguration, selectedEmbeddingProfile);
     lastInferenceConfigurationKey = inferenceConfigurationKey;
     cachedRuntime = newRuntime;
     return newRuntime.service;
+  }
+
+  async function resolveService(): Promise<RecallConversationService> {
+    return runSerializedServiceRuntimeOperation(resolveServiceWithoutConcurrentReplacement);
+  }
+
+  async function disposeCachedServiceRuntime(): Promise<void> {
+    await runSerializedServiceRuntimeOperation(async () => {
+      const runtime = cachedRuntime;
+      if (runtime === undefined) {
+        return;
+      }
+      await runtime.dispose();
+      cachedRuntime = undefined;
+      lastInferenceConfigurationKey = undefined;
+    });
   }
 
   registerRecallLifecycleMarkers(
@@ -218,6 +253,13 @@ export default async function recallExtension(
       nowEpochMilliseconds: Date.now,
     },
   );
+  if (startupOptions.registerServiceRuntimeShutdown !== undefined) {
+    startupOptions.registerServiceRuntimeShutdown(disposeCachedServiceRuntime);
+  } else {
+    pi.on('session_shutdown', async () => {
+      await disposeCachedServiceRuntime();
+    });
+  }
   pi.registerTool({
     name: 'pi-session-recall',
     label: 'Pi Session Recall',

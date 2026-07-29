@@ -131,6 +131,7 @@ export interface RecallInferenceAdapterRegistry {
 export interface ConfiguredRecallInferenceRuntimeOptions {
   onWarning?: (warning: string) => void;
   inferenceConfigurationPath?: string;
+  inferenceConfiguration?: RecallInferenceConfiguration;
   adapterRegistries?: readonly RecallInferenceAdapterRegistry[];
   /**
    * When true, reconstructs embedding from `pendingEmbeddingReplacement.selection` if present.
@@ -496,9 +497,11 @@ export async function createConfiguredRecallInferenceRuntime(
 ): Promise<ConfiguredRecallInferenceRuntime> {
   const configurationPath =
     options.inferenceConfigurationPath ?? resolveRecallInferenceConfigurationPath(config);
-  const persistedConfiguration = await readRecallInferenceConfiguration(configurationPath, {
-    generationRegistryPath: config.generationRegistryPath,
-  });
+  const persistedConfiguration =
+    options.inferenceConfiguration ??
+    (await readRecallInferenceConfiguration(configurationPath, {
+      generationRegistryPath: config.generationRegistryPath,
+    }));
   const configuration = resolveConfiguredRuntimeConfiguration(
     persistedConfiguration,
     options.preferPendingEmbeddingReplacement === true,

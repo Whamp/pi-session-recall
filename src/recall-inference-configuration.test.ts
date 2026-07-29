@@ -29,6 +29,7 @@ import {
   writeRecallInferenceConfiguration,
   type RecallInferenceConfigurationCandidate,
 } from './recall-inference-configuration.js';
+import { tryAcquireRecallRebuildOwnershipLock } from './recall-rebuild-ownership-lock.js';
 import type { ConversationTextTokenizer } from './session-conversation-index.js';
 
 const FIXED_CONVERSATION_TOKENIZER: ConversationTextTokenizer = {
@@ -165,6 +166,37 @@ void test('mixed inference configuration requires only embeddings and verifies e
   );
   assert.equal(configuration.embedding?.artifact?.state, RecallInferenceArtifactState.VALID);
   assert.deepEqual(configuration.embedding?.device?.names, ['Fixture CPU']);
+});
+
+void test('inference configuration mutation waits for flock ownership', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-inference-flock-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const statePath = join(root, 'inference-configuration.json');
+  const owner = await tryAcquireRecallRebuildOwnershipLock(`${statePath}.configuration-lock`);
+  assert.ok(owner);
+  t.after(() => owner.release());
+
+  const configuration = configureRecallInferenceCapability(
+    statePath,
+    createConformingCandidate(
+      RecallInferenceCapability.EMBEDDING,
+      'embedding-custom',
+      'embedding-profile-v1',
+      RecallInferenceBackend.CUSTOM,
+      'embedding-custom-v1',
+    ),
+  );
+  const settledBeforeRelease = await Promise.race([
+    configuration.then(
+      () => true,
+      () => true,
+    ),
+    sleep(50).then(() => false),
+  ]);
+  assert.equal(settledBeforeRelease, false);
+
+  await owner.release();
+  assert.equal((await configuration).embedding?.candidateId, 'embedding-custom');
 });
 
 void test('version 1 inference configuration migrates embedding semantic identity without changing selection', async (t) => {

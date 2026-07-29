@@ -1,10 +1,12 @@
 import { createHash } from 'node:crypto';
-import { lstat, mkdir, readFile, rm } from 'node:fs/promises';
+import { lstat, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 
 import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 
+import { assertExactEvaluationCaseCoverage } from './assert-exact-evaluation-case-coverage.js';
 import {
   QueryPlannedRecallBaselineOutcome,
   QueryPlannedRecallCaseCategory,
@@ -19,6 +21,7 @@ import {
 } from './recall-evaluation-file-system.js';
 import {
   createRecallConversationService,
+  type RecallCandidateAdmission,
   type RecallConversationConfig,
   type RecallConversationDependencies,
   type RecallConversationSearch,
@@ -146,7 +149,10 @@ export interface LoadedPrivateQueryPlannedRecallCorpus {
   manifestSha256: string;
   snapshotDirectory: string;
   snapshots: Array<
-    PrivateQueryPlannedRecallManifest['corpus']['snapshots'][number] & { path: string }
+    PrivateQueryPlannedRecallManifest['corpus']['snapshots'][number] & {
+      path: string;
+      verifiedBytesBase64: string;
+    }
   >;
 }
 
@@ -164,6 +170,7 @@ export interface PublishableQueryPlannedRecallControls {
   version: 1;
   corpusId: string;
   privateManifestSha256: string;
+  snapshotSha256: string[];
   policy: {
     normalCandidateLimits: RecallSearchCandidateLimits;
     plannedCandidateLimit: 20;
@@ -325,7 +332,7 @@ export async function loadPrivateQueryPlannedRecallCorpus(
     if (createSha256(content) !== snapshot.sha256) {
       throw new Error(`Private query-planned recall snapshot checksum mismatch for ${snapshot.id}`);
     }
-    snapshots.push({ ...snapshot, path });
+    snapshots.push({ ...snapshot, path, verifiedBytesBase64: content.toString('base64') });
   }
   return {
     manifest,
@@ -334,6 +341,44 @@ export async function loadPrivateQueryPlannedRecallCorpus(
     snapshotDirectory,
     snapshots,
   };
+}
+
+/** Immutable staged copies made from the exact snapshot bytes verified during corpus loading. */
+export interface StagedPrivateQueryPlannedRecallCorpus {
+  snapshotDirectory: string;
+  snapshots: Array<{ id: string; fileName: string; path: string; sha256: string }>;
+}
+
+/** Stages the already-verified snapshot bytes without rereading mutable source paths. */
+export async function stagePrivateQueryPlannedRecallCorpus(
+  corpus: LoadedPrivateQueryPlannedRecallCorpus,
+  workDirectory: string,
+): Promise<StagedPrivateQueryPlannedRecallCorpus> {
+  const snapshotDirectory = resolve(workDirectory, 'verified-snapshots');
+  await rm(snapshotDirectory, { recursive: true, force: true });
+  await mkdir(snapshotDirectory, { recursive: true, mode: 0o700 });
+  const snapshots: StagedPrivateQueryPlannedRecallCorpus['snapshots'] = [];
+  for (const snapshot of corpus.snapshots) {
+    const verifiedBytes = Buffer.from(snapshot.verifiedBytesBase64, 'base64');
+    if (createSha256(verifiedBytes) !== snapshot.sha256) {
+      throw new Error(`Private query-planned recall staged bytes mismatch for ${snapshot.id}`);
+    }
+    const path = join(snapshotDirectory, snapshot.fileName);
+    await writeFile(path, verifiedBytes, { flag: 'wx', mode: 0o400 });
+    const stagedBytes = await readFile(path);
+    if (createSha256(stagedBytes) !== snapshot.sha256) {
+      throw new Error(
+        `Private query-planned recall staged snapshot checksum mismatch for ${snapshot.id}`,
+      );
+    }
+    snapshots.push({
+      id: snapshot.id,
+      fileName: snapshot.fileName,
+      path,
+      sha256: snapshot.sha256,
+    });
+  }
+  return { snapshotDirectory, snapshots };
 }
 
 /** Projects an allowlisted control manifest containing checksums and counts but no private text or paths. */
@@ -345,6 +390,7 @@ export function createPublishableQueryPlannedRecallControls(
     version: 1,
     corpusId: corpus.manifest.corpus.id,
     privateManifestSha256: corpus.manifestSha256,
+    snapshotSha256: corpus.snapshots.map(({ sha256 }) => sha256),
     policy: {
       normalCandidateLimits: { ...corpus.manifest.policy.normalCandidateLimits },
       plannedCandidateLimit: corpus.manifest.policy.plannedCandidateLimit,
@@ -449,6 +495,7 @@ export interface PrivateQueryPlannedRecallBaselineResult {
   corpusId: string;
   privateManifestSha256: string;
   indexedSnapshotCount: number;
+  indexedSnapshotSha256: string[];
   indexedDocumentCount: number;
   executedSearchRequests: number;
   cases: Array<{
@@ -501,13 +548,14 @@ function createPrivateBaselineConfig(
   options: RunPrivateQueryPlannedRecallBaselineOptions,
   workDirectory: string,
   candidateLimits: RecallSearchCandidateLimits,
+  stagedCorpus: StagedPrivateQueryPlannedRecallCorpus,
 ): RecallConversationConfig {
   return createPrivateRecallEvaluationConfig({
     baseConfig: options.baseConfig,
     evaluationRootDirectory: dirname(options.corpus.manifestPath),
     workDirectory,
-    sessionsDirectory: options.corpus.snapshotDirectory,
-    immutableInputPaths: [options.corpus.snapshotDirectory, options.corpus.manifestPath],
+    sessionsDirectory: stagedCorpus.snapshotDirectory,
+    immutableInputPaths: [stagedCorpus.snapshotDirectory, options.corpus.manifestPath],
     candidateLimits,
   });
 }
@@ -546,36 +594,61 @@ function matchesPrivateBaselineSourceIdentity(
 }
 
 function verifiesPrivateBaselineProvenance(
-  result: RecallConversationSearchResult,
-  candidate: RecallSearchResult,
+  candidate: RecallCandidateAdmission,
   source: PrivateQueryPlannedRecallCase['expectedSources'][number],
 ): boolean {
   return (
     candidate.cwd === source.expectedSessionOrigin &&
-    result.evidenceRelation === source.expectedEvidenceRelation &&
+    candidate.evidenceRelation === source.expectedEvidenceRelation &&
     (!source.expectedBranch ||
       (source.expectedBranch === 'active' && candidate.isOnActiveBranch) ||
       (source.expectedBranch === 'abandoned' && !candidate.isOnActiveBranch))
   );
 }
 
-function findPrivateBaselineSourceMatch(
+function findPrivateBaselineRankedSourceMatch(
   search: RecallConversationSearch,
   source: PrivateQueryPlannedRecallCase['expectedSources'][number],
   snapshotFileName: string,
 ): { rank: number; provenancePassed: boolean } | null {
+  const admissionById = new Map(
+    search.candidateAdmission.map((candidate) => [candidate.id, candidate]),
+  );
   for (const [index, result] of search.results.entries()) {
     const candidate = getPrivateBaselineGroupMembers(result).find((groupMember) =>
       matchesPrivateBaselineSourceIdentity(groupMember, source, snapshotFileName),
     );
     if (candidate) {
+      const admittedCandidate = admissionById.get(candidate.id);
+      if (!admittedCandidate) {
+        throw new Error(
+          `Private query-planned recall baseline ranked candidate ${candidate.id} was absent from candidate admission`,
+        );
+      }
       return {
         rank: index + 1,
-        provenancePassed: verifiesPrivateBaselineProvenance(result, candidate, source),
+        provenancePassed: verifiesPrivateBaselineProvenance(admittedCandidate, source),
       };
     }
   }
   return null;
+}
+
+function findPrivateBaselineAdmissionSourceMatch(
+  search: RecallConversationSearch,
+  source: PrivateQueryPlannedRecallCase['expectedSources'][number],
+  snapshotFileName: string,
+): { rank: number; provenancePassed: boolean } | null {
+  const index = search.candidateAdmission.findIndex((candidate) =>
+    matchesPrivateBaselineSourceIdentity(candidate, source, snapshotFileName),
+  );
+  const candidate = search.candidateAdmission[index];
+  return index < 0 || !candidate
+    ? null
+    : {
+        rank: index + 1,
+        provenancePassed: verifiesPrivateBaselineProvenance(candidate, source),
+      };
 }
 
 function findPrivateBaselineDistractorRank(
@@ -596,12 +669,13 @@ function findPrivateBaselineDistractorRank(
 
 function classifyPrivateBaselineOutcome(
   expectedSourceRanks: readonly (number | null)[],
+  candidateAdmissionVerified: boolean,
   finalResultLimit: number,
 ): QueryPlannedRecallBaselineOutcome {
-  if (expectedSourceRanks.some((rank) => rank === null)) {
+  if (!candidateAdmissionVerified) {
     return QueryPlannedRecallBaselineOutcome.CANDIDATE_UNION_MISS;
   }
-  if (expectedSourceRanks.some((rank) => rank !== null && rank > finalResultLimit)) {
+  if (expectedSourceRanks.some((rank) => rank === null || rank > finalResultLimit)) {
     return QueryPlannedRecallBaselineOutcome.FINAL_RANK_MISS;
   }
   return QueryPlannedRecallBaselineOutcome.SUCCESS;
@@ -613,15 +687,21 @@ function measurePrivateBaselineSearch(
   snapshotsById: ReadonlyMap<string, { fileName: string }>,
   finalResultLimit: number,
 ): QueryPlannedRecallBaselineArmMeasurement {
-  const sourceMatches = evaluationCase.expectedSources.map((source) => {
+  const sourceSnapshots = evaluationCase.expectedSources.map((source) => {
     const snapshot = snapshotsById.get(source.snapshotId);
     if (!snapshot) {
       throw new Error(
         `Private query-planned recall baseline missing snapshot ${source.snapshotId}`,
       );
     }
-    return findPrivateBaselineSourceMatch(search, source, snapshot.fileName);
+    return { source, snapshot };
   });
+  const rankedSourceMatches = sourceSnapshots.map(({ source, snapshot }) =>
+    findPrivateBaselineRankedSourceMatch(search, source, snapshot.fileName),
+  );
+  const admissionSourceMatches = sourceSnapshots.map(({ source, snapshot }) =>
+    findPrivateBaselineAdmissionSourceMatch(search, source, snapshot.fileName),
+  );
   const distractorRanks = evaluationCase.relevantDistractors.map((distractor) => {
     const snapshot = snapshotsById.get(distractor.snapshotId);
     if (!snapshot) {
@@ -631,24 +711,27 @@ function measurePrivateBaselineSearch(
     }
     return findPrivateBaselineDistractorRank(search, distractor, snapshot.fileName);
   });
-  const groupMembers = search.results.flatMap(getPrivateBaselineGroupMembers);
   return {
     outcome: classifyPrivateBaselineOutcome(
-      sourceMatches.map((match) => match?.rank ?? null),
+      rankedSourceMatches.map((match) => match?.rank ?? null),
+      admissionSourceMatches.every((match) => match !== null),
       finalResultLimit,
     ),
-    expectedSourceRanks: sourceMatches.map((match) => match?.rank ?? null),
+    expectedSourceRanks: rankedSourceMatches.map((match) => match?.rank ?? null),
     highestRelevantDistractorRank:
       distractorRanks
         .filter((rank): rank is number => rank !== null)
         .toSorted((a, b) => a - b)[0] ?? null,
-    provenancePassed: sourceMatches.every((match) => match?.provenancePassed === true),
+    provenancePassed: rankedSourceMatches.every(
+      (rankedMatch, index) =>
+        (rankedMatch ?? admissionSourceMatches[index])?.provenancePassed === true,
+    ),
     listLimits: { ...search.searchPolicy.candidateLimits },
-    totalCandidatesExamined: groupMembers.reduce(
+    totalCandidatesExamined: search.candidateAdmission.reduce(
       (total, candidate) => total + candidate.rankedListEvidence.length,
       0,
     ),
-    uniqueCandidatesAdmitted: groupMembers.length,
+    uniqueCandidatesAdmitted: search.candidateAdmission.length,
     finalResultCount: Math.min(finalResultLimit, search.results.length),
     fusedPoolLimit: search.searchPolicy.fusedPoolLimit,
     rerankPoolLimit: search.searchPolicy.rerankPoolLimit,
@@ -720,6 +803,18 @@ export function createPublishableQueryPlannedRecallBaselineEvidence(
       'Query-planned recall baseline evidence invalid: controls and measurements must bind the same private manifest',
     );
   }
+  if (
+    baseline.indexedSnapshotCount !== controls.snapshotSha256.length ||
+    !isDeepStrictEqual(baseline.indexedSnapshotSha256, controls.snapshotSha256)
+  ) {
+    throw new Error(
+      'Query-planned recall baseline evidence invalid: indexed snapshots must exactly match manifest hashes',
+    );
+  }
+  assertExactEvaluationCaseCoverage({
+    controls: controls.cases.map(({ caseId }) => caseId),
+    baselineMeasurements: baseline.cases.map(({ caseId }) => caseId),
+  });
   const controlsByCaseId = new Map(controls.cases.map((control) => [control.caseId, control]));
   for (const measurement of baseline.cases) {
     const control = controlsByCaseId.get(measurement.caseId);
@@ -813,13 +908,22 @@ export async function runPrivateQueryPlannedRecallBaseline(
   options: RunPrivateQueryPlannedRecallBaselineOptions,
 ): Promise<PrivateQueryPlannedRecallBaselineResult> {
   const workDirectory = assertPrivateBaselineWorkDirectory(options.corpus, options.workDirectory);
-  const indexConfig = createPrivateBaselineConfig(
+  createPrivateBaselineConfig(
     options,
     workDirectory,
     options.corpus.manifest.policy.normalCandidateLimits,
+    { snapshotDirectory: options.corpus.snapshotDirectory, snapshots: [] },
   );
   await rm(workDirectory, { recursive: true, force: true });
   await mkdir(workDirectory, { recursive: true, mode: 0o700 });
+  const stagedCorpus = await stagePrivateQueryPlannedRecallCorpus(options.corpus, workDirectory);
+  const indexWorkDirectory = join(workDirectory, 'index');
+  const indexConfig = createPrivateBaselineConfig(
+    options,
+    indexWorkDirectory,
+    options.corpus.manifest.policy.normalCandidateLimits,
+    stagedCorpus,
+  );
   const dependencies = createPrivateBaselineDependencies(options.dependencies);
   const indexService = createRecallConversationService(indexConfig, dependencies);
   const indexed = await indexService.index({ optimize: true });
@@ -828,9 +932,9 @@ export async function runPrivateQueryPlannedRecallBaseline(
       `Private query-planned recall baseline index failed for ${indexed.indexSummary.failedSessions.length} snapshot(s)`,
     );
   }
-  if (indexed.indexSummary.scannedSessions !== options.corpus.snapshots.length) {
+  if (indexed.indexSummary.scannedSessions !== stagedCorpus.snapshots.length) {
     throw new Error(
-      `Private query-planned recall baseline scan mismatch: expected ${options.corpus.snapshots.length}, received ${indexed.indexSummary.scannedSessions}`,
+      `Private query-planned recall baseline scan mismatch: expected ${stagedCorpus.snapshots.length}, received ${indexed.indexSummary.scannedSessions}`,
     );
   }
 
@@ -843,7 +947,12 @@ export async function runPrivateQueryPlannedRecallBaseline(
     const runArm = async (
       candidateLimits: RecallSearchCandidateLimits,
     ): Promise<QueryPlannedRecallBaselineArmMeasurement> => {
-      const config = createPrivateBaselineConfig(options, workDirectory, candidateLimits);
+      const config = createPrivateBaselineConfig(
+        options,
+        indexWorkDirectory,
+        candidateLimits,
+        stagedCorpus,
+      );
       const service = createRecallConversationService(config, dependencies);
       const fusedPoolLimit =
         candidateLimits.dense + candidateLimits.lexical + candidateLimits.identifier;
@@ -876,7 +985,8 @@ export async function runPrivateQueryPlannedRecallBaseline(
     version: 1,
     corpusId: options.corpus.manifest.corpus.id,
     privateManifestSha256: options.corpus.manifestSha256,
-    indexedSnapshotCount: options.corpus.snapshots.length,
+    indexedSnapshotCount: stagedCorpus.snapshots.length,
+    indexedSnapshotSha256: stagedCorpus.snapshots.map(({ sha256 }) => sha256),
     indexedDocumentCount: indexed.totalChunks,
     executedSearchRequests,
     cases,

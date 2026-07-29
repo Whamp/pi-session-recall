@@ -7,6 +7,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 
+import { assertExactEvaluationCaseCoverage } from './assert-exact-evaluation-case-coverage.js';
 import { createCanonicalIdentity } from './create-canonical-identity.js';
 import {
   EmbeddedInferenceComputeBackend,
@@ -27,13 +28,16 @@ import {
 } from './recall-evaluation-file-system.js';
 import { classifyQueryPlannedRecallContribution } from './query-planned-recall-contribution.js';
 import { DEFAULT_RECALL_CHUNK_POLICY } from './recall-index-manifest.js';
+import { stagePrivateQueryPlannedRecallCorpus } from './query-planned-recall-baseline.js';
 import type {
   LoadedPrivateQueryPlannedRecallCorpus,
+  StagedPrivateQueryPlannedRecallCorpus,
   PublishableQueryPlannedRecallControls,
   QueryPlannedRecallBaselineArmMeasurement,
 } from './query-planned-recall-baseline.js';
 import {
   createRecallConversationService,
+  type RecallCandidateAdmission,
   type RecallConversationConfig,
   type RecallConversationDependencies,
   type RecallConversationSearch,
@@ -248,8 +252,9 @@ export interface QueryPlannedRecallListWorkMeasurement {
 export interface QueryPlannedRecallArmMeasurement {
   outcome: QueryPlannedRecallBaselineOutcome;
   expectedSourceRanks: Array<number | null>;
-  admissionProbeSourceRanks: Array<number | null>;
+  candidateAdmissionSourceRanks: Array<number | null>;
   candidateAdmissionVerified: boolean;
+  sourceProvenance: QueryPlannedSourceProvenance[];
   provenancePassed: boolean;
   listWork: QueryPlannedRecallListWorkMeasurement[];
   totalCandidatesExamined: number;
@@ -277,7 +282,7 @@ export interface QueryPlannedRecallArmMeasurement {
     }>;
   };
   rankingProviderPolicy: 'neutral-fused-order-v1' | 'live-profile-v1';
-  admissionProbeProviderPolicy: 'expected-source-promotion-v1';
+  candidateAdmissionBoundaryPolicy: 'fused-candidate-pool-v1';
 }
 
 /** Aggregate deterministic evidence comparing controls with one fixed private plan per case. */
@@ -290,9 +295,10 @@ export interface PrivateQueryPlannedRecallEvaluationResult {
     embeddingPolicy: 'deterministic-token-hash-v1';
     embeddingDimensions: number;
     rankingRerankerPolicy: 'neutral-fused-order-v1';
-    admissionProbeRerankerPolicy: 'expected-source-promotion-v1';
+    candidateAdmissionBoundaryPolicy: 'fused-candidate-pool-v1';
   };
   indexedSnapshotCount: number;
+  indexedSnapshotSha256: string[];
   indexedDocumentCount: number;
   executedSearchRequests: number;
   cases: Array<{
@@ -320,6 +326,32 @@ export interface PrivateQueryPlannedRecallEvaluationResult {
 interface PrivateExpectedSourceMatch {
   rank: number;
   provenancePassed: boolean;
+}
+
+/** Per-source provenance selected from ranked output first and candidate admission second. */
+export interface QueryPlannedSourceProvenance {
+  selectedFrom: 'ranked_result' | 'candidate_admission' | 'missing';
+  passed: boolean;
+}
+
+/** Selects provenance independently for each expected source without mixing search arms. */
+export function selectQueryPlannedSourceProvenance(
+  rankedMatches: readonly (Pick<PrivateExpectedSourceMatch, 'provenancePassed'> | null)[],
+  admissionMatches: readonly (Pick<PrivateExpectedSourceMatch, 'provenancePassed'> | null)[],
+): QueryPlannedSourceProvenance[] {
+  if (rankedMatches.length !== admissionMatches.length) {
+    throw new Error(
+      'Query-planned source provenance invalid: ranked and candidate-admission sources must align',
+    );
+  }
+  return rankedMatches.map((rankedMatch, index) => {
+    const admissionMatch = admissionMatches[index];
+    return rankedMatch
+      ? { selectedFrom: 'ranked_result', passed: rankedMatch.provenancePassed }
+      : admissionMatch
+        ? { selectedFrom: 'candidate_admission', passed: admissionMatch.provenancePassed }
+        : { selectedFrom: 'missing', passed: false };
+  });
 }
 
 interface ControlledEvaluationReranker {
@@ -358,15 +390,16 @@ function createPrivateQueryPlannedEvaluationConfig(
   options: PrivateQueryPlannedRecallEvaluationBaseOptions,
   workDirectory: string,
   candidateLimits: RecallSearchCandidateLimits,
+  stagedCorpus: StagedPrivateQueryPlannedRecallCorpus,
   additionalImmutableInputPaths: readonly string[] = [],
 ): RecallConversationConfig {
   return createPrivateRecallEvaluationConfig({
     baseConfig: options.baseConfig,
     evaluationRootDirectory: dirname(options.corpus.manifestPath),
     workDirectory,
-    sessionsDirectory: options.corpus.snapshotDirectory,
+    sessionsDirectory: stagedCorpus.snapshotDirectory,
     immutableInputPaths: [
-      options.corpus.snapshotDirectory,
+      stagedCorpus.snapshotDirectory,
       options.corpus.manifestPath,
       ...additionalImmutableInputPaths,
     ],
@@ -418,24 +451,14 @@ function createDeterministicQueryPlannedEvaluationDependencies(
   };
 }
 
-function createControlledEvaluationReranker(
-  requiredTextGroups?: readonly (readonly string[])[],
-): ControlledEvaluationReranker {
+function createControlledEvaluationReranker(): ControlledEvaluationReranker {
   let lastCandidateCount = 0;
   return {
     reranker: {
       async rerankDocuments(rerankerQuery, documents) {
         void rerankerQuery;
         lastCandidateCount = documents.length;
-        return documents.map((document) =>
-          requiredTextGroups?.some((requiredTexts) =>
-            requiredTexts.every((requiredText) => document.includes(requiredText)),
-          )
-            ? 1
-            : requiredTextGroups
-              ? -1
-              : 0,
-        );
+        return documents.map(() => 0);
       },
     },
     readLastCandidateCount() {
@@ -450,39 +473,83 @@ function getQueryPlannedRecallGroupMembers(
   return [result, ...result.duplicateOccurrences];
 }
 
-function findPrivateExpectedSourceMatch(
+function matchesPrivateExpectedSource(
+  candidate: RecallSearchResult,
+  source: LoadedPrivateQueryPlannedRecallCorpus['manifest']['cases'][number]['expectedSources'][number],
+  snapshotFileName: string,
+): boolean {
+  return (
+    basename(candidate.sessionPath) === snapshotFileName &&
+    (candidate.entryId.value === source.entryId ||
+      candidate.contributingEntryIds.some(({ value }) => value === source.entryId)) &&
+    source.requiredText.every((requiredText) => candidate.content.includes(requiredText)) &&
+    (!source.expectedEvidenceKind || candidate.evidenceKind === source.expectedEvidenceKind)
+  );
+}
+
+function verifiesPrivateExpectedSourceProvenance(
+  candidate: RecallCandidateAdmission,
+  source: LoadedPrivateQueryPlannedRecallCorpus['manifest']['cases'][number]['expectedSources'][number],
+): boolean {
+  return (
+    candidate.cwd === source.expectedSessionOrigin &&
+    candidate.evidenceRelation === source.expectedEvidenceRelation &&
+    (!source.expectedBranch ||
+      (source.expectedBranch === 'active' && candidate.isOnActiveBranch) ||
+      (source.expectedBranch === 'abandoned' && !candidate.isOnActiveBranch))
+  );
+}
+
+function findPrivateExpectedSourceRankedMatch(
   search: RecallConversationSearch,
   source: LoadedPrivateQueryPlannedRecallCorpus['manifest']['cases'][number]['expectedSources'][number],
   snapshotFileName: string,
 ): PrivateExpectedSourceMatch | null {
+  const admissionById = new Map(
+    search.candidateAdmission.map((candidate) => [candidate.id, candidate]),
+  );
   for (const [index, result] of search.results.entries()) {
-    const candidate = getQueryPlannedRecallGroupMembers(result).find(
-      (groupMember) =>
-        basename(groupMember.sessionPath) === snapshotFileName &&
-        (groupMember.entryId.value === source.entryId ||
-          groupMember.contributingEntryIds.some(({ value }) => value === source.entryId)) &&
-        source.requiredText.every((requiredText) => groupMember.content.includes(requiredText)) &&
-        (!source.expectedEvidenceKind || groupMember.evidenceKind === source.expectedEvidenceKind),
+    const candidate = getQueryPlannedRecallGroupMembers(result).find((groupMember) =>
+      matchesPrivateExpectedSource(groupMember, source, snapshotFileName),
     );
     if (candidate) {
+      const admittedCandidate = admissionById.get(candidate.id);
+      if (!admittedCandidate) {
+        throw new Error(
+          `Private query-planned recall evaluation ranked candidate ${candidate.id} was absent from candidate admission`,
+        );
+      }
       return {
         rank: index + 1,
-        provenancePassed:
-          candidate.cwd === source.expectedSessionOrigin &&
-          result.evidenceRelation === source.expectedEvidenceRelation &&
-          (!source.expectedBranch ||
-            (source.expectedBranch === 'active' && candidate.isOnActiveBranch) ||
-            (source.expectedBranch === 'abandoned' && !candidate.isOnActiveBranch)),
+        provenancePassed: verifiesPrivateExpectedSourceProvenance(admittedCandidate, source),
       };
     }
   }
   return null;
 }
 
+function findPrivateExpectedSourceAdmissionMatch(
+  search: RecallConversationSearch,
+  source: LoadedPrivateQueryPlannedRecallCorpus['manifest']['cases'][number]['expectedSources'][number],
+  snapshotFileName: string,
+): PrivateExpectedSourceMatch | null {
+  const index = search.candidateAdmission.findIndex((candidate) =>
+    matchesPrivateExpectedSource(candidate, source, snapshotFileName),
+  );
+  const candidate = search.candidateAdmission[index];
+  return index < 0 || !candidate
+    ? null
+    : {
+        rank: index + 1,
+        provenancePassed: verifiesPrivateExpectedSourceProvenance(candidate, source),
+      };
+}
+
 function findPrivateExpectedSourceMatches(
   search: RecallConversationSearch,
   evaluationCase: LoadedPrivateQueryPlannedRecallCorpus['manifest']['cases'][number],
   snapshotsById: ReadonlyMap<string, { fileName: string }>,
+  boundary: 'ranked_result' | 'candidate_admission',
 ): Array<PrivateExpectedSourceMatch | null> {
   return evaluationCase.expectedSources.map((source) => {
     const snapshot = snapshotsById.get(source.snapshotId);
@@ -491,7 +558,9 @@ function findPrivateExpectedSourceMatches(
         `Private query-planned recall evaluation missing snapshot ${source.snapshotId}`,
       );
     }
-    return findPrivateExpectedSourceMatch(search, source, snapshot.fileName);
+    return boundary === 'ranked_result'
+      ? findPrivateExpectedSourceRankedMatch(search, source, snapshot.fileName)
+      : findPrivateExpectedSourceAdmissionMatch(search, source, snapshot.fileName);
   });
 }
 
@@ -513,25 +582,36 @@ function measurePrivateHybridControl(
   snapshotsById: ReadonlyMap<string, { fileName: string }>,
   finalResultLimit: number,
 ): QueryPlannedRecallBaselineArmMeasurement {
-  const matches = findPrivateExpectedSourceMatches(search, evaluationCase, snapshotsById);
-  const ranks = matches.map((match) => match?.rank ?? null);
-  const groupMembers = search.results.flatMap(getQueryPlannedRecallGroupMembers);
-  const outcome = ranks.some((rank) => rank === null)
-    ? QueryPlannedRecallBaselineOutcome.CANDIDATE_UNION_MISS
-    : ranks.some((rank) => rank !== null && rank > finalResultLimit)
-      ? QueryPlannedRecallBaselineOutcome.FINAL_RANK_MISS
-      : QueryPlannedRecallBaselineOutcome.SUCCESS;
+  const rankedMatches = findPrivateExpectedSourceMatches(
+    search,
+    evaluationCase,
+    snapshotsById,
+    'ranked_result',
+  );
+  const admissionMatches = findPrivateExpectedSourceMatches(
+    search,
+    evaluationCase,
+    snapshotsById,
+    'candidate_admission',
+  );
+  const ranks = rankedMatches.map((match) => match?.rank ?? null);
+  const outcome = classifyPrivateQueryPlannedOutcome(
+    ranks.map((rank) => (rank !== null && rank <= finalResultLimit ? rank : null)),
+    admissionMatches.every((match) => match !== null),
+  );
   return {
     outcome,
     expectedSourceRanks: ranks,
     highestRelevantDistractorRank: null,
-    provenancePassed: matches.every((match) => match?.provenancePassed === true),
+    provenancePassed: rankedMatches.every(
+      (rankedMatch, index) => (rankedMatch ?? admissionMatches[index])?.provenancePassed === true,
+    ),
     listLimits: { ...search.searchPolicy.candidateLimits },
-    totalCandidatesExamined: groupMembers.reduce(
+    totalCandidatesExamined: search.candidateAdmission.reduce(
       (total, candidate) => total + candidate.rankedListEvidence.length,
       0,
     ),
-    uniqueCandidatesAdmitted: groupMembers.length,
+    uniqueCandidatesAdmitted: search.candidateAdmission.length,
     finalResultCount: Math.min(finalResultLimit, search.results.length),
     fusedPoolLimit: search.searchPolicy.fusedPoolLimit,
     rerankPoolLimit: search.searchPolicy.rerankPoolLimit,
@@ -543,7 +623,6 @@ function measurePrivateHybridControl(
 
 function measurePrivateQueryPlannedArm(
   rankedSearch: RecallConversationSearch,
-  admissionProbeSearch: RecallConversationSearch,
   evaluationCase: LoadedPrivateQueryPlannedRecallCorpus['manifest']['cases'][number],
   snapshotsById: ReadonlyMap<string, { fileName: string }>,
   rerankCandidatesExamined: number,
@@ -553,15 +632,18 @@ function measurePrivateQueryPlannedArm(
     rankedSearch,
     evaluationCase,
     snapshotsById,
+    'ranked_result',
   );
   const admissionMatches = findPrivateExpectedSourceMatches(
-    admissionProbeSearch,
+    rankedSearch,
     evaluationCase,
     snapshotsById,
+    'candidate_admission',
   );
   const expectedSourceRanks = rankedMatches.map((match) => match?.rank ?? null);
-  const admissionProbeSourceRanks = admissionMatches.map((match) => match?.rank ?? null);
+  const candidateAdmissionSourceRanks = admissionMatches.map((match) => match?.rank ?? null);
   const candidateAdmissionVerified = admissionMatches.every((match) => match !== null);
+  const sourceProvenance = selectQueryPlannedSourceProvenance(rankedMatches, admissionMatches);
   const queryPlan = rankedSearch.searchPolicy.queryPlan;
   if (!queryPlan) {
     throw new Error('Private query-planned recall evaluation missing public query-plan evidence');
@@ -575,12 +657,10 @@ function measurePrivateQueryPlannedArm(
   return {
     outcome: classifyPrivateQueryPlannedOutcome(expectedSourceRanks, candidateAdmissionVerified),
     expectedSourceRanks,
-    admissionProbeSourceRanks,
+    candidateAdmissionSourceRanks,
     candidateAdmissionVerified,
-    provenancePassed: (rankedMatches.some((match) => match !== null)
-      ? rankedMatches
-      : admissionMatches
-    ).every((match) => match?.provenancePassed === true),
+    sourceProvenance,
+    provenancePassed: sourceProvenance.every(({ passed }) => passed),
     listWork,
     totalCandidatesExamined: listWork.reduce(
       (total, list) => total + list.admittedCandidateCount,
@@ -605,7 +685,7 @@ function measurePrivateQueryPlannedArm(
       fusedRankBlend: queryPlan.rerankerProfile.fusedRankBlend.map((band) => ({ ...band })),
     },
     rankingProviderPolicy,
-    admissionProbeProviderPolicy: 'expected-source-promotion-v1',
+    candidateAdmissionBoundaryPolicy: 'fused-candidate-pool-v1',
   };
 }
 
@@ -615,20 +695,13 @@ function createQueryPlannedContribution(
   retrievalWorkMatched: QueryPlannedRecallBaselineArmMeasurement,
   queryPlanned: QueryPlannedRecallArmMeasurement,
 ): PrivateQueryPlannedRecallEvaluationResult['cases'][number]['contribution'] {
-  const classified = classifyQueryPlannedRecallContribution({
+  return classifyQueryPlannedRecallContribution({
     controlKind,
     normalOutcome: normal.outcome,
     retrievalWorkMatchedOutcome: retrievalWorkMatched.outcome,
     queryPlannedOutcome: queryPlanned.outcome,
     candidateAdmissionVerified: queryPlanned.candidateAdmissionVerified,
   });
-  return {
-    ...classified,
-    noImprovement:
-      !classified.newCandidateAdmission &&
-      !classified.rankingOnlyPromotion &&
-      !classified.preservedExistingSuccess,
-  };
 }
 
 /** Runs fixed plans and equal-work controls through public service searches with deterministic providers. */
@@ -648,15 +721,25 @@ export async function runPrivateQueryPlannedRecallEvaluation(
     options.workDirectory,
   );
   const normalCandidateLimits = options.corpus.manifest.policy.normalCandidateLimits;
-  const immutableInputPaths = [options.plans.path];
-  const indexConfig = createPrivateQueryPlannedEvaluationConfig(
+  createPrivateQueryPlannedEvaluationConfig(
     options,
     workDirectory,
     normalCandidateLimits,
-    immutableInputPaths,
+    { snapshotDirectory: options.corpus.snapshotDirectory, snapshots: [] },
+    [options.plans.path],
   );
   await rm(workDirectory, { recursive: true, force: true });
   await mkdir(workDirectory, { recursive: true, mode: 0o700 });
+  const stagedCorpus = await stagePrivateQueryPlannedRecallCorpus(options.corpus, workDirectory);
+  const indexWorkDirectory = resolve(workDirectory, 'index');
+  const immutableInputPaths = [options.plans.path];
+  const indexConfig = createPrivateQueryPlannedEvaluationConfig(
+    options,
+    indexWorkDirectory,
+    normalCandidateLimits,
+    stagedCorpus,
+    immutableInputPaths,
+  );
   const neutralReranker = createControlledEvaluationReranker();
   const indexService = createRecallConversationService(
     indexConfig,
@@ -665,7 +748,7 @@ export async function runPrivateQueryPlannedRecallEvaluation(
   const indexed = await indexService.index({ optimize: true });
   if (
     indexed.indexSummary.failedSessions.length > 0 ||
-    indexed.indexSummary.scannedSessions !== options.corpus.snapshots.length
+    indexed.indexSummary.scannedSessions !== stagedCorpus.snapshots.length
   ) {
     throw new Error(
       'Private query-planned recall deterministic index did not cover every snapshot',
@@ -692,8 +775,9 @@ export async function runPrivateQueryPlannedRecallEvaluation(
     ): Promise<QueryPlannedRecallBaselineArmMeasurement> => {
       const config = createPrivateQueryPlannedEvaluationConfig(
         options,
-        workDirectory,
+        indexWorkDirectory,
         candidateLimits,
+        stagedCorpus,
         immutableInputPaths,
       );
       const service = createRecallConversationService(
@@ -724,8 +808,9 @@ export async function runPrivateQueryPlannedRecallEvaluation(
 
     const plannedConfig = createPrivateQueryPlannedEvaluationConfig(
       options,
-      workDirectory,
+      indexWorkDirectory,
       normalCandidateLimits,
+      stagedCorpus,
       immutableInputPaths,
     );
     const rankedReranker = createControlledEvaluationReranker();
@@ -748,25 +833,8 @@ export async function runPrivateQueryPlannedRecallEvaluation(
     );
     executedSearchRequests += 1;
 
-    const admissionProbeReranker = createControlledEvaluationReranker(
-      evaluationCase.expectedSources.map(({ requiredText }) => requiredText),
-    );
-    const admissionProbeService = createRecallConversationService(
-      plannedConfig,
-      createDeterministicQueryPlannedEvaluationDependencies(
-        options,
-        admissionProbeReranker.reranker,
-      ),
-    );
-    const admissionProbeSearch = await admissionProbeService.search(
-      evaluationCase.query,
-      options.corpus.manifest.policy.finalResultLimit,
-      searchOptions,
-    );
-    executedSearchRequests += 1;
     const queryPlanned = measurePrivateQueryPlannedArm(
       rankedSearch,
-      admissionProbeSearch,
       evaluationCase,
       snapshotsById,
       rankedReranker.readLastCandidateCount(),
@@ -796,9 +864,10 @@ export async function runPrivateQueryPlannedRecallEvaluation(
       embeddingPolicy: 'deterministic-token-hash-v1',
       embeddingDimensions: QUERY_PLANNED_RECALL_EVALUATION_EMBEDDING_DIMENSIONS,
       rankingRerankerPolicy: 'neutral-fused-order-v1',
-      admissionProbeRerankerPolicy: 'expected-source-promotion-v1',
+      candidateAdmissionBoundaryPolicy: 'fused-candidate-pool-v1',
     },
-    indexedSnapshotCount: options.corpus.snapshots.length,
+    indexedSnapshotCount: stagedCorpus.snapshots.length,
+    indexedSnapshotSha256: stagedCorpus.snapshots.map(({ sha256 }) => sha256),
     indexedDocumentCount: indexed.totalChunks,
     executedSearchRequests,
     cases,
@@ -952,6 +1021,7 @@ export interface LiveQueryPlannedProfileEvaluationResult {
     id: string;
     privateManifestSha256: string;
     snapshotCount: number;
+    snapshotSha256: string[];
     indexedDocumentCount: number;
     caseCount: number;
   };
@@ -1029,13 +1099,20 @@ export async function runLiveQueryPlannedProfileEvaluation(
     options.workDirectory,
   );
   const normalCandidateLimits = options.corpus.manifest.policy.normalCandidateLimits;
-  const normalConfig = createPrivateQueryPlannedEvaluationConfig(
-    options,
-    workDirectory,
-    normalCandidateLimits,
-  );
+  createPrivateQueryPlannedEvaluationConfig(options, workDirectory, normalCandidateLimits, {
+    snapshotDirectory: options.corpus.snapshotDirectory,
+    snapshots: [],
+  });
   await rm(workDirectory, { recursive: true, force: true });
   await mkdir(workDirectory, { recursive: true, mode: 0o700 });
+  const stagedCorpus = await stagePrivateQueryPlannedRecallCorpus(options.corpus, workDirectory);
+  const indexWorkDirectory = resolve(workDirectory, 'index');
+  const normalConfig = createPrivateQueryPlannedEvaluationConfig(
+    options,
+    indexWorkDirectory,
+    normalCandidateLimits,
+    stagedCorpus,
+  );
   const warnings: string[] = [];
   let planningMilliseconds = 0;
   let rerankingMilliseconds = 0;
@@ -1115,7 +1192,7 @@ export async function runLiveQueryPlannedProfileEvaluation(
   const indexed = await indexService.index({ optimize: true });
   if (
     indexed.indexSummary.failedSessions.length > 0 ||
-    indexed.indexSummary.scannedSessions !== options.corpus.snapshots.length
+    indexed.indexSummary.scannedSessions !== stagedCorpus.snapshots.length
   ) {
     throw new Error('Live query-planned profile index did not cover every private snapshot');
   }
@@ -1183,8 +1260,9 @@ export async function runLiveQueryPlannedProfileEvaluation(
     );
     const matchedConfig = createPrivateQueryPlannedEvaluationConfig(
       options,
-      workDirectory,
+      indexWorkDirectory,
       matchedCandidateLimits,
+      stagedCorpus,
     );
     const matchedService = createRecallConversationService(
       matchedConfig,
@@ -1208,39 +1286,8 @@ export async function runLiveQueryPlannedProfileEvaluation(
       options.corpus.manifest.policy.finalResultLimit,
     );
 
-    let admissionProbeSearch = liveSearch;
-    if (queryPlan.source === 'planner') {
-      const admissionProbeReranker = createControlledEvaluationReranker(
-        evaluationCase.expectedSources.map(({ requiredText }) => requiredText),
-      );
-      const admissionProbeDependencies: RecallConversationDependencies = {
-        ...createDeterministicQueryPlannedEvaluationDependencies(
-          options,
-          admissionProbeReranker.reranker,
-        ),
-        rerankingProfile: options.rerankingProfile,
-        rerankerExecutionIdentity: timedReranker.executionIdentity,
-      };
-      const admissionProbeService = createRecallConversationService(
-        normalConfig,
-        admissionProbeDependencies,
-      );
-      admissionProbeSearch = await admissionProbeService.search(
-        evaluationCase.query,
-        options.corpus.manifest.policy.finalResultLimit,
-        {
-          mode: 'query-planned',
-          scope: evaluationCase.scope,
-          plan: queryPlan.plannedQueries,
-          ...(evaluationCase.invocationDirectory
-            ? { invocationDirectory: evaluationCase.invocationDirectory }
-            : {}),
-        },
-      );
-    }
     const measuredQueryPlanned = measurePrivateQueryPlannedArm(
       liveSearch,
-      admissionProbeSearch,
       evaluationCase,
       snapshotsById,
       lastRerankCandidateCount,
@@ -1293,7 +1340,8 @@ export async function runLiveQueryPlannedProfileEvaluation(
     corpus: {
       id: options.corpus.manifest.corpus.id,
       privateManifestSha256: options.corpus.manifestSha256,
-      snapshotCount: options.corpus.snapshots.length,
+      snapshotCount: stagedCorpus.snapshots.length,
+      snapshotSha256: stagedCorpus.snapshots.map(({ sha256 }) => sha256),
       indexedDocumentCount: indexed.totalChunks,
       caseCount: cases.length,
     },
@@ -1873,6 +1921,46 @@ function assertQueryPlannedRecallEvaluationGate(
       'Query-planned recall evaluation gate failed: controls and evaluation must bind the same private manifest',
     );
   }
+  if (
+    evaluation.indexedSnapshotCount !== controls.snapshotSha256.length ||
+    !isDeepStrictEqual(evaluation.indexedSnapshotSha256, controls.snapshotSha256)
+  ) {
+    throw new Error(
+      'Query-planned recall evaluation gate failed: indexed snapshots must exactly match manifest hashes',
+    );
+  }
+  assertExactEvaluationCaseCoverage({
+    controls: controls.cases.map(({ caseId }) => caseId),
+    planIdentities: evaluation.planIdentity.cases.map(({ caseId }) => caseId),
+    evaluationMeasurements: evaluation.cases.map(({ caseId }) => caseId),
+  });
+  for (const measurement of evaluation.cases) {
+    if (Object.values(measurement.contribution).filter(Boolean).length !== 1) {
+      throw new Error(
+        `Query-planned recall evaluation gate failed: contribution classification must be exclusive for ${measurement.caseId}`,
+      );
+    }
+    const expectedContribution = createQueryPlannedContribution(
+      measurement.controlKind,
+      measurement.normal,
+      measurement.retrievalWorkMatched,
+      measurement.queryPlanned,
+    );
+    if (!isDeepStrictEqual(measurement.contribution, expectedContribution)) {
+      throw new Error(
+        `Query-planned recall evaluation gate failed: contribution classification mismatch for ${measurement.caseId}`,
+      );
+    }
+  }
+  const aggregateContributionCount = Object.values(evaluation.contributionCounts).reduce(
+    (total, count) => total + count,
+    0,
+  );
+  if (aggregateContributionCount !== evaluation.cases.length) {
+    throw new Error(
+      'Query-planned recall evaluation gate failed: contribution counts must equal measured case count',
+    );
+  }
   if (evaluation.contributionCounts.newCandidateAdmission < 1) {
     throw new Error(
       'Query-planned recall evaluation gate requires at least one new candidate admission beyond both original-query controls',
@@ -1890,14 +1978,6 @@ function assertQueryPlannedRecallEvaluationGate(
   const planIdentityByCaseId = new Map(
     evaluation.planIdentity.cases.map((plannedCase) => [plannedCase.caseId, plannedCase]),
   );
-  if (
-    evaluation.cases.length !== controls.cases.length ||
-    evaluation.planIdentity.cases.length !== controls.cases.length
-  ) {
-    throw new Error(
-      'Query-planned recall evaluation gate failed: controls, plans, and measurements must cover the same cases',
-    );
-  }
   for (const measurement of evaluation.cases) {
     const control = controlsByCaseId.get(measurement.caseId);
     const planIdentity = planIdentityByCaseId.get(measurement.caseId);
@@ -1912,6 +1992,45 @@ function assertQueryPlannedRecallEvaluationGate(
       );
     }
     const queryPlanned = measurement.queryPlanned;
+    const sourceMeasurementCount = control.expectedSourceCount;
+    if (
+      queryPlanned.expectedSourceRanks.length !== sourceMeasurementCount ||
+      queryPlanned.candidateAdmissionSourceRanks.length !== sourceMeasurementCount ||
+      queryPlanned.sourceProvenance.length !== sourceMeasurementCount
+    ) {
+      throw new Error(
+        `Query-planned recall evaluation gate failed: source measurement count mismatch for ${measurement.caseId}`,
+      );
+    }
+    const candidateAdmissionVerified = queryPlanned.candidateAdmissionSourceRanks.every(
+      (rank) => rank !== null,
+    );
+    const expectedOutcome = classifyPrivateQueryPlannedOutcome(
+      queryPlanned.expectedSourceRanks,
+      candidateAdmissionVerified,
+    );
+    const sourceProvenancePassed = queryPlanned.sourceProvenance.every(({ passed }) => passed);
+    const sourceSelectionPassed = queryPlanned.sourceProvenance.every(({ selectedFrom }, index) => {
+      const rankedRank = queryPlanned.expectedSourceRanks[index] ?? null;
+      const admissionRank = queryPlanned.candidateAdmissionSourceRanks[index] ?? null;
+      if (rankedRank !== null) {
+        return selectedFrom === 'ranked_result' && admissionRank !== null;
+      }
+      if (admissionRank !== null) {
+        return selectedFrom === 'candidate_admission';
+      }
+      return selectedFrom === 'missing';
+    });
+    if (
+      queryPlanned.candidateAdmissionVerified !== candidateAdmissionVerified ||
+      queryPlanned.outcome !== expectedOutcome ||
+      queryPlanned.provenancePassed !== sourceProvenancePassed ||
+      !sourceSelectionPassed
+    ) {
+      throw new Error(
+        `Query-planned recall evaluation gate failed: source evidence mismatch for ${measurement.caseId}`,
+      );
+    }
     const plannedCandidateAllowance = queryPlanned.listWork.reduce(
       (total, list) => total + list.candidateLimit,
       0,
@@ -2038,9 +2157,9 @@ export function formatPublishableQueryPlannedRecallEvaluationReport(
     `- Publishable controls canonical JSON SHA-256: \`${evidence.controlsSha256}\``,
     `- Embedding policy: \`${evaluation.providerIdentity.embeddingPolicy}\`, ${evaluation.providerIdentity.embeddingDimensions} dimensions`,
     `- Ranking reranker policy: \`${evaluation.providerIdentity.rankingRerankerPolicy}\``,
-    `- Admission probe reranker policy: \`${evaluation.providerIdentity.admissionProbeRerankerPolicy}\``,
+    `- Candidate-admission boundary policy: \`${evaluation.providerIdentity.candidateAdmissionBoundaryPolicy}\``,
     `- Frozen cases: ${evaluation.cases.length} across ${evaluation.indexedSnapshotCount} snapshots and ${evaluation.indexedDocumentCount} indexed documents`,
-    `- Executed searches: ${evaluation.executedSearchRequests} (normal hybrid, retrieval-work-matched original query, neutral planned ranking, and planned admission probe per case)`,
+    `- Executed searches: ${evaluation.executedSearchRequests} (normal hybrid, retrieval-work-matched original query, and planned ranking per case)`,
     '',
     '## Quality gate',
     '',
@@ -2049,7 +2168,7 @@ export function formatPublishableQueryPlannedRecallEvaluationReport(
     `- Preserved existing success: ${evaluation.contributionCounts.preservedExistingSuccess}`,
     `- No improvement: ${evaluation.contributionCounts.noImprovement}`,
     '',
-    'A planned search receives source-admission credit only when its admission probe finds the expected source and both original-query candidate unions miss. Promotion of a source admitted by either control is reported separately as ranking-only behavior. Existing-success preservation requires both the measured normal hybrid arm and query-planned arm to succeed.',
+    'A planned search receives source-admission credit only when its fused candidate pool contains every expected source before duplicate grouping, rerank limits, and final truncation, while both original-query candidate unions miss. Promotion of a source admitted by either control is reported separately as ranking-only behavior. Existing-success preservation requires both the measured normal hybrid arm and query-planned arm to succeed.',
     '',
     '## Ranking policy',
     '',

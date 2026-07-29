@@ -24,6 +24,7 @@ import {
   loadPrivateQueryPlannedRecallPlans,
   runLiveQueryPlannedProfileEvaluation,
   runPrivateQueryPlannedRecallEvaluation,
+  selectQueryPlannedSourceProvenance,
   type LiveQueryPlannedProfileEvaluationResult,
 } from './query-planned-recall-evaluation.js';
 import {
@@ -48,6 +49,33 @@ import { normalizeRecallProjectLineages } from './resolve-project-identity.js';
 function createSha256(content: string): string {
   return createHash('sha256').update(content).digest('hex');
 }
+
+void test('per-source provenance uses each ranked match or its own candidate-admission match', () => {
+  assert.deepEqual(
+    selectQueryPlannedSourceProvenance(
+      [{ provenancePassed: true }, null],
+      [{ provenancePassed: false }, { provenancePassed: true }],
+    ),
+    [
+      { selectedFrom: 'ranked_result', passed: true },
+      { selectedFrom: 'candidate_admission', passed: true },
+    ],
+  );
+  assert.equal(
+    selectQueryPlannedSourceProvenance(
+      [{ provenancePassed: true }, null],
+      [{ provenancePassed: true }, { provenancePassed: false }],
+    ).every(({ passed }) => passed),
+    false,
+  );
+  assert.equal(
+    selectQueryPlannedSourceProvenance(
+      [{ provenancePassed: false }, null],
+      [{ provenancePassed: true }, { provenancePassed: true }],
+    ).every(({ passed }) => passed),
+    false,
+  );
+});
 
 async function readEvaluationContainmentFileTree(
   rootDirectory: string,
@@ -402,7 +430,9 @@ void test('fixed private plans prove new source admission through deterministic 
   });
   await assertProductionRemainsIsolated();
   const measuredCase = evaluation.cases[0];
-  assert.equal(evaluation.executedSearchRequests, 4);
+  assert.equal(evaluation.executedSearchRequests, 3);
+  assert.equal(evaluation.indexedSnapshotCount, 1);
+  assert.deepEqual(evaluation.indexedSnapshotSha256, [createSha256(snapshotContent)]);
   assert.equal(
     measuredCase?.normal.outcome,
     QueryPlannedRecallBaselineOutcome.CANDIDATE_UNION_MISS,
@@ -413,6 +443,9 @@ void test('fixed private plans prove new source admission through deterministic 
   );
   assert.equal(measuredCase?.queryPlanned.outcome, QueryPlannedRecallBaselineOutcome.SUCCESS);
   assert.equal(measuredCase?.queryPlanned.candidateAdmissionVerified, true);
+  assert.deepEqual(measuredCase?.queryPlanned.sourceProvenance, [
+    { selectedFrom: 'ranked_result', passed: true },
+  ]);
   assert.equal(measuredCase?.queryPlanned.fusedPoolLimit, 100);
   assert.equal(measuredCase?.queryPlanned.rerankPoolLimit, 40);
   assert.deepEqual(measuredCase?.queryPlanned.rerankerPolicy, {
@@ -450,6 +483,9 @@ void test('fixed private plans prove new source admission through deterministic 
   assert.match(report, /Duplicate-group rerank limit \/ final results: 40 \/ 5/u);
   assert.equal(JSON.stringify(evidence).includes(lexicalPlanQuery), false);
   assert.equal(report.includes('Private mechanism phrase'), false);
+  const evidenceEnvironment = {
+    recordedAgainstCommit: '030396576c03c705a1f3c84dce1ff639256ed2cf',
+  };
   assert.throws(
     () =>
       createPublishableQueryPlannedRecallEvaluationEvidence(
@@ -459,12 +495,66 @@ void test('fixed private plans prove new source admission through deterministic 
           contributionCounts: {
             ...evaluation.contributionCounts,
             newCandidateAdmission: 0,
+            noImprovement: 1,
           },
         },
-        { recordedAgainstCommit: '030396576c03c705a1f3c84dce1ff639256ed2cf' },
+        evidenceEnvironment,
       ),
     /requires at least one new candidate admission/u,
   );
+  assert.throws(
+    () =>
+      createPublishableQueryPlannedRecallEvaluationEvidence(
+        controls,
+        { ...evaluation, indexedSnapshotSha256: ['0'.repeat(64)] },
+        evidenceEnvironment,
+      ),
+    /indexed snapshots must exactly match manifest hashes/u,
+  );
+  const controlCase = controls.cases[0];
+  const planCase = evaluation.planIdentity.cases[0];
+  if (!controlCase || !planCase || !measuredCase) {
+    throw new Error('Query-planned recall evaluation fixture requires one measured case');
+  }
+  assert.throws(
+    () =>
+      createPublishableQueryPlannedRecallEvaluationEvidence(
+        { ...controls, cases: [controlCase, controlCase] },
+        evaluation,
+        evidenceEnvironment,
+      ),
+    /Evaluation case coverage invalid/u,
+  );
+  assert.throws(
+    () =>
+      createPublishableQueryPlannedRecallEvaluationEvidence(
+        controls,
+        {
+          ...evaluation,
+          planIdentity: {
+            ...evaluation.planIdentity,
+            cases: [planCase, planCase],
+          },
+        },
+        evidenceEnvironment,
+      ),
+    /Evaluation case coverage invalid/u,
+  );
+  for (const cases of [
+    [measuredCase, measuredCase],
+    [{ ...measuredCase, caseId: 'case-999' }],
+    [],
+  ]) {
+    assert.throws(
+      () =>
+        createPublishableQueryPlannedRecallEvaluationEvidence(
+          controls,
+          { ...evaluation, cases },
+          evidenceEnvironment,
+        ),
+      /Evaluation case coverage invalid/u,
+    );
+  }
 
   const queryPlanningProfile = createRecommendedQmdQueryPlanningModelProfile();
   const rerankingProfile = createRecommendedQwenRerankingModelProfile();

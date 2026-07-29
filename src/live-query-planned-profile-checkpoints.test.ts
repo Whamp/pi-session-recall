@@ -92,6 +92,7 @@ function createProfileResult(
       id: 'private-corpus',
       privateManifestSha256: 'private-manifest-sha256',
       snapshotCount: 1,
+      snapshotSha256: ['2'.repeat(64)],
       indexedDocumentCount: 2,
       caseCount: 1,
     },
@@ -199,8 +200,9 @@ function createProfileResult(
         queryPlanned: {
           outcome: QueryPlannedRecallBaselineOutcome.SUCCESS,
           expectedSourceRanks: [1],
-          admissionProbeSourceRanks: [1],
+          candidateAdmissionSourceRanks: [1],
           candidateAdmissionVerified: true,
+          sourceProvenance: [{ selectedFrom: 'ranked_result', passed: true }],
           provenancePassed: true,
           listWork: [
             { source: 'planned-lex-0', weight: 1, candidateLimit: 20, admittedCandidateCount: 1 },
@@ -227,7 +229,7 @@ function createProfileResult(
             ],
           },
           rankingProviderPolicy: 'live-profile-v1',
-          admissionProbeProviderPolicy: 'expected-source-promotion-v1',
+          candidateAdmissionBoundaryPolicy: 'fused-candidate-pool-v1',
         },
         planningMilliseconds: 10,
         rerankingMilliseconds: 5,

@@ -254,6 +254,7 @@ void test('Pi recall tool adapter propagates trusted cwd with project default an
       return {
         totalChunks: 0,
         results: [],
+        candidateAdmission: [],
         searchPolicy: {
           scope: options?.scope ?? RecallSearchScope.PROJECT,
           invocationProjectIdentity: null,

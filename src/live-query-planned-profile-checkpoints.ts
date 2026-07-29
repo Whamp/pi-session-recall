@@ -118,8 +118,18 @@ const BASELINE_ARM_SCHEMA = Type.Object({
 const QUERY_PLANNED_ARM_SCHEMA = Type.Object({
   outcome: Type.Enum(QueryPlannedRecallBaselineOutcome),
   expectedSourceRanks: Type.Array(NULLABLE_NUMBER_SCHEMA),
-  admissionProbeSourceRanks: Type.Array(NULLABLE_NUMBER_SCHEMA),
+  candidateAdmissionSourceRanks: Type.Array(NULLABLE_NUMBER_SCHEMA),
   candidateAdmissionVerified: Type.Boolean(),
+  sourceProvenance: Type.Array(
+    Type.Object({
+      selectedFrom: Type.Union([
+        Type.Literal('ranked_result'),
+        Type.Literal('candidate_admission'),
+        Type.Literal('missing'),
+      ]),
+      passed: Type.Boolean(),
+    }),
+  ),
   provenancePassed: Type.Boolean(),
   listWork: Type.Array(
     Type.Object({
@@ -159,7 +169,7 @@ const QUERY_PLANNED_ARM_SCHEMA = Type.Object({
     Type.Literal('neutral-fused-order-v1'),
     Type.Literal('live-profile-v1'),
   ]),
-  admissionProbeProviderPolicy: Type.Literal('expected-source-promotion-v1'),
+  candidateAdmissionBoundaryPolicy: Type.Literal('fused-candidate-pool-v1'),
 });
 const CONTRIBUTION_SCHEMA = Type.Object({
   newCandidateAdmission: Type.Boolean(),
@@ -174,6 +184,7 @@ const LIVE_PROFILE_RESULT_SCHEMA = Type.Object({
     id: Type.String(),
     privateManifestSha256: Type.String(),
     snapshotCount: Type.Number(),
+    snapshotSha256: Type.Array(Type.String({ pattern: '^[a-f0-9]{64}$' })),
     indexedDocumentCount: Type.Number(),
     caseCount: Type.Number(),
   }),

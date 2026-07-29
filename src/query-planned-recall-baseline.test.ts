@@ -117,6 +117,11 @@ void test('private query-planned recall corpus stays checksum-fixed and publishe
   const loaded = await loadPrivateQueryPlannedRecallCorpus(manifestPath);
   const controls = createPublishableQueryPlannedRecallControls(loaded);
   const published = JSON.stringify(controls);
+  const changedSnapshotContent = snapshotContent.replace(
+    'Private mechanism phrase and outcome token.',
+    'Changed bytes must not be indexed under the verified checksum.',
+  );
+  await writeFile(snapshotPath, changedSnapshotContent, { mode: 0o600 });
 
   assert.equal(loaded.manifestSha256, createSha256(manifestContent));
   assert.equal(controls.cases[0]?.caseId, 'case-001');
@@ -205,6 +210,9 @@ void test('private query-planned recall corpus stays checksum-fixed and publishe
   const normalArm = baseline.cases[0]?.normal;
   const workMatchedArm = baseline.cases[0]?.retrievalWorkMatched;
   assert.equal(baseline.executedSearchRequests, 2);
+  assert.equal(baseline.indexedSnapshotCount, 1);
+  assert.deepEqual(baseline.indexedSnapshotSha256, [createSha256(snapshotContent)]);
+  assert.deepEqual(controls.snapshotSha256, baseline.indexedSnapshotSha256);
   assert.equal(normalArm?.outcome, QueryPlannedRecallBaselineOutcome.SUCCESS);
   assert.equal(workMatchedArm?.outcome, QueryPlannedRecallBaselineOutcome.SUCCESS);
   assert.deepEqual(normalArm?.listLimits, { dense: 8, lexical: 8, identifier: 8 });
@@ -239,6 +247,64 @@ void test('private query-planned recall corpus stays checksum-fixed and publishe
   assert.equal(report.includes('Private mechanism phrase'), false);
   assert.equal(report.includes(snapshotPath), false);
 
+  const controlCase = controls.cases[0];
+  const baselineCase = baseline.cases[0];
+  if (!controlCase || !baselineCase) {
+    throw new Error('Query-planned recall baseline fixture requires one measured case');
+  }
+  const evidenceEnvironment = {
+    recordedAgainstCommit: '38aab6722a6fc97dd212e704faee4373af8b363e',
+    embeddingProfile: {
+      requestModel: 'test-embedding',
+      servedModelId: 'test-embedding-served',
+      artifact: 'test-embedding.fp32',
+      dimensions: 3,
+      quantization: 'fp32',
+      pooling: 'last',
+    },
+  };
+  assert.throws(
+    () =>
+      createPublishableQueryPlannedRecallBaselineEvidence(
+        controls,
+        { ...baseline, indexedSnapshotSha256: ['0'.repeat(64)] },
+        evidenceEnvironment,
+      ),
+    /indexed snapshots must exactly match manifest hashes/u,
+  );
+  for (const invalidInput of [
+    {
+      invalidControls: { ...controls, cases: [controlCase, controlCase] },
+      invalidBaseline: baseline,
+    },
+    {
+      invalidControls: controls,
+      invalidBaseline: { ...baseline, cases: [baselineCase, baselineCase] },
+    },
+    {
+      invalidControls: controls,
+      invalidBaseline: { ...baseline, cases: [] },
+    },
+    {
+      invalidControls: controls,
+      invalidBaseline: {
+        ...baseline,
+        cases: [{ ...baselineCase, caseId: 'case-999' }],
+      },
+    },
+  ]) {
+    assert.throws(
+      () =>
+        createPublishableQueryPlannedRecallBaselineEvidence(
+          invalidInput.invalidControls,
+          invalidInput.invalidBaseline,
+          evidenceEnvironment,
+        ),
+      /Evaluation case coverage invalid/u,
+    );
+  }
+
+  await writeFile(snapshotPath, snapshotContent, { mode: 0o600 });
   await chmod(snapshotPath, 0o644);
   await assert.rejects(
     () => loadPrivateQueryPlannedRecallCorpus(manifestPath),

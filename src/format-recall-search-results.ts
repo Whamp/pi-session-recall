@@ -99,7 +99,7 @@ function formatRecallScoreComponents(result: RankedRecallSearchResult): string {
 
 /** Formats hybrid or deeply reranked recall evidence with every source occurrence. */
 export function formatRecallSearchResults(
-  search: RecallConversationSearch,
+  search: Pick<RecallConversationSearch, 'results' | 'searchPolicy' | 'totalChunks'>,
   maxExcerptCharacters = 2_000,
 ): string {
   const rankingDescription =

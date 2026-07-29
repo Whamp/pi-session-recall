@@ -29,6 +29,7 @@ import {
   RECALL_RANK_FUSION_VERSION,
   RECALL_RRF_RANK_CONSTANT,
   type RecallRankedList,
+  type RecallSearchResult,
 } from './fuse-recall-ranked-lists.js';
 import {
   inspectRecallConversationCorpus,
@@ -249,6 +250,11 @@ export interface RecallSearchPolicy {
   queryPlan?: RecallQueryPlanEvidence;
 }
 
+/** One fused candidate captured before duplicate grouping, rerank limits, and final truncation. */
+export interface RecallCandidateAdmission extends RecallSearchResult {
+  evidenceRelation: RecallEvidenceRelation;
+}
+
 /** One ranked recall result labeled by its explicit relationship to the invocation project. */
 export interface RecallConversationSearchResult extends RankedRecallSearchResult {
   evidenceRelation: RecallEvidenceRelation;
@@ -257,6 +263,7 @@ export interface RecallConversationSearchResult extends RankedRecallSearchResult
 /** One read-only hybrid query against a previously built compatible index. */
 export interface RecallConversationSearch {
   results: RecallConversationSearchResult[];
+  candidateAdmission: RecallCandidateAdmission[];
   totalChunks: number;
   searchPolicy: RecallSearchPolicy;
 }
@@ -2077,25 +2084,36 @@ export function createRecallConversationService(
                     );
                   }
                 }
+                const createEvidenceRelation = (
+                  candidate: RecallSearchResult,
+                ): RecallEvidenceRelation =>
+                  !invocationProject ||
+                  invocationProject.projectIdentity !==
+                    candidate.projectAttribution?.projectIdentity
+                    ? RecallEvidenceRelation.UNRESTRICTED_GLOBAL
+                    : candidate.projectAttribution.identitySource ===
+                          RecallProjectIdentitySource.CONFIGURED_PROJECT_LINEAGE ||
+                        invocationProject.identitySource ===
+                          RecallProjectIdentitySource.CONFIGURED_PROJECT_LINEAGE
+                      ? RecallEvidenceRelation.CONFIGURED_PROJECT_LINEAGE
+                      : invocationProject.identitySource ===
+                          RecallProjectIdentitySource.NON_GIT_SESSION_ORIGIN
+                        ? RecallEvidenceRelation.SAME_SESSION_ORIGIN
+                        : RecallEvidenceRelation.SAME_REPOSITORY;
+                const candidateAdmission: RecallCandidateAdmission[] = fusedCandidates.map(
+                  (candidate) => ({
+                    ...candidate,
+                    evidenceRelation: createEvidenceRelation(candidate),
+                  }),
+                );
                 const results: RecallConversationSearchResult[] = rankedResults.map((result) => ({
                   ...result,
-                  evidenceRelation:
-                    !invocationProject ||
-                    invocationProject.projectIdentity !== result.projectAttribution?.projectIdentity
-                      ? RecallEvidenceRelation.UNRESTRICTED_GLOBAL
-                      : result.projectAttribution.identitySource ===
-                            RecallProjectIdentitySource.CONFIGURED_PROJECT_LINEAGE ||
-                          invocationProject.identitySource ===
-                            RecallProjectIdentitySource.CONFIGURED_PROJECT_LINEAGE
-                        ? RecallEvidenceRelation.CONFIGURED_PROJECT_LINEAGE
-                        : invocationProject.identitySource ===
-                            RecallProjectIdentitySource.NON_GIT_SESSION_ORIGIN
-                          ? RecallEvidenceRelation.SAME_SESSION_ORIGIN
-                          : RecallEvidenceRelation.SAME_REPOSITORY,
+                  evidenceRelation: createEvidenceRelation(result),
                 }));
                 const completedRerankerExecutionIdentity = readCurrentRerankerExecutionIdentity();
                 return {
                   results,
+                  candidateAdmission,
                   totalChunks: store.count(),
                   searchPolicy: {
                     scope,

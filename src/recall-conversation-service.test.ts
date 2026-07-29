@@ -3380,6 +3380,7 @@ void test('query-planned recall routes agent lists through capability-specific e
   const plannerWarnings: string[] = [];
   let plannerFailure: Error | null = null;
   let plannerPlan: RecallPlannedRetrievalQuery[] = [...plan];
+  let reverseRerankerPreference = false;
   const queryPlanningProfile = createRecommendedQmdQueryPlanningModelProfile();
   function createQueryPlannedTestEmbedding(text: string): number[] {
     if (text === RECALL_EMBEDDING_CANARY_TEXT) {
@@ -3411,7 +3412,9 @@ void test('query-planned recall routes agent lists through capability-specific e
       reranker: {
         async rerankDocuments(rerankerQuery, documents) {
           rerankerQueries.push(rerankerQuery);
-          return documents.map(() => 0.5);
+          return documents.map((document, index) =>
+            reverseRerankerPreference ? documents.length - index : document.length / 1_000,
+          );
         },
       },
       queryPlanningProfile,
@@ -3530,6 +3533,36 @@ void test('query-planned recall routes agent lists through capability-specific e
         (evidence) => evidence.source === RecallRankedListSource.PLANNED_HYDE,
       ),
   );
+
+  reverseRerankerPreference = true;
+  const rerankedAndTruncatedSearch = await service.search(query, 1, {
+    mode: 'query-planned',
+    scope: RecallSearchScope.GLOBAL,
+    plan,
+    intent: 'recover the implementation decision',
+  });
+  assert.equal(rerankedAndTruncatedSearch.results.length, 1);
+  assert.deepEqual(
+    rerankedAndTruncatedSearch.candidateAdmission.map(({ id }) => id),
+    search.candidateAdmission.map(({ id }) => id),
+  );
+  assert.equal(
+    rerankedAndTruncatedSearch.candidateAdmission.some(
+      ({ entryId }) => entryId.value === 'lexical-entry',
+    ),
+    true,
+  );
+  assert.equal(
+    rerankedAndTruncatedSearch.results.some(({ entryId }) => entryId.value === 'lexical-entry'),
+    false,
+  );
+  assert.equal(
+    rerankedAndTruncatedSearch.candidateAdmission.some(
+      ({ entryId }) => entryId.value === 'absent-control-entry',
+    ),
+    false,
+  );
+  reverseRerankerPreference = false;
 
   queryEmbeddedTexts.length = 0;
   rerankerQueries.length = 0;

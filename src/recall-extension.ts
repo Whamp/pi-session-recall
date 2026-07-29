@@ -76,7 +76,9 @@ export async function searchPiRecall(
 }
 
 /** Builds the structured Pi tool details for one source-backed recall search. */
-export function createPiRecallToolDetails(search: RecallConversationSearch) {
+export function createPiRecallToolDetails(
+  search: Pick<RecallConversationSearch, 'results' | 'searchPolicy' | 'totalChunks'>,
+) {
   return {
     totalChunks: search.totalChunks,
     searchPolicy: search.searchPolicy,

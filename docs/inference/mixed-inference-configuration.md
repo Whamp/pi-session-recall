@@ -64,6 +64,10 @@ Repair requires the exact selected candidate. Artifact mutation requires separat
 
 `createConfiguredRecallInferenceRuntime()` reconstructs exact recommended embedded or llama.cpp HTTP selections. It does not substitute a model, backend, adapter, endpoint, or device policy. The HTTP EmbeddingGemma backend retains the same profile identity and uses the checksum-pinned local GGUF tokenizer.
 
+The extension reads effective inference configuration once for each runtime resolution. A recursively canonical serialization of that complete configuration and the selected setup profile forms the cache identity. The same read constructs the runtime, so a concurrent configuration write cannot cache one runtime under another configuration's key. Property order does not change the identity.
+
+One disposable owner covers every configured, recommended, or fallback runtime. Concurrent cache misses serialize to one creation. Each search or index command leases its runtime until the operation settles; configuration replacement and shutdown wait for active leases before disposal. A failed disposal retains ownership for retry, and a failed replacement creation leaves no new runtime cached.
+
 A custom integration registers its setup candidates and one `RecallInferenceAdapterRegistry`. Persisted candidate, profile, backend, adapter, and endpoint identities select that registry after restart. An unavailable registry fails explicitly. The registry creates the complete mixed runtime, so it also owns any custom detached-worker factory required for background indexing.
 
 Detached built-in embedding replacement uses a candidate-specific named background service factory. The child therefore receives the pending embedding semantics without making that selection active before its generation activates.
@@ -78,7 +82,9 @@ The committed tests prove:
 - backend-only embedding movement starts no staging build;
 - an approved embedding profile change durably records pending semantics before launch, keeps the old selection active while staging, and restores the prior state on launch failure;
 - matching replacement work resumes by embedding semantic identity even when cache identity is richer;
-- concurrent replacement attempts serialize through launch and rollback;
+- concurrent configuration replacement attempts serialize through launch and rollback;
+- extension runtime cache identity covers the canonical complete effective configuration and uses that exact read for construction;
+- concurrent runtime cache misses share one runtime, while replacement and shutdown wait for active operations before disposal;
 - first-index selection cannot bypass staging for a different embedding profile;
 - optional profile/cache identity changes do not rebuild vectors;
 - repair changes only the selected capability;

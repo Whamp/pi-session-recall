@@ -804,6 +804,16 @@ async function validateApprovedRebuildEvidenceMembership(
     if (chunks.size !== chunkIds.length) {
       throw new Error(`Recall rebuild indexed evidence could not be reloaded: ${sourcePath}`);
     }
+    const unexpectedSourceChunk = [...chunks.values()].find(
+      (chunk) =>
+        chunk.sessionPath !== sourcePath ||
+        chunk.physicalSessionProjectionId !== physicalProjection.projectionId,
+    );
+    if (unexpectedSourceChunk !== undefined) {
+      throw new Error(
+        `Recall rebuild indexed evidence outside approved snapshot: ${unexpectedSourceChunk.sessionPath}`,
+      );
+    }
     const approvedContributorEntryIds = new Set(
       [...eligibleByLogicalSessionId.values()].flatMap((entryIds) => [...entryIds]),
     );

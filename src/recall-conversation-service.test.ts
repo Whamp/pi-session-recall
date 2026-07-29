@@ -1029,7 +1029,7 @@ void test('approved rebuild excludes physical sources added after snapshot appro
               ...approvedChunk,
               id: 'unexpected-rebuild-evidence',
               checksum: 'f'.repeat(64),
-              contributingEntryIds: [{ value: 'unexpected-entry' }],
+              sessionPath: join(sessionsDirectory, 'unapproved-session.jsonl'),
             });
             injectUnexpectedEvidence = false;
           }

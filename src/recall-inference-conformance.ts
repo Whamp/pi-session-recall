@@ -1,8 +1,10 @@
-import type {
-  RecallEmbeddingProvider,
-  RecallIdentifiedQueryPlanningProvider,
-  RecallIdentifiedRerankingProvider,
-  RecallPlannedRetrievalQuery,
+import {
+  createRecallQueryPlanningExecutionIdentity,
+  createRecallRerankingExecutionIdentity,
+  type RecallEmbeddingProvider,
+  type RecallIdentifiedQueryPlanningProvider,
+  type RecallIdentifiedRerankingProvider,
+  type RecallPlannedRetrievalQuery,
 } from './recall-inference-capabilities.js';
 import type {
   RecallEmbeddingModelProfile,
@@ -200,10 +202,17 @@ export async function measureRecallRerankingProviderConformance(
       `Recall reranking conformance profile identity mismatch: expected ${options.profile.profileId}, received ${options.provider.executionIdentity.modelProfileId}`,
     );
   }
-  const expectedCacheIdentity = `${options.profile.profileId}:${options.provider.executionIdentity.adapterId}`;
-  if (options.provider.executionIdentity.cacheIdentity !== expectedCacheIdentity) {
+  const rerankingIdentity = options.provider.executionIdentity;
+  const expectedCacheIdentity = createRecallRerankingExecutionIdentity(
+    options.profile,
+    rerankingIdentity.adapterId,
+    rerankingIdentity.adapterConfigurationIdentity,
+    rerankingIdentity.backend,
+    rerankingIdentity.requestTimeoutMilliseconds,
+  ).cacheIdentity;
+  if (rerankingIdentity.cacheIdentity !== expectedCacheIdentity) {
     throw new Error(
-      `Recall reranking conformance cache identity mismatch: expected ${expectedCacheIdentity}, received ${options.provider.executionIdentity.cacheIdentity}`,
+      `Recall reranking conformance cache identity mismatch: expected ${expectedCacheIdentity}, received ${rerankingIdentity.cacheIdentity}`,
     );
   }
   if (options.documents.length !== options.expectedScores.length) {
@@ -287,7 +296,13 @@ export async function measureRecallQueryPlanningProviderConformance(
       `Recall query planning conformance grammar version mismatch: expected ${options.profile.grammarVersion}, received ${identity.grammarVersion}`,
     );
   }
-  const expectedCacheIdentity = `${options.profile.profileId}:${identity.adapterId}:${options.profile.promptPolicy}:${options.profile.grammarVersion}:${identity.adapterConfigurationIdentity}`;
+  const expectedCacheIdentity = createRecallQueryPlanningExecutionIdentity(
+    options.profile,
+    identity.adapterId,
+    identity.adapterConfigurationIdentity,
+    identity.backend,
+    identity.requestTimeoutMilliseconds,
+  ).cacheIdentity;
   if (identity.cacheIdentity !== expectedCacheIdentity) {
     throw new Error(
       `Recall query planning conformance cache identity mismatch: expected ${expectedCacheIdentity}, received ${identity.cacheIdentity}`,

@@ -15,6 +15,7 @@ import {
   RecallSearchScope,
 } from './enums.js';
 import {
+  createLiveQueryPlannedEvaluationConfigurationIdentity,
   createPublishableLiveQueryPlannedProfileAcceptance,
   createPublishableQueryPlannedRecallEvaluationEvidence,
   createPublishableQueryPlannedRecallPlanIdentity,
@@ -33,9 +34,14 @@ import { isUnknownRecord } from './is-unknown-record.js';
 import { createRecallConversationService } from './recall-conversation-service.js';
 import { loadRecallConversationConfig } from './recall-conversation-config.js';
 import {
+  createRecallQueryPlanningExecutionIdentity,
+  createRecallRerankingExecutionIdentity,
+} from './recall-inference-capabilities.js';
+import {
   createRecommendedQmdQueryPlanningModelProfile,
   createRecommendedQwenRerankingModelProfile,
 } from './recall-model-profiles.js';
+import { normalizeRecallProjectLineages } from './resolve-project-identity.js';
 
 function createSha256(content: string): string {
   return createHash('sha256').update(content).digest('hex');
@@ -298,6 +304,38 @@ void test('fixed private plans prove new source admission through deterministic 
       return texts.map(() => [1, ...Array.from({ length: 63 }, () => 0)]);
     },
   };
+  const conformanceFixture = {
+    query: 'source provenance',
+    documents: ['relevant', 'irrelevant'],
+    expectedScores: [0.9, 0.1],
+    maximumAbsoluteDifference: 0.001,
+  };
+  const evaluationConfigurationIdentity = createLiveQueryPlannedEvaluationConfigurationIdentity(
+    baseConfig,
+    conformanceFixture,
+  );
+  assert.deepEqual(
+    evaluationConfigurationIdentity,
+    createLiveQueryPlannedEvaluationConfigurationIdentity(
+      { ...baseConfig, projectLineages: normalizeRecallProjectLineages({}) },
+      { ...conformanceFixture },
+    ),
+  );
+  assert.notDeepEqual(
+    evaluationConfigurationIdentity,
+    createLiveQueryPlannedEvaluationConfigurationIdentity(
+      { ...baseConfig, embeddingBatchSize: 32 },
+      conformanceFixture,
+    ),
+  );
+  assert.notDeepEqual(
+    evaluationConfigurationIdentity,
+    createLiveQueryPlannedEvaluationConfigurationIdentity(baseConfig, {
+      ...conformanceFixture,
+      maximumAbsoluteDifference: 0.01,
+    }),
+  );
+
   const productionService = createRecallConversationService(baseConfig, {
     embeddings,
     loadTokenizer,
@@ -424,6 +462,32 @@ void test('fixed private plans prove new source admission through deterministic 
   let conformancePlannerRequestCount = 0;
   const liveProgress: string[] = [];
   const liveWorkDirectory = join(privateDirectory, 'live-evaluation-work');
+  const fixtureQueryPlanningExecutionIdentity = {
+    ...createRecallQueryPlanningExecutionIdentity(
+      queryPlanningProfile,
+      'fixture-live-planner-v1',
+      'fixture-live-planner-configuration-v1',
+      RecallInferenceBackend.EMBEDDED,
+      1_000,
+    ),
+    computeBackend: 'cpu',
+    devicePolicy: 'cpu',
+    fallbackFromComputeBackend: null,
+    physicalDeviceIdentity: ['fixture cpu'],
+  };
+  const fixtureRerankingExecutionIdentity = {
+    ...createRecallRerankingExecutionIdentity(
+      rerankingProfile,
+      'fixture-live-reranker-v1',
+      'fixture-live-reranker-configuration-v1',
+      RecallInferenceBackend.EMBEDDED,
+      1_000,
+    ),
+    computeBackend: 'cpu',
+    devicePolicy: 'cpu',
+    fallbackFromComputeBackend: null,
+    physicalDeviceIdentity: ['fixture cpu'],
+  };
   const liveEvaluation = await runLiveQueryPlannedProfileEvaluation({
     corpus,
     baseConfig,
@@ -432,20 +496,24 @@ void test('fixed private plans prove new source admission through deterministic 
       id: 'fixture-embedded-cpu',
       backend: RecallInferenceBackend.EMBEDDED,
       deviceClass: 'cpu',
-      device: 'fixture CPU',
+      device: 'cpu',
+      backendVersion: 'fixture-backend-v1',
+    },
+    evaluationConfiguration: {
+      version: 1,
+      effectiveConfigurationIdentity: 'fixture-effective-evaluation-config-v1',
+      rerankerConformanceFixtureIdentity: 'fixture-reranker-conformance-v1',
+    },
+    software: {
+      repositoryCommit: '030396576c03c705a1f3c84dce1ff639256ed2cf',
+      backendVersion: 'fixture-backend-v1',
+      nodeVersion: process.version,
+      platform: process.platform,
+      architecture: process.arch,
     },
     queryPlanningProfile,
     queryPlanner: {
-      executionIdentity: {
-        adapterId: 'fixture-live-planner-v1',
-        adapterConfigurationIdentity: 'fixture-live-planner-configuration-v1',
-        backend: RecallInferenceBackend.EMBEDDED,
-        cacheIdentity: `${queryPlanningProfile.profileId}:fixture-live-planner-v1:${queryPlanningProfile.promptPolicy}:${queryPlanningProfile.grammarVersion}:fixture-live-planner-configuration-v1`,
-        modelProfileId: queryPlanningProfile.profileId,
-        promptPolicy: queryPlanningProfile.promptPolicy,
-        grammarVersion: queryPlanningProfile.grammarVersion,
-        requestTimeoutMilliseconds: 1_000,
-      },
+      executionIdentity: fixtureQueryPlanningExecutionIdentity,
       async planRecallQuery(request) {
         if (request.query === queryPlanningProfile.conformanceCanary.query) {
           conformancePlannerRequestCount += 1;
@@ -465,12 +533,7 @@ void test('fixed private plans prove new source admission through deterministic 
     },
     rerankingProfile,
     reranker: {
-      executionIdentity: {
-        adapterId: 'fixture-live-reranker-v1',
-        backend: RecallInferenceBackend.EMBEDDED,
-        cacheIdentity: `${rerankingProfile.profileId}:fixture-live-reranker-v1`,
-        modelProfileId: rerankingProfile.profileId,
-      },
+      executionIdentity: fixtureRerankingExecutionIdentity,
       async rerankDocuments(rerankerQuery, documents) {
         if (rerankerQuery === 'source provenance') {
           return [0.9, 0.1];
@@ -554,28 +617,49 @@ void test('fixed private plans prove new source admission through deterministic 
     deviceClass: 'cpu' | 'accelerated',
     adapterIds: { queryPlanning: string; reranking: string },
   ) {
+    const embeddedDevice = deviceClass === 'cpu' ? 'cpu' : 'vulkan';
+    const device =
+      backend === RecallInferenceBackend.EMBEDDED ? embeddedDevice : 'fixture HTTP CPU';
+    const backendVersion =
+      backend === RecallInferenceBackend.EMBEDDED ? 'fixture-embedded-v1' : 'fixture-http-v1';
+    const embeddedHardwareIdentity =
+      backend === RecallInferenceBackend.EMBEDDED
+        ? {
+            computeBackend: embeddedDevice,
+            devicePolicy: embeddedDevice,
+            fallbackFromComputeBackend: null,
+            physicalDeviceIdentity: [deviceClass === 'cpu' ? 'fixture cpu' : 'fixture gpu'],
+          }
+        : {};
     const queryPlanningExecutionIdentity = {
-      ...liveEvaluation.profileIdentity.queryPlanning.executionIdentity,
-      adapterId: adapterIds.queryPlanning,
-      backend,
-      cacheIdentity: `${queryPlanningProfile.profileId}:${adapterIds.queryPlanning}:${queryPlanningProfile.promptPolicy}:${queryPlanningProfile.grammarVersion}`,
+      ...createRecallQueryPlanningExecutionIdentity(
+        queryPlanningProfile,
+        adapterIds.queryPlanning,
+        `${adapterIds.queryPlanning}-configuration`,
+        backend,
+        1_000,
+      ),
+      ...embeddedHardwareIdentity,
     };
     const rerankingExecutionIdentity = {
-      ...liveEvaluation.profileIdentity.reranking.executionIdentity,
-      adapterId: adapterIds.reranking,
-      backend,
-      cacheIdentity: `${rerankingProfile.profileId}:${adapterIds.reranking}`,
+      ...createRecallRerankingExecutionIdentity(
+        rerankingProfile,
+        adapterIds.reranking,
+        `${adapterIds.reranking}-configuration`,
+        backend,
+        1_000,
+      ),
+      ...embeddedHardwareIdentity,
     };
     return {
       ...liveEvaluation,
-      profileRun: {
-        id,
-        backend,
-        deviceClass,
-        device: deviceClass === 'cpu' ? 'fixture CPU' : 'fixture accelerator',
-      },
+      profileRun: { id, backend, deviceClass, device, backendVersion },
       profileIdentity: {
         ...liveEvaluation.profileIdentity,
+        software: {
+          ...liveEvaluation.profileIdentity.software,
+          backendVersion,
+        },
         queryPlanning: {
           ...liveEvaluation.profileIdentity.queryPlanning,
           executionIdentity: queryPlanningExecutionIdentity,
@@ -601,6 +685,25 @@ void test('fixed private plans prove new source admission through deterministic 
     queryPlanning: 'node-llama-cpp-qmd-query-planning-v1',
     reranking: 'node-llama-cpp-qwen-reranking-logit-recovery-v1',
   };
+  const measuredProfileRuns = [
+    createMeasuredProfileRun(
+      'embedded-cpu',
+      RecallInferenceBackend.EMBEDDED,
+      'cpu',
+      embeddedAdapters,
+    ),
+    createMeasuredProfileRun(
+      'embedded-accelerated',
+      RecallInferenceBackend.EMBEDDED,
+      'accelerated',
+      embeddedAdapters,
+    ),
+    createMeasuredProfileRun('http-cpu', RecallInferenceBackend.LLAMA_CPP_HTTP, 'cpu', {
+      queryPlanning: 'llama-cpp-http-query-planning-v1',
+      reranking: 'llama-cpp-http-reranking-v1',
+    }),
+  ];
+  const expectedProfileRuns = measuredProfileRuns.map(({ profileRun }) => profileRun);
   const acceptance = createPublishableLiveQueryPlannedProfileAcceptance({
     recordedAgainstCommit: '030396576c03c705a1f3c84dce1ff639256ed2cf',
     defaultSearchMode: 'hybrid',
@@ -633,24 +736,8 @@ void test('fixed private plans prove new source admission through deterministic 
         finalRecall: 0.941,
       },
     ],
-    profileRuns: [
-      createMeasuredProfileRun(
-        'embedded-cpu',
-        RecallInferenceBackend.EMBEDDED,
-        'cpu',
-        embeddedAdapters,
-      ),
-      createMeasuredProfileRun(
-        'embedded-accelerated',
-        RecallInferenceBackend.EMBEDDED,
-        'accelerated',
-        embeddedAdapters,
-      ),
-      createMeasuredProfileRun('http-cpu', RecallInferenceBackend.LLAMA_CPP_HTTP, 'cpu', {
-        queryPlanning: 'llama-cpp-http-query-planning-v1',
-        reranking: 'llama-cpp-http-reranking-v1',
-      }),
-    ],
+    expectedProfileRuns,
+    profileRuns: measuredProfileRuns,
     requiredSuccessfulBaselineControlCount: 0,
     privacyAudit: { checkedValueCount: 7, leakCount: 0 },
     failureSemantics: {
@@ -683,10 +770,74 @@ void test('fixed private plans prove new source admission through deterministic 
   assert.equal(acceptanceReport.includes(lexicalPlanQuery), false);
   assert.equal(acceptanceReport.includes('Private mechanism phrase'), false);
 
+  const createAcceptanceWithProfileRuns = (profileRuns: typeof measuredProfileRuns) =>
+    createPublishableLiveQueryPlannedProfileAcceptance({
+      recordedAgainstCommit: acceptance.recordedAgainstCommit,
+      defaultSearchMode: acceptance.defaultSearchMode,
+      committedCorpus: acceptance.committedCorpus,
+      expectedProfileRuns,
+      profileRuns,
+      requiredSuccessfulBaselineControlCount: 0,
+      privacyAudit: acceptance.privacyAudit,
+      failureSemantics: acceptance.failureSemantics,
+    });
+  const embeddedCpuRun = measuredProfileRuns[0];
+  const embeddedAcceleratedRun = measuredProfileRuns[1];
+  const httpRun = measuredProfileRuns[2];
+  if (!embeddedCpuRun || !embeddedAcceleratedRun || !httpRun) {
+    throw new Error('Expected complete measured profile fixture matrix');
+  }
+  assert.throws(
+    () =>
+      createAcceptanceWithProfileRuns([
+        embeddedCpuRun,
+        {
+          ...embeddedAcceleratedRun,
+          profileRun: {
+            ...embeddedAcceleratedRun.profileRun,
+            id: 'embedded-cpu-duplicate',
+            deviceClass: 'cpu',
+            device: 'cpu',
+          },
+        },
+        { ...httpRun, profileRun: { ...httpRun.profileRun, deviceClass: 'accelerated' } },
+      ]),
+    /missing or substituted profile tuple/u,
+  );
+  assert.throws(
+    () =>
+      createAcceptanceWithProfileRuns([
+        {
+          ...embeddedCpuRun,
+          profileRun: { ...embeddedCpuRun.profileRun, deviceClass: 'accelerated' },
+        },
+        {
+          ...embeddedAcceleratedRun,
+          profileRun: { ...embeddedAcceleratedRun.profileRun, deviceClass: 'cpu' },
+        },
+        httpRun,
+      ]),
+    /missing or substituted profile tuple/u,
+  );
+  assert.throws(
+    () =>
+      createAcceptanceWithProfileRuns([
+        embeddedCpuRun,
+        embeddedAcceleratedRun,
+        { ...embeddedCpuRun, profileRun: { ...embeddedCpuRun.profileRun, id: 'duplicate-run' } },
+      ]),
+    /missing or substituted profile tuple/u,
+  );
+  assert.throws(
+    () => createAcceptanceWithProfileRuns([...measuredProfileRuns, httpRun]),
+    /duplicate or extra profile tuples/u,
+  );
+
   const fallbackAcceptance = createPublishableLiveQueryPlannedProfileAcceptance({
     recordedAgainstCommit: acceptance.recordedAgainstCommit,
     defaultSearchMode: acceptance.defaultSearchMode,
     committedCorpus: acceptance.committedCorpus,
+    expectedProfileRuns,
     profileRuns: acceptance.profileRuns.map((run) => ({
       ...run,
       quality: {

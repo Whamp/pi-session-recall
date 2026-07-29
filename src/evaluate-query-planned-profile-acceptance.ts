@@ -28,13 +28,17 @@ import {
   type LoadedPrivateQueryPlannedRecallCorpus,
 } from './query-planned-recall-baseline.js';
 import {
+  createLiveQueryPlannedEvaluationConfigurationIdentity,
+  createLiveQueryPlannedProfileIdentity,
   createPublishableLiveQueryPlannedProfileAcceptance,
   formatPublishableLiveQueryPlannedProfileAcceptanceReport,
   loadPrivateQueryPlannedRecallPlans,
   runLiveQueryPlannedProfileEvaluation,
   type CommittedCorpusLiveProfileEvidence,
   type LiveQueryPlannedProfileEvaluationResult,
+  type LiveQueryPlannedProfileIdentity,
   type LiveQueryPlannedProfileRunIdentity,
+  type LiveQueryPlannedSoftwareIdentity,
   type PublishableLiveQueryPlannedProfileAcceptance,
 } from './query-planned-recall-evaluation.js';
 import {
@@ -274,22 +278,27 @@ function createLiveProfileCheckpointIdentity(
   recordedAgainstCommit: string,
   corpus: LoadedPrivateQueryPlannedRecallCorpus,
   profileRun: LiveQueryPlannedProfileRunIdentity,
-  queryPlanningProfileId: string,
-  queryPlanningCacheIdentity: string,
-  rerankingProfileId: string,
-  rerankingCacheIdentity: string,
-  adapterConfiguration: object,
+  profileIdentity: LiveQueryPlannedProfileIdentity,
 ): LiveProfileEvaluationCheckpointIdentity {
   return {
-    version: 1,
+    version: 2,
     recordedAgainstCommit,
     privateManifestSha256: corpus.manifestSha256,
     profileRun,
-    queryPlanningProfileId,
-    queryPlanningCacheIdentity,
-    rerankingProfileId,
-    rerankingCacheIdentity,
-    adapterConfigurationIdentity: createSha256(JSON.stringify(adapterConfiguration)),
+    profileIdentity,
+  };
+}
+
+function createLiveProfileSoftwareIdentity(
+  recordedAgainstCommit: string,
+  backendVersion: string,
+): LiveQueryPlannedSoftwareIdentity {
+  return {
+    repositoryCommit: recordedAgainstCommit,
+    backendVersion,
+    nodeVersion: process.version,
+    platform: process.platform,
+    architecture: process.arch,
   };
 }
 
@@ -330,24 +339,46 @@ function createEmbeddedProfileEvaluation(
     device,
     backendVersion: 'node-llama-cpp@3.18.1 / llama.cpp b8390',
   };
+  const rerankerConformance = createRerankerConformanceFixture();
+  const software = createLiveProfileSoftwareIdentity(
+    recordedAgainstCommit,
+    'node-llama-cpp@3.18.1 / llama.cpp b8390',
+  );
+  let baseConfigPromise: Promise<Awaited<ReturnType<typeof loadRecallConversationConfig>>>;
+  function loadBaseConfig() {
+    baseConfigPromise ??= loadRecallConversationConfig();
+    return baseConfigPromise;
+  }
+  async function resolveProfileIdentity(): Promise<LiveQueryPlannedProfileIdentity> {
+    const [baseConfig] = await Promise.all([
+      loadBaseConfig(),
+      queryPlanner.resolveExecutionIdentity(),
+      reranker.resolveExecutionIdentity(),
+    ]);
+    return createLiveQueryPlannedProfileIdentity({
+      evaluationConfiguration: createLiveQueryPlannedEvaluationConfigurationIdentity(
+        baseConfig,
+        rerankerConformance,
+      ),
+      software,
+      queryPlanningProfile,
+      queryPlanningExecutionIdentity: queryPlanner.executionIdentity,
+      rerankingProfile,
+      rerankingExecutionIdentity: reranker.executionIdentity,
+    });
+  }
   return {
-    checkpointIdentity: createLiveProfileCheckpointIdentity(
-      recordedAgainstCommit,
-      corpus,
-      profileRun,
-      queryPlanningProfile.profileId,
-      queryPlanner.executionIdentity.cacheIdentity,
-      rerankingProfile.profileId,
-      reranker.executionIdentity.cacheIdentity,
-      {
-        backend: RecallInferenceBackend.EMBEDDED,
-        device,
-        modelCacheDirectory,
-        requestTimeoutMilliseconds,
-      },
-    ),
+    profileRun,
+    async resolveCheckpointIdentity() {
+      return createLiveProfileCheckpointIdentity(
+        recordedAgainstCommit,
+        corpus,
+        profileRun,
+        await resolveProfileIdentity(),
+      );
+    },
     async evaluateProfile() {
-      const baseConfig = await loadRecallConversationConfig();
+      const baseConfig = await loadBaseConfig();
       return runLiveQueryPlannedProfileEvaluation({
         corpus,
         baseConfig,
@@ -358,11 +389,16 @@ function createEmbeddedProfileEvaluation(
           `live-profile-${device}`,
         ),
         profileRun,
+        evaluationConfiguration: createLiveQueryPlannedEvaluationConfigurationIdentity(
+          baseConfig,
+          rerankerConformance,
+        ),
+        software,
         queryPlanningProfile,
         queryPlanner,
         rerankingProfile,
         reranker,
-        rerankerConformance: createRerankerConformanceFixture(),
+        rerankerConformance,
         reportProgress,
       });
     },
@@ -397,24 +433,42 @@ function createHttpProfileEvaluation(
     device: options.httpDevice,
     backendVersion: options.httpBackendVersion,
   };
+  const rerankerConformance = createRerankerConformanceFixture();
+  const software = createLiveProfileSoftwareIdentity(
+    recordedAgainstCommit,
+    options.httpBackendVersion,
+  );
+  let baseConfigPromise: Promise<Awaited<ReturnType<typeof loadRecallConversationConfig>>>;
+  function loadBaseConfig() {
+    baseConfigPromise ??= loadRecallConversationConfig();
+    return baseConfigPromise;
+  }
+  async function resolveProfileIdentity(): Promise<LiveQueryPlannedProfileIdentity> {
+    const baseConfig = await loadBaseConfig();
+    return createLiveQueryPlannedProfileIdentity({
+      evaluationConfiguration: createLiveQueryPlannedEvaluationConfigurationIdentity(
+        baseConfig,
+        rerankerConformance,
+      ),
+      software,
+      queryPlanningProfile,
+      queryPlanningExecutionIdentity: queryPlanner.executionIdentity,
+      rerankingProfile,
+      rerankingExecutionIdentity: reranker.executionIdentity,
+    });
+  }
   return {
-    checkpointIdentity: createLiveProfileCheckpointIdentity(
-      recordedAgainstCommit,
-      corpus,
-      profileRun,
-      queryPlanningProfile.profileId,
-      queryPlanner.executionIdentity.cacheIdentity,
-      rerankingProfile.profileId,
-      reranker.executionIdentity.cacheIdentity,
-      {
-        backend: RecallInferenceBackend.LLAMA_CPP_HTTP,
-        httpPlannerUrl: options.httpPlannerUrl,
-        httpRerankerUrl: options.httpRerankerUrl,
-        requestTimeoutMilliseconds,
-      },
-    ),
+    profileRun,
+    async resolveCheckpointIdentity() {
+      return createLiveProfileCheckpointIdentity(
+        recordedAgainstCommit,
+        corpus,
+        profileRun,
+        await resolveProfileIdentity(),
+      );
+    },
     async evaluateProfile() {
-      const baseConfig = await loadRecallConversationConfig();
+      const baseConfig = await loadBaseConfig();
       return runLiveQueryPlannedProfileEvaluation({
         corpus,
         baseConfig,
@@ -425,11 +479,16 @@ function createHttpProfileEvaluation(
           `live-profile-${profileRun.id}`,
         ),
         profileRun,
+        evaluationConfiguration: createLiveQueryPlannedEvaluationConfigurationIdentity(
+          baseConfig,
+          rerankerConformance,
+        ),
+        software,
         queryPlanningProfile,
         queryPlanner,
         rerankingProfile,
         reranker,
-        rerankerConformance: createRerankerConformanceFixture(),
+        rerankerConformance,
         reportProgress,
       });
     },
@@ -538,33 +597,34 @@ export async function evaluateQueryPlannedProfileAcceptance(
   const reportProgress = (message: string): void => {
     process.stderr.write(`[${new Date().toISOString()}] ${message}\n`);
   };
+  const profiles = [
+    createEmbeddedProfileEvaluation(
+      resolvedProjectDirectory,
+      corpus,
+      recordedAgainstCommit,
+      EmbeddedInferenceDevicePolicy.CPU,
+      'cpu',
+      reportProgress,
+    ),
+    createEmbeddedProfileEvaluation(
+      resolvedProjectDirectory,
+      corpus,
+      recordedAgainstCommit,
+      options.acceleratedDevice,
+      'accelerated',
+      reportProgress,
+    ),
+    createHttpProfileEvaluation(
+      resolvedProjectDirectory,
+      corpus,
+      recordedAgainstCommit,
+      options,
+      reportProgress,
+    ),
+  ];
   const profileRuns = await runCheckpointedLiveProfileEvaluationMatrix({
     checkpointDirectory: join(privateDirectory, 'live-profile-checkpoints'),
-    profiles: [
-      createEmbeddedProfileEvaluation(
-        resolvedProjectDirectory,
-        corpus,
-        recordedAgainstCommit,
-        EmbeddedInferenceDevicePolicy.CPU,
-        'cpu',
-        reportProgress,
-      ),
-      createEmbeddedProfileEvaluation(
-        resolvedProjectDirectory,
-        corpus,
-        recordedAgainstCommit,
-        options.acceleratedDevice,
-        'accelerated',
-        reportProgress,
-      ),
-      createHttpProfileEvaluation(
-        resolvedProjectDirectory,
-        corpus,
-        recordedAgainstCommit,
-        options,
-        reportProgress,
-      ),
-    ],
+    profiles,
     reportProgress,
   });
   const privacyAudit = assertNoPrivateValuesPublished(
@@ -578,6 +638,7 @@ export async function evaluateQueryPlannedProfileAcceptance(
     recordedAgainstCommit,
     defaultSearchMode: 'hybrid',
     committedCorpus,
+    expectedProfileRuns: profiles.map(({ profileRun }) => profileRun),
     profileRuns,
     requiredSuccessfulBaselineControlCount: successfulBaselineControlCount,
     privacyAudit,

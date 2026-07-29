@@ -180,11 +180,13 @@ void test('QMD HTTP query planner passes shared bounded-plan conformance with re
     adapterConfigurationIdentity,
     /^llama-cpp-http-query-planning-config-v1:[a-f0-9]{64}$/u,
   );
-  assert.match(cacheIdentity, new RegExp(`${adapterConfigurationIdentity}$`, 'u'));
+  assert.match(cacheIdentity, /^recall-query-planning-execution-v1:[a-f0-9]{64}$/u);
   assert.deepEqual(executionIdentity, {
     adapterId: 'llama-cpp-http-query-planning-v1',
+    adapterVersion: 'llama-cpp-http-query-planning-v1',
     backend: 'llama-cpp-http',
     modelProfileId: profile.profileId,
+    modelProfileIdentity: provider.executionIdentity.modelProfileIdentity,
     promptPolicy: profile.promptPolicy,
     grammarVersion: profile.grammarVersion,
     requestTimeoutMilliseconds: 12_345,
@@ -388,16 +390,13 @@ void test('query planning conformance rejects missing protected terms from a cus
     () =>
       measureRecallQueryPlanningProviderConformance({
         provider: {
-          executionIdentity: {
+          executionIdentity: createRecallQueryPlanningExecutionIdentity(
+            profile,
             adapterId,
-            adapterConfigurationIdentity: 'unprotected-query-planning-configuration-v1',
-            backend: RecallInferenceBackend.CUSTOM,
-            cacheIdentity: `${profile.profileId}:${adapterId}:${profile.promptPolicy}:${profile.grammarVersion}:unprotected-query-planning-configuration-v1`,
-            modelProfileId: profile.profileId,
-            promptPolicy: profile.promptPolicy,
-            grammarVersion: profile.grammarVersion,
-            requestTimeoutMilliseconds: 1_000,
-          },
+            'unprotected-query-planning-configuration-v1',
+            RecallInferenceBackend.CUSTOM,
+            1_000,
+          ),
           async planRecallQuery() {
             return [
               { type: 'lex', query: 'unrelated keywords' },

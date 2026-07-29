@@ -3250,11 +3250,15 @@ void test('recall service defaults to fused ranking and reranks only in explicit
     },
   ]);
   assert.equal(deepSearch.searchPolicy.rankingMode, 'deep-rerank');
-  assert.deepEqual(deepSearch.searchPolicy.rerankerIdentity, {
-    profileId: 'qwen-reranking:test-reranker-model',
-    adapterId: 'custom-injected-reranking-v1',
-    cacheIdentity: 'qwen-reranking:test-reranker-model:custom-injected-reranking-v1',
-  });
+  assert.equal(
+    deepSearch.searchPolicy.rerankerIdentity?.profileId,
+    'qwen-reranking:test-reranker-model',
+  );
+  assert.equal(deepSearch.searchPolicy.rerankerIdentity?.adapterId, 'custom-injected-reranking-v1');
+  assert.match(
+    deepSearch.searchPolicy.rerankerIdentity?.cacheIdentity ?? '',
+    /^recall-reranking-execution-v1:[a-f0-9]{64}$/u,
+  );
   assert.equal(defaultSearch.searchPolicy.rerankerIdentity, null);
   assert.equal(deepSearch.searchPolicy.fusedPoolLimit, 6);
   assert.equal(deepSearch.searchPolicy.rerankPoolLimit, 6);

@@ -22,6 +22,13 @@ void test('QMD HTTP query planning identity distinguishes endpoint configuration
   const second = createQmdHttpQueryPlanningProvider(profile, {
     baseUrl: 'http://planner-b.example.test/v1',
   });
+  const equivalent = createQmdHttpQueryPlanningProvider(profile, {
+    baseUrl: 'HTTP://PLANNER-A.EXAMPLE.TEST:80/v1/',
+  });
+  const changedTimeout = createQmdHttpQueryPlanningProvider(profile, {
+    baseUrl: 'http://planner-a.example.test/v1',
+    requestTimeoutMilliseconds: 2_000,
+  });
 
   assert.match(
     first.executionIdentity.adapterConfigurationIdentity,
@@ -32,6 +39,11 @@ void test('QMD HTTP query planning identity distinguishes endpoint configuration
     second.executionIdentity.adapterConfigurationIdentity,
   );
   assert.notEqual(first.executionIdentity.cacheIdentity, second.executionIdentity.cacheIdentity);
+  assert.deepEqual(first.executionIdentity, equivalent.executionIdentity);
+  assert.notEqual(
+    first.executionIdentity.cacheIdentity,
+    changedTimeout.executionIdentity.cacheIdentity,
+  );
   assert.doesNotMatch(
     first.executionIdentity.adapterConfigurationIdentity,
     /planner-a\.example\.test/u,

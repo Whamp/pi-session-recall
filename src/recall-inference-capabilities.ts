@@ -1,5 +1,19 @@
+import { createCanonicalIdentity } from './create-canonical-identity.js';
 import type { RecallInferenceBackend } from './enums.js';
-import type { RecallQueryPlanningModelProfile } from './recall-model-profiles.js';
+import type {
+  RecallQueryPlanningModelProfile,
+  RecallRerankingModelProfile,
+} from './recall-model-profiles.js';
+
+/** Normalizes resolved physical device names for stable hardware-bound execution identity. */
+export function normalizeRecallPhysicalDeviceIdentity(
+  deviceNames: readonly string[],
+): readonly string[] {
+  const normalizedNames = deviceNames
+    .map((deviceName) => deviceName.trim().replace(/\s+/gu, ' ').toLocaleLowerCase('en-US'))
+    .filter(Boolean);
+  return Object.freeze([...new Set(normalizedNames)].sort());
+}
 
 /** Embeds recall queries and index documents through explicitly distinct model operations. */
 export interface RecallEmbeddingProvider {
@@ -44,11 +58,13 @@ export interface RecallQueryPlanningProvider {
 /** Inspectable adapter, policy, timeout, and cache identity for query planning execution. */
 export interface RecallQueryPlanningExecutionIdentity {
   adapterId: string;
+  adapterVersion: string;
   /** Opaque identity for endpoint or device settings that can change generated plans. */
   adapterConfigurationIdentity: string;
   backend: RecallInferenceBackend;
   cacheIdentity: string;
   modelProfileId: string;
+  modelProfileIdentity: string;
   promptPolicy: string;
   grammarVersion: string;
   requestTimeoutMilliseconds: number;
@@ -67,12 +83,26 @@ export function createRecallQueryPlanningExecutionIdentity(
   backend: RecallQueryPlanningExecutionIdentity['backend'],
   requestTimeoutMilliseconds: number,
 ): Readonly<RecallQueryPlanningExecutionIdentity> {
+  const adapterVersion = adapterId;
+  const modelProfileIdentity = createCanonicalIdentity(
+    'recall-query-planning-model-profile-v1',
+    profile,
+  );
   return Object.freeze({
     adapterId,
+    adapterVersion,
     adapterConfigurationIdentity,
     backend,
-    cacheIdentity: `${profile.profileId}:${adapterId}:${profile.promptPolicy}:${profile.grammarVersion}:${adapterConfigurationIdentity}`,
+    cacheIdentity: createCanonicalIdentity('recall-query-planning-execution-v1', {
+      adapterConfigurationIdentity,
+      adapterId,
+      adapterVersion,
+      backend,
+      modelProfileIdentity,
+      requestTimeoutMilliseconds,
+    }),
     modelProfileId: profile.profileId,
+    modelProfileIdentity,
     promptPolicy: profile.promptPolicy,
     grammarVersion: profile.grammarVersion,
     requestTimeoutMilliseconds,
@@ -82,9 +112,13 @@ export function createRecallQueryPlanningExecutionIdentity(
 /** Search and cache identity for one reranking adapter executing one model profile. */
 export interface RecallRerankingExecutionIdentity {
   adapterId: string;
+  adapterVersion: string;
+  adapterConfigurationIdentity: string;
   backend: RecallInferenceBackend;
   cacheIdentity: string;
   modelProfileId: string;
+  modelProfileIdentity: string;
+  requestTimeoutMilliseconds: number;
 }
 
 /** Reranking provider whose profile and adapter identity can be verified before use. */
@@ -94,14 +128,32 @@ export interface RecallIdentifiedRerankingProvider extends RecallRerankingProvid
 
 /** Creates cache identity that changes with either reranker profile or adapter policy. */
 export function createRecallRerankingExecutionIdentity(
-  modelProfileId: string,
+  profile: RecallRerankingModelProfile,
   adapterId: string,
+  adapterConfigurationIdentity: string,
   backend: RecallRerankingExecutionIdentity['backend'],
+  requestTimeoutMilliseconds: number,
 ): Readonly<RecallRerankingExecutionIdentity> {
+  const adapterVersion = adapterId;
+  const modelProfileIdentity = createCanonicalIdentity(
+    'recall-reranking-model-profile-v1',
+    profile,
+  );
   return Object.freeze({
     adapterId,
+    adapterVersion,
+    adapterConfigurationIdentity,
     backend,
-    cacheIdentity: `${modelProfileId}:${adapterId}`,
-    modelProfileId,
+    cacheIdentity: createCanonicalIdentity('recall-reranking-execution-v1', {
+      adapterConfigurationIdentity,
+      adapterId,
+      adapterVersion,
+      backend,
+      modelProfileIdentity,
+      requestTimeoutMilliseconds,
+    }),
+    modelProfileId: profile.profileId,
+    modelProfileIdentity,
+    requestTimeoutMilliseconds,
   });
 }

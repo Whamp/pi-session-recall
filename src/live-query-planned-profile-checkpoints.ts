@@ -24,19 +24,25 @@ const PROFILE_RUN_SCHEMA = Type.Object({
 });
 const QUERY_PLANNING_EXECUTION_IDENTITY_SCHEMA = Type.Object({
   adapterId: Type.String(),
+  adapterVersion: Type.String(),
   adapterConfigurationIdentity: Type.String(),
   backend: EXECUTION_BACKEND_SCHEMA,
   cacheIdentity: Type.String(),
   modelProfileId: Type.String(),
+  modelProfileIdentity: Type.String(),
   promptPolicy: Type.String(),
   grammarVersion: Type.String(),
   requestTimeoutMilliseconds: Type.Number(),
 });
 const RERANKING_EXECUTION_IDENTITY_SCHEMA = Type.Object({
   adapterId: Type.String(),
+  adapterVersion: Type.String(),
+  adapterConfigurationIdentity: Type.String(),
   backend: EXECUTION_BACKEND_SCHEMA,
   cacheIdentity: Type.String(),
   modelProfileId: Type.String(),
+  modelProfileIdentity: Type.String(),
+  requestTimeoutMilliseconds: Type.Number(),
 });
 const CANDIDATE_LIMITS_SCHEMA = Type.Object({
   dense: Type.Number(),
@@ -123,6 +129,18 @@ const LIVE_PROFILE_RESULT_SCHEMA = Type.Object({
   profileIdentity: Type.Object({
     embeddingPolicy: Type.Literal('deterministic-token-hash-v1'),
     embeddingDimensions: Type.Number(),
+    evaluationConfiguration: Type.Object({
+      version: Type.Literal(1),
+      effectiveConfigurationIdentity: Type.String(),
+      rerankerConformanceFixtureIdentity: Type.String(),
+    }),
+    software: Type.Object({
+      repositoryCommit: Type.String(),
+      backendVersion: Type.String(),
+      nodeVersion: Type.String(),
+      platform: Type.String(),
+      architecture: Type.String(),
+    }),
     queryPlanning: Type.Object({
       profileId: Type.String(),
       model: Type.String(),
@@ -205,37 +223,30 @@ const LIVE_PROFILE_RESULT_SCHEMA = Type.Object({
   }),
 });
 const CHECKPOINT_IDENTITY_SCHEMA = Type.Object({
-  version: Type.Literal(1),
+  version: Type.Literal(2),
   recordedAgainstCommit: Type.String(),
   privateManifestSha256: Type.String(),
   profileRun: PROFILE_RUN_SCHEMA,
-  queryPlanningProfileId: Type.String(),
-  queryPlanningCacheIdentity: Type.String(),
-  rerankingProfileId: Type.String(),
-  rerankingCacheIdentity: Type.String(),
-  adapterConfigurationIdentity: Type.String(),
+  profileIdentity: LIVE_PROFILE_RESULT_SCHEMA.properties.profileIdentity,
 });
 const LIVE_PROFILE_CHECKPOINT_SCHEMA = Type.Object({
   checkpointIdentity: CHECKPOINT_IDENTITY_SCHEMA,
   result: LIVE_PROFILE_RESULT_SCHEMA,
 });
 
-/** Exact code, corpus, profile, backend, and device identity required to resume one live profile. */
+/** Exact code, corpus, canonical execution, evaluation, software, and hardware identity for resume. */
 export interface LiveProfileEvaluationCheckpointIdentity {
-  version: 1;
+  version: 2;
   recordedAgainstCommit: string;
   privateManifestSha256: string;
   profileRun: LiveQueryPlannedProfileEvaluationResult['profileRun'];
-  queryPlanningProfileId: string;
-  queryPlanningCacheIdentity: string;
-  rerankingProfileId: string;
-  rerankingCacheIdentity: string;
-  adapterConfigurationIdentity: string;
+  profileIdentity: LiveQueryPlannedProfileEvaluationResult['profileIdentity'];
 }
 
 /** One expensive live profile operation guarded by an identity-bound private checkpoint. */
 export interface CheckpointedLiveProfileEvaluation {
-  checkpointIdentity: LiveProfileEvaluationCheckpointIdentity;
+  profileRun: LiveQueryPlannedProfileEvaluationResult['profileRun'];
+  resolveCheckpointIdentity(): Promise<LiveProfileEvaluationCheckpointIdentity>;
   evaluateProfile(): Promise<LiveQueryPlannedProfileEvaluationResult>;
   disposeProfile?(): Promise<void>;
 }
@@ -259,16 +270,16 @@ function checkpointResultMatchesIdentity(
   return (
     isDeepStrictEqual(result.profileRun, identity.profileRun) &&
     result.corpus.privateManifestSha256 === identity.privateManifestSha256 &&
-    result.profileIdentity.queryPlanning.profileId === identity.queryPlanningProfileId &&
-    result.profileIdentity.queryPlanning.executionIdentity.cacheIdentity ===
-      identity.queryPlanningCacheIdentity &&
-    result.capabilityConformance.queryPlanning.executionIdentity.cacheIdentity ===
-      identity.queryPlanningCacheIdentity &&
-    result.profileIdentity.reranking.profileId === identity.rerankingProfileId &&
-    result.profileIdentity.reranking.executionIdentity.cacheIdentity ===
-      identity.rerankingCacheIdentity &&
-    result.capabilityConformance.reranking.executionIdentity.cacheIdentity ===
-      identity.rerankingCacheIdentity
+    identity.profileIdentity.software.repositoryCommit === identity.recordedAgainstCommit &&
+    isDeepStrictEqual(result.profileIdentity, identity.profileIdentity) &&
+    isDeepStrictEqual(
+      result.capabilityConformance.queryPlanning.executionIdentity,
+      identity.profileIdentity.queryPlanning.executionIdentity,
+    ) &&
+    isDeepStrictEqual(
+      result.capabilityConformance.reranking.executionIdentity,
+      identity.profileIdentity.reranking.executionIdentity,
+    )
   );
 }
 
@@ -308,15 +319,19 @@ export async function runCheckpointedLiveProfileEvaluationMatrix(
   const results: LiveQueryPlannedProfileEvaluationResult[] = [];
   for (const [profileIndex, profile] of options.profiles.entries()) {
     const position = `${profileIndex + 1}/${options.profiles.length}`;
-    const profileId = profile.checkpointIdentity.profileRun.id;
+    const profileId = profile.profileRun.id;
     try {
+      const checkpointIdentity = await profile.resolveCheckpointIdentity();
+      if (!isDeepStrictEqual(checkpointIdentity.profileRun, profile.profileRun)) {
+        throw new Error(`Live profile resolved checkpoint tuple mismatch for ${profileId}`);
+      }
       const checkpointPath = createLiveProfileCheckpointPath(
         options.checkpointDirectory,
         profileId,
       );
       const checkpointResult = await readMatchingLiveProfileCheckpoint(
         checkpointPath,
-        profile.checkpointIdentity,
+        checkpointIdentity,
       );
       if (checkpointResult) {
         options.reportProgress(`Resumed live profile ${profileId} (${position})`);
@@ -326,12 +341,12 @@ export async function runCheckpointedLiveProfileEvaluationMatrix(
 
       options.reportProgress(`Starting live profile ${profileId} (${position})`);
       const result = await profile.evaluateProfile();
-      if (!checkpointResultMatchesIdentity(result, profile.checkpointIdentity)) {
+      if (!checkpointResultMatchesIdentity(result, checkpointIdentity)) {
         throw new Error(`Live profile checkpoint identity mismatch for ${profileId}`);
       }
       await writeAtomicRecallEvaluationFile(
         checkpointPath,
-        `${JSON.stringify({ checkpointIdentity: profile.checkpointIdentity, result }, null, 2)}\n`,
+        `${JSON.stringify({ checkpointIdentity, result }, null, 2)}\n`,
       );
       options.reportProgress(`Completed live profile ${profileId} (${position})`);
       results.push(result);

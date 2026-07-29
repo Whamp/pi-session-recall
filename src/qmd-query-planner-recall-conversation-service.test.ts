@@ -204,7 +204,7 @@ void test('conversation service verifies replacement planners without rebuilding
   assert.equal(replacementVerification.profileId, replacementProfile.profileId);
   assert.equal(
     replacementVerification.executionIdentity.cacheIdentity,
-    'replacement-query-planner-v2:replacement-query-planning-v2:qmd-query-expansion-no-think-v1:qmd-bounded-query-plan-v2:replacement-planner-configuration',
+    replacementPlanner.executionIdentity.cacheIdentity,
   );
   assert.equal(replacementSearch.searchPolicy.rankingMode, 'hybrid');
 });

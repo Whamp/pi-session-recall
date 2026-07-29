@@ -137,12 +137,14 @@ void test('embedded QMD query planner passes shared conformance with profile gra
     adapterConfigurationIdentity,
     /^node-llama-cpp-qmd-query-planning-config-v1:[a-f0-9]{64}$/u,
   );
-  assert.equal(adapterConfigurationIdentity, pendingAdapterConfigurationIdentity);
-  assert.match(cacheIdentity, new RegExp(`${adapterConfigurationIdentity}$`, 'u'));
+  assert.notEqual(adapterConfigurationIdentity, pendingAdapterConfigurationIdentity);
+  assert.match(cacheIdentity, /^recall-query-planning-execution-v1:[a-f0-9]{64}$/u);
   assert.deepEqual(executionIdentity, {
     adapterId: 'node-llama-cpp-qmd-query-planning-v1',
+    adapterVersion: 'node-llama-cpp-qmd-query-planning-v1',
     backend: 'embedded',
     modelProfileId: profile.profileId,
+    modelProfileIdentity: provider.executionIdentity.modelProfileIdentity,
     promptPolicy: profile.promptPolicy,
     grammarVersion: profile.grammarVersion,
     requestTimeoutMilliseconds: 4_321,
@@ -150,7 +152,10 @@ void test('embedded QMD query planner passes shared conformance with profile gra
     deviceNames: ['CPU'],
     devicePolicy: 'cpu',
     fallbackFromComputeBackend: null,
+    contextSize: 2_048,
+    threads: null,
     nodeLlamaCppVersion: '3.18.1',
+    physicalDeviceIdentity: ['cpu'],
     probedComputeBackends: [],
   });
   assert.deepEqual(measurement, {

@@ -13,31 +13,61 @@ import {
   runCheckpointedLiveProfileEvaluationMatrix,
   type LiveProfileEvaluationCheckpointIdentity,
 } from './live-query-planned-profile-checkpoints.js';
+import {
+  createRecallQueryPlanningExecutionIdentity,
+  createRecallRerankingExecutionIdentity,
+} from './recall-inference-capabilities.js';
+import {
+  createRecommendedQmdQueryPlanningModelProfile,
+  createRecommendedQwenRerankingModelProfile,
+} from './recall-model-profiles.js';
 import type { LiveQueryPlannedProfileEvaluationResult } from './query-planned-recall-evaluation.js';
 
 function createCheckpointIdentity(
   recordedAgainstCommit: string,
+  result: LiveQueryPlannedProfileEvaluationResult,
 ): LiveProfileEvaluationCheckpointIdentity {
   return {
-    version: 1,
+    version: 2,
     recordedAgainstCommit,
-    privateManifestSha256: 'private-manifest-sha256',
-    profileRun: {
-      id: 'embedded-cpu',
-      backend: RecallInferenceBackend.EMBEDDED,
-      deviceClass: 'cpu',
-      device: 'cpu',
-      backendVersion: 'node-llama-cpp@3.18.1 / llama.cpp b8390',
-    },
-    queryPlanningProfileId: 'qmd-query-expansion-1.7b-q4-k-m-v1',
-    queryPlanningCacheIdentity: 'planner-cache-identity',
-    rerankingProfileId: 'qwen3-reranker-0.6b-q8-0-v1',
-    rerankingCacheIdentity: 'reranker-cache-identity',
-    adapterConfigurationIdentity: 'embedded-cpu-configuration',
+    privateManifestSha256: result.corpus.privateManifestSha256,
+    profileRun: result.profileRun,
+    profileIdentity: result.profileIdentity,
   };
 }
 
-function createProfileResult(): LiveQueryPlannedProfileEvaluationResult {
+function createProfileResult(
+  recordedAgainstCommit = 'commit-one',
+  physicalDeviceIdentity = 'cpu',
+): LiveQueryPlannedProfileEvaluationResult {
+  const queryPlanningProfile = createRecommendedQmdQueryPlanningModelProfile();
+  const rerankingProfile = createRecommendedQwenRerankingModelProfile();
+  const queryPlanningExecutionIdentity = {
+    ...createRecallQueryPlanningExecutionIdentity(
+      queryPlanningProfile,
+      'embedded-qmd-query-planner-v1',
+      `planner-configuration-${physicalDeviceIdentity}`,
+      RecallInferenceBackend.EMBEDDED,
+      300_000,
+    ),
+    computeBackend: 'cpu',
+    devicePolicy: 'cpu',
+    fallbackFromComputeBackend: null,
+    physicalDeviceIdentity: [physicalDeviceIdentity],
+  };
+  const rerankingExecutionIdentity = {
+    ...createRecallRerankingExecutionIdentity(
+      rerankingProfile,
+      'embedded-qwen-reranker-v1',
+      `reranker-configuration-${physicalDeviceIdentity}`,
+      RecallInferenceBackend.EMBEDDED,
+      300_000,
+    ),
+    computeBackend: 'cpu',
+    devicePolicy: 'cpu',
+    fallbackFromComputeBackend: null,
+    physicalDeviceIdentity: [physicalDeviceIdentity],
+  };
   return {
     version: 1,
     profileRun: {
@@ -57,32 +87,30 @@ function createProfileResult(): LiveQueryPlannedProfileEvaluationResult {
     profileIdentity: {
       embeddingPolicy: 'deterministic-token-hash-v1',
       embeddingDimensions: 64,
+      evaluationConfiguration: {
+        version: 1,
+        effectiveConfigurationIdentity: 'effective-evaluation-configuration-identity',
+        rerankerConformanceFixtureIdentity: 'reranker-conformance-fixture-identity',
+      },
+      software: {
+        repositoryCommit: recordedAgainstCommit,
+        backendVersion: 'node-llama-cpp@3.18.1 / llama.cpp b8390',
+        nodeVersion: 'v24.0.0',
+        platform: 'linux',
+        architecture: 'x64',
+      },
       queryPlanning: {
         profileId: 'qmd-query-expansion-1.7b-q4-k-m-v1',
         model: 'qmd-query-expansion-1.7B-q4_k_m',
         promptPolicy: 'qmd-query-expansion-v1',
         grammarVersion: 'qmd-query-plan-v1',
-        executionIdentity: {
-          adapterId: 'embedded-qmd-query-planner-v1',
-          adapterConfigurationIdentity: 'planner-configuration-identity',
-          backend: RecallInferenceBackend.EMBEDDED,
-          cacheIdentity: 'planner-cache-identity',
-          modelProfileId: 'qmd-query-expansion-1.7b-q4-k-m-v1',
-          promptPolicy: 'qmd-query-expansion-v1',
-          grammarVersion: 'qmd-query-plan-v1',
-          requestTimeoutMilliseconds: 300_000,
-        },
+        executionIdentity: queryPlanningExecutionIdentity,
       },
       reranking: {
         profileId: 'qwen3-reranker-0.6b-q8-0-v1',
         model: 'qwen3-reranker-0.6b-q8_0',
         scorePolicy: 'qwen3-logit-sigmoid-v1',
-        executionIdentity: {
-          adapterId: 'embedded-qwen-reranker-v1',
-          backend: RecallInferenceBackend.EMBEDDED,
-          cacheIdentity: 'reranker-cache-identity',
-          modelProfileId: 'qwen3-reranker-0.6b-q8-0-v1',
-        },
+        executionIdentity: rerankingExecutionIdentity,
       },
     },
     capabilityConformance: {
@@ -91,16 +119,7 @@ function createProfileResult(): LiveQueryPlannedProfileEvaluationResult {
         model: 'qmd-query-expansion-1.7B-q4_k_m',
         promptPolicy: 'qmd-query-expansion-v1',
         grammarVersion: 'qmd-query-plan-v1',
-        executionIdentity: {
-          adapterId: 'embedded-qmd-query-planner-v1',
-          adapterConfigurationIdentity: 'planner-configuration-identity',
-          backend: RecallInferenceBackend.EMBEDDED,
-          cacheIdentity: 'planner-cache-identity',
-          modelProfileId: 'qmd-query-expansion-1.7b-q4-k-m-v1',
-          promptPolicy: 'qmd-query-expansion-v1',
-          grammarVersion: 'qmd-query-plan-v1',
-          requestTimeoutMilliseconds: 300_000,
-        },
+        executionIdentity: queryPlanningExecutionIdentity,
         measurement: {
           plannedQueryCount: 2,
           lexQueryCount: 1,
@@ -113,12 +132,7 @@ function createProfileResult(): LiveQueryPlannedProfileEvaluationResult {
         profileId: 'qwen3-reranker-0.6b-q8-0-v1',
         model: 'qwen3-reranker-0.6b-q8_0',
         scorePolicy: 'qwen3-logit-sigmoid-v1',
-        executionIdentity: {
-          adapterId: 'embedded-qwen-reranker-v1',
-          backend: RecallInferenceBackend.EMBEDDED,
-          cacheIdentity: 'reranker-cache-identity',
-          modelProfileId: 'qwen3-reranker-0.6b-q8-0-v1',
-        },
+        executionIdentity: rerankingExecutionIdentity,
         measurement: {
           queryCount: 1,
           documentCount: 2,
@@ -228,15 +242,18 @@ void test('live profile matrix resumes only an exact identity-bound checkpoint',
   const checkpointDirectory = await mkdtemp(join(tmpdir(), 'recall-live-profile-checkpoints-'));
   const progress: string[] = [];
   let runCount = 0;
-  const firstIdentity = createCheckpointIdentity('commit-one');
   const result = createProfileResult();
+  const firstIdentity = createCheckpointIdentity('commit-one', result);
 
   try {
     const firstRun = await runCheckpointedLiveProfileEvaluationMatrix({
       checkpointDirectory,
       profiles: [
         {
-          checkpointIdentity: firstIdentity,
+          profileRun: firstIdentity.profileRun,
+          async resolveCheckpointIdentity() {
+            return firstIdentity;
+          },
           async evaluateProfile() {
             runCount += 1;
             return result;
@@ -259,7 +276,10 @@ void test('live profile matrix resumes only an exact identity-bound checkpoint',
       checkpointDirectory,
       profiles: [
         {
-          checkpointIdentity: firstIdentity,
+          profileRun: firstIdentity.profileRun,
+          async resolveCheckpointIdentity() {
+            return firstIdentity;
+          },
           async evaluateProfile() {
             throw new Error('Exact checkpoint should have resumed');
           },
@@ -274,15 +294,19 @@ void test('live profile matrix resumes only an exact identity-bound checkpoint',
     assert.deepEqual(progress, ['Resumed live profile embedded-cpu (1/1)']);
 
     progress.length = 0;
-    const changedIdentity = createCheckpointIdentity('commit-two');
+    const changedResult = createProfileResult('commit-two');
+    const changedIdentity = createCheckpointIdentity('commit-two', changedResult);
     await runCheckpointedLiveProfileEvaluationMatrix({
       checkpointDirectory,
       profiles: [
         {
-          checkpointIdentity: changedIdentity,
+          profileRun: changedIdentity.profileRun,
+          async resolveCheckpointIdentity() {
+            return changedIdentity;
+          },
           async evaluateProfile() {
             runCount += 1;
-            return result;
+            return changedResult;
           },
         },
       ],
@@ -291,6 +315,36 @@ void test('live profile matrix resumes only an exact identity-bound checkpoint',
       },
     });
     assert.equal(runCount, 2);
+    assert.deepEqual(progress, [
+      'Starting live profile embedded-cpu (1/1)',
+      'Completed live profile embedded-cpu (1/1)',
+    ]);
+
+    progress.length = 0;
+    const replacementDeviceResult = createProfileResult('commit-two', 'replacement cpu');
+    const replacementDeviceIdentity = createCheckpointIdentity(
+      'commit-two',
+      replacementDeviceResult,
+    );
+    await runCheckpointedLiveProfileEvaluationMatrix({
+      checkpointDirectory,
+      profiles: [
+        {
+          profileRun: replacementDeviceIdentity.profileRun,
+          async resolveCheckpointIdentity() {
+            return replacementDeviceIdentity;
+          },
+          async evaluateProfile() {
+            runCount += 1;
+            return replacementDeviceResult;
+          },
+        },
+      ],
+      reportProgress(message) {
+        progress.push(message);
+      },
+    });
+    assert.equal(runCount, 3);
     assert.deepEqual(progress, [
       'Starting live profile embedded-cpu (1/1)',
       'Completed live profile embedded-cpu (1/1)',

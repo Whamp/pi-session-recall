@@ -2,10 +2,12 @@ import { createHash } from 'node:crypto';
 import { lstat, mkdir, readFile, rm } from 'node:fs/promises';
 import { basename, dirname, resolve } from 'node:path';
 import { performance } from 'node:perf_hooks';
+import { isDeepStrictEqual } from 'node:util';
 
 import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 
+import { createCanonicalIdentity } from './create-canonical-identity.js';
 import {
   QueryPlannedRecallBaselineOutcome,
   QueryPlannedRecallControlKind,
@@ -828,10 +830,103 @@ export interface LiveRerankerConformanceFixture {
   maximumAbsoluteDifference: number;
 }
 
+/** Canonical non-corpus evaluation inputs that can change measurements or release gates. */
+export interface LiveQueryPlannedEvaluationConfigurationIdentity {
+  version: 1;
+  effectiveConfigurationIdentity: string;
+  rerankerConformanceFixtureIdentity: string;
+}
+
+/** Software revisions that bound one published live profile measurement. */
+export interface LiveQueryPlannedSoftwareIdentity {
+  repositoryCommit: string;
+  backendVersion: string;
+  nodeVersion: string;
+  platform: string;
+  architecture: string;
+}
+
+/** Complete canonical profile, adapter, evaluation, and software execution identity. */
+export interface LiveQueryPlannedProfileIdentity {
+  embeddingPolicy: 'deterministic-token-hash-v1';
+  embeddingDimensions: number;
+  evaluationConfiguration: LiveQueryPlannedEvaluationConfigurationIdentity;
+  software: LiveQueryPlannedSoftwareIdentity;
+  queryPlanning: {
+    profileId: string;
+    model: string;
+    promptPolicy: string;
+    grammarVersion: string;
+    executionIdentity: RecallIdentifiedQueryPlanningProvider['executionIdentity'];
+  };
+  reranking: {
+    profileId: string;
+    model: string;
+    scorePolicy: string;
+    executionIdentity: RecallIdentifiedRerankingProvider['executionIdentity'];
+  };
+}
+
+/** Creates the canonical effective evaluation and conformance-fixture identity. */
+export function createLiveQueryPlannedEvaluationConfigurationIdentity(
+  baseConfig: RecallConversationConfig,
+  rerankerConformance: LiveRerankerConformanceFixture,
+): LiveQueryPlannedEvaluationConfigurationIdentity {
+  return {
+    version: 1,
+    effectiveConfigurationIdentity: createCanonicalIdentity(
+      'live-query-planned-effective-evaluation-config-v1',
+      {
+        chunkPolicy: baseConfig.chunkPolicy ?? null,
+        embeddingBatchSize: baseConfig.embeddingBatchSize,
+        embeddingDimensions: QUERY_PLANNED_RECALL_EVALUATION_EMBEDDING_DIMENSIONS,
+        embeddingPolicy: 'deterministic-token-hash-v1',
+        projectLineages: baseConfig.projectLineages,
+      },
+    ),
+    rerankerConformanceFixtureIdentity: createCanonicalIdentity(
+      'live-query-planned-reranker-conformance-fixture-v1',
+      rerankerConformance,
+    ),
+  };
+}
+
+/** Creates the one canonical identity published by and checked against a live profile result. */
+export function createLiveQueryPlannedProfileIdentity(options: {
+  evaluationConfiguration: LiveQueryPlannedEvaluationConfigurationIdentity;
+  software: LiveQueryPlannedSoftwareIdentity;
+  queryPlanningProfile: RecallQueryPlanningModelProfile;
+  queryPlanningExecutionIdentity: RecallIdentifiedQueryPlanningProvider['executionIdentity'];
+  rerankingProfile: RecallRerankingModelProfile;
+  rerankingExecutionIdentity: RecallIdentifiedRerankingProvider['executionIdentity'];
+}): LiveQueryPlannedProfileIdentity {
+  return {
+    embeddingPolicy: 'deterministic-token-hash-v1',
+    embeddingDimensions: QUERY_PLANNED_RECALL_EVALUATION_EMBEDDING_DIMENSIONS,
+    evaluationConfiguration: { ...options.evaluationConfiguration },
+    software: { ...options.software },
+    queryPlanning: {
+      profileId: options.queryPlanningProfile.profileId,
+      model: options.queryPlanningProfile.model,
+      promptPolicy: options.queryPlanningProfile.promptPolicy,
+      grammarVersion: options.queryPlanningProfile.grammarVersion,
+      executionIdentity: options.queryPlanningExecutionIdentity,
+    },
+    reranking: {
+      profileId: options.rerankingProfile.profileId,
+      model: options.rerankingProfile.model,
+      scorePolicy: options.rerankingProfile.scorePolicy,
+      executionIdentity: options.rerankingExecutionIdentity,
+    },
+  };
+}
+
 /** Live planner and reranker inputs for one privacy-safe private-corpus evaluation. */
 export interface RunLiveQueryPlannedProfileEvaluationOptions extends PrivateQueryPlannedRecallEvaluationBaseOptions {
   workDirectory: string;
   profileRun: LiveQueryPlannedProfileRunIdentity;
+  evaluationConfiguration: LiveQueryPlannedEvaluationConfigurationIdentity;
+  software: LiveQueryPlannedSoftwareIdentity;
   queryPlanningProfile: RecallQueryPlanningModelProfile;
   queryPlanner: RecallIdentifiedQueryPlanningProvider;
   rerankingProfile: RecallRerankingModelProfile;
@@ -858,23 +953,7 @@ export interface LiveQueryPlannedProfileEvaluationResult {
     indexedDocumentCount: number;
     caseCount: number;
   };
-  profileIdentity: {
-    embeddingPolicy: 'deterministic-token-hash-v1';
-    embeddingDimensions: number;
-    queryPlanning: {
-      profileId: string;
-      model: string;
-      promptPolicy: string;
-      grammarVersion: string;
-      executionIdentity: RecallIdentifiedQueryPlanningProvider['executionIdentity'];
-    };
-    reranking: {
-      profileId: string;
-      model: string;
-      scorePolicy: string;
-      executionIdentity: RecallIdentifiedRerankingProvider['executionIdentity'];
-    };
-  };
+  profileIdentity: LiveQueryPlannedProfileIdentity;
   capabilityConformance: {
     queryPlanning: RecallQueryPlanningCapabilityVerification;
     reranking: RecallRerankingCapabilityVerification;
@@ -1216,23 +1295,14 @@ export async function runLiveQueryPlannedProfileEvaluation(
       indexedDocumentCount: indexed.totalChunks,
       caseCount: cases.length,
     },
-    profileIdentity: {
-      embeddingPolicy: 'deterministic-token-hash-v1',
-      embeddingDimensions: QUERY_PLANNED_RECALL_EVALUATION_EMBEDDING_DIMENSIONS,
-      queryPlanning: {
-        profileId: options.queryPlanningProfile.profileId,
-        model: options.queryPlanningProfile.model,
-        promptPolicy: options.queryPlanningProfile.promptPolicy,
-        grammarVersion: options.queryPlanningProfile.grammarVersion,
-        executionIdentity: options.queryPlanner.executionIdentity,
-      },
-      reranking: {
-        profileId: options.rerankingProfile.profileId,
-        model: options.rerankingProfile.model,
-        scorePolicy: options.rerankingProfile.scorePolicy,
-        executionIdentity: options.reranker.executionIdentity,
-      },
-    },
+    profileIdentity: createLiveQueryPlannedProfileIdentity({
+      evaluationConfiguration: options.evaluationConfiguration,
+      software: options.software,
+      queryPlanningProfile: options.queryPlanningProfile,
+      queryPlanningExecutionIdentity: options.queryPlanner.executionIdentity,
+      rerankingProfile: options.rerankingProfile,
+      rerankingExecutionIdentity: options.reranker.executionIdentity,
+    }),
     capabilityConformance: {
       queryPlanning: queryPlanningConformance,
       reranking: rerankingConformance,
@@ -1284,6 +1354,7 @@ export interface CreateLiveQueryPlannedProfileAcceptanceOptions {
   recordedAgainstCommit: string;
   defaultSearchMode: 'hybrid';
   committedCorpus: readonly CommittedCorpusLiveProfileEvidence[];
+  expectedProfileRuns: readonly LiveQueryPlannedProfileRunIdentity[];
   profileRuns: readonly LiveQueryPlannedProfileEvaluationResult[];
   requiredSuccessfulBaselineControlCount: number;
   privacyAudit: { checkedValueCount: number; leakCount: 0 };
@@ -1350,24 +1421,67 @@ function assertLiveProfileExecutionIdentity(run: LiveQueryPlannedProfileEvaluati
   const conformancePlannerIdentity = run.capabilityConformance.queryPlanning.executionIdentity;
   const conformanceRerankerIdentity = run.capabilityConformance.reranking.executionIdentity;
   if (
-    conformancePlannerIdentity.adapterId !== planner.executionIdentity.adapterId ||
-    conformancePlannerIdentity.adapterConfigurationIdentity !==
-      planner.executionIdentity.adapterConfigurationIdentity ||
-    conformancePlannerIdentity.backend !== planner.executionIdentity.backend ||
-    conformancePlannerIdentity.cacheIdentity !== planner.executionIdentity.cacheIdentity ||
-    conformancePlannerIdentity.modelProfileId !== planner.executionIdentity.modelProfileId ||
-    conformancePlannerIdentity.promptPolicy !== planner.executionIdentity.promptPolicy ||
-    conformancePlannerIdentity.grammarVersion !== planner.executionIdentity.grammarVersion ||
-    conformancePlannerIdentity.requestTimeoutMilliseconds !==
-      planner.executionIdentity.requestTimeoutMilliseconds ||
-    conformanceRerankerIdentity.adapterId !== reranker.executionIdentity.adapterId ||
-    conformanceRerankerIdentity.backend !== reranker.executionIdentity.backend ||
-    conformanceRerankerIdentity.cacheIdentity !== reranker.executionIdentity.cacheIdentity ||
-    conformanceRerankerIdentity.modelProfileId !== reranker.executionIdentity.modelProfileId
+    !isDeepStrictEqual(conformancePlannerIdentity, planner.executionIdentity) ||
+    !isDeepStrictEqual(conformanceRerankerIdentity, reranker.executionIdentity)
   ) {
     throw new Error(
       `Live query-planned profile acceptance conformance identity mismatch for ${run.profileRun.id}`,
     );
+  }
+  if (run.profileIdentity.software.backendVersion !== (run.profileRun.backendVersion ?? '')) {
+    throw new Error(
+      `Live query-planned profile acceptance software identity mismatch for ${run.profileRun.id}`,
+    );
+  }
+  if (run.profileRun.backend === RecallInferenceBackend.EMBEDDED) {
+    const plannerComputeBackend =
+      'computeBackend' in planner.executionIdentity
+        ? planner.executionIdentity.computeBackend
+        : undefined;
+    const rerankerComputeBackend =
+      'computeBackend' in reranker.executionIdentity
+        ? reranker.executionIdentity.computeBackend
+        : undefined;
+    const plannerDevicePolicy =
+      'devicePolicy' in planner.executionIdentity
+        ? planner.executionIdentity.devicePolicy
+        : undefined;
+    const rerankerDevicePolicy =
+      'devicePolicy' in reranker.executionIdentity
+        ? reranker.executionIdentity.devicePolicy
+        : undefined;
+    const plannerFallback =
+      'fallbackFromComputeBackend' in planner.executionIdentity
+        ? planner.executionIdentity.fallbackFromComputeBackend
+        : undefined;
+    const rerankerFallback =
+      'fallbackFromComputeBackend' in reranker.executionIdentity
+        ? reranker.executionIdentity.fallbackFromComputeBackend
+        : undefined;
+    const plannerPhysicalDeviceIdentity =
+      'physicalDeviceIdentity' in planner.executionIdentity
+        ? planner.executionIdentity.physicalDeviceIdentity
+        : undefined;
+    const rerankerPhysicalDeviceIdentity =
+      'physicalDeviceIdentity' in reranker.executionIdentity
+        ? reranker.executionIdentity.physicalDeviceIdentity
+        : undefined;
+    const resolvedDeviceClass = plannerComputeBackend === 'cpu' ? 'cpu' : 'accelerated';
+    if (
+      plannerComputeBackend !== rerankerComputeBackend ||
+      plannerDevicePolicy !== run.profileRun.device ||
+      rerankerDevicePolicy !== run.profileRun.device ||
+      resolvedDeviceClass !== run.profileRun.deviceClass ||
+      plannerFallback !== null ||
+      rerankerFallback !== null ||
+      !Array.isArray(plannerPhysicalDeviceIdentity) ||
+      plannerPhysicalDeviceIdentity.length === 0 ||
+      !isDeepStrictEqual(plannerPhysicalDeviceIdentity, rerankerPhysicalDeviceIdentity)
+    ) {
+      throw new Error(
+        `Live query-planned profile acceptance resolved hardware identity mismatch for ${run.profileRun.id}`,
+      );
+    }
   }
   for (const measuredCase of run.cases) {
     const fusedDocumentLimit = measuredCase.queryPlanned.listWork.reduce(
@@ -1386,6 +1500,48 @@ function assertLiveProfileExecutionIdentity(run: LiveQueryPlannedProfileEvaluati
         `Live query-planned profile acceptance search policy mismatch for ${run.profileRun.id}/${measuredCase.caseId}`,
       );
     }
+  }
+}
+
+function assertExactLiveProfileAcceptanceMatrix(
+  expectedProfileRuns: readonly LiveQueryPlannedProfileRunIdentity[],
+  profileRuns: readonly LiveQueryPlannedProfileEvaluationResult[],
+): void {
+  const expectedEmbeddedCpuCount = expectedProfileRuns.filter(
+    (run) => run.backend === RecallInferenceBackend.EMBEDDED && run.deviceClass === 'cpu',
+  ).length;
+  const expectedEmbeddedAcceleratedCount = expectedProfileRuns.filter(
+    (run) => run.backend === RecallInferenceBackend.EMBEDDED && run.deviceClass === 'accelerated',
+  ).length;
+  const expectedHttpCount = expectedProfileRuns.filter(
+    (run) => run.backend === RecallInferenceBackend.LLAMA_CPP_HTTP,
+  ).length;
+  if (
+    expectedProfileRuns.length !== 3 ||
+    expectedEmbeddedCpuCount !== 1 ||
+    expectedEmbeddedAcceleratedCount !== 1 ||
+    expectedHttpCount !== 1
+  ) {
+    throw new Error(
+      'Live query-planned profile acceptance failed: producer matrix must declare exactly embedded CPU, embedded accelerated, and one HTTP tuple',
+    );
+  }
+  const unmatchedActualRuns = profileRuns.map(({ profileRun }) => profileRun);
+  for (const expectedProfileRun of expectedProfileRuns) {
+    const matchingIndex = unmatchedActualRuns.findIndex((actualProfileRun) =>
+      isDeepStrictEqual(actualProfileRun, expectedProfileRun),
+    );
+    if (matchingIndex < 0) {
+      throw new Error(
+        `Live query-planned profile acceptance failed: missing or substituted profile tuple ${expectedProfileRun.id}`,
+      );
+    }
+    unmatchedActualRuns.splice(matchingIndex, 1);
+  }
+  if (unmatchedActualRuns.length > 0) {
+    throw new Error(
+      'Live query-planned profile acceptance failed: duplicate or extra profile tuples are not allowed',
+    );
   }
 }
 
@@ -1452,20 +1608,7 @@ export function createPublishableLiveQueryPlannedProfileAcceptance(
       'Live query-planned profile acceptance failed: accepted Octen baseline plus measured CPU and accelerated EmbeddingGemma candidates are required',
     );
   }
-  const measuredBackends = new Set(options.profileRuns.map(({ profileRun }) => profileRun.backend));
-  const measuredDeviceClasses = new Set(
-    options.profileRuns.map(({ profileRun }) => profileRun.deviceClass),
-  );
-  if (
-    !measuredBackends.has(RecallInferenceBackend.EMBEDDED) ||
-    !measuredBackends.has(RecallInferenceBackend.LLAMA_CPP_HTTP) ||
-    !measuredDeviceClasses.has('cpu') ||
-    !measuredDeviceClasses.has('accelerated')
-  ) {
-    throw new Error(
-      'Live query-planned profile acceptance failed: embedded, HTTP, CPU, and accelerated profile runs are required',
-    );
-  }
+  assertExactLiveProfileAcceptanceMatrix(options.expectedProfileRuns, options.profileRuns);
   const runIds = options.profileRuns.map(({ profileRun }) => profileRun.id);
   if (new Set(runIds).size !== runIds.length) {
     throw new Error('Live query-planned profile acceptance failed: profile run IDs must be unique');
@@ -1481,6 +1624,11 @@ export function createPublishableLiveQueryPlannedProfileAcceptance(
     if (run.corpus.privateManifestSha256 !== privateManifestSha256) {
       throw new Error(
         'Live query-planned profile acceptance failed: every run must bind the same private manifest',
+      );
+    }
+    if (run.profileIdentity.software.repositoryCommit !== options.recordedAgainstCommit) {
+      throw new Error(
+        `Live query-planned profile acceptance failed: software commit mismatch for ${run.profileRun.id}`,
       );
     }
     assertLiveProfileExecutionIdentity(run);

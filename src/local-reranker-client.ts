@@ -1,7 +1,8 @@
 import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 
-const DEFAULT_LOCAL_RERANKER_REQUEST_TIMEOUT_MILLISECONDS = 60_000;
+/** Default local reranker request timeout in milliseconds. */
+export const DEFAULT_LOCAL_RERANKER_REQUEST_TIMEOUT_MILLISECONDS = 60_000;
 
 const LOCAL_RERANKER_RESPONSE_SCHEMA = Type.Object({
   model: Type.String({ minLength: 1 }),
@@ -34,7 +35,8 @@ export interface LocalRerankerClient {
   ): Promise<number[]>;
 }
 
-function createLocalRerankerEndpoint(baseUrl: string): string {
+/** Normalizes one HTTP reranker base URL to the exact request endpoint used by the adapter. */
+export function normalizeLocalRerankerEndpoint(baseUrl: string): string {
   if (!URL.canParse(baseUrl)) {
     throw new Error(`Recall reranker base URL invalid: ${baseUrl}`);
   }
@@ -48,7 +50,7 @@ function createLocalRerankerEndpoint(baseUrl: string): string {
 
 /** Creates a validated OpenAI-compatible client for the locally served Qwen reranker. */
 export function createLocalRerankerClient(config: LocalRerankerClientConfig): LocalRerankerClient {
-  const endpoint = createLocalRerankerEndpoint(config.baseUrl);
+  const endpoint = normalizeLocalRerankerEndpoint(config.baseUrl);
   const model = config.model.trim();
   if (!model) {
     throw new Error('Recall reranker model invalid: expected a non-blank model name');

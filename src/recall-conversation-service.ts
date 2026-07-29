@@ -899,8 +899,12 @@ function readRecallRerankingExecutionIdentity(
   if (
     !isUnknownRecord(identity) ||
     typeof identity.adapterId !== 'string' ||
+    typeof identity.adapterVersion !== 'string' ||
+    typeof identity.adapterConfigurationIdentity !== 'string' ||
     typeof identity.cacheIdentity !== 'string' ||
-    typeof identity.modelProfileId !== 'string'
+    typeof identity.modelProfileId !== 'string' ||
+    typeof identity.modelProfileIdentity !== 'string' ||
+    typeof identity.requestTimeoutMilliseconds !== 'number'
   ) {
     return undefined;
   }
@@ -916,9 +920,13 @@ function readRecallRerankingExecutionIdentity(
   }
   return {
     adapterId: identity.adapterId,
+    adapterVersion: identity.adapterVersion,
+    adapterConfigurationIdentity: identity.adapterConfigurationIdentity,
     backend,
     cacheIdentity: identity.cacheIdentity,
     modelProfileId: identity.modelProfileId,
+    modelProfileIdentity: identity.modelProfileIdentity,
+    requestTimeoutMilliseconds: identity.requestTimeoutMilliseconds,
   };
 }
 
@@ -1008,9 +1016,11 @@ export function createRecallConversationService(
     ? (dependencies.rerankerExecutionIdentity ??
       providerExecutionIdentity ??
       createRecallRerankingExecutionIdentity(
-        rerankingProfile.profileId,
+        rerankingProfile,
         'custom-injected-reranking-v1',
+        'custom-injected-reranking-config-v1',
         RecallInferenceBackend.CUSTOM,
+        60_000,
       ))
     : null;
   if (
@@ -1020,6 +1030,13 @@ export function createRecallConversationService(
   ) {
     throw new Error(
       `Recall reranker profile identity mismatch: expected ${rerankingProfile.profileId}, received ${rerankerExecutionIdentity.modelProfileId}`,
+    );
+  }
+  function readCurrentRerankerExecutionIdentity(): RecallRerankingExecutionIdentity | null {
+    return (
+      dependencies.rerankerExecutionIdentity ??
+      (reranker ? readRecallRerankingExecutionIdentity(reranker) : undefined) ??
+      rerankerExecutionIdentity
     );
   }
   const queryPlanningProfile = dependencies.queryPlanningProfile;
@@ -1594,7 +1611,9 @@ export function createRecallConversationService(
       }
       const measurement = await measureRecallRerankingProviderConformance({
         provider: {
-          executionIdentity: rerankerExecutionIdentity,
+          get executionIdentity() {
+            return readCurrentRerankerExecutionIdentity() ?? rerankerExecutionIdentity;
+          },
           rerankDocuments: reranker.rerankDocuments.bind(reranker),
         },
         profile: rerankingProfile,
@@ -1610,7 +1629,7 @@ export function createRecallConversationService(
         profileId: rerankingProfile.profileId,
         model: rerankingProfile.model,
         scorePolicy: rerankingProfile.scorePolicy,
-        executionIdentity: rerankerExecutionIdentity,
+        executionIdentity: readCurrentRerankerExecutionIdentity() ?? rerankerExecutionIdentity,
         measurement,
       };
     },
@@ -2074,6 +2093,7 @@ export function createRecallConversationService(
                           ? RecallEvidenceRelation.SAME_SESSION_ORIGIN
                           : RecallEvidenceRelation.SAME_REPOSITORY,
                 }));
+                const completedRerankerExecutionIdentity = readCurrentRerankerExecutionIdentity();
                 return {
                   results,
                   totalChunks: store.count(),
@@ -2091,11 +2111,11 @@ export function createRecallConversationService(
                     rerankerModel:
                       mode !== 'hybrid' && rerankingProfile ? rerankingProfile.model : null,
                     rerankerIdentity:
-                      mode !== 'hybrid' && rerankingProfile && rerankerExecutionIdentity
+                      mode !== 'hybrid' && rerankingProfile && completedRerankerExecutionIdentity
                         ? {
                             profileId: rerankingProfile.profileId,
-                            adapterId: rerankerExecutionIdentity.adapterId,
-                            cacheIdentity: rerankerExecutionIdentity.cacheIdentity,
+                            adapterId: completedRerankerExecutionIdentity.adapterId,
+                            cacheIdentity: completedRerankerExecutionIdentity.cacheIdentity,
                           }
                         : null,
                     activeBranchPrior: RECALL_ACTIVE_BRANCH_PRIOR,

@@ -1,5 +1,8 @@
+import { createCanonicalIdentity } from './create-canonical-identity.js';
 import {
   createLocalRerankerClient,
+  DEFAULT_LOCAL_RERANKER_REQUEST_TIMEOUT_MILLISECONDS,
+  normalizeLocalRerankerEndpoint,
   type LocalRerankerClientConfig,
 } from './local-reranker-client.js';
 import {
@@ -17,15 +20,23 @@ export function createQwenHttpRerankingProvider(
   profile: QwenRerankingModelProfile,
   backend: QwenHttpRerankingBackendConfig,
 ): RecallIdentifiedRerankingProvider {
+  const normalizedEndpoint = normalizeLocalRerankerEndpoint(backend.baseUrl);
+  const requestTimeoutMilliseconds =
+    backend.requestTimeoutMilliseconds ?? DEFAULT_LOCAL_RERANKER_REQUEST_TIMEOUT_MILLISECONDS;
   const client = createLocalRerankerClient({
     ...backend,
     model: profile.model,
   });
   return {
     executionIdentity: createRecallRerankingExecutionIdentity(
-      profile.profileId,
+      profile,
       'llama-cpp-http-reranking-v1',
+      createCanonicalIdentity('llama-cpp-http-reranking-config-v1', {
+        normalizedEndpoint,
+        requestTimeoutMilliseconds,
+      }),
       RecallInferenceBackend.LLAMA_CPP_HTTP,
+      requestTimeoutMilliseconds,
     ),
     async rerankDocuments(query, documents, signal) {
       const scores = await client.rerankDocuments(query, documents, signal);

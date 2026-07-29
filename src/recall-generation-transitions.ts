@@ -14,6 +14,7 @@ import {
   writeRecallBacklogSummary,
   writeRecallGenerationRegistry,
   RECALL_BACKLOG_SUMMARY_VERSION,
+  RECALL_GENERATION_REGISTRY_VERSION,
   type RecallBacklogSummary,
   type RecallGenerationRegistry,
   type RecallGenerationRegistryEntry,
@@ -22,6 +23,16 @@ import { RECALL_SESSION_PROJECTION_SCHEMA_VERSION } from './recall-session-proje
 import { RECALL_WORK_MARKER_VERSION } from './recall-work-marker.js';
 
 const DEFAULT_ROLLBACK_RETENTION_MILLISECONDS = 7 * 24 * 60 * 60_000;
+
+/** Exact version-5 identity permitted for explicit read-only legacy adoption. */
+export interface AdoptLegacyRecallGenerationTransitionOptions {
+  activeGenerationPointerPath: string;
+  generationRegistryPath: string;
+  backlogSummaryPath: string;
+  generationId: string;
+  indexManifestFingerprint: string;
+  adoptedAtEpochMilliseconds: number;
+}
 
 /** Initial registry and pointer identity used to validate build start or resume. */
 export interface InspectRecallGenerationBuildStartTransitionOptions {
@@ -171,6 +182,67 @@ export interface CompleteRecallGenerationReplayTransitionOptions {
   backlogSummaryPath: string;
   nowEpochMilliseconds?: () => number;
   proveReplayWorkComplete(): Promise<boolean>;
+}
+
+/** Publishes exact legacy adoption registry, pointer, then read-only backlog state. */
+export async function adoptLegacyRecallGenerationTransition(
+  options: AdoptLegacyRecallGenerationTransitionOptions,
+): Promise<void> {
+  const pointer = createRecallActiveGenerationPointer(options.generationId);
+  const [existingPointer, existingRegistry] = await Promise.all([
+    readRecallActiveGenerationPointer(options.activeGenerationPointerPath),
+    readRecallGenerationRegistry(options.generationRegistryPath),
+  ]);
+  if (existingPointer !== null && existingPointer.checksum !== pointer.checksum) {
+    throw new Error('Recall legacy adoption journal conflicts with the active pointer');
+  }
+  if (
+    existingRegistry !== null &&
+    (existingRegistry.activeGenerationId !== options.generationId ||
+      existingRegistry.activePointerChecksum !== pointer.checksum)
+  ) {
+    throw new Error('Recall legacy adoption journal conflicts with the generation registry');
+  }
+  if (existingRegistry === null) {
+    await writeRecallGenerationRegistry(options.generationRegistryPath, {
+      version: RECALL_GENERATION_REGISTRY_VERSION,
+      activeGenerationId: options.generationId,
+      buildingGenerationId: null,
+      rollbackGenerationId: null,
+      activePointerChecksum: pointer.checksum,
+      generations: [
+        {
+          generationId: options.generationId,
+          state: RecallGenerationCutoverState.LEGACY_READ_ONLY,
+          indexManifestVersion: 5,
+          markerSchemaVersion: null,
+          sessionProjectionSchemaVersion: null,
+          indexManifestFingerprint: options.indexManifestFingerprint,
+          rebuildStartedAtEpochMilliseconds: options.adoptedAtEpochMilliseconds,
+          stateChangedAtEpochMilliseconds: options.adoptedAtEpochMilliseconds,
+          rebuildStartMarkerId: null,
+          rebuildMarkerWatermark: [],
+          validatedAtEpochMilliseconds: options.adoptedAtEpochMilliseconds,
+          retireAfterEpochMilliseconds: null,
+        },
+      ],
+    });
+  }
+  if (existingPointer === null) {
+    await writeRecallActiveGenerationPointer(options.activeGenerationPointerPath, pointer);
+  }
+  await writeRecallBacklogSummary(options.backlogSummaryPath, {
+    version: RECALL_BACKLOG_SUMMARY_VERSION,
+    pendingEligibleSessionCount: 0,
+    oldestEligibleMarkerAgeMilliseconds: null,
+    activeGenerationId: options.generationId,
+    buildingGenerationId: null,
+    generationState: RecallGenerationCutoverState.LEGACY_READ_ONLY,
+    activeGenerationAgeMilliseconds: 0,
+    rebuildAgeMilliseconds: 0,
+    lastFailureCategory: null,
+    observedAtEpochMilliseconds: options.adoptedAtEpochMilliseconds,
+  });
 }
 
 /** Validates active/building roles before a new build directory is created or resumed. */

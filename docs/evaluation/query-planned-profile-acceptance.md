@@ -6,7 +6,7 @@ This evidence measures live query planning and reranking with fixed test embeddi
 
 ## Bounds and identity
 
-- Recorded against commit: `feeb18b3d89544210a167be65d05fb9b29b219bb`
+- Recorded against commit: `367c816093243053c009be3b8f76d66a86234c42`
 - Private manifest SHA-256: `4b3fb8573bcd52a26d66a2f8e60f5bbba57b098530791b23f55505d3e9a1187e`
 - Private corpus: 8 cases, 8 snapshots, 44521 indexed documents
 - Retrieval embedding policy for every live matrix row: `deterministic-token-hash-v1`, 256 dimensions

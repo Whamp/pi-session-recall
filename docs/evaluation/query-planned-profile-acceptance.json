@@ -1,7 +1,7 @@
 {
   "version": 1,
   "releaseDecision": "approved-explicit-fallback",
-  "recordedAgainstCommit": "feeb18b3d89544210a167be65d05fb9b29b219bb",
+  "recordedAgainstCommit": "367c816093243053c009be3b8f76d66a86234c42",
   "approvedSearchMode": "query-planned",
   "defaultSearchMode": "hybrid",
   "committedCorpus": [
@@ -69,7 +69,7 @@
           "rerankerConformanceFixtureIdentity": "live-query-planned-reranker-conformance-fixture-v1:6d78e2775446350ffc2606be15392ccdc2eb66137b249a40bcffa9ddb769cf3a"
         },
         "software": {
-          "repositoryCommit": "feeb18b3d89544210a167be65d05fb9b29b219bb",
+          "repositoryCommit": "367c816093243053c009be3b8f76d66a86234c42",
           "backendVersion": "node-llama-cpp@3.18.1 / llama.cpp b8390",
           "nodeVersion": "v24.16.0",
           "platform": "linux",
@@ -1693,7 +1693,7 @@
           "rerankerConformanceFixtureIdentity": "live-query-planned-reranker-conformance-fixture-v1:6d78e2775446350ffc2606be15392ccdc2eb66137b249a40bcffa9ddb769cf3a"
         },
         "software": {
-          "repositoryCommit": "feeb18b3d89544210a167be65d05fb9b29b219bb",
+          "repositoryCommit": "367c816093243053c009be3b8f76d66a86234c42",
           "backendVersion": "node-llama-cpp@3.18.1 / llama.cpp b8390",
           "nodeVersion": "v24.16.0",
           "platform": "linux",
@@ -3305,7 +3305,7 @@
           "rerankerConformanceFixtureIdentity": "live-query-planned-reranker-conformance-fixture-v1:6d78e2775446350ffc2606be15392ccdc2eb66137b249a40bcffa9ddb769cf3a"
         },
         "software": {
-          "repositoryCommit": "feeb18b3d89544210a167be65d05fb9b29b219bb",
+          "repositoryCommit": "367c816093243053c009be3b8f76d66a86234c42",
           "backendVersion": "llama.cpp b8390 bundle b10e98a CPU planner-ctx-2048 reranker-ctx-8192 batch-2048",
           "nodeVersion": "v24.16.0",
           "platform": "linux",

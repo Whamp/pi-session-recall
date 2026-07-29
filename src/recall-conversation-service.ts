@@ -84,15 +84,16 @@ import {
   type RecallTokenizerManifestIdentity,
 } from './recall-index-manifest.js';
 import {
-  decodeRecallBacklogSummary,
   readRecallActiveGenerationPointer,
   readRecallActiveGenerationSelection,
   readRecallGenerationRegistry,
   readRecallMaterialBacklogWarning,
   resolveRecallGenerationDirectory,
-  writeRecallBacklogSummary,
-  writeRecallGenerationRegistry,
 } from './recall-generation-state.js';
+import {
+  completeStagingRecallGenerationDiscardTransition,
+  prepareStagingRecallGenerationDiscardTransition,
+} from './recall-generation-transitions.js';
 import {
   createOctenEmbeddingModelProfile,
   createQwenRerankingModelProfile,
@@ -141,7 +142,6 @@ import {
   type RecallPhysicalSessionDiagnostic,
   type RecallSearchDiagnosticMetrics,
 } from './recall-operation-diagnostics.js';
-import { readNodeErrorCode } from './read-node-error-code.js';
 import {
   createLineageResolver,
   resolveProjectIdentity,
@@ -2178,59 +2178,13 @@ export function createRecallConversationService(
         await coordinateRecallWriteWindow(
           { lockPath: config.lockPath, allowRecovery: false },
           async () => {
-            const registry = await readRecallGenerationRegistry(config.generationRegistryPath);
-            if (!registry) {
-              throw new Error('Recall generation registry missing during staging discard');
-            }
-            if (registry.activeGenerationId === discardedGenerationId) {
-              throw new Error('Recall active generation cannot be discarded as staging');
-            }
-            const discardedAt = Date.now();
-            const generationsAfterDiscard = registry.generations.map((entry) => {
-              if (entry.generationId !== discardedGenerationId) {
-                return entry;
-              }
-              return {
-                ...entry,
-                state: RecallGenerationCutoverState.RETIRED,
-                stateChangedAtEpochMilliseconds: discardedAt,
-                validatedAtEpochMilliseconds: entry.validatedAtEpochMilliseconds ?? discardedAt,
-                retireAfterEpochMilliseconds: discardedAt,
-              };
+            await prepareStagingRecallGenerationDiscardTransition({
+              activeGenerationPointerPath: config.activeGenerationPointerPath,
+              generationRegistryPath: config.generationRegistryPath,
+              backlogSummaryPath: config.backlogSummaryPath,
+              discardedGenerationId,
+              discardedAtEpochMilliseconds: Date.now(),
             });
-            await writeRecallGenerationRegistry(config.generationRegistryPath, {
-              ...registry,
-              buildingGenerationId:
-                registry.buildingGenerationId === discardedGenerationId
-                  ? null
-                  : registry.buildingGenerationId,
-              generations: generationsAfterDiscard,
-            });
-            if (registry.activeGenerationId) {
-              let backlogSummary;
-              try {
-                backlogSummary = decodeRecallBacklogSummary(
-                  await readFile(config.backlogSummaryPath, 'utf8'),
-                );
-              } catch (error) {
-                if (readNodeErrorCode(error) !== 'ENOENT') {
-                  throw error;
-                }
-              }
-              if (backlogSummary) {
-                const activeEntry = generationsAfterDiscard.find(
-                  ({ generationId }) => generationId === registry.activeGenerationId,
-                );
-                await writeRecallBacklogSummary(config.backlogSummaryPath, {
-                  ...backlogSummary,
-                  buildingGenerationId: null,
-                  generationState: activeEntry?.state ?? RecallGenerationCutoverState.ACTIVE,
-                  rebuildAgeMilliseconds: null,
-                  lastFailureCategory: null,
-                  observedAtEpochMilliseconds: discardedAt,
-                });
-              }
-            }
             await clearPendingRecallEmbeddingReplacement(
               join(dirname(config.manifestPath), 'inference-configuration.json'),
               {
@@ -2247,17 +2201,11 @@ export function createRecallConversationService(
         await coordinateRecallWriteWindow(
           { lockPath: config.lockPath, allowRecovery: false },
           async () => {
-            const registryAfterRemoval = await readRecallGenerationRegistry(
-              config.generationRegistryPath,
-            );
-            if (registryAfterRemoval) {
-              await writeRecallGenerationRegistry(config.generationRegistryPath, {
-                ...registryAfterRemoval,
-                generations: registryAfterRemoval.generations.filter(
-                  ({ generationId }) => generationId !== discardedGenerationId,
-                ),
-              });
-            }
+            await completeStagingRecallGenerationDiscardTransition({
+              activeGenerationPointerPath: config.activeGenerationPointerPath,
+              generationRegistryPath: config.generationRegistryPath,
+              discardedGenerationId,
+            });
           },
         );
         await markRecallBackgroundIndexGenerationDiscarded(backgroundIndexCoordinatorConfig);

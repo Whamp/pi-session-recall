@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -16,6 +16,8 @@ import {
 } from './recall-generation-state.js';
 import {
   completeRecallGenerationReplayTransition,
+  completeStagingRecallGenerationDiscardTransition,
+  prepareStagingRecallGenerationDiscardTransition,
   rollbackRecallGenerationTransition,
 } from './recall-generation-transitions.js';
 import { RECALL_SESSION_PROJECTION_SCHEMA_VERSION } from './recall-session-projection.js';
@@ -47,6 +49,213 @@ function createReplayRegistry(generationId: string): RecallGenerationRegistry {
     ],
   };
 }
+
+function createStagingDiscardRegistry(
+  stagingState: RecallGenerationCutoverState,
+): RecallGenerationRegistry {
+  const activeRegistry = createReplayRegistry('generation_active');
+  return {
+    ...activeRegistry,
+    buildingGenerationId:
+      stagingState === RecallGenerationCutoverState.BUILDING ||
+      stagingState === RecallGenerationCutoverState.READY
+        ? 'generation_staging'
+        : null,
+    rollbackGenerationId:
+      stagingState === RecallGenerationCutoverState.ROLLBACK ? 'generation_staging' : null,
+    generations: [
+      ...activeRegistry.generations.map((entry) => ({
+        ...entry,
+        state: RecallGenerationCutoverState.ACTIVE,
+      })),
+      {
+        generationId: 'generation_staging',
+        state: stagingState,
+        embeddingProfileId: 'embedding-profile-v2',
+        indexManifestVersion: 6,
+        markerSchemaVersion: 1,
+        sessionProjectionSchemaVersion: RECALL_SESSION_PROJECTION_SCHEMA_VERSION,
+        indexManifestFingerprint: '0'.repeat(64),
+        rebuildStartedAtEpochMilliseconds: 13_000,
+        stateChangedAtEpochMilliseconds: 14_000,
+        rebuildStartMarkerId: null,
+        rebuildMarkerWatermark: [],
+        validatedAtEpochMilliseconds:
+          stagingState === RecallGenerationCutoverState.ROLLBACK ? 14_000 : null,
+        retireAfterEpochMilliseconds:
+          stagingState === RecallGenerationCutoverState.ROLLBACK ? 30_000 : null,
+      },
+    ],
+  };
+}
+
+void test('staging discard rejects a retained rollback generation', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-staging-discard-source-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const pointerPath = join(root, 'active-generation.json');
+  const registryPath = join(root, 'generation-registry.json');
+  await writeRecallActiveGenerationPointer(
+    pointerPath,
+    createRecallActiveGenerationPointer('generation_active'),
+  );
+  await writeRecallGenerationRegistry(
+    registryPath,
+    createStagingDiscardRegistry(RecallGenerationCutoverState.ROLLBACK),
+  );
+
+  await assert.rejects(
+    () =>
+      prepareStagingRecallGenerationDiscardTransition({
+        activeGenerationPointerPath: pointerPath,
+        generationRegistryPath: registryPath,
+        backlogSummaryPath: join(root, 'backlog-summary.json'),
+        discardedGenerationId: 'generation_staging',
+        discardedAtEpochMilliseconds: 20_000,
+      }),
+    /staging discard requires failed or abandoned building state/u,
+  );
+});
+
+void test('staging discard completion rejects an entry not prepared for deletion', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-staging-discard-completion-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const pointerPath = join(root, 'active-generation.json');
+  const registryPath = join(root, 'generation-registry.json');
+  await writeRecallActiveGenerationPointer(
+    pointerPath,
+    createRecallActiveGenerationPointer('generation_active'),
+  );
+  await writeRecallGenerationRegistry(
+    registryPath,
+    createStagingDiscardRegistry(RecallGenerationCutoverState.FAILED),
+  );
+
+  await assert.rejects(
+    () =>
+      completeStagingRecallGenerationDiscardTransition({
+        activeGenerationPointerPath: pointerPath,
+        generationRegistryPath: registryPath,
+        discardedGenerationId: 'generation_staging',
+      }),
+    /staging discard completion requires a retired entry/u,
+  );
+  assert.equal(
+    (await readRecallGenerationRegistry(registryPath))?.generations.some(
+      ({ generationId }) => generationId === 'generation_staging',
+    ),
+    true,
+  );
+});
+
+void test('staging discard retires failed and abandoned build states before removal', async (t) => {
+  for (const stagingState of [
+    RecallGenerationCutoverState.FAILED,
+    RecallGenerationCutoverState.BUILDING,
+    RecallGenerationCutoverState.READY,
+  ]) {
+    await t.test(stagingState, async (stateTest) => {
+      const root = await mkdtemp(join(tmpdir(), `recall-staging-discard-${stagingState}-`));
+      stateTest.after(() => rm(root, { recursive: true, force: true }));
+      const pointerPath = join(root, 'active-generation.json');
+      const registryPath = join(root, 'generation-registry.json');
+      await writeRecallActiveGenerationPointer(
+        pointerPath,
+        createRecallActiveGenerationPointer('generation_active'),
+      );
+      await writeRecallGenerationRegistry(registryPath, createStagingDiscardRegistry(stagingState));
+
+      await prepareStagingRecallGenerationDiscardTransition({
+        activeGenerationPointerPath: pointerPath,
+        generationRegistryPath: registryPath,
+        backlogSummaryPath: join(root, 'backlog-summary.json'),
+        discardedGenerationId: 'generation_staging',
+        discardedAtEpochMilliseconds: 20_000,
+      });
+
+      const preparedRegistry = await readRecallGenerationRegistry(registryPath);
+      const preparedEntry = preparedRegistry?.generations.find(
+        ({ generationId }) => generationId === 'generation_staging',
+      );
+      assert.equal(preparedRegistry?.buildingGenerationId, null);
+      assert.equal(preparedEntry?.state, RecallGenerationCutoverState.RETIRED);
+      assert.equal(preparedEntry?.validatedAtEpochMilliseconds, 20_000);
+      assert.equal(preparedEntry?.retireAfterEpochMilliseconds, 20_000);
+      await completeStagingRecallGenerationDiscardTransition({
+        activeGenerationPointerPath: pointerPath,
+        generationRegistryPath: registryPath,
+        discardedGenerationId: 'generation_staging',
+      });
+      assert.equal(
+        (await readRecallGenerationRegistry(registryPath))?.generations.some(
+          ({ generationId }) => generationId === 'generation_staging',
+        ),
+        false,
+      );
+    });
+  }
+});
+
+void test('staging discard remains retired when backlog publication fails', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-staging-discard-backlog-fault-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const pointerPath = join(root, 'active-generation.json');
+  const registryPath = join(root, 'generation-registry.json');
+  const backlogPath = join(root, 'backlog-summary.json');
+  await writeRecallActiveGenerationPointer(
+    pointerPath,
+    createRecallActiveGenerationPointer('generation_active'),
+  );
+  await writeRecallGenerationRegistry(
+    registryPath,
+    createStagingDiscardRegistry(RecallGenerationCutoverState.FAILED),
+  );
+  await mkdir(backlogPath);
+
+  await assert.rejects(
+    () =>
+      prepareStagingRecallGenerationDiscardTransition({
+        activeGenerationPointerPath: pointerPath,
+        generationRegistryPath: registryPath,
+        backlogSummaryPath: backlogPath,
+        discardedGenerationId: 'generation_staging',
+        discardedAtEpochMilliseconds: 20_000,
+      }),
+    /EISDIR|directory/iu,
+  );
+  assert.equal(
+    (await readRecallGenerationRegistry(registryPath))?.generations.find(
+      ({ generationId }) => generationId === 'generation_staging',
+    )?.state,
+    RecallGenerationCutoverState.RETIRED,
+  );
+});
+
+void test('staging discard rejects pointer and registry disagreement', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-staging-discard-pointer-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const pointerPath = join(root, 'active-generation.json');
+  const registryPath = join(root, 'generation-registry.json');
+  await writeRecallActiveGenerationPointer(
+    pointerPath,
+    createRecallActiveGenerationPointer('generation_other'),
+  );
+  await writeRecallGenerationRegistry(
+    registryPath,
+    createStagingDiscardRegistry(RecallGenerationCutoverState.FAILED),
+  );
+
+  await assert.rejects(
+    () =>
+      prepareStagingRecallGenerationDiscardTransition({
+        activeGenerationPointerPath: pointerPath,
+        generationRegistryPath: registryPath,
+        backlogSummaryPath: join(root, 'backlog-summary.json'),
+        discardedGenerationId: 'generation_staging',
+        discardedAtEpochMilliseconds: 20_000,
+      }),
+    /staging discard found pointer and registry disagreement/u,
+  );
+});
 
 void test('replay completion transition publishes active registry then active backlog', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'recall-replay-transition-'));
@@ -83,6 +292,38 @@ void test('replay completion transition publishes active registry then active ba
   assert.equal(backlog.activeGenerationId, generationId);
   assert.equal(backlog.generationState, RecallGenerationCutoverState.ACTIVE);
   assert.equal(backlog.observedAtEpochMilliseconds, 20_000);
+});
+
+void test('replay completion leaves active registry recoverable when backlog publication fails', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-replay-backlog-fault-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const pointerPath = join(root, 'active-generation.json');
+  const registryPath = join(root, 'generation-registry.json');
+  const backlogPath = join(root, 'backlog-summary.json');
+  const generationId = 'generation_replay';
+  await writeRecallActiveGenerationPointer(
+    pointerPath,
+    createRecallActiveGenerationPointer(generationId),
+  );
+  await writeRecallGenerationRegistry(registryPath, createReplayRegistry(generationId));
+  await mkdir(backlogPath);
+
+  await assert.rejects(
+    () =>
+      completeRecallGenerationReplayTransition({
+        activeGenerationPointerPath: pointerPath,
+        generationRegistryPath: registryPath,
+        backlogSummaryPath: backlogPath,
+        async proveReplayWorkComplete() {
+          return true;
+        },
+      }),
+    /EISDIR|directory/iu,
+  );
+  assert.equal(
+    (await readRecallGenerationRegistry(registryPath))?.generations[0]?.state,
+    RecallGenerationCutoverState.ACTIVE,
+  );
 });
 
 void test('active replay completion repairs backlog without rechecking marker work', async (t) => {

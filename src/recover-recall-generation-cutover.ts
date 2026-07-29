@@ -12,7 +12,7 @@ import {
   readRecallGenerationRegistry,
   resolveRecallGenerationDirectory,
 } from './recall-generation-state.js';
-import { recoverRecallGenerationStateTransition } from './recall-generation-transitions.js';
+import { recoverRecallGenerationCutoverTransition } from './recall-generation-transitions.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
 import {
   recallRebuildOwnershipLockPath,
@@ -189,7 +189,7 @@ export async function recoverRecallGenerationCutover(
         readRecallGenerationRegistry(options.generationRegistryPath),
         readRecallRecoveryBacklogSummary(options.backlogSummaryPath),
       ]);
-      const transition = await recoverRecallGenerationStateTransition({
+      const transition = await recoverRecallGenerationCutoverTransition({
         activeGenerationPointerPath: options.activeGenerationPointerPath,
         generationRegistryPath: options.generationRegistryPath,
         backlogSummaryPath: options.backlogSummaryPath,

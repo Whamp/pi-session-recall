@@ -28,6 +28,7 @@ import {
   writeRecallGenerationRegistry,
   RECALL_GENERATION_REGISTRY_VERSION,
 } from './recall-generation-state.js';
+import { prepareStagingRecallGenerationDiscardTransition } from './recall-generation-transitions.js';
 import {
   readRecallInferenceConfiguration,
   writeRecallInferenceConfiguration,
@@ -610,24 +611,15 @@ void test('discarded staging stays retired and collectible when directory remova
     },
   });
 
-  // Simulate a crash after marking RETIRED but before directory removal by only applying the
-  // registry transition, then prove collect-retired can finish cleanup.
-  const registry = await readRecallGenerationRegistry(config.generationRegistryPath);
-  assert.ok(registry);
+  // Simulate a crash after the durable prepare transition but before directory removal, then
+  // prove collect-retired can finish cleanup.
   const discardedAt = 50;
-  await writeRecallGenerationRegistry(config.generationRegistryPath, {
-    ...registry,
-    generations: registry.generations.map((entry) =>
-      entry.generationId === 'generation_staging'
-        ? {
-            ...entry,
-            state: RecallGenerationCutoverState.RETIRED,
-            stateChangedAtEpochMilliseconds: discardedAt,
-            validatedAtEpochMilliseconds: discardedAt,
-            retireAfterEpochMilliseconds: discardedAt,
-          }
-        : entry,
-    ),
+  await prepareStagingRecallGenerationDiscardTransition({
+    activeGenerationPointerPath: config.activeGenerationPointerPath,
+    generationRegistryPath: config.generationRegistryPath,
+    backlogSummaryPath: config.backlogSummaryPath,
+    discardedGenerationId: 'generation_staging',
+    discardedAtEpochMilliseconds: discardedAt,
   });
   assert.equal((await service.readIndexGenerationStatus()).staging, null);
   await access(stagingDirectory);

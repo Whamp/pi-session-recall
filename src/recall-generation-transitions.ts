@@ -1,12 +1,13 @@
+import { readFile } from 'node:fs/promises';
+
 import {
   RecallBacklogFailureCategory,
   RecallGenerationCutoverState,
   RECALL_INDEX_MANIFEST_VERSION,
 } from './enums.js';
 import {
-  activateRecallReplacementInRegistry,
   createRecallActiveGenerationPointer,
-  createReplayPendingActivationBacklogSummary,
+  decodeRecallBacklogSummary,
   encodeRecallGenerationRegistry,
   readRecallActiveGenerationPointer,
   readRecallGenerationRegistry,
@@ -19,13 +20,103 @@ import {
   type RecallGenerationRegistry,
   type RecallGenerationRegistryEntry,
 } from './recall-generation-state.js';
+import { readNodeErrorCode } from './read-node-error-code.js';
 import { RECALL_SESSION_PROJECTION_SCHEMA_VERSION } from './recall-session-projection.js';
 import { RECALL_WORK_MARKER_VERSION } from './recall-work-marker.js';
 
 const DEFAULT_ROLLBACK_RETENTION_MILLISECONDS = 7 * 24 * 60 * 60_000;
 
+function assertRecallGenerationPointerAgreement(
+  registry: RecallGenerationRegistry,
+  pointer: Awaited<ReturnType<typeof readRecallActiveGenerationPointer>>,
+  disagreementMessage: string,
+): void {
+  if (
+    registry.activeGenerationId !== (pointer?.activeGenerationId ?? null) ||
+    registry.activePointerChecksum !== (pointer?.checksum ?? null)
+  ) {
+    throw new Error(disagreementMessage);
+  }
+}
+
+function activateRecallReplacementInRegistry(
+  registry: RecallGenerationRegistry,
+  replacement: RecallGenerationRegistryEntry,
+  pointerChecksum: string,
+  activatedAtEpochMilliseconds: number,
+  rollbackRetentionMilliseconds: number,
+): RecallGenerationRegistry {
+  const previousGenerationId = registry.activeGenerationId;
+  return {
+    ...registry,
+    activeGenerationId: replacement.generationId,
+    buildingGenerationId: null,
+    rollbackGenerationId: previousGenerationId,
+    activePointerChecksum: pointerChecksum,
+    generations: registry.generations.map((entry): RecallGenerationRegistryEntry => {
+      if (entry.generationId === replacement.generationId) {
+        return {
+          ...replacement,
+          state: RecallGenerationCutoverState.REPLAY_PENDING,
+          stateChangedAtEpochMilliseconds: activatedAtEpochMilliseconds,
+        };
+      }
+      if (entry.generationId === previousGenerationId) {
+        return {
+          ...entry,
+          state: RecallGenerationCutoverState.ROLLBACK,
+          stateChangedAtEpochMilliseconds: activatedAtEpochMilliseconds,
+          retireAfterEpochMilliseconds:
+            activatedAtEpochMilliseconds + rollbackRetentionMilliseconds,
+        };
+      }
+      if (entry.state === RecallGenerationCutoverState.ROLLBACK) {
+        return { ...entry, state: RecallGenerationCutoverState.RETIRED };
+      }
+      return entry;
+    }),
+  };
+}
+
+function createReplayPendingActivationBacklogSummary(
+  replacement: RecallGenerationRegistryEntry,
+  observedAtEpochMilliseconds: number,
+): RecallBacklogSummary {
+  return {
+    version: RECALL_BACKLOG_SUMMARY_VERSION,
+    pendingEligibleSessionCount: replacement.rebuildMarkerWatermark?.length ?? 0,
+    oldestEligibleMarkerAgeMilliseconds: null,
+    activeGenerationId: replacement.generationId,
+    buildingGenerationId: null,
+    generationState: RecallGenerationCutoverState.REPLAY_PENDING,
+    activeGenerationAgeMilliseconds: 0,
+    rebuildAgeMilliseconds: Math.max(
+      0,
+      observedAtEpochMilliseconds - replacement.rebuildStartedAtEpochMilliseconds,
+    ),
+    lastFailureCategory: null,
+    observedAtEpochMilliseconds,
+  };
+}
+
+/** Target and durable paths used to retire a non-active staging generation before deletion. */
+export interface PrepareStagingRecallGenerationDiscardTransitionOptions {
+  activeGenerationPointerPath: string;
+  generationRegistryPath: string;
+  backlogSummaryPath: string;
+  discardedGenerationId: string;
+  discardedAtEpochMilliseconds: number;
+}
+
+/** Registry path and target removed only after its generation directory has been deleted. */
+export interface CompleteStagingRecallGenerationDiscardTransitionOptions {
+  activeGenerationPointerPath: string;
+  generationRegistryPath: string;
+  discardedGenerationId: string;
+}
+
 /** Durable crash state and ownership evidence used to recover an interrupted cutover. */
-export interface RecoverRecallGenerationStateTransitionOptions {
+export interface RecoverRecallGenerationCutoverTransitionOptions {
   activeGenerationPointerPath: string;
   generationRegistryPath: string;
   backlogSummaryPath: string;
@@ -39,7 +130,7 @@ export interface RecoverRecallGenerationStateTransitionOptions {
 }
 
 /** State publication result plus the active store that may require write-mode attestation. */
-export interface RecoverRecallGenerationStateTransitionResult {
+export interface RecoverRecallGenerationCutoverTransitionResult {
   stateChanged: boolean;
   activeGenerationId: string;
 }
@@ -54,16 +145,25 @@ export interface AdoptLegacyRecallGenerationTransitionOptions {
   adoptedAtEpochMilliseconds: number;
 }
 
-/** Initial registry and pointer identity used to validate build start or resume. */
-export interface InspectRecallGenerationBuildStartTransitionOptions {
-  registry: RecallGenerationRegistry;
-  activePointer: Awaited<ReturnType<typeof readRecallActiveGenerationPointer>>;
-  generationId: string;
-  resumeExistingGeneration: boolean;
+/** Filesystem-inspected manifest identity for an active generation predating its registry. */
+export interface RecallGenerationBuildStartActiveGeneration {
+  indexManifestVersion: 5 | 6;
+  indexManifestFingerprint: string;
 }
 
-/** Existing failed/building entry reused by an explicit resume, when requested. */
-export interface InspectRecallGenerationBuildStartTransitionResult {
+/** Initial durable state and target identity used to validate build start or resume. */
+export interface PrepareRecallGenerationBuildStartTransitionOptions {
+  registry: RecallGenerationRegistry | null;
+  activePointer: Awaited<ReturnType<typeof readRecallActiveGenerationPointer>>;
+  activeGeneration?: RecallGenerationBuildStartActiveGeneration;
+  generationId: string;
+  resumeExistingGeneration: boolean;
+  inspectedAtEpochMilliseconds: number;
+}
+
+/** Registry plus the failed/building entry reused by an explicit resume, when requested. */
+export interface PrepareRecallGenerationBuildStartTransitionResult {
+  registry: RecallGenerationRegistry;
   resumableEntry?: RecallGenerationRegistryEntry;
 }
 
@@ -204,10 +304,125 @@ export interface CompleteRecallGenerationReplayTransitionOptions {
   proveReplayWorkComplete(): Promise<boolean>;
 }
 
+/** Retires staging state and repairs backlog before external directory deletion. */
+export async function prepareStagingRecallGenerationDiscardTransition(
+  options: PrepareStagingRecallGenerationDiscardTransitionOptions,
+): Promise<void> {
+  const [pointer, registry] = await Promise.all([
+    readRecallActiveGenerationPointer(options.activeGenerationPointerPath),
+    readRecallGenerationRegistry(options.generationRegistryPath),
+  ]);
+  if (registry === null) {
+    throw new Error('Recall generation registry missing during staging discard');
+  }
+  assertRecallGenerationPointerAgreement(
+    registry,
+    pointer,
+    'Recall staging discard found pointer and registry disagreement',
+  );
+  if (registry.activeGenerationId === options.discardedGenerationId) {
+    throw new Error('Recall active generation cannot be discarded as staging');
+  }
+  const discardedEntry = registry.generations.find(
+    ({ generationId }) => generationId === options.discardedGenerationId,
+  );
+  const abandonedBuildingEntry =
+    registry.buildingGenerationId === options.discardedGenerationId &&
+    (discardedEntry?.state === RecallGenerationCutoverState.BUILDING ||
+      discardedEntry?.state === RecallGenerationCutoverState.READY);
+  const failedEntryWithoutAnotherBuild =
+    discardedEntry?.state === RecallGenerationCutoverState.FAILED &&
+    registry.buildingGenerationId === null;
+  if (!abandonedBuildingEntry && !failedEntryWithoutAnotherBuild) {
+    throw new Error('Recall staging discard requires failed or abandoned building state');
+  }
+  const generationsAfterDiscard = registry.generations.map((entry) =>
+    entry.generationId === options.discardedGenerationId
+      ? {
+          ...entry,
+          state: RecallGenerationCutoverState.RETIRED,
+          stateChangedAtEpochMilliseconds: options.discardedAtEpochMilliseconds,
+          validatedAtEpochMilliseconds:
+            entry.validatedAtEpochMilliseconds ?? options.discardedAtEpochMilliseconds,
+          retireAfterEpochMilliseconds: options.discardedAtEpochMilliseconds,
+        }
+      : entry,
+  );
+  await writeRecallGenerationRegistry(options.generationRegistryPath, {
+    ...registry,
+    buildingGenerationId:
+      registry.buildingGenerationId === options.discardedGenerationId
+        ? null
+        : registry.buildingGenerationId,
+    generations: generationsAfterDiscard,
+  });
+  if (registry.activeGenerationId === null) {
+    return;
+  }
+  let backlogSummary: RecallBacklogSummary | null = null;
+  try {
+    backlogSummary = decodeRecallBacklogSummary(await readFile(options.backlogSummaryPath, 'utf8'));
+  } catch (error) {
+    if (readNodeErrorCode(error) !== 'ENOENT') {
+      throw error;
+    }
+  }
+  if (backlogSummary === null) {
+    return;
+  }
+  const activeEntry = generationsAfterDiscard.find(
+    ({ generationId }) => generationId === registry.activeGenerationId,
+  );
+  await writeRecallBacklogSummary(options.backlogSummaryPath, {
+    ...backlogSummary,
+    buildingGenerationId: null,
+    generationState: activeEntry?.state ?? RecallGenerationCutoverState.ACTIVE,
+    rebuildAgeMilliseconds: null,
+    lastFailureCategory: null,
+    observedAtEpochMilliseconds: options.discardedAtEpochMilliseconds,
+  });
+}
+
+/** Removes retired staging registry state after external directory deletion succeeds. */
+export async function completeStagingRecallGenerationDiscardTransition(
+  options: CompleteStagingRecallGenerationDiscardTransitionOptions,
+): Promise<void> {
+  const [pointer, registry] = await Promise.all([
+    readRecallActiveGenerationPointer(options.activeGenerationPointerPath),
+    readRecallGenerationRegistry(options.generationRegistryPath),
+  ]);
+  if (registry === null) {
+    return;
+  }
+  assertRecallGenerationPointerAgreement(
+    registry,
+    pointer,
+    'Recall staging discard completion found pointer and registry disagreement',
+  );
+  const discardedEntry = registry.generations.find(
+    ({ generationId }) => generationId === options.discardedGenerationId,
+  );
+  if (discardedEntry === undefined) {
+    return;
+  }
+  if (
+    registry.activeGenerationId === options.discardedGenerationId ||
+    discardedEntry.state !== RecallGenerationCutoverState.RETIRED
+  ) {
+    throw new Error('Recall staging discard completion requires a retired entry');
+  }
+  await writeRecallGenerationRegistry(options.generationRegistryPath, {
+    ...registry,
+    generations: registry.generations.filter(
+      ({ generationId }) => generationId !== options.discardedGenerationId,
+    ),
+  });
+}
+
 /** Classifies and publishes every supported interrupted generation cutover state. */
-export async function recoverRecallGenerationStateTransition(
-  options: RecoverRecallGenerationStateTransitionOptions,
-): Promise<RecoverRecallGenerationStateTransitionResult> {
+export async function recoverRecallGenerationCutoverTransition(
+  options: RecoverRecallGenerationCutoverTransitionOptions,
+): Promise<RecoverRecallGenerationCutoverTransitionResult> {
   const { pointer, registry, backlog } = options;
   const buildingGenerationEntry = registry?.generations.find(
     ({ generationId }) =>
@@ -428,12 +643,60 @@ export async function adoptLegacyRecallGenerationTransition(
   });
 }
 
-/** Validates active/building roles before a new build directory is created or resumed. */
-export function inspectRecallGenerationBuildStartTransition(
-  options: InspectRecallGenerationBuildStartTransitionOptions,
-): InspectRecallGenerationBuildStartTransitionResult {
+function createInitialRecallGenerationRegistry(
+  options: PrepareRecallGenerationBuildStartTransitionOptions,
+): RecallGenerationRegistry {
+  if (options.activePointer === null) {
+    if (options.activeGeneration !== undefined) {
+      throw new Error('Recall generation bootstrap found active metadata without a pointer');
+    }
+    return {
+      version: RECALL_GENERATION_REGISTRY_VERSION,
+      activeGenerationId: null,
+      buildingGenerationId: null,
+      rollbackGenerationId: null,
+      activePointerChecksum: null,
+      generations: [],
+    };
+  }
+  if (options.activeGeneration === undefined) {
+    throw new Error('Recall generation bootstrap requires active manifest identity');
+  }
+  const legacy = options.activeGeneration.indexManifestVersion === 5;
+  return {
+    version: RECALL_GENERATION_REGISTRY_VERSION,
+    activeGenerationId: options.activePointer.activeGenerationId,
+    buildingGenerationId: null,
+    rollbackGenerationId: null,
+    activePointerChecksum: options.activePointer.checksum,
+    generations: [
+      {
+        generationId: options.activePointer.activeGenerationId,
+        state: legacy
+          ? RecallGenerationCutoverState.LEGACY_READ_ONLY
+          : RecallGenerationCutoverState.ACTIVE,
+        indexManifestVersion: options.activeGeneration.indexManifestVersion,
+        markerSchemaVersion: legacy ? null : RECALL_WORK_MARKER_VERSION,
+        sessionProjectionSchemaVersion: legacy ? null : RECALL_SESSION_PROJECTION_SCHEMA_VERSION,
+        indexManifestFingerprint: options.activeGeneration.indexManifestFingerprint,
+        rebuildStartedAtEpochMilliseconds: options.inspectedAtEpochMilliseconds,
+        stateChangedAtEpochMilliseconds: options.inspectedAtEpochMilliseconds,
+        rebuildStartMarkerId: null,
+        rebuildMarkerWatermark: [],
+        validatedAtEpochMilliseconds: options.inspectedAtEpochMilliseconds,
+        retireAfterEpochMilliseconds: null,
+      },
+    ],
+  };
+}
+
+/** Initializes missing registry state and validates roles before a build directory is touched. */
+export function prepareRecallGenerationBuildStartTransition(
+  options: PrepareRecallGenerationBuildStartTransitionOptions,
+): PrepareRecallGenerationBuildStartTransitionResult {
+  const registry = options.registry ?? createInitialRecallGenerationRegistry(options);
   const resumableEntry = options.resumeExistingGeneration
-    ? options.registry.generations.find(({ generationId }) => generationId === options.generationId)
+    ? registry.generations.find(({ generationId }) => generationId === options.generationId)
     : undefined;
   if (
     options.resumeExistingGeneration &&
@@ -446,20 +709,19 @@ export function inspectRecallGenerationBuildStartTransition(
     );
   }
   if (
-    options.registry.buildingGenerationId !== null &&
-    options.registry.buildingGenerationId !== resumableEntry?.generationId
+    registry.buildingGenerationId !== null &&
+    registry.buildingGenerationId !== resumableEntry?.generationId
   ) {
     throw new Error(
-      `Recall generation rebuild already in progress: ${options.registry.buildingGenerationId}`,
+      `Recall generation rebuild already in progress: ${registry.buildingGenerationId}`,
     );
   }
-  if (
-    options.registry.activeGenerationId !== (options.activePointer?.activeGenerationId ?? null) ||
-    options.registry.activePointerChecksum !== (options.activePointer?.checksum ?? null)
-  ) {
-    throw new Error('Recall generation registry and active pointer disagree before rebuild');
-  }
-  return resumableEntry ? { resumableEntry } : {};
+  assertRecallGenerationPointerAgreement(
+    registry,
+    options.activePointer,
+    'Recall generation registry and active pointer disagree before rebuild',
+  );
+  return resumableEntry ? { registry, resumableEntry } : { registry };
 }
 
 /** Proves pointer and registry state remain unchanged before external snapshot capture. */
@@ -719,12 +981,11 @@ export async function prepareRetiredRecallGenerationCollectionTransition(
   if (!pointer || !registry) {
     throw new Error('Recall generation collection requires initialized pointer and registry');
   }
-  if (
-    registry.activeGenerationId !== pointer.activeGenerationId ||
-    registry.activePointerChecksum !== pointer.checksum
-  ) {
-    throw new Error('Recall generation collection found pointer and registry disagreement');
-  }
+  assertRecallGenerationPointerAgreement(
+    registry,
+    pointer,
+    'Recall generation collection found pointer and registry disagreement',
+  );
   const activeEntry = registry.generations.find(
     ({ generationId }) => generationId === pointer.activeGenerationId,
   );
@@ -776,14 +1037,11 @@ export async function completeRetiredRecallGenerationCollectionTransition(
   if (!pointer || !registry) {
     throw new Error('Recall generation collection completion requires pointer and registry');
   }
-  if (
-    registry.activeGenerationId !== pointer.activeGenerationId ||
-    registry.activePointerChecksum !== pointer.checksum
-  ) {
-    throw new Error(
-      'Recall generation collection completion found pointer and registry disagreement',
-    );
-  }
+  assertRecallGenerationPointerAgreement(
+    registry,
+    pointer,
+    'Recall generation collection completion found pointer and registry disagreement',
+  );
   const deletedIds = new Set(options.deletedGenerationIds);
   for (const generationId of deletedIds) {
     const entry = registry.generations.find((candidate) => candidate.generationId === generationId);
@@ -814,12 +1072,11 @@ export async function rollbackRecallGenerationTransition(
   if (!pointer || !registry || !registry.rollbackGenerationId) {
     throw new Error('Recall generation rollback unavailable: no retained rollback generation');
   }
-  if (
-    registry.activeGenerationId !== pointer.activeGenerationId ||
-    registry.activePointerChecksum !== pointer.checksum
-  ) {
-    throw new Error('Recall generation rollback found pointer and registry disagreement');
-  }
+  assertRecallGenerationPointerAgreement(
+    registry,
+    pointer,
+    'Recall generation rollback found pointer and registry disagreement',
+  );
   if (registry.buildingGenerationId !== null) {
     throw new Error('Recall generation rollback unavailable while a replacement builds');
   }
@@ -954,12 +1211,11 @@ export async function completeRecallGenerationReplayTransition(
       'Recall generation replay completion requires initialized pointer and registry',
     );
   }
-  if (
-    registry.activeGenerationId !== pointer.activeGenerationId ||
-    registry.activePointerChecksum !== pointer.checksum
-  ) {
-    throw new Error('Recall generation replay completion found pointer and registry disagreement');
-  }
+  assertRecallGenerationPointerAgreement(
+    registry,
+    pointer,
+    'Recall generation replay completion found pointer and registry disagreement',
+  );
   const activeEntry = registry.generations.find(
     ({ generationId }) => generationId === pointer.activeGenerationId,
   );

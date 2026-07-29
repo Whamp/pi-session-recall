@@ -157,6 +157,54 @@ void test('embedded Qwen reranker reports automatic accelerator selection', asyn
   assert.deepEqual(provider.executionIdentity.probedComputeBackends, ['cuda', 'vulkan']);
 });
 
+void test('embedded Qwen disposal releases later resources after context disposal fails', async () => {
+  const profile = createRecommendedQwenRerankingModelProfile();
+  const events: string[] = [];
+  const provider = createEmbeddedQwenRerankingProvider(profile, {
+    modelCacheDirectory: '/models',
+    device: EmbeddedInferenceDevicePolicy.CPU,
+    async verifyModelArtifact() {
+      return '/models/qwen-reranker.gguf';
+    },
+    async loadNodeLlamaCpp() {
+      return {
+        version: '3.18.1',
+        LlamaLogLevel: { error: 'error' },
+        async getLlama() {
+          return {
+            gpu: false as const,
+            async loadModel() {
+              return {
+                async createRankingContext() {
+                  return {
+                    async rankAll() {
+                      return [1 / (1 + Math.exp(-0.9))];
+                    },
+                    async dispose() {
+                      events.push('context');
+                      throw new Error('fixture context disposal failed');
+                    },
+                  };
+                },
+                async dispose() {
+                  events.push('model');
+                },
+              };
+            },
+            async dispose() {
+              events.push('runtime');
+            },
+          };
+        },
+      };
+    },
+  });
+
+  await provider.rerankDocuments('load resources', ['candidate']);
+  await assert.rejects(() => provider.dispose(), AggregateError);
+  assert.deepEqual(events, ['context', 'model', 'runtime']);
+});
+
 void test('embedded Qwen reranker retries automatic accelerator failure on CPU once', async (t) => {
   const profile = createRecommendedQwenRerankingModelProfile();
   const requestedBackends: unknown[] = [];

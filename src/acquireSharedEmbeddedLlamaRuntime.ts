@@ -161,10 +161,7 @@ export interface EmbeddedLlamaModuleForRuntimeAcquisition<Runtime> {
   getLlama(options: Record<string, unknown>): Promise<Runtime>;
 }
 
-/**
- * Acquires a shared or private node-llama-cpp runtime for one compute backend.
- * Throws on GPU mismatch without releasing; callers dispose on failure.
- */
+/** Acquires a shared or private node-llama-cpp runtime for one compute backend. */
 export async function acquireEmbeddedLlamaRuntimeForBackend<
   Runtime extends { gpu: NodeLlamaCppGpuBackend; dispose(): Promise<void> },
 >(options: {
@@ -201,9 +198,17 @@ export async function acquireEmbeddedLlamaRuntimeForBackend<
     releaseRuntime = () => runtime.dispose();
   }
   if (runtime.gpu !== requestedGpu) {
-    throw new Error(
+    const mismatchError = new Error(
       `Recall embedded ${options.capabilityLabel} compute backend mismatch: requested ${options.computeBackend}, received ${runtime.gpu === false ? 'cpu' : runtime.gpu}`,
     );
+    const [releaseResult] = await Promise.allSettled([releaseRuntime()]);
+    if (releaseResult?.status === 'rejected') {
+      throw new AggregateError(
+        [mismatchError, releaseResult.reason],
+        `Recall embedded ${options.capabilityLabel} backend mismatch cleanup failed`,
+      );
+    }
+    throw mismatchError;
   }
   return { runtime, releaseRuntime };
 }
@@ -211,6 +216,7 @@ export async function acquireEmbeddedLlamaRuntimeForBackend<
 /** Result of the shared embedded provider load orchestration (before capability-specific identity). */
 export interface EmbeddedProviderResourceInitialization<Resources> {
   resources: Resources;
+  disposeResources(): Promise<void>;
   selectedComputeBackend: EmbeddedInferenceComputeBackend;
   fallbackFromComputeBackend: EmbeddedInferenceAcceleratorBackend | null;
   fallbackWarningEmitted: boolean;
@@ -242,6 +248,7 @@ export async function initializeEmbeddedProviderResources<
     modelPath: string,
     computeBackend: EmbeddedInferenceComputeBackend,
   ) => Promise<Resources>;
+  disposeResources: (resources: Resources) => Promise<void>;
   writeFallbackWarning: (
     fallbackFromComputeBackend: EmbeddedInferenceAcceleratorBackend,
     error: unknown,
@@ -272,17 +279,39 @@ export async function initializeEmbeddedProviderResources<
       options.initializeForBackend(nodeLlamaCpp, modelPath, computeBackend),
     writeFallbackWarning: options.writeFallbackWarning,
   });
-  const deviceNames = await readEmbeddedInferenceDeviceNames(
-    initialized.selectedComputeBackend,
-    initialized.resources.runtime,
-  );
+  let resourcesDisposed = false;
+  const disposeResources = async (): Promise<void> => {
+    if (resourcesDisposed) {
+      return;
+    }
+    resourcesDisposed = true;
+    await options.disposeResources(initialized.resources);
+  };
+  const [deviceNamesResult] = await Promise.allSettled([
+    readEmbeddedInferenceDeviceNames(
+      initialized.selectedComputeBackend,
+      initialized.resources.runtime,
+    ),
+  ]);
+  if (!deviceNamesResult || deviceNamesResult.status === 'rejected') {
+    const deviceEnumerationError: unknown = deviceNamesResult?.reason;
+    const [disposalResult] = await Promise.allSettled([disposeResources()]);
+    if (disposalResult?.status === 'rejected') {
+      throw new AggregateError(
+        [deviceEnumerationError, disposalResult.reason],
+        `Recall embedded ${options.capabilityLabel} device enumeration cleanup failed`,
+      );
+    }
+    throw deviceEnumerationError;
+  }
   return {
     resources: initialized.resources,
+    disposeResources,
     selectedComputeBackend: initialized.selectedComputeBackend,
     fallbackFromComputeBackend: initialized.fallbackFromComputeBackend,
     fallbackWarningEmitted: initialized.fallbackWarningEmitted,
     probedComputeBackends,
-    deviceNames,
+    deviceNames: deviceNamesResult.value,
   };
 }
 

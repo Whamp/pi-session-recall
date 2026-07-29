@@ -272,13 +272,46 @@ export function createEmbeddedEmbeddingGemmaProvider(
     profileId: profile.profileId,
   });
 
-  async function disposeLoadedResources(loaded: LoadedEmbeddingGemmaResources): Promise<void> {
-    await Promise.all(loaded.contextOperations);
-    for (const context of loaded.contexts) {
-      await context.dispose();
+  async function disposeEmbeddingGemmaResourceLayers(options: {
+    contextOperations: readonly Promise<void>[];
+    contexts: readonly EmbeddingGemmaLlamaEmbeddingContext[];
+    model: EmbeddingGemmaLlamaModel | undefined;
+    releaseRuntime: (() => Promise<void>) | undefined;
+  }): Promise<void> {
+    const errors: unknown[] = [];
+    const operationResults = await Promise.allSettled(options.contextOperations);
+    for (const result of operationResults) {
+      if (result.status === 'rejected') {
+        const reason: unknown = result.reason;
+        errors.push(reason);
+      }
     }
-    await loaded.model.dispose();
-    await loaded.releaseRuntime();
+    const contextResults = await Promise.allSettled(
+      options.contexts.map((context) => context.dispose()),
+    );
+    for (const result of contextResults) {
+      if (result.status === 'rejected') {
+        const reason: unknown = result.reason;
+        errors.push(reason);
+      }
+    }
+    try {
+      await options.model?.dispose();
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      await options.releaseRuntime?.();
+    } catch (error) {
+      errors.push(error);
+    }
+    if (errors.length > 0) {
+      throw new AggregateError(errors, 'Recall embedded EmbeddingGemma resource disposal failed');
+    }
+  }
+
+  async function disposeLoadedResources(loaded: LoadedEmbeddingGemmaResources): Promise<void> {
+    await disposeEmbeddingGemmaResourceLayers(loaded);
   }
 
   function clearIdleResourceDisposal(): void {
@@ -330,7 +363,7 @@ export function createEmbeddedEmbeddingGemmaProvider(
     let releaseRuntime: (() => Promise<void>) | undefined;
     let model: EmbeddingGemmaLlamaModel | undefined;
     const contexts: EmbeddingGemmaLlamaEmbeddingContext[] = [];
-    try {
+    const initializeResources = async (): Promise<LoadedEmbeddingGemmaResources> => {
       const acquired = await acquireEmbeddedLlamaRuntimeForBackend({
         capabilityLabel: 'EmbeddingGemma',
         computeBackend,
@@ -369,14 +402,27 @@ export function createEmbeddedEmbeddingGemmaProvider(
         contextOperations: contexts.map(() => Promise.resolve()),
         nextContextIndex: 0,
       };
-    } catch (error) {
-      for (const context of contexts) {
-        await context.dispose();
-      }
-      await model?.dispose();
-      await releaseRuntime?.();
-      throw error;
-    }
+    };
+    return initializeResources().then(
+      (loaded) => loaded,
+      async (error: unknown) => {
+        const [disposalResult] = await Promise.allSettled([
+          disposeEmbeddingGemmaResourceLayers({
+            contextOperations: [],
+            contexts,
+            model,
+            releaseRuntime,
+          }),
+        ]);
+        if (disposalResult?.status === 'rejected') {
+          throw new AggregateError(
+            [error, disposalResult.reason],
+            'Recall embedded EmbeddingGemma initialization cleanup failed',
+          );
+        }
+        throw error;
+      },
+    );
   }
 
   async function loadResources(): Promise<LoadedEmbeddingGemmaResources> {
@@ -400,6 +446,7 @@ export function createEmbeddedEmbeddingGemmaProvider(
         verifyModelArtifact,
         loadNodeLlamaCpp,
         initializeForBackend: loadResourcesForBackend,
+        disposeResources: disposeLoadedResources,
         writeFallbackWarning: (fallbackFromComputeBackend, error) => {
           writeWarning(
             `Recall embedded EmbeddingGemma accelerator initialization failed for ${fallbackFromComputeBackend}; retrying the same profile ${profile.profileId} on CPU: ${readEmbeddingErrorMessage(error)}`,

@@ -710,15 +710,11 @@ async function validateApprovedRebuildSourceFingerprints(
       sourceFingerprint: string;
     }> = [projection.headerDescriptor, ...projection.entryDescriptors];
     for (const descriptor of descriptors) {
-      let bytes: Buffer;
-      try {
-        bytes = await readApprovedSourceRange(sourcePath, descriptor.startByte, descriptor.endByte);
-      } catch (error) {
-        throw new Error(
-          `Recall rebuild approved evidence changed: source unreadable at ${sourcePath}:${descriptor.sourceLine}`,
-          { cause: error },
-        );
-      }
+      const bytes = await readApprovedSourceRange(
+        sourcePath,
+        descriptor.startByte,
+        descriptor.endByte,
+      );
       const lineEnd = bytes.at(-1) === 0x0a ? bytes.length - 1 : bytes.length;
       const contentEnd = lineEnd > 0 && bytes.at(lineEnd - 1) === 0x0d ? lineEnd - 1 : lineEnd;
       const text = bytes.subarray(0, contentEnd).toString('utf8');
@@ -2102,8 +2098,7 @@ export function createRecallConversationService(
                 ...entry,
                 state: RecallGenerationCutoverState.RETIRED,
                 stateChangedAtEpochMilliseconds: discardedAt,
-                validatedAtEpochMilliseconds:
-                  entry.validatedAtEpochMilliseconds ?? discardedAt,
+                validatedAtEpochMilliseconds: entry.validatedAtEpochMilliseconds ?? discardedAt,
                 retireAfterEpochMilliseconds: discardedAt,
               };
             });

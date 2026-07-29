@@ -6,7 +6,10 @@ import test from 'node:test';
 
 import { RecallSessionProjectionKind } from './enums.js';
 import { createRecallSessionProjectionBaseline } from './create-recall-session-projection-baseline.js';
-import type { LogicalSessionProjection, PhysicalSessionProjection } from './recall-session-projection.js';
+import type {
+  LogicalSessionProjection,
+  PhysicalSessionProjection,
+} from './recall-session-projection.js';
 import type { ConversationTextTokenizer } from './session-conversation-index.js';
 
 const tokenizer: ConversationTextTokenizer = {

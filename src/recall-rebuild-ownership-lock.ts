@@ -70,9 +70,13 @@ export async function tryAcquireRecallRebuildOwnershipLock(
 ): Promise<HeldRecallRebuildOwnershipLock | null> {
   await mkdir(dirname(lockPath), { recursive: true });
   const token = `recall-rebuild-owner-${randomUUID()}`;
-  const child = spawn(resolveRecallFlockExecutable(), ['--exclusive', '--nonblock', lockPath, '/bin/cat'], {
-    stdio: ['pipe', 'pipe', 'pipe'],
-  });
+  const child = spawn(
+    resolveRecallFlockExecutable(),
+    ['--exclusive', '--nonblock', lockPath, '/bin/cat'],
+    {
+      stdio: ['pipe', 'pipe', 'pipe'],
+    },
+  );
   // A losing nonblocking flock can close stdin before the token write reaches its pipe.
   child.stdin.on('error', () => undefined);
   child.stdin.write(`${token}\n`);

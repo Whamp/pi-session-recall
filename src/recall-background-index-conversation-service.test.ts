@@ -538,10 +538,9 @@ void test('discarding staging clears pending embedding replacement', async (t) =
     ),
     false,
   );
-  await assert.rejects(
-    () => access(join(config.generationRootDirectory, 'generation_staging')),
-    { code: 'ENOENT' },
-  );
+  await assert.rejects(() => access(join(config.generationRootDirectory, 'generation_staging')), {
+    code: 'ENOENT',
+  });
 });
 
 void test('discarded staging stays retired and collectible when directory removal fails', async (t) => {
@@ -633,7 +632,8 @@ void test('discarded staging stays retired and collectible when directory remova
   assert.equal((await service.readIndexGenerationStatus()).staging, null);
   await access(stagingDirectory);
 
-  const { collectRetiredRecallGenerations } = await import('./collect-retired-recall-generations.js');
+  const { collectRetiredRecallGenerations } =
+    await import('./collect-retired-recall-generations.js');
   const collected = await collectRetiredRecallGenerations({
     activeGenerationPointerPath: config.activeGenerationPointerPath,
     generationRegistryPath: config.generationRegistryPath,

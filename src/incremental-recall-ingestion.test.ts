@@ -252,7 +252,11 @@ const lifecycleAcceptanceScenarios: readonly LifecycleAcceptanceScenario[] = [
     markers: [
       createAcceptanceMarker(
         `${name}-marker`,
-        { kind: RecallWorkMarkerTrigger.DEPARTURE },
+        {
+          kind: RecallWorkMarkerTrigger.DEPARTURE,
+          logicalSessionId: 'logical_acceptance',
+          leafEntryId: 'e3',
+        },
         `runtime-${name}`,
         index + 1,
       ),

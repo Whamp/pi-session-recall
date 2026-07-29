@@ -32,14 +32,14 @@ The consolidated external-evidence boundary is [`embedded-profile-acceptance.md`
 
 ## #34 — Preserve Octen behind model profiles and provider contracts
 
-| Acceptance criterion                                                                        | Evidence                                                                                                  | Status                            |
-| ------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- | --------------------------------- |
-| Distinct query/document embedding operations preserve Octen inputs and vectors              | `recall-inference-conformance.test.ts:33`; `recall-conversation-service.test.ts:3021`                     | Pass — deterministic              |
-| Reranking uses ordered finite capability-specific scores                                    | `recall-inference-conformance.test.ts:181,392,447`                                                        | Pass — deterministic              |
-| Profile identity excludes backend URL, device, and adapter                                  | `recall-model-profiles.ts`; ADR 0004; backend-switch test at `recall-inference-configuration.test.ts:141` | Pass — observable + deterministic |
+| Acceptance criterion                                                                        | Evidence                                                                                                           | Status                                                      |
+| ------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------- |
+| Distinct query/document embedding operations preserve Octen inputs and vectors              | `recall-inference-conformance.test.ts:33`; `recall-conversation-service.test.ts:3021`                              | Pass — deterministic                                        |
+| Reranking uses ordered finite capability-specific scores                                    | `recall-inference-conformance.test.ts:181,392,447`                                                                 | Pass — deterministic                                        |
+| Profile identity excludes backend URL, device, and adapter                                  | `recall-model-profiles.ts`; ADR 0004; backend-switch test at `recall-inference-configuration.test.ts:141`          | Pass — observable + deterministic                           |
 | Existing Octen configuration/manifest needs no rebuild                                      | `recall-index-manifest.test.ts:75`; ledger records superseded Octen paths after deterministic-fixture regeneration | Pass — deterministic; Octen artifact attestation superseded |
-| Built-in HTTP embedding/reranking adapters pass shared conformance                          | `recall-inference-conformance.test.ts:33,181`                                                             | Pass — deterministic              |
-| Existing indexing, hybrid, deep-rerank, manifest, cache, and quality behavior remains green | Full `npm test` plus unchanged Octen quality evidence identity                                            | Pass — deterministic              |
+| Built-in HTTP embedding/reranking adapters pass shared conformance                          | `recall-inference-conformance.test.ts:33,181`                                                                      | Pass — deterministic                                        |
+| Existing indexing, hybrid, deep-rerank, manifest, cache, and quality behavior remains green | Full `npm test` plus unchanged Octen quality evidence identity                                                     | Pass — deterministic                                        |
 
 ## #35 — Download and verify pinned EmbeddingGemma
 
@@ -157,17 +157,17 @@ The consolidated external-evidence boundary is [`embedded-profile-acceptance.md`
 
 ## #44 — Publish embedded-profile acceptance evidence
 
-| Acceptance criterion                                                                                          | Evidence                                                                     | Status                                             |
-| ------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- | -------------------------------------------------- |
+| Acceptance criterion                                                                                          | Evidence                                                                     | Status                                                                     |
+| ------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
 | Octen quality result unchanged and profile-scoped                                                             | hashes in `embedded-profile-acceptance.json`                                 | Superseded — committed artifacts regenerated with deterministic-fixture-v1 |
-| EmbeddingGemma passes committed regression corpus                                                             | runner exists; no real artifact was approved                                 | Blocked — external live quality run                |
-| Embedded Qwen conformance/deep-rerank has verified live score semantics                                       | deterministic fixtures pass; independent live parity absent                  | Blocked — external independent scores/model run    |
-| Planner capability conformance passes; retrieval quality stays in #29                                         | deterministic embedded/HTTP conformance passes                               | Pass — deterministic; live parity pending          |
-| Evidence records profile/backend/adapter/device/dimensions/prompts/tokenizer/canary/policy/cache              | ledger records known values and explicitly marks live fields pending         | Implemented; pending fields are honest blockers    |
-| Cold/warm, throughput, storage, CPU, accelerator measured                                                     | `evaluate:embeddinggemma` writer exists; no authorized live run              | Blocked — external measurements                    |
-| Background interruption, resumption, active availability, marker replay, validation, and activation exercised | background and generation integration suites                                 | Pass — integration                                 |
-| Gemma terms/notices documented without claiming legal approval                                                | `embedded-profile-distribution-review.md`                                    | Pass as review packet; maintainer approval pending |
-| Full gates and applicable slop scan pass                                                                      | exact commands below; final result recorded in the integration report/commit | Verified at integration HEAD                       |
+| EmbeddingGemma passes committed regression corpus                                                             | runner exists; no real artifact was approved                                 | Blocked — external live quality run                                        |
+| Embedded Qwen conformance/deep-rerank has verified live score semantics                                       | deterministic fixtures pass; independent live parity absent                  | Blocked — external independent scores/model run                            |
+| Planner capability conformance passes; retrieval quality stays in #29                                         | deterministic embedded/HTTP conformance passes                               | Pass — deterministic; live parity pending                                  |
+| Evidence records profile/backend/adapter/device/dimensions/prompts/tokenizer/canary/policy/cache              | ledger records known values and explicitly marks live fields pending         | Implemented; pending fields are honest blockers                            |
+| Cold/warm, throughput, storage, CPU, accelerator measured                                                     | `evaluate:embeddinggemma` writer exists; no authorized live run              | Blocked — external measurements                                            |
+| Background interruption, resumption, active availability, marker replay, validation, and activation exercised | background and generation integration suites                                 | Pass — integration                                                         |
+| Gemma terms/notices documented without claiming legal approval                                                | `embedded-profile-distribution-review.md`                                    | Pass as review packet; maintainer approval pending                         |
+| Full gates and applicable slop scan pass                                                                      | exact commands below; final result recorded in the integration report/commit | Verified at integration HEAD                                               |
 
 ## Integration gates
 

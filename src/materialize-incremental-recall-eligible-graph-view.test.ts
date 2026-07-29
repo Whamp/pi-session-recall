@@ -81,7 +81,11 @@ void test('cursor-zero graph materialization reuses append records without rerea
     runtimeInstanceId: 'runtime-graph-view',
     runtimeSequence: 1,
     createdAtEpochMilliseconds: 1,
-    trigger: { kind: RecallWorkMarkerTrigger.DEPARTURE },
+    trigger: {
+      kind: RecallWorkMarkerTrigger.DEPARTURE,
+      logicalSessionId: physicalSessionId,
+      leafEntryId: 'entry-1',
+    },
   } as const;
   const marker: RecallWorkMarker = {
     ...markerIdentity,

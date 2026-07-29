@@ -3591,9 +3591,7 @@ void test('explicit indexing refuses unmanifested legacy state before tokenizer 
 });
 
 void test('rebuild rejects when approved projection fingerprint no longer matches live file', async (t) => {
-  const directory = await mkdtemp(
-    join(tmpdir(), 'recall-service-rebuild-fingerprint-mismatch-'),
-  );
+  const directory = await mkdtemp(join(tmpdir(), 'recall-service-rebuild-fingerprint-mismatch-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const sessionsDirectory = join(directory, 'sessions');
   await mkdir(sessionsDirectory);
@@ -3711,7 +3709,15 @@ void test('rebuild rejects when approved projection fingerprint no longer matche
       },
     ],
     eligibleContributorEntryIds: ['fp-entry'],
-    eligibleSpans: [{ startByte: entryStart, endByte: entryEnd, startEntryId: 'fp-entry', endEntryId: 'fp-entry', contributorEntryIds: ['fp-entry'] }],
+    eligibleSpans: [
+      {
+        startByte: entryStart,
+        endByte: entryEnd,
+        startEntryId: 'fp-entry',
+        endEntryId: 'fp-entry',
+        contributorEntryIds: ['fp-entry'],
+      },
+    ],
     labels: [],
     markerCheckpoint: {
       generationId: TEST_ACTIVE_GENERATION_ID,

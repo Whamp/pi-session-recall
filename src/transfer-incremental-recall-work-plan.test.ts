@@ -78,7 +78,11 @@ void test('nonzero durable append cursor commits new evidence without a whole-se
     runtimeInstanceId: 'runtime-transfer',
     runtimeSequence: 1,
     createdAtEpochMilliseconds: initialGrowthAtEpochMilliseconds,
-    trigger: { kind: RecallWorkMarkerTrigger.DEPARTURE },
+    trigger: {
+      kind: RecallWorkMarkerTrigger.DEPARTURE,
+      logicalSessionId: physicalSessionId,
+      leafEntryId: 'entry-1',
+    },
   } as const;
   const marker: RecallWorkMarker = {
     ...markerIdentity,
@@ -163,6 +167,11 @@ void test('nonzero durable append cursor commits new evidence without a whole-se
     ...markerIdentity,
     runtimeSequence: 2,
     createdAtEpochMilliseconds: secondGrowthAtEpochMilliseconds,
+    trigger: {
+      kind: RecallWorkMarkerTrigger.DEPARTURE,
+      logicalSessionId: physicalSessionId,
+      leafEntryId: 'entry-2',
+    },
   } as const;
   const secondMarker: RecallWorkMarker = {
     ...secondMarkerIdentity,
@@ -529,7 +538,11 @@ void test('33 actual prepared documents retain the marker until five minutes', a
     runtimeInstanceId: 'runtime-large',
     runtimeSequence: 1,
     createdAtEpochMilliseconds: growthAtEpochMilliseconds,
-    trigger: { kind: RecallWorkMarkerTrigger.DEPARTURE },
+    trigger: {
+      kind: RecallWorkMarkerTrigger.DEPARTURE,
+      logicalSessionId: physicalSessionId,
+      leafEntryId: 'assistant-11',
+    },
   } as const;
   const marker: RecallWorkMarker = {
     ...markerIdentity,

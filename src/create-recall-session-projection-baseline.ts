@@ -110,7 +110,10 @@ async function synthesizePiV1AppendDelta(filePath: string): Promise<RecallSessio
       });
     }
   }
-  const committedBoundaryStart = Math.max(0, framed.appendCursorBytes - RECALL_APPEND_BOUNDARY_WINDOW_BYTES);
+  const committedBoundaryStart = Math.max(
+    0,
+    framed.appendCursorBytes - RECALL_APPEND_BOUNDARY_WINDOW_BYTES,
+  );
   const boundaryFingerprint = createHash('sha256')
     .update(allBytes.subarray(committedBoundaryStart, framed.appendCursorBytes))
     .digest('hex');

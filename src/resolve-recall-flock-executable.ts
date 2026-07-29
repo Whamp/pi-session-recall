@@ -10,7 +10,10 @@ export function resolveRecallFlockExecutable(): string {
   }
   const candidates = [
     '/usr/bin/flock',
-    ...(process.env.PATH ?? '').split(':').filter(Boolean).map((dir) => join(dir, 'flock')),
+    ...(process.env.PATH ?? '')
+      .split(':')
+      .filter(Boolean)
+      .map((dir) => join(dir, 'flock')),
     '/opt/homebrew/opt/util-linux/bin/flock',
     '/usr/local/opt/util-linux/bin/flock',
   ];

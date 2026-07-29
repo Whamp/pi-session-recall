@@ -254,8 +254,11 @@ async function readPhysicalSessionIdFromJsonlHeader(filePath: string): Promise<s
     let parsed: unknown;
     try {
       parsed = JSON.parse(trimmed);
-    } catch {
-      return null;
+    } catch (error) {
+      if (error instanceof SyntaxError) {
+        return null;
+      }
+      throw error;
     }
     if (
       isUnknownRecord(parsed) &&
@@ -299,8 +302,11 @@ async function publishMetadataSweepArrivalMarkers(
     let physicalSessionId: string | null;
     try {
       physicalSessionId = await readPhysicalSessionIdFromJsonlHeader(absolutePath);
-    } catch {
-      continue;
+    } catch (error) {
+      if (readNodeErrorCode(error) === 'ENOENT') {
+        continue;
+      }
+      throw error;
     }
     if (physicalSessionId === null) {
       continue;
@@ -317,20 +323,16 @@ async function publishMetadataSweepArrivalMarkers(
       createdAtEpochMilliseconds: nowEpochMilliseconds,
       trigger: { kind: RecallWorkMarkerTrigger.ARRIVAL },
     };
-    try {
-      await publishRecallWorkMarker(
-        { ...markerIdentity, markerId: createRecallWorkMarkerId(markerIdentity) },
-        {
-          markerSpoolDirectory: options.markerSpoolDirectory,
-          trustedSessionRoots: options.trustedSessionRoots,
-          // No-op signal: we are already inside the worker; the caller sets follow-up instead.
-          workerSignal: { signalDetachedWorker() {} },
-        },
-      );
-      published += 1;
-    } catch {
-      // Best-effort: skip files that cannot be published (e.g. path outside trust boundary).
-    }
+    await publishRecallWorkMarker(
+      { ...markerIdentity, markerId: createRecallWorkMarkerId(markerIdentity) },
+      {
+        markerSpoolDirectory: options.markerSpoolDirectory,
+        trustedSessionRoots: options.trustedSessionRoots,
+        // No-op signal: we are already inside the worker; the caller sets follow-up instead.
+        workerSignal: { signalDetachedWorker() {} },
+      },
+    );
+    published += 1;
   }
   return published;
 }
@@ -1047,116 +1049,121 @@ async function runConfiguredRecallIncrementalWorkerExecutable(
   };
   let deletionReconciliationHalted = false;
   try {
-  const result = await runRecallIncrementalWorker({
-    markerSpoolDirectory: config.markerSpoolDirectory,
-    markerQuarantineDirectory: config.markerQuarantineDirectory,
-    controlDirectory: config.markerControlDirectory,
-    targetGenerationId: activeSelection.activeGenerationId,
-    generationRegistryPath: config.generationRegistryPath,
-    generationReplayCompletion: {
-      activeGenerationPointerPath: config.activeGenerationPointerPath,
+    const result = await runRecallIncrementalWorker({
+      markerSpoolDirectory: config.markerSpoolDirectory,
+      markerQuarantineDirectory: config.markerQuarantineDirectory,
+      controlDirectory: config.markerControlDirectory,
+      targetGenerationId: activeSelection.activeGenerationId,
       generationRegistryPath: config.generationRegistryPath,
-      backlogSummaryPath: config.backlogSummaryPath,
-      lockPath: config.lockPath,
-    },
-    ...(registry?.rollbackGenerationId
-      ? { retainedMarkerDirectory: resolve(config.markerControlDirectory, 'rollback-retained') }
-      : {}),
-    trustedSessionRoots: [config.sessionsDirectory],
-    confirmedDeletionMaxMissingSourceCount: config.confirmedDeletionMaxMissingSourceCount,
-    confirmedDeletionMaxMissingSourceRatio: config.confirmedDeletionMaxMissingSourceRatio,
-    operationDiagnostics,
-    persistedLargeTransferDeferrals: persistedSchedule?.largeTransferDeferrals ?? [],
-    metadataSweepRequested: persistedSchedule?.metadataSweepRequested ?? false,
-    async transferWorkPlan(workPlan) {
-      const dependencies = await loadProductionTransferDependencies();
-      return dependencies.transferWorkPlan({
-        workPlan,
-        lockPath: config.lockPath,
-        evidenceDatabasePath: activeSelection.databasePath,
-        projectionDatabasePath: activeSelection.projectionDatabasePath,
-        embeddingDimensions: dependencies.embeddingDimensions,
-        chunkPolicy: dependencies.chunkPolicy,
-        loadTokenizer: dependencies.loadTokenizer,
-        resolveProjectIdentity: resolveWorkerProjectIdentity,
-        embeddingCache: dependencies.embeddingCache,
-        operationDiagnostics,
-        nowEpochMilliseconds: Date.now,
-      });
-    },
-    loadKnownSourceInventory: () =>
-      loadRecallKnownSourceInventory(
-        activeSelection.projectionDatabasePath,
-        activeSelection.activeGenerationId,
-        config.sessionsDirectory,
-      ),
-    async reconcileDeletion(metadataSweep, physicalProjections, missingSourceWorkPlans, workPlan) {
-      const { reconcileConfirmedSessionDeletion } =
-        await import('./reconcile-confirmed-session-deletion.js');
-      const deletionResult = await reconcileConfirmedSessionDeletion({
-        metadataSweep,
-        physicalProjections,
+      generationReplayCompletion: {
         activeGenerationPointerPath: config.activeGenerationPointerPath,
         generationRegistryPath: config.generationRegistryPath,
-        generationRootDirectory: config.generationRootDirectory,
+        backlogSummaryPath: config.backlogSummaryPath,
         lockPath: config.lockPath,
-        embeddingDimensions: config.embeddingDimensions,
-        markerWorkPlans: missingSourceWorkPlans,
-      });
-      if (deletionResult.halted) {
-        deletionReconciliationHalted = true;
-        await reportRecallIncrementalWorkerDeletionHalt({
-          operationDiagnostics,
-          generationId: activeSelection.activeGenerationId,
-          generationState:
-            registry?.generations.find(
-              ({ generationId }) => generationId === activeSelection.activeGenerationId,
-            )?.state ?? null,
-          haltResult: deletionResult,
+      },
+      ...(registry?.rollbackGenerationId
+        ? { retainedMarkerDirectory: resolve(config.markerControlDirectory, 'rollback-retained') }
+        : {}),
+      trustedSessionRoots: [config.sessionsDirectory],
+      confirmedDeletionMaxMissingSourceCount: config.confirmedDeletionMaxMissingSourceCount,
+      confirmedDeletionMaxMissingSourceRatio: config.confirmedDeletionMaxMissingSourceRatio,
+      operationDiagnostics,
+      persistedLargeTransferDeferrals: persistedSchedule?.largeTransferDeferrals ?? [],
+      metadataSweepRequested: persistedSchedule?.metadataSweepRequested ?? false,
+      async transferWorkPlan(workPlan) {
+        const dependencies = await loadProductionTransferDependencies();
+        return dependencies.transferWorkPlan({
           workPlan,
-          persistFailure: () =>
-            writeRecallIncrementalWorkerFailureBacklog(
-              {
-                backlogSummaryPath: config.backlogSummaryPath,
-                generationRegistryPath: config.generationRegistryPath,
-                targetGenerationId: activeSelection.activeGenerationId,
-              },
-              RecallBacklogFailureCategory.CONFIRMED_DELETION_HALTED,
-              { workPlan },
-            ),
+          lockPath: config.lockPath,
+          evidenceDatabasePath: activeSelection.databasePath,
+          projectionDatabasePath: activeSelection.projectionDatabasePath,
+          embeddingDimensions: dependencies.embeddingDimensions,
+          chunkPolicy: dependencies.chunkPolicy,
+          loadTokenizer: dependencies.loadTokenizer,
+          resolveProjectIdentity: resolveWorkerProjectIdentity,
+          embeddingCache: dependencies.embeddingCache,
+          operationDiagnostics,
+          nowEpochMilliseconds: Date.now,
         });
-      }
-      return deletionResult;
-    },
-  });
-  const shouldSignalWake = await persistRecallIncrementalWorkerSchedule({
-    schedulePath,
-    nowEpochMilliseconds: Date.now(),
-    schedule: {
-      version: RECALL_INCREMENTAL_WORKER_SCHEDULE_VERSION,
-      nextWakeAtEpochMilliseconds: result.nextWakeAtEpochMilliseconds,
-      metadataSweepRequested: result.metadataSweepFollowUpRequired,
-      largeTransferDeferrals: [...result.largeTransferDeferrals],
-    },
-  });
-  if (shouldSignalWake && result.nextWakeAtEpochMilliseconds !== null) {
-    signalRecallIncrementalWorkerWake({
-      readyAtEpochMilliseconds: result.nextWakeAtEpochMilliseconds,
-      workerOwnershipLockPath: config.workerOwnershipLockPath,
-      workerExecutablePath: fileURLToPath(import.meta.url),
+      },
+      loadKnownSourceInventory: () =>
+        loadRecallKnownSourceInventory(
+          activeSelection.projectionDatabasePath,
+          activeSelection.activeGenerationId,
+          config.sessionsDirectory,
+        ),
+      async reconcileDeletion(
+        metadataSweep,
+        physicalProjections,
+        missingSourceWorkPlans,
+        workPlan,
+      ) {
+        const { reconcileConfirmedSessionDeletion } =
+          await import('./reconcile-confirmed-session-deletion.js');
+        const deletionResult = await reconcileConfirmedSessionDeletion({
+          metadataSweep,
+          physicalProjections,
+          activeGenerationPointerPath: config.activeGenerationPointerPath,
+          generationRegistryPath: config.generationRegistryPath,
+          generationRootDirectory: config.generationRootDirectory,
+          lockPath: config.lockPath,
+          embeddingDimensions: config.embeddingDimensions,
+          markerWorkPlans: missingSourceWorkPlans,
+        });
+        if (deletionResult.halted) {
+          deletionReconciliationHalted = true;
+          await reportRecallIncrementalWorkerDeletionHalt({
+            operationDiagnostics,
+            generationId: activeSelection.activeGenerationId,
+            generationState:
+              registry?.generations.find(
+                ({ generationId }) => generationId === activeSelection.activeGenerationId,
+              )?.state ?? null,
+            haltResult: deletionResult,
+            workPlan,
+            persistFailure: () =>
+              writeRecallIncrementalWorkerFailureBacklog(
+                {
+                  backlogSummaryPath: config.backlogSummaryPath,
+                  generationRegistryPath: config.generationRegistryPath,
+                  targetGenerationId: activeSelection.activeGenerationId,
+                },
+                RecallBacklogFailureCategory.CONFIRMED_DELETION_HALTED,
+                { workPlan },
+              ),
+          });
+        }
+        return deletionResult;
+      },
     });
-  }
-  await writeRecallIncrementalWorkerBacklog(
-    {
-      backlogSummaryPath: config.backlogSummaryPath,
-      generationRegistryPath: config.generationRegistryPath,
-      targetGenerationId: activeSelection.activeGenerationId,
-    },
-    deletionReconciliationHalted
-      ? RecallBacklogFailureCategory.CONFIRMED_DELETION_HALTED
-      : result.replayBlockingFailureCategory,
-    result,
-  );
+    const shouldSignalWake = await persistRecallIncrementalWorkerSchedule({
+      schedulePath,
+      nowEpochMilliseconds: Date.now(),
+      schedule: {
+        version: RECALL_INCREMENTAL_WORKER_SCHEDULE_VERSION,
+        nextWakeAtEpochMilliseconds: result.nextWakeAtEpochMilliseconds,
+        metadataSweepRequested: result.metadataSweepFollowUpRequired,
+        largeTransferDeferrals: [...result.largeTransferDeferrals],
+      },
+    });
+    if (shouldSignalWake && result.nextWakeAtEpochMilliseconds !== null) {
+      signalRecallIncrementalWorkerWake({
+        readyAtEpochMilliseconds: result.nextWakeAtEpochMilliseconds,
+        workerOwnershipLockPath: config.workerOwnershipLockPath,
+        workerExecutablePath: fileURLToPath(import.meta.url),
+      });
+    }
+    await writeRecallIncrementalWorkerBacklog(
+      {
+        backlogSummaryPath: config.backlogSummaryPath,
+        generationRegistryPath: config.generationRegistryPath,
+        targetGenerationId: activeSelection.activeGenerationId,
+      },
+      deletionReconciliationHalted
+        ? RecallBacklogFailureCategory.CONFIRMED_DELETION_HALTED
+        : result.replayBlockingFailureCategory,
+      result,
+    );
   } finally {
     await configuredRuntime?.dispose();
   }

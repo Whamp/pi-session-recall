@@ -1,19 +1,21 @@
-import { createCanonicalIdentity } from './create-canonical-identity.js';
 import {
-  acquireSharedEmbeddedLlamaRuntime,
-  mapNodeLlamaCppComputeBackend,
-  writeEmbeddedLlamaLog,
+  acquireEmbeddedLlamaRuntimeForBackend,
+  initializeEmbeddedProviderResources,
+  resolveEmbeddedModelGpuLayers,
   type NodeLlamaCppGpuBackend,
 } from './acquireSharedEmbeddedLlamaRuntime.js';
 import { EMBEDDED_NODE_LLAMA_CPP_VERSION } from './embedded-embeddinggemma-provider.js';
 import {
-  EmbeddedInferenceComputeBackend,
+  createEmbeddedProviderResourceLifecycle,
+  disposeEmbeddedProviderResourceLayers,
+} from './embedded-provider-resource-lifecycle.js';
+import {
   EmbeddedInferenceDevicePolicy,
   RecallInferenceBackend,
+  type EmbeddedInferenceComputeBackend,
 } from './enums.js';
 import {
   createRecallQueryPlanningExecutionIdentity,
-  resolveRecallPhysicalDeviceIdentity,
   type RecallIdentifiedQueryPlanningProvider,
   type RecallQueryPlanningExecutionIdentity,
 } from './recall-inference-capabilities.js';
@@ -28,26 +30,6 @@ import {
 export const QMD_QUERY_PLANNER_MAX_GPU_LAYERS = 40;
 
 const NODE_LLAMA_CPP_QUERY_PLANNING_ADAPTER_ID = 'node-llama-cpp-qmd-query-planning-v1';
-const NODE_LLAMA_CPP_QUERY_PLANNING_ADAPTER_VERSION = '1';
-
-function createEmbeddedQmdQueryPlanningAdapterConfigurationIdentity(configuration: {
-  devicePolicy: EmbeddedInferenceDevicePolicy;
-  computeBackend: EmbeddedInferenceComputeBackend | 'pending';
-  fallbackFromComputeBackend:
-    | EmbeddedInferenceComputeBackend.METAL
-    | EmbeddedInferenceComputeBackend.CUDA
-    | EmbeddedInferenceComputeBackend.VULKAN
-    | null;
-  physicalDeviceIdentity: readonly string[];
-  threads: number | null;
-  requestTimeoutMilliseconds: number;
-  idleTimeoutMilliseconds: number;
-}): string {
-  return createCanonicalIdentity('node-llama-cpp-qmd-query-planning-config-v1', {
-    ...configuration,
-    nodeLlamaCppVersion: EMBEDDED_NODE_LLAMA_CPP_VERSION,
-  });
-}
 
 type QmdQueryPlanningGrammar = object;
 
@@ -113,11 +95,7 @@ export interface EmbeddedQmdQueryPlanningExecutionIdentity extends RecallQueryPl
     | EmbeddedInferenceComputeBackend.CUDA
     | EmbeddedInferenceComputeBackend.VULKAN
     | null;
-  contextSize: number;
-  threads: number | null;
   nodeLlamaCppVersion: typeof EMBEDDED_NODE_LLAMA_CPP_VERSION;
-  idleTimeoutMilliseconds: number;
-  physicalDeviceIdentity: readonly string[];
   probedComputeBackends: readonly (
     | EmbeddedInferenceComputeBackend.METAL
     | EmbeddedInferenceComputeBackend.CUDA
@@ -128,8 +106,6 @@ export interface EmbeddedQmdQueryPlanningExecutionIdentity extends RecallQueryPl
 /** Embedded QMD planner with inspectable execution identity and explicit native disposal. */
 export interface EmbeddedQmdQueryPlanningProvider extends RecallIdentifiedQueryPlanningProvider {
   readonly executionIdentity: Readonly<EmbeddedQmdQueryPlanningExecutionIdentity>;
-  /** Loads native resources far enough to bind resolved compute and physical device identity. */
-  resolveExecutionIdentity(): Promise<Readonly<EmbeddedQmdQueryPlanningExecutionIdentity>>;
   dispose(): Promise<void>;
 }
 
@@ -292,106 +268,49 @@ export function createEmbeddedQmdQueryPlanningProvider(
   const writeWarning =
     options.onWarning ?? ((warning: string) => process.stderr.write(`${warning}\n`));
 
-  let resources: LoadedQmdQueryPlanningResources | undefined;
-  let resourcesLoadPromise: Promise<LoadedQmdQueryPlanningResources> | undefined;
-  let resourcesDisposalPromise: Promise<void> | undefined;
-  let idleDisposalTimer: ReturnType<typeof setTimeout> | undefined;
-  let activeOperationCount = 0;
-  let disposed = false;
-  let cpuFallbackWarningEmitted = false;
-  function createBaseExecutionIdentity(
-    computeBackend: EmbeddedInferenceComputeBackend | 'pending',
-    fallbackFromComputeBackend:
-      | EmbeddedInferenceComputeBackend.METAL
-      | EmbeddedInferenceComputeBackend.CUDA
-      | EmbeddedInferenceComputeBackend.VULKAN
-      | null,
-    physicalDeviceIdentity: readonly string[],
-  ): Readonly<RecallQueryPlanningExecutionIdentity> {
-    return createRecallQueryPlanningExecutionIdentity(
-      profile,
-      NODE_LLAMA_CPP_QUERY_PLANNING_ADAPTER_ID,
-      createEmbeddedQmdQueryPlanningAdapterConfigurationIdentity({
-        devicePolicy,
-        computeBackend,
-        fallbackFromComputeBackend,
-        physicalDeviceIdentity,
-        threads: options.threads ?? null,
-        requestTimeoutMilliseconds,
-        idleTimeoutMilliseconds,
-      }),
-      RecallInferenceBackend.EMBEDDED,
-      requestTimeoutMilliseconds,
-      NODE_LLAMA_CPP_QUERY_PLANNING_ADAPTER_VERSION,
-    );
-  }
-  const configuredComputeBackend: EmbeddedInferenceComputeBackend | 'pending' =
-    devicePolicy === EmbeddedInferenceDevicePolicy.AUTO
-      ? 'pending'
-      : devicePolicy === EmbeddedInferenceDevicePolicy.CPU
-        ? EmbeddedInferenceComputeBackend.CPU
-        : devicePolicy === EmbeddedInferenceDevicePolicy.METAL
-          ? EmbeddedInferenceComputeBackend.METAL
-          : devicePolicy === EmbeddedInferenceDevicePolicy.CUDA
-            ? EmbeddedInferenceComputeBackend.CUDA
-            : EmbeddedInferenceComputeBackend.VULKAN;
+  const baseExecutionIdentity = createRecallQueryPlanningExecutionIdentity(
+    profile,
+    NODE_LLAMA_CPP_QUERY_PLANNING_ADAPTER_ID,
+    RecallInferenceBackend.EMBEDDED,
+    requestTimeoutMilliseconds,
+  );
   let executionIdentity: Readonly<EmbeddedQmdQueryPlanningExecutionIdentity> = Object.freeze({
-    ...createBaseExecutionIdentity(configuredComputeBackend, null, []),
+    ...baseExecutionIdentity,
     adapterId: NODE_LLAMA_CPP_QUERY_PLANNING_ADAPTER_ID,
     backend: RecallInferenceBackend.EMBEDDED,
-    computeBackend: configuredComputeBackend,
+    computeBackend: 'pending',
     deviceNames: [],
     devicePolicy,
     fallbackFromComputeBackend: null,
-    contextSize: profile.generationPolicy.contextSize,
-    threads: options.threads ?? null,
     nodeLlamaCppVersion: EMBEDDED_NODE_LLAMA_CPP_VERSION,
-    idleTimeoutMilliseconds,
-    physicalDeviceIdentity: [],
     probedComputeBackends: [],
   });
+
+  async function disposeQmdQueryPlanningResourceLayers(options: {
+    model: QmdQueryPlanningModel | undefined;
+    releaseRuntime: (() => Promise<void>) | undefined;
+  }): Promise<void> {
+    await disposeEmbeddedProviderResourceLayers({
+      failureMessage: 'Recall embedded QMD query planning resource disposal failed',
+      layers: [
+        [
+          async () => {
+            await options.model?.dispose();
+          },
+        ],
+        [
+          async () => {
+            await options.releaseRuntime?.();
+          },
+        ],
+      ],
+    });
+  }
 
   async function disposeQmdQueryPlanningResources(
     loaded: LoadedQmdQueryPlanningResources,
   ): Promise<void> {
-    await loaded.model.dispose();
-    await loaded.releaseRuntime();
-  }
-
-  function clearQmdQueryPlanningIdleDisposal(): void {
-    if (idleDisposalTimer) {
-      clearTimeout(idleDisposalTimer);
-      idleDisposalTimer = undefined;
-    }
-  }
-
-  function scheduleQmdQueryPlanningIdleDisposal(loaded: LoadedQmdQueryPlanningResources): void {
-    if (disposed || idleTimeoutMilliseconds === 0 || activeOperationCount !== 0) {
-      return;
-    }
-    clearQmdQueryPlanningIdleDisposal();
-    idleDisposalTimer = setTimeout(() => {
-      idleDisposalTimer = undefined;
-      if (disposed || activeOperationCount !== 0 || resources !== loaded) {
-        return;
-      }
-      resources = undefined;
-      resourcesLoadPromise = undefined;
-      const disposal = disposeQmdQueryPlanningResources(loaded);
-      resourcesDisposalPromise = disposal;
-      void disposal
-        .catch((error: unknown) => {
-          writeWarning(
-            `Recall embedded QMD query planner idle disposal failed: ${readQmdQueryPlanningErrorMessage(error)}`,
-          );
-        })
-        .finally(() => {
-          if (resourcesDisposalPromise === disposal) {
-            resourcesDisposalPromise = undefined;
-          }
-        });
-    }, idleTimeoutMilliseconds);
-    idleDisposalTimer.unref();
+    await disposeQmdQueryPlanningResourceLayers(loaded);
   }
 
   async function loadQmdQueryPlanningResourcesForBackend(
@@ -399,229 +318,154 @@ export function createEmbeddedQmdQueryPlanningProvider(
     modelPath: string,
     computeBackend: EmbeddedInferenceComputeBackend,
   ): Promise<LoadedQmdQueryPlanningResources> {
-    let runtime: QmdQueryPlanningRuntime | undefined;
     let releaseRuntime: (() => Promise<void>) | undefined;
     let model: QmdQueryPlanningModel | undefined;
-    try {
-      const requestedGpu =
-        computeBackend === EmbeddedInferenceComputeBackend.CPU ? false : computeBackend;
-      const loadRuntime = () =>
-        nodeLlamaCpp.getLlama({
-          build: 'never',
-          debug: false,
-          gpu: requestedGpu,
-          logger: writeEmbeddedLlamaLog,
-          logLevel: nodeLlamaCpp.LlamaLogLevel.error,
-          progressLogs: false,
-          skipDownload: true,
-        });
-      if (nodeLlamaCpp.runtimePoolIdentity) {
-        const lease = await acquireSharedEmbeddedLlamaRuntime(
-          nodeLlamaCpp.runtimePoolIdentity,
-          `${nodeLlamaCpp.version}:${computeBackend}`,
-          loadRuntime,
-          isQmdQueryPlanningRuntime,
-          (sharedRuntime) => sharedRuntime.dispose(),
-        );
-        runtime = lease.runtime;
-        releaseRuntime = () => lease.release();
-      } else {
-        runtime = await loadRuntime();
-        releaseRuntime = () => runtime?.dispose() ?? Promise.resolve();
-      }
-      if (runtime.gpu !== requestedGpu) {
-        throw new Error(
-          `Recall embedded QMD query planner compute backend mismatch: requested ${computeBackend}, received ${runtime.gpu === false ? 'cpu' : runtime.gpu}`,
-        );
-      }
+    const initializeResources = async (): Promise<LoadedQmdQueryPlanningResources> => {
+      const acquired = await acquireEmbeddedLlamaRuntimeForBackend({
+        capabilityLabel: 'QMD query planner',
+        computeBackend,
+        nodeLlamaCpp,
+        isRuntime: (value): value is QmdQueryPlanningRuntime => isQmdQueryPlanningRuntime(value),
+      });
+      const { runtime } = acquired;
+      releaseRuntime = () => acquired.releaseRuntime();
       model = await runtime.loadModel({
         modelPath,
-        gpuLayers:
-          computeBackend === EmbeddedInferenceComputeBackend.CPU
-            ? 0
-            : {
-                fitContext: { contextSize: profile.generationPolicy.contextSize },
-                max: QMD_QUERY_PLANNER_MAX_GPU_LAYERS,
-              },
+        gpuLayers: resolveEmbeddedModelGpuLayers({
+          computeBackend,
+          maxGpuLayers: QMD_QUERY_PLANNER_MAX_GPU_LAYERS,
+          fitContext: { contextSize: profile.generationPolicy.contextSize },
+        }),
       });
       const grammar = await runtime.createGrammar({ grammar: profile.grammar });
       return { nodeLlamaCpp, runtime, releaseRuntime, model, grammar };
-    } catch (error) {
-      await model?.dispose();
-      await releaseRuntime?.();
-      throw error;
-    }
-  }
-
-  async function loadQmdQueryPlanningResources(): Promise<LoadedQmdQueryPlanningResources> {
-    clearQmdQueryPlanningIdleDisposal();
-    if (disposed) {
-      throw new Error('Recall embedded QMD query planning provider disposed');
-    }
-    await resourcesDisposalPromise;
-    if (resources) {
-      return resources;
-    }
-    resourcesLoadPromise ??= (async () => {
-      const modelPath = await verifyModelArtifact();
-      const nodeLlamaCpp = await loadNodeLlamaCpp();
-      if (nodeLlamaCpp.version !== EMBEDDED_NODE_LLAMA_CPP_VERSION) {
-        throw new Error(
-          `Recall embedded QMD query planner runtime version mismatch: expected ${EMBEDDED_NODE_LLAMA_CPP_VERSION}, received ${nodeLlamaCpp.version}`,
-        );
-      }
-      const probedComputeBackends =
-        devicePolicy === EmbeddedInferenceDevicePolicy.AUTO && nodeLlamaCpp.getLlamaGpuTypes
-          ? (await nodeLlamaCpp.getLlamaGpuTypes('supported'))
-              .filter(
-                (backend): backend is Exclude<NodeLlamaCppGpuBackend, false> => backend !== false,
-              )
-              .map(mapNodeLlamaCppComputeBackend)
-          : [];
-      const requestedComputeBackend: EmbeddedInferenceComputeBackend =
-        devicePolicy === EmbeddedInferenceDevicePolicy.AUTO
-          ? (probedComputeBackends[0] ?? EmbeddedInferenceComputeBackend.CPU)
-          : devicePolicy === EmbeddedInferenceDevicePolicy.CPU
-            ? EmbeddedInferenceComputeBackend.CPU
-            : devicePolicy === EmbeddedInferenceDevicePolicy.METAL
-              ? EmbeddedInferenceComputeBackend.METAL
-              : devicePolicy === EmbeddedInferenceDevicePolicy.CUDA
-                ? EmbeddedInferenceComputeBackend.CUDA
-                : EmbeddedInferenceComputeBackend.VULKAN;
-      let selectedComputeBackend = requestedComputeBackend;
-      let fallbackFromComputeBackend:
-        | EmbeddedInferenceComputeBackend.METAL
-        | EmbeddedInferenceComputeBackend.CUDA
-        | EmbeddedInferenceComputeBackend.VULKAN
-        | null = null;
-      try {
-        resources = await loadQmdQueryPlanningResourcesForBackend(
-          nodeLlamaCpp,
-          modelPath,
-          requestedComputeBackend,
-        );
-      } catch (error) {
-        if (
-          devicePolicy !== EmbeddedInferenceDevicePolicy.AUTO ||
-          requestedComputeBackend === EmbeddedInferenceComputeBackend.CPU
-        ) {
-          throw error;
-        }
-        fallbackFromComputeBackend = requestedComputeBackend;
-        selectedComputeBackend = EmbeddedInferenceComputeBackend.CPU;
-        if (!cpuFallbackWarningEmitted) {
-          cpuFallbackWarningEmitted = true;
-          writeWarning(
-            `Recall embedded QMD query planner accelerator initialization failed for ${requestedComputeBackend}; retrying the same profile ${profile.profileId} on CPU: ${readQmdQueryPlanningErrorMessage(error)}`,
+    };
+    return initializeResources().then(
+      (loaded) => loaded,
+      async (error: unknown) => {
+        const [disposalResult] = await Promise.allSettled([
+          disposeQmdQueryPlanningResourceLayers({ model, releaseRuntime }),
+        ]);
+        if (disposalResult?.status === 'rejected') {
+          throw new AggregateError(
+            [error, disposalResult.reason],
+            'Recall embedded QMD query planning initialization cleanup failed',
           );
         }
-        resources = await loadQmdQueryPlanningResourcesForBackend(
-          nodeLlamaCpp,
-          modelPath,
-          EmbeddedInferenceComputeBackend.CPU,
-        );
-      }
-      const acceleratedDeviceNames =
-        selectedComputeBackend === EmbeddedInferenceComputeBackend.CPU
-          ? undefined
-          : await resources.runtime.getGpuDeviceNames?.();
-      const { deviceNames, physicalDeviceIdentity } = resolveRecallPhysicalDeviceIdentity(
-        selectedComputeBackend,
-        acceleratedDeviceNames,
-      );
-      executionIdentity = Object.freeze({
-        ...createBaseExecutionIdentity(
-          selectedComputeBackend,
-          fallbackFromComputeBackend,
-          physicalDeviceIdentity,
-        ),
-        adapterId: NODE_LLAMA_CPP_QUERY_PLANNING_ADAPTER_ID,
-        backend: RecallInferenceBackend.EMBEDDED,
-        computeBackend: selectedComputeBackend,
-        deviceNames: Object.freeze([...deviceNames]),
-        devicePolicy,
-        fallbackFromComputeBackend,
-        contextSize: profile.generationPolicy.contextSize,
-        threads: options.threads ?? null,
-        nodeLlamaCppVersion: EMBEDDED_NODE_LLAMA_CPP_VERSION,
-        idleTimeoutMilliseconds,
-        physicalDeviceIdentity,
-        probedComputeBackends: Object.freeze([...probedComputeBackends]),
-      });
-      return resources;
-    })();
-    try {
-      return await resourcesLoadPromise;
-    } finally {
-      if (!resources) {
-        resourcesLoadPromise = undefined;
-      }
-    }
+        throw error;
+      },
+    );
   }
+
+  const resourceLifecycle =
+    createEmbeddedProviderResourceLifecycle<LoadedQmdQueryPlanningResources>({
+      disposedErrorMessage: 'Recall embedded QMD query planning provider disposed',
+      idleTimeoutMilliseconds,
+      async loadResources(fallbackWarningAlreadyEmitted) {
+        const initialized = await initializeEmbeddedProviderResources({
+          capabilityLabel: 'QMD query planner',
+          devicePolicy,
+          expectedNodeLlamaCppVersion: EMBEDDED_NODE_LLAMA_CPP_VERSION,
+          fallbackWarningAlreadyEmitted,
+          verifyModelArtifact,
+          loadNodeLlamaCpp,
+          initializeForBackend: loadQmdQueryPlanningResourcesForBackend,
+          disposeResources: disposeQmdQueryPlanningResources,
+          writeFallbackWarning: (fallbackFromComputeBackend, error) => {
+            writeWarning(
+              `Recall embedded QMD query planner accelerator initialization failed for ${fallbackFromComputeBackend}; retrying the same profile ${profile.profileId} on CPU: ${readQmdQueryPlanningErrorMessage(error)}`,
+            );
+          },
+        });
+        executionIdentity = Object.freeze({
+          ...baseExecutionIdentity,
+          adapterId: NODE_LLAMA_CPP_QUERY_PLANNING_ADAPTER_ID,
+          backend: RecallInferenceBackend.EMBEDDED,
+          computeBackend: initialized.selectedComputeBackend,
+          deviceNames: Object.freeze([...initialized.deviceNames]),
+          devicePolicy,
+          fallbackFromComputeBackend: initialized.fallbackFromComputeBackend,
+          nodeLlamaCppVersion: EMBEDDED_NODE_LLAMA_CPP_VERSION,
+          probedComputeBackends: Object.freeze([...initialized.probedComputeBackends]),
+        });
+        return initialized;
+      },
+      writeIdleDisposalWarning(error) {
+        writeWarning(
+          `Recall embedded QMD query planner idle disposal failed: ${readQmdQueryPlanningErrorMessage(error)}`,
+        );
+      },
+    });
 
   return {
     get executionIdentity() {
       return executionIdentity;
     },
-    async resolveExecutionIdentity() {
-      await loadQmdQueryPlanningResources();
-      return executionIdentity;
-    },
     async planRecallQuery(request, signal) {
-      activeOperationCount += 1;
-      let loaded: LoadedQmdQueryPlanningResources | undefined;
-      let context: QmdQueryPlanningContext | undefined;
-      try {
-        throwIfQmdQueryPlanningAborted(signal);
-        loaded = await loadQmdQueryPlanningResources();
-        throwIfQmdQueryPlanningAborted(signal);
-        context = await loaded.model.createContext({
-          contextSize: profile.generationPolicy.contextSize,
-          ...(options.threads === undefined ? {} : { threads: options.threads }),
-        });
-        const session = loaded.nodeLlamaCpp.createChatSession(context.getSequence());
-        const timeoutSignal = AbortSignal.timeout(requestTimeoutMilliseconds);
-        const requestSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
-        const output = await waitForQmdQueryPlanningOperation(
-          session.prompt(formatQmdQueryPlanningPrompt(request.query, request.recallIntent), {
-            grammar: loaded.grammar,
-            maxTokens: profile.generationPolicy.maximumOutputTokens,
-            temperature: profile.generationPolicy.temperature,
-            topK: profile.generationPolicy.topK,
-            topP: profile.generationPolicy.topP,
-            repeatPenalty: {
-              lastTokens: profile.generationPolicy.repeatPenaltyLastTokens,
-              presencePenalty: profile.generationPolicy.presencePenalty,
-            },
-            signal: requestSignal,
-          }),
-          requestSignal,
-          timeoutSignal,
-          requestTimeoutMilliseconds,
-          signal,
-        );
-        return parseQmdQueryPlanningOutput(output, profile);
-      } finally {
-        await context?.dispose();
-        activeOperationCount -= 1;
-        if (loaded) {
-          scheduleQmdQueryPlanningIdleDisposal(loaded);
+      throwIfQmdQueryPlanningAborted(signal);
+      return resourceLifecycle.runWithResources(async (loaded) => {
+        let context: QmdQueryPlanningContext | undefined;
+        let operationFailed = false;
+        let operationError: unknown;
+        let plannedQuery: ReturnType<typeof parseQmdQueryPlanningOutput> | undefined;
+        try {
+          throwIfQmdQueryPlanningAborted(signal);
+          context = await loaded.model.createContext({
+            contextSize: profile.generationPolicy.contextSize,
+            ...(options.threads === undefined ? {} : { threads: options.threads }),
+          });
+          const session = loaded.nodeLlamaCpp.createChatSession(context.getSequence());
+          const timeoutSignal = AbortSignal.timeout(requestTimeoutMilliseconds);
+          const requestSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+          const output = await waitForQmdQueryPlanningOperation(
+            session.prompt(formatQmdQueryPlanningPrompt(request.query, request.recallIntent), {
+              grammar: loaded.grammar,
+              maxTokens: profile.generationPolicy.maximumOutputTokens,
+              temperature: profile.generationPolicy.temperature,
+              topK: profile.generationPolicy.topK,
+              topP: profile.generationPolicy.topP,
+              repeatPenalty: {
+                lastTokens: profile.generationPolicy.repeatPenaltyLastTokens,
+                presencePenalty: profile.generationPolicy.presencePenalty,
+              },
+              signal: requestSignal,
+            }),
+            requestSignal,
+            timeoutSignal,
+            requestTimeoutMilliseconds,
+            signal,
+          );
+          plannedQuery = parseQmdQueryPlanningOutput(output, profile);
+        } catch (error) {
+          operationFailed = true;
+          operationError = error;
         }
-      }
+        let contextDisposalFailed = false;
+        let contextDisposalError: unknown;
+        try {
+          await context?.dispose();
+        } catch (error) {
+          contextDisposalFailed = true;
+          contextDisposalError = error;
+        }
+        if (operationFailed && contextDisposalFailed) {
+          throw new AggregateError(
+            [operationError, contextDisposalError],
+            'Recall embedded QMD query planning operation and context disposal failed',
+          );
+        }
+        if (operationFailed) {
+          throw operationError;
+        }
+        if (contextDisposalFailed) {
+          throw contextDisposalError;
+        }
+        if (!plannedQuery) {
+          throw new Error('Recall embedded QMD query planning operation produced no query plan');
+        }
+        return plannedQuery;
+      });
     },
-    async dispose() {
-      if (disposed) {
-        return;
-      }
-      disposed = true;
-      clearQmdQueryPlanningIdleDisposal();
-      await resourcesDisposalPromise;
-      const loaded = resources ?? (await resourcesLoadPromise);
-      resources = undefined;
-      resourcesLoadPromise = undefined;
-      if (loaded) {
-        await disposeQmdQueryPlanningResources(loaded);
-      }
-    },
+    dispose: () => resourceLifecycle.dispose(),
   };
 }

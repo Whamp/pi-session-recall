@@ -263,6 +263,111 @@ void test('embedded EmbeddingGemma provider passes deterministic explicit CPU an
   assert.deepEqual(events.slice(-3), ['dispose context', 'dispose model', 'dispose runtime']);
 });
 
+void test('embedded EmbeddingGemma disposal releases later resources after context disposal fails', async () => {
+  const profile = createRecommendedEmbeddingGemmaModelProfile();
+  const events: string[] = [];
+  const provider = createEmbeddedEmbeddingGemmaProvider(profile, {
+    modelCacheDirectory: '/models',
+    device: EmbeddedInferenceDevicePolicy.CPU,
+    async verifyModelArtifact() {
+      return '/models/model.gguf';
+    },
+    async loadNodeLlamaCpp() {
+      return {
+        version: '3.18.1',
+        LlamaLogLevel: { error: 'error' },
+        async getLlama() {
+          return {
+            gpu: false as const,
+            async loadModel() {
+              return {
+                embeddingVectorSize: 768,
+                tokenize() {
+                  return [];
+                },
+                async createEmbeddingContext() {
+                  return {
+                    async getEmbeddingFor() {
+                      return { vector: [1, ...Array<number>(767).fill(0)] };
+                    },
+                    async dispose() {
+                      events.push('context');
+                      throw new Error('fixture context disposal failed');
+                    },
+                  };
+                },
+                async dispose() {
+                  events.push('model');
+                },
+              };
+            },
+            async dispose() {
+              events.push('runtime');
+            },
+          };
+        },
+      };
+    },
+  });
+
+  await provider.embedQuery('load resources');
+  await assert.rejects(() => provider.dispose(), AggregateError);
+  assert.deepEqual(events, ['context', 'model', 'runtime']);
+});
+
+void test('device enumeration failure disposes initialized EmbeddingGemma resources', async () => {
+  const profile = createRecommendedEmbeddingGemmaModelProfile();
+  const events: string[] = [];
+  const provider = createEmbeddedEmbeddingGemmaProvider(profile, {
+    modelCacheDirectory: '/models',
+    device: EmbeddedInferenceDevicePolicy.METAL,
+    async verifyModelArtifact() {
+      return '/models/model.gguf';
+    },
+    async loadNodeLlamaCpp() {
+      return {
+        version: '3.18.1',
+        LlamaLogLevel: { error: 'error' },
+        async getLlama() {
+          return {
+            gpu: 'metal' as const,
+            async getGpuDeviceNames() {
+              throw new Error('fixture device enumeration failed');
+            },
+            async loadModel() {
+              return {
+                embeddingVectorSize: 768,
+                tokenize() {
+                  return [];
+                },
+                async createEmbeddingContext() {
+                  return {
+                    async getEmbeddingFor() {
+                      return { vector: [1, ...Array<number>(767).fill(0)] };
+                    },
+                    async dispose() {
+                      events.push('context');
+                    },
+                  };
+                },
+                async dispose() {
+                  events.push('model');
+                },
+              };
+            },
+            async dispose() {
+              events.push('runtime');
+            },
+          };
+        },
+      };
+    },
+  });
+
+  await assert.rejects(() => provider.embedQuery('load resources'), /device enumeration failed/u);
+  assert.deepEqual(events, ['context', 'model', 'runtime']);
+});
+
 void test('embedded EmbeddingGemma provider shares one model load across concurrent requests', async (t) => {
   const profile = createRecommendedEmbeddingGemmaModelProfile();
   let runtimeLoadCount = 0;

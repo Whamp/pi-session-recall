@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -18,15 +18,23 @@ function createFirstIndexSetupTestConfig(
 ): RecallConversationConfig {
   return {
     sessionsDirectory,
+    dataDirectory,
     databasePath: join(dataDirectory, 'zvec'),
+    projectionDatabasePath: join(dataDirectory, 'session-projections'),
     statePath: join(dataDirectory, 'index-state.json'),
     manifestPath: join(dataDirectory, 'index-manifest.json'),
     tokenizerCacheDirectory: join(dataDirectory, 'tokenizers'),
     embeddingCacheDirectory: join(dataDirectory, 'embedding-cache'),
     lockPath: join(dataDirectory, 'operation.lock'),
-    generationsDirectory: join(dataDirectory, 'index-generations'),
-    activeGenerationPath: join(dataDirectory, 'active-generation.json'),
-    stagingGenerationPath: join(dataDirectory, 'staging-generation.json'),
+    markerSpoolDirectory: join(dataDirectory, 'markers', 'pending'),
+    markerQuarantineDirectory: join(dataDirectory, 'markers', 'quarantine'),
+    markerControlDirectory: join(dataDirectory, 'markers', 'control'),
+    workerOwnershipLockPath: join(dataDirectory, 'incremental-worker.lock'),
+    generationRootDirectory: join(dataDirectory, 'generations'),
+    activeGenerationPointerPath: join(dataDirectory, 'active-generation.json'),
+    generationRegistryPath: join(dataDirectory, 'generation-registry.json'),
+    backlogSummaryPath: join(dataDirectory, 'backlog-summary.json'),
+    incrementalDiagnosticLogPath: join(dataDirectory, 'incremental-diagnostics.jsonl'),
     backgroundIndexStatusPath: join(dataDirectory, 'background-index-status.json'),
     backgroundIndexRequestPath: join(dataDirectory, 'background-index-request.json'),
     diagnosticsMode: RecallDiagnosticsMode.OFF,
@@ -42,6 +50,9 @@ function createFirstIndexSetupTestConfig(
     embeddingBatchSize: 8,
     rerankerBaseUrl: 'http://unused-reranker.test/v1',
     rerankerModel: 'unused-reranker',
+    searchWriteWindowWaitMilliseconds: 500,
+    confirmedDeletionMaxMissingSourceCount: 1,
+    confirmedDeletionMaxMissingSourceRatio: 0.1,
     projectLineages: normalizeRecallProjectLineages({}),
     searchCandidateLimits: { dense: 8, lexical: 8, identifier: 8 },
   };
@@ -217,6 +228,7 @@ void test('conversation service measures a bounded sample and full rebuild reuse
   const dataDirectory = join(root, 'data');
   const config = createFirstIndexSetupTestConfig(dataDirectory, sessionsDirectory);
   const service = createRecallConversationService(config, {
+    workerSignal: { signalDetachedWorker() {} },
     embeddingProfile: profile,
     tokenizerIdentity: {
       model: 'first-index-fixture',
@@ -273,7 +285,7 @@ void test('conversation service measures a bounded sample and full rebuild reuse
     measurement.estimatedDurationMilliseconds.maximum >=
       measurement.estimatedDurationMilliseconds.minimum,
   );
-  assert.match(await readFile(config.stagingGenerationPath ?? '', 'utf8'), /"status":"resumable"/u);
+  assert.deepEqual(await service.readIndexGenerationStatus(), { active: null, staging: null });
 
   const rebuilt = await service.index({ rebuild: true });
 

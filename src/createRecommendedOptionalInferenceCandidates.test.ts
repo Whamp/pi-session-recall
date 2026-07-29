@@ -69,8 +69,8 @@ void test('production HTTP reranking and query-planning candidates run live conf
               message: {
                 role: 'assistant',
                 content: [
-                  'lex: Copper Finch records',
-                  'vec: Copper Finch evidence in recalled conversations',
+                  'lex: source provenance evidence',
+                  'vec: source provenance in recalled conversations',
                 ].join('\n'),
               },
             },

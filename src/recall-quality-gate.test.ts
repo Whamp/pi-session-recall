@@ -236,6 +236,28 @@ void test('quality evidence rejects a stale project identity policy', async (t) 
   assert.match(decision.blockers.join('; '), /project identity does not match/i);
 });
 
+void test('quality evidence rejects a stale incremental storage identity', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-quality-storage-policy-gate-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const resultsPath = join(directory, 'results.json');
+  const evidence = await createPassingQualityEvidence(CURRENT_EVALUATION_IDENTITY);
+  if (!isUnknownRecord(evidence)) {
+    throw new Error('Recall quality gate test fixture invalid: expected evidence object');
+  }
+  const result = Reflect.get(evidence, 'result');
+  const storageIdentity = isUnknownRecord(result) ? Reflect.get(result, 'storageIdentity') : null;
+  if (!isUnknownRecord(storageIdentity)) {
+    throw new Error('Recall quality gate test fixture invalid: expected storage identity');
+  }
+  Reflect.set(storageIdentity, 'incrementalEligibilityPolicyVersion', 0);
+  await writeFile(resultsPath, JSON.stringify(evidence));
+
+  const decision = await readRecallQualityGateDecision(resultsPath);
+
+  assert.equal(decision.automatedGatePassed, false);
+  assert.match(decision.blockers.join('; '), /incremental storage identity does not match/i);
+});
+
 void test('quality evidence rejects a stale rank-fusion identity', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'recall-quality-ranking-policy-gate-'));
   t.after(() => rm(directory, { recursive: true, force: true }));

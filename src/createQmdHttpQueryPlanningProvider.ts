@@ -1,5 +1,3 @@
-import { createHash } from 'node:crypto';
-
 import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 
@@ -15,8 +13,6 @@ import {
 } from './recall-query-planning-policy.js';
 
 const DEFAULT_QMD_HTTP_QUERY_PLANNING_TIMEOUT_MILLISECONDS = 60_000;
-const LLAMA_CPP_HTTP_QUERY_PLANNING_ADAPTER_ID = 'llama-cpp-http-query-planning-v1';
-const LLAMA_CPP_HTTP_QUERY_PLANNING_ADAPTER_VERSION = '1';
 
 const QMD_HTTP_QUERY_PLANNING_RESPONSE_SCHEMA = Type.Object({
   model: Type.String({ minLength: 1 }),
@@ -25,7 +21,6 @@ const QMD_HTTP_QUERY_PLANNING_RESPONSE_SCHEMA = Type.Object({
       message: Type.Object({
         role: Type.Literal('assistant'),
         content: Type.String(),
-        reasoning_content: Type.Optional(Type.String()),
       }),
     }),
     { minItems: 1, maxItems: 1 },
@@ -70,19 +65,12 @@ export function createQmdHttpQueryPlanningProvider(
       `Recall QMD query planner request timeout invalid: expected a positive integer, received ${requestTimeoutMilliseconds}`,
     );
   }
-  const adapterConfigurationIdentity = `llama-cpp-http-query-planning-config-v1:${createHash(
-    'sha256',
-  )
-    .update(JSON.stringify({ endpoint, requestTimeoutMilliseconds }))
-    .digest('hex')}`;
   return {
     executionIdentity: createRecallQueryPlanningExecutionIdentity(
       profile,
-      LLAMA_CPP_HTTP_QUERY_PLANNING_ADAPTER_ID,
-      adapterConfigurationIdentity,
+      'llama-cpp-http-query-planning-v1',
       RecallInferenceBackend.LLAMA_CPP_HTTP,
       requestTimeoutMilliseconds,
-      LLAMA_CPP_HTTP_QUERY_PLANNING_ADAPTER_VERSION,
     ),
     async planRecallQuery(request, signal) {
       const timeoutSignal = AbortSignal.timeout(requestTimeoutMilliseconds);
@@ -142,14 +130,11 @@ export function createQmdHttpQueryPlanningProvider(
           `Recall QMD query planner response model mismatch: expected ${profile.model}, received ${payload.model}`,
         );
       }
-      const message = payload.choices[0]?.message;
-      const generatedPlan = message?.content.trim() || message?.reasoning_content?.trim();
-      if (!generatedPlan) {
-        throw new Error(
-          'Recall QMD query planner response invalid: missing assistant content and reasoning content',
-        );
+      const content = payload.choices[0]?.message.content;
+      if (content === undefined) {
+        throw new Error('Recall QMD query planner response invalid: missing assistant content');
       }
-      return parseQmdQueryPlanningOutput(generatedPlan, profile);
+      return parseQmdQueryPlanningOutput(content, profile);
     },
   };
 }

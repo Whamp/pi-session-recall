@@ -1,8 +1,5 @@
-import { createCanonicalIdentity } from './create-canonical-identity.js';
 import {
   createLocalRerankerClient,
-  DEFAULT_LOCAL_RERANKER_REQUEST_TIMEOUT_MILLISECONDS,
-  normalizeLocalRerankerEndpoint,
   type LocalRerankerClientConfig,
 } from './local-reranker-client.js';
 import {
@@ -12,9 +9,6 @@ import {
 import { RecallInferenceBackend } from './enums.js';
 import type { QwenRerankingModelProfile } from './recall-model-profiles.js';
 
-const LLAMA_CPP_HTTP_RERANKING_ADAPTER_ID = 'llama-cpp-http-reranking-v1';
-const LLAMA_CPP_HTTP_RERANKING_ADAPTER_VERSION = '1';
-
 /** HTTP execution settings that do not contribute to the Qwen model profile identity. */
 export type QwenHttpRerankingBackendConfig = Omit<LocalRerankerClientConfig, 'model'>;
 
@@ -23,24 +17,15 @@ export function createQwenHttpRerankingProvider(
   profile: QwenRerankingModelProfile,
   backend: QwenHttpRerankingBackendConfig,
 ): RecallIdentifiedRerankingProvider {
-  const normalizedEndpoint = normalizeLocalRerankerEndpoint(backend.baseUrl);
-  const requestTimeoutMilliseconds =
-    backend.requestTimeoutMilliseconds ?? DEFAULT_LOCAL_RERANKER_REQUEST_TIMEOUT_MILLISECONDS;
   const client = createLocalRerankerClient({
     ...backend,
     model: profile.model,
   });
   return {
     executionIdentity: createRecallRerankingExecutionIdentity(
-      profile,
-      LLAMA_CPP_HTTP_RERANKING_ADAPTER_ID,
-      createCanonicalIdentity('llama-cpp-http-reranking-config-v1', {
-        normalizedEndpoint,
-        requestTimeoutMilliseconds,
-      }),
+      profile.profileId,
+      'llama-cpp-http-reranking-v1',
       RecallInferenceBackend.LLAMA_CPP_HTTP,
-      requestTimeoutMilliseconds,
-      LLAMA_CPP_HTTP_RERANKING_ADAPTER_VERSION,
     ),
     async rerankDocuments(query, documents, signal) {
       const scores = await client.rerankDocuments(query, documents, signal);

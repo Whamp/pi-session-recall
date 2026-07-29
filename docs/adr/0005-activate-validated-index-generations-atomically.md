@@ -2,14 +2,20 @@
 status: accepted
 ---
 
-# Activate validated index generations atomically
+# Activate validated recall generations atomically
 
-A full first or replacement build writes to one staging index generation. Each managed generation owns its zvec store, incremental session state, manifest, and writer lock under `index-generations/<generation-id>/`. Searches resolve `active-generation.json` once at the start of an operation and open only that generation. A staging writer uses separate locks, so it does not block searches against the active index generation.
+A first or replacement build writes one self-contained recall generation under `generations/<generation-id>/`. Each generation owns its zvec evidence store, session projection store, index state, and manifest. Search reads the checksummed `active-generation.json` pointer once and opens only that generation.
 
-The service checkpoints session state after every changed physical session. A resumed build reuses that state, the staging zvec store, and the profile-bound embedding cache. After the main pass, the service scans the corpus again to catch files changed during the build. Any parse or indexing failure leaves the staging generation resumable and leaves active selection unchanged.
+`generation-registry.json` records the active, building, rollback, failed, replay-pending, and retired states. A building entry also records the configured embedding profile when known. The registry, rather than a second staging pointer, is the sole authority for replacement work. A crash-released rebuild ownership lock distinguishes a live detached worker from an abandoned `BUILDING` entry.
 
-Before activation, the service optimizes zvec and validates the manifest, current embedding canary, zvec schema dimensions, session-state schema, document counts, every state-referenced document, every dense-vector count, and every dense vector's dimensions and finite values. It then atomically replaces `active-generation.json` and removes the staging selection. A crash before the selector replacement leaves the old active generation selected. A crash after it leaves the complete validated generation selected.
+A replacement build checkpoints each physical session in its own index state. Stop, failure, or worker death leaves the generation directory and registry entry available for explicit resume. Resume reopens the same generation ID, zvec store, index state, manifest, and profile-bound embedding cache. A different embedding profile cannot reuse that generation.
 
-`staging-generation.json` identifies the one resumable staging generation and its embedding profile. A different profile cannot reuse that work. `discardStagingIndexGeneration()` is the only operation that removes abandoned staging work; it never removes the selected active generation. Completed older active generations remain on disk because automatic garbage collection is outside this decision.
+The build reproduces every approved physical source, logical session, and eligible contributor from the active projections. Missing or changed approved evidence fails the replacement. Lifecycle markers remain generation-independent while the build runs. After cutover, the ordinary incremental worker replays retained markers against the replacement; search does not wait for replay.
 
-Existing installations without an active selector remain readable through their legacy zvec, state, and manifest paths. Their next explicit rebuild creates and selects a managed generation instead of deleting the legacy generation. Incremental maintenance updates the currently selected active generation. Interactive startup, settled turns, shutdown, reload, and recall search do not start a full build.
+Before activation, the service optimizes zvec and validates the manifest, embedding canary, document count, projection count, and approved projection coverage. It then replaces the active pointer atomically inside the cutover write window and records the former active generation for bounded rollback. A failure before the pointer swap leaves the old generation selected. Recovery reconciles registry-first or pointer-first crashes without scanning for a “latest” directory.
+
+Embedding replacement setup persists a pending selection before launching the detached build. The building registry entry carries its semantic embedding profile ID. Inference configuration promotes the pending selection only after that registry entry becomes active. Backend or adapter changes that preserve the profile do not rebuild vectors.
+
+`discardStagingIndexGeneration()` removes only a failed or abandoned non-active registry entry after proving no live rebuild owns it. `/pi-session-recall-index --rollback` restores the retained rollback generation and republishes retained markers. `/pi-session-recall-index --collect-retired` removes only generations outside active, building, replay-pending, and rollback retention.
+
+Exact version-5 legacy adoption remains explicit and read-only. Its next rebuild creates a version-6 managed generation. Interactive startup, lifecycle hooks, and recall search never start a full build.

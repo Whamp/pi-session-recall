@@ -4,11 +4,16 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:pat
 import { performance } from 'node:perf_hooks';
 import { promisify } from 'node:util';
 
-import { RecallProjectIdentitySource, RecallSearchScope } from './enums.js';
+import { assertRecallTestDataRoot } from './assert-recall-test-data-root.js';
+import {
+  PROJECT_SCOPE_POLICY_VERSION,
+  RecallProjectIdentitySource,
+  RecallSearchScope,
+} from './enums.js';
 import {
   RECALL_RANK_FUSION_VERSION,
   RECALL_RRF_RANK_CONSTANT,
-} from './fuse-recall-ranked-lists.js';
+} from './fuse-recall-search-candidates.js';
 import type { ConversationIndexSummary } from './incremental-session-indexer.js';
 import { createLocalEmbeddingClient, type LocalEmbeddingClient } from './local-embedding-client.js';
 import type { LocalRerankerClient } from './local-reranker-client.js';
@@ -32,21 +37,25 @@ import {
   type RecallQualityPolicySelection,
 } from './select-recall-quality-policy.js';
 import { RECALL_ACTIVE_BRANCH_PRIOR } from './rank-recall-search-results.js';
+import { RECALL_INDEX_MANIFEST_VERSION } from './recall-index-manifest.js';
+import { INCREMENTAL_RECALL_ELIGIBILITY_POLICY_VERSION } from './reduce-recall-eligibility.js';
 import {
   createLineageDigest,
   normalizeRecallProjectLineages,
   PROJECT_IDENTITY_METADATA_SCHEMA_VERSION,
   PROJECT_IDENTITY_POLICY_VERSION,
   PROJECT_LINEAGE_POLICY_VERSION,
-  PROJECT_SCOPE_POLICY_VERSION,
   parseProjectIdentity,
   resolveProjectIdentity,
   type ResolvedProjectIdentity,
 } from './resolve-project-identity.js';
+import { SESSION_CONVERSATION_SCHEMA_VERSION } from './session-conversation-index.js';
+import { ZVEC_CONVERSATION_SCHEMA_VERSION } from './zvec-conversation-store.js';
 
 const EXEC_FILE_ASYNC = promisify(execFile);
 const RECALL_QUALITY_FULL_POOL_LIMIT = 200;
 const RECALL_QUALITY_WORK_DIRECTORY_NAME = 'recall-quality-evaluation';
+const RECALL_QUALITY_GENERATION_ID = 'generation_quality_active';
 
 /** Profile-aware inference and tokenizer boundaries for bounded quality evaluation. */
 export interface RecallQualityEvaluationDependencies extends Pick<
@@ -98,14 +107,21 @@ export interface RecallQualityEvaluationIdentity {
   reciprocalRankConstant: number;
   activeBranchPrior: number;
   candidateLimits: { dense: 8; lexical: 8; identifier: 8 };
-  fusedPoolLimit: 24;
-  rerankPoolLimit: 24;
   finalResultCount: 5;
+}
+
+/** Incremental eligibility and persisted storage schemas measured by quality evidence. */
+export interface RecallQualityStorageIdentity {
+  conversationSchemaVersion: number;
+  zvecSchemaVersion: number;
+  indexManifestVersion: number;
+  incrementalEligibilityPolicyVersion: number;
 }
 
 /** Raw measured configurations, gate selection, and bounded-work evidence from one run. */
 export interface RecallQualityEvaluationResult {
-  version: 4;
+  version: 5;
+  storageIdentity: RecallQualityStorageIdentity;
   evaluationIdentity: RecallQualityEvaluationIdentity;
   startedAt: string;
   completedAt: string;
@@ -124,11 +140,11 @@ function isPathInside(parentPath: string, childPath: string): boolean {
   return pathFromParent === '' || (!pathFromParent.startsWith('..') && !isAbsolute(pathFromParent));
 }
 
-function assertSafeRecallQualityPaths(
+async function assertSafeRecallQualityPaths(
   workDirectory: string,
   corpus: LoadedRecallQualityCorpus,
   baseConfig: RecallConversationConfig,
-): string {
+): Promise<string> {
   const resolvedWorkDirectory = resolve(workDirectory);
   if (basename(resolvedWorkDirectory) !== RECALL_QUALITY_WORK_DIRECTORY_NAME) {
     throw new Error(
@@ -141,26 +157,33 @@ function assertSafeRecallQualityPaths(
       `Recall quality work directory must stay inside evaluation data area: ${resolvedWorkDirectory} is outside ${evaluationDirectory}`,
     );
   }
-  const protectedPaths = [
-    corpus.sessionDirectory,
-    baseConfig.sessionsDirectory,
-    baseConfig.databasePath,
-    baseConfig.statePath,
-    baseConfig.manifestPath,
-    baseConfig.embeddingCacheDirectory,
-    baseConfig.lockPath,
-  ].map((path) => resolve(path));
-  for (const protectedPath of protectedPaths) {
-    if (
-      isPathInside(resolvedWorkDirectory, protectedPath) ||
-      isPathInside(protectedPath, resolvedWorkDirectory)
-    ) {
-      throw new Error(
-        `Recall quality work directory overlaps protected path: ${resolvedWorkDirectory} and ${protectedPath}`,
-      );
-    }
-  }
-  return resolvedWorkDirectory;
+  return assertRecallTestDataRoot({
+    testDataRoot: resolvedWorkDirectory,
+    repositoryRoot: dirname(evaluationDirectory),
+    configuredProtectedPaths: [
+      corpus.sessionDirectory,
+      baseConfig.sessionsDirectory,
+      baseConfig.dataDirectory,
+      baseConfig.databasePath,
+      baseConfig.projectionDatabasePath,
+      baseConfig.statePath,
+      baseConfig.manifestPath,
+      baseConfig.tokenizerCacheDirectory,
+      baseConfig.embeddingCacheDirectory,
+      baseConfig.lockPath,
+      baseConfig.diagnosticLogPath,
+      baseConfig.retainedDiagnosticLogPath,
+      baseConfig.markerSpoolDirectory,
+      baseConfig.markerQuarantineDirectory,
+      baseConfig.markerControlDirectory,
+      baseConfig.workerOwnershipLockPath,
+      baseConfig.generationRootDirectory,
+      baseConfig.activeGenerationPointerPath,
+      baseConfig.generationRegistryPath,
+      baseConfig.backlogSummaryPath,
+      baseConfig.incrementalDiagnosticLogPath,
+    ],
+  });
 }
 
 function createEvaluationEmbeddingClient(
@@ -186,14 +209,25 @@ function createChunkPolicyConfig(
   candidateCount: number,
 ): RecallConversationConfig {
   const policyDirectory = join(workDirectory, chunkPolicy.id);
+  const generationRootDirectory = join(policyDirectory, 'generations');
+  const generationDirectory = join(generationRootDirectory, RECALL_QUALITY_GENERATION_ID);
   return {
     ...baseConfig,
     sessionsDirectory: corpus.sessionDirectory,
-    databasePath: join(policyDirectory, 'zvec'),
-    statePath: join(policyDirectory, 'index-state.json'),
-    manifestPath: join(policyDirectory, 'index-manifest.json'),
+    databasePath: join(generationDirectory, 'zvec'),
+    projectionDatabasePath: join(generationDirectory, 'session-projections'),
+    statePath: join(generationDirectory, 'index-state.json'),
+    manifestPath: join(generationDirectory, 'index-manifest.json'),
     embeddingCacheDirectory: join(policyDirectory, 'embedding-cache'),
     lockPath: join(policyDirectory, 'operation.lock'),
+    generationRootDirectory,
+    activeGenerationPointerPath: join(policyDirectory, 'active-generation.json'),
+    generationRegistryPath: join(policyDirectory, 'generation-registry.json'),
+    backlogSummaryPath: join(policyDirectory, 'backlog-summary.json'),
+    markerSpoolDirectory: join(policyDirectory, 'markers', 'pending'),
+    markerQuarantineDirectory: join(policyDirectory, 'markers', 'quarantine'),
+    markerControlDirectory: join(policyDirectory, 'markers', 'control'),
+    workerOwnershipLockPath: join(policyDirectory, 'incremental-worker.lock'),
     projectLineages: normalizeRecallProjectLineages(corpus.specification.projectLineages),
     chunkPolicy: {
       maxTokens: chunkPolicy.maxTokens,
@@ -204,8 +238,6 @@ function createChunkPolicyConfig(
       lexical: candidateCount,
       identifier: candidateCount,
     },
-    fusedPoolLimit: candidateCount * 3,
-    rerankPoolLimit: candidateCount * 3,
   };
 }
 
@@ -342,7 +374,7 @@ export async function runRecallQualityEvaluation(
 ): Promise<RecallQualityEvaluationResult> {
   const startedAt = new Date();
   const started = performance.now();
-  const workDirectory = assertSafeRecallQualityPaths(
+  const workDirectory = await assertSafeRecallQualityPaths(
     options.workDirectory,
     options.corpus,
     options.baseConfig,
@@ -391,7 +423,11 @@ export async function runRecallQualityEvaluation(
       ),
     );
     const indexStarted = performance.now();
-    const indexed = await indexService.index({ optimize: true });
+    const indexed = await indexService.index({
+      rebuild: true,
+      optimize: true,
+      generationId: RECALL_QUALITY_GENERATION_ID,
+    });
     const indexLatencyMilliseconds = performance.now() - indexStarted;
     if (indexed.indexSummary.failedSessions.length > 0) {
       const failures = indexed.indexSummary.failedSessions
@@ -518,7 +554,13 @@ export async function runRecallQualityEvaluation(
   }
   const completedAt = new Date();
   return {
-    version: 4,
+    version: 5,
+    storageIdentity: {
+      conversationSchemaVersion: SESSION_CONVERSATION_SCHEMA_VERSION,
+      zvecSchemaVersion: ZVEC_CONVERSATION_SCHEMA_VERSION,
+      indexManifestVersion: RECALL_INDEX_MANIFEST_VERSION,
+      incrementalEligibilityPolicyVersion: INCREMENTAL_RECALL_ELIGIBILITY_POLICY_VERSION,
+    },
     evaluationIdentity: {
       defaultScope: RecallSearchScope.PROJECT,
       projectScopePolicyVersion: PROJECT_SCOPE_POLICY_VERSION,
@@ -533,8 +575,6 @@ export async function runRecallQualityEvaluation(
       reciprocalRankConstant: RECALL_RRF_RANK_CONSTANT,
       activeBranchPrior: RECALL_ACTIVE_BRANCH_PRIOR,
       candidateLimits: { dense: 8, lexical: 8, identifier: 8 },
-      fusedPoolLimit: 24,
-      rerankPoolLimit: 24,
       finalResultCount: 5,
     },
     startedAt: startedAt.toISOString(),

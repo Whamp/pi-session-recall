@@ -108,6 +108,14 @@ _Avoid_: Exact result
 One conversation, summary, or tool evidence document deduplicated across retrieval channels, with its document kind and each component rank and score retained.
 _Avoid_: Semantic match
 
+**Submitted recall query**:
+The exact search text that an invoking agent sends to Conversation Recall.
+_Avoid_: User query, original query
+
+**Recall intent**:
+Optional context supplied by the invoking agent to disambiguate query planning and reranking without becoming a retrieval query itself.
+_Avoid_: Search query, filter, agent prompt
+
 **Query plan**:
 One ordered, validated collection of planned retrieval queries produced by an invoking agent or a configured query planning model. It does not itself execute retrieval or ranking.
 _Avoid_: Expanded query string, generated search
@@ -120,6 +128,18 @@ _Avoid_: Search result, identifier query
 One independent conformance operation that checks planner profile, adapter, prompt, grammar, typed bounds, recall intent, cancellation, timeout, and cache identity before query-planned search can use it.
 _Avoid_: Query-planned search, model health check
 
+**Query-planned recall**:
+A recall search that keeps every submitted-query retrieval channel and adds ranked lists from a query plan. An invoking agent may supply the plan; otherwise a configured query-planning model produces it.
+_Avoid_: Planned search, query rewrite, agentic search
+
+**Model profile**:
+The immutable semantic identity of one inference model's accepted inputs and produced outputs, independent of where or how the model executes.
+_Avoid_: Backend, endpoint configuration, model name
+
+**Inference adapter**:
+A verified translation between one inference service contract and one Conversation Recall capability contract, including the service's capability-specific semantics.
+_Avoid_: Endpoint mapping, generic model adapter, inference configuration
+
 **Inference configuration**:
 The atomic local selection of independently verified embedding, reranking, and query-planning model profiles plus their execution backends. Embeddings are required; the other capabilities are optional.
 _Avoid_: Model stack, index manifest
@@ -128,17 +148,13 @@ _Avoid_: Model stack, index manifest
 One exact capability profile, backend, adapter, artifact/device description, and conformance operation offered to setup. A candidate is never an automatic fallback.
 _Avoid_: Provider default, generic endpoint
 
-**Execution identity**:
-The canonical profile, adapter revision and settings, evaluation policy, software, resolved compute backend, and physical device identity that can affect one measured inference result.
-_Avoid_: Cache key, profile label
-
-**Physical device identity**:
-The normalized names and stable processor-count metadata for the resolved device used by one embedded inference capability.
-_Avoid_: Caller device label, requested device policy, hardware identity
-
 **Capability conformance record**:
-The accepted profile, backend, adapter, cache identity, verification time, and bounded measurement persisted after one capability-specific conformance operation passes.
+The accepted profile, backend, adapter, cache identity, verification time, and bounded measurement persisted after one capability-specific conformance operation passes. Embedding records also carry the semantic identity that determines index-generation compatibility.
 _Avoid_: Health check, model availability
+
+**Pending embedding replacement**:
+One verified embedding selection waiting for a matching replacement recall generation to activate. It does not replace the active embedding selection while replacement work is incomplete.
+_Avoid_: Configured embedding, active embedding
 
 **Evidence occurrence**:
 One exact source location for recalled evidence, including its session, graph position, and source geometry. Copied evidence can have several occurrences.
@@ -156,20 +172,12 @@ _Avoid_: Final match, semantic match
 Readable context formed from a winning atomic conversation chunk and its valid contiguous siblings in the same visible text run. The contributing chunks remain individually identified.
 _Avoid_: Expanded transcript, joined messages
 
-**Index generation**:
-One self-consistent vector store, incremental session state, and index manifest built with one embedding profile.
-_Avoid_: Index directory, database
-
-**Active index generation**:
-The complete, validated index generation selected atomically for recall search and incremental maintenance.
-_Avoid_: Current database, production index
-
-**Staging index generation**:
-One resumable index generation built and validated without changing the active index generation.
-_Avoid_: Temporary index, partial active index
+**Replacement recall generation**:
+One resumable recall generation built and validated beside the active generation. Its registry entry records building, failed, or ready state until atomic activation.
+_Avoid_: Staging index generation, temporary index, partial active index
 
 **Background index build**:
-One detached child process that owns a staging index generation and its writer lock until activation, failure, or an explicit stop.
+One detached child process that owns the crash-released rebuild lock while building a replacement recall generation until activation, failure, or an explicit stop.
 _Avoid_: Daemon, background job framework
 
 **Background index status record**:
@@ -185,20 +193,40 @@ Bounded first-index work that measures model cold start and throughput while ret
 _Avoid_: Benchmark, throwaway sample
 
 **Recall readiness**:
-Whether one complete active index generation is available for recall search; selected inference configuration alone is not ready.
+Whether one complete active recall generation is available for search; selected inference configuration alone is not ready.
 _Avoid_: Setup complete, model ready
 
 **Index manifest**:
 The versioned identity of the model, tokenizer, chunk policy, provenance schema, and zvec schema used by one index generation.
 _Avoid_: Index state, configuration
 
-**Live session reconciliation**:
-A lower-level targeted update that reprocesses one session file without scanning sibling sessions. Interactive Pi operations do not invoke it because it still rebuilds the whole changed session.
-_Avoid_: Incremental active-session ingestion, append-only indexing, session watcher
+**Recall generation**:
+One self-contained, validated recall evidence store, session projection store, index state, and index manifest. A replacement generation is built beside the searchable generation rather than overwriting it.
+_Avoid_: Database, index directory, mutable release
+
+**Active generation pointer**:
+The checksummed atomic selection of the sole recall generation served by search and targeted by incremental commits.
+_Avoid_: Latest directory, generation scan, fallback generation
+
+**Replay-pending generation**:
+A newly active generation whose retained generation-independent work markers have not all been covered by durable session projection checkpoints. Search may serve it while the ordinary incremental worker completes replay. It cannot become active while any marker remains pending or quarantined.
+_Avoid_: Building generation, dual-write generation, failed generation
+
+**Rollback generation**:
+The one validated former active generation retained for a bounded period after cutover. Restoring it is explicit and republishes retained markers before incremental writes resume.
+_Avoid_: Backup copy, automatic fallback, second write target
 
 **Recall work marker**:
 One immutable, atomically published event file telling an external worker that a physical session may contain newly eligible evidence. The worker orders and coalesces markers; Pi processes never overwrite them.
 _Avoid_: Index job, mutable session marker, session lock
+
+**Recall marker quarantine**:
+The retained holding area for a corrupt or unsupported recall work marker removed from ordinary replay. Its diagnostics expose only a failure category, count, and age; the original marker remains available for inspection, and unresolved quarantine blocks replay completion.
+_Avoid_: Failed marker deletion, retry queue, marker contents diagnostic
+
+**Metadata recovery sweep**:
+One bounded, resumable inspection of physical session file names and metadata used to observe crash-missed source arrivals or absences without reading session content.
+_Avoid_: Full session scan, session parsing, deletion confirmation
 
 **Incremental recall worker**:
 The sole writer for deferred incremental transfer. This short-lived process runs outside Pi, drains recall work markers, processes eligible append deltas, and exits when no work remains.
@@ -219,10 +247,6 @@ _Avoid_: Trace, span, telemetry
 **Diagnostics mode**:
 The persistence policy for recall diagnostic operations: `slow`, `all`, or `off`.
 _Avoid_: Verbosity level, tracing mode
-
-**Lifecycle trigger**:
-The historical reason recorded for live session reconciliation diagnostics. Interactive Pi no longer starts reconciliation from lifecycle or search events.
-_Avoid_: Current runtime maintenance policy, session watcher event, polling reason
 
 **Manual maintenance trigger**:
 The explicit index command mode that requested a full corpus catch-up: incremental indexing or rebuilding.

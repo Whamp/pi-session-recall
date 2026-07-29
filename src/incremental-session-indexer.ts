@@ -120,20 +120,16 @@ export interface IncrementalSessionIndexerOptions {
   diagnosticMetrics?: RecallIndexDiagnosticMetrics;
   diagnosticsClock?: RecallDiagnosticsClock;
   onPhysicalSessionCheck?: (completion: RecallPhysicalSessionDiagnostic) => void;
-}
-
-/** Dependencies for reconciling one active Pi session without scanning sibling files. */
-export interface IncrementalConversationSessionIndexerOptions {
-  sessionPath: string;
-  statePath: string;
-  store: ConversationChunkStore;
-  embeddingCache: EmbeddingVectorCache;
-  tokenizer: ConversationTextTokenizer;
-  chunkPolicy?: RecallChunkPolicy;
-  resolveProjectIdentity?: (sessionOrigin: string) => Promise<ResolvedProjectIdentity | null>;
-  signal?: AbortSignal;
-  diagnosticMetrics?: RecallIndexDiagnosticMetrics;
-  diagnosticsClock?: RecallDiagnosticsClock;
+  eligibleContributorEntryIdsBySessionPath?: ReadonlyMap<
+    string,
+    ReadonlyMap<string, ReadonlySet<string>>
+  >;
+  /**
+   * When false, skips immediate removal of stale-path sessions and suppresses
+   * error-path chunk deletion for previously indexed sessions, deferring to confirmed
+   * deletion via the incremental worker. Defaults to true (rebuild/legacy behavior).
+   */
+  retireMissingSourcesImmediately?: boolean;
 }
 
 async function readConversationIndexState(statePath: string): Promise<ConversationIndexState> {
@@ -170,6 +166,7 @@ async function readChangedSessionChunks(
   chunkPolicy?: RecallChunkPolicy,
   diagnosticMetrics?: RecallIndexDiagnosticMetrics,
   diagnosticsClock?: RecallDiagnosticsClock,
+  eligibleContributorEntryIdsByLogicalSessionId?: ReadonlyMap<string, ReadonlySet<string>>,
 ): Promise<
   | { changed: false; size: number }
   | {
@@ -199,6 +196,9 @@ async function readChangedSessionChunks(
       chunks: await readSessionConversationChunks(sessionPath, {
         tokenizer,
         ...(chunkPolicy ? chunkPolicy : {}),
+        ...(eligibleContributorEntryIdsByLogicalSessionId
+          ? { eligibleContributorEntryIdsByLogicalSessionId }
+          : {}),
       }),
     };
   } finally {
@@ -235,14 +235,14 @@ function createConversationIndexSummary(): ConversationIndexSummary {
   };
 }
 
-function runTimedDatabaseWrite<T>(
-  operation: () => T,
+async function runTimedDatabaseWrite<T>(
+  operation: () => Promise<T>,
   diagnosticMetrics?: RecallIndexDiagnosticMetrics,
   diagnosticsClock?: RecallDiagnosticsClock,
-): T {
+): Promise<T> {
   const startedAtMilliseconds = diagnosticsClock?.monotonicMilliseconds();
   try {
-    return operation();
+    return await operation();
   } finally {
     if (diagnosticMetrics && diagnosticsClock && startedAtMilliseconds !== undefined) {
       diagnosticMetrics.databaseWriteMilliseconds += Math.max(
@@ -272,20 +272,24 @@ async function writeConversationIndexStateWithDiagnostics(
   }
 }
 
-function removeIndexedConversationSession(
+async function removeIndexedConversationSession(
   state: ConversationIndexState,
   sessionPath: string,
   store: ConversationChunkStore,
   summary: ConversationIndexSummary,
   diagnosticMetrics?: RecallIndexDiagnosticMetrics,
   diagnosticsClock?: RecallDiagnosticsClock,
-): boolean {
+): Promise<boolean> {
   const previous = state.sessions[sessionPath];
   if (!previous) {
     return false;
   }
   const staleIds = previous.chunks.map((chunk) => chunk.id);
-  runTimedDatabaseWrite(() => store.deleteChunks(staleIds), diagnosticMetrics, diagnosticsClock);
+  await runTimedDatabaseWrite(
+    () => store.deleteChunks(staleIds),
+    diagnosticMetrics,
+    diagnosticsClock,
+  );
   summary.deletedChunks += staleIds.length;
   if (diagnosticMetrics) {
     diagnosticMetrics.deletedDocumentCount += staleIds.length;
@@ -315,6 +319,7 @@ async function indexChangedConversationSessionFile(
       options.chunkPolicy,
       options.diagnosticMetrics,
       options.diagnosticsClock,
+      options.eligibleContributorEntryIdsBySessionPath?.get(sessionPath),
     );
   } catch (error) {
     summary.failedSessions.push({
@@ -324,8 +329,11 @@ async function indexChangedConversationSessionFile(
     if (!previous) {
       return { stateChanged: false, failed: true };
     }
+    if (options.retireMissingSourcesImmediately === false) {
+      return { stateChanged: false, failed: true };
+    }
     const staleIds = previous.chunks.map((chunk) => chunk.id);
-    runTimedDatabaseWrite(
+    await runTimedDatabaseWrite(
       () => options.store.deleteChunks(staleIds),
       options.diagnosticMetrics,
       options.diagnosticsClock,
@@ -374,7 +382,7 @@ async function indexChangedConversationSessionFile(
   const currentIds = new Set(attributedChunks.map((chunk) => chunk.id));
   const removedIds =
     previous?.chunks.filter((chunk) => !currentIds.has(chunk.id)).map((chunk) => chunk.id) ?? [];
-  runTimedDatabaseWrite(
+  await runTimedDatabaseWrite(
     () => options.store.deleteChunks(removedIds),
     options.diagnosticMetrics,
     options.diagnosticsClock,
@@ -443,7 +451,7 @@ async function indexChangedConversationSessionFile(
       }
       return { ...chunk, isDenseSearchable: true, embedding };
     });
-    runTimedDatabaseWrite(
+    await runTimedDatabaseWrite(
       () => options.store.upsertChunks(indexedChunks),
       options.diagnosticMetrics,
       options.diagnosticsClock,
@@ -480,63 +488,6 @@ function createSessionProjectIdentityResolver(
     projectIdentityBySessionOrigin.set(sessionOrigin, resolution);
     return resolution;
   };
-}
-
-/** Reconciles one active Pi session while embedding only new dense-searchable evidence. */
-export async function indexChangedConversationSession(
-  options: IncrementalConversationSessionIndexerOptions,
-): Promise<ConversationIndexSummary> {
-  const state = await readConversationIndexState(options.statePath);
-  const summary = createConversationIndexSummary();
-  throwIfIndexingAborted(options.signal);
-  summary.scannedSessions = 1;
-  try {
-    await stat(options.sessionPath);
-  } catch (error) {
-    if (readNodeErrorCode(error) !== 'ENOENT') {
-      throw error;
-    }
-    const previous = state.sessions[options.sessionPath];
-    if (options.diagnosticMetrics) {
-      options.diagnosticMetrics.sourceByteSize = 0;
-      options.diagnosticMetrics.changed = previous !== undefined;
-      options.diagnosticMetrics.skipped = previous === undefined;
-    }
-    if (
-      removeIndexedConversationSession(
-        state,
-        options.sessionPath,
-        options.store,
-        summary,
-        options.diagnosticMetrics,
-        options.diagnosticsClock,
-      )
-    ) {
-      await writeConversationIndexStateWithDiagnostics(
-        options.statePath,
-        state,
-        options.diagnosticMetrics,
-        options.diagnosticsClock,
-      );
-    }
-    return summary;
-  }
-  const outcome = await indexChangedConversationSessionFile(
-    options,
-    state,
-    options.sessionPath,
-    summary,
-    createSessionProjectIdentityResolver(options.resolveProjectIdentity),
-  );
-  if (outcome.stateChanged) {
-    await writeConversationIndexStateWithDiagnostics(
-      options.statePath,
-      state,
-      options.diagnosticMetrics,
-      options.diagnosticsClock,
-    );
-  }
-  return summary;
 }
 
 interface PhysicalSessionDiagnosticOutcome {
@@ -627,9 +578,15 @@ async function scanPhysicalSessionFiles(options: IncrementalSessionIndexerOption
 }> {
   const scanStartedAtMilliseconds = options.diagnosticsClock?.monotonicMilliseconds();
   try {
+    const liveSessionFiles = await listRecallConversationSessionFiles(options.sessionsDirectory);
     return {
       state: await readConversationIndexState(options.statePath),
-      sessionFiles: await listRecallConversationSessionFiles(options.sessionsDirectory),
+      sessionFiles:
+        options.eligibleContributorEntryIdsBySessionPath === undefined
+          ? liveSessionFiles
+          : liveSessionFiles.filter((sessionPath) =>
+              options.eligibleContributorEntryIdsBySessionPath?.has(sessionPath),
+            ),
     };
   } finally {
     if (
@@ -653,42 +610,44 @@ export async function indexChangedConversationSessions(
   const liveSessionPaths = new Set(sessionFiles);
   const summary = createConversationIndexSummary();
 
-  for (const stalePath of Object.keys(state.sessions).filter(
-    (path) => !liveSessionPaths.has(path),
-  )) {
-    throwIfIndexingAborted(options.signal);
-    await runPhysicalSessionCheck({
-      indexerOptions: options,
-      sessionPath: stalePath,
-      performPhysicalSessionCheck(physicalSessionMetrics) {
-        if (physicalSessionMetrics) {
-          physicalSessionMetrics.sourceByteSize = 0;
-          physicalSessionMetrics.changed = true;
-          physicalSessionMetrics.skipped = false;
-        }
-        const removed = removeIndexedConversationSession(
-          state,
-          stalePath,
-          options.store,
-          summary,
-          physicalSessionMetrics,
-          options.diagnosticsClock,
-        );
-        return {
-          indexedSessionCount: 0,
-          removedSessionCount: removed ? 1 : 0,
-          failedSessionCount: 0,
-        };
-      },
-    });
-  }
-  if (summary.removedSessions > 0) {
-    await writeConversationIndexStateWithDiagnostics(
-      options.statePath,
-      state,
-      options.diagnosticMetrics,
-      options.diagnosticsClock,
-    );
+  if (options.retireMissingSourcesImmediately !== false) {
+    for (const stalePath of Object.keys(state.sessions).filter(
+      (path) => !liveSessionPaths.has(path),
+    )) {
+      throwIfIndexingAborted(options.signal);
+      await runPhysicalSessionCheck({
+        indexerOptions: options,
+        sessionPath: stalePath,
+        async performPhysicalSessionCheck(physicalSessionMetrics) {
+          if (physicalSessionMetrics) {
+            physicalSessionMetrics.sourceByteSize = 0;
+            physicalSessionMetrics.changed = true;
+            physicalSessionMetrics.skipped = false;
+          }
+          const removed = await removeIndexedConversationSession(
+            state,
+            stalePath,
+            options.store,
+            summary,
+            physicalSessionMetrics,
+            options.diagnosticsClock,
+          );
+          return {
+            indexedSessionCount: 0,
+            removedSessionCount: removed ? 1 : 0,
+            failedSessionCount: 0,
+          };
+        },
+      });
+    }
+    if (summary.removedSessions > 0) {
+      await writeConversationIndexStateWithDiagnostics(
+        options.statePath,
+        state,
+        options.diagnosticMetrics,
+        options.diagnosticsClock,
+      );
+    }
   }
 
   const resolveSessionProjectIdentity = createSessionProjectIdentityResolver(

@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { access } from 'node:fs/promises';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -12,6 +11,9 @@ import { promisify } from 'node:util';
 import {
   RecallBackgroundIndexProcessState,
   RecallDiagnosticsMode,
+  RecallGenerationCutoverState,
+  RecallInferenceBackend,
+  RecallInferenceCapability,
   RecallSearchScope,
 } from './enums.js';
 import { isUnknownRecord } from './is-unknown-record.js';
@@ -19,6 +21,17 @@ import {
   createRecallConversationService,
   type RecallConversationConfig,
 } from './recall-conversation-service.js';
+import {
+  createRecallActiveGenerationPointer,
+  readRecallGenerationRegistry,
+  writeRecallActiveGenerationPointer,
+  writeRecallGenerationRegistry,
+  RECALL_GENERATION_REGISTRY_VERSION,
+} from './recall-generation-state.js';
+import {
+  readRecallInferenceConfiguration,
+  writeRecallInferenceConfiguration,
+} from './recall-inference-configuration.js';
 import { normalizeRecallProjectLineages } from './resolve-project-identity.js';
 
 const EXEC_FILE_ASYNC = promisify(execFile);
@@ -35,15 +48,23 @@ function createBackgroundIndexTestConfig(
 ): RecallConversationConfig {
   return {
     sessionsDirectory,
+    dataDirectory: directory,
     databasePath: join(directory, 'zvec'),
+    projectionDatabasePath: join(directory, 'session-projections'),
     statePath: join(directory, 'index-state.json'),
     manifestPath: join(directory, 'index-manifest.json'),
     tokenizerCacheDirectory: join(directory, 'tokenizers'),
     embeddingCacheDirectory: join(directory, 'embedding-cache'),
     lockPath: join(directory, 'recall.lock'),
-    generationsDirectory: join(directory, 'index-generations'),
-    activeGenerationPath: join(directory, 'active-generation.json'),
-    stagingGenerationPath: join(directory, 'staging-generation.json'),
+    markerSpoolDirectory: join(directory, 'markers', 'pending'),
+    markerQuarantineDirectory: join(directory, 'markers', 'quarantine'),
+    markerControlDirectory: join(directory, 'markers', 'control'),
+    workerOwnershipLockPath: join(directory, 'incremental-worker.lock'),
+    generationRootDirectory: join(directory, 'generations'),
+    activeGenerationPointerPath: join(directory, 'active-generation.json'),
+    generationRegistryPath: join(directory, 'generation-registry.json'),
+    backlogSummaryPath: join(directory, 'backlog-summary.json'),
+    incrementalDiagnosticLogPath: join(directory, 'incremental-diagnostics.jsonl'),
     backgroundIndexStatusPath: join(directory, 'background-index-status.json'),
     backgroundIndexRequestPath: join(directory, 'background-index-request.json'),
     diagnosticsMode: RecallDiagnosticsMode.OFF,
@@ -59,6 +80,9 @@ function createBackgroundIndexTestConfig(
     embeddingBatchSize: 8,
     rerankerBaseUrl: 'http://unused-reranker.test/v1',
     rerankerModel: 'test-reranker-model',
+    searchWriteWindowWaitMilliseconds: 500,
+    confirmedDeletionMaxMissingSourceCount: 1,
+    confirmedDeletionMaxMissingSourceRatio: 0.1,
     projectLineages: normalizeRecallProjectLineages({}),
     searchCandidateLimits: { dense: 5, lexical: 5, identifier: 5 },
   };
@@ -162,8 +186,9 @@ void test('background rebuild reports progress while active recall remains searc
   const activeService = createRecallConversationService(config, deterministicDependencies);
 
   await writeBackgroundIndexSession(sessionPath, 'active generation evidence');
-  await activeService.index();
-  await writeBackgroundIndexSession(sessionPath, 'background replacement evidence');
+  await activeService.index({ rebuild: true });
+  await rm(config.embeddingCacheDirectory, { recursive: true, force: true });
+  await writeFile(join(directory, 'fixture-pause-embedding'), 'pause\n', 'utf8');
 
   const backgroundService = createRecallConversationService(config, {
     ...deterministicDependencies,
@@ -202,7 +227,8 @@ void test('background rebuild reports progress while active recall remains searc
 
 void test('detached staging build survives the client process that started it', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'recall-background-survival-'));
-  const releasePath = join(directory, 'fixture-embedding-release');
+  const dataDirectory = join(directory, 'data');
+  const releasePath = join(dataDirectory, 'fixture-embedding-release');
   t.after(async () => {
     await writeFile(releasePath, 'release\n', 'utf8').catch(() => undefined);
     await sleep(100);
@@ -220,13 +246,13 @@ void test('detached staging build survives the client process that started it', 
   );
   const launched = await EXEC_FILE_ASYNC(
     process.execPath,
-    ['--import', 'tsx', launcherPath, directory, sessionsDirectory],
+    ['--import', 'tsx', launcherPath, dataDirectory, sessionsDirectory],
     { cwd: process.cwd() },
   );
   const startingProcessId = parseBackgroundProcessId(launched.stdout);
   assert.doesNotThrow(() => process.kill(startingProcessId, 0));
 
-  const config = createBackgroundIndexTestConfig(directory, sessionsDirectory);
+  const config = createBackgroundIndexTestConfig(dataDirectory, sessionsDirectory);
   const observer = createRecallConversationService(config, {
     embeddingProvider: {
       async embedQuery() {
@@ -246,8 +272,8 @@ void test('detached staging build survives the client process that started it', 
     },
   });
   await waitForPath(
-    join(directory, 'fixture-embedding-started'),
-    join(directory, 'background-index-status.json'),
+    join(dataDirectory, 'fixture-embedding-started'),
+    join(dataDirectory, 'background-index-status.json'),
   );
   const running = await waitForBackgroundProcessState(
     observer,
@@ -392,8 +418,241 @@ void test('background worker bootstrap failure persists one bounded actionable e
   assert.equal(statusLines.length, 1);
 });
 
+void test('discarding staging clears pending embedding replacement', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-discard-pending-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionsDirectory = join(directory, 'sessions');
+  await mkdir(sessionsDirectory);
+  const config = createBackgroundIndexTestConfig(directory, sessionsDirectory);
+  const activePointer = createRecallActiveGenerationPointer('generation_active');
+  await mkdir(join(config.generationRootDirectory, activePointer.activeGenerationId), {
+    recursive: true,
+  });
+  await mkdir(join(config.generationRootDirectory, 'generation_staging'), { recursive: true });
+  await writeRecallActiveGenerationPointer(config.activeGenerationPointerPath, activePointer);
+  await writeRecallGenerationRegistry(config.generationRegistryPath, {
+    version: RECALL_GENERATION_REGISTRY_VERSION,
+    activeGenerationId: activePointer.activeGenerationId,
+    buildingGenerationId: null,
+    rollbackGenerationId: null,
+    activePointerChecksum: activePointer.checksum,
+    generations: [
+      {
+        generationId: activePointer.activeGenerationId,
+        state: RecallGenerationCutoverState.ACTIVE,
+        embeddingProfileId: 'embedding-profile-v1',
+        indexManifestVersion: 6,
+        markerSchemaVersion: 1,
+        sessionProjectionSchemaVersion: 3,
+        indexManifestFingerprint: 'a'.repeat(64),
+        rebuildStartedAtEpochMilliseconds: 1,
+        stateChangedAtEpochMilliseconds: 2,
+        rebuildStartMarkerId: null,
+        rebuildMarkerWatermark: [],
+        validatedAtEpochMilliseconds: 2,
+        retireAfterEpochMilliseconds: null,
+      },
+      {
+        generationId: 'generation_staging',
+        state: RecallGenerationCutoverState.FAILED,
+        embeddingProfileId: 'embedding-profile-v2',
+        indexManifestVersion: 6,
+        markerSchemaVersion: 1,
+        sessionProjectionSchemaVersion: 3,
+        indexManifestFingerprint: '0'.repeat(64),
+        rebuildStartedAtEpochMilliseconds: 3,
+        stateChangedAtEpochMilliseconds: 4,
+        rebuildStartMarkerId: null,
+        rebuildMarkerWatermark: [],
+        validatedAtEpochMilliseconds: null,
+        retireAfterEpochMilliseconds: null,
+      },
+    ],
+  });
+  const inferenceConfigurationPath = join(directory, 'inference-configuration.json');
+  await writeRecallInferenceConfiguration(inferenceConfigurationPath, {
+    version: 2,
+    embedding: {
+      capability: RecallInferenceCapability.EMBEDDING,
+      candidateId: 'embedding-v1',
+      profileId: 'embedding-profile-v1',
+      backend: RecallInferenceBackend.CUSTOM,
+      adapterId: 'embedding-v1',
+      endpoint: null,
+      device: null,
+      artifact: null,
+      conformance: {
+        verifiedAt: '2026-01-01T00:00:00.000Z',
+        cacheIdentity: 'embedding-profile-v1',
+        embeddingProfileId: 'embedding-profile-v1',
+        measurement: { verificationOperations: 1 },
+      },
+    },
+    reranking: null,
+    queryPlanning: null,
+    pendingEmbeddingReplacement: {
+      embeddingProfileId: 'embedding-profile-v2',
+      selection: {
+        capability: RecallInferenceCapability.EMBEDDING,
+        candidateId: 'embedding-v2',
+        profileId: 'embedding-profile-v2',
+        backend: RecallInferenceBackend.CUSTOM,
+        adapterId: 'embedding-v2',
+        endpoint: null,
+        device: null,
+        artifact: null,
+        conformance: {
+          verifiedAt: '2026-01-01T00:00:00.000Z',
+          cacheIdentity: 'embedding-profile-v2',
+          embeddingProfileId: 'embedding-profile-v2',
+          measurement: { verificationOperations: 1 },
+        },
+      },
+    },
+  });
+
+  const service = createRecallConversationService(config, {
+    embeddingProvider: {
+      async embedQuery() {
+        return [1, 0, 0];
+      },
+      async embedDocuments(documents) {
+        return documents.map(() => [1, 0, 0]);
+      },
+    },
+    async loadTokenizer() {
+      return TOKENIZER;
+    },
+  });
+
+  assert.equal(await service.discardStagingIndexGeneration(), true);
+  assert.equal((await service.readIndexGenerationStatus()).staging, null);
+  assert.equal(
+    (await readRecallInferenceConfiguration(inferenceConfigurationPath))
+      .pendingEmbeddingReplacement,
+    null,
+  );
+  assert.equal(
+    (await readRecallGenerationRegistry(config.generationRegistryPath))?.generations.some(
+      ({ generationId }) => generationId === 'generation_staging',
+    ),
+    false,
+  );
+  await assert.rejects(() => access(join(config.generationRootDirectory, 'generation_staging')), {
+    code: 'ENOENT',
+  });
+});
+
+void test('discarded staging stays retired and collectible when directory removal fails', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-discard-orphan-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionsDirectory = join(directory, 'sessions');
+  await mkdir(sessionsDirectory);
+  const config = createBackgroundIndexTestConfig(directory, sessionsDirectory);
+  const activePointer = createRecallActiveGenerationPointer('generation_active');
+  await mkdir(join(config.generationRootDirectory, activePointer.activeGenerationId), {
+    recursive: true,
+  });
+  const stagingDirectory = join(config.generationRootDirectory, 'generation_staging');
+  await mkdir(stagingDirectory, { recursive: true });
+  await writeRecallActiveGenerationPointer(config.activeGenerationPointerPath, activePointer);
+  await writeRecallGenerationRegistry(config.generationRegistryPath, {
+    version: RECALL_GENERATION_REGISTRY_VERSION,
+    activeGenerationId: activePointer.activeGenerationId,
+    buildingGenerationId: null,
+    rollbackGenerationId: null,
+    activePointerChecksum: activePointer.checksum,
+    generations: [
+      {
+        generationId: activePointer.activeGenerationId,
+        state: RecallGenerationCutoverState.ACTIVE,
+        embeddingProfileId: 'embedding-profile-v1',
+        indexManifestVersion: 6,
+        markerSchemaVersion: 1,
+        sessionProjectionSchemaVersion: 3,
+        indexManifestFingerprint: 'a'.repeat(64),
+        rebuildStartedAtEpochMilliseconds: 1,
+        stateChangedAtEpochMilliseconds: 2,
+        rebuildStartMarkerId: null,
+        rebuildMarkerWatermark: [],
+        validatedAtEpochMilliseconds: 2,
+        retireAfterEpochMilliseconds: null,
+      },
+      {
+        generationId: 'generation_staging',
+        state: RecallGenerationCutoverState.FAILED,
+        embeddingProfileId: 'embedding-profile-v2',
+        indexManifestVersion: 6,
+        markerSchemaVersion: 1,
+        sessionProjectionSchemaVersion: 3,
+        indexManifestFingerprint: '0'.repeat(64),
+        rebuildStartedAtEpochMilliseconds: 3,
+        stateChangedAtEpochMilliseconds: 4,
+        rebuildStartMarkerId: null,
+        rebuildMarkerWatermark: [],
+        validatedAtEpochMilliseconds: null,
+        retireAfterEpochMilliseconds: null,
+      },
+    ],
+  });
+
+  const service = createRecallConversationService(config, {
+    embeddingProvider: {
+      async embedQuery() {
+        return [1, 0, 0];
+      },
+      async embedDocuments(documents) {
+        return documents.map(() => [1, 0, 0]);
+      },
+    },
+    async loadTokenizer() {
+      return TOKENIZER;
+    },
+  });
+
+  // Simulate a crash after marking RETIRED but before directory removal by only applying the
+  // registry transition, then prove collect-retired can finish cleanup.
+  const registry = await readRecallGenerationRegistry(config.generationRegistryPath);
+  assert.ok(registry);
+  const discardedAt = 50;
+  await writeRecallGenerationRegistry(config.generationRegistryPath, {
+    ...registry,
+    generations: registry.generations.map((entry) =>
+      entry.generationId === 'generation_staging'
+        ? {
+            ...entry,
+            state: RecallGenerationCutoverState.RETIRED,
+            stateChangedAtEpochMilliseconds: discardedAt,
+            validatedAtEpochMilliseconds: discardedAt,
+            retireAfterEpochMilliseconds: discardedAt,
+          }
+        : entry,
+    ),
+  });
+  assert.equal((await service.readIndexGenerationStatus()).staging, null);
+  await access(stagingDirectory);
+
+  const { collectRetiredRecallGenerations } =
+    await import('./collect-retired-recall-generations.js');
+  const collected = await collectRetiredRecallGenerations({
+    activeGenerationPointerPath: config.activeGenerationPointerPath,
+    generationRegistryPath: config.generationRegistryPath,
+    generationRootDirectory: config.generationRootDirectory,
+    lockPath: config.lockPath,
+    nowEpochMilliseconds: () => discardedAt,
+  });
+  assert.deepEqual(collected.deletedGenerationIds, ['generation_staging']);
+  await assert.rejects(() => access(stagingDirectory), { code: 'ENOENT' });
+  assert.equal(
+    (await readRecallGenerationRegistry(config.generationRegistryPath))?.generations.some(
+      ({ generationId }) => generationId === 'generation_staging',
+    ),
+    false,
+  );
+});
+
 void test('crashed workers at every staging phase remain resumable and idempotent', async (t) => {
-  const phases = ['parsing', 'embedding', 'store-write', 'optimization', 'pre-activation'] as const;
+  const phases = ['parsing', 'embedding', 'store-write', 'optimization'] as const;
 
   for (const phase of phases) {
     await t.test(phase, async (phaseTest) => {

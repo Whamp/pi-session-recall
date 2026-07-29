@@ -747,7 +747,6 @@ export async function clearPendingRecallEmbeddingReplacement(
   statePath: string,
   options: {
     generationRegistryPath?: string;
-    matchingEmbeddingProfileId?: string;
   } = {},
 ): Promise<boolean> {
   return withRecallInferenceConfigurationLock(statePath, async () => {
@@ -758,12 +757,6 @@ export async function clearPendingRecallEmbeddingReplacement(
     });
     const pending = current.pendingEmbeddingReplacement;
     if (!pending) {
-      return false;
-    }
-    if (
-      options.matchingEmbeddingProfileId !== undefined &&
-      pending.embeddingProfileId !== options.matchingEmbeddingProfileId
-    ) {
       return false;
     }
     await writeRecallInferenceConfiguration(statePath, {

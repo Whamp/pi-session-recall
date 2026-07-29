@@ -74,7 +74,8 @@ function createReportEnvironment(
   };
 }
 
-function createDeterministicRecallQualityConfig(
+/** Creates the production-isolated deterministic configuration for committed-corpus quality runs. */
+export function createDeterministicRecallQualityConfig(
   projectDirectory: string,
 ): RecallConversationConfig {
   const protectedDirectory = join(projectDirectory, 'evaluation', '.protected-production-sentinel');

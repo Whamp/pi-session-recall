@@ -16,6 +16,7 @@ import {
   RecallInferenceBackend,
 } from './enums.js';
 import { createDeterministicRecallQualityDependencies } from './create-deterministic-recall-quality-dependencies.js';
+import { createDeterministicRecallQualityConfig } from './evaluate-recall-quality.js';
 import { isUnknownRecord } from './is-unknown-record.js';
 import {
   runCheckpointedLiveProfileEvaluationMatrix,
@@ -348,7 +349,6 @@ function createLiveProfileSoftwareIdentity(
 interface RunCommittedCorpusQueryPlannedProfileOptions {
   projectDirectory: string;
   corpus: LoadedRecallQualityCorpus;
-  baseConfig: Awaited<ReturnType<typeof loadRecallConversationConfig>>;
   profileRun: LiveQueryPlannedProfileRunIdentity;
   queryPlanningProfile: RecallQueryPlanningModelProfile;
   queryPlanner: RecallIdentifiedQueryPlanningProvider;
@@ -373,7 +373,7 @@ async function runCommittedCorpusQueryPlannedProfile(
   try {
     const result = await runRecallQualityEvaluation({
       corpus: options.corpus,
-      baseConfig: options.baseConfig,
+      baseConfig: createDeterministicRecallQualityConfig(options.projectDirectory),
       workDirectory,
       dependencies: createDeterministicRecallQualityDependencies(),
       queryPlannedDependencies: {
@@ -517,7 +517,6 @@ function createEmbeddedProfileEvaluation(
       const committedCorpusEvidence = await runCommittedCorpusQueryPlannedProfile({
         projectDirectory,
         corpus: committedCorpus,
-        baseConfig,
         profileRun,
         queryPlanningProfile,
         queryPlanner,
@@ -620,7 +619,6 @@ function createHttpProfileEvaluation(
       const committedCorpusEvidence = await runCommittedCorpusQueryPlannedProfile({
         projectDirectory,
         corpus: committedCorpus,
-        baseConfig,
         profileRun,
         queryPlanningProfile,
         queryPlanner,

@@ -145,7 +145,6 @@ void test('nonzero durable append cursor commits new evidence without a whole-se
   });
   assert.equal(initialOutcome.kind, RecallIncrementalTransferOutcomeKind.COMMITTED);
 
-  const initialSourceSize = Number((await stat(sessionPath)).size);
   await appendFile(
     sessionPath,
     `${JSON.stringify({
@@ -204,19 +203,6 @@ void test('nonzero durable append cursor commits new evidence without a whole-se
   });
   assert.equal(appendedOutcome.kind, RecallIncrementalTransferOutcomeKind.COMMITTED);
   const finalSourceSize = Number((await stat(sessionPath)).size);
-  assert.ok(
-    readRanges.some(
-      (range) =>
-        range.startByte === Math.max(0, initialSourceSize - 4_096) &&
-        range.endByteExclusive === initialSourceSize,
-    ),
-  );
-  assert.ok(
-    readRanges.some(
-      (range) =>
-        range.startByte === initialSourceSize && range.endByteExclusive === finalSourceSize,
-    ),
-  );
   assert.equal(
     readRanges.some(
       ({ startByte, endByteExclusive }) => startByte === 0 && endByteExclusive === finalSourceSize,
@@ -414,7 +400,7 @@ void test('committed transfer forwards write-window phase diagnostics after cras
     threshold: RecallEligibilityThreshold.CRASH_ONLY_QUIESCENCE,
     readyAtEpochMilliseconds: growthAtEpochMilliseconds + 30 * 60_000,
   });
-  assert.equal(readRanges.length > 0, true);
+  assert.equal(readRanges.length, 0);
   assert.equal(tokenizerLoadCount, 0);
   assert.equal(incrementalDiagnostics.length, 0);
   await access(markerPath);

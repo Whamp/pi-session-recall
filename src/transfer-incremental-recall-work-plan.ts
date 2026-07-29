@@ -183,7 +183,6 @@ export async function transferIncrementalRecallWorkPlan(
   const appendDelta = await readRecallSessionAppendDelta(
     firstMarker.physicalSessionPath,
     physicalProjection,
-    options.readRange ? { readRange: options.readRange } : {},
   );
   if (appendDelta.status !== RecallAppendDeltaStatus.APPENDED) {
     throw new Error(

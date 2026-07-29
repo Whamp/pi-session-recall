@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtemp, open, rename, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, rename, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -172,16 +172,8 @@ void test('append reader reads only the bounded fingerprint and bytes at or afte
   const reads: Array<{ start: number; endExclusive: number }> = [];
 
   const delta = await readRecallSessionAppendDelta(sessionPath, projection, {
-    async *readRange(path, start, endExclusive) {
+    beforeReadRange(start, endExclusive) {
       reads.push({ start, endExclusive });
-      const handle = await open(path, 'r');
-      try {
-        const bytes = Buffer.alloc(endExclusive - start);
-        await handle.read(bytes, 0, bytes.length, start);
-        yield bytes;
-      } finally {
-        await handle.close();
-      }
     },
   });
 
@@ -190,6 +182,39 @@ void test('append reader reads only the bounded fingerprint and bytes at or afte
     { start: padding.length - 4_096, endExclusive: padding.length },
     { start: padding.length, endExclusive: padding.length + appended.length },
   ]);
+});
+
+void test('append reader rejects a path replacement between bounded range reads', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-append-replaced-between-reads-'));
+  const sessionPath = join(directory, 'session.jsonl');
+  const header = record({
+    type: 'session',
+    version: 3,
+    id: 'logical-replaced',
+    timestamp: '2026-07-24T10:00:00Z',
+    cwd: '/project',
+  });
+  const originalAppend = record({ type: 'leaf', targetId: 'a' });
+  const replacementAppend = record({ type: 'leaf', targetId: 'b' });
+  await writeFile(sessionPath, Buffer.concat([header, originalAppend]));
+  const projection = await createProjection(sessionPath, header, header.length, 1);
+  const replacementPath = join(directory, 'replacement.jsonl');
+  await writeFile(replacementPath, Buffer.concat([header, replacementAppend]));
+  let readCount = 0;
+
+  const delta = await readRecallSessionAppendDelta(sessionPath, projection, {
+    async beforeReadRange() {
+      readCount += 1;
+      if (readCount === 2) {
+        await rename(replacementPath, sessionPath);
+      }
+    },
+  });
+
+  assert.deepEqual(delta, {
+    status: RecallAppendDeltaStatus.REQUIRES_RECONCILIATION,
+    repairReason: RecallProjectionRepairReason.SOURCE_IDENTITY_MISMATCH,
+  });
 });
 
 void test('arbitrary source byte chunking preserves complete JSONL framing and exact cursor advancement', async () => {
@@ -221,18 +246,12 @@ void test('arbitrary source byte chunking preserves complete JSONL framing and e
         await writeFile(sessionPath, source);
         const projection = await createProjection(sessionPath, source, 0, 0);
         const expected = await readRecallSessionAppendDelta(sessionPath, projection);
+        let chunkIndex = 0;
         const chunked = await readRecallSessionAppendDelta(sessionPath, projection, {
-          async *readRange(path, start, endExclusive) {
-            assert.equal(path, sessionPath);
-            let position = start;
-            let chunkIndex = 0;
-            while (position < endExclusive) {
-              const chunkSize = chunkSizes[chunkIndex % chunkSizes.length] ?? 1;
-              const next = Math.min(endExclusive, position + chunkSize);
-              yield source.subarray(position, next);
-              position = next;
-              chunkIndex += 1;
-            }
+          readChunkByteLength() {
+            const chunkSize = chunkSizes[chunkIndex % chunkSizes.length] ?? 1;
+            chunkIndex += 1;
+            return chunkSize;
           },
         });
         assert.deepEqual(chunked, expected);

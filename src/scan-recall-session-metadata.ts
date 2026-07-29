@@ -16,7 +16,7 @@ export const RECALL_METADATA_SWEEP_MAX_FILES = 10_000;
 export const RECALL_METADATA_SWEEP_MAX_ELAPSED_MILLISECONDS = 500;
 
 /** Current strict scalar continuation version for metadata recovery sweeps. */
-export const RECALL_METADATA_SWEEP_CONTINUATION_VERSION = 2;
+export const RECALL_METADATA_SWEEP_CONTINUATION_VERSION = 3;
 
 /** Filename of the strict scalar metadata sweep continuation under the marker control directory. */
 export const RECALL_METADATA_SWEEP_CONTINUATION_FILENAME = 'metadata-sweep-continuation.json';
@@ -60,13 +60,20 @@ export interface RecallSessionMetadataFilesystem {
   statPath: (path: string) => Promise<RecallSessionMetadataStat>;
 }
 
+/** Durable names already examined in one directory during a metadata sweep. */
+export interface RecallMetadataSweepDirectoryCheckpoint {
+  relativeDirectory: string;
+  processedEntryNames: string[];
+}
+
 /** Strict scalar state that resumes one bounded metadata sweep without session content. */
 export interface RecallMetadataSweepContinuation {
-  version: 2;
+  version: 3;
   sweepId: string;
   currentRelativeDirectory: string;
-  afterEntryName: string | null;
+  directoryCheckpoints: RecallMetadataSweepDirectoryCheckpoint[];
   pendingRelativeDirectories: string[];
+  rescanStarted: boolean;
   observedPhysicalSessionIds: string[];
   observedKnownSourceIdentities: ObservedKnownRecallSourceIdentity[];
   observedSessionFileCount: number;
@@ -118,8 +125,17 @@ const recallMetadataSweepContinuationSchema = Type.Object(
     version: Type.Literal(RECALL_METADATA_SWEEP_CONTINUATION_VERSION),
     sweepId: Type.String({ minLength: 1 }),
     currentRelativeDirectory: relativeDirectorySchema,
-    afterEntryName: Type.Union([entryNameSchema, Type.Null()]),
+    directoryCheckpoints: Type.Array(
+      Type.Object(
+        {
+          relativeDirectory: relativeDirectorySchema,
+          processedEntryNames: Type.Array(entryNameSchema),
+        },
+        { additionalProperties: false },
+      ),
+    ),
     pendingRelativeDirectories: Type.Array(relativeDirectorySchema),
+    rescanStarted: Type.Boolean(),
     observedPhysicalSessionIds: Type.Array(Type.String({ minLength: 1 })),
     observedKnownSourceIdentities: Type.Array(
       Type.Object(
@@ -224,8 +240,9 @@ function createInitialRecallMetadataSweepContinuation(
     version: RECALL_METADATA_SWEEP_CONTINUATION_VERSION,
     sweepId,
     currentRelativeDirectory: '',
-    afterEntryName: null,
+    directoryCheckpoints: [],
     pendingRelativeDirectories: [],
+    rescanStarted: false,
     observedPhysicalSessionIds: [],
     observedKnownSourceIdentities: [],
     observedSessionFileCount: 0,
@@ -376,9 +393,21 @@ export async function scanRecallSessionMetadata(
       return persistRecallMetadataSweepResult(failureStatus);
     }
 
-    const remainingEntryNames = entryNames.filter(
-      (name) => continuation.afterEntryName === null || name > continuation.afterEntryName,
+    let directoryCheckpoint = continuation.directoryCheckpoints.find(
+      ({ relativeDirectory }) => relativeDirectory === continuation.currentRelativeDirectory,
     );
+    if (directoryCheckpoint === undefined) {
+      directoryCheckpoint = {
+        relativeDirectory: continuation.currentRelativeDirectory,
+        processedEntryNames: [],
+      };
+      continuation.directoryCheckpoints.push(directoryCheckpoint);
+      continuation.directoryCheckpoints.sort((left, right) =>
+        left.relativeDirectory.localeCompare(right.relativeDirectory),
+      );
+    }
+    const processedEntryNames = new Set(directoryCheckpoint.processedEntryNames);
+    const remainingEntryNames = entryNames.filter((name) => !processedEntryNames.has(name));
     for (const [entryIndex, entryName] of remainingEntryNames.entries()) {
       if (!Value.Check(entryNameSchema, entryName)) {
         throw new Error('Recall metadata sweep directory returned an invalid entry name');
@@ -401,7 +430,7 @@ export async function scanRecallSessionMetadata(
         }
         return persistRecallMetadataSweepResult(failureStatus);
       }
-      continuation.afterEntryName = entryName;
+      directoryCheckpoint.processedEntryNames.push(entryName);
       if (metadata.isDirectory) {
         continuation.pendingRelativeDirectories.push(relativePath);
         continuation.pendingRelativeDirectories.sort();
@@ -442,12 +471,18 @@ export async function scanRecallSessionMetadata(
       }
     }
 
-    const nextRelativeDirectory = continuation.pendingRelativeDirectories.shift();
+    let nextRelativeDirectory = continuation.pendingRelativeDirectories.shift();
+    if (nextRelativeDirectory === undefined && !continuation.rescanStarted) {
+      continuation.rescanStarted = true;
+      continuation.pendingRelativeDirectories = continuation.directoryCheckpoints
+        .map(({ relativeDirectory }) => relativeDirectory)
+        .toSorted();
+      nextRelativeDirectory = continuation.pendingRelativeDirectories.shift();
+    }
     if (nextRelativeDirectory === undefined) {
       break;
     }
     continuation.currentRelativeDirectory = nextRelativeDirectory;
-    continuation.afterEntryName = null;
   }
 
   await continuationStore.clearContinuation();

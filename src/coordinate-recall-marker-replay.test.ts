@@ -160,6 +160,34 @@ void test('recall marker replay coalesces activity while preserving divergent co
   assert.deepEqual(workPlan.quarantineDiagnostics, []);
 });
 
+void test('recall marker replay keeps delimiter-ambiguous compaction tuples distinct', async (t) => {
+  const fixture = await createCoordinatorFixture(t);
+  const first = fixture.createMarker('runtime-a', 1, {
+    kind: RecallWorkMarkerTrigger.COMPACTION,
+    logicalSessionId: 'logical',
+    compactionEntryId: 'entry:tail',
+  });
+  const second = fixture.createMarker('runtime-a', 2, {
+    kind: RecallWorkMarkerTrigger.COMPACTION,
+    logicalSessionId: 'logical:entry',
+    compactionEntryId: 'tail',
+  });
+  await fixture.publishMarker(first);
+  await fixture.publishMarker(second);
+
+  const workPlan = await coordinateRecallMarkerReplay({
+    markerSpoolDirectory: fixture.markerSpoolDirectory,
+    markerQuarantineDirectory: fixture.markerQuarantineDirectory,
+    targetGenerationId: 'generation-1',
+    trustedSessionRoots: [fixture.sessionsDirectory],
+  });
+
+  assert.deepEqual(
+    workPlan.workItems.map(({ coveredMarkerIds }) => coveredMarkerIds),
+    [[first.markerId], [second.markerId]],
+  );
+});
+
 void test('recall marker replay quarantines corrupt and unsupported files without exposing their contents', async (t) => {
   const fixture = await createCoordinatorFixture(t);
   const validMarker = fixture.createMarker('runtime-a', 1, {

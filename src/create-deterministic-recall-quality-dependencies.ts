@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 
+import type { RecallEmbeddingProvider } from './recall-inference-capabilities.js';
 import { RECALL_EMBEDDING_CANARY_TEXT } from './recall-index-manifest.js';
 import type { RecallQualityEvaluationDependencies } from './run-recall-quality-evaluation.js';
 
@@ -45,14 +46,21 @@ function createDeterministicRecallQualityVector(text: string): number[] {
   return values.map((value) => value / norm);
 }
 
+function createDeterministicRecallQualityEmbeddingProvider(): RecallEmbeddingProvider {
+  return {
+    async embedQuery(query) {
+      return createDeterministicRecallQualityVector(query);
+    },
+    async embedDocuments(documents) {
+      return documents.map((document) => createDeterministicRecallQualityVector(document));
+    },
+  };
+}
+
 /** Creates network-free deterministic model and tokenizer boundaries for the fixed quality corpus. */
 export function createDeterministicRecallQualityDependencies(): RecallQualityEvaluationDependencies {
   return {
-    embeddings: {
-      async embedTexts(texts) {
-        return texts.map(createDeterministicRecallQualityVector);
-      },
-    },
+    embeddingProvider: createDeterministicRecallQualityEmbeddingProvider(),
     async loadTokenizer() {
       return {
         encodeConversationText(text) {

@@ -10,7 +10,7 @@ import {
   type EmbeddingVectorCache,
 } from './embedding-vector-cache.js';
 import { indexChangedConversationSessions } from './incremental-session-indexer.js';
-import type { LocalEmbeddingClient } from './local-embedding-client.js';
+import type { RecallEmbeddingProvider } from './recall-inference-capabilities.js';
 import { RecallProjectIdentitySource } from './enums.js';
 import { createRecallIndexManifest } from './recall-index-manifest.js';
 import { parseProjectIdentity, type ResolvedProjectIdentity } from './resolve-project-identity.js';
@@ -54,7 +54,7 @@ const tokenizer: ConversationTextTokenizer = {
 
 function createTestEmbeddingCache(
   directory: string,
-  embeddings: LocalEmbeddingClient,
+  embeddingProvider: RecallEmbeddingProvider,
 ): EmbeddingVectorCache {
   const manifest = createRecallIndexManifest({
     embeddingIdentity: {
@@ -71,7 +71,7 @@ function createTestEmbeddingCache(
     cacheDirectory: join(directory, 'embedding-cache'),
     identity: createEmbeddingVectorCacheIdentity(manifest),
     embeddingRequestBatchSize: 8,
-    embeddings,
+    embeddingProvider,
   });
 }
 
@@ -102,14 +102,22 @@ void test('incremental index embeds only new content and removes deleted session
 
   const store = new MemoryConversationStore();
   const embeddedBatches: string[][] = [];
-  const embeddings: LocalEmbeddingClient = {
-    async embedTexts(texts) {
+  const embeddingProvider: RecallEmbeddingProvider = {
+    async embedQuery(query, signal) {
+      const vectors = await this.embedDocuments([query], signal);
+      const vector = vectors[0];
+      if (!vector) {
+        throw new Error('missing query vector');
+      }
+      return vector;
+    },
+    async embedDocuments(texts) {
       embeddedBatches.push([...texts]);
       return texts.map((text) => [text.length, 1, 0]);
     },
   };
 
-  const embeddingCache = createTestEmbeddingCache(directory, embeddings);
+  const embeddingCache = createTestEmbeddingCache(directory, embeddingProvider);
   const first = await indexChangedConversationSessions({
     sessionsDirectory,
     statePath,
@@ -266,7 +274,15 @@ void test('incremental index reconciles every logical session in one physical re
     statePath,
     store,
     embeddingCache: createTestEmbeddingCache(directory, {
-      async embedTexts(texts) {
+      async embedQuery(query: string, signal?: AbortSignal) {
+        const vectors = await this.embedDocuments([query], signal);
+        const vector = vectors[0];
+        if (!vector) {
+          throw new Error('missing query vector');
+        }
+        return vector;
+      },
+      async embedDocuments(texts) {
         return texts.map((text) => [text.length, 1, 0]);
       },
     }),
@@ -328,7 +344,15 @@ void test('incremental index rejects state from an older session import policy',
         statePath,
         store: new MemoryConversationStore(),
         embeddingCache: createTestEmbeddingCache(directory, {
-          async embedTexts(texts) {
+          async embedQuery(query: string, signal?: AbortSignal) {
+            const vectors = await this.embedDocuments([query], signal);
+            const vector = vectors[0];
+            if (!vector) {
+              throw new Error('missing query vector');
+            }
+            return vector;
+          },
+          async embedDocuments(texts) {
             return texts.map((text) => [text.length, 1, 0]);
           },
         }),
@@ -369,7 +393,15 @@ void test('incremental index removes stale documents when a changed session grap
     statePath,
     store,
     embeddingCache: createTestEmbeddingCache(directory, {
-      async embedTexts(texts) {
+      async embedQuery(query: string, signal?: AbortSignal) {
+        const vectors = await this.embedDocuments([query], signal);
+        const vector = vectors[0];
+        if (!vector) {
+          throw new Error('missing query vector');
+        }
+        return vector;
+      },
+      async embedDocuments(texts) {
         return texts.map((text) => [text.length, 1, 0]);
       },
     }),
@@ -451,8 +483,16 @@ void test('incremental index never sends lexical-only tool evidence to embedding
   );
   const store = new MemoryConversationStore();
   const embeddedBatches: string[][] = [];
-  const embeddings: LocalEmbeddingClient = {
-    async embedTexts(texts) {
+  const embeddingProvider: RecallEmbeddingProvider = {
+    async embedQuery(query, signal) {
+      const vectors = await this.embedDocuments([query], signal);
+      const vector = vectors[0];
+      if (!vector) {
+        throw new Error('missing query vector');
+      }
+      return vector;
+    },
+    async embedDocuments(texts) {
       embeddedBatches.push([...texts]);
       return texts.map((text) => [text.length, 1, 0]);
     },
@@ -462,7 +502,7 @@ void test('incremental index never sends lexical-only tool evidence to embedding
     sessionsDirectory,
     statePath: join(directory, 'state.json'),
     store,
-    embeddingCache: createTestEmbeddingCache(directory, embeddings),
+    embeddingCache: createTestEmbeddingCache(directory, embeddingProvider),
     tokenizer,
   });
   const toolChunks = [...store.chunks.values()].filter((chunk) => chunk.documentKind === 'tool');
@@ -502,14 +542,22 @@ void test('incremental index fails fast when the local embedding model is unavai
     );
   }
   let embeddingCalls = 0;
-  const embeddings: LocalEmbeddingClient = {
-    async embedTexts() {
+  const embeddingProvider: RecallEmbeddingProvider = {
+    async embedQuery(query, signal) {
+      const vectors = await this.embedDocuments([query], signal);
+      const vector = vectors[0];
+      if (!vector) {
+        throw new Error('missing query vector');
+      }
+      return vector;
+    },
+    async embedDocuments() {
       embeddingCalls += 1;
       throw new Error('Recall embedding request failed (503): unavailable');
     },
   };
 
-  const embeddingCache = createTestEmbeddingCache(directory, embeddings);
+  const embeddingCache = createTestEmbeddingCache(directory, embeddingProvider);
   await assert.rejects(
     () =>
       indexChangedConversationSessions({
@@ -550,8 +598,16 @@ void test('managed incremental index with retireMissingSourcesImmediately false 
     ]),
   );
   const store = new MemoryConversationStore();
-  const embeddings: LocalEmbeddingClient = {
-    async embedTexts(texts) {
+  const embeddingProvider: RecallEmbeddingProvider = {
+    async embedQuery(query, signal) {
+      const vectors = await this.embedDocuments([query], signal);
+      const vector = vectors[0];
+      if (!vector) {
+        throw new Error('missing query vector');
+      }
+      return vector;
+    },
+    async embedDocuments(texts) {
       return texts.map(() => [1, 0, 0]);
     },
   };
@@ -562,7 +618,7 @@ void test('managed incremental index with retireMissingSourcesImmediately false 
     sessionsDirectory,
     statePath,
     store,
-    embeddingCache: createTestEmbeddingCache(directory, embeddings),
+    embeddingCache: createTestEmbeddingCache(directory, embeddingProvider),
     tokenizer,
     retireMissingSourcesImmediately: false,
   });
@@ -578,7 +634,7 @@ void test('managed incremental index with retireMissingSourcesImmediately false 
     sessionsDirectory,
     statePath,
     store,
-    embeddingCache: createTestEmbeddingCache(directory, embeddings),
+    embeddingCache: createTestEmbeddingCache(directory, embeddingProvider),
     tokenizer,
     retireMissingSourcesImmediately: false,
   });
@@ -617,8 +673,16 @@ void test('incremental index with retireMissingSourcesImmediately default delete
     ]),
   );
   const store = new MemoryConversationStore();
-  const embeddings: LocalEmbeddingClient = {
-    async embedTexts(texts) {
+  const embeddingProvider: RecallEmbeddingProvider = {
+    async embedQuery(query, signal) {
+      const vectors = await this.embedDocuments([query], signal);
+      const vector = vectors[0];
+      if (!vector) {
+        throw new Error('missing query vector');
+      }
+      return vector;
+    },
+    async embedDocuments(texts) {
       return texts.map(() => [1, 0, 0]);
     },
   };
@@ -629,7 +693,7 @@ void test('incremental index with retireMissingSourcesImmediately default delete
     sessionsDirectory,
     statePath,
     store,
-    embeddingCache: createTestEmbeddingCache(directory, embeddings),
+    embeddingCache: createTestEmbeddingCache(directory, embeddingProvider),
     tokenizer,
   });
   assert.ok(store.chunks.size > 0);
@@ -642,7 +706,7 @@ void test('incremental index with retireMissingSourcesImmediately default delete
     sessionsDirectory,
     statePath,
     store,
-    embeddingCache: createTestEmbeddingCache(directory, embeddings),
+    embeddingCache: createTestEmbeddingCache(directory, embeddingProvider),
     tokenizer,
   });
 

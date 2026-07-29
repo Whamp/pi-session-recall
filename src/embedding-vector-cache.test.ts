@@ -9,7 +9,7 @@ import {
   createEmbeddingVectorCacheIdentity,
   normalizeConversationTextForEmbedding,
 } from './embedding-vector-cache.js';
-import type { LocalEmbeddingClient } from './local-embedding-client.js';
+import type { RecallEmbeddingProvider } from './recall-inference-capabilities.js';
 import type { RecallDiagnosticsClock } from './recall-operation-diagnostics.js';
 import { createRecallIndexManifest } from './recall-index-manifest.js';
 
@@ -38,8 +38,16 @@ void test('embedding cache keys normalized text and full geometry identity while
   const directory = await mkdtemp(join(tmpdir(), 'embedding-vector-cache-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const embeddedInputs: string[][] = [];
-  const embeddings: LocalEmbeddingClient = {
-    async embedTexts(texts) {
+  const embeddingProvider: RecallEmbeddingProvider = {
+    async embedQuery(query, signal) {
+      const vectors = await this.embedDocuments([query], signal);
+      const vector = vectors[0];
+      if (!vector) {
+        throw new Error('missing query vector');
+      }
+      return vector;
+    },
+    async embedDocuments(texts) {
       embeddedInputs.push([...texts]);
       return texts.map((text) => [text.length / 3, text.includes('changed') ? 2 : 1, 0]);
     },
@@ -48,7 +56,7 @@ void test('embedding cache keys normalized text and full geometry identity while
     cacheDirectory: directory,
     identity: createTestCacheIdentity(),
     embeddingRequestBatchSize: 1,
-    embeddings,
+    embeddingProvider,
   });
 
   const first = await cache.resolveEmbeddingVectors(['cafe\u0301', 'second']);
@@ -75,7 +83,7 @@ void test('embedding cache keys normalized text and full geometry identity while
     cacheDirectory: directory,
     identity: createTestCacheIdentity({ pooling: 'mean' }),
     embeddingRequestBatchSize: 8,
-    embeddings,
+    embeddingProvider,
   });
   const changedModel = await changedModelCache.resolveEmbeddingVectors(['café']);
   assert.equal(changedModel.cacheHits, 0);
@@ -90,8 +98,16 @@ void test('embedding cache writes one atomic checksummed file and rejects corrup
     cacheDirectory: directory,
     identity: createTestCacheIdentity(),
     embeddingRequestBatchSize: 8,
-    embeddings: {
-      async embedTexts() {
+    embeddingProvider: {
+      async embedQuery(query, signal) {
+        const vectors = await this.embedDocuments([query], signal);
+        const vector = vectors[0];
+        if (!vector) {
+          throw new Error('missing query vector');
+        }
+        return vector;
+      },
+      async embedDocuments() {
         return [[1, 2, 3]];
       },
     },
@@ -124,8 +140,16 @@ void test('embedding cache rejects wrong dimensions and non-finite FP32 values b
     ['nan vector', [1, Number.NaN, 3], /value 1 is not finite/],
     ['fp32 overflow', [1, Number.MAX_VALUE, 3], /value 1 is not finite/],
   ] as const) {
-    const embeddings: LocalEmbeddingClient = {
-      async embedTexts() {
+    const embeddingProvider: RecallEmbeddingProvider = {
+      async embedQuery(query, signal) {
+        const vectors = await this.embedDocuments([query], signal);
+        const vector = vectors[0];
+        if (!vector) {
+          throw new Error('missing query vector');
+        }
+        return vector;
+      },
+      async embedDocuments() {
         return [[...vector]];
       },
     };
@@ -133,7 +157,7 @@ void test('embedding cache rejects wrong dimensions and non-finite FP32 values b
       cacheDirectory: directory,
       identity: createTestCacheIdentity(),
       embeddingRequestBatchSize: 8,
-      embeddings,
+      embeddingProvider,
     });
     await assert.rejects(() => cache.resolveEmbeddingVectors([content]), expectedError);
   }
@@ -143,8 +167,16 @@ void test('embedding cache rejects wrong dimensions and non-finite FP32 values b
     cacheDirectory: directory,
     identity: createTestCacheIdentity(),
     embeddingRequestBatchSize: 8,
-    embeddings: {
-      async embedTexts(texts) {
+    embeddingProvider: {
+      async embedQuery(query, signal) {
+        const vectors = await this.embedDocuments([query], signal);
+        const vector = vectors[0];
+        if (!vector) {
+          throw new Error('missing query vector');
+        }
+        return vector;
+      },
+      async embedDocuments(texts) {
         validEmbeddingRequests += 1;
         return texts.map(() => [1, 2, 3]);
       },
@@ -181,8 +213,16 @@ void test('embedding cache reports exclusive local cache and embedding-server mi
     identity: createTestCacheIdentity(),
     embeddingRequestBatchSize: 8,
     diagnosticsClock,
-    embeddings: {
-      async embedTexts() {
+    embeddingProvider: {
+      async embedQuery(query, signal) {
+        const vectors = await this.embedDocuments([query], signal);
+        const vector = vectors[0];
+        if (!vector) {
+          throw new Error('missing query vector');
+        }
+        return vector;
+      },
+      async embedDocuments() {
         return [[1, 2, 3]];
       },
     },
@@ -216,8 +256,16 @@ void test('embedding cache reports server time when an embedding request fails',
       },
       wallClockIsoTimestamp: () => '2026-07-27T10:00:00.000Z',
     },
-    embeddings: {
-      async embedTexts() {
+    embeddingProvider: {
+      async embedQuery(query, signal) {
+        const vectors = await this.embedDocuments([query], signal);
+        const vector = vectors[0];
+        if (!vector) {
+          throw new Error('missing query vector');
+        }
+        return vector;
+      },
+      async embedDocuments() {
         throw new Error('embedding server unavailable');
       },
     },
@@ -249,8 +297,16 @@ void test('embedding text normalization is idempotent and rejects mislabeled cac
         cacheDirectory: '/unused',
         identity,
         embeddingRequestBatchSize: 8,
-        embeddings: {
-          async embedTexts() {
+        embeddingProvider: {
+          async embedQuery(query, signal) {
+            const vectors = await this.embedDocuments([query], signal);
+            const vector = vectors[0];
+            if (!vector) {
+              throw new Error('missing query vector');
+            }
+            return vector;
+          },
+          async embedDocuments() {
             return [];
           },
         },

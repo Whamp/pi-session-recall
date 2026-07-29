@@ -12,7 +12,6 @@ import {
   RecallSearchScope,
 } from './enums.js';
 import type { RecallEmbeddingProvider } from './recall-inference-capabilities.js';
-import type { LocalEmbeddingClient } from './local-embedding-client.js';
 import { loadRecallQualityCorpus } from './recall-quality-corpus.js';
 import type { RecallConversationConfig } from './recall-conversation-service.js';
 import {
@@ -165,8 +164,16 @@ void test('recall quality runner indexes and searches only the bounded declared 
     confirmedDeletionMaxMissingSourceCount: 1,
     confirmedDeletionMaxMissingSourceRatio: 0.1,
   };
-  const embeddings: LocalEmbeddingClient = {
-    async embedTexts(texts) {
+  const canaryAwareEmbeddingProvider: RecallEmbeddingProvider = {
+    async embedQuery(query, signal) {
+      const vectors = await this.embedDocuments([query], signal);
+      const vector = vectors[0];
+      if (!vector) {
+        throw new Error('missing query vector');
+      }
+      return vector;
+    },
+    async embedDocuments(texts) {
       return texts.map((text) => (text === RECALL_EMBEDDING_CANARY_TEXT ? [0, 0, 1] : [1, 0, 0]));
     },
   };
@@ -222,7 +229,7 @@ void test('recall quality runner indexes and searches only the bounded declared 
     baseConfig,
     workDirectory: join(evaluationDirectory, '.recall-data', 'recall-quality-evaluation'),
     dependencies: {
-      embeddings,
+      embeddingProvider: canaryAwareEmbeddingProvider,
       async loadTokenizer() {
         return tokenizer;
       },

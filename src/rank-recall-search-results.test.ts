@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import type { RecallSearchResult } from './fuse-recall-search-candidates.js';
-import type { LocalRerankerClient } from './local-reranker-client.js';
+import type { RecallRerankingProvider } from './recall-inference-capabilities.js';
 import { createTestRecallSearchResult } from './recall-test-utils.js';
 import {
   rankFusedRecallSearchResults,
@@ -85,7 +85,7 @@ void test('recall reranking sends every candidate kind as original text and pres
     }),
   ];
   const rerankerInputs: string[][] = [];
-  const reranker: LocalRerankerClient = {
+  const reranker: RecallRerankingProvider = {
     async rerankDocuments(query, documents) {
       assert.equal(query, 'How did Atlas fail?');
       rerankerInputs.push([...documents]);
@@ -156,7 +156,7 @@ void test('recall reranking suppresses overlapping sibling slots and preserves t
     fusedScore: 0.02,
   });
   const rerankerInputs: string[][] = [];
-  const reranker: LocalRerankerClient = {
+  const reranker: RecallRerankingProvider = {
     async rerankDocuments(query, documents) {
       void query;
       rerankerInputs.push([...documents]);
@@ -223,7 +223,7 @@ void test('recall reranking keeps reciprocal siblings whose overlap text does no
     siblingIds: ['mismatched-first'],
     previousSiblingId: 'mismatched-first',
   });
-  const reranker: LocalRerankerClient = {
+  const reranker: RecallRerankingProvider = {
     async rerankDocuments(query, documents) {
       void query;
       assert.deepEqual(documents, ['alpha beta', 'WRONG gamma']);
@@ -273,7 +273,7 @@ void test('recall reranking suppresses exact cross-session copies without confla
     fusedScore: 0.01,
   });
   const rerankerInputs: string[][] = [];
-  const reranker: LocalRerankerClient = {
+  const reranker: RecallRerankingProvider = {
     async rerankDocuments(query, documents) {
       void query;
       rerankerInputs.push([...documents]);
@@ -316,7 +316,7 @@ void test('recall reranking favors an active branch without hiding a stronger ab
     isVisibleInActiveContext: true,
     fusedScore: 0.03,
   });
-  const reranker: LocalRerankerClient = {
+  const reranker: RecallRerankingProvider = {
     async rerankDocuments(query, documents) {
       void query;
       assert.deepEqual(documents, ['Abandoned branch evidence.', 'Active branch evidence.']);
@@ -399,7 +399,7 @@ void test('recall reranking expands a winning atomic chunk through valid same-ru
     previousSiblingId: 'winner',
   });
   const fetchedIds: string[][] = [];
-  const reranker: LocalRerankerClient = {
+  const reranker: RecallRerankingProvider = {
     async rerankDocuments(query, documents) {
       void query;
       assert.deepEqual(documents, ['gamma delta']);
@@ -471,7 +471,7 @@ void test('recall neighbor expansion rejects a source-offset gap between recipro
     siblingIds: ['gapped-winner'],
     previousSiblingId: 'gapped-winner',
   });
-  const reranker: LocalRerankerClient = {
+  const reranker: RecallRerankingProvider = {
     async rerankDocuments(query, documents) {
       void query;
       assert.deepEqual(documents, ['alpha beta']);
@@ -550,7 +550,7 @@ void test('recall neighbor expansion rejects reciprocal pointers across entry, r
     toolResultEntryId: { value: 'guarded-entry' },
     toolError: false,
   });
-  const reranker: LocalRerankerClient = {
+  const reranker: RecallRerankingProvider = {
     async rerankDocuments(query, documents) {
       void query;
       assert.deepEqual(documents, ['middle evidence']);

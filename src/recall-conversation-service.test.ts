@@ -34,9 +34,10 @@ import {
 } from './errors.js';
 import { formatRecallSearchResults } from './format-recall-search-results.js';
 import { isUnknownRecord } from './is-unknown-record.js';
-import type { RecallEmbeddingProvider } from './recall-inference-capabilities.js';
-import type { LocalEmbeddingClient } from './local-embedding-client.js';
-import type { LocalRerankerClient } from './local-reranker-client.js';
+import type {
+  RecallEmbeddingProvider,
+  RecallRerankingProvider,
+} from './recall-inference-capabilities.js';
 import {
   createRecallEmbeddingCanaryFingerprint,
   createRecallIndexManifest,
@@ -141,7 +142,7 @@ function createTestConfig(directory: string, sessionsDirectory: string) {
   };
 }
 
-const PRESERVE_FUSION_ORDER_RERANKER: LocalRerankerClient = {
+const PRESERVE_FUSION_ORDER_RERANKER: RecallRerankingProvider = {
   async rerankDocuments(query, documents) {
     void query;
     const scores: number[] = [];
@@ -228,8 +229,16 @@ void test('slow diagnostics retain fast manual incremental index start and compl
   const service = createRecallConversationService(config, {
     diagnostics,
     diagnosticsClock,
-    embeddings: {
-      async embedTexts(texts) {
+    embeddingProvider: {
+      async embedQuery(query, signal) {
+        const vectors = await this.embedDocuments([query], signal);
+        const vector = vectors[0];
+        if (!vector) {
+          throw new Error('missing query vector');
+        }
+        return vector;
+      },
+      async embedDocuments(texts) {
         monotonicMilliseconds += texts.includes(RECALL_EMBEDDING_CANARY_TEXT) ? 7 : 13;
         return texts.map(() => [1, 0, 0]);
       },
@@ -371,8 +380,16 @@ void test('all diagnostics record changed and unchanged physical session checks'
   const service = createRecallConversationService(config, {
     diagnostics,
     diagnosticsClock,
-    embeddings: {
-      async embedTexts(texts) {
+    embeddingProvider: {
+      async embedQuery(query, signal) {
+        const vectors = await this.embedDocuments([query], signal);
+        const vector = vectors[0];
+        if (!vector) {
+          throw new Error('missing query vector');
+        }
+        return vector;
+      },
+      async embedDocuments(texts) {
         return texts.map(() => [1, 0, 0]);
       },
     },
@@ -518,8 +535,16 @@ void test('slow diagnostics retain only threshold physical session checks', asyn
   const service = createRecallConversationService(config, {
     diagnostics,
     diagnosticsClock,
-    embeddings: {
-      async embedTexts(texts) {
+    embeddingProvider: {
+      async embedQuery(query, signal) {
+        const vectors = await this.embedDocuments([query], signal);
+        const vector = vectors[0];
+        if (!vector) {
+          throw new Error('missing query vector');
+        }
+        return vector;
+      },
+      async embedDocuments(texts) {
         if (texts.some((text) => text.includes('slow physical session evidence'))) {
           monotonicMilliseconds += 1_000;
         }
@@ -590,8 +615,16 @@ void test('manual index diagnostics report continued physical session parse fail
   });
   const service = createRecallConversationService(config, {
     diagnostics,
-    embeddings: {
-      async embedTexts(texts) {
+    embeddingProvider: {
+      async embedQuery(query, signal) {
+        const vectors = await this.embedDocuments([query], signal);
+        const vector = vectors[0];
+        if (!vector) {
+          throw new Error('missing query vector');
+        }
+        return vector;
+      },
+      async embedDocuments(texts) {
         return texts.map(() => [1, 0, 0]);
       },
     },
@@ -677,8 +710,16 @@ void test('manual index diagnostics retain partial counts for fatal embedding fa
   const service = createRecallConversationService(config, {
     diagnostics,
     diagnosticsClock,
-    embeddings: {
-      async embedTexts(texts) {
+    embeddingProvider: {
+      async embedQuery(query, signal) {
+        const vectors = await this.embedDocuments([query], signal);
+        const vector = vectors[0];
+        if (!vector) {
+          throw new Error('missing query vector');
+        }
+        return vector;
+      },
+      async embedDocuments(texts) {
         if (!texts.includes(RECALL_EMBEDDING_CANARY_TEXT)) {
           monotonicMilliseconds += 29;
           throw new Error('private fatal embedding model response sentinel 26');
@@ -812,8 +853,16 @@ void test('manual rebuild diagnostics isolate final database optimization durati
   const service = createRecallConversationService(config, {
     diagnostics,
     diagnosticsClock,
-    embeddings: {
-      async embedTexts(texts) {
+    embeddingProvider: {
+      async embedQuery(query, signal) {
+        const vectors = await this.embedDocuments([query], signal);
+        const vector = vectors[0];
+        if (!vector) {
+          throw new Error('missing query vector');
+        }
+        return vector;
+      },
+      async embedDocuments(texts) {
         monotonicMilliseconds += texts.includes(RECALL_EMBEDDING_CANARY_TEXT) ? 7 : 13;
         return texts.map(() => [1, 0, 0]);
       },
@@ -1061,8 +1110,16 @@ void test('rebuild preserves the active generation when an approved physical sou
   projectionStore.close();
   let removedApprovedSource = false;
   const service = createRecallConversationService(config, {
-    embeddings: {
-      async embedTexts(texts) {
+    embeddingProvider: {
+      async embedQuery(query, signal) {
+        const vectors = await this.embedDocuments([query], signal);
+        const vector = vectors[0];
+        if (!vector) {
+          throw new Error('missing query vector');
+        }
+        return vector;
+      },
+      async embedDocuments(texts) {
         return texts.map(() => [1, 0, 0]);
       },
     },
@@ -1173,8 +1230,16 @@ void test('manual index diagnostics preserve optimization failure and release th
   const service = createRecallConversationService(config, {
     diagnostics,
     diagnosticsClock,
-    embeddings: {
-      async embedTexts(texts) {
+    embeddingProvider: {
+      async embedQuery(query, signal) {
+        const vectors = await this.embedDocuments([query], signal);
+        const vector = vectors[0];
+        if (!vector) {
+          throw new Error('missing query vector');
+        }
+        return vector;
+      },
+      async embedDocuments(texts) {
         return texts.map(() => [1, 0, 0]);
       },
     },
@@ -1349,8 +1414,16 @@ void test('deep search diagnostics isolate reranker time and exclude private sea
   const service = createRecallConversationService(config, {
     diagnostics,
     diagnosticsClock,
-    embeddings: {
-      async embedTexts(texts) {
+    embeddingProvider: {
+      async embedQuery(query, signal) {
+        const vectors = await this.embedDocuments([query], signal);
+        const vector = vectors[0];
+        if (!vector) {
+          throw new Error('missing query vector');
+        }
+        return vector;
+      },
+      async embedDocuments(texts) {
         return texts.map((text) => {
           if (recordSearchCosts && text === RECALL_EMBEDDING_CANARY_TEXT) {
             monotonicMilliseconds += 7;
@@ -1467,8 +1540,16 @@ void test('slow search diagnostics omit 999 milliseconds and retain the 1000 mil
   const service = createRecallConversationService(config, {
     diagnostics,
     diagnosticsClock,
-    embeddings: {
-      async embedTexts(texts) {
+    embeddingProvider: {
+      async embedQuery(query, signal) {
+        const vectors = await this.embedDocuments([query], signal);
+        const vector = vectors[0];
+        if (!vector) {
+          throw new Error('missing query vector');
+        }
+        return vector;
+      },
+      async embedDocuments(texts) {
         for (const text of texts) {
           if (recordSearchCosts && text === 'fast-search') {
             monotonicMilliseconds += 999;
@@ -1556,8 +1637,16 @@ void test('slow diagnostics retain failed searches, omit fast cancellation, and 
   const service = createRecallConversationService(config, {
     diagnostics,
     diagnosticsClock,
-    embeddings: {
-      async embedTexts(texts, signal) {
+    embeddingProvider: {
+      async embedQuery(query, signal) {
+        const vectors = await this.embedDocuments([query], signal);
+        const vector = vectors[0];
+        if (!vector) {
+          throw new Error('missing query vector');
+        }
+        return vector;
+      },
+      async embedDocuments(texts, signal) {
         if (signal?.aborted) {
           throw cancellationError;
         }
@@ -1635,8 +1724,16 @@ void test('read-only search opens the pointer-selected store and awaits retrieva
   const config = createTestConfig(directory, sessionsDirectory);
   const events: string[] = [];
   const service = createRecallConversationService(config, {
-    embeddings: {
-      async embedTexts(texts) {
+    embeddingProvider: {
+      async embedQuery(query, signal) {
+        const vectors = await this.embedDocuments([query], signal);
+        const vector = vectors[0];
+        if (!vector) {
+          throw new Error('missing query vector');
+        }
+        return vector;
+      },
+      async embedDocuments(texts) {
         return texts.map((text) => (text === RECALL_EMBEDDING_CANARY_TEXT ? [0, 0, 1] : [1, 0, 0]));
       },
     },
@@ -1769,8 +1866,16 @@ void test('search waits only for one write window and reports busy, recovery, po
     notifyWarning(message) {
       warnings.push(message);
     },
-    embeddings: {
-      async embedTexts(texts) {
+    embeddingProvider: {
+      async embedQuery(query, signal) {
+        const vectors = await this.embedDocuments([query], signal);
+        const vector = vectors[0];
+        if (!vector) {
+          throw new Error('missing query vector');
+        }
+        return vector;
+      },
+      async embedDocuments(texts) {
         return texts.map((text) => (text === RECALL_EMBEDDING_CANARY_TEXT ? [0, 0, 1] : [1, 0, 0]));
       },
     },
@@ -1800,8 +1905,16 @@ void test('search waits only for one write window and reports busy, recovery, po
 
   const busyConfig = { ...config, searchWriteWindowWaitMilliseconds: 500 };
   const busyService = createRecallConversationService(busyConfig, {
-    embeddings: {
-      async embedTexts(texts) {
+    embeddingProvider: {
+      async embedQuery(query, signal) {
+        const vectors = await this.embedDocuments([query], signal);
+        const vector = vectors[0];
+        if (!vector) {
+          throw new Error('missing query vector');
+        }
+        return vector;
+      },
+      async embedDocuments(texts) {
         return texts.map((text) => (text === RECALL_EMBEDDING_CANARY_TEXT ? [0, 0, 1] : [1, 0, 0]));
       },
     },
@@ -1936,8 +2049,16 @@ void test('explicit project scope filters dense, lexical, and identifier candida
   );
   const query = 'queue readNodeErrorCode';
   const service = createRecallConversationService(createTestConfig(directory, sessionsDirectory), {
-    embeddings: {
-      async embedTexts(texts) {
+    embeddingProvider: {
+      async embedQuery(query, signal) {
+        const vectors = await this.embedDocuments([query], signal);
+        const vector = vectors[0];
+        if (!vector) {
+          throw new Error('missing query vector');
+        }
+        return vector;
+      },
+      async embedDocuments(texts) {
         return texts.map((text) => {
           if (text === RECALL_EMBEDDING_CANARY_TEXT) {
             return [0, 0, 1];
@@ -2056,8 +2177,16 @@ void test('configured project lineage admits exact, descendant, deleted, and Git
     searchCandidateLimits: { dense: 3, lexical: 3, identifier: 3 },
   };
   const service = createRecallConversationService(config, {
-    embeddings: {
-      async embedTexts(texts) {
+    embeddingProvider: {
+      async embedQuery(query, signal) {
+        const vectors = await this.embedDocuments([query], signal);
+        const vector = vectors[0];
+        if (!vector) {
+          throw new Error('missing query vector');
+        }
+        return vector;
+      },
+      async embedDocuments(texts) {
         return texts.map((text) => {
           if (text === RECALL_EMBEDDING_CANARY_TEXT) {
             return [0, 0, 1];
@@ -2183,8 +2312,16 @@ void test('omitted scope admits only the exact non-Git session origin', async (t
     searchCandidateLimits: { dense: 4, lexical: 4, identifier: 4 },
   };
   const service = createRecallConversationService(config, {
-    embeddings: {
-      async embedTexts(texts) {
+    embeddingProvider: {
+      async embedQuery(query, signal) {
+        const vectors = await this.embedDocuments([query], signal);
+        const vector = vectors[0];
+        if (!vector) {
+          throw new Error('missing query vector');
+        }
+        return vector;
+      },
+      async embedDocuments(texts) {
         return texts.map((text) => (text === RECALL_EMBEDDING_CANARY_TEXT ? [0, 0, 1] : [1, 0, 0]));
       },
     },
@@ -2282,8 +2419,16 @@ void test('indexing resolves each distinct session origin once and keeps unresol
     searchCandidateLimits: { dense: 3, lexical: 3, identifier: 3 },
   };
   const service = createRecallConversationService(config, {
-    embeddings: {
-      async embedTexts(texts) {
+    embeddingProvider: {
+      async embedQuery(query, signal) {
+        const vectors = await this.embedDocuments([query], signal);
+        const vector = vectors[0];
+        if (!vector) {
+          throw new Error('missing query vector');
+        }
+        return vector;
+      },
+      async embedDocuments(texts) {
         return texts.map((text) => (text === RECALL_EMBEDDING_CANARY_TEXT ? [0, 0, 1] : [1, 0, 0]));
       },
     },
@@ -2350,8 +2495,17 @@ void test('lineage metadata rebuild rejects stale policy and reuses cached vecto
   );
   const embeddedInputs: string[] = [];
   const dependencies = {
-    embeddings: {
-      async embedTexts(texts: string[]) {
+    embeddingProvider: {
+      async embedQuery(query: string, signal?: AbortSignal) {
+        const vectors = await this.embedDocuments([query], signal);
+        const vector = vectors[0];
+        if (!vector) {
+          throw new Error('missing query vector');
+        }
+        return vector;
+      },
+      async embedDocuments(texts: string[], signal?: AbortSignal) {
+        void signal;
         embeddedInputs.push(...texts);
         return texts.map((text) => (text === RECALL_EMBEDDING_CANARY_TEXT ? [0, 0, 1] : [1, 0, 0]));
       },
@@ -2435,8 +2589,16 @@ void test('recall service builds a temporary index with an explicit chunk policy
     chunkPolicy: { maxTokens: 3, overlapTokens: 1 },
   };
   const service = createRecallConversationService(config, {
-    embeddings: {
-      async embedTexts(texts) {
+    embeddingProvider: {
+      async embedQuery(query, signal) {
+        const vectors = await this.embedDocuments([query], signal);
+        const vector = vectors[0];
+        if (!vector) {
+          throw new Error('missing query vector');
+        }
+        return vector;
+      },
+      async embedDocuments(texts) {
         return texts.map((text) => [text.length, 1, 0]);
       },
     },
@@ -2510,8 +2672,16 @@ void test('recall service fuses bounded dense, lexical, and identifier candidate
   const semanticParaphraseQuery = 'How did we make background task delivery resilient?';
   const identifierQuery = 'readNodeErrorCode';
   const service = createRecallConversationService(createTestConfig(directory, sessionsDirectory), {
-    embeddings: {
-      async embedTexts(texts) {
+    embeddingProvider: {
+      async embedQuery(query, signal) {
+        const vectors = await this.embedDocuments([query], signal);
+        const vector = vectors[0];
+        if (!vector) {
+          throw new Error('missing query vector');
+        }
+        return vector;
+      },
+      async embedDocuments(texts) {
         return texts.map((text) => {
           if (text === RECALL_EMBEDDING_CANARY_TEXT) {
             return [0, 0, 1];
@@ -2715,7 +2885,7 @@ void test('recall service defaults to fused ranking and reranks only in explicit
   );
   const query = 'fusion favorite';
   const rerankerInputs: string[][] = [];
-  const reranker: LocalRerankerClient = {
+  const reranker: RecallRerankingProvider = {
     async rerankDocuments(receivedQuery, documents) {
       assert.equal(receivedQuery, query);
       rerankerInputs.push([...documents]);
@@ -2727,8 +2897,16 @@ void test('recall service defaults to fused ranking and reranks only in explicit
     searchCandidateLimits: { dense: 2, lexical: 2, identifier: 2 },
   };
   const service = createRecallConversationService(config, {
-    embeddings: {
-      async embedTexts(texts) {
+    embeddingProvider: {
+      async embedQuery(query, signal) {
+        const vectors = await this.embedDocuments([query], signal);
+        const vector = vectors[0];
+        if (!vector) {
+          throw new Error('missing query vector');
+        }
+        return vector;
+      },
+      async embedDocuments(texts) {
         return texts.map((text) => {
           if (text === RECALL_EMBEDDING_CANARY_TEXT) {
             return [0, 0, 1];
@@ -2802,8 +2980,16 @@ void test('recall service fails clearly when Qwen reranking is unavailable', asy
     ].join('\n') + '\n',
   );
   const service = createRecallConversationService(createTestConfig(directory, sessionsDirectory), {
-    embeddings: {
-      async embedTexts(texts) {
+    embeddingProvider: {
+      async embedQuery(query, signal) {
+        const vectors = await this.embedDocuments([query], signal);
+        const vector = vectors[0];
+        if (!vector) {
+          throw new Error('missing query vector');
+        }
+        return vector;
+      },
+      async embedDocuments(texts) {
         return texts.map((text) => (text === RECALL_EMBEDDING_CANARY_TEXT ? [0, 0, 1] : [1, 0, 0]));
       },
     },
@@ -2909,8 +3095,16 @@ void test('recall service retrieves context-dependent replies and reuses turn-co
   );
   const embeddingInputs: string[][] = [];
   const query = 'Atlas Yes';
-  const embeddings: LocalEmbeddingClient = {
-    async embedTexts(texts) {
+  const embeddingProvider: RecallEmbeddingProvider = {
+    async embedQuery(query, signal) {
+      const vectors = await this.embedDocuments([query], signal);
+      const vector = vectors[0];
+      if (!vector) {
+        throw new Error('missing query vector');
+      }
+      return vector;
+    },
+    async embedDocuments(texts) {
       embeddingInputs.push([...texts]);
       return texts.map((text) => {
         if (text === RECALL_EMBEDDING_CANARY_TEXT) {
@@ -2925,7 +3119,7 @@ void test('recall service retrieves context-dependent replies and reuses turn-co
   };
   const config = createTestConfig(directory, sessionsDirectory);
   const service = createRecallConversationService(config, {
-    embeddings,
+    embeddingProvider,
     async loadTokenizer() {
       return tokenizer;
     },
@@ -3024,8 +3218,16 @@ void test('recall service fuses lexical-only tool evidence with dense conversati
   );
   const embeddedInputs: string[] = [];
   const service = createRecallConversationService(createTestConfig(directory, sessionsDirectory), {
-    embeddings: {
-      async embedTexts(texts) {
+    embeddingProvider: {
+      async embedQuery(query, signal) {
+        const vectors = await this.embedDocuments([query], signal);
+        const vector = vectors[0];
+        if (!vector) {
+          throw new Error('missing query vector');
+        }
+        return vector;
+      },
+      async embedDocuments(texts) {
         embeddedInputs.push(...texts);
         return texts.map((text) => (text === RECALL_EMBEDDING_CANARY_TEXT ? [0, 0, 1] : [1, 0, 0]));
       },
@@ -3117,8 +3319,16 @@ void test('fresh zvec rebuild reuses unchanged cached chunk vectors without embe
   );
 
   const embeddingInputs: string[][] = [];
-  const embeddings: LocalEmbeddingClient = {
-    async embedTexts(texts) {
+  const embeddingProvider: RecallEmbeddingProvider = {
+    async embedQuery(query, signal) {
+      const vectors = await this.embedDocuments([query], signal);
+      const vector = vectors[0];
+      if (!vector) {
+        throw new Error('missing query vector');
+      }
+      return vector;
+    },
+    async embedDocuments(texts) {
       embeddingInputs.push([...texts]);
       return texts.map((text) =>
         text === RECALL_EMBEDDING_CANARY_TEXT ? [0, 0, 1] : [text.length, 1, 0],
@@ -3127,7 +3337,7 @@ void test('fresh zvec rebuild reuses unchanged cached chunk vectors without embe
   };
   const config = createTestConfig(directory, sessionsDirectory);
   const service = createRecallConversationService(config, {
-    embeddings,
+    embeddingProvider,
     async loadTokenizer() {
       return tokenizer;
     },
@@ -3179,8 +3389,16 @@ void test('schema migration keeps canonical cache identity across tolerated cana
   let workerSignalCalls = 0;
   const config = createTestConfig(directory, sessionsDirectory);
   const service = createRecallConversationService(config, {
-    embeddings: {
-      async embedTexts(texts) {
+    embeddingProvider: {
+      async embedQuery(query, signal) {
+        const vectors = await this.embedDocuments([query], signal);
+        const vector = vectors[0];
+        if (!vector) {
+          throw new Error('missing query vector');
+        }
+        return vector;
+      },
+      async embedDocuments(texts) {
         return texts.map((text) => {
           if (text === RECALL_EMBEDDING_CANARY_TEXT) {
             canaryRequests += 1;
@@ -3232,8 +3450,16 @@ void test('explicit indexing retries a transient embedding-canary failure in the
   let canaryRequests = 0;
   let tokenizerLoads = 0;
   const service = createRecallConversationService(createTestConfig(directory, sessionsDirectory), {
-    embeddings: {
-      async embedTexts() {
+    embeddingProvider: {
+      async embedQuery(query, signal) {
+        const vectors = await this.embedDocuments([query], signal);
+        const vector = vectors[0];
+        if (!vector) {
+          throw new Error('missing query vector');
+        }
+        return vector;
+      },
+      async embedDocuments() {
         canaryRequests += 1;
         if (canaryRequests === 1) {
           throw new Error('temporary canary failure');
@@ -3263,14 +3489,22 @@ void test('recall search refuses a missing manifest before opening or mutating i
   let embeddingRequests = 0;
   let tokenizerLoads = 0;
   let storeOpens = 0;
-  const embeddings: LocalEmbeddingClient = {
-    async embedTexts() {
+  const embeddingProvider: RecallEmbeddingProvider = {
+    async embedQuery(query, signal) {
+      const vectors = await this.embedDocuments([query], signal);
+      const vector = vectors[0];
+      if (!vector) {
+        throw new Error('missing query vector');
+      }
+      return vector;
+    },
+    async embedDocuments() {
       embeddingRequests += 1;
       return [[0, 0, 1]];
     },
   };
   const service = createRecallConversationService(createTestConfig(directory, sessionsDirectory), {
-    embeddings,
+    embeddingProvider,
     async loadTokenizer() {
       tokenizerLoads += 1;
       return tokenizer;
@@ -3299,8 +3533,16 @@ void test('recall search detects an embedding model swap in the same service pro
   let canaryRequests = 0;
   const config = createTestConfig(directory, sessionsDirectory);
   const service = createRecallConversationService(config, {
-    embeddings: {
-      async embedTexts(texts) {
+    embeddingProvider: {
+      async embedQuery(query, signal) {
+        const vectors = await this.embedDocuments([query], signal);
+        const vector = vectors[0];
+        if (!vector) {
+          throw new Error('missing query vector');
+        }
+        return vector;
+      },
+      async embedDocuments(texts) {
         return texts.map((text) => {
           if (text === RECALL_EMBEDDING_CANARY_TEXT) {
             canaryRequests += 1;
@@ -3345,8 +3587,16 @@ void test('ordinary indexing detects a model swap before embedding new session c
   let modelSwapped = false;
   let contentEmbeddingRequests = 0;
   const service = createRecallConversationService(createTestConfig(directory, sessionsDirectory), {
-    embeddings: {
-      async embedTexts(texts) {
+    embeddingProvider: {
+      async embedQuery(query, signal) {
+        const vectors = await this.embedDocuments([query], signal);
+        const vector = vectors[0];
+        if (!vector) {
+          throw new Error('missing query vector');
+        }
+        return vector;
+      },
+      async embedDocuments(texts) {
         return texts.map((text) => {
           if (text === RECALL_EMBEDDING_CANARY_TEXT) {
             return modelSwapped ? [0, 0, 1] : [1, 0, 0];
@@ -3409,13 +3659,21 @@ void test('recall search reports an incompatible manifest before opening zvec', 
   await writeRecallIndexManifest(config.manifestPath, actualManifest);
   let storeOpens = 0;
   let tokenizerLoads = 0;
-  const embeddings: LocalEmbeddingClient = {
-    async embedTexts() {
+  const embeddingProvider: RecallEmbeddingProvider = {
+    async embedQuery(query, signal) {
+      const vectors = await this.embedDocuments([query], signal);
+      const vector = vectors[0];
+      if (!vector) {
+        throw new Error('missing query vector');
+      }
+      return vector;
+    },
+    async embedDocuments() {
       return [[0, 0, 1]];
     },
   };
   const service = createRecallConversationService(config, {
-    embeddings,
+    embeddingProvider,
     async loadTokenizer() {
       tokenizerLoads += 1;
       return tokenizer;
@@ -3458,8 +3716,16 @@ void test('explicit rebuild replaces incompatible index metadata while preservin
   const cacheSentinelPath = join(config.embeddingCacheDirectory, 'preserve-me');
   await writeFile(cacheSentinelPath, 'durable vector cache');
   const service = createRecallConversationService(config, {
-    embeddings: {
-      async embedTexts() {
+    embeddingProvider: {
+      async embedQuery(query, signal) {
+        const vectors = await this.embedDocuments([query], signal);
+        const vector = vectors[0];
+        if (!vector) {
+          throw new Error('missing query vector');
+        }
+        return vector;
+      },
+      async embedDocuments() {
         return [[0, 0, 1]];
       },
     },
@@ -3504,8 +3770,16 @@ void test('explicit rebuild preserves the old generation when model preflight fa
   const databaseSentinelPath = join(config.databasePath, 'old-generation');
   await writeFile(databaseSentinelPath, 'preserve old generation');
   const service = createRecallConversationService(config, {
-    embeddings: {
-      async embedTexts() {
+    embeddingProvider: {
+      async embedQuery(query, signal) {
+        const vectors = await this.embedDocuments([query], signal);
+        const vector = vectors[0];
+        if (!vector) {
+          throw new Error('missing query vector');
+        }
+        return vector;
+      },
+      async embedDocuments() {
         throw new Error('embedding preflight unavailable');
       },
     },
@@ -3528,8 +3802,16 @@ void test('explicit rebuild preserves the old generation when model preflight fa
   assert.equal(await readFile(databaseSentinelPath, 'utf8'), 'preserve old generation');
 
   const invalidCanaryService = createRecallConversationService(config, {
-    embeddings: {
-      async embedTexts() {
+    embeddingProvider: {
+      async embedQuery(query, signal) {
+        const vectors = await this.embedDocuments([query], signal);
+        const vector = vectors[0];
+        if (!vector) {
+          throw new Error('missing query vector');
+        }
+        return vector;
+      },
+      async embedDocuments() {
         return [[0, 1]];
       },
     },
@@ -3564,8 +3846,16 @@ void test('explicit indexing refuses unmanifested legacy state before tokenizer 
   let tokenizerLoads = 0;
   let storeOpens = 0;
   const service = createRecallConversationService(config, {
-    embeddings: {
-      async embedTexts() {
+    embeddingProvider: {
+      async embedQuery(query, signal) {
+        const vectors = await this.embedDocuments([query], signal);
+        const vector = vectors[0];
+        if (!vector) {
+          throw new Error('missing query vector');
+        }
+        return vector;
+      },
+      async embedDocuments() {
         embeddingRequests += 1;
         return [[0, 0, 1]];
       },
@@ -3744,8 +4034,16 @@ void test('rebuild rejects when approved projection fingerprint no longer matche
   await writeFile(sessionPath, modifiedContent);
 
   const service = createRecallConversationService(config, {
-    embeddings: {
-      async embedTexts(texts) {
+    embeddingProvider: {
+      async embedQuery(query, signal) {
+        const vectors = await this.embedDocuments([query], signal);
+        const vector = vectors[0];
+        if (!vector) {
+          throw new Error('missing query vector');
+        }
+        return vector;
+      },
+      async embedDocuments(texts) {
         return texts.map(() => [1, 0, 0]);
       },
     },

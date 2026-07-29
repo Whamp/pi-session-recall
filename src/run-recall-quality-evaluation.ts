@@ -15,8 +15,13 @@ import {
   RECALL_RRF_RANK_CONSTANT,
 } from './fuse-recall-search-candidates.js';
 import type { ConversationIndexSummary } from './incremental-session-indexer.js';
-import { createLocalEmbeddingClient, type LocalEmbeddingClient } from './local-embedding-client.js';
-import type { LocalRerankerClient } from './local-reranker-client.js';
+import { createLlamaCppHttpEmbeddingProvider } from './createLlamaCppHttpEmbeddingProvider.js';
+import type {
+  RecallEmbeddingProvider,
+  RecallRerankingProvider,
+} from './recall-inference-capabilities.js';
+import { createOctenEmbeddingModelProfile } from './recall-model-profiles.js';
+import type { RecallEmbeddingModelIdentity } from './recall-index-manifest.js';
 import {
   measureRecallQuality,
   type RecallQualitySearchObservation,
@@ -58,13 +63,10 @@ const RECALL_QUALITY_WORK_DIRECTORY_NAME = 'recall-quality-evaluation';
 const RECALL_QUALITY_GENERATION_ID = 'generation_quality_active';
 
 /** Profile-aware inference and tokenizer boundaries for bounded quality evaluation. */
-export interface RecallQualityEvaluationDependencies extends Pick<
+export type RecallQualityEvaluationDependencies = Pick<
   RecallConversationDependencies,
   'embeddingProfile' | 'embeddingProvider' | 'tokenizerIdentity' | 'loadTokenizer'
-> {
-  /** @deprecated Use embeddingProvider for profile-aware query and document semantics. */
-  embeddings?: LocalEmbeddingClient;
-}
+>;
 
 /** Inputs for one bounded evaluation run over a checksum-fixed corpus. */
 export interface RunRecallQualityEvaluationOptions {
@@ -186,18 +188,28 @@ async function assertSafeRecallQualityPaths(
   });
 }
 
-function createEvaluationEmbeddingClient(
+function createEvaluationEmbeddingIdentity(
   config: RecallConversationConfig,
-  dependency?: LocalEmbeddingClient,
-): LocalEmbeddingClient {
-  return (
-    dependency ??
-    createLocalEmbeddingClient({
+): RecallEmbeddingModelIdentity {
+  return {
+    requestModel: config.embeddingModel,
+    servedModelId: config.embeddingServedModelId,
+    artifact: config.embeddingArtifact,
+    dimensions: config.embeddingDimensions,
+    quantization: config.embeddingQuantization,
+    pooling: config.embeddingPooling,
+  };
+}
+
+function createEvaluationEmbeddingProvider(
+  config: RecallConversationConfig,
+): RecallEmbeddingProvider {
+  return createLlamaCppHttpEmbeddingProvider(
+    createOctenEmbeddingModelProfile(createEvaluationEmbeddingIdentity(config)),
+    {
       baseUrl: config.embeddingBaseUrl,
-      model: config.embeddingModel,
-      dimensions: config.embeddingDimensions,
       batchSize: config.embeddingBatchSize,
-    })
+    },
   );
 }
 
@@ -323,10 +335,10 @@ async function createEvaluationProjectResolver(
 }
 
 function createServiceDependencies(
-  reranker: LocalRerankerClient,
+  reranker: RecallRerankingProvider,
   resolveProjectIdentity: (workingDirectory: string) => Promise<ResolvedProjectIdentity | null>,
   evaluationDependencies?: RecallQualityEvaluationDependencies,
-  embeddings?: LocalEmbeddingClient,
+  embeddingProvider?: RecallEmbeddingProvider,
 ): RecallConversationDependencies {
   return {
     ...(evaluationDependencies?.embeddingProfile
@@ -334,11 +346,12 @@ function createServiceDependencies(
       : {}),
     ...(evaluationDependencies?.embeddingProvider
       ? { embeddingProvider: evaluationDependencies.embeddingProvider }
-      : {}),
+      : embeddingProvider
+        ? { embeddingProvider }
+        : {}),
     ...(evaluationDependencies?.tokenizerIdentity
       ? { tokenizerIdentity: evaluationDependencies.tokenizerIdentity }
       : {}),
-    ...(embeddings ? { embeddings } : {}),
     reranker,
     resolveProjectIdentity,
     ...(evaluationDependencies?.loadTokenizer
@@ -386,15 +399,15 @@ export async function runRecallQualityEvaluation(
   await rm(workDirectory, { recursive: true, force: true });
   await mkdir(workDirectory, { recursive: true });
 
-  const embeddings = options.dependencies?.embeddingProvider
-    ? undefined
-    : createEvaluationEmbeddingClient(options.baseConfig, options.dependencies?.embeddings);
+  const embeddingProvider =
+    options.dependencies?.embeddingProvider ??
+    createEvaluationEmbeddingProvider(options.baseConfig);
   const projectResolver = await createEvaluationProjectResolver(options.corpus, workDirectory);
   const indexRuns: RecallQualityIndexRun[] = [];
   const configurations: RecallQualityConfigurationMeasurement[] = [];
   let executedSearchRequests = 0;
   let rerankerRequests = 0;
-  const rejectingReranker: LocalRerankerClient = {
+  const rejectingReranker: RecallRerankingProvider = {
     async rerankDocuments() {
       rerankerRequests += 1;
       throw new Error('Recall quality evaluation attempted an unexpected reranker request');
@@ -419,7 +432,7 @@ export async function runRecallQualityEvaluation(
         rejectingReranker,
         projectResolver.resolveProjectIdentity,
         options.dependencies,
-        embeddings,
+        embeddingProvider,
       ),
     );
     const indexStarted = performance.now();
@@ -461,7 +474,7 @@ export async function runRecallQualityEvaluation(
           rejectingReranker,
           projectResolver.resolveProjectIdentity,
           options.dependencies,
-          embeddings,
+          embeddingProvider,
         ),
       );
       const warmupCases = specification.cases.filter(

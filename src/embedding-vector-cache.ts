@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path';
 import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 
-import type { LocalEmbeddingClient } from './local-embedding-client.js';
+import type { RecallEmbeddingProvider } from './recall-inference-capabilities.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
 import type { RecallDiagnosticsClock } from './recall-operation-diagnostics.js';
 
@@ -154,7 +154,7 @@ export interface EmbeddingVectorCacheOptions {
   cacheDirectory: string;
   identity: EmbeddingVectorCacheIdentity;
   embeddingRequestBatchSize: number;
-  embeddings: LocalEmbeddingClient;
+  embeddingProvider: RecallEmbeddingProvider;
   diagnosticsClock?: RecallDiagnosticsClock;
 }
 
@@ -418,7 +418,7 @@ export function createEmbeddingVectorCache(
       async function requestEmbeddings(batch: PendingCacheEntry[]): Promise<number[][]> {
         const requestStartedAtMilliseconds = monotonicMilliseconds();
         try {
-          return await options.embeddings.embedTexts(
+          return await options.embeddingProvider.embedDocuments(
             batch.map((entry) => entry.normalizedText),
             signal,
           );

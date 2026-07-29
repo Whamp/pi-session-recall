@@ -67,7 +67,6 @@ import {
 import { createLlamaCppHttpEmbeddingProvider } from './createLlamaCppHttpEmbeddingProvider.js';
 import { createQwenHttpRerankingProvider } from './createQwenHttpRerankingProvider.js';
 import { isUnknownRecord } from './is-unknown-record.js';
-import type { LocalEmbeddingClient } from './local-embedding-client.js';
 import { loadOctenConversationTokenizer } from './octen-conversation-tokenizer.js';
 import { openRecallZvecValidationStore } from './open-recall-zvec-validation-store.js';
 import {
@@ -392,8 +391,6 @@ export interface RecallConversationService {
 export interface RecallConversationDependencies {
   embeddingProfile?: RecallEmbeddingModelProfile;
   embeddingProvider?: RecallEmbeddingProvider;
-  /** @deprecated Use embeddingProvider so query and document semantics stay distinct. */
-  embeddings?: LocalEmbeddingClient;
   rerankingProfile?: RecallRerankingModelProfile | null;
   reranker?: RecallRerankingProvider | null;
   rerankerExecutionIdentity?: RecallRerankingExecutionIdentity | null;
@@ -807,26 +804,12 @@ export function createRecallConversationService(
       'Recall embedding profile canary incompatible: dimensions and normalization must match the embedding identity',
     );
   }
-  const legacyEmbeddings = dependencies.embeddings;
   const embeddingProvider: RecallEmbeddingProvider =
     dependencies.embeddingProvider ??
-    (legacyEmbeddings
-      ? {
-          async embedQuery(query, signal) {
-            const embedding = (await legacyEmbeddings.embedTexts([query], signal))[0];
-            if (!embedding) {
-              throw new Error('Recall embedding response missing query vector');
-            }
-            return embedding;
-          },
-          embedDocuments(documents, signal) {
-            return legacyEmbeddings.embedTexts([...documents], signal);
-          },
-        }
-      : createLlamaCppHttpEmbeddingProvider(embeddingProfile, {
-          baseUrl: config.embeddingBaseUrl,
-          batchSize: config.embeddingBatchSize,
-        }));
+    createLlamaCppHttpEmbeddingProvider(embeddingProfile, {
+      baseUrl: config.embeddingBaseUrl,
+      batchSize: config.embeddingBatchSize,
+    });
   const rerankingDisabled =
     dependencies.rerankingProfile === null && dependencies.reranker === null;
   if (
@@ -928,7 +911,6 @@ export function createRecallConversationService(
     Boolean(
       dependencies.embeddingProfile ||
       dependencies.embeddingProvider ||
-      dependencies.embeddings ||
       dependencies.tokenizerIdentity ||
       dependencies.loadTokenizer ||
       dependencies.openStore ||
@@ -1233,14 +1215,15 @@ export function createRecallConversationService(
       }
       return embeddingProvider.embedDocuments(texts, embeddingSignal);
     }
-    const preflightedEmbeddings: LocalEmbeddingClient = {
-      embedTexts: embedTextsAfterModelPreflight,
+    const indexingEmbeddingProvider: RecallEmbeddingProvider = {
+      embedQuery: (query, signal) => embeddingProvider.embedQuery(query, signal),
+      embedDocuments: embedTextsAfterModelPreflight,
     };
     const embeddingCache = createEmbeddingVectorCache({
       cacheDirectory: config.embeddingCacheDirectory,
       identity: createEmbeddingVectorCacheIdentity(manifest),
       embeddingRequestBatchSize: config.embeddingBatchSize,
-      embeddings: preflightedEmbeddings,
+      embeddingProvider: indexingEmbeddingProvider,
       diagnosticsClock,
     });
     const indexerOptions = {
@@ -1313,7 +1296,7 @@ export function createRecallConversationService(
           cacheDirectory: config.embeddingCacheDirectory,
           identity: createEmbeddingVectorCacheIdentity(manifest),
           embeddingRequestBatchSize: config.embeddingBatchSize,
-          embeddings: { embedTexts: embeddingProvider.embedDocuments.bind(embeddingProvider) },
+          embeddingProvider,
           diagnosticsClock,
         });
         let sampledDenseDocumentCount = 0;

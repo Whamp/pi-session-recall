@@ -52,6 +52,7 @@ import {
   type RecallOperationDiagnostics,
 } from './recall-operation-diagnostics.js';
 import { recoverRecallGenerationCutover } from './recover-recall-generation-cutover.js';
+import type { RecallEmbeddingProvider } from './recall-inference-capabilities.js';
 import {
   RECALL_METADATA_SWEEP_CONTINUATION_FILENAME,
   scanRecallSessionMetadata,
@@ -1004,7 +1005,7 @@ async function runConfiguredRecallIncrementalWorkerExecutable(
           { generationRegistryPath: config.generationRegistryPath },
         );
         let loadTokenizer: () => Promise<ConversationTextTokenizer>;
-        let embeddings: { embedTexts(texts: string[], signal?: AbortSignal): Promise<number[][]> };
+        let embeddingProvider: RecallEmbeddingProvider;
         if (inferenceConfig.embedding !== null) {
           const runtime = await inferenceRuntimeModule.createConfiguredRecallInferenceRuntime(
             config,
@@ -1012,20 +1013,28 @@ async function runConfiguredRecallIncrementalWorkerExecutable(
           );
           configuredRuntime = runtime;
           loadTokenizer = () => runtime.loadTokenizer();
-          embeddings = {
-            embedTexts: (texts, signal) => runtime.embeddingProvider.embedDocuments(texts, signal),
-          };
+          embeddingProvider = runtime.embeddingProvider;
         } else {
-          const [embeddingClientModule, tokenizerModule] = await Promise.all([
-            import('./local-embedding-client.js'),
+          const [httpEmbeddingModule, modelProfileModule, tokenizerModule] = await Promise.all([
+            import('./createLlamaCppHttpEmbeddingProvider.js'),
+            import('./recall-model-profiles.js'),
             import('./octen-conversation-tokenizer.js'),
           ]);
-          embeddings = embeddingClientModule.createLocalEmbeddingClient({
-            baseUrl: config.embeddingBaseUrl,
-            model: config.embeddingModel,
+          const embeddingProfile = modelProfileModule.createOctenEmbeddingModelProfile({
+            requestModel: config.embeddingModel,
+            servedModelId: config.embeddingServedModelId,
+            artifact: config.embeddingArtifact,
             dimensions: config.embeddingDimensions,
-            batchSize: config.embeddingBatchSize,
+            quantization: config.embeddingQuantization,
+            pooling: config.embeddingPooling,
           });
+          embeddingProvider = httpEmbeddingModule.createLlamaCppHttpEmbeddingProvider(
+            embeddingProfile,
+            {
+              baseUrl: config.embeddingBaseUrl,
+              batchSize: config.embeddingBatchSize,
+            },
+          );
           loadTokenizer = () =>
             tokenizerModule.loadOctenConversationTokenizer({
               cacheDirectory: config.tokenizerCacheDirectory,
@@ -1036,7 +1045,7 @@ async function runConfiguredRecallIncrementalWorkerExecutable(
             cacheDirectory: config.embeddingCacheDirectory,
             identity: embeddingCacheModule.createEmbeddingVectorCacheIdentity(manifest),
             embeddingRequestBatchSize: config.embeddingBatchSize,
-            embeddings,
+            embeddingProvider,
           }),
           chunkPolicy: manifest.chunkPolicy,
           embeddingDimensions: manifest.embedding.dimensions,

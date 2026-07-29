@@ -1985,6 +1985,7 @@ export function createPublishableLiveQueryPlannedProfileAcceptance(
     limitations: [
       'Approval applies only as an explicit fallback after hybrid recall misses, with the accepted committed hybrid baseline and recorded planner, reranker, adapter, grammar, score, and search-policy identities.',
       'Live candidate admissions and preservation of queries already answered by hybrid are reported as fallback characterization, not release gates.',
+      'Committed-corpus query-planned correctness must pass; its latency is recorded as explicit-fallback characterization rather than compared with the hybrid latency gate.',
       'EmbeddingGemma live candidates remain separate and are not approved when their committed-corpus quality gate fails.',
       'The committed corpus is synthetic-but-session-shaped; the private corpus is bounded and does not establish broad superiority.',
       'Private queries, plans, source text, session paths, and model artifacts remain outside Git.',
@@ -2064,6 +2065,8 @@ export function formatPublishableLiveQueryPlannedProfileAcceptanceReport(
   lines.push(
     '',
     '## Live planner/reranker quality on the committed corpus',
+    '',
+    'Correctness uses the frozen committed-corpus retrieval and provenance gates. Median and p95 latency are recorded as explicit-fallback characterization; the hybrid 2-second latency gate does not apply to this mode.',
     '',
     '| Profile run | Cases | Candidate pool recall | Final recall | Context | Source occurrences | Session origins | Evidence relations | Contributing entries | Branches | Planner / reranker calls | Median / p95 |',
     '| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |',

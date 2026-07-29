@@ -5,7 +5,11 @@ import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { setTimeout as sleep } from 'node:timers/promises';
 
-import { createConfiguredRecallInferenceRuntime } from './configured-recall-inference-runtime.js';
+import {
+  createConfiguredRecallInferenceRuntime,
+  type RecallInferenceAdapterRegistration,
+} from './configured-recall-inference-runtime.js';
+import { createEmbeddingGemmaTokenizerManifestIdentity } from './embedded-embeddinggemma-provider.js';
 import {
   RecallGenerationCutoverState,
   RecallInferenceArtifactState,
@@ -13,11 +17,11 @@ import {
   RecallInferenceCapability,
 } from './enums.js';
 import { loadRecallConversationConfig } from './recall-conversation-config.js';
-import { createRecallConversationService } from './recall-conversation-service.js';
 import {
   createRecallActiveGenerationPointer,
   writeRecallGenerationRegistry,
 } from './recall-generation-state.js';
+import { createRecommendedEmbeddingGemmaModelProfile } from './recall-model-profiles.js';
 import { tryAcquireRecallRebuildOwnershipLock } from './recall-rebuild-ownership-lock.js';
 import { runRecallInferenceSetupCommand } from './runRecallInferenceSetupCommand.js';
 import {
@@ -713,10 +717,11 @@ void test('configured runtime reconstructs registered custom adapters and reject
   t.after(() => rm(root, { recursive: true, force: true }));
   const config = await loadRecallConversationConfig({ homeDirectory: root, environment: {} });
   const statePath = join(root, 'inference-configuration.json');
+  const embeddingProfile = createRecommendedEmbeddingGemmaModelProfile();
   const customEmbedding = createConformingCandidate(
     RecallInferenceCapability.EMBEDDING,
     'project-custom-embedding',
-    'project-embedding-profile-v1',
+    embeddingProfile.profileId,
     RecallInferenceBackend.CUSTOM,
     'project-custom-adapter-v1',
   );
@@ -736,43 +741,47 @@ void test('configured runtime reconstructs registered custom adapters and reject
     inferenceConfigurationPath: statePath,
     adapterRegistries: [
       {
-        candidates: [customEmbedding],
-        async createConfiguredRuntime(runtimeConfig, configuration) {
-          assert.equal(configuration.embedding?.candidateId, 'project-custom-embedding');
-          const embeddingProvider = {
-            async embedQuery() {
-              customEmbeddingOperationCount += 1;
-              return Array<number>(runtimeConfig.embeddingDimensions).fill(0.02);
+        registrations: [
+          {
+            candidate: customEmbedding,
+            async createConfiguredCapability({ config: runtimeConfig, selection }) {
+              assert.equal(runtimeConfig.manifestPath, config.manifestPath);
+              assert.equal(selection.candidateId, 'project-custom-embedding');
+              const embeddingProvider = {
+                async embedQuery() {
+                  customEmbeddingOperationCount += 1;
+                  return Array<number>(embeddingProfile.identity.dimensions).fill(0.02);
+                },
+                async embedDocuments(documents: readonly string[]) {
+                  customEmbeddingOperationCount += documents.length;
+                  return documents.map(() =>
+                    Array<number>(embeddingProfile.identity.dimensions).fill(0.02),
+                  );
+                },
+              };
+              const loadTokenizer = async () => {
+                customTokenizerOperationCount += 1;
+                return FIXED_CONVERSATION_TOKENIZER;
+              };
+              return {
+                capability: RecallInferenceCapability.EMBEDDING,
+                profile: embeddingProfile,
+                provider: embeddingProvider,
+                tokenizerIdentity: createEmbeddingGemmaTokenizerManifestIdentity(embeddingProfile),
+                loadTokenizer,
+                embeddingDimensions: embeddingProfile.identity.dimensions,
+                async dispose() {},
+              };
             },
-            async embedDocuments(documents: readonly string[]) {
-              customEmbeddingOperationCount += documents.length;
-              return documents.map(() =>
-                Array<number>(runtimeConfig.embeddingDimensions).fill(0.02),
-              );
-            },
-          };
-          const loadTokenizer = async () => {
-            customTokenizerOperationCount += 1;
-            return FIXED_CONVERSATION_TOKENIZER;
-          };
-          return {
-            service: createRecallConversationService(runtimeConfig, {
-              embeddingProvider,
-              loadTokenizer,
-            }),
-            embeddingProvider,
-            loadTokenizer,
-            embeddingDimensions: runtimeConfig.embeddingDimensions,
-            async dispose() {},
-          };
-        },
+          },
+        ],
       },
     ],
   });
   await runtime.service.verifyEmbeddingCapability();
   await runtime.dispose();
 
-  assert.equal(customEmbeddingOperationCount, 1);
+  assert.equal(customEmbeddingOperationCount, 2);
   assert.equal(customTokenizerOperationCount, 1);
 });
 
@@ -828,34 +837,37 @@ void test('background runtime prefers pending embedding replacement over active 
   });
 
   let reconstructedCandidateId: string | null = null;
-  const registry = {
-    candidates: [active, pending],
-    async createConfiguredRuntime(
-      runtimeConfig: Awaited<ReturnType<typeof loadRecallConversationConfig>>,
-      configuration: Awaited<ReturnType<typeof readRecallInferenceConfiguration>>,
-    ) {
-      reconstructedCandidateId = configuration.embedding?.candidateId ?? null;
+  const embeddingProfile = createRecommendedEmbeddingGemmaModelProfile();
+  const createRegistration = (
+    candidate: RecallInferenceConfigurationCandidate,
+  ): RecallInferenceAdapterRegistration => ({
+    candidate,
+    async createConfiguredCapability({ config: runtimeConfig, selection }) {
+      assert.equal(runtimeConfig.manifestPath, config.manifestPath);
+      reconstructedCandidateId = selection.candidateId;
       const embeddingProvider = {
         async embedQuery() {
-          return Array<number>(runtimeConfig.embeddingDimensions).fill(0.03);
+          return Array<number>(embeddingProfile.identity.dimensions).fill(0.03);
         },
         async embedDocuments(documents: readonly string[]) {
-          return documents.map(() => Array<number>(runtimeConfig.embeddingDimensions).fill(0.03));
+          return documents.map(() =>
+            Array<number>(embeddingProfile.identity.dimensions).fill(0.03),
+          );
         },
       };
       const loadTokenizer = async () => FIXED_CONVERSATION_TOKENIZER;
       return {
-        service: createRecallConversationService(runtimeConfig, {
-          embeddingProvider,
-          loadTokenizer,
-        }),
-        embeddingProvider,
+        capability: RecallInferenceCapability.EMBEDDING,
+        profile: embeddingProfile,
+        provider: embeddingProvider,
+        tokenizerIdentity: createEmbeddingGemmaTokenizerManifestIdentity(embeddingProfile),
         loadTokenizer,
-        embeddingDimensions: runtimeConfig.embeddingDimensions,
+        embeddingDimensions: embeddingProfile.identity.dimensions,
         async dispose() {},
       };
     },
-  };
+  });
+  const registry = { registrations: [createRegistration(active), createRegistration(pending)] };
 
   const activeRuntime = await createConfiguredRecallInferenceRuntime(config, {
     inferenceConfigurationPath: statePath,

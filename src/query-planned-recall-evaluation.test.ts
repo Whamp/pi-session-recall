@@ -26,6 +26,7 @@ import {
   runPrivateQueryPlannedRecallEvaluation,
   selectQueryPlannedSourceProvenance,
   type LiveQueryPlannedProfileEvaluationResult,
+  type RunLiveQueryPlannedProfileEvaluationOptions,
 } from './query-planned-recall-evaluation.js';
 import {
   createPublishableQueryPlannedRecallControls,
@@ -577,6 +578,7 @@ void test('fixed private plans prove new source admission through deterministic 
     contextSize: 2_048,
     threads: null,
     nodeLlamaCppVersion: '3.18.1',
+    idleTimeoutMilliseconds: 300_000,
     physicalDeviceIdentity: ['fixture cpu'],
     probedComputeBackends: [],
   };
@@ -597,10 +599,11 @@ void test('fixed private plans prove new source admission through deterministic 
     threads: null,
     nodeLlamaCppVersion: '3.18.1',
     parallelism: 1,
+    idleTimeoutMilliseconds: 300_000,
     physicalDeviceIdentity: ['fixture cpu'],
     probedComputeBackends: [],
   };
-  const liveEvaluation = await runLiveQueryPlannedProfileEvaluation({
+  const liveEvaluationOptions = {
     corpus,
     baseConfig,
     workDirectory: liveWorkDirectory,
@@ -673,7 +676,8 @@ void test('fixed private plans prove new source admission through deterministic 
         };
       },
     },
-  });
+  } satisfies RunLiveQueryPlannedProfileEvaluationOptions;
+  const liveEvaluation = await runLiveQueryPlannedProfileEvaluation(liveEvaluationOptions);
   await assertProductionRemainsIsolated();
   const privateEvaluationFiles = await readEvaluationContainmentFileTree(privateDirectory);
   const immutablePrivateFiles = new Set([
@@ -723,6 +727,51 @@ void test('fixed private plans prove new source admission through deterministic 
   assert.equal(publishedLiveEvaluation.includes(semanticPlanQuery), false);
   assert.equal(publishedLiveEvaluation.includes('Private mechanism phrase'), false);
 
+  const fallbackCorpus = {
+    ...corpus,
+    manifest: {
+      ...corpus.manifest,
+      cases: corpus.manifest.cases.map((evaluationCase) => ({
+        ...evaluationCase,
+        query: lexicalPlanQuery,
+      })),
+    },
+  };
+  const fallbackEvaluation = await runLiveQueryPlannedProfileEvaluation({
+    ...liveEvaluationOptions,
+    corpus: fallbackCorpus,
+    workDirectory: join(privateDirectory, 'live-fallback-evaluation-work'),
+    profileRun: { ...liveEvaluationOptions.profileRun, id: 'fixture-embedded-cpu-fallback' },
+    queryPlanner: {
+      executionIdentity: fixtureQueryPlanningExecutionIdentity,
+      async planRecallQuery(request) {
+        if (request.query === queryPlanningProfile.conformanceCanary.query) {
+          return [
+            { type: 'lex', query: 'Copper Finch records' },
+            { type: 'vec', query: 'Copper Finch evidence' },
+          ];
+        }
+        throw new Error('fixture planner unavailable');
+      },
+    },
+    reportProgress() {},
+  });
+  const fallbackCase = fallbackEvaluation.cases[0];
+  assert.equal(fallbackCase?.planSource, 'fallback');
+  assert.equal(fallbackCase?.queryPlanned.candidateAdmissionVerified, true);
+  assert.ok(
+    fallbackCase?.queryPlanned.candidateAdmissionSourceRanks.every((rank) => rank !== null),
+  );
+  assert.equal(fallbackCase?.queryPlanned.outcome, QueryPlannedRecallBaselineOutcome.SUCCESS);
+  assert.deepEqual(fallbackCase?.contribution, {
+    newCandidateAdmission: false,
+    rankingOnlyPromotion: false,
+    preservedExistingSuccess: false,
+    noImprovement: true,
+  });
+  assert.equal(fallbackEvaluation.quality.newCandidateAdmissionCount, 0);
+  assert.equal(fallbackEvaluation.quality.plannerFallbackCount, 1);
+
   function createMeasuredProfileRun(
     id: string,
     backend: RecallInferenceBackend,
@@ -745,6 +794,7 @@ void test('fixed private plans prove new source admission through deterministic 
             threads: null,
             nodeLlamaCppVersion: '3.18.1',
             parallelism: 1,
+            idleTimeoutMilliseconds: 300_000,
             physicalDeviceIdentity: [deviceClass === 'cpu' ? 'fixture cpu' : 'fixture gpu'],
             probedComputeBackends: [],
           }
@@ -824,9 +874,21 @@ void test('fixed private plans prove new source admission through deterministic 
     }),
   ];
   const expectedProfileRuns = measuredProfileRuns.map(({ profileRun }) => profileRun);
+  const expectedCorpus = {
+    id: liveEvaluation.corpus.id,
+    privateManifestSha256: liveEvaluation.corpus.privateManifestSha256,
+    snapshotSha256: liveEvaluation.corpus.snapshotSha256,
+    cases: liveEvaluation.cases.map((measuredCase) => ({
+      caseId: measuredCase.caseId,
+      category: measuredCase.category,
+      controlKind: measuredCase.controlKind,
+      expectedSourceCount: measuredCase.queryPlanned.expectedSourceRanks.length,
+    })),
+  };
   const acceptance = createPublishableLiveQueryPlannedProfileAcceptance({
     recordedAgainstCommit: '030396576c03c705a1f3c84dce1ff639256ed2cf',
     defaultSearchMode: 'hybrid',
+    expectedCorpus,
     committedCorpus: [
       {
         evidenceKind: 'accepted-hybrid-baseline',
@@ -897,6 +959,7 @@ void test('fixed private plans prove new source admission through deterministic 
       recordedAgainstCommit: acceptance.recordedAgainstCommit,
       defaultSearchMode: acceptance.defaultSearchMode,
       committedCorpus: acceptance.committedCorpus,
+      expectedCorpus,
       expectedProfileRuns,
       profileRuns,
       requiredSuccessfulBaselineControlCount: 0,
@@ -1024,34 +1087,87 @@ void test('fixed private plans prove new source admission through deterministic 
     /resolved physical device identity mismatch/u,
   );
 
-  const fallbackAcceptance = createPublishableLiveQueryPlannedProfileAcceptance({
-    recordedAgainstCommit: acceptance.recordedAgainstCommit,
-    defaultSearchMode: acceptance.defaultSearchMode,
-    committedCorpus: acceptance.committedCorpus,
-    expectedProfileRuns,
-    profileRuns: acceptance.profileRuns.map((run) => ({
-      ...run,
-      quality: {
-        ...run.quality,
-        newCandidateAdmissionCount: 0,
-        preservedExistingSuccessCount: 0,
-      },
-    })),
-    requiredSuccessfulBaselineControlCount: 1,
-    privacyAudit: acceptance.privacyAudit,
-    failureSemantics: acceptance.failureSemantics,
-  });
-  assert.equal(fallbackAcceptance.releaseDecision, 'approved-explicit-fallback');
-  assert.equal(fallbackAcceptance.approvedSearchMode, 'query-planned');
-  assert.deepEqual(fallbackAcceptance.fallbackCharacterization, {
-    liveNewCandidateAdmissionObserved: false,
-    existingSuccessPreservedAcrossProfiles: false,
-    existingSuccessRegressionProfileRunIds: ['embedded-cpu', 'embedded-accelerated', 'http-cpu'],
-  });
-  const fallbackReport =
-    formatPublishableLiveQueryPlannedProfileAcceptanceReport(fallbackAcceptance);
-  assert.match(fallbackReport, /Approved as an explicit fallback after hybrid misses/u);
-  assert.match(fallbackReport, /not release gates/u);
+  assert.throws(
+    () =>
+      createAcceptanceWithProfileRuns(
+        acceptance.profileRuns.map((run) => ({
+          ...run,
+          quality: {
+            ...run.quality,
+            newCandidateAdmissionCount: 0,
+            preservedExistingSuccessCount: 0,
+          },
+        })),
+      ),
+    /quality does not match recomputed case evidence/u,
+  );
+  assert.throws(
+    () =>
+      createAcceptanceWithProfileRuns([
+        {
+          ...embeddedCpuRun,
+          corpus: {
+            ...embeddedCpuRun.corpus,
+            snapshotSha256: ['f'.repeat(64)],
+          },
+        },
+        embeddedAcceleratedRun,
+        httpRun,
+      ]),
+    /corpus identity mismatch/u,
+  );
+  assert.throws(
+    () =>
+      createAcceptanceWithProfileRuns([
+        {
+          ...embeddedCpuRun,
+          cases: [...embeddedCpuRun.cases, ...embeddedCpuRun.cases],
+        },
+        embeddedAcceleratedRun,
+        httpRun,
+      ]),
+    /case IDs must be unique/u,
+  );
+  assert.throws(
+    () =>
+      createAcceptanceWithProfileRuns([
+        {
+          ...embeddedCpuRun,
+          cases: embeddedCpuRun.cases.map((measuredCase) => ({
+            ...measuredCase,
+            queryPlanned: {
+              ...measuredCase.queryPlanned,
+              expectedSourceRanks: [],
+              candidateAdmissionSourceRanks: [],
+              sourceProvenance: [],
+            },
+          })),
+        },
+        embeddedAcceleratedRun,
+        httpRun,
+      ]),
+    /source evidence length mismatch/u,
+  );
+  assert.throws(
+    () =>
+      createAcceptanceWithProfileRuns([
+        {
+          ...embeddedCpuRun,
+          cases: embeddedCpuRun.cases.map((measuredCase) => ({
+            ...measuredCase,
+            contribution: {
+              newCandidateAdmission: false,
+              rankingOnlyPromotion: false,
+              preservedExistingSuccess: false,
+              noImprovement: true,
+            },
+          })),
+        },
+        embeddedAcceleratedRun,
+        httpRun,
+      ]),
+    /contribution does not match recomputed case evidence/u,
+  );
 
   await chmod(plansPath, 0o644);
   await assert.rejects(

@@ -157,6 +157,7 @@ void test('embedded QMD query planner passes shared conformance with profile gra
     contextSize: 2_048,
     threads: null,
     nodeLlamaCppVersion: '3.18.1',
+    idleTimeoutMilliseconds: 300_000,
     physicalDeviceIdentity: cpuPhysicalDeviceIdentity.physicalDeviceIdentity,
     probedComputeBackends: [],
   });
@@ -298,6 +299,34 @@ void test('embedded QMD query planner retries automatic accelerator failure on C
     pendingAdapterConfigurationIdentity,
   );
   assert.deepEqual(provider.executionIdentity.probedComputeBackends, ['metal']);
+});
+
+void test('embedded QMD query planner identity binds every result-affecting adapter setting', async (t) => {
+  const profile = createRecommendedQmdQueryPlanningModelProfile();
+  const configurations = [
+    { modelCacheDirectory: '/models', device: EmbeddedInferenceDevicePolicy.CPU },
+    { modelCacheDirectory: '/models', device: EmbeddedInferenceDevicePolicy.CPU, threads: 2 },
+    {
+      modelCacheDirectory: '/models',
+      device: EmbeddedInferenceDevicePolicy.CPU,
+      requestTimeoutMilliseconds: 1_000,
+    },
+    {
+      modelCacheDirectory: '/models',
+      device: EmbeddedInferenceDevicePolicy.CPU,
+      idleTimeoutMilliseconds: 1_000,
+    },
+    { modelCacheDirectory: '/models', device: EmbeddedInferenceDevicePolicy.VULKAN },
+  ] as const;
+  const providers = configurations.map((options) =>
+    createEmbeddedQmdQueryPlanningProvider(profile, options),
+  );
+  t.after(() => Promise.all(providers.map((provider) => provider.dispose())));
+
+  const configurationIdentities = providers.map(
+    (provider) => provider.executionIdentity.adapterConfigurationIdentity,
+  );
+  assert.equal(new Set(configurationIdentities).size, configurations.length);
 });
 
 void test('embedded QMD query planner enforces timeout and caller cancellation', async (t) => {

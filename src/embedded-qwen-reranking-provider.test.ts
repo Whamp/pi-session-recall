@@ -331,6 +331,11 @@ void test('embedded Qwen reranker identity binds every result-affecting adapter 
       device: EmbeddedInferenceDevicePolicy.CPU,
       requestTimeoutMilliseconds: 1_000,
     },
+    {
+      modelCacheDirectory: '/models',
+      device: EmbeddedInferenceDevicePolicy.CPU,
+      idleTimeoutMilliseconds: 1_000,
+    },
     { modelCacheDirectory: '/models', device: EmbeddedInferenceDevicePolicy.VULKAN },
   ] as const;
   const providers = configurations.map((options) =>

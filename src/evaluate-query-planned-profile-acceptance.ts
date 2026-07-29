@@ -37,6 +37,7 @@ import {
 } from './query-planned-recall-baseline.js';
 import {
   createLiveQueryPlannedEvaluationConfigurationIdentity,
+  createLiveQueryPlannedEvaluationCorpusIdentity,
   createLiveQueryPlannedProfileIdentity,
   createPublishableLiveQueryPlannedProfileAcceptance,
   formatPublishableLiveQueryPlannedProfileAcceptanceReport,
@@ -294,9 +295,9 @@ function createLiveProfileCheckpointIdentity(
   profileIdentity: LiveQueryPlannedProfileIdentity,
 ): LiveProfileEvaluationCheckpointIdentity {
   return {
-    version: 2,
+    version: 3,
     recordedAgainstCommit,
-    privateManifestSha256: corpus.manifestSha256,
+    corpusIdentity: createLiveQueryPlannedEvaluationCorpusIdentity(corpus),
     profileRun,
     profileIdentity,
   };
@@ -645,6 +646,7 @@ export async function evaluateQueryPlannedProfileAcceptance(
     recordedAgainstCommit,
     defaultSearchMode: 'hybrid',
     committedCorpus,
+    expectedCorpus: createLiveQueryPlannedEvaluationCorpusIdentity(corpus),
     expectedProfileRuns: profiles.map(({ profileRun }) => profileRun),
     profileRuns,
     requiredSuccessfulBaselineControlCount: successfulBaselineControlCount,

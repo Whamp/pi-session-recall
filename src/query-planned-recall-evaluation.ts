@@ -694,7 +694,16 @@ function createQueryPlannedContribution(
   normal: QueryPlannedRecallBaselineArmMeasurement,
   retrievalWorkMatched: QueryPlannedRecallBaselineArmMeasurement,
   queryPlanned: QueryPlannedRecallArmMeasurement,
+  planSource: 'planner' | 'fallback' = 'planner',
 ): PrivateQueryPlannedRecallEvaluationResult['cases'][number]['contribution'] {
+  if (planSource === 'fallback') {
+    return {
+      newCandidateAdmission: false,
+      rankingOnlyPromotion: false,
+      preservedExistingSuccess: false,
+      noImprovement: true,
+    };
+  }
   return classifyQueryPlannedRecallContribution({
     controlKind,
     normalOutcome: normal.outcome,
@@ -1013,6 +1022,36 @@ export interface LiveQueryPlannedSearchLatencySummary {
   maximum: number;
 }
 
+/** Immutable private corpus identity required to validate live profile evidence. */
+export interface LiveQueryPlannedEvaluationCorpusIdentity {
+  id: string;
+  privateManifestSha256: string;
+  snapshotSha256: readonly string[];
+  cases: readonly {
+    caseId: string;
+    category: QueryPlannedRecallCaseCategory;
+    controlKind: QueryPlannedRecallControlKind;
+    expectedSourceCount: number;
+  }[];
+}
+
+/** Creates the manifest-bound snapshot and case identity expected from every live profile. */
+export function createLiveQueryPlannedEvaluationCorpusIdentity(
+  corpus: LoadedPrivateQueryPlannedRecallCorpus,
+): LiveQueryPlannedEvaluationCorpusIdentity {
+  return {
+    id: corpus.manifest.corpus.id,
+    privateManifestSha256: corpus.manifestSha256,
+    snapshotSha256: corpus.snapshots.map(({ sha256 }) => sha256),
+    cases: corpus.manifest.cases.map((evaluationCase) => ({
+      caseId: evaluationCase.id,
+      category: evaluationCase.category,
+      controlKind: evaluationCase.controlKind,
+      expectedSourceCount: evaluationCase.expectedSources.length,
+    })),
+  };
+}
+
 /** Publishable profile-bound quality and latency without private query or source text. */
 export interface LiveQueryPlannedProfileEvaluationResult {
   version: 1;
@@ -1058,6 +1097,137 @@ export interface LiveQueryPlannedProfileEvaluationResult {
     preservedExistingSuccessCount: number;
     plannerFallbackCount: number;
   };
+}
+
+function createLiveQueryPlannedProfileQuality(
+  cases: readonly LiveQueryPlannedProfileEvaluationResult['cases'][number][],
+): LiveQueryPlannedProfileEvaluationResult['quality'] {
+  return {
+    newCandidateAdmissionCount: cases.filter(
+      ({ contribution }) => contribution.newCandidateAdmission,
+    ).length,
+    rankingOnlyPromotionCount: cases.filter(({ contribution }) => contribution.rankingOnlyPromotion)
+      .length,
+    preservedExistingSuccessCount: cases.filter(
+      ({ contribution }) => contribution.preservedExistingSuccess,
+    ).length,
+    plannerFallbackCount: cases.filter(({ planSource }) => planSource === 'fallback').length,
+  };
+}
+
+/** Rejects live profile evidence that is not corpus-bound, case-complete, and recomputable. */
+export function assertLiveQueryPlannedProfileEvaluationResult(
+  result: LiveQueryPlannedProfileEvaluationResult,
+  expectedCorpus: LiveQueryPlannedEvaluationCorpusIdentity,
+): void {
+  if (
+    result.corpus.id !== expectedCorpus.id ||
+    result.corpus.privateManifestSha256 !== expectedCorpus.privateManifestSha256 ||
+    result.corpus.snapshotCount !== expectedCorpus.snapshotSha256.length ||
+    !isDeepStrictEqual(result.corpus.snapshotSha256, expectedCorpus.snapshotSha256) ||
+    result.corpus.caseCount !== expectedCorpus.cases.length ||
+    !Number.isInteger(result.corpus.indexedDocumentCount) ||
+    result.corpus.indexedDocumentCount < 1
+  ) {
+    throw new Error('Live query-planned profile evidence invalid: corpus identity mismatch');
+  }
+  assertExactEvaluationCaseCoverage({
+    controls: expectedCorpus.cases.map(({ caseId }) => caseId),
+    measurements: result.cases.map(({ caseId }) => caseId),
+  });
+  const expectedCasesById = new Map(
+    expectedCorpus.cases.map((expectedCase) => [expectedCase.caseId, expectedCase]),
+  );
+  for (const measuredCase of result.cases) {
+    const expectedCase = expectedCasesById.get(measuredCase.caseId);
+    if (
+      !expectedCase ||
+      measuredCase.category !== expectedCase.category ||
+      measuredCase.controlKind !== expectedCase.controlKind
+    ) {
+      throw new Error(
+        `Live query-planned profile evidence invalid: case identity mismatch for ${measuredCase.caseId}`,
+      );
+    }
+    const queryPlanned = measuredCase.queryPlanned;
+    if (
+      queryPlanned.expectedSourceRanks.length !== expectedCase.expectedSourceCount ||
+      queryPlanned.candidateAdmissionSourceRanks.length !== expectedCase.expectedSourceCount ||
+      queryPlanned.sourceProvenance.length !== expectedCase.expectedSourceCount
+    ) {
+      throw new Error(
+        `Live query-planned profile evidence invalid: source evidence length mismatch for ${measuredCase.caseId}`,
+      );
+    }
+    const sourceRanks = [
+      ...queryPlanned.expectedSourceRanks,
+      ...queryPlanned.candidateAdmissionSourceRanks,
+    ];
+    if (sourceRanks.some((rank) => rank !== null && (!Number.isInteger(rank) || rank < 1))) {
+      throw new Error(
+        `Live query-planned profile evidence invalid: source ranks must be positive integers for ${measuredCase.caseId}`,
+      );
+    }
+    const candidateAdmissionVerified = queryPlanned.candidateAdmissionSourceRanks.every(
+      (rank) => rank !== null,
+    );
+    if (queryPlanned.candidateAdmissionVerified !== candidateAdmissionVerified) {
+      throw new Error(
+        `Live query-planned profile evidence invalid: candidate admission does not match source ranks for ${measuredCase.caseId}`,
+      );
+    }
+    const outcome = classifyPrivateQueryPlannedOutcome(
+      queryPlanned.expectedSourceRanks,
+      candidateAdmissionVerified,
+    );
+    if (queryPlanned.outcome !== outcome) {
+      throw new Error(
+        `Live query-planned profile evidence invalid: outcome does not match measured admission and ranks for ${measuredCase.caseId}`,
+      );
+    }
+    for (const [sourceIndex, provenance] of queryPlanned.sourceProvenance.entries()) {
+      const selectedFrom =
+        queryPlanned.expectedSourceRanks[sourceIndex] !== null
+          ? 'ranked_result'
+          : queryPlanned.candidateAdmissionSourceRanks[sourceIndex] !== null
+            ? 'candidate_admission'
+            : 'missing';
+      if (provenance.selectedFrom !== selectedFrom) {
+        throw new Error(
+          `Live query-planned profile evidence invalid: provenance boundary does not match source ranks for ${measuredCase.caseId}`,
+        );
+      }
+    }
+    if (
+      queryPlanned.provenancePassed !== queryPlanned.sourceProvenance.every(({ passed }) => passed)
+    ) {
+      throw new Error(
+        `Live query-planned profile evidence invalid: provenance aggregate mismatch for ${measuredCase.caseId}`,
+      );
+    }
+    const contribution = createQueryPlannedContribution(
+      measuredCase.controlKind,
+      measuredCase.normal,
+      measuredCase.retrievalWorkMatched,
+      queryPlanned,
+      measuredCase.planSource,
+    );
+    if (!isDeepStrictEqual(measuredCase.contribution, contribution)) {
+      throw new Error(
+        `Live query-planned profile evidence invalid: contribution does not match recomputed case evidence for ${measuredCase.caseId}`,
+      );
+    }
+    if (Object.values(measuredCase.contribution).filter(Boolean).length !== 1) {
+      throw new Error(
+        `Live query-planned profile evidence invalid: contribution must be exclusive for ${measuredCase.caseId}`,
+      );
+    }
+  }
+  if (!isDeepStrictEqual(result.quality, createLiveQueryPlannedProfileQuality(result.cases))) {
+    throw new Error(
+      'Live query-planned profile evidence invalid: quality does not match recomputed case evidence',
+    );
+  }
 }
 
 function createRetrievalWorkMatchedCandidateLimits(
@@ -1293,22 +1463,13 @@ export async function runLiveQueryPlannedProfileEvaluation(
       lastRerankCandidateCount,
       'live-profile-v1',
     );
-    const queryPlanned =
-      queryPlan.source === 'planner'
-        ? measuredQueryPlanned
-        : {
-            ...measuredQueryPlanned,
-            outcome: classifyPrivateQueryPlannedOutcome(
-              measuredQueryPlanned.expectedSourceRanks,
-              false,
-            ),
-            candidateAdmissionVerified: false,
-          };
+    const queryPlanned = measuredQueryPlanned;
     const contribution = createQueryPlannedContribution(
       evaluationCase.controlKind,
       normal,
       retrievalWorkMatched,
       queryPlanned,
+      queryPlan.source,
     );
     cases.push({
       caseId: evaluationCase.id,
@@ -1366,18 +1527,7 @@ export async function runLiveQueryPlannedProfileEvaluation(
       totalSearchMilliseconds: summarizeLiveSearchLatencies(totalSearchMeasurements),
     },
     cases,
-    quality: {
-      newCandidateAdmissionCount: cases.filter(
-        ({ contribution }) => contribution.newCandidateAdmission,
-      ).length,
-      rankingOnlyPromotionCount: cases.filter(
-        ({ contribution }) => contribution.rankingOnlyPromotion,
-      ).length,
-      preservedExistingSuccessCount: cases.filter(
-        ({ contribution }) => contribution.preservedExistingSuccess,
-      ).length,
-      plannerFallbackCount: cases.filter(({ planSource }) => planSource === 'fallback').length,
-    },
+    quality: createLiveQueryPlannedProfileQuality(cases),
   };
 }
 
@@ -1404,6 +1554,7 @@ export interface CreateLiveQueryPlannedProfileAcceptanceOptions {
   recordedAgainstCommit: string;
   defaultSearchMode: 'hybrid';
   committedCorpus: readonly CommittedCorpusLiveProfileEvidence[];
+  expectedCorpus: LiveQueryPlannedEvaluationCorpusIdentity;
   expectedProfileRuns: readonly LiveQueryPlannedProfileRunIdentity[];
   profileRuns: readonly LiveQueryPlannedProfileEvaluationResult[];
   requiredSuccessfulBaselineControlCount: number;
@@ -1699,10 +1850,18 @@ export function createPublishableLiveQueryPlannedProfileAcceptance(
     );
   }
   const existingSuccessRegressionProfileRunIds: string[] = [];
+  const profileQualities: LiveQueryPlannedProfileEvaluationResult['quality'][] = [];
+  const indexedDocumentCount = options.profileRuns[0]?.corpus.indexedDocumentCount;
   for (const run of options.profileRuns) {
-    if (run.corpus.privateManifestSha256 !== privateManifestSha256) {
+    assertLiveQueryPlannedProfileEvaluationResult(run, options.expectedCorpus);
+    const quality = createLiveQueryPlannedProfileQuality(run.cases);
+    profileQualities.push(quality);
+    if (
+      run.corpus.privateManifestSha256 !== privateManifestSha256 ||
+      run.corpus.indexedDocumentCount !== indexedDocumentCount
+    ) {
       throw new Error(
-        'Live query-planned profile acceptance failed: every run must bind the same private manifest',
+        'Live query-planned profile acceptance failed: every run must bind the same private manifest and indexed corpus',
       );
     }
     if (run.profileIdentity.software.repositoryCommit !== options.recordedAgainstCommit) {
@@ -1711,27 +1870,25 @@ export function createPublishableLiveQueryPlannedProfileAcceptance(
       );
     }
     assertLiveProfileExecutionIdentity(run);
-    if (
-      run.quality.preservedExistingSuccessCount < options.requiredSuccessfulBaselineControlCount
-    ) {
+    if (quality.preservedExistingSuccessCount < options.requiredSuccessfulBaselineControlCount) {
       existingSuccessRegressionProfileRunIds.push(run.profileRun.id);
     }
   }
   const aggregateQuality = {
-    newCandidateAdmissionCount: options.profileRuns.reduce(
-      (total, run) => total + run.quality.newCandidateAdmissionCount,
+    newCandidateAdmissionCount: profileQualities.reduce(
+      (total, quality) => total + quality.newCandidateAdmissionCount,
       0,
     ),
-    rankingOnlyPromotionCount: options.profileRuns.reduce(
-      (total, run) => total + run.quality.rankingOnlyPromotionCount,
+    rankingOnlyPromotionCount: profileQualities.reduce(
+      (total, quality) => total + quality.rankingOnlyPromotionCount,
       0,
     ),
-    preservedExistingSuccessCount: options.profileRuns.reduce(
-      (total, run) => total + run.quality.preservedExistingSuccessCount,
+    preservedExistingSuccessCount: profileQualities.reduce(
+      (total, quality) => total + quality.preservedExistingSuccessCount,
       0,
     ),
-    plannerFallbackCount: options.profileRuns.reduce(
-      (total, run) => total + run.quality.plannerFallbackCount,
+    plannerFallbackCount: profileQualities.reduce(
+      (total, quality) => total + quality.plannerFallbackCount,
       0,
     ),
   };

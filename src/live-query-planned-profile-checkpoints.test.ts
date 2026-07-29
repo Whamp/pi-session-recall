@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -28,9 +29,19 @@ function createCheckpointIdentity(
   result: LiveQueryPlannedProfileEvaluationResult,
 ): LiveProfileEvaluationCheckpointIdentity {
   return {
-    version: 2,
+    version: 3,
     recordedAgainstCommit,
-    privateManifestSha256: result.corpus.privateManifestSha256,
+    corpusIdentity: {
+      id: result.corpus.id,
+      privateManifestSha256: result.corpus.privateManifestSha256,
+      snapshotSha256: result.corpus.snapshotSha256,
+      cases: result.cases.map((measuredCase) => ({
+        caseId: measuredCase.caseId,
+        category: measuredCase.category,
+        controlKind: measuredCase.controlKind,
+        expectedSourceCount: measuredCase.queryPlanned.expectedSourceRanks.length,
+      })),
+    },
     profileRun: result.profileRun,
     profileIdentity: result.profileIdentity,
   };
@@ -57,6 +68,7 @@ function createProfileResult(
     contextSize: 2_048,
     threads: null,
     nodeLlamaCppVersion: '3.18.1',
+    idleTimeoutMilliseconds: 300_000,
     physicalDeviceIdentity: [physicalDeviceIdentity],
     probedComputeBackends: [],
   };
@@ -76,6 +88,7 @@ function createProfileResult(
     threads: null,
     nodeLlamaCppVersion: '3.18.1',
     parallelism: 1,
+    idleTimeoutMilliseconds: 300_000,
     physicalDeviceIdentity: [physicalDeviceIdentity],
     probedComputeBackends: [],
   };
@@ -305,6 +318,43 @@ void test('live profile matrix resumes only an exact identity-bound checkpoint',
     assert.deepEqual(resumed, [result]);
     assert.equal(runCount, 1);
     assert.deepEqual(progress, ['Resumed live profile embedded-cpu (1/1)']);
+
+    const checkpointPath = join(
+      checkpointDirectory,
+      `${createHash('sha256').update('embedded-cpu').digest('hex')}.json`,
+    );
+    const checkpointContent = await readFile(checkpointPath, 'utf8');
+    const tamperedCheckpointContent = checkpointContent.replace(
+      '"newCandidateAdmissionCount": 1',
+      '"newCandidateAdmissionCount": 0',
+    );
+    assert.notEqual(tamperedCheckpointContent, checkpointContent);
+    await writeFile(checkpointPath, tamperedCheckpointContent);
+    let tamperedCheckpointEvaluationCount = 0;
+    progress.length = 0;
+    await runCheckpointedLiveProfileEvaluationMatrix({
+      checkpointDirectory,
+      profiles: [
+        {
+          profileRun: firstIdentity.profileRun,
+          async resolveCheckpointIdentity() {
+            return firstIdentity;
+          },
+          async evaluateProfile() {
+            tamperedCheckpointEvaluationCount += 1;
+            return result;
+          },
+        },
+      ],
+      reportProgress(message) {
+        progress.push(message);
+      },
+    });
+    assert.equal(tamperedCheckpointEvaluationCount, 1);
+    assert.deepEqual(progress, [
+      'Starting live profile embedded-cpu (1/1)',
+      'Completed live profile embedded-cpu (1/1)',
+    ]);
 
     progress.length = 0;
     const changedResult = createProfileResult('commit-two');

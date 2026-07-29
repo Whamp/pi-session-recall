@@ -95,6 +95,7 @@ export interface EmbeddedQwenRerankingExecutionIdentity extends RecallRerankingE
   threads: number | null;
   nodeLlamaCppVersion: typeof EMBEDDED_NODE_LLAMA_CPP_VERSION;
   parallelism: number;
+  idleTimeoutMilliseconds: number;
   physicalDeviceIdentity: readonly string[];
   probedComputeBackends: readonly (
     | EmbeddedInferenceComputeBackend.METAL
@@ -307,6 +308,7 @@ export function createEmbeddedQwenRerankingProvider(
         contextSize,
         devicePolicy,
         fallbackFromComputeBackend,
+        idleTimeoutMilliseconds,
         nodeLlamaCppVersion: EMBEDDED_NODE_LLAMA_CPP_VERSION,
         parallelism,
         physicalDeviceIdentity,
@@ -330,6 +332,7 @@ export function createEmbeddedQwenRerankingProvider(
     threads: options.threads ?? null,
     nodeLlamaCppVersion: EMBEDDED_NODE_LLAMA_CPP_VERSION,
     parallelism,
+    idleTimeoutMilliseconds,
     physicalDeviceIdentity: [],
     probedComputeBackends: [],
   });
@@ -550,6 +553,7 @@ export function createEmbeddedQwenRerankingProvider(
         threads: options.threads ?? null,
         nodeLlamaCppVersion: EMBEDDED_NODE_LLAMA_CPP_VERSION,
         parallelism,
+        idleTimeoutMilliseconds,
         physicalDeviceIdentity,
         probedComputeBackends: Object.freeze([...probedComputeBackends]),
       });

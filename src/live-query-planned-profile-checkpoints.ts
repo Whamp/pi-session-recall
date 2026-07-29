@@ -13,7 +13,11 @@ import {
   RecallInferenceBackend,
 } from './enums.js';
 import { writeAtomicRecallEvaluationFile } from './recall-evaluation-file-system.js';
-import type { LiveQueryPlannedProfileEvaluationResult } from './query-planned-recall-evaluation.js';
+import { assertLiveQueryPlannedProfileEvaluationResult } from './query-planned-recall-evaluation.js';
+import type {
+  LiveQueryPlannedEvaluationCorpusIdentity,
+  LiveQueryPlannedProfileEvaluationResult,
+} from './query-planned-recall-evaluation.js';
 
 const NULLABLE_NUMBER_SCHEMA = Type.Union([Type.Number(), Type.Null()]);
 const EXECUTION_BACKEND_SCHEMA = Type.Enum(RecallInferenceBackend);
@@ -65,6 +69,7 @@ const QUERY_PLANNING_EXECUTION_IDENTITY_SCHEMA = Type.Union([
     contextSize: Type.Integer({ minimum: 1 }),
     threads: Type.Union([Type.Integer({ minimum: 1 }), Type.Null()]),
     nodeLlamaCppVersion: Type.String({ minLength: 1 }),
+    idleTimeoutMilliseconds: Type.Integer({ minimum: 0 }),
   }),
   Type.Object({
     ...QUERY_PLANNING_EXECUTION_IDENTITY_PROPERTIES,
@@ -89,6 +94,7 @@ const RERANKING_EXECUTION_IDENTITY_SCHEMA = Type.Union([
     threads: Type.Union([Type.Integer({ minimum: 1 }), Type.Null()]),
     nodeLlamaCppVersion: Type.String({ minLength: 1 }),
     parallelism: Type.Integer({ minimum: 1 }),
+    idleTimeoutMilliseconds: Type.Integer({ minimum: 0 }),
   }),
   Type.Object({
     ...RERANKING_EXECUTION_IDENTITY_PROPERTIES,
@@ -284,10 +290,24 @@ const LIVE_PROFILE_RESULT_SCHEMA = Type.Object({
     plannerFallbackCount: Type.Number(),
   }),
 });
-const CHECKPOINT_IDENTITY_SCHEMA = Type.Object({
-  version: Type.Literal(2),
-  recordedAgainstCommit: Type.String(),
+const LIVE_EVALUATION_CORPUS_IDENTITY_SCHEMA = Type.Object({
+  id: Type.String(),
   privateManifestSha256: Type.String(),
+  snapshotSha256: Type.Array(Type.String({ pattern: '^[a-f0-9]{64}$' }), { minItems: 1 }),
+  cases: Type.Array(
+    Type.Object({
+      caseId: Type.String({ minLength: 1 }),
+      category: Type.Enum(QueryPlannedRecallCaseCategory),
+      controlKind: Type.Enum(QueryPlannedRecallControlKind),
+      expectedSourceCount: Type.Integer({ minimum: 1 }),
+    }),
+    { minItems: 1 },
+  ),
+});
+const CHECKPOINT_IDENTITY_SCHEMA = Type.Object({
+  version: Type.Literal(3),
+  recordedAgainstCommit: Type.String(),
+  corpusIdentity: LIVE_EVALUATION_CORPUS_IDENTITY_SCHEMA,
   profileRun: PROFILE_RUN_SCHEMA,
   profileIdentity: LIVE_PROFILE_RESULT_SCHEMA.properties.profileIdentity,
 });
@@ -298,9 +318,9 @@ const LIVE_PROFILE_CHECKPOINT_SCHEMA = Type.Object({
 
 /** Exact code, corpus, canonical execution, evaluation, software, and physical device identity for resume. */
 export interface LiveProfileEvaluationCheckpointIdentity {
-  version: 2;
+  version: 3;
   recordedAgainstCommit: string;
-  privateManifestSha256: string;
+  corpusIdentity: LiveQueryPlannedEvaluationCorpusIdentity;
   profileRun: LiveQueryPlannedProfileEvaluationResult['profileRun'];
   profileIdentity: LiveQueryPlannedProfileEvaluationResult['profileIdentity'];
 }
@@ -329,9 +349,9 @@ function checkpointResultMatchesIdentity(
   result: LiveQueryPlannedProfileEvaluationResult,
   identity: LiveProfileEvaluationCheckpointIdentity,
 ): boolean {
+  assertLiveQueryPlannedProfileEvaluationResult(result, identity.corpusIdentity);
   return (
     isDeepStrictEqual(result.profileRun, identity.profileRun) &&
-    result.corpus.privateManifestSha256 === identity.privateManifestSha256 &&
     identity.profileIdentity.software.repositoryCommit === identity.recordedAgainstCommit &&
     isDeepStrictEqual(result.profileIdentity, identity.profileIdentity) &&
     isDeepStrictEqual(

@@ -41,6 +41,7 @@ function createEmbeddedQmdQueryPlanningAdapterConfigurationIdentity(configuratio
   physicalDeviceIdentity: readonly string[];
   threads: number | null;
   requestTimeoutMilliseconds: number;
+  idleTimeoutMilliseconds: number;
 }): string {
   return createCanonicalIdentity('node-llama-cpp-qmd-query-planning-config-v1', {
     ...configuration,
@@ -115,6 +116,7 @@ export interface EmbeddedQmdQueryPlanningExecutionIdentity extends RecallQueryPl
   contextSize: number;
   threads: number | null;
   nodeLlamaCppVersion: typeof EMBEDDED_NODE_LLAMA_CPP_VERSION;
+  idleTimeoutMilliseconds: number;
   physicalDeviceIdentity: readonly string[];
   probedComputeBackends: readonly (
     | EmbeddedInferenceComputeBackend.METAL
@@ -316,6 +318,7 @@ export function createEmbeddedQmdQueryPlanningProvider(
         physicalDeviceIdentity,
         threads: options.threads ?? null,
         requestTimeoutMilliseconds,
+        idleTimeoutMilliseconds,
       }),
       RecallInferenceBackend.EMBEDDED,
       requestTimeoutMilliseconds,
@@ -343,6 +346,7 @@ export function createEmbeddedQmdQueryPlanningProvider(
     contextSize: profile.generationPolicy.contextSize,
     threads: options.threads ?? null,
     nodeLlamaCppVersion: EMBEDDED_NODE_LLAMA_CPP_VERSION,
+    idleTimeoutMilliseconds,
     physicalDeviceIdentity: [],
     probedComputeBackends: [],
   });
@@ -540,6 +544,7 @@ export function createEmbeddedQmdQueryPlanningProvider(
         contextSize: profile.generationPolicy.contextSize,
         threads: options.threads ?? null,
         nodeLlamaCppVersion: EMBEDDED_NODE_LLAMA_CPP_VERSION,
+        idleTimeoutMilliseconds,
         physicalDeviceIdentity,
         probedComputeBackends: Object.freeze([...probedComputeBackends]),
       });

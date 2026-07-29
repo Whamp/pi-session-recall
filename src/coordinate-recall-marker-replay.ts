@@ -110,7 +110,7 @@ function coalesceRecallWorkMarkers(
   const workItemsByKey = new Map<string, MutableRecallMarkerReplayWorkItem>();
   for (const marker of markers) {
     if (marker.trigger.kind === RecallWorkMarkerTrigger.BRANCH_EXIT) {
-      workItemsByKey.set(`branch-exit:${marker.markerId}`, {
+      workItemsByKey.set(JSON.stringify(['branch-exit', marker.markerId]), {
         marker,
         coveredMarkerIds: [marker.markerId],
       });
@@ -118,8 +118,13 @@ function coalesceRecallWorkMarkers(
     }
     const key =
       marker.trigger.kind === RecallWorkMarkerTrigger.COMPACTION
-        ? `${marker.physicalSessionId}:compaction:${marker.trigger.logicalSessionId}:${marker.trigger.compactionEntryId}`
-        : `${marker.physicalSessionId}:${marker.runtimeInstanceId}:${marker.trigger.kind}`;
+        ? JSON.stringify([
+            marker.physicalSessionId,
+            'compaction',
+            marker.trigger.logicalSessionId,
+            marker.trigger.compactionEntryId,
+          ])
+        : JSON.stringify([marker.physicalSessionId, marker.runtimeInstanceId, marker.trigger.kind]);
     addLatestRecallMarker(workItemsByKey, key, marker);
   }
   return [...workItemsByKey.values()]

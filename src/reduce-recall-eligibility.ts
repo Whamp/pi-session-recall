@@ -146,18 +146,9 @@ export function reduceRecallEligibility(
   );
   const previousEligibleEntryIds = new Set(projection.eligibleContributorEntryIds);
   const eligibleEntryIds = new Set(previousEligibleEntryIds);
-  const runtimeSequences = new Map(
-    projection.markerCheckpoint.runtimeSequences.map(({ runtimeInstanceId, sequence }) => [
-      runtimeInstanceId,
-      sequence,
-    ]),
-  );
   const coveredMarkerIds = new Set(projection.markerCheckpoint.coveredMarkerIds);
-  const unprocessedMarkers = input.markers.filter((marker) =>
-    marker.trigger.kind === RecallWorkMarkerTrigger.COMPACTION ||
-    marker.trigger.kind === RecallWorkMarkerTrigger.BRANCH_EXIT
-      ? !coveredMarkerIds.has(marker.markerId)
-      : marker.runtimeSequence > (runtimeSequences.get(marker.runtimeInstanceId) ?? 0),
+  const unprocessedMarkers = input.markers.filter(
+    (marker) => !coveredMarkerIds.has(marker.markerId),
   );
   let malformed = false;
   let compactionBoundary = projection.compactionBoundary;

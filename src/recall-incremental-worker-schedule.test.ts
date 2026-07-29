@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { setTimeout as sleep } from 'node:timers/promises';
 
 import { RecallEligibilityThreshold } from './enums.js';
 import {
@@ -10,6 +11,7 @@ import {
   readRecallIncrementalWorkerSchedule,
   type RecallLargeTransferDeferral,
 } from './recall-incremental-worker-schedule.js';
+import { tryAcquireRecallRebuildOwnershipLock } from './recall-rebuild-ownership-lock.js';
 
 void test('incremental worker schedule persists the earliest future wake and large-transfer deferral', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'recall-worker-schedule-'));
@@ -116,6 +118,61 @@ void test('incremental worker schedule preserves a request newer than the worker
     },
   });
 
+  assert.equal(
+    (await readRecallIncrementalWorkerSchedule(schedulePath))?.metadataSweepRequested,
+    true,
+  );
+});
+
+void test('concurrent schedule writers wait for flock and preserve a newer sweep request', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-worker-schedule-contention-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const schedulePath = join(directory, 'worker-schedule.json');
+  await persistRecallIncrementalWorkerSchedule({
+    schedulePath,
+    nowEpochMilliseconds: 1_000,
+    schedule: {
+      version: 1,
+      nextWakeAtEpochMilliseconds: null,
+      metadataSweepRequested: true,
+      largeTransferDeferrals: [],
+    },
+  });
+  const workerObservation = await readRecallIncrementalWorkerSchedule(schedulePath);
+  assert.ok(workerObservation);
+  const lockOwner = await tryAcquireRecallRebuildOwnershipLock(`${schedulePath}.lock`);
+  assert.ok(lockOwner);
+  t.after(() => lockOwner.release());
+
+  const acknowledgment = persistRecallIncrementalWorkerSchedule({
+    schedulePath,
+    nowEpochMilliseconds: 1_001,
+    acknowledgedMetadataSweepRevision: workerObservation.metadataSweepRevision ?? 0,
+    schedule: {
+      version: 1,
+      nextWakeAtEpochMilliseconds: null,
+      metadataSweepRequested: false,
+      largeTransferDeferrals: [],
+    },
+  });
+  const newerRequest = persistRecallIncrementalWorkerSchedule({
+    schedulePath,
+    nowEpochMilliseconds: 1_002,
+    schedule: {
+      version: 1,
+      nextWakeAtEpochMilliseconds: null,
+      metadataSweepRequested: true,
+      largeTransferDeferrals: [],
+    },
+  });
+  const completedWhileContended = await Promise.race([
+    Promise.all([acknowledgment, newerRequest]).then(() => true),
+    sleep(200).then(() => false),
+  ]);
+  assert.equal(completedWhileContended, false);
+
+  await lockOwner.release();
+  await Promise.all([acknowledgment, newerRequest]);
   assert.equal(
     (await readRecallIncrementalWorkerSchedule(schedulePath))?.metadataSweepRequested,
     true,

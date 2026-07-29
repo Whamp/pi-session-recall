@@ -1,16 +1,16 @@
 # PROTOTYPE measurements — predictable recall storage topology
 
-Generated 2026-07-29T16:29:26.554Z with `@zvec/zvec` 0.6.0 on disposable scratch data.
+Generated 2026-07-29T16:57:15.505Z with `@zvec/zvec` 0.6.0 on disposable scratch data.
 
 ## Verdict
 
-The three-store split is the simplest coherent topology and its lookup, traversal, replay, sizing, validation, and resumable deletion protocols work on scratch evidence. Zvec 0.6.0 still fails the production durability threshold because close success is unobservable and corrupt recovery can silently open incomplete state.
+The three-store split is the simplest coherent topology, and its lookup, traversal, replay, sizing, validation, and resumable deletion protocols work on scratch evidence. Zvec cannot reliably certify its own crash recovery, but that does not block a rebuildable index. After a crash, verify and reuse valid embeddings, recompute only missing or damaged rows, and reserve a full rebuild for damage that cannot be isolated.
 
 The smallest useful topology is three zvec collections plus application-owned generation metadata:
 
 `lexical-source/` stores vector-free lexical evidence and immutable entry anchors; `dense/` stores only embedded occurrence IDs; `projections/` isolates mutable ingestion state. Stable occurrence IDs join lexical and dense evidence. Entry anchors provide direct source-neighborhood traversal without reopening JSONL.
 
-This topology is **not production-acknowledgeable with the current binding**. The retrieval and lifecycle shape works, but the persistence boundary does not.
+This topology is acceptable for a rebuildable index. Activate only a reopened and validated generation, and keep the previous valid generation until activation succeeds. After an interrupted build, replay the source, reuse rows whose occurrence ID, embedding profile, and content checksum still match, and re-embed only missing or damaged rows. Rebuild the whole generation only when the damage cannot be isolated.
 
 ## Representative fixture
 
@@ -26,13 +26,13 @@ The fixture reproduces the essential scalar/FTS provenance shape, 512-token-scal
 
 ## Lifecycle
 
-- Initial build: 71.8 ms
-- Incremental append: 16.6 ms
-- Optimize: 126.4 ms
-- Close: 59.0 ms; return types: `undefined,undefined,undefined`
-- Reopen: 31.0 ms
+- Initial build: 68.5 ms
+- Incremental append: 15.6 ms
+- Optimize: 121.7 ms
+- Close: 58.4 ms; return types: `undefined,undefined,undefined`
+- Reopen: 32.3 ms
 - Immutable replay rows skipped after checksum verification: 256
-- Peak whole-generation bytes observed during optimize: 17,303,418
+- Peak whole-generation bytes observed during optimize: 14,706,554
 
 ### After initial build
 
@@ -89,7 +89,7 @@ The expansion fetched 6 exact evidence occurrences, stayed in one logical sessio
 
 | Strategy            | Live logical rows | Successful physical write versions | Apparent bytes after initial + 3 replays    | Bytes after optimize |
 | ------------------- | ----------------: | ---------------------------------: | ------------------------------------------- | -------------------: |
-| blind_upsert        |               256 |                               1024 | 577,722 → 1,149,018 → 1,719,680 → 2,277,130 |              586,322 |
+| blind_upsert        |               256 |                               1024 | 577,722 → 1,155,675 → 1,719,881 → 2,277,130 |              586,322 |
 | fetch_verify_insert |               256 |                                256 | 577,722 → 584,770 → 584,771 → 584,771       |              584,776 |
 
 Fetch-and-verify plus insert-if-absent keeps immutable replay source-driven. Blind upsert preserves logical IDs but writes another physical version on every replay.
@@ -106,7 +106,7 @@ Each variant began as the same SIGKILL residue containing 32 successful writes.
 | missing     | true                  |            0 |                  0 | none         |
 | unreadable  | true                  |            0 |                  0 | none         |
 
-The intact process-crash path recovered. Truncated, CRC-flipped, missing, and unreadable WAL variants can return a successfully opened collection with partial or zero rows. Native logs may report the corruption, but the application receives no failed open status.
+The intact process-crash path recovered. Truncated, CRC-flipped, missing, and unreadable WAL variants can return a successfully opened collection with partial or zero rows. Therefore a successful zvec open cannot by itself certify a generation. On restart, compare stored rows with the generation manifest and source identities, reuse valid embeddings, and recompute only missing or mismatched rows.
 
 ## Resumable split-store deletion
 
@@ -116,16 +116,18 @@ The intact process-crash path recovered. Truncated, CRC-flipped, missing, and un
 - Logical and physical projection rows removed last: 2
 - A complete replay removed nothing: true
 - Whole generation rename-and-delete completed: true
-- Marker acknowledgement: **blocked** — Node closeSync() returns no native persistence status, and corrupt/truncated/missing WAL recovery can open successfully with partial or zero rows.
+- Completion check: **reopen_and_verify** — Advance the checkpoint only after reopen verifies the expected IDs are absent. If broader validation fails, replay the source and reuse valid rows; rebuild the whole generation only when the damage cannot be isolated.
 
-## Required native boundary
+## Lightweight durability policy
 
-User-space durability guarantee established: **false**.
+Native durability established: **false**. The session JSONL files protect the data; durability work here protects the time spent embedding it.
 
-Required capability: A native status-returning flush/close boundary covering WAL fsync, scalar/vector/ID-map/index writes, atomically published and fsynced manifest files, and parent-directory fsync; recovery must fail open on WAL open/CRC/truncation and propagate every replayed operation status.
+Required application policy: Build outside the active generation, checkpoint bounded completed work, and record expected store counts and validation canaries in the manifest. On restart, reuse rows whose occurrence ID, embedding profile, and content checksum match, then embed only missing or mismatched rows. Keep the previous valid generation until replacement activation succeeds; rebuild the whole generation only when damage cannot be isolated.
 
-Still uncovered by this user-space prototype: power loss and volatile-device cache behavior; disk-full during each store and manifest phase; failed ID-map or vector/FTS index writes; interrupted recovery replay; native binary attestation to reviewed source.
+Optional native improvement: A status-returning flush or close and fail-open WAL recovery could reduce restart verification and re-embedding time. Adopt it only if zvec can expose it without adding a second recovery protocol or meaningful storage overhead.
+
+Deferred unless a concrete need justifies them: power-loss certification; disk-full recovery for every internal write phase; custom WAL repair; native binary attestation.
 
 ## Decision implication
 
-Keep zvec as the incumbent topology candidate, but do not select it for production acknowledgement. The next decision is binary: obtain the native persistence/recovery capability above and rerun these preserved probes, or compare another embedded daemon-free engine under the same three-store generation protocol.
+Adopt the three-store topology with zvec as the incumbent. Preserve these crash probes. Add cheap checkpoints or native durability only when they clearly reduce restart verification or re-embedding time without materially increasing code complexity or index size. Do not build a second recovery system to protect data that already exists in the session JSONL files.

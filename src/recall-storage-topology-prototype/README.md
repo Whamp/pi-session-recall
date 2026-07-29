@@ -34,3 +34,11 @@ generations/<id>/
 ```
 
 An entry anchor is an immutable source-neighborhood index row. It stores parent linkage, branch endpoint membership, exact occurrence IDs, and source geometry. It is not searchable evidence. This avoids a fourth store while preserving direct ID lookup and one-path traversal.
+
+## Durability scope
+
+The session JSONL files protect the data. Durability work protects the time already spent creating embeddings, which can take many hours.
+
+After a crash, replay the source and reuse rows whose occurrence ID, embedding profile, and content checksum still match. Re-embed only missing or damaged rows. Rebuild the whole generation only when the damage cannot be isolated.
+
+Prefer small checkpoints and simple validation. Add stronger database guarantees only when they save meaningful rebuild time without adding much code or storage.

@@ -137,8 +137,8 @@ interface DeletionMeasurement {
   lexicalSourceRowsRemoved: number;
   projectionRowsRemoved: number;
   replayWasIdempotent: boolean;
-  acknowledgement: 'blocked';
-  acknowledgementBlocker: string;
+  completionCheck: 'reopen_and_verify';
+  completionBasis: string;
   wholeGenerationRemoved: boolean;
 }
 
@@ -188,9 +188,10 @@ interface PrototypeReport {
   recoveryFaults: RecoveryFaultMeasurement[];
   deletion: DeletionMeasurement;
   durabilityBoundary: {
-    userSpaceGuaranteeEstablished: false;
-    exactRequiredCapability: string;
-    uncoveredFaults: string[];
+    nativeDurabilityEstablished: false;
+    lightweightPolicy: string;
+    optionalNativeCapability: string;
+    deferredFaults: string[];
   };
   verdict: string;
 }
@@ -210,7 +211,7 @@ interface PrototypeOperationState {
     | 'deleting_dense'
     | 'deleting_lexical_source'
     | 'deleting_projections'
-    | 'verification_complete_ack_blocked'
+    | 'verification_complete'
     | 'generation_removed';
   targetPhysicalSessionProjectionId: string | null;
 }
@@ -1244,10 +1245,10 @@ function runResumableDeletion(
     throw new Error('Prototype projection deletion verification failed');
   }
 
-  const acknowledgementBlocker =
-    'Node closeSync() returns no native persistence status, and corrupt/truncated/missing WAL recovery can open successfully with partial or zero rows.';
+  const completionBasis =
+    'Advance the checkpoint only after reopen verifies the expected IDs are absent. If broader validation fails, replay the source and reuse valid rows; rebuild the whole generation only when the damage cannot be isolated.';
   writeOperationState({
-    phase: 'verification_complete_ack_blocked',
+    phase: 'verification_complete',
     targetPhysicalSessionProjectionId,
   });
   writeAtomicJson(join(GENERATION_ROOT, 'deletion-verification.json'), {
@@ -1256,8 +1257,8 @@ function runResumableDeletion(
     lexicalSourceRowsRemoved,
     projectionRowsRemoved,
     replayRemovedRows,
-    acknowledgement: 'blocked',
-    acknowledgementBlocker,
+    completionCheck: 'reopen_and_verify',
+    completionBasis,
     dimensions,
   });
   return {
@@ -1266,8 +1267,8 @@ function runResumableDeletion(
     lexicalSourceRowsRemoved,
     projectionRowsRemoved,
     replayWasIdempotent: replayRemovedRows === 0,
-    acknowledgement: 'blocked',
-    acknowledgementBlocker,
+    completionCheck: 'reopen_and_verify',
+    completionBasis,
     wholeGenerationRemoved: false,
   };
 }
@@ -1331,7 +1332,7 @@ The smallest useful topology is three zvec collections plus application-owned ge
 
 \`lexical-source/\` stores vector-free lexical evidence and immutable entry anchors; \`dense/\` stores only embedded occurrence IDs; \`projections/\` isolates mutable ingestion state. Stable occurrence IDs join lexical and dense evidence. Entry anchors provide direct source-neighborhood traversal without reopening JSONL.
 
-This topology is **not production-acknowledgeable with the current binding**. The retrieval and lifecycle shape works, but the persistence boundary does not.
+This topology is acceptable for a rebuildable index. Activate only a reopened and validated generation, and keep the previous valid generation until activation succeeds. After an interrupted build, replay the source, reuse rows whose occurrence ID, embedding profile, and content checksum still match, and re-embed only missing or damaged rows. Rebuild the whole generation only when the damage cannot be isolated.
 
 ## Representative fixture
 
@@ -1401,7 +1402,7 @@ Each variant began as the same SIGKILL residue containing ${CRASH_ROW_COUNT} suc
 | --- | --- | ---: | ---: | --- |
 ${faultRows}
 
-The intact process-crash path recovered. Truncated, CRC-flipped, missing, and unreadable WAL variants can return a successfully opened collection with partial or zero rows. Native logs may report the corruption, but the application receives no failed open status.
+The intact process-crash path recovered. Truncated, CRC-flipped, missing, and unreadable WAL variants can return a successfully opened collection with partial or zero rows. Therefore a successful zvec open cannot by itself certify a generation. On restart, compare stored rows with the generation manifest and source identities, reuse valid embeddings, and recompute only missing or mismatched rows.
 
 ## Resumable split-store deletion
 
@@ -1411,19 +1412,21 @@ The intact process-crash path recovered. Truncated, CRC-flipped, missing, and un
 - Logical and physical projection rows removed last: ${report.deletion.projectionRowsRemoved}
 - A complete replay removed nothing: ${report.deletion.replayWasIdempotent}
 - Whole generation rename-and-delete completed: ${report.deletion.wholeGenerationRemoved}
-- Marker acknowledgement: **${report.deletion.acknowledgement}** — ${report.deletion.acknowledgementBlocker}
+- Completion check: **${report.deletion.completionCheck}** — ${report.deletion.completionBasis}
 
-## Required native boundary
+## Lightweight durability policy
 
-User-space durability guarantee established: **${report.durabilityBoundary.userSpaceGuaranteeEstablished}**.
+Native durability established: **${report.durabilityBoundary.nativeDurabilityEstablished}**. The session JSONL files protect the data; durability work here protects the time spent embedding it.
 
-Required capability: ${report.durabilityBoundary.exactRequiredCapability}
+Required application policy: ${report.durabilityBoundary.lightweightPolicy}
 
-Still uncovered by this user-space prototype: ${report.durabilityBoundary.uncoveredFaults.join('; ')}.
+Optional native improvement: ${report.durabilityBoundary.optionalNativeCapability}
+
+Deferred unless a concrete need justifies them: ${report.durabilityBoundary.deferredFaults.join('; ')}.
 
 ## Decision implication
 
-Keep zvec as the incumbent topology candidate, but do not select it for production acknowledgement. The next decision is binary: obtain the native persistence/recovery capability above and rerun these preserved probes, or compare another embedded daemon-free engine under the same three-store generation protocol.
+Adopt the three-store topology with zvec as the incumbent. Preserve these crash probes. Add cheap checkpoints or native durability only when they clearly reduce restart verification or re-embedding time without materially increasing code complexity or index size. Do not build a second recovery system to protect data that already exists in the session JSONL files.
 `;
 }
 
@@ -1565,19 +1568,20 @@ async function runPrototype(): Promise<PrototypeReport> {
     recoveryFaults,
     deletion,
     durabilityBoundary: {
-      userSpaceGuaranteeEstablished: false,
-      exactRequiredCapability:
-        'A native status-returning flush/close boundary covering WAL fsync, scalar/vector/ID-map/index writes, atomically published and fsynced manifest files, and parent-directory fsync; recovery must fail open on WAL open/CRC/truncation and propagate every replayed operation status.',
-      uncoveredFaults: [
-        'power loss and volatile-device cache behavior',
-        'disk-full during each store and manifest phase',
-        'failed ID-map or vector/FTS index writes',
-        'interrupted recovery replay',
-        'native binary attestation to reviewed source',
+      nativeDurabilityEstablished: false,
+      lightweightPolicy:
+        'Build outside the active generation, checkpoint bounded completed work, and record expected store counts and validation canaries in the manifest. On restart, reuse rows whose occurrence ID, embedding profile, and content checksum match, then embed only missing or mismatched rows. Keep the previous valid generation until replacement activation succeeds; rebuild the whole generation only when damage cannot be isolated.',
+      optionalNativeCapability:
+        'A status-returning flush or close and fail-open WAL recovery could reduce restart verification and re-embedding time. Adopt it only if zvec can expose it without adding a second recovery protocol or meaningful storage overhead.',
+      deferredFaults: [
+        'power-loss certification',
+        'disk-full recovery for every internal write phase',
+        'custom WAL repair',
+        'native binary attestation',
       ],
     },
     verdict:
-      'The three-store split is the simplest coherent topology and its lookup, traversal, replay, sizing, validation, and resumable deletion protocols work on scratch evidence. Zvec 0.6.0 still fails the production durability threshold because close success is unobservable and corrupt recovery can silently open incomplete state.',
+      'The three-store split is the simplest coherent topology, and its lookup, traversal, replay, sizing, validation, and resumable deletion protocols work on scratch evidence. Zvec cannot reliably certify its own crash recovery, but that does not block a rebuildable index. After a crash, verify and reuse valid embeddings, recompute only missing or damaged rows, and reserve a full rebuild for damage that cannot be isolated.',
   };
   const markdown = formatPrototypeReport(report);
   writeFileSync(MEASUREMENTS_PATH, markdown);

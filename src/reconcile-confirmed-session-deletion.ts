@@ -280,9 +280,13 @@ type ConfirmedDeletionWindowOutcome =
       progress: ConfirmedSessionDeletionProgress;
     }
   | { action: 'phase_advanced' }
+  | { action: 'ack_pending'; confirmedSweepId: string }
+  | {
+      action: 'acknowledgement_checkpointed';
+      progress: ConfirmedSessionDeletionProgress;
+    }
   | {
       action: 'physical_projection_removed';
-      confirmedSweepId: string;
       progress: ConfirmedSessionDeletionProgress;
     }
   | { action: 'already_removed'; confirmedSweepId: string }
@@ -367,6 +371,25 @@ function defaultConfirmedDeletionProjectionStore(
   });
 }
 
+function listDurableConfirmedDeletionTombstones(
+  selection: RecallActiveGenerationSelection,
+): readonly PhysicalSessionProjection[] {
+  const projectionStore = defaultConfirmedDeletionProjectionStore(selection, true);
+  try {
+    return projectionStore.listPhysicalProjections().filter((projection) => {
+      const phase = projection.deletionCheckpoint?.phase;
+      return (
+        projection.sourceAvailability === RecallSourceAvailability.DELETION_CONFIRMED &&
+        (phase === RecallConfirmedDeletionPhase.PHYSICAL_PROJECTION ||
+          phase === RecallConfirmedDeletionPhase.ACK_PENDING ||
+          phase === RecallConfirmedDeletionPhase.ACKNOWLEDGED)
+      );
+    });
+  } finally {
+    projectionStore.close();
+  }
+}
+
 function findConfirmedDeletionMarkerWorkPlan(
   options: ReconcileConfirmedSessionDeletionOptions,
   physicalSessionId: string,
@@ -409,6 +432,7 @@ async function runConfirmedDeletionWriteWindow(
   targetGenerationId: string,
   physicalProjectionId: string,
   sourceObservation: ConfirmedSessionDeletionSourceObservation | null,
+  acknowledgementCompleted: boolean,
 ): Promise<ConfirmedDeletionWindowOutcome> {
   return coordinateRecallWriteWindow(
     {
@@ -607,10 +631,45 @@ async function runConfirmedDeletionWriteWindow(
             };
           }
           case RecallConfirmedDeletionPhase.PHYSICAL_PROJECTION:
+            await projectionStore.upsertProjections([
+              {
+                ...projection,
+                deletionCheckpoint: {
+                  ...checkpoint,
+                  phase: RecallConfirmedDeletionPhase.ACK_PENDING,
+                },
+              },
+            ]);
+            return { action: 'phase_advanced' };
+          case RecallConfirmedDeletionPhase.ACK_PENDING:
+            if (!acknowledgementCompleted) {
+              return {
+                action: 'ack_pending',
+                confirmedSweepId: checkpoint.confirmedSweepId,
+              };
+            }
+            await projectionStore.upsertProjections([
+              {
+                ...projection,
+                deletionCheckpoint: {
+                  ...checkpoint,
+                  phase: RecallConfirmedDeletionPhase.ACKNOWLEDGED,
+                },
+              },
+            ]);
+            return {
+              action: 'acknowledgement_checkpointed',
+              progress: {
+                phase: RecallConfirmedDeletionPhase.ACKNOWLEDGED,
+                removedEvidenceOccurrenceCount: checkpoint.deletedEvidenceCount,
+                removedLogicalProjectionCount: checkpoint.deletedLogicalProjectionCount,
+                removedPhysicalProjectionCount: 0,
+              },
+            };
+          case RecallConfirmedDeletionPhase.ACKNOWLEDGED:
             await projectionStore.deleteProjections([projection.projectionId]);
             return {
               action: 'physical_projection_removed',
-              confirmedSweepId: checkpoint.confirmedSweepId,
               progress: {
                 phase: RecallConfirmedDeletionPhase.PHYSICAL_PROJECTION,
                 removedEvidenceOccurrenceCount: checkpoint.deletedEvidenceCount,
@@ -671,7 +730,7 @@ async function observeConfirmedPhysicalProjectionRemoved(
 
 /**
  * Reconciles one complete metadata sweep against the pointer-selected active generation.
- * Every destructive batch is checkpointed before deletion and acknowledged only after absence is observed.
+ * Every destructive batch is checkpointed, and the physical projection remains as a tombstone until marker acknowledgement completes.
  */
 export async function reconcileConfirmedSessionDeletion(
   options: ReconcileConfirmedSessionDeletionOptions,
@@ -683,19 +742,27 @@ export async function reconcileConfirmedSessionDeletion(
     options.onDiagnostic?.(result);
     return result;
   }
-  const projectionsNeedingReconciliation = options.physicalProjections.filter((projection) =>
-    physicalProjectionNeedsDeletionReconciliation(projection, options.metadataSweep),
+  const targetSelection = await readRecallActiveGenerationSelection(
+    options.activeGenerationPointerPath,
+    options.generationRootDirectory,
+  );
+  const reconciliationProjectionById = new Map(
+    options.physicalProjections.map((projection) => [projection.projectionId, projection]),
+  );
+  for (const tombstone of listDurableConfirmedDeletionTombstones(targetSelection)) {
+    reconciliationProjectionById.set(tombstone.projectionId, tombstone);
+  }
+  const projectionsNeedingReconciliation = [...reconciliationProjectionById.values()].filter(
+    (projection) =>
+      physicalProjectionNeedsDeletionReconciliation(projection, options.metadataSweep),
   );
   if (projectionsNeedingReconciliation.length === 0) {
     const result = createConfirmedDeletionResult(false, 0, counts);
     options.onDiagnostic?.(result);
     return result;
   }
-  const targetSelection = await readRecallActiveGenerationSelection(
-    options.activeGenerationPointerPath,
-    options.generationRootDirectory,
-  );
   let consideredPhysicalSessionCount = 0;
+  const acknowledgedPhysicalProjectionIds = new Set<string>();
 
   for (const suppliedProjection of projectionsNeedingReconciliation) {
     consideredPhysicalSessionCount += 1;
@@ -725,6 +792,7 @@ export async function reconcileConfirmedSessionDeletion(
         targetSelection.activeGenerationId,
         suppliedProjection.projectionId,
         sourceObservation,
+        acknowledgedPhysicalProjectionIds.has(suppliedProjection.projectionId),
       );
       switch (outcome.action) {
         case 'halted': {
@@ -755,6 +823,18 @@ export async function reconcileConfirmedSessionDeletion(
         case 'logical_projections_removed':
           await options.onProgress?.(Object.freeze({ ...outcome.progress }));
           continue;
+        case 'ack_pending':
+          await acknowledgeConfirmedDeletionMarkers(
+            options,
+            suppliedProjection,
+            outcome.confirmedSweepId,
+          );
+          acknowledgedPhysicalProjectionIds.add(suppliedProjection.projectionId);
+          counts.acknowledgedCheckpointCount += 1;
+          continue;
+        case 'acknowledgement_checkpointed':
+          await options.onProgress?.(Object.freeze({ ...outcome.progress }));
+          continue;
         case 'physical_projection_removed':
           counts.removedEvidenceOccurrenceCount += outcome.progress.removedEvidenceOccurrenceCount;
           counts.removedLogicalProjectionCount += outcome.progress.removedLogicalProjectionCount;
@@ -776,12 +856,6 @@ export async function reconcileConfirmedSessionDeletion(
             options.onDiagnostic?.(result);
             return result;
           }
-          await acknowledgeConfirmedDeletionMarkers(
-            options,
-            suppliedProjection,
-            outcome.confirmedSweepId,
-          );
-          counts.acknowledgedCheckpointCount += 1;
           break;
         case 'already_removed':
           await acknowledgeConfirmedDeletionMarkers(

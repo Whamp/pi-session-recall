@@ -231,6 +231,8 @@ export enum RecallConfirmedDeletionPhase {
   EVIDENCE = 'evidence',
   LOGICAL_PROJECTIONS = 'logical_projections',
   PHYSICAL_PROJECTION = 'physical_projection',
+  ACK_PENDING = 'ack_pending',
+  ACKNOWLEDGED = 'acknowledged',
 }
 
 /** Outcome of encoding one bounded session projection candidate. */

@@ -507,7 +507,7 @@ void test('scratch zvec confirmed deletion removes only one physical source and 
     haltCategoryCounts: {},
   });
   assert.deepEqual(acknowledgedSweeps, ['sweep-2']);
-  assert.equal(searchDuringDeletionCount, 3);
+  assert.equal(searchDuringDeletionCount, 4);
   assert.equal(scalarDiagnostics.length, 1);
   assert.doesNotMatch(
     scalarDiagnostics[0] ?? '',
@@ -861,6 +861,104 @@ void test('scratch zvec confirmed deletion resumes idempotently after every dest
     );
     evidenceStore.close();
   }
+});
+
+void test('confirmed deletion retries acknowledgement from a durable tombstone', async (t) => {
+  const fixture = await createScratchConfirmedDeletionFixture();
+  t.after(() => rm(fixture.directory, { recursive: true, force: true }));
+  await reconcileConfirmedSessionDeletion(
+    createScratchReconciliationOptions(fixture, createMetadataSweep('sweep-1', false)),
+  );
+
+  const acknowledgementAttempts: string[] = [];
+  await assert.rejects(
+    () =>
+      reconcileConfirmedSessionDeletion({
+        ...createScratchReconciliationOptions(fixture, createMetadataSweep('sweep-2', false)),
+        async acknowledgeCheckpoint(sweepId) {
+          acknowledgementAttempts.push(sweepId);
+          throw new Error('intentional interruption after marker acknowledgement side effect');
+        },
+      }),
+    /intentional interruption after marker acknowledgement side effect/u,
+  );
+
+  const projectionStore = openZvecSessionProjectionStore({
+    databasePath: join(fixture.generationDirectory, 'session-projections'),
+    generationId,
+    createIfMissing: false,
+    readOnly: true,
+  });
+  const durablePhysicalProjections = projectionStore.listPhysicalProjections();
+  projectionStore.close();
+  assert.equal(durablePhysicalProjections.length, 1);
+  assert.equal(
+    durablePhysicalProjections[0]?.deletionCheckpoint?.phase,
+    RecallConfirmedDeletionPhase.ACK_PENDING,
+  );
+
+  const resumed = await reconcileConfirmedSessionDeletion({
+    ...createScratchReconciliationOptions(fixture, createMetadataSweep('sweep-2', false)),
+    physicalProjections: [],
+    async acknowledgeCheckpoint(sweepId) {
+      acknowledgementAttempts.push(sweepId);
+    },
+  });
+
+  assert.equal(resumed.acknowledgedCheckpointCount, 1);
+  assert.equal(resumed.removedPhysicalProjectionCount, 1);
+  assert.deepEqual(acknowledgementAttempts, ['sweep-2', 'sweep-2']);
+});
+
+void test('confirmed deletion resumes after durable acknowledgement without acknowledging again', async (t) => {
+  const fixture = await createScratchConfirmedDeletionFixture();
+  t.after(() => rm(fixture.directory, { recursive: true, force: true }));
+  await reconcileConfirmedSessionDeletion(
+    createScratchReconciliationOptions(fixture, createMetadataSweep('sweep-1', false)),
+  );
+
+  const acknowledgementAttempts: string[] = [];
+  await assert.rejects(
+    () =>
+      reconcileConfirmedSessionDeletion({
+        ...createScratchReconciliationOptions(fixture, createMetadataSweep('sweep-2', false)),
+        async acknowledgeCheckpoint(sweepId) {
+          acknowledgementAttempts.push(sweepId);
+        },
+        onProgress(progress) {
+          if (progress.phase === RecallConfirmedDeletionPhase.ACKNOWLEDGED) {
+            throw new Error('intentional interruption after durable acknowledgement');
+          }
+        },
+      }),
+    /intentional interruption after durable acknowledgement/u,
+  );
+
+  const projectionStore = openZvecSessionProjectionStore({
+    databasePath: join(fixture.generationDirectory, 'session-projections'),
+    generationId,
+    createIfMissing: false,
+    readOnly: true,
+  });
+  const durablePhysicalProjections = projectionStore.listPhysicalProjections();
+  projectionStore.close();
+  assert.equal(durablePhysicalProjections.length, 1);
+  assert.equal(
+    durablePhysicalProjections[0]?.deletionCheckpoint?.phase,
+    RecallConfirmedDeletionPhase.ACKNOWLEDGED,
+  );
+
+  const resumed = await reconcileConfirmedSessionDeletion({
+    ...createScratchReconciliationOptions(fixture, createMetadataSweep('sweep-2', false)),
+    physicalProjections: [],
+    async acknowledgeCheckpoint(sweepId) {
+      acknowledgementAttempts.push(sweepId);
+    },
+  });
+
+  assert.equal(resumed.acknowledgedCheckpointCount, 0);
+  assert.equal(resumed.removedPhysicalProjectionCount, 1);
+  assert.deepEqual(acknowledgementAttempts, ['sweep-2']);
 });
 
 void test('confirmed deletion rechecks the rebuild freeze under the write lock', async (t) => {

@@ -69,6 +69,7 @@ import { createQwenHttpRerankingProvider } from './createQwenHttpRerankingProvid
 import { isUnknownRecord } from './is-unknown-record.js';
 import type { LocalEmbeddingClient } from './local-embedding-client.js';
 import { loadOctenConversationTokenizer } from './octen-conversation-tokenizer.js';
+import { openRecallZvecValidationStore } from './open-recall-zvec-validation-store.js';
 import {
   assertRecallIndexManifestCompatible,
   calculateRecallEmbeddingCanaryCosineSimilarity,
@@ -1899,7 +1900,10 @@ export function createRecallConversationService(
               if (!manifest) {
                 throw new Error('Recall replacement generation manifest missing during validation');
               }
-              const validationStore = openStore('read', paths.databasePath);
+              const validationStore = await openRecallZvecValidationStore(
+                () => openStore('read', paths.databasePath),
+                options.signal,
+              );
               try {
                 if (validationStore.count() !== result.totalChunks) {
                   throw new Error('Recall replacement generation count changed during validation');

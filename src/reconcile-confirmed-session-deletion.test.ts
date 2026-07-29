@@ -863,6 +863,51 @@ void test('scratch zvec confirmed deletion resumes idempotently after every dest
   }
 });
 
+void test('confirmed deletion retries acknowledgement from a durable tombstone', async (t) => {
+  const fixture = await createScratchConfirmedDeletionFixture();
+  t.after(() => rm(fixture.directory, { recursive: true, force: true }));
+  await reconcileConfirmedSessionDeletion(
+    createScratchReconciliationOptions(fixture, createMetadataSweep('sweep-1', false)),
+  );
+
+  await assert.rejects(
+    () =>
+      reconcileConfirmedSessionDeletion({
+        ...createScratchReconciliationOptions(fixture, createMetadataSweep('sweep-2', false)),
+        async acknowledgeCheckpoint() {
+          throw new Error('intentional interruption before marker acknowledgement');
+        },
+      }),
+    /intentional interruption before marker acknowledgement/u,
+  );
+
+  const projectionStore = openZvecSessionProjectionStore({
+    databasePath: join(fixture.generationDirectory, 'session-projections'),
+    generationId,
+    createIfMissing: false,
+    readOnly: true,
+  });
+  const durablePhysicalProjections = projectionStore.listPhysicalProjections();
+  projectionStore.close();
+  assert.equal(durablePhysicalProjections.length, 1);
+  assert.equal(
+    durablePhysicalProjections[0]?.deletionCheckpoint?.phase,
+    RecallConfirmedDeletionPhase.PHYSICAL_PROJECTION,
+  );
+
+  const acknowledgements: string[] = [];
+  const resumed = await reconcileConfirmedSessionDeletion({
+    ...createScratchReconciliationOptions(fixture, createMetadataSweep('sweep-2', false)),
+    physicalProjections: durablePhysicalProjections,
+    async acknowledgeCheckpoint(sweepId) {
+      acknowledgements.push(sweepId);
+    },
+  });
+
+  assert.equal(resumed.acknowledgedCheckpointCount, 1);
+  assert.deepEqual(acknowledgements, ['sweep-2']);
+});
+
 void test('confirmed deletion rechecks the rebuild freeze under the write lock', async (t) => {
   const fixture = await createScratchConfirmedDeletionFixture();
   t.after(() => rm(fixture.directory, { recursive: true, force: true }));

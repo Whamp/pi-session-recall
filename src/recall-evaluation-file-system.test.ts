@@ -155,6 +155,39 @@ void test('durable evaluation replacement cannot resolve successfully before fin
   );
 });
 
+void test('ordinary failed evaluation replacement removes its matching temp artifact', async () => {
+  const temporaryPaths = new Set<string>();
+  const fileSystem: RecallEvaluationFileSystem = {
+    async mkdir() {
+      return undefined;
+    },
+    async open(path, flags) {
+      if (flags === 'wx') {
+        temporaryPaths.add(path);
+      }
+      return {
+        async writeFile() {},
+        async sync() {},
+        async close() {},
+      };
+    },
+    async rename() {
+      throw new Error('replace failed');
+    },
+    async rm(path) {
+      temporaryPaths.delete(path);
+    },
+    async readdir() {
+      return [];
+    },
+  };
+
+  await assert.rejects(() =>
+    writeAtomicRecallEvaluationFile('/publication/evidence.json', 'evidence', fileSystem),
+  );
+  assert.deepEqual([...temporaryPaths], []);
+});
+
 void test('durable evaluation replacement preserves the original failure when cleanup also fails', async () => {
   const originalFailure = new Error('replace failed');
   let tempClosed = false;

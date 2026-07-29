@@ -14,7 +14,6 @@ import {
 import { applyRecallQualityPolicyToConversationConfig } from './applyRecallQualityPolicyToConversationConfig.js';
 import {
   createConfiguredRecallInferenceRuntime,
-  type ConfiguredRecallInferenceRuntime,
   resolveRecallInferenceConfigurationPath,
 } from './configured-recall-inference-runtime.js';
 import { RecallSearchScope } from './enums.js';
@@ -38,7 +37,10 @@ import {
   type RecallLifecycleRuntimeFactory,
 } from './register-recall-lifecycle-markers.js';
 import { runRecallIndexCommand } from './recall-index-command.js';
-import { readRecallInferenceConfiguration } from './recall-inference-configuration.js';
+import {
+  readRecallInferenceConfiguration,
+  type RecallInferenceConfiguration,
+} from './recall-inference-configuration.js';
 import { createRecommendedEmbeddingGemmaModelProfile } from './recall-model-profiles.js';
 import { createRecommendedEmbeddingGemmaConversationRuntime } from './recommended-embeddinggemma-conversation-service.js';
 import {
@@ -63,11 +65,21 @@ interface PiRecallInvocationContext {
   cwd: ExtensionContext['cwd'];
 }
 
+/** One cached recall service whose inference resources are always owned by the extension. */
+export interface RecallExtensionServiceRuntime {
+  service: RecallConversationService;
+  dispose(): Promise<void>;
+}
+
 /** Explicit startup seams used by tests to avoid production recall paths and worker processes. */
 export interface RecallExtensionStartupOptions {
   config?: RecallConversationConfig;
   workerSignal?: RecallDetachedWorkerSignal;
   lifecycleRuntimeFactory?: RecallLifecycleRuntimeFactory;
+  createServiceRuntime?: (
+    inferenceConfiguration: RecallInferenceConfiguration,
+    selectedEmbeddingProfileId: string | undefined,
+  ) => RecallExtensionServiceRuntime | Promise<RecallExtensionServiceRuntime>;
 }
 
 /** Applies trusted Pi tool context and project-default scope to one recall service search. */
@@ -99,13 +111,49 @@ export default async function recallExtension(
 
   const recommendedEmbeddingProfile = createRecommendedEmbeddingGemmaModelProfile();
 
-  // Lazy service resolution — recreated only when embedding selection changes.
-  let lastEmbeddingServiceKey: string | undefined;
-  let cachedService: RecallConversationService | undefined;
-  let cachedConfiguredRuntime: ConfiguredRecallInferenceRuntime | undefined;
+  // Lazy service resolution — recreated only when the effective inference configuration changes.
+  let lastInferenceConfigurationKey: string | undefined;
+  let cachedRuntime: RecallExtensionServiceRuntime | undefined;
 
   async function resolveInstallationMode() {
     return resolveRecallInstallationMode(config);
+  }
+
+  async function createServiceRuntime(
+    inferenceConfiguration: RecallInferenceConfiguration,
+    selectedEmbeddingProfileId: string | undefined,
+  ): Promise<RecallExtensionServiceRuntime> {
+    if (startupOptions.createServiceRuntime) {
+      return startupOptions.createServiceRuntime(
+        inferenceConfiguration,
+        selectedEmbeddingProfileId,
+      );
+    }
+    if (inferenceConfiguration.embedding) {
+      return createConfiguredRecallInferenceRuntime(config, {
+        onWarning(message) {
+          recallWarningHandler?.(message);
+        },
+      });
+    }
+    if (selectedEmbeddingProfileId) {
+      return createRecommendedEmbeddingGemmaConversationRuntime(config, {
+        onWarning(message) {
+          recallWarningHandler?.(message);
+        },
+      });
+    }
+    return {
+      service: createRecallConversationService(config, {
+        notifyWarning(message) {
+          recallWarningHandler?.(message);
+        },
+        ...(startupOptions.workerSignal === undefined
+          ? {}
+          : { workerSignal: startupOptions.workerSignal }),
+      }),
+      async dispose() {},
+    };
   }
 
   async function resolveService(): Promise<RecallConversationService> {
@@ -126,51 +174,29 @@ export default async function recallExtension(
       );
     }
 
-    const embeddingServiceKey = inferenceConfiguration.embedding
-      ? `configured:${inferenceConfiguration.embedding.candidateId}:${inferenceConfiguration.embedding.profileId}`
-      : (selectedEmbeddingProfile ?? 'basic');
+    const inferenceConfigurationKey = JSON.stringify({
+      inferenceConfiguration,
+      selectedEmbeddingProfile: selectedEmbeddingProfile ?? null,
+    });
 
-    if (embeddingServiceKey === lastEmbeddingServiceKey && cachedService !== undefined) {
-      return cachedService;
+    if (
+      inferenceConfigurationKey === lastInferenceConfigurationKey &&
+      cachedRuntime !== undefined
+    ) {
+      return cachedRuntime.service;
     }
 
-    const previousRuntime = cachedConfiguredRuntime;
-    cachedConfiguredRuntime = undefined;
-    cachedService = undefined;
-    lastEmbeddingServiceKey = undefined;
+    const previousRuntime = cachedRuntime;
+    cachedRuntime = undefined;
+    lastInferenceConfigurationKey = undefined;
     if (previousRuntime) {
       await previousRuntime.dispose();
     }
 
-    let newService: RecallConversationService;
-    if (inferenceConfiguration.embedding) {
-      const runtime = await createConfiguredRecallInferenceRuntime(config, {
-        onWarning(message) {
-          recallWarningHandler?.(message);
-        },
-      });
-      cachedConfiguredRuntime = runtime;
-      newService = runtime.service;
-    } else if (selectedEmbeddingProfile) {
-      newService = createRecommendedEmbeddingGemmaConversationRuntime(config, {
-        onWarning(message) {
-          recallWarningHandler?.(message);
-        },
-      }).service;
-    } else {
-      newService = createRecallConversationService(config, {
-        notifyWarning(message) {
-          recallWarningHandler?.(message);
-        },
-        ...(startupOptions.workerSignal === undefined
-          ? {}
-          : { workerSignal: startupOptions.workerSignal }),
-      });
-    }
-
-    lastEmbeddingServiceKey = embeddingServiceKey;
-    cachedService = newService;
-    return newService;
+    const newRuntime = await createServiceRuntime(inferenceConfiguration, selectedEmbeddingProfile);
+    lastInferenceConfigurationKey = inferenceConfigurationKey;
+    cachedRuntime = newRuntime;
+    return newRuntime.service;
   }
 
   registerRecallLifecycleMarkers(

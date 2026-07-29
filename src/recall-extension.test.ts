@@ -1,18 +1,29 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import test from 'node:test';
 
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 
-import { RecallSearchScope } from './enums.js';
+import { RecallInferenceBackend, RecallInferenceCapability, RecallSearchScope } from './enums.js';
 import { loadRecallConversationConfig } from './recall-conversation-config.js';
 import recallExtension, { searchPiRecall } from './recall-extension.js';
-import type {
-  RecallConversationSearchOptions,
-  RecallConversationService,
+import {
+  createRecallConversationService,
+  type RecallConversationSearchOptions,
+  type RecallConversationService,
 } from './recall-conversation-service.js';
+import { resolveRecallInferenceConfigurationPath } from './configured-recall-inference-runtime.js';
+import { resolveRecallFirstIndexSetupStatePath } from './recall-first-index-setup-command.js';
+import {
+  writeRecallInferenceConfiguration,
+  type RecallInferenceConfiguration,
+} from './recall-inference-configuration.js';
+import {
+  createRecommendedEmbeddingGemmaModelProfile,
+  createRecommendedQwenRerankingModelProfile,
+} from './recall-model-profiles.js';
 
 async function createExtensionTestConfig(t: test.TestContext) {
   const homeDirectory = await mkdtemp(join(tmpdir(), 'recall-extension-'));
@@ -23,6 +34,152 @@ async function createExtensionTestConfig(t: test.TestContext) {
     environment: {},
   });
 }
+
+function createConfiguredInferenceSelection(
+  capability: RecallInferenceCapability,
+): NonNullable<RecallInferenceConfiguration['embedding']> {
+  const embeddingProfile = createRecommendedEmbeddingGemmaModelProfile();
+  const rerankingProfile = createRecommendedQwenRerankingModelProfile();
+  const embedding = capability === RecallInferenceCapability.EMBEDDING;
+  return {
+    capability,
+    candidateId: embedding ? 'recommended-embeddinggemma-http' : 'recommended-qwen-reranker-http',
+    profileId: embedding ? embeddingProfile.profileId : rerankingProfile.profileId,
+    backend: RecallInferenceBackend.LLAMA_CPP_HTTP,
+    adapterId: embedding ? 'llama-cpp-http-embedding-v1' : 'llama-cpp-http-reranking-v1',
+    endpoint: embedding ? 'http://127.0.0.1:8080' : 'http://127.0.0.1:8081',
+    device: null,
+    artifact: null,
+    conformance: {
+      verifiedAt: '2026-01-01T00:00:00.000Z',
+      cacheIdentity: embedding ? 'embedding-cache-v1' : 'reranking-cache-v1',
+      embeddingProfileId: embedding ? embeddingProfile.profileId : null,
+      measurement: { verificationOperations: 1 },
+    },
+  };
+}
+
+async function writeRecommendedFirstIndexSetup(
+  config: Awaited<ReturnType<typeof createExtensionTestConfig>>,
+): Promise<void> {
+  const statePath = resolveRecallFirstIndexSetupStatePath(config);
+  await mkdir(dirname(statePath), { recursive: true });
+  await writeFile(
+    statePath,
+    `${JSON.stringify({
+      version: 1,
+      embedding: {
+        profileId: createRecommendedEmbeddingGemmaModelProfile().profileId,
+        backend: 'embedded',
+        adapterId: 'node-llama-cpp-embedded-v2',
+        devicePolicy: 'auto',
+        verifiedAt: '2026-01-01T00:00:00.000Z',
+      },
+      lastEstimate: null,
+    })}\n`,
+    'utf8',
+  );
+}
+
+function captureIndexCommand() {
+  let command: Parameters<ExtensionAPI['registerCommand']>[1] | undefined;
+  const registrar: Pick<ExtensionAPI, 'on' | 'registerTool' | 'registerCommand'> = {
+    on() {},
+    registerTool() {},
+    registerCommand(_name, definition) {
+      command = definition;
+    },
+  };
+  return {
+    registrar,
+    async resolveService() {
+      assert.ok(command);
+      // oxlint-disable-next-line typescript/consistent-type-assertions -- invalid arguments fail before the command reads any other context fields
+      const context = {
+        ui: { setStatus() {}, notify() {} },
+      } as unknown as Parameters<typeof command.handler>[1];
+      await assert.rejects(
+        command.handler('invalid', context),
+        /Recall index command arguments invalid/,
+      );
+    },
+  };
+}
+
+void test('Pi recall replaces its cached runtime when reranking configuration changes', async (t) => {
+  const config = await createExtensionTestConfig(t);
+  const inferenceConfigurationPath = resolveRecallInferenceConfigurationPath(config);
+  const embedding = createConfiguredInferenceSelection(RecallInferenceCapability.EMBEDDING);
+  await writeRecallInferenceConfiguration(inferenceConfigurationPath, {
+    version: 2,
+    embedding,
+    reranking: null,
+    queryPlanning: null,
+    pendingEmbeddingReplacement: null,
+  });
+  const createdConfigurations: RecallInferenceConfiguration[] = [];
+  const command = captureIndexCommand();
+
+  await recallExtension(command.registrar, {
+    config,
+    createServiceRuntime(inferenceConfiguration: RecallInferenceConfiguration) {
+      createdConfigurations.push(inferenceConfiguration);
+      return {
+        service: createRecallConversationService(config),
+        async dispose() {},
+      };
+    },
+  });
+
+  await command.resolveService();
+  await writeRecallInferenceConfiguration(inferenceConfigurationPath, {
+    version: 2,
+    embedding,
+    reranking: createConfiguredInferenceSelection(RecallInferenceCapability.RERANKING),
+    queryPlanning: null,
+    pendingEmbeddingReplacement: null,
+  });
+  await command.resolveService();
+
+  assert.equal(createdConfigurations.length, 2);
+  assert.equal(createdConfigurations[0]?.reranking, null);
+  assert.equal(createdConfigurations[1]?.reranking?.candidateId, 'recommended-qwen-reranker-http');
+});
+
+void test('Pi recall disposes the recommended runtime when configured inference replaces it', async (t) => {
+  const config = await createExtensionTestConfig(t);
+  await writeRecommendedFirstIndexSetup(config);
+  const disposedRuntimeKinds: string[] = [];
+  const createdRuntimeKinds: string[] = [];
+  const command = captureIndexCommand();
+
+  await recallExtension(command.registrar, {
+    config,
+    createServiceRuntime(inferenceConfiguration: RecallInferenceConfiguration) {
+      const runtimeKind = inferenceConfiguration.embedding ? 'configured' : 'recommended';
+      createdRuntimeKinds.push(runtimeKind);
+      return {
+        service: createRecallConversationService(config),
+        async dispose() {
+          disposedRuntimeKinds.push(runtimeKind);
+        },
+      };
+    },
+  });
+
+  await command.resolveService();
+  await writeRecallInferenceConfiguration(resolveRecallInferenceConfigurationPath(config), {
+    version: 2,
+    embedding: createConfiguredInferenceSelection(RecallInferenceCapability.EMBEDDING),
+    reranking: null,
+    queryPlanning: null,
+    pendingEmbeddingReplacement: null,
+  });
+  await command.resolveService();
+
+  assert.deepEqual(createdRuntimeKinds, ['recommended', 'configured']);
+  assert.deepEqual(disposedRuntimeKinds, ['recommended']);
+});
 
 void test('Pi session recall registers collision-free tool guidance and index command', async (t) => {
   const toolNames: string[] = [];

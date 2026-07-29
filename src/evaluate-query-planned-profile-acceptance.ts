@@ -31,6 +31,7 @@ import {
   readCleanRecallEvaluationGitRevision,
 } from './recall-evaluation-git-revision.js';
 import { verifyRequiredRecallEvaluationSemanticChecks } from './recall-evaluation-semantic-checks.js';
+import { readRecallQualityGateDecision } from './recall-quality-gate.js';
 import {
   loadPrivateQueryPlannedRecallCorpus,
   type LoadedPrivateQueryPlannedRecallCorpus,
@@ -249,31 +250,45 @@ async function loadEmbeddingGemmaCommittedCorpusEvidence(
   };
 }
 
-async function loadOctenCommittedCorpusEvidence(
+async function loadAcceptedHybridCommittedCorpusEvidence(
   path: string,
 ): Promise<CommittedCorpusLiveProfileEvidence> {
   const content = await readFile(path, 'utf8');
   const parsed: unknown = JSON.parse(content);
   if (!isUnknownRecord(parsed)) {
-    throw new Error(`Octen committed-corpus evidence invalid at ${path}: expected an object`);
+    throw new Error(
+      `Accepted hybrid committed-corpus evidence invalid at ${path}: expected an object`,
+    );
   }
   const environment = Reflect.get(parsed, 'environment');
   const result = Reflect.get(parsed, 'result');
   if (!isUnknownRecord(environment) || !isUnknownRecord(result)) {
-    throw new Error(`Octen committed-corpus evidence invalid at ${path}: missing result data`);
+    throw new Error(
+      `Accepted hybrid committed-corpus evidence invalid at ${path}: missing result data`,
+    );
   }
+  const embeddingModel = Reflect.get(environment, 'embeddingModel');
   const selection = Reflect.get(result, 'selection');
-  if (Reflect.get(environment, 'embeddingModel') !== 'octen-embed' || !isUnknownRecord(selection)) {
-    throw new Error(`Octen committed-corpus evidence identity invalid at ${path}`);
+  if (typeof embeddingModel !== 'string' || !embeddingModel.trim() || !isUnknownRecord(selection)) {
+    throw new Error(`Accepted hybrid committed-corpus evidence identity invalid at ${path}`);
   }
+  const qualityGate = await readRecallQualityGateDecision(path);
   const metrics = readRecallQualityMetrics(selection);
-  if (!metrics.qualityPassed || metrics.candidatePoolRecall !== 1 || metrics.finalRecall !== 1) {
-    throw new Error(`Octen committed-corpus evidence quality gate failed at ${path}`);
+  if (
+    !qualityGate.automatedGatePassed ||
+    !qualityGate.selectedPolicy ||
+    !metrics.qualityPassed ||
+    metrics.candidatePoolRecall !== 1 ||
+    metrics.finalRecall !== 1
+  ) {
+    throw new Error(
+      `Accepted hybrid committed-corpus evidence quality gate failed at ${path}: ${qualityGate.blockers.join('; ') || 'complete current passing evidence required'}`,
+    );
   }
   return {
     evidenceKind: 'accepted-hybrid-baseline',
     deviceClass: 'baseline',
-    profileId: 'octen-embed',
+    profileId: embeddingModel.trim(),
     evidenceSha256: createSha256(content),
     ...metrics,
   };
@@ -581,7 +596,7 @@ export async function evaluateQueryPlannedProfileAcceptance(
     plannedCase.queries.map(({ query }) => query),
   );
   const committedCorpus = await Promise.all([
-    loadOctenCommittedCorpusEvidence(
+    loadAcceptedHybridCommittedCorpusEvidence(
       join(resolvedProjectDirectory, 'docs', 'evaluation', 'recall-quality-results.json'),
     ),
     loadEmbeddingGemmaCommittedCorpusEvidence(

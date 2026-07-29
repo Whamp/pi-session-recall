@@ -1819,10 +1819,10 @@ export function createPublishableLiveQueryPlannedProfileAcceptance(
       'Live query-planned profile acceptance failed: planner fallback, reranker failure, and Pi tool semantics must pass',
     );
   }
-  const acceptedOctenBaseline = options.committedCorpus.some(
+  const acceptedHybridBaseline = options.committedCorpus.some(
     (evidence) =>
       evidence.evidenceKind === 'accepted-hybrid-baseline' &&
-      evidence.profileId === 'octen-embed' &&
+      evidence.profileId.length > 0 &&
       evidence.qualityPassed &&
       evidence.candidatePoolRecall === 1 &&
       evidence.finalRecall === 1 &&
@@ -1839,12 +1839,12 @@ export function createPublishableLiveQueryPlannedProfileAcceptance(
       .map(({ deviceClass }) => deviceClass),
   );
   if (
-    !acceptedOctenBaseline ||
+    !acceptedHybridBaseline ||
     !measuredEmbeddingGemmaDeviceClasses.has('cpu') ||
     !measuredEmbeddingGemmaDeviceClasses.has('accelerated')
   ) {
     throw new Error(
-      'Live query-planned profile acceptance failed: accepted Octen baseline plus measured CPU and accelerated EmbeddingGemma candidates are required',
+      'Live query-planned profile acceptance failed: accepted current hybrid baseline plus measured CPU and accelerated EmbeddingGemma candidates are required',
     );
   }
   assertExactLiveProfileAcceptanceMatrix(options.expectedProfileRuns, options.profileRuns);
@@ -1919,7 +1919,7 @@ export function createPublishableLiveQueryPlannedProfileAcceptance(
     aggregateQuality,
     fallbackCharacterization,
     limitations: [
-      'Approval applies only as an explicit fallback after hybrid recall misses, with the accepted Octen embedding baseline and recorded planner, reranker, adapter, grammar, score, and search-policy identities.',
+      'Approval applies only as an explicit fallback after hybrid recall misses, with the accepted committed hybrid baseline and recorded planner, reranker, adapter, grammar, score, and search-policy identities.',
       'Live candidate admissions and preservation of queries already answered by hybrid are reported as fallback characterization, not release gates.',
       'EmbeddingGemma live candidates remain separate and are not approved when their committed-corpus quality gate fails.',
       'The committed corpus is synthetic-but-session-shaped; the private corpus is bounded and does not establish broad superiority.',

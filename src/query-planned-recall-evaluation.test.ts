@@ -892,7 +892,7 @@ void test('fixed private plans prove new source admission through deterministic 
       {
         evidenceKind: 'accepted-hybrid-baseline',
         deviceClass: 'baseline',
-        profileId: 'octen-embed',
+        profileId: 'deterministic-fixture-v1',
         evidenceSha256: '0'.repeat(64),
         qualityPassed: true,
         candidatePoolRecall: 1,

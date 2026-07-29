@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { createWriteStream } from 'node:fs';
 import { access, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 
@@ -188,19 +188,67 @@ async function writeArtifactReceiptAtomically(
   await rename(temporaryPath, receiptPath);
 }
 
+function validateRecallModelArtifactPathSegment(name: string, value: string): void {
+  if (
+    isAbsolute(value) ||
+    value.includes('/') ||
+    value.includes('\\') ||
+    value === '.' ||
+    value === '..'
+  ) {
+    throw new Error(
+      `Recall model artifact cache path invalid: ${name} must be one relative path segment`,
+    );
+  }
+}
+
+function resolveContainedRecallModelCachePath(
+  cacheRoot: string,
+  ...segments: readonly string[]
+): string {
+  const containedPath = resolve(cacheRoot, ...segments);
+  const relativePath = relative(cacheRoot, containedPath);
+  if (
+    relativePath.length === 0 ||
+    relativePath === '..' ||
+    relativePath.startsWith(`..${sep}`) ||
+    isAbsolute(relativePath)
+  ) {
+    throw new Error('Recall model artifact cache path invalid: path escapes the cache root');
+  }
+  return containedPath;
+}
+
 /** Creates explicit model artifact operations without downloading until approval is supplied. */
 export function createRecallModelArtifactCache(
   options: RecallModelArtifactCacheOptions,
 ): RecallModelArtifactCache {
-  const artifactPath = join(
-    options.cacheDirectory,
+  validateRecallModelArtifactPathSegment('profileId', options.profile.profileId);
+  validateRecallModelArtifactPathSegment('revision', options.profile.source.revision);
+  validateRecallModelArtifactPathSegment('artifact', options.profile.source.artifact);
+
+  const cacheRoot = resolve(options.cacheDirectory);
+  const profileDirectory = resolveContainedRecallModelCachePath(
+    cacheRoot,
+    options.profile.profileId,
+  );
+  const artifactDirectory = resolveContainedRecallModelCachePath(
+    cacheRoot,
+    options.profile.profileId,
+    options.profile.source.revision,
+  );
+  const artifactPath = resolveContainedRecallModelCachePath(
+    cacheRoot,
     options.profile.profileId,
     options.profile.source.revision,
     options.profile.source.artifact,
   );
-  const artifactDirectory = dirname(artifactPath);
-  const profileDirectory = join(options.cacheDirectory, options.profile.profileId);
-  const receiptPath = `${artifactPath}.receipt.json`;
+  const receiptPath = resolveContainedRecallModelCachePath(
+    cacheRoot,
+    options.profile.profileId,
+    options.profile.source.revision,
+    `${options.profile.source.artifact}.receipt.json`,
+  );
   const expectedReceipt = createExpectedArtifactReceipt(options.profile);
   const transport = options.transport ?? createRecallHttpsModelArtifactTransport();
 

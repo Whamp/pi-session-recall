@@ -209,3 +209,32 @@ void test('rejected model download remains partial and never becomes available',
   assert.equal(status.partialPaths.length, 1);
   await assert.rejects(() => access(status.artifactPath), { code: 'ENOENT' });
 });
+
+void test('model artifact cache rejects path traversal segments before filesystem access', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-model-containment-'));
+  t.after(async () => {
+    const { rm } = await import('node:fs/promises');
+    await rm(root, { recursive: true, force: true });
+  });
+  const cacheDirectory = join(root, 'cache');
+  const fixtureArtifact = createFixtureGguf();
+  const profile = createFixtureProfile(fixtureArtifact);
+  const invalidProfiles = [
+    { ...profile, profileId: '../victim' },
+    { ...profile, profileId: '/absolute' },
+    { ...profile, profileId: '.' },
+    { ...profile, source: { ...profile.source, revision: '..' } },
+    { ...profile, source: { ...profile.source, revision: '/absolute' } },
+    { ...profile, source: { ...profile.source, artifact: '..' } },
+    { ...profile, source: { ...profile.source, artifact: 'nested/model.gguf' } },
+    { ...profile, source: { ...profile.source, artifact: String.raw`nested\model.gguf` } },
+  ];
+
+  for (const invalidProfile of invalidProfiles) {
+    assert.throws(
+      () => createRecallModelArtifactCache({ cacheDirectory, profile: invalidProfile }),
+      /Recall model artifact cache path invalid/u,
+    );
+  }
+  await assert.rejects(() => access(cacheDirectory), { code: 'ENOENT' });
+});

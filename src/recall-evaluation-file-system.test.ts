@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, rm, symlink } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -9,6 +9,7 @@ import {
   createPrivateRecallEvaluationConfig,
   isPathInsideRecallEvaluationArea,
   writeAtomicRecallEvaluationFile,
+  type RecallEvaluationFileSystem,
 } from './recall-evaluation-file-system.js';
 
 void test('recall evaluation paths stay bounded and publishable files replace atomically', async (t) => {
@@ -23,6 +24,169 @@ void test('recall evaluation paths stay bounded and publishable files replace at
   await writeAtomicRecallEvaluationFile(evidencePath, 'first');
   await writeAtomicRecallEvaluationFile(evidencePath, 'second');
   assert.equal(await readFile(evidencePath, 'utf8'), 'second');
+  assert.deepEqual(
+    (await readdir(join(directory, 'nested'))).filter((name) => name.endsWith('.tmp')),
+    [],
+  );
+});
+
+void test('durable evaluation replacement syncs and closes the temp before rename and syncs the destination directory', async () => {
+  const operations: string[] = [];
+  const temporaryPathPattern = /evidence\.json\.\d+\.[0-9a-f-]+\.tmp$/u;
+  const fileSystem: RecallEvaluationFileSystem = {
+    async mkdir() {
+      return undefined;
+    },
+    async open(path, flags) {
+      const label = flags === 'wx' ? 'temp' : 'directory';
+      if (label === 'temp') {
+        assert.match(path, temporaryPathPattern);
+        operations.push('create temp');
+      } else {
+        operations.push('open directory');
+      }
+      return {
+        async writeFile(content) {
+          assert.equal(content, 'evidence');
+          operations.push('write temp');
+        },
+        async sync() {
+          operations.push(`sync ${label}`);
+        },
+        async close() {
+          operations.push(`close ${label}`);
+        },
+      };
+    },
+    async rename(from, to) {
+      assert.match(from, temporaryPathPattern);
+      assert.equal(to, '/publication/evidence.json');
+      operations.push('replace target');
+    },
+    async rm() {
+      operations.push('remove temp');
+    },
+    async readdir() {
+      return [];
+    },
+  };
+
+  await writeAtomicRecallEvaluationFile('/publication/evidence.json', 'evidence', fileSystem);
+
+  assert.deepEqual(operations, [
+    'create temp',
+    'write temp',
+    'sync temp',
+    'close temp',
+    'replace target',
+    'open directory',
+    'sync directory',
+    'close directory',
+  ]);
+});
+
+void test('durable evaluation replacement persists each newly created parent entry', async () => {
+  const syncedDirectories: string[] = [];
+  const fileSystem: RecallEvaluationFileSystem = {
+    async mkdir() {
+      return '/publication/new-parent';
+    },
+    async open(path, flags) {
+      const directoryPath = flags === 'r' ? path : null;
+      return {
+        async writeFile() {},
+        async sync() {
+          if (directoryPath) {
+            syncedDirectories.push(directoryPath);
+          }
+        },
+        async close() {},
+      };
+    },
+    async rename() {},
+    async rm() {},
+    async readdir() {
+      return [];
+    },
+  };
+
+  await writeAtomicRecallEvaluationFile(
+    '/publication/new-parent/nested/evidence.json',
+    'evidence',
+    fileSystem,
+  );
+
+  assert.deepEqual(syncedDirectories, [
+    '/publication',
+    '/publication/new-parent',
+    '/publication/new-parent/nested',
+    '/publication/new-parent/nested',
+  ]);
+});
+
+void test('durable evaluation replacement cannot resolve successfully before final directory sync', async () => {
+  const finalSyncFailure = new Error('directory sync failed');
+  const fileSystem: RecallEvaluationFileSystem = {
+    async mkdir() {
+      return undefined;
+    },
+    async open(path, flags) {
+      assert.ok(path);
+      return {
+        async writeFile() {},
+        async sync() {
+          if (flags === 'r') {
+            throw finalSyncFailure;
+          }
+        },
+        async close() {},
+      };
+    },
+    async rename() {},
+    async rm() {},
+    async readdir() {
+      return [];
+    },
+  };
+
+  await assert.rejects(
+    () => writeAtomicRecallEvaluationFile('/publication/evidence.json', 'evidence', fileSystem),
+    (error: unknown) => error === finalSyncFailure,
+  );
+});
+
+void test('durable evaluation replacement preserves the original failure when cleanup also fails', async () => {
+  const originalFailure = new Error('replace failed');
+  let tempClosed = false;
+  const fileSystem: RecallEvaluationFileSystem = {
+    async mkdir() {
+      return undefined;
+    },
+    async open() {
+      return {
+        async writeFile() {},
+        async sync() {},
+        async close() {
+          tempClosed = true;
+        },
+      };
+    },
+    async rename() {
+      throw originalFailure;
+    },
+    async rm() {
+      throw new Error('cleanup failed');
+    },
+    async readdir() {
+      return [];
+    },
+  };
+
+  await assert.rejects(
+    () => writeAtomicRecallEvaluationFile('/publication/evidence.json', 'evidence', fileSystem),
+    (error: unknown) => error === originalFailure,
+  );
+  assert.equal(tempClosed, true);
 });
 
 void test('private recall evaluation config replaces every production mutable and selector path', async (t) => {

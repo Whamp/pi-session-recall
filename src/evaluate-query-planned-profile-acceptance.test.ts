@@ -31,6 +31,9 @@ void test('live query-planned profile acceptance CLI documents the complete meas
     stdout,
     /exact commit, corpus, profile, backend, device, and adapter configuration/u,
   );
+  assert.match(stdout, /Recognized interrupted-writer temps/u);
+  assert.match(stdout, /Unrelated untracked work still fails/u);
+  assert.match(stdout, /fully clean worktree, including existing output\s+files/u);
   assert.match(stdout, /reports profile and case progress/u);
   assert.match(stdout, /never publishes private query, plan, or source text/u);
 });

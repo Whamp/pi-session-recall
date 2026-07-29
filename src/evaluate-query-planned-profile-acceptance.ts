@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -21,8 +22,15 @@ import {
   type LiveProfileEvaluationCheckpointIdentity,
 } from './live-query-planned-profile-checkpoints.js';
 import { loadRecallConversationConfig } from './recall-conversation-config.js';
-import { writeAtomicRecallEvaluationFile } from './recall-evaluation-file-system.js';
-import { readCleanRecallEvaluationGitRevision } from './recall-evaluation-git-revision.js';
+import {
+  removeStaleRecallEvaluationTemporaryFiles,
+  writeAtomicRecallEvaluationFile,
+} from './recall-evaluation-file-system.js';
+import {
+  assertRecallEvaluationGitRevisionCurrent,
+  readCleanRecallEvaluationGitRevision,
+} from './recall-evaluation-git-revision.js';
+import { verifyRequiredRecallEvaluationSemanticChecks } from './recall-evaluation-semantic-checks.js';
 import {
   loadPrivateQueryPlannedRecallCorpus,
   type LoadedPrivateQueryPlannedRecallCorpus,
@@ -46,6 +54,8 @@ import {
   createRecommendedQwenRerankingModelProfile,
 } from './recall-model-profiles.js';
 
+const REQUIRE = createRequire(import.meta.url);
+
 const LIVE_PROFILE_ACCEPTANCE_HELP = `Usage: npm run evaluate:query-planned-profiles -- \\
   --accelerated-device <metal|cuda|vulkan> \\
   --http-planner-url <llama.cpp-v1-base-url> \\
@@ -66,7 +76,10 @@ Publishes aggregate evidence to:
 
 Completed profiles are checkpointed under the private .recall-data evaluation area. A rerun resumes
 only checkpoints with the exact commit, corpus, profile, backend, device, and adapter configuration.
-The command reports profile and case progress to stderr.
+Recognized interrupted-writer temps for the two exact outputs are recovered before the clean-worktree
+gate. Unrelated untracked work still fails. HEAD and the fully clean worktree, including existing output
+files, are revalidated immediately before publication. The command reports profile and case progress
+to stderr.
 
 The command never downloads models, never scans production sessions, and never publishes private query, plan, or source text. Start exact model-bound llama.cpp HTTP planner and reranker servers before running it.
 `;
@@ -495,31 +508,12 @@ function createHttpProfileEvaluation(
   };
 }
 
-function verifyFocusedFailureAndToolSemantics(projectDirectory: string): void {
-  execFileSync(
-    process.execPath,
-    [
-      '--import',
-      'tsx',
-      '--test',
-      '--test-name-pattern',
-      'query-planned recall routes|recall service fails clearly when Qwen reranking is unavailable',
-      'src/recall-conversation-service.test.ts',
-    ],
-    { cwd: projectDirectory, stdio: 'inherit' },
-  );
-  execFileSync(
-    process.execPath,
-    [
-      '--import',
-      'tsx',
-      '--test',
-      '--test-name-pattern',
-      'Pi session recall registers|Pi recall tool details expose query-plan',
-      'src/recall-extension.test.ts',
-    ],
-    { cwd: projectDirectory, stdio: 'inherit' },
-  );
+function formatRecallEvaluationPublication(path: string, content: string): string {
+  return execFileSync(REQUIRE.resolve('oxfmt/bin/oxfmt'), ['--stdin-filepath', path], {
+    encoding: 'utf8',
+    input: content,
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
 }
 
 function collectPrivateValuesForAudit(
@@ -562,6 +556,19 @@ export async function evaluateQueryPlannedProfileAcceptance(
   projectDirectory: string = process.cwd(),
 ): Promise<PublishableLiveQueryPlannedProfileAcceptance> {
   const resolvedProjectDirectory = resolve(projectDirectory);
+  const jsonPath = join(
+    resolvedProjectDirectory,
+    'docs',
+    'evaluation',
+    'query-planned-profile-acceptance.json',
+  );
+  const reportPath = join(
+    resolvedProjectDirectory,
+    'docs',
+    'evaluation',
+    'query-planned-profile-acceptance.md',
+  );
+  await removeStaleRecallEvaluationTemporaryFiles([jsonPath, reportPath]);
   const recordedAgainstCommit = readCleanRecallEvaluationGitRevision(resolvedProjectDirectory);
   const privateDirectory = join(resolvedProjectDirectory, '.recall-data', 'query-planned-recall');
   const corpus = await loadPrivateQueryPlannedRecallCorpus(join(privateDirectory, 'manifest.json'));
@@ -593,7 +600,7 @@ export async function evaluateQueryPlannedProfileAcceptance(
     ),
   ]);
 
-  verifyFocusedFailureAndToolSemantics(resolvedProjectDirectory);
+  const failureSemantics = verifyRequiredRecallEvaluationSemanticChecks(resolvedProjectDirectory);
   const reportProgress = (message: string): void => {
     process.stderr.write(`[${new Date().toISOString()}] ${message}\n`);
   };
@@ -642,36 +649,19 @@ export async function evaluateQueryPlannedProfileAcceptance(
     profileRuns,
     requiredSuccessfulBaselineControlCount: successfulBaselineControlCount,
     privacyAudit,
-    failureSemantics: {
-      plannerFallbackPublicServicePassed: true,
-      rerankerFailurePublicServicePassed: true,
-      piToolContractPassed: true,
-    },
+    failureSemantics,
   });
-  const jsonPath = join(
-    resolvedProjectDirectory,
-    'docs',
-    'evaluation',
-    'query-planned-profile-acceptance.json',
+  const jsonContent = formatRecallEvaluationPublication(
+    jsonPath,
+    `${JSON.stringify(evidence, null, 2)}\n`,
   );
-  const reportPath = join(
-    resolvedProjectDirectory,
-    'docs',
-    'evaluation',
-    'query-planned-profile-acceptance.md',
+  const reportContent = formatRecallEvaluationPublication(
+    reportPath,
+    formatPublishableLiveQueryPlannedProfileAcceptanceReport(evidence),
   );
-  await Promise.all([
-    writeAtomicRecallEvaluationFile(jsonPath, `${JSON.stringify(evidence, null, 2)}\n`),
-    writeAtomicRecallEvaluationFile(
-      reportPath,
-      formatPublishableLiveQueryPlannedProfileAcceptanceReport(evidence),
-    ),
-  ]);
-  execFileSync(
-    join(resolvedProjectDirectory, 'node_modules', '.bin', 'oxfmt'),
-    [jsonPath, reportPath],
-    { cwd: resolvedProjectDirectory, stdio: 'pipe' },
-  );
+  assertRecallEvaluationGitRevisionCurrent(resolvedProjectDirectory, recordedAgainstCommit);
+  await writeAtomicRecallEvaluationFile(jsonPath, jsonContent);
+  await writeAtomicRecallEvaluationFile(reportPath, reportContent);
   return evidence;
 }
 

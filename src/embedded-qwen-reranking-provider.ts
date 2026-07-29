@@ -300,15 +300,48 @@ export function createEmbeddedQwenRerankingProvider(
     probedComputeBackends: [],
   });
 
+  async function disposeQwenRerankingResourceLayers(options: {
+    contextOperations: readonly Promise<void>[];
+    contexts: readonly QwenLlamaRankingContext[];
+    model: QwenLlamaModel | undefined;
+    releaseRuntime: (() => Promise<void>) | undefined;
+  }): Promise<void> {
+    const errors: unknown[] = [];
+    const operationResults = await Promise.allSettled(options.contextOperations);
+    for (const result of operationResults) {
+      if (result.status === 'rejected') {
+        const reason: unknown = result.reason;
+        errors.push(reason);
+      }
+    }
+    const contextResults = await Promise.allSettled(
+      options.contexts.map((context) => context.dispose()),
+    );
+    for (const result of contextResults) {
+      if (result.status === 'rejected') {
+        const reason: unknown = result.reason;
+        errors.push(reason);
+      }
+    }
+    try {
+      await options.model?.dispose();
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      await options.releaseRuntime?.();
+    } catch (error) {
+      errors.push(error);
+    }
+    if (errors.length > 0) {
+      throw new AggregateError(errors, 'Recall embedded Qwen reranking resource disposal failed');
+    }
+  }
+
   async function disposeQwenRerankingResources(
     loaded: LoadedQwenRerankingResources,
   ): Promise<void> {
-    await Promise.all(loaded.contextOperations);
-    for (const context of loaded.contexts) {
-      await context.dispose();
-    }
-    await loaded.model.dispose();
-    await loaded.releaseRuntime();
+    await disposeQwenRerankingResourceLayers(loaded);
   }
 
   function clearQwenRerankingIdleDisposal(): void {
@@ -355,7 +388,7 @@ export function createEmbeddedQwenRerankingProvider(
     let releaseRuntime: (() => Promise<void>) | undefined;
     let model: QwenLlamaModel | undefined;
     const contexts: QwenLlamaRankingContext[] = [];
-    try {
+    const initializeResources = async (): Promise<LoadedQwenRerankingResources> => {
       const acquired = await acquireEmbeddedLlamaRuntimeForBackend({
         capabilityLabel: 'Qwen reranker',
         computeBackend,
@@ -388,14 +421,27 @@ export function createEmbeddedQwenRerankingProvider(
         contextOperations: contexts.map(() => Promise.resolve()),
         nextContextIndex: 0,
       };
-    } catch (error) {
-      for (const context of contexts) {
-        await context.dispose();
-      }
-      await model?.dispose();
-      await releaseRuntime?.();
-      throw error;
-    }
+    };
+    return initializeResources().then(
+      (loaded) => loaded,
+      async (error: unknown) => {
+        const [disposalResult] = await Promise.allSettled([
+          disposeQwenRerankingResourceLayers({
+            contextOperations: [],
+            contexts,
+            model,
+            releaseRuntime,
+          }),
+        ]);
+        if (disposalResult?.status === 'rejected') {
+          throw new AggregateError(
+            [error, disposalResult.reason],
+            'Recall embedded Qwen reranking initialization cleanup failed',
+          );
+        }
+        throw error;
+      },
+    );
   }
 
   async function loadQwenRerankingResources(): Promise<LoadedQwenRerankingResources> {
@@ -416,6 +462,7 @@ export function createEmbeddedQwenRerankingProvider(
         verifyModelArtifact,
         loadNodeLlamaCpp,
         initializeForBackend: loadQwenRerankingResourcesForBackend,
+        disposeResources: disposeQwenRerankingResources,
         writeFallbackWarning: (fallbackFromComputeBackend, error) => {
           writeWarning(
             `Recall embedded Qwen reranker accelerator initialization failed for ${fallbackFromComputeBackend}; retrying the same profile ${profile.profileId} on CPU: ${readQwenRerankingErrorMessage(error)}`,

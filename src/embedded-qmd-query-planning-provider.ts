@@ -289,11 +289,33 @@ export function createEmbeddedQmdQueryPlanningProvider(
     probedComputeBackends: [],
   });
 
+  async function disposeQmdQueryPlanningResourceLayers(options: {
+    model: QmdQueryPlanningModel | undefined;
+    releaseRuntime: (() => Promise<void>) | undefined;
+  }): Promise<void> {
+    const errors: unknown[] = [];
+    try {
+      await options.model?.dispose();
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      await options.releaseRuntime?.();
+    } catch (error) {
+      errors.push(error);
+    }
+    if (errors.length > 0) {
+      throw new AggregateError(
+        errors,
+        'Recall embedded QMD query planning resource disposal failed',
+      );
+    }
+  }
+
   async function disposeQmdQueryPlanningResources(
     loaded: LoadedQmdQueryPlanningResources,
   ): Promise<void> {
-    await loaded.model.dispose();
-    await loaded.releaseRuntime();
+    await disposeQmdQueryPlanningResourceLayers(loaded);
   }
 
   function clearQmdQueryPlanningIdleDisposal(): void {
@@ -339,7 +361,7 @@ export function createEmbeddedQmdQueryPlanningProvider(
   ): Promise<LoadedQmdQueryPlanningResources> {
     let releaseRuntime: (() => Promise<void>) | undefined;
     let model: QmdQueryPlanningModel | undefined;
-    try {
+    const initializeResources = async (): Promise<LoadedQmdQueryPlanningResources> => {
       const acquired = await acquireEmbeddedLlamaRuntimeForBackend({
         capabilityLabel: 'QMD query planner',
         computeBackend,
@@ -358,11 +380,22 @@ export function createEmbeddedQmdQueryPlanningProvider(
       });
       const grammar = await runtime.createGrammar({ grammar: profile.grammar });
       return { nodeLlamaCpp, runtime, releaseRuntime, model, grammar };
-    } catch (error) {
-      await model?.dispose();
-      await releaseRuntime?.();
-      throw error;
-    }
+    };
+    return initializeResources().then(
+      (loaded) => loaded,
+      async (error: unknown) => {
+        const [disposalResult] = await Promise.allSettled([
+          disposeQmdQueryPlanningResourceLayers({ model, releaseRuntime }),
+        ]);
+        if (disposalResult?.status === 'rejected') {
+          throw new AggregateError(
+            [error, disposalResult.reason],
+            'Recall embedded QMD query planning initialization cleanup failed',
+          );
+        }
+        throw error;
+      },
+    );
   }
 
   async function loadQmdQueryPlanningResources(): Promise<LoadedQmdQueryPlanningResources> {
@@ -383,6 +416,7 @@ export function createEmbeddedQmdQueryPlanningProvider(
         verifyModelArtifact,
         loadNodeLlamaCpp,
         initializeForBackend: loadQmdQueryPlanningResourcesForBackend,
+        disposeResources: disposeQmdQueryPlanningResources,
         writeFallbackWarning: (fallbackFromComputeBackend, error) => {
           writeWarning(
             `Recall embedded QMD query planner accelerator initialization failed for ${fallbackFromComputeBackend}; retrying the same profile ${profile.profileId} on CPU: ${readQmdQueryPlanningErrorMessage(error)}`,
@@ -421,6 +455,9 @@ export function createEmbeddedQmdQueryPlanningProvider(
       activeOperationCount += 1;
       let loaded: LoadedQmdQueryPlanningResources | undefined;
       let context: QmdQueryPlanningContext | undefined;
+      let operationFailed = false;
+      let operationError: unknown;
+      let plannedQuery: ReturnType<typeof parseQmdQueryPlanningOutput> | undefined;
       try {
         throwIfQmdQueryPlanningAborted(signal);
         loaded = await loadQmdQueryPlanningResources();
@@ -450,14 +487,40 @@ export function createEmbeddedQmdQueryPlanningProvider(
           requestTimeoutMilliseconds,
           signal,
         );
-        return parseQmdQueryPlanningOutput(output, profile);
-      } finally {
+        plannedQuery = parseQmdQueryPlanningOutput(output, profile);
+      } catch (error) {
+        operationFailed = true;
+        operationError = error;
+      }
+      let contextDisposalFailed = false;
+      let contextDisposalError: unknown;
+      try {
         await context?.dispose();
+      } catch (error) {
+        contextDisposalFailed = true;
+        contextDisposalError = error;
+      } finally {
         activeOperationCount -= 1;
         if (loaded) {
           scheduleQmdQueryPlanningIdleDisposal(loaded);
         }
       }
+      if (operationFailed && contextDisposalFailed) {
+        throw new AggregateError(
+          [operationError, contextDisposalError],
+          'Recall embedded QMD query planning operation and context disposal failed',
+        );
+      }
+      if (operationFailed) {
+        throw operationError;
+      }
+      if (contextDisposalFailed) {
+        throw contextDisposalError;
+      }
+      if (!plannedQuery) {
+        throw new Error('Recall embedded QMD query planning operation produced no query plan');
+      }
+      return plannedQuery;
     },
     async dispose() {
       if (disposed) {

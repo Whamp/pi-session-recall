@@ -13,6 +13,30 @@ import {
 
 const DEFAULT_ROLLBACK_RETENTION_MILLISECONDS = 7 * 24 * 60 * 60_000;
 
+/** Durable paths and clock used to select expired validated generations for collection. */
+export interface PrepareRetiredRecallGenerationCollectionTransitionOptions {
+  activeGenerationPointerPath: string;
+  generationRegistryPath: string;
+  nowEpochMilliseconds?: () => number;
+}
+
+/** Generation IDs durably marked retired before their directories may be deleted. */
+export interface PrepareRetiredRecallGenerationCollectionTransitionResult {
+  candidateGenerationIds: string[];
+}
+
+/** Durable inputs for removing successfully deleted retired entries from the registry. */
+export interface CompleteRetiredRecallGenerationCollectionTransitionOptions {
+  activeGenerationPointerPath: string;
+  generationRegistryPath: string;
+  deletedGenerationIds: readonly string[];
+}
+
+/** Whether retained rollback markers may be deleted after registry completion. */
+export interface CompleteRetiredRecallGenerationCollectionTransitionResult {
+  removeRetainedMarkers: boolean;
+}
+
 /** Filesystem and marker operations retained outside the durable rollback transition. */
 export interface RollbackRecallGenerationTransitionOptions {
   activeGenerationPointerPath: string;
@@ -42,6 +66,113 @@ export interface CompleteRecallGenerationReplayTransitionOptions {
   backlogSummaryPath: string;
   nowEpochMilliseconds?: () => number;
   proveReplayWorkComplete(): Promise<boolean>;
+}
+
+function isRecallGenerationCollectible(
+  entry: RecallGenerationRegistryEntry,
+  nowEpochMilliseconds: number,
+): boolean {
+  return (
+    (entry.state === RecallGenerationCutoverState.ROLLBACK ||
+      entry.state === RecallGenerationCutoverState.RETIRED) &&
+    entry.validatedAtEpochMilliseconds !== undefined &&
+    entry.validatedAtEpochMilliseconds !== null &&
+    entry.retireAfterEpochMilliseconds !== undefined &&
+    entry.retireAfterEpochMilliseconds !== null &&
+    entry.retireAfterEpochMilliseconds <= nowEpochMilliseconds
+  );
+}
+
+/** Marks validated expired rollback material retired before directory deletion begins. */
+export async function prepareRetiredRecallGenerationCollectionTransition(
+  options: PrepareRetiredRecallGenerationCollectionTransitionOptions,
+): Promise<PrepareRetiredRecallGenerationCollectionTransitionResult> {
+  const [pointer, registry] = await Promise.all([
+    readRecallActiveGenerationPointer(options.activeGenerationPointerPath),
+    readRecallGenerationRegistry(options.generationRegistryPath),
+  ]);
+  if (!pointer || !registry) {
+    throw new Error('Recall generation collection requires initialized pointer and registry');
+  }
+  if (
+    registry.activeGenerationId !== pointer.activeGenerationId ||
+    registry.activePointerChecksum !== pointer.checksum
+  ) {
+    throw new Error('Recall generation collection found pointer and registry disagreement');
+  }
+  const activeEntry = registry.generations.find(
+    ({ generationId }) => generationId === pointer.activeGenerationId,
+  );
+  if (
+    activeEntry?.state !== RecallGenerationCutoverState.ACTIVE ||
+    registry.buildingGenerationId !== null
+  ) {
+    return { candidateGenerationIds: [] };
+  }
+  const now = options.nowEpochMilliseconds?.() ?? Date.now();
+  const candidateGenerationIds = registry.generations
+    .filter(
+      (entry) =>
+        entry.generationId !== pointer.activeGenerationId &&
+        isRecallGenerationCollectible(entry, now),
+    )
+    .map(({ generationId }) => generationId)
+    .toSorted();
+  if (candidateGenerationIds.length === 0) {
+    return { candidateGenerationIds };
+  }
+  const candidateIds = new Set(candidateGenerationIds);
+  await writeRecallGenerationRegistry(options.generationRegistryPath, {
+    ...registry,
+    rollbackGenerationId:
+      registry.rollbackGenerationId !== null && candidateIds.has(registry.rollbackGenerationId)
+        ? null
+        : registry.rollbackGenerationId,
+    generations: registry.generations.map((entry) =>
+      candidateIds.has(entry.generationId)
+        ? { ...entry, state: RecallGenerationCutoverState.RETIRED }
+        : entry,
+    ),
+  });
+  return { candidateGenerationIds };
+}
+
+/** Removes only successfully deleted retired entries and reports marker-retention ownership. */
+export async function completeRetiredRecallGenerationCollectionTransition(
+  options: CompleteRetiredRecallGenerationCollectionTransitionOptions,
+): Promise<CompleteRetiredRecallGenerationCollectionTransitionResult> {
+  if (options.deletedGenerationIds.length === 0) {
+    return { removeRetainedMarkers: false };
+  }
+  const [pointer, registry] = await Promise.all([
+    readRecallActiveGenerationPointer(options.activeGenerationPointerPath),
+    readRecallGenerationRegistry(options.generationRegistryPath),
+  ]);
+  if (!pointer || !registry) {
+    throw new Error('Recall generation collection completion requires pointer and registry');
+  }
+  if (
+    registry.activeGenerationId !== pointer.activeGenerationId ||
+    registry.activePointerChecksum !== pointer.checksum
+  ) {
+    throw new Error(
+      'Recall generation collection completion found pointer and registry disagreement',
+    );
+  }
+  const deletedIds = new Set(options.deletedGenerationIds);
+  for (const generationId of deletedIds) {
+    const entry = registry.generations.find((candidate) => candidate.generationId === generationId);
+    if (!entry || entry.state !== RecallGenerationCutoverState.RETIRED) {
+      throw new Error(
+        `Recall generation collection completion entry is not retired: ${generationId}`,
+      );
+    }
+  }
+  await writeRecallGenerationRegistry(options.generationRegistryPath, {
+    ...registry,
+    generations: registry.generations.filter(({ generationId }) => !deletedIds.has(generationId)),
+  });
+  return { removeRetainedMarkers: registry.rollbackGenerationId === null };
 }
 
 /**

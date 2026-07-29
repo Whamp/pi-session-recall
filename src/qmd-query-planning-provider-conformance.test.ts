@@ -105,13 +105,23 @@ function createCustomQueryPlanningProvider(
 void test('QMD HTTP query planner passes shared bounded-plan conformance with recall intent', async (t) => {
   const requests: Array<ReturnType<typeof Value.Parse<typeof QUERY_PLANNING_REQUEST_SCHEMA>>> = [];
   const profile = createRecommendedQmdQueryPlanningModelProfile();
-  const generatedOutput = [
-    'lex: recovery session evidence',
-    'lex: retained Finch recovery records',
-    'vec: how Copper Finch is retained for recalled conversation evidence',
-    'vec: where Finch recovery evidence connects to its original Pi session',
-    'hyde: Copper Finch records connect recalled recovery evidence to its Pi session location.',
-  ].join('\n');
+  const generatedPlan: RecallPlannedRetrievalQuery[] = [
+    { type: 'lex', query: 'recovery session evidence' },
+    { type: 'lex', query: 'retained Finch recovery records' },
+    {
+      type: 'vec',
+      query: 'how Copper Finch is retained for recalled conversation evidence',
+    },
+    {
+      type: 'vec',
+      query: 'where Finch recovery evidence connects to its original Pi session',
+    },
+    {
+      type: 'hyde',
+      query: 'Copper Finch records connect recalled recovery evidence to its Pi session location.',
+    },
+  ];
+  const generatedOutput = generatedPlan.map(({ type, query }) => `${type}: ${query}`).join('\n');
   const server = createServer((request, response) => {
     let body = '';
     request.setEncoding('utf8');
@@ -156,23 +166,7 @@ void test('QMD HTTP query planner passes shared bounded-plan conformance with re
     query: profile.conformanceCanary.query,
     recallIntent: profile.conformanceCanary.recallIntent,
     protectedTerms: profile.conformanceCanary.protectedTerms,
-    expectedPlan: [
-      { type: 'lex', query: 'recovery session evidence' },
-      { type: 'lex', query: 'retained Finch recovery records' },
-      {
-        type: 'vec',
-        query: 'how Copper Finch is retained for recalled conversation evidence',
-      },
-      {
-        type: 'vec',
-        query: 'where Finch recovery evidence connects to its original Pi session',
-      },
-      {
-        type: 'hyde',
-        query:
-          'Copper Finch records connect recalled recovery evidence to its Pi session location.',
-      },
-    ],
+    expectedPlan: generatedPlan,
     monotonicMilliseconds() {
       const value = clockValues.shift();
       assert.notEqual(value, undefined);

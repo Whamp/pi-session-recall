@@ -19,15 +19,16 @@ export function formatQmdQueryPlanningPrompt(query: string, recallIntent?: strin
   return `/no_think Expand this search query: ${normalizedQuery}\nQuery intent: ${normalizedRecallIntent}`;
 }
 
-/** Validates ordered QMD plan bounds using at most 512 Unicode code points after trimming. */
+/** Validates unique lex→vec→optional-hyde plans with 512 Unicode code points per query. */
 export function validateQmdQueryPlanningPlan(
   plan: readonly RecallPlannedRetrievalQuery[],
   profile: RecallQueryPlanningModelProfile,
 ): RecallPlannedRetrievalQuery[] {
   const normalizedPlan: RecallPlannedRetrievalQuery[] = [];
-  let seenLexicalQuery = false;
-  let seenVectorQuery = false;
-  let seenHypotheticalAnswerQuery = false;
+  let currentPhase: RecallPlannedRetrievalQuery['type'] = 'lex';
+  let lexQueryCount = 0;
+  let vecQueryCount = 0;
+  let hydeQueryCount = 0;
   for (const [index, plannedQuery] of plan.entries()) {
     if (
       plannedQuery.type !== 'lex' &&
@@ -54,38 +55,37 @@ export function validateQmdQueryPlanningPlan(
         `Recall query planning output grammar invalid at entry ${index + 1}: expected at most ${MAXIMUM_QMD_QUERY_CONTENT_CODE_POINTS} Unicode code points`,
       );
     }
-    if (seenHypotheticalAnswerQuery) {
+    if (currentPhase === 'hyde') {
       throw new Error(
         `Recall query planning output ordering invalid at entry ${index + 1}: no query may follow a hypothetical-answer query`,
       );
     }
     if (plannedQuery.type === 'lex') {
-      if (seenVectorQuery) {
+      if (currentPhase !== 'lex') {
         throw new Error(
           `Recall query planning output ordering invalid at entry ${index + 1}: lexical queries must precede vector queries`,
         );
       }
-      seenLexicalQuery = true;
+      lexQueryCount += 1;
     } else if (plannedQuery.type === 'vec') {
-      if (!seenLexicalQuery) {
+      if (lexQueryCount === 0) {
         throw new Error(
           `Recall query planning output ordering invalid at entry ${index + 1}: vector queries must follow at least one lexical query`,
         );
       }
-      seenVectorQuery = true;
+      currentPhase = 'vec';
+      vecQueryCount += 1;
     } else {
-      if (!seenVectorQuery) {
+      if (currentPhase !== 'vec') {
         throw new Error(
           `Recall query planning output ordering invalid at entry ${index + 1}: a hypothetical-answer query must follow all lexical and vector queries`,
         );
       }
-      seenHypotheticalAnswerQuery = true;
+      currentPhase = 'hyde';
+      hydeQueryCount += 1;
     }
     normalizedPlan.push({ type: plannedQuery.type, query: normalizedQuery });
   }
-  const lexQueryCount = normalizedPlan.filter((query) => query.type === 'lex').length;
-  const vecQueryCount = normalizedPlan.filter((query) => query.type === 'vec').length;
-  const hydeQueryCount = normalizedPlan.filter((query) => query.type === 'hyde').length;
   const bounds = profile.planBounds;
   if (
     lexQueryCount < bounds.minimumLexQueries ||

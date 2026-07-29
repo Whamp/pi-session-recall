@@ -538,10 +538,10 @@ function assertPhysicalSessionProjectionId(physicalSessionProjectionId: string):
   }
 }
 
-function assertConfirmedDeletionEvidenceLimit(limit: number): void {
-  if (!Number.isInteger(limit) || limit < 1 || limit > CONFIRMED_DELETION_BATCH_SIZE) {
+function assertPhysicalSessionProjectionChunkLimit(limit: number): void {
+  if (!Number.isSafeInteger(limit) || limit < 1) {
     throw new Error(
-      `Recall confirmed deletion evidence limit invalid: expected 1..${CONFIRMED_DELETION_BATCH_SIZE}`,
+      'Recall physical session projection chunk limit invalid: expected a positive safe integer',
     );
   }
 }
@@ -699,7 +699,7 @@ export function openZvecConversationStore(config: {
     },
     async listChunkIdsByPhysicalSessionProjectionId(physicalSessionProjectionId, limit) {
       assertPhysicalSessionProjectionId(physicalSessionProjectionId);
-      assertConfirmedDeletionEvidenceLimit(limit);
+      assertPhysicalSessionProjectionChunkLimit(limit);
       const documents = await collection.query({
         filter: `physicalSessionProjectionId = '${physicalSessionProjectionId}'`,
         topk: limit,

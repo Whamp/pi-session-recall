@@ -1,5 +1,5 @@
 import { RecallSearchScope } from './enums.js';
-import type { RecallSearchResult } from './fuse-recall-search-candidates.js';
+import type { RecallSearchResult } from './fuse-recall-ranked-lists.js';
 import type { RecallConversationSearch } from './recall-conversation-service.js';
 import type { RankedRecallSearchResult } from './rank-recall-search-results.js';
 
@@ -66,6 +66,18 @@ function formatRecallScoreComponents(result: RankedRecallSearchResult): string {
     ...(result.rerankerScore === null ? [] : [`Qwen reranker ${result.rerankerScore.toFixed(4)}`]),
     `active prior +${result.activeBranchPrior.toFixed(4)}`,
     `fused RRF ${result.fusedScore.toFixed(4)}`,
+    ...(result.topRankBonus !== undefined && result.topRankBonus > 0
+      ? [`top-rank bonus +${result.topRankBonus.toFixed(4)}`]
+      : []),
+    ...(result.retrievalPositionRank === undefined ||
+    result.retrievalPositionScore === undefined ||
+    result.retrievalScoreWeight === undefined ||
+    result.rerankerScoreWeight === undefined
+      ? []
+      : [
+          `fused rank #${result.retrievalPositionRank} position ${result.retrievalPositionScore.toFixed(4)}`,
+          `blend ${Math.round(result.retrievalScoreWeight * 100)}% retrieval / ${Math.round(result.rerankerScoreWeight * 100)}% reranker`,
+        ]),
   ];
   if (result.dense) {
     components.push(
@@ -87,13 +99,16 @@ function formatRecallScoreComponents(result: RankedRecallSearchResult): string {
 
 /** Formats hybrid or deeply reranked recall evidence with every source occurrence. */
 export function formatRecallSearchResults(
-  search: RecallConversationSearch,
+  search: Pick<RecallConversationSearch, 'results' | 'searchPolicy' | 'totalChunks'>,
   maxExcerptCharacters = 2_000,
 ): string {
   const rankingDescription =
-    search.searchPolicy.rankingMode === 'deep-rerank'
-      ? `fusion v${search.searchPolicy.rankFusionVersion} (RRF k=${search.searchPolicy.reciprocalRankConstant}) and Qwen ${search.searchPolicy.rerankerModel} policy v${search.searchPolicy.rerankPolicyVersion}`
-      : `deterministic fusion v${search.searchPolicy.rankFusionVersion} (RRF k=${search.searchPolicy.reciprocalRankConstant}) without Qwen reranking`;
+    search.searchPolicy.rankingMode === 'hybrid'
+      ? `deterministic fusion v${search.searchPolicy.rankFusionVersion} (RRF k=${search.searchPolicy.reciprocalRankConstant}) without Qwen reranking`
+      : search.searchPolicy.rankingMode === 'query-planned' &&
+          search.searchPolicy.queryPlan?.source !== 'fallback'
+        ? `query-planned fusion v${search.searchPolicy.rankFusionVersion} (RRF k=${search.searchPolicy.reciprocalRankConstant}) and position-aware Qwen ${search.searchPolicy.rerankerModel} policy v${search.searchPolicy.rerankPolicyVersion}`
+        : `fusion v${search.searchPolicy.rankFusionVersion} (RRF k=${search.searchPolicy.reciprocalRankConstant}) and Qwen ${search.searchPolicy.rerankerModel} policy v${search.searchPolicy.rerankPolicyVersion}`;
   const scopeDescription =
     search.searchPolicy.scope === RecallSearchScope.PROJECT
       ? `project scope for ${search.searchPolicy.invocationProjectIdentity ?? 'an unresolved project'}`
@@ -101,6 +116,26 @@ export function formatRecallSearchResults(
   const lines = [
     `Recall searched ${scopeDescription} across ${search.totalChunks} indexed evidence documents with ${rankingDescription} (active prior +${search.searchPolicy.activeBranchPrior.toFixed(4)}).`,
   ];
+  const queryPlan = search.searchPolicy.queryPlan;
+  if (queryPlan) {
+    const planDescription =
+      queryPlan.source === 'agent'
+        ? 'Agent query plan'
+        : queryPlan.source === 'planner'
+          ? 'Configured planner query plan'
+          : 'Planner fallback to submitted-query deep reranking';
+    lines.push(
+      `${planDescription} (${queryPlan.source}): ${queryPlan.plannedQueries.length === 0 ? 'no planned retrieval queries' : queryPlan.plannedQueries.map((plannedQuery) => `${plannedQuery.type}: ${plannedQuery.query}`).join(' · ')}`,
+      `Plan intent: ${queryPlan.intent ?? 'none'}`,
+      `Fusion policy: submitted weight ${queryPlan.fusionPolicy.submittedQueryListWeight}, planned weight ${queryPlan.fusionPolicy.plannedQueryListWeight}, rank bonuses +${queryPlan.fusionPolicy.rankOneBonus.toFixed(4)} / +${queryPlan.fusionPolicy.rankTwoOrThreeBonus.toFixed(4)}.`,
+      `Ranked lists: ${queryPlan.rankedLists.map((list) => `${list.source} ${list.admittedCandidateCount}/${list.candidateLimit} for ${list.query}`).join(' · ')}`,
+    );
+    if (queryPlan.plannerIdentity) {
+      lines.push(
+        `Planner identity: planner profile ${queryPlan.plannerIdentity.profileId} · model ${queryPlan.plannerIdentity.model} · adapter ${queryPlan.plannerIdentity.adapterId} · backend ${queryPlan.plannerIdentity.backend} · prompt ${queryPlan.plannerIdentity.promptPolicy} · grammar ${queryPlan.plannerIdentity.grammarVersion} · cache ${queryPlan.plannerIdentity.cacheIdentity}.`,
+      );
+    }
+  }
   if (search.searchPolicy.rerankerIdentity) {
     lines.push(
       `Reranker identity: reranker profile ${search.searchPolicy.rerankerIdentity.profileId} · adapter ${search.searchPolicy.rerankerIdentity.adapterId} · cache ${search.searchPolicy.rerankerIdentity.cacheIdentity}.`,

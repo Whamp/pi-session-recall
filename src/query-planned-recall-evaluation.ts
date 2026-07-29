@@ -14,6 +14,7 @@ import {
   QueryPlannedRecallBaselineOutcome,
   QueryPlannedRecallControlKind,
   RecallInferenceBackend,
+  RecallManualMaintenanceTrigger,
 } from './enums.js';
 import type { QueryPlannedRecallCaseCategory } from './enums.js';
 import type { RecallSearchResult } from './fuse-recall-ranked-lists.js';
@@ -754,7 +755,11 @@ export async function runPrivateQueryPlannedRecallEvaluation(
     indexConfig,
     createDeterministicQueryPlannedEvaluationDependencies(options, neutralReranker.reranker),
   );
-  const indexed = await indexService.index({ optimize: true });
+  const indexed = await indexService.index({
+    rebuild: true,
+    manualMaintenanceTrigger: RecallManualMaintenanceTrigger.MANUAL_REBUILD,
+    optimize: true,
+  });
   if (
     indexed.indexSummary.failedSessions.length > 0 ||
     indexed.indexSummary.scannedSessions !== stagedCorpus.snapshots.length
@@ -1359,7 +1364,11 @@ export async function runLiveQueryPlannedProfileEvaluation(
     normalConfig,
     createDeterministicQueryPlannedEvaluationDependencies(options, indexReranker.reranker),
   );
-  const indexed = await indexService.index({ optimize: true });
+  const indexed = await indexService.index({
+    rebuild: true,
+    manualMaintenanceTrigger: RecallManualMaintenanceTrigger.MANUAL_REBUILD,
+    optimize: true,
+  });
   if (
     indexed.indexSummary.failedSessions.length > 0 ||
     indexed.indexSummary.scannedSessions !== stagedCorpus.snapshots.length

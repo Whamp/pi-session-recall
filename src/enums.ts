@@ -268,10 +268,45 @@ export enum RecallBacklogFailureCategory {
 /** Version of trusted-invocation exact project filtering before every retrieval-channel limit. */
 export const PROJECT_SCOPE_POLICY_VERSION = 1;
 
+/** Retrieval channel that produced one bounded recall ranked list. */
+export enum RecallRankedListSource {
+  DENSE = 'dense',
+  LEXICAL = 'lexical',
+  IDENTIFIER = 'identifier',
+  PLANNED_LEX = 'planned_lex',
+  PLANNED_VEC = 'planned_vec',
+  PLANNED_HYDE = 'planned_hyde',
+}
+
 /** Corpus boundary selected for one recall search. */
 export enum RecallSearchScope {
   PROJECT = 'project',
   GLOBAL = 'global',
+}
+
+/** Privacy-safe behavior category for one frozen query-planned recall case. */
+export enum QueryPlannedRecallCaseCategory {
+  VOCABULARY_DRIFT = 'vocabulary_drift',
+  SYMPTOM_TO_MECHANISM = 'symptom_to_mechanism',
+  OUTCOME_TO_COMPONENT = 'outcome_to_component',
+  AMBIGUOUS_DECISION = 'ambiguous_decision',
+  LEXICAL_ONLY_TOOL_EVIDENCE = 'lexical_only_tool_evidence',
+  EXACT_IDENTIFIER = 'exact_identifier',
+  BRANCH_COMPETITION = 'branch_competition',
+  CURRENT_VERSUS_OBSOLETE_SUMMARY = 'current_versus_obsolete_summary',
+}
+
+/** Whether a frozen case is difficult or a successful hybrid regression control. */
+export enum QueryPlannedRecallControlKind {
+  DIFFICULT_CASE = 'difficult_case',
+  SUCCESSFUL_BASELINE_CONTROL = 'successful_baseline_control',
+}
+
+/** Location of an expected source under one hybrid baseline arm. */
+export enum QueryPlannedRecallBaselineOutcome {
+  CANDIDATE_UNION_MISS = 'candidate_union_miss',
+  FINAL_RANK_MISS = 'final_rank_miss',
+  SUCCESS = 'success',
 }
 
 /** Explicit relationship between recalled evidence and the invoking project. */

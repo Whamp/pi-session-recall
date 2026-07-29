@@ -13,7 +13,7 @@ import {
 import {
   RECALL_RANK_FUSION_VERSION,
   RECALL_RRF_RANK_CONSTANT,
-} from './fuse-recall-search-candidates.js';
+} from './fuse-recall-ranked-lists.js';
 import type { ConversationIndexSummary } from './incremental-session-indexer.js';
 import { createLocalEmbeddingClient, type LocalEmbeddingClient } from './local-embedding-client.js';
 import type { LocalRerankerClient } from './local-reranker-client.js';
@@ -107,6 +107,8 @@ export interface RecallQualityEvaluationIdentity {
   reciprocalRankConstant: number;
   activeBranchPrior: number;
   candidateLimits: { dense: 8; lexical: 8; identifier: 8 };
+  fusedPoolLimit: 24;
+  rerankPoolLimit: 24;
   finalResultCount: 5;
 }
 
@@ -238,6 +240,8 @@ function createChunkPolicyConfig(
       lexical: candidateCount,
       identifier: candidateCount,
     },
+    fusedPoolLimit: candidateCount * 3,
+    rerankPoolLimit: candidateCount * 3,
   };
 }
 
@@ -575,6 +579,8 @@ export async function runRecallQualityEvaluation(
       reciprocalRankConstant: RECALL_RRF_RANK_CONSTANT,
       activeBranchPrior: RECALL_ACTIVE_BRANCH_PRIOR,
       candidateLimits: { dense: 8, lexical: 8, identifier: 8 },
+      fusedPoolLimit: 24,
+      rerankPoolLimit: 24,
       finalResultCount: 5,
     },
     startedAt: startedAt.toISOString(),

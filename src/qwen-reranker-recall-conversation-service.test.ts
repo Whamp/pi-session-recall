@@ -195,7 +195,7 @@ void test('deep-rerank works end to end with built-in HTTP and embedded Qwen ada
   assert.deepEqual(httpSearch.searchPolicy.rerankerIdentity, {
     profileId: profile.profileId,
     adapterId: 'llama-cpp-http-reranking-v1',
-    cacheIdentity: `${profile.profileId}:llama-cpp-http-reranking-v1`,
+    cacheIdentity: httpProvider.executionIdentity.cacheIdentity,
   });
 
   const embeddedProvider = createEmbeddedQwenRerankingProvider(profile, {
@@ -253,7 +253,7 @@ void test('deep-rerank works end to end with built-in HTTP and embedded Qwen ada
   assert.deepEqual(embeddedSearch.searchPolicy.rerankerIdentity, {
     profileId: profile.profileId,
     adapterId: 'node-llama-cpp-qwen-reranking-logit-recovery-v1',
-    cacheIdentity: `${profile.profileId}:node-llama-cpp-qwen-reranking-logit-recovery-v1`,
+    cacheIdentity: embeddedProvider.executionIdentity.cacheIdentity,
   });
 
   const replacementProfile = createQwenRerankingModelProfile('replacement-qwen-reranker');
@@ -276,7 +276,7 @@ void test('deep-rerank works end to end with built-in HTTP and embedded Qwen ada
   assert.deepEqual(replacementSearch.searchPolicy.rerankerIdentity, {
     profileId: 'qwen-reranking:replacement-qwen-reranker',
     adapterId: 'llama-cpp-http-reranking-v1',
-    cacheIdentity: 'qwen-reranking:replacement-qwen-reranker:llama-cpp-http-reranking-v1',
+    cacheIdentity: replacementHttpProvider.executionIdentity.cacheIdentity,
   });
 
   const embeddingOnlyService = createRecallConversationService(config, {
@@ -298,5 +298,14 @@ void test('deep-rerank works end to end with built-in HTTP and embedded Qwen ada
         scope: RecallSearchScope.GLOBAL,
       }),
     /Recall reranking is not configured/u,
+  );
+  assert.throws(
+    () =>
+      embeddingOnlyService.search('fusion favorite', 1, {
+        mode: 'query-planned',
+        scope: RecallSearchScope.GLOBAL,
+        plan: [{ type: 'vec', query: 'reranker favorite' }],
+      }),
+    /Recall reranking is not configured.*before query-planned search/u,
   );
 });

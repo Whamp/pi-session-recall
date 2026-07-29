@@ -1,6 +1,8 @@
 import type { RecallPlannedRetrievalQuery } from './recall-inference-capabilities.js';
 import type { RecallQueryPlanningModelProfile } from './recall-model-profiles.js';
 
+const MAXIMUM_QMD_QUERY_CONTENT_CODE_POINTS = 512;
+
 /** Formats the QMD no-think query expansion prompt, including optional recall intent. */
 export function formatQmdQueryPlanningPrompt(query: string, recallIntent?: string): string {
   const normalizedQuery = query.trim();
@@ -17,7 +19,95 @@ export function formatQmdQueryPlanningPrompt(query: string, recallIntent?: strin
   return `/no_think Expand this search query: ${normalizedQuery}\nQuery intent: ${normalizedRecallIntent}`;
 }
 
-/** Parses and bounds grammar-constrained QMD lex, vec, and hyde planner output. */
+/** Validates unique lex→vec→optional-hyde plans with 512 Unicode code points per query. */
+export function validateQmdQueryPlanningPlan(
+  plan: readonly RecallPlannedRetrievalQuery[],
+  profile: RecallQueryPlanningModelProfile,
+): RecallPlannedRetrievalQuery[] {
+  const normalizedPlan: RecallPlannedRetrievalQuery[] = [];
+  let currentPhase: RecallPlannedRetrievalQuery['type'] = 'lex';
+  let lexQueryCount = 0;
+  let vecQueryCount = 0;
+  let hydeQueryCount = 0;
+  for (const [index, plannedQuery] of plan.entries()) {
+    if (
+      plannedQuery.type !== 'lex' &&
+      plannedQuery.type !== 'vec' &&
+      plannedQuery.type !== 'hyde'
+    ) {
+      throw new Error(
+        `Recall query planning output grammar invalid at entry ${index + 1}: expected lex, vec, or hyde`,
+      );
+    }
+    if (typeof plannedQuery.query !== 'string' || !plannedQuery.query.trim()) {
+      throw new Error(
+        `Recall query planning output grammar invalid at entry ${index + 1}: expected non-blank single-line text`,
+      );
+    }
+    if (/[\r\n]/u.test(plannedQuery.query)) {
+      throw new Error(
+        `Recall query planning output grammar invalid at entry ${index + 1}: expected non-blank single-line text`,
+      );
+    }
+    const normalizedQuery = plannedQuery.query.trim();
+    if (Array.from(normalizedQuery).length > MAXIMUM_QMD_QUERY_CONTENT_CODE_POINTS) {
+      throw new Error(
+        `Recall query planning output grammar invalid at entry ${index + 1}: expected at most ${MAXIMUM_QMD_QUERY_CONTENT_CODE_POINTS} Unicode code points`,
+      );
+    }
+    if (currentPhase === 'hyde') {
+      throw new Error(
+        `Recall query planning output ordering invalid at entry ${index + 1}: no query may follow a hypothetical-answer query`,
+      );
+    }
+    if (plannedQuery.type === 'lex') {
+      if (currentPhase !== 'lex') {
+        throw new Error(
+          `Recall query planning output ordering invalid at entry ${index + 1}: lexical queries must precede vector queries`,
+        );
+      }
+      lexQueryCount += 1;
+    } else if (plannedQuery.type === 'vec') {
+      if (lexQueryCount === 0) {
+        throw new Error(
+          `Recall query planning output ordering invalid at entry ${index + 1}: vector queries must follow at least one lexical query`,
+        );
+      }
+      currentPhase = 'vec';
+      vecQueryCount += 1;
+    } else {
+      if (currentPhase !== 'vec') {
+        throw new Error(
+          `Recall query planning output ordering invalid at entry ${index + 1}: a hypothetical-answer query must follow all lexical and vector queries`,
+        );
+      }
+      currentPhase = 'hyde';
+      hydeQueryCount += 1;
+    }
+    normalizedPlan.push({ type: plannedQuery.type, query: normalizedQuery });
+  }
+  const bounds = profile.planBounds;
+  if (
+    lexQueryCount < bounds.minimumLexQueries ||
+    lexQueryCount > bounds.maximumLexQueries ||
+    vecQueryCount < bounds.minimumVecQueries ||
+    vecQueryCount > bounds.maximumVecQueries ||
+    hydeQueryCount > bounds.maximumHydeQueries
+  ) {
+    throw new Error(
+      `Recall query planning output bounds invalid: expected ${bounds.minimumLexQueries}-${bounds.maximumLexQueries} lex, ${bounds.minimumVecQueries}-${bounds.maximumVecQueries} vec, and 0-${bounds.maximumHydeQueries} hyde queries; received ${lexQueryCount} lex, ${vecQueryCount} vec, and ${hydeQueryCount} hyde`,
+    );
+  }
+  const uniqueQueries = new Set(normalizedPlan.map(({ type, query }) => `${type}:${query}`));
+  if (uniqueQueries.size !== normalizedPlan.length) {
+    throw new Error(
+      'Recall query planning output invalid: duplicate typed queries are not allowed',
+    );
+  }
+  return normalizedPlan;
+}
+
+/** Parses grammar-constrained QMD lex, vec, and hyde planner text into a validated plan. */
 export function parseQmdQueryPlanningOutput(
   output: string,
   profile: RecallQueryPlanningModelProfile,
@@ -35,32 +125,14 @@ export function parseQmdQueryPlanningOutput(
       );
     }
     const type = match[1];
-    const query = match[2]?.trim();
+    const query = match[2]
+      ?.trim()
+      .replace(/<\/think>$/u, '')
+      .trim();
     if ((type !== 'lex' && type !== 'vec' && type !== 'hyde') || !query) {
       throw new Error(`Recall query planning output invalid at line ${index + 1}`);
     }
     return { type, query };
   });
-  const lexQueryCount = plan.filter((query) => query.type === 'lex').length;
-  const vecQueryCount = plan.filter((query) => query.type === 'vec').length;
-  const hydeQueryCount = plan.filter((query) => query.type === 'hyde').length;
-  const bounds = profile.planBounds;
-  if (
-    lexQueryCount < bounds.minimumLexQueries ||
-    lexQueryCount > bounds.maximumLexQueries ||
-    vecQueryCount < bounds.minimumVecQueries ||
-    vecQueryCount > bounds.maximumVecQueries ||
-    hydeQueryCount > bounds.maximumHydeQueries
-  ) {
-    throw new Error(
-      `Recall query planning output bounds invalid: expected ${bounds.minimumLexQueries}-${bounds.maximumLexQueries} lex, ${bounds.minimumVecQueries}-${bounds.maximumVecQueries} vec, and 0-${bounds.maximumHydeQueries} hyde queries; received ${lexQueryCount} lex, ${vecQueryCount} vec, and ${hydeQueryCount} hyde`,
-    );
-  }
-  const uniqueQueries = new Set(plan.map(({ type, query }) => `${type}:${query}`));
-  if (uniqueQueries.size !== plan.length) {
-    throw new Error(
-      'Recall query planning output invalid: duplicate typed queries are not allowed',
-    );
-  }
-  return plan;
+  return validateQmdQueryPlanningPlan(plan, profile);
 }

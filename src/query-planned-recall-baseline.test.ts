@@ -9,9 +9,8 @@ import {
   QueryPlannedRecallBaselineOutcome,
   QueryPlannedRecallCaseCategory,
   QueryPlannedRecallControlKind,
-  RecallDiagnosticsMode,
 } from './enums.js';
-import type { RecallConversationConfig } from './recall-conversation-service.js';
+import { loadRecallConversationConfig } from './recall-conversation-config.js';
 import { RECALL_EMBEDDING_CANARY_TEXT } from './recall-index-manifest.js';
 import {
   createPublishableQueryPlannedRecallBaselineEvidence,
@@ -20,7 +19,6 @@ import {
   loadPrivateQueryPlannedRecallCorpus,
   runPrivateQueryPlannedRecallBaseline,
 } from './query-planned-recall-baseline.js';
-import { normalizeRecallProjectLineages } from './resolve-project-identity.js';
 
 function createSha256(content: string): string {
   return createHash('sha256').update(content).digest('hex');
@@ -138,30 +136,23 @@ void test('private query-planned recall corpus stays checksum-fixed and publishe
   assert.equal(published.includes('/private/project'), false);
   assert.equal(published.includes(snapshotPath), false);
 
-  const baseConfig: RecallConversationConfig = {
-    sessionsDirectory: join(directory, 'must-not-scan-production-sessions'),
-    databasePath: join(directory, 'unused-zvec'),
-    statePath: join(directory, 'unused-state.json'),
-    manifestPath: join(directory, 'unused-manifest.json'),
-    tokenizerCacheDirectory: join(directory, 'unused-tokenizers'),
-    embeddingCacheDirectory: join(directory, 'unused-embedding-cache'),
-    lockPath: join(directory, 'unused.lock'),
-    diagnosticsMode: RecallDiagnosticsMode.OFF,
-    diagnosticLogPath: join(directory, 'unused-diagnostics.jsonl'),
-    retainedDiagnosticLogPath: join(directory, 'unused-diagnostics.previous.jsonl'),
-    embeddingBaseUrl: 'http://unused.test/v1',
-    embeddingModel: 'test-embedding',
-    embeddingServedModelId: 'test-embedding-served',
-    embeddingArtifact: 'test-embedding.fp32',
-    embeddingQuantization: 'fp32',
-    embeddingPooling: 'last',
-    embeddingDimensions: 3,
-    embeddingBatchSize: 8,
-    rerankerBaseUrl: 'http://unused-reranker.test/v1',
-    rerankerModel: 'test-reranker',
-    projectLineages: normalizeRecallProjectLineages({}),
-    searchCandidateLimits: { dense: 8, lexical: 8, identifier: 8 },
-  };
+  const baseConfig = await loadRecallConversationConfig({
+    homeDirectory: directory,
+    environment: {
+      PI_RECALL_DATA_DIRECTORY: join(directory, 'must-not-mutate-production-recall'),
+      PI_RECALL_SESSIONS_DIRECTORY: join(directory, 'must-not-scan-production-sessions'),
+      PI_RECALL_EMBEDDING_BASE_URL: 'http://unused.test/v1',
+      PI_RECALL_EMBEDDING_MODEL: 'test-embedding',
+      PI_RECALL_EMBEDDING_SERVED_MODEL_ID: 'test-embedding-served',
+      PI_RECALL_EMBEDDING_ARTIFACT: 'test-embedding.fp32',
+      PI_RECALL_EMBEDDING_QUANTIZATION: 'fp32',
+      PI_RECALL_EMBEDDING_POOLING: 'last',
+      PI_RECALL_EMBEDDING_DIMENSIONS: '3',
+      PI_RECALL_EMBEDDING_BATCH_SIZE: '8',
+      PI_RECALL_RERANKER_BASE_URL: 'http://unused-reranker.test/v1',
+      PI_RECALL_RERANKER_MODEL: 'test-reranker',
+    },
+  });
   const dependencies = {
     embeddings: {
       async embedTexts(texts: readonly string[]) {

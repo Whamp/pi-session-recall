@@ -453,6 +453,7 @@ async function createRegisteredRecallInferenceRuntime(
           queryPlanner: queryPlanning.provider,
         }
       : {}),
+    ...(options.onWarning ? { notifyWarning: options.onWarning } : {}),
     backgroundIndexServiceFactory: embedding.backgroundIndexServiceFactory ?? {
       moduleUrl: import.meta.url,
       exportName: 'createConfiguredRecallBackgroundService',

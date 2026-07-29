@@ -33,14 +33,17 @@ import {
   RecallInferenceBackend,
   RecallManualMaintenanceTrigger,
   RecallProjectIdentitySource,
+  RecallRankedListSource,
   RecallSearchScope,
   RecallSessionProjectionKind,
 } from './enums.js';
 import {
-  fuseRecallSearchCandidates,
+  fuseRecallRankedLists,
   RECALL_RANK_FUSION_VERSION,
   RECALL_RRF_RANK_CONSTANT,
-} from './fuse-recall-search-candidates.js';
+  type RecallRankedList,
+  type RecallSearchResult,
+} from './fuse-recall-ranked-lists.js';
 import {
   markRecallBackgroundIndexGenerationDiscarded,
   readRecallBackgroundIndexGenerationStatus,
@@ -114,6 +117,7 @@ import {
   persistRecallIncrementalWorkerSchedule,
   RECALL_INCREMENTAL_WORKER_SCHEDULE_VERSION,
 } from './recall-incremental-worker-schedule.js';
+import { validateQmdQueryPlanningPlan } from './recall-query-planning-policy.js';
 import {
   measureRecallQueryPlanningProviderConformance,
   measureRecallRerankingProviderConformance,
@@ -150,11 +154,14 @@ import {
 } from './resolve-project-identity.js';
 import { rollbackRecallGeneration } from './rollback-recall-generation.js';
 import {
+  QUERY_PLANNED_RECALL_FUSED_RANK_BLEND,
+  QUERY_PLANNED_RECALL_RERANK_POLICY_VERSION,
   rankFusedRecallSearchResults,
   rerankRecallSearchResults,
   RECALL_ACTIVE_BRANCH_PRIOR,
   RECALL_RERANK_POLICY_VERSION,
   type RankedRecallSearchResult,
+  type RecallFusedRankBlendBand,
 } from './rank-recall-search-results.js';
 import {
   readSessionConversationChunks,
@@ -170,15 +177,77 @@ export type {
   RecallConversationConfig,
   RecallSearchCandidateLimits,
 } from './recall-conversation-config.js';
+export type { RecallPlannedRetrievalQuery } from './recall-inference-capabilities.js';
 
-/** User-selected ranking depth for hybrid-only or local Qwen recall search. */
-export type RecallSearchMode = 'hybrid' | 'deep-rerank';
+/** Maximum agent-supplied retrieval queries admitted by one query-planned recall search. */
+export const MAX_AGENT_RECALL_PLANNED_QUERY_COUNT = 10;
+
+/** Fixed project-eligible candidate admission limit for every query-planned ranked list. */
+export const QUERY_PLANNED_RECALL_LIST_CANDIDATE_LIMIT = 20;
+
+/** Duplicate evidence group limit applied before query-planned reranking. */
+export const QUERY_PLANNED_RECALL_GROUP_LIMIT = 40;
+
+/** Final result cap applied before query-planned neighbor context expansion. */
+export const QUERY_PLANNED_RECALL_FINAL_RESULT_LIMIT = 5;
+
+/** User-selected ranking depth for hybrid-only, local Qwen, or query-planned recall search. */
+export type RecallSearchMode = 'hybrid' | 'deep-rerank' | 'query-planned';
+
+/** One project-eligible ranked-list admission trace from query-planned retrieval. */
+export interface RecallRankedListTrace {
+  source: RecallRankedListSource;
+  query: string;
+  weight: number;
+  candidateLimit: number;
+  admittedCandidateCount: number;
+}
+
+/** QMD fusion constants used for one agent-supplied or model-generated query plan. */
+export interface RecallQueryPlannedFusionPolicy {
+  reciprocalRankConstant: number;
+  submittedQueryListWeight: number;
+  plannedQueryListWeight: number;
+  rankOneBonus: number;
+  rankTwoOrThreeBonus: number;
+}
+
+/** Reranker model and position-aware blend profile used by query-planned recall. */
+export interface RecallQueryPlannedRerankerProfile {
+  model: string;
+  policyVersion: number;
+  fusedRankBlend: readonly RecallFusedRankBlendBand[];
+}
+
+/** Profile, adapter policy, and request-complete cache identity for configured planning. */
+export interface RecallSearchPlannerIdentity {
+  profileId: string;
+  model: string;
+  adapterId: string;
+  backend: RecallQueryPlanningExecutionIdentity['backend'];
+  promptPolicy: string;
+  grammarVersion: string;
+  cacheIdentity: string;
+}
+
+/** Actual plan source, planner identity, intent, traces, fusion constants, and reranker profile. */
+export interface RecallQueryPlanEvidence {
+  source: 'agent' | 'planner' | 'fallback';
+  plannerIdentity: RecallSearchPlannerIdentity | null;
+  intent: string | null;
+  plannedQueries: readonly RecallPlannedRetrievalQuery[];
+  rankedLists: readonly RecallRankedListTrace[];
+  fusionPolicy: RecallQueryPlannedFusionPolicy;
+  rerankerProfile: RecallQueryPlannedRerankerProfile;
+}
 
 /** Trusted invocation context, cancellation, and ranking depth for one recall search. */
 export interface RecallConversationSearchOptions {
   mode?: RecallSearchMode;
   scope?: RecallSearchScope;
   invocationDirectory?: string;
+  plan?: readonly RecallPlannedRetrievalQuery[];
+  intent?: string;
   signal?: AbortSignal;
 }
 
@@ -201,6 +270,18 @@ export interface RecallSearchPolicy {
   rerankerIdentity: RecallSearchRerankerIdentity | null;
   activeBranchPrior: number;
   candidateLimits: RecallSearchCandidateLimits;
+  /** Maximum fused documents retained before duplicate evidence grouping. */
+  fusedPoolLimit: number;
+  /** Maximum duplicate evidence groups admitted to reranking. */
+  rerankPoolLimit: number;
+  /** Maximum ranked results retained before neighbor context expansion. */
+  finalResultLimit: number;
+  queryPlan?: RecallQueryPlanEvidence;
+}
+
+/** One fused candidate captured before duplicate grouping, rerank limits, and final truncation. */
+export interface RecallCandidateAdmission extends RecallSearchResult {
+  evidenceRelation: RecallEvidenceRelation;
 }
 
 /** One ranked recall result labeled by its explicit relationship to the invocation project. */
@@ -211,6 +292,7 @@ export interface RecallConversationSearchResult extends RankedRecallSearchResult
 /** One read-only hybrid query against a previously built compatible index. */
 export interface RecallConversationSearch {
   results: RecallConversationSearchResult[];
+  candidateAdmission: RecallCandidateAdmission[];
   totalChunks: number;
   searchPolicy: RecallSearchPolicy;
 }
@@ -399,6 +481,7 @@ export interface RecallConversationDependencies {
   reranker?: RecallRerankingProvider | null;
   rerankerExecutionIdentity?: RecallRerankingExecutionIdentity | null;
   queryPlanningProfile?: RecallQueryPlanningModelProfile;
+  /** Optional identified planner invoked when query-planned search receives no agent plan. */
   queryPlanner?: RecallIdentifiedQueryPlanningProvider;
   tokenizerIdentity?: RecallTokenizerManifestIdentity;
   loadTokenizer?: () => Promise<ConversationTextTokenizer>;
@@ -410,6 +493,139 @@ export interface RecallConversationDependencies {
   workerSignal?: RecallDetachedWorkerSignal;
   /** Reconstructs the same configured inference runtime inside a detached rebuild worker. */
   backgroundIndexServiceFactory?: RecallBackgroundIndexServiceFactory;
+}
+
+interface ValidatedRecallQueryPlanningOptions {
+  plannedQueries: RecallPlannedRetrievalQuery[] | null;
+  intent: string | null;
+}
+
+const QUERY_PLANNED_RECALL_SUBMITTED_QUERY_LIST_WEIGHT = 2;
+const QUERY_PLANNED_RECALL_PLANNED_QUERY_LIST_WEIGHT = 1;
+const QUERY_PLANNED_RECALL_RANK_ONE_BONUS = 0.05;
+const QUERY_PLANNED_RECALL_RANK_TWO_OR_THREE_BONUS = 0.02;
+
+function validateRecallQueryPlanningOptions(
+  mode: RecallSearchMode,
+  query: string,
+  plan?: readonly RecallPlannedRetrievalQuery[],
+  intent?: string,
+): ValidatedRecallQueryPlanningOptions {
+  if (mode === 'hybrid' && intent !== undefined) {
+    throw new Error(
+      'Recall hybrid mode does not accept intent; remove intent or choose deep-rerank or query-planned mode',
+    );
+  }
+  if (mode !== 'query-planned' && plan !== undefined) {
+    throw new Error(
+      'Recall query plan is supported only in query-planned mode; remove plan or choose query-planned mode',
+    );
+  }
+  const normalizedIntent = intent?.trim() ?? null;
+  if (intent !== undefined && !normalizedIntent) {
+    throw new Error('Recall intent must not be blank');
+  }
+  if (mode !== 'query-planned') {
+    return { plannedQueries: [], intent: normalizedIntent };
+  }
+  if (/\r|\n/u.test(query)) {
+    throw new Error('Recall query-planned query invalid: expected a single-line string');
+  }
+  if (normalizedIntent !== null && /\r|\n/u.test(normalizedIntent)) {
+    throw new Error('Recall query-planned intent invalid: expected a single-line string');
+  }
+  if (plan === undefined) {
+    return { plannedQueries: null, intent: normalizedIntent };
+  }
+  if (!Array.isArray(plan)) {
+    throw new Error(
+      'Recall query plan invalid: provide plan with 1 to 10 { type: lex|vec|hyde, query: string } entries',
+    );
+  }
+  if (plan.length < 1 || plan.length > MAX_AGENT_RECALL_PLANNED_QUERY_COUNT) {
+    throw new Error(
+      `Recall query plan invalid: expected 1 to ${MAX_AGENT_RECALL_PLANNED_QUERY_COUNT} entries, received ${plan.length}`,
+    );
+  }
+  const plannedQueries: RecallPlannedRetrievalQuery[] = [];
+  const plannedQueryEntryByIdentity = new Map<string, number>();
+  for (const [index, plannedQuery] of plan.entries()) {
+    if (!isUnknownRecord(plannedQuery)) {
+      throw new Error(
+        `Recall query plan invalid at entry ${index + 1}: expected { type: lex|vec|hyde, query: string }`,
+      );
+    }
+    const unexpectedKeys = Object.keys(plannedQuery).filter(
+      (key) => key !== 'type' && key !== 'query',
+    );
+    if (unexpectedKeys.length > 0) {
+      throw new Error(
+        `Recall query plan invalid at entry ${index + 1}: unsupported field ${unexpectedKeys[0]}; use only type and query`,
+      );
+    }
+    const queryType = plannedQuery.type;
+    if (queryType !== 'lex' && queryType !== 'vec' && queryType !== 'hyde') {
+      throw new Error(
+        `Recall query plan invalid at entry ${index + 1}: unsupported type ${String(queryType)}; use lex, vec, or hyde`,
+      );
+    }
+    if (typeof plannedQuery.query !== 'string' || !plannedQuery.query.trim()) {
+      throw new Error(
+        `Recall query plan invalid at entry ${index + 1}: query must be a nonblank string`,
+      );
+    }
+    if (/\r|\n/u.test(plannedQuery.query)) {
+      throw new Error(`Recall query plan invalid at entry ${index + 1}: query must be single-line`);
+    }
+    const normalizedQuery = plannedQuery.query.trim();
+    const plannedQueryIdentity = `${queryType}:${normalizedQuery}`;
+    const matchingEntry = plannedQueryEntryByIdentity.get(plannedQueryIdentity);
+    if (matchingEntry !== undefined) {
+      throw new Error(
+        `Recall query plan invalid at entry ${index + 1}: duplicate ${queryType} query matches entry ${matchingEntry}; remove one duplicate entry`,
+      );
+    }
+    plannedQueryEntryByIdentity.set(plannedQueryIdentity, index + 1);
+    plannedQueries.push({ type: queryType, query: normalizedQuery });
+  }
+  return { plannedQueries, intent: normalizedIntent };
+}
+
+function createRecallRerankerQuery(query: string, intent: string | null): string {
+  return intent ? `${intent}\n\n${query}` : query;
+}
+
+function createRecallQueryPlanningCacheIdentity(
+  submittedQuery: string,
+  recallIntent: string | null,
+  profile: RecallQueryPlanningModelProfile,
+  executionIdentity: RecallQueryPlanningExecutionIdentity,
+): string {
+  const identityInput = JSON.stringify({
+    submittedQuery,
+    recallIntent,
+    modelProfile: {
+      profileId: profile.profileId,
+      model: profile.model,
+      promptPolicy: profile.promptPolicy,
+      grammarVersion: profile.grammarVersion,
+      grammar: profile.grammar,
+      planBounds: profile.planBounds,
+      generationPolicy: profile.generationPolicy,
+      conformanceCanary: profile.conformanceCanary,
+    },
+    adapterPolicy: {
+      adapterId: executionIdentity.adapterId,
+      adapterConfigurationIdentity: executionIdentity.adapterConfigurationIdentity,
+      backend: executionIdentity.backend,
+      cacheIdentity: executionIdentity.cacheIdentity,
+      modelProfileId: executionIdentity.modelProfileId,
+      promptPolicy: executionIdentity.promptPolicy,
+      grammarVersion: executionIdentity.grammarVersion,
+      requestTimeoutMilliseconds: executionIdentity.requestTimeoutMilliseconds,
+    },
+  });
+  return `query-plan-v1:${createHash('sha256').update(identityInput).digest('hex')}`;
 }
 
 interface RecallSearchDiagnosticRunOptions {
@@ -620,8 +836,12 @@ function readRecallRerankingExecutionIdentity(
   if (
     !isUnknownRecord(identity) ||
     typeof identity.adapterId !== 'string' ||
+    typeof identity.adapterVersion !== 'string' ||
+    typeof identity.adapterConfigurationIdentity !== 'string' ||
     typeof identity.cacheIdentity !== 'string' ||
-    typeof identity.modelProfileId !== 'string'
+    typeof identity.modelProfileId !== 'string' ||
+    typeof identity.modelProfileIdentity !== 'string' ||
+    typeof identity.requestTimeoutMilliseconds !== 'number'
   ) {
     return undefined;
   }
@@ -637,9 +857,13 @@ function readRecallRerankingExecutionIdentity(
   }
   return {
     adapterId: identity.adapterId,
+    adapterVersion: identity.adapterVersion,
+    adapterConfigurationIdentity: identity.adapterConfigurationIdentity,
     backend,
     cacheIdentity: identity.cacheIdentity,
     modelProfileId: identity.modelProfileId,
+    modelProfileIdentity: identity.modelProfileIdentity,
+    requestTimeoutMilliseconds: identity.requestTimeoutMilliseconds,
   };
 }
 
@@ -928,9 +1152,11 @@ export function createRecallConversationService(
     ? (dependencies.rerankerExecutionIdentity ??
       providerExecutionIdentity ??
       createRecallRerankingExecutionIdentity(
-        rerankingProfile.profileId,
+        rerankingProfile,
         'custom-injected-reranking-v1',
+        'custom-injected-reranking-config-v1',
         RecallInferenceBackend.CUSTOM,
+        60_000,
       ))
     : null;
   if (
@@ -940,6 +1166,13 @@ export function createRecallConversationService(
   ) {
     throw new Error(
       `Recall reranker profile identity mismatch: expected ${rerankingProfile.profileId}, received ${rerankerExecutionIdentity.modelProfileId}`,
+    );
+  }
+  function readCurrentRerankerExecutionIdentity(): RecallRerankingExecutionIdentity | null {
+    return (
+      dependencies.rerankerExecutionIdentity ??
+      (reranker ? readRecallRerankingExecutionIdentity(reranker) : undefined) ??
+      rerankerExecutionIdentity
     );
   }
   const queryPlanningProfile = dependencies.queryPlanningProfile;
@@ -1464,7 +1697,9 @@ export function createRecallConversationService(
       }
       const measurement = await measureRecallRerankingProviderConformance({
         provider: {
-          executionIdentity: rerankerExecutionIdentity,
+          get executionIdentity() {
+            return readCurrentRerankerExecutionIdentity() ?? rerankerExecutionIdentity;
+          },
           rerankDocuments: reranker.rerankDocuments.bind(reranker),
         },
         profile: rerankingProfile,
@@ -1480,7 +1715,7 @@ export function createRecallConversationService(
         profileId: rerankingProfile.profileId,
         model: rerankingProfile.model,
         scorePolicy: rerankingProfile.scorePolicy,
-        executionIdentity: rerankerExecutionIdentity,
+        executionIdentity: readCurrentRerankerExecutionIdentity() ?? rerankerExecutionIdentity,
         measurement,
       };
     },
@@ -1513,14 +1748,30 @@ export function createRecallConversationService(
         mode = 'hybrid',
         scope = RecallSearchScope.PROJECT,
         invocationDirectory,
+        plan,
+        intent,
         signal,
       } = options;
+      let queryPlanning: ValidatedRecallQueryPlanningOptions;
+      try {
+        queryPlanning = validateRecallQueryPlanningOptions(mode, query, plan, intent);
+      } catch (error) {
+        return Promise.reject(error);
+      }
       if (
-        mode === 'deep-rerank' &&
-        (!rerankingProfile || !reranker || !rerankerExecutionIdentity)
+        mode === 'query-planned' &&
+        queryPlanning.plannedQueries === null &&
+        (!queryPlanningProfile || !queryPlanner)
       ) {
+        return Promise.reject(
+          new Error(
+            'Recall query planner is not configured: select and verify a query-planning capability before query-planned search without an agent plan',
+          ),
+        );
+      }
+      if (mode !== 'hybrid' && (!rerankingProfile || !reranker || !rerankerExecutionIdentity)) {
         throw new Error(
-          'Recall reranking is not configured: select and verify a reranking capability before deep-rerank search',
+          `Recall reranking is not configured: select and verify a reranking capability before ${mode} search`,
         );
       }
       return runRecallSearchWithDiagnostics({
@@ -1533,6 +1784,56 @@ export function createRecallConversationService(
             const searchQuery = query.trim();
             if (!searchQuery) {
               throw new Error('Recall query must not be blank');
+            }
+            let planSource: RecallQueryPlanEvidence['source'] = 'agent';
+            let plannerIdentity: RecallSearchPlannerIdentity | null = null;
+            if (queryPlanning.plannedQueries === null) {
+              if (!queryPlanningProfile || !queryPlanner) {
+                throw new Error(
+                  'Recall query planner became unavailable before query-planned search',
+                );
+              }
+              try {
+                const generatedPlan = await queryPlanner.planRecallQuery(
+                  {
+                    query: searchQuery,
+                    ...(queryPlanning.intent === null
+                      ? {}
+                      : { recallIntent: queryPlanning.intent }),
+                  },
+                  signal,
+                );
+                queryPlanning = {
+                  plannedQueries: validateQmdQueryPlanningPlan(generatedPlan, queryPlanningProfile),
+                  intent: queryPlanning.intent,
+                };
+                planSource = 'planner';
+              } catch (error: unknown) {
+                if (isRecallOperationCancelled(error, signal)) {
+                  throw error;
+                }
+                const reason = error instanceof Error ? error.message : String(error);
+                dependencies.notifyWarning?.(
+                  `Recall query planner failed; using submitted-query deep reranking without changing the configured planner or reranker: ${reason}`,
+                );
+                queryPlanning = { plannedQueries: [], intent: queryPlanning.intent };
+                planSource = 'fallback';
+              }
+              const executionIdentity = queryPlanner.executionIdentity;
+              plannerIdentity = {
+                profileId: queryPlanningProfile.profileId,
+                model: queryPlanningProfile.model,
+                adapterId: executionIdentity.adapterId,
+                backend: executionIdentity.backend,
+                promptPolicy: queryPlanningProfile.promptPolicy,
+                grammarVersion: queryPlanningProfile.grammarVersion,
+                cacheIdentity: createRecallQueryPlanningCacheIdentity(
+                  searchQuery,
+                  queryPlanning.intent,
+                  queryPlanningProfile,
+                  executionIdentity,
+                ),
+              };
             }
             if (scope === RecallSearchScope.PROJECT && !invocationDirectory) {
               throw new Error(
@@ -1561,18 +1862,39 @@ export function createRecallConversationService(
                 0,
               );
             }
+            const plannedQueries = queryPlanning.plannedQueries ?? [];
+            const semanticQueryTexts = [
+              searchQuery,
+              ...plannedQueries
+                .filter(
+                  (plannedQuery) => plannedQuery.type === 'vec' || plannedQuery.type === 'hyde',
+                )
+                .map((plannedQuery) => plannedQuery.query),
+            ];
             const queryEmbeddingStartedAtMilliseconds = diagnosticsClock.monotonicMilliseconds();
-            let queryEmbedding: number[] | undefined;
+            let queryEmbeddings: number[][];
             try {
-              queryEmbedding = await embeddingProvider.embedQuery(searchQuery, signal);
+              throwIfRecallSearchCancelled(signal);
+              queryEmbeddings = await Promise.all(
+                semanticQueryTexts.map((semanticQueryText) =>
+                  embeddingProvider.embedQuery(semanticQueryText, signal),
+                ),
+              );
+              throwIfRecallSearchCancelled(signal);
             } finally {
               diagnosticMetrics.queryEmbeddingMilliseconds += Math.max(
                 diagnosticsClock.monotonicMilliseconds() - queryEmbeddingStartedAtMilliseconds,
                 0,
               );
             }
+            if (queryEmbeddings.length !== semanticQueryTexts.length) {
+              throw new Error(
+                `Recall embedding response vector count mismatch: expected ${semanticQueryTexts.length}, received ${queryEmbeddings.length}`,
+              );
+            }
+            const queryEmbedding = queryEmbeddings[0];
             if (!queryEmbedding) {
-              throw new Error('Recall embedding response missing query vector');
+              throw new Error('Recall embedding response missing submitted query vector');
             }
 
             return coordinateRecallReadWindow(
@@ -1622,30 +1944,196 @@ export function createRecallConversationService(
                   const deepRerankStartedWithMilliseconds =
                     diagnosticMetrics.deepRerankMilliseconds;
                   try {
+                    const usesQueryPlannedRanking =
+                      mode === 'query-planned' && planSource !== 'fallback';
+                    const submittedQueryCandidateLimits = usesQueryPlannedRanking
+                      ? {
+                          dense: QUERY_PLANNED_RECALL_LIST_CANDIDATE_LIMIT,
+                          lexical: QUERY_PLANNED_RECALL_LIST_CANDIDATE_LIMIT,
+                          identifier: QUERY_PLANNED_RECALL_LIST_CANDIDATE_LIMIT,
+                        }
+                      : config.searchCandidateLimits;
+                    const submittedQueryListWeight = usesQueryPlannedRanking
+                      ? QUERY_PLANNED_RECALL_SUBMITTED_QUERY_LIST_WEIGHT
+                      : 1;
+                    const maximumCurrentCandidateCount =
+                      config.searchCandidateLimits.dense +
+                      config.searchCandidateLimits.lexical +
+                      config.searchCandidateLimits.identifier;
+                    const fusedPoolLimit = usesQueryPlannedRanking
+                      ? (3 + plannedQueries.length) * QUERY_PLANNED_RECALL_LIST_CANDIDATE_LIMIT
+                      : (config.fusedPoolLimit ?? maximumCurrentCandidateCount);
+                    const rerankPoolLimit = usesQueryPlannedRanking
+                      ? QUERY_PLANNED_RECALL_GROUP_LIMIT
+                      : (config.rerankPoolLimit ?? fusedPoolLimit);
+                    if (
+                      !Number.isInteger(rerankPoolLimit) ||
+                      rerankPoolLimit < 1 ||
+                      rerankPoolLimit > fusedPoolLimit
+                    ) {
+                      throw new Error(
+                        `Recall rerank pool limit invalid: expected an integer from 1 to fused pool limit ${fusedPoolLimit}`,
+                      );
+                    }
                     throwIfRecallSearchCancelled(signal);
                     const denseCandidates = await store.searchDenseCandidates(
                       queryEmbedding,
-                      config.searchCandidateLimits.dense,
+                      submittedQueryCandidateLimits.dense,
                       projectIdentityPredicate,
                     );
                     throwIfRecallSearchCancelled(signal);
                     const lexicalCandidates = await store.searchLexicalCandidates(
                       searchQuery,
-                      config.searchCandidateLimits.lexical,
+                      submittedQueryCandidateLimits.lexical,
                       projectIdentityPredicate,
                     );
                     throwIfRecallSearchCancelled(signal);
                     const identifierCandidates = await store.searchIdentifierCandidates(
                       searchQuery,
-                      config.searchCandidateLimits.identifier,
+                      submittedQueryCandidateLimits.identifier,
                       projectIdentityPredicate,
                     );
                     throwIfRecallSearchCancelled(signal);
-                    const fusedCandidates = fuseRecallSearchCandidates(
-                      { denseCandidates, lexicalCandidates, identifierCandidates },
-                      config.searchCandidateLimits.dense +
-                        config.searchCandidateLimits.lexical +
-                        config.searchCandidateLimits.identifier,
+                    const rankedLists: RecallRankedList[] = [
+                      {
+                        source: RecallRankedListSource.DENSE,
+                        query: searchQuery,
+                        weight: submittedQueryListWeight,
+                        candidateLimit: submittedQueryCandidateLimits.dense,
+                        higherNativeScoresRankFirst: false,
+                        candidates: denseCandidates.map(({ cosineDistance, ...document }) => ({
+                          document,
+                          nativeScore: cosineDistance,
+                        })),
+                      },
+                      {
+                        source: RecallRankedListSource.LEXICAL,
+                        query: searchQuery,
+                        weight: submittedQueryListWeight,
+                        candidateLimit: submittedQueryCandidateLimits.lexical,
+                        higherNativeScoresRankFirst: true,
+                        candidates: lexicalCandidates.map(({ fullTextScore, ...document }) => ({
+                          document,
+                          nativeScore: fullTextScore,
+                        })),
+                      },
+                      {
+                        source: RecallRankedListSource.IDENTIFIER,
+                        query: searchQuery,
+                        weight: submittedQueryListWeight,
+                        candidateLimit: submittedQueryCandidateLimits.identifier,
+                        higherNativeScoresRankFirst: true,
+                        candidates: identifierCandidates.map(({ fullTextScore, ...document }) => ({
+                          document,
+                          nativeScore: fullTextScore,
+                        })),
+                      },
+                    ];
+                    const rankedListTraces: RecallRankedListTrace[] = rankedLists.map((list) => ({
+                      source: list.source,
+                      query: list.query,
+                      weight: list.weight,
+                      candidateLimit: list.candidateLimit,
+                      admittedCandidateCount: list.candidates.length,
+                    }));
+                    let semanticEmbeddingIndex = 1;
+                    for (const plannedQuery of plannedQueries) {
+                      if (plannedQuery.type === 'lex') {
+                        throwIfRecallSearchCancelled(signal);
+                        const plannedCandidates = await store.searchLexicalCandidates(
+                          plannedQuery.query,
+                          QUERY_PLANNED_RECALL_LIST_CANDIDATE_LIMIT,
+                          projectIdentityPredicate,
+                        );
+                        throwIfRecallSearchCancelled(signal);
+                        rankedLists.push({
+                          source: RecallRankedListSource.PLANNED_LEX,
+                          query: plannedQuery.query,
+                          weight: QUERY_PLANNED_RECALL_PLANNED_QUERY_LIST_WEIGHT,
+                          candidateLimit: QUERY_PLANNED_RECALL_LIST_CANDIDATE_LIMIT,
+                          higherNativeScoresRankFirst: true,
+                          candidates: plannedCandidates.map(({ fullTextScore, ...document }) => ({
+                            document,
+                            nativeScore: fullTextScore,
+                          })),
+                        });
+                        rankedListTraces.push({
+                          source: RecallRankedListSource.PLANNED_LEX,
+                          query: plannedQuery.query,
+                          weight: QUERY_PLANNED_RECALL_PLANNED_QUERY_LIST_WEIGHT,
+                          candidateLimit: QUERY_PLANNED_RECALL_LIST_CANDIDATE_LIMIT,
+                          admittedCandidateCount: plannedCandidates.length,
+                        });
+                        continue;
+                      }
+                      const plannedEmbedding = queryEmbeddings[semanticEmbeddingIndex];
+                      semanticEmbeddingIndex += 1;
+                      if (!plannedEmbedding) {
+                        throw new Error(
+                          `Recall embedding response missing ${plannedQuery.type} plan vector at entry ${semanticEmbeddingIndex - 1}`,
+                        );
+                      }
+                      throwIfRecallSearchCancelled(signal);
+                      const plannedCandidates = await store.searchDenseCandidates(
+                        plannedEmbedding,
+                        QUERY_PLANNED_RECALL_LIST_CANDIDATE_LIMIT,
+                        projectIdentityPredicate,
+                      );
+                      throwIfRecallSearchCancelled(signal);
+                      const plannedSource =
+                        plannedQuery.type === 'vec'
+                          ? RecallRankedListSource.PLANNED_VEC
+                          : RecallRankedListSource.PLANNED_HYDE;
+                      rankedLists.push({
+                        source: plannedSource,
+                        query: plannedQuery.query,
+                        weight: QUERY_PLANNED_RECALL_PLANNED_QUERY_LIST_WEIGHT,
+                        candidateLimit: QUERY_PLANNED_RECALL_LIST_CANDIDATE_LIMIT,
+                        higherNativeScoresRankFirst: false,
+                        candidates: plannedCandidates.map(({ cosineDistance, ...document }) => ({
+                          document,
+                          nativeScore: cosineDistance,
+                        })),
+                      });
+                      rankedListTraces.push({
+                        source: plannedSource,
+                        query: plannedQuery.query,
+                        weight: QUERY_PLANNED_RECALL_PLANNED_QUERY_LIST_WEIGHT,
+                        candidateLimit: QUERY_PLANNED_RECALL_LIST_CANDIDATE_LIMIT,
+                        admittedCandidateCount: plannedCandidates.length,
+                      });
+                    }
+                    const fusedCandidates = fuseRecallRankedLists(
+                      rankedLists,
+                      fusedPoolLimit,
+                      usesQueryPlannedRanking
+                        ? {
+                            rankOne: QUERY_PLANNED_RECALL_RANK_ONE_BONUS,
+                            rankTwoOrThree: QUERY_PLANNED_RECALL_RANK_TWO_OR_THREE_BONUS,
+                          }
+                        : undefined,
+                    );
+                    const createEvidenceRelation = (
+                      candidate: RecallSearchResult,
+                    ): RecallEvidenceRelation =>
+                      !invocationProject ||
+                      invocationProject.projectIdentity !==
+                        candidate.projectAttribution?.projectIdentity
+                        ? RecallEvidenceRelation.UNRESTRICTED_GLOBAL
+                        : candidate.projectAttribution.identitySource ===
+                              RecallProjectIdentitySource.CONFIGURED_PROJECT_LINEAGE ||
+                            invocationProject.identitySource ===
+                              RecallProjectIdentitySource.CONFIGURED_PROJECT_LINEAGE
+                          ? RecallEvidenceRelation.CONFIGURED_PROJECT_LINEAGE
+                          : invocationProject.identitySource ===
+                              RecallProjectIdentitySource.NON_GIT_SESSION_ORIGIN
+                            ? RecallEvidenceRelation.SAME_SESSION_ORIGIN
+                            : RecallEvidenceRelation.SAME_REPOSITORY;
+                    const candidateAdmission: RecallCandidateAdmission[] = fusedCandidates.map(
+                      (candidate) => ({
+                        ...candidate,
+                        evidenceRelation: createEvidenceRelation(candidate),
+                      }),
                     );
                     const diagnosticReranker: RecallRerankingProvider = {
                       async rerankDocuments(rerankerQuery, documents, rerankerSignal) {
@@ -1671,42 +2159,52 @@ export function createRecallConversationService(
                         }
                       },
                     };
-                    const rankedResults =
-                      mode === 'deep-rerank'
-                        ? await rerankRecallSearchResults({
-                            query: searchQuery,
-                            candidates: fusedCandidates,
-                            resultLimit: limit,
-                            reranker: diagnosticReranker,
-                            fetchConversationChunks: store.fetchConversationChunks,
-                            ...(signal ? { signal } : {}),
-                          })
-                        : rankFusedRecallSearchResults(
-                            fusedCandidates,
-                            limit,
-                            store.fetchConversationChunks,
-                          );
+                    const finalResultLimit = usesQueryPlannedRanking
+                      ? Math.min(limit, QUERY_PLANNED_RECALL_FINAL_RESULT_LIMIT)
+                      : limit;
+                    let rankedResults: RankedRecallSearchResult[];
+                    if (mode === 'hybrid') {
+                      rankedResults = rankFusedRecallSearchResults(
+                        fusedCandidates,
+                        finalResultLimit,
+                        store.fetchConversationChunks,
+                      );
+                    } else {
+                      try {
+                        rankedResults = await rerankRecallSearchResults({
+                          query: createRecallRerankerQuery(searchQuery, queryPlanning.intent),
+                          candidates: fusedCandidates,
+                          rerankPoolLimit,
+                          resultLimit: finalResultLimit,
+                          reranker: diagnosticReranker,
+                          fetchConversationChunks: store.fetchConversationChunks,
+                          ...(usesQueryPlannedRanking
+                            ? { useQueryPlannedPositionBlend: true }
+                            : {}),
+                          ...(signal ? { signal } : {}),
+                        });
+                      } catch (error: unknown) {
+                        if (!usesQueryPlannedRanking || isRecallOperationCancelled(error, signal)) {
+                          throw error;
+                        }
+                        const reason = error instanceof Error ? error.message : String(error);
+                        throw new Error(
+                          `Recall query-planned reranking failed: verify the configured reranker and retry; ${reason}`,
+                          { cause: error },
+                        );
+                      }
+                    }
                     const results: RecallConversationSearchResult[] = rankedResults.map(
                       (result) => ({
                         ...result,
-                        evidenceRelation:
-                          !invocationProject ||
-                          invocationProject.projectIdentity !==
-                            result.projectAttribution?.projectIdentity
-                            ? RecallEvidenceRelation.UNRESTRICTED_GLOBAL
-                            : result.projectAttribution.identitySource ===
-                                  RecallProjectIdentitySource.CONFIGURED_PROJECT_LINEAGE ||
-                                invocationProject.identitySource ===
-                                  RecallProjectIdentitySource.CONFIGURED_PROJECT_LINEAGE
-                              ? RecallEvidenceRelation.CONFIGURED_PROJECT_LINEAGE
-                              : invocationProject.identitySource ===
-                                  RecallProjectIdentitySource.NON_GIT_SESSION_ORIGIN
-                                ? RecallEvidenceRelation.SAME_SESSION_ORIGIN
-                                : RecallEvidenceRelation.SAME_REPOSITORY,
+                        evidenceRelation: createEvidenceRelation(result),
                       }),
                     );
+                    const completedRerankerExecutionIdentity =
+                      readCurrentRerankerExecutionIdentity();
                     return {
                       results,
+                      candidateAdmission,
                       totalChunks: store.count(),
                       searchPolicy: {
                         scope,
@@ -1714,22 +2212,60 @@ export function createRecallConversationService(
                         rankingMode: mode,
                         rankFusionVersion: RECALL_RANK_FUSION_VERSION,
                         reciprocalRankConstant: RECALL_RRF_RANK_CONSTANT,
-                        rerankPolicyVersion:
-                          mode === 'deep-rerank' ? RECALL_RERANK_POLICY_VERSION : null,
-                        rerankerModel:
-                          mode === 'deep-rerank' && rerankingProfile
-                            ? rerankingProfile.model
+                        rerankPolicyVersion: usesQueryPlannedRanking
+                          ? QUERY_PLANNED_RECALL_RERANK_POLICY_VERSION
+                          : mode !== 'hybrid'
+                            ? RECALL_RERANK_POLICY_VERSION
                             : null,
+                        rerankerModel:
+                          mode !== 'hybrid' && rerankingProfile ? rerankingProfile.model : null,
                         rerankerIdentity:
-                          mode === 'deep-rerank' && rerankingProfile && rerankerExecutionIdentity
+                          mode !== 'hybrid' &&
+                          rerankingProfile &&
+                          completedRerankerExecutionIdentity
                             ? {
                                 profileId: rerankingProfile.profileId,
-                                adapterId: rerankerExecutionIdentity.adapterId,
-                                cacheIdentity: rerankerExecutionIdentity.cacheIdentity,
+                                adapterId: completedRerankerExecutionIdentity.adapterId,
+                                cacheIdentity: completedRerankerExecutionIdentity.cacheIdentity,
                               }
                             : null,
                         activeBranchPrior: RECALL_ACTIVE_BRANCH_PRIOR,
-                        candidateLimits: { ...config.searchCandidateLimits },
+                        candidateLimits: { ...submittedQueryCandidateLimits },
+                        fusedPoolLimit,
+                        rerankPoolLimit,
+                        finalResultLimit,
+                        ...(mode === 'query-planned'
+                          ? {
+                              queryPlan: {
+                                source: planSource,
+                                plannerIdentity,
+                                intent: queryPlanning.intent,
+                                plannedQueries,
+                                rankedLists: rankedListTraces,
+                                fusionPolicy: {
+                                  reciprocalRankConstant: RECALL_RRF_RANK_CONSTANT,
+                                  submittedQueryListWeight,
+                                  plannedQueryListWeight:
+                                    QUERY_PLANNED_RECALL_PLANNED_QUERY_LIST_WEIGHT,
+                                  rankOneBonus: usesQueryPlannedRanking
+                                    ? QUERY_PLANNED_RECALL_RANK_ONE_BONUS
+                                    : 0,
+                                  rankTwoOrThreeBonus: usesQueryPlannedRanking
+                                    ? QUERY_PLANNED_RECALL_RANK_TWO_OR_THREE_BONUS
+                                    : 0,
+                                },
+                                rerankerProfile: {
+                                  model: rerankingProfile?.model ?? config.rerankerModel,
+                                  policyVersion: usesQueryPlannedRanking
+                                    ? QUERY_PLANNED_RECALL_RERANK_POLICY_VERSION
+                                    : RECALL_RERANK_POLICY_VERSION,
+                                  fusedRankBlend: usesQueryPlannedRanking
+                                    ? QUERY_PLANNED_RECALL_FUSED_RANK_BLEND
+                                    : [],
+                                },
+                              },
+                            }
+                          : {}),
                       },
                     };
                   } finally {

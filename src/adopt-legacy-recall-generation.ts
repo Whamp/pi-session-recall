@@ -6,18 +6,11 @@ import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 
 import { coordinateRecallWriteWindow } from './coordinate-recall-write-window.js';
-import { RecallGenerationCutoverState } from './enums.js';
 import {
-  createRecallActiveGenerationPointer,
   readRecallActiveGenerationPointer,
   readRecallGenerationRegistry,
-  writeRecallActiveGenerationPointer,
-  writeRecallBacklogSummary,
-  writeRecallGenerationRegistry,
-  RECALL_BACKLOG_SUMMARY_VERSION,
-  RECALL_GENERATION_REGISTRY_VERSION,
-  type RecallGenerationRegistry,
 } from './recall-generation-state.js';
+import { adoptLegacyRecallGenerationTransition } from './recall-generation-transitions.js';
 import { readLegacyRecallIndexManifestV5 } from './recall-index-manifest.js';
 import { SESSION_IMPORT_POLICY_VERSION } from './import-session-jsonl.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
@@ -166,35 +159,6 @@ async function assertLegacyAdoptionFilesystem(
   }
 }
 
-function createLegacyGenerationRegistry(
-  journal: LegacyAdoptionJournal,
-  pointerChecksum: string,
-): RecallGenerationRegistry {
-  return {
-    version: RECALL_GENERATION_REGISTRY_VERSION,
-    activeGenerationId: journal.generationId,
-    buildingGenerationId: null,
-    rollbackGenerationId: null,
-    activePointerChecksum: pointerChecksum,
-    generations: [
-      {
-        generationId: journal.generationId,
-        state: RecallGenerationCutoverState.LEGACY_READ_ONLY,
-        indexManifestVersion: 5,
-        markerSchemaVersion: null,
-        sessionProjectionSchemaVersion: null,
-        indexManifestFingerprint: journal.indexManifestFingerprint,
-        rebuildStartedAtEpochMilliseconds: journal.adoptedAtEpochMilliseconds,
-        stateChangedAtEpochMilliseconds: journal.adoptedAtEpochMilliseconds,
-        rebuildStartMarkerId: null,
-        rebuildMarkerWatermark: [],
-        validatedAtEpochMilliseconds: journal.adoptedAtEpochMilliseconds,
-        retireAfterEpochMilliseconds: null,
-      },
-    ],
-  };
-}
-
 function assertLegacyAdoptionJournalPaths(
   options: AdoptLegacyRecallGenerationOptions,
   journal: LegacyAdoptionJournal,
@@ -261,41 +225,13 @@ async function completeLegacyAdoptionJournal(
   const manifestPath = join(generationDirectory, 'index-manifest.json');
   await readLegacyRecallIndexManifestV5(manifestPath);
   await options.validateLegacyDatabase(join(generationDirectory, 'zvec'));
-  const pointer = createRecallActiveGenerationPointer(journal.generationId);
-  const [existingPointer, existingRegistry] = await Promise.all([
-    readRecallActiveGenerationPointer(options.activeGenerationPointerPath),
-    readRecallGenerationRegistry(options.generationRegistryPath),
-  ]);
-  if (existingPointer !== null && existingPointer.checksum !== pointer.checksum) {
-    throw new Error('Recall legacy adoption journal conflicts with the active pointer');
-  }
-  if (
-    existingRegistry !== null &&
-    (existingRegistry.activeGenerationId !== journal.generationId ||
-      existingRegistry.activePointerChecksum !== pointer.checksum)
-  ) {
-    throw new Error('Recall legacy adoption journal conflicts with the generation registry');
-  }
-  if (existingRegistry === null) {
-    await writeRecallGenerationRegistry(
-      options.generationRegistryPath,
-      createLegacyGenerationRegistry(journal, pointer.checksum),
-    );
-  }
-  if (existingPointer === null) {
-    await writeRecallActiveGenerationPointer(options.activeGenerationPointerPath, pointer);
-  }
-  await writeRecallBacklogSummary(options.backlogSummaryPath, {
-    version: RECALL_BACKLOG_SUMMARY_VERSION,
-    pendingEligibleSessionCount: 0,
-    oldestEligibleMarkerAgeMilliseconds: null,
-    activeGenerationId: journal.generationId,
-    buildingGenerationId: null,
-    generationState: RecallGenerationCutoverState.LEGACY_READ_ONLY,
-    activeGenerationAgeMilliseconds: 0,
-    rebuildAgeMilliseconds: 0,
-    lastFailureCategory: null,
-    observedAtEpochMilliseconds: journal.adoptedAtEpochMilliseconds,
+  await adoptLegacyRecallGenerationTransition({
+    activeGenerationPointerPath: options.activeGenerationPointerPath,
+    generationRegistryPath: options.generationRegistryPath,
+    backlogSummaryPath: options.backlogSummaryPath,
+    generationId: journal.generationId,
+    indexManifestFingerprint: journal.indexManifestFingerprint,
+    adoptedAtEpochMilliseconds: journal.adoptedAtEpochMilliseconds,
   });
   await writeDurableLegacyAdoptionEvidence(options.backupEvidencePath, {
     ...journal,

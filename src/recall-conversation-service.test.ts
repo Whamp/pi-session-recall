@@ -49,7 +49,10 @@ import {
   encodeRecallActiveGenerationPointer,
   encodeRecallBacklogSummary,
   readRecallActiveGenerationSelection,
+  readRecallGenerationRegistry,
   RECALL_BACKLOG_SUMMARY_VERSION,
+  RECALL_GENERATION_REGISTRY_VERSION,
+  writeRecallGenerationRegistry,
 } from './recall-generation-state.js';
 import {
   createRecallConversationService as createProductionRecallConversationService,
@@ -951,6 +954,177 @@ void test('manual rebuild diagnostics isolate final database optimization durati
   assert.equal(records[1]?.unattributedMilliseconds, 18);
 });
 
+void test('approved rebuild excludes physical sources added after snapshot approval', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-service-rebuild-approved-sources-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionsDirectory = join(directory, 'sessions');
+  await mkdir(sessionsDirectory);
+  const approvedSessionPath = join(sessionsDirectory, 'approved-session.jsonl');
+  await writeFile(
+    approvedSessionPath,
+    `${JSON.stringify({
+      type: 'session',
+      version: 3,
+      id: 'approved-session',
+      timestamp: '2026-07-27T10:00:00.000Z',
+      cwd: '/workspace/approved',
+    })}\n${JSON.stringify({
+      type: 'message',
+      id: 'approved-entry',
+      parentId: null,
+      timestamp: '2026-07-27T10:00:01.000Z',
+      message: { role: 'user', content: 'approved searchable evidence' },
+    })}\n`,
+  );
+  const config = createTestConfig(directory, sessionsDirectory);
+  await mkdir(join(config.generationRootDirectory, TEST_ACTIVE_GENERATION_ID), {
+    recursive: true,
+  });
+  await writeRecallIndexManifest(
+    config.manifestPath,
+    createRecallIndexManifest({
+      embeddingIdentity: {
+        requestModel: config.embeddingModel,
+        servedModelId: config.embeddingServedModelId,
+        artifact: config.embeddingArtifact,
+        dimensions: config.embeddingDimensions,
+        quantization: config.embeddingQuantization,
+        pooling: config.embeddingPooling,
+      },
+      canaryEmbedding: [1, 0, 0],
+    }),
+  );
+  const storedChunksByDatabasePath = new Map<
+    string,
+    Map<string, IndexedSessionConversationChunk>
+  >();
+  let injectUnexpectedEvidence = false;
+  const service = createRecallConversationService(config, {
+    embeddings: {
+      async embedTexts(texts) {
+        return texts.map(() => [1, 0, 0]);
+      },
+    },
+    async loadTokenizer() {
+      return tokenizer;
+    },
+    openStore(mode, databasePath = config.databasePath) {
+      void mode;
+      const storedChunks =
+        storedChunksByDatabasePath.get(databasePath) ??
+        new Map<string, IndexedSessionConversationChunk>();
+      storedChunksByDatabasePath.set(databasePath, storedChunks);
+      return {
+        async upsertChunks(chunks) {
+          for (const chunk of chunks) {
+            storedChunks.set(chunk.id, chunk);
+          }
+          const approvedChunk = chunks[0];
+          if (
+            injectUnexpectedEvidence &&
+            databasePath !== config.databasePath &&
+            approvedChunk !== undefined
+          ) {
+            storedChunks.set('unexpected-rebuild-evidence', {
+              ...approvedChunk,
+              id: 'unexpected-rebuild-evidence',
+              checksum: 'f'.repeat(64),
+              sessionPath: join(sessionsDirectory, 'unapproved-session.jsonl'),
+            });
+            injectUnexpectedEvidence = false;
+          }
+        },
+        async deleteChunks(ids) {
+          for (const id of ids) {
+            storedChunks.delete(id);
+          }
+        },
+        async listChunkIdsByPhysicalSessionProjectionId(physicalSessionProjectionId, limit) {
+          return [...storedChunks.values()]
+            .filter((chunk) => chunk.physicalSessionProjectionId === physicalSessionProjectionId)
+            .map(({ id }) => id)
+            .slice(0, limit);
+        },
+        async searchDenseCandidates() {
+          return [];
+        },
+        async searchLexicalCandidates() {
+          return [];
+        },
+        async searchIdentifierCandidates() {
+          return [];
+        },
+        fetchConversationChunks(ids) {
+          const chunks = new Map<string, IndexedSessionConversationChunk>();
+          for (const id of ids) {
+            const chunk = storedChunks.get(id);
+            if (chunk !== undefined) {
+              chunks.set(id, chunk);
+            }
+          }
+          return chunks;
+        },
+        fetchVectors() {
+          return new Map();
+        },
+        groupDenseCandidates() {
+          return [];
+        },
+        addColumn() {},
+        alterColumn() {},
+        createIndex() {},
+        async optimize() {},
+        close() {},
+        count() {
+          return storedChunks.size;
+        },
+      };
+    },
+  });
+
+  assert.equal((await service.index({ rebuild: true })).totalChunks, 1);
+  await writeFile(
+    join(sessionsDirectory, 'unapproved-session.jsonl'),
+    `${JSON.stringify({
+      type: 'session',
+      version: 3,
+      id: 'unapproved-session',
+      timestamp: '2026-07-27T10:01:00.000Z',
+      cwd: '/workspace/unapproved',
+    })}\n${JSON.stringify({
+      type: 'message',
+      id: 'unapproved-entry',
+      parentId: null,
+      timestamp: '2026-07-27T10:01:01.000Z',
+      message: { role: 'assistant', content: 'unapproved searchable evidence' },
+    })}\n`,
+  );
+
+  const rebuilt = await service.index({ rebuild: true });
+
+  assert.equal(rebuilt.totalChunks, 1);
+  assert.equal(rebuilt.indexSummary.scannedSessions, 1);
+
+  const activeGenerationBeforeUnexpectedEvidence = await readRecallActiveGenerationSelection(
+    config.activeGenerationPointerPath,
+    config.generationRootDirectory,
+  );
+  injectUnexpectedEvidence = true;
+  await assert.rejects(
+    () => service.index({ rebuild: true }),
+    /Recall rebuild indexed evidence outside approved snapshot/u,
+  );
+  assert.equal(
+    (
+      await readRecallActiveGenerationSelection(
+        config.activeGenerationPointerPath,
+        config.generationRootDirectory,
+      )
+    ).activeGenerationId,
+    activeGenerationBeforeUnexpectedEvidence.activeGenerationId,
+  );
+});
+
 void test('rebuild preserves the active generation when an approved physical source disappears', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'recall-service-rebuild-source-disappears-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -1122,6 +1296,109 @@ void test('rebuild preserves the active generation when an approved physical sou
       )
     ).activeGenerationId,
     TEST_ACTIVE_GENERATION_ID,
+  );
+});
+
+void test('staging discard holds the write window while removing its registry entry', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-service-discard-registry-lock-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionsDirectory = join(directory, 'sessions');
+  await mkdir(sessionsDirectory);
+  const config = createTestConfig(directory, sessionsDirectory);
+  const activePointer = createRecallActiveGenerationPointer(TEST_ACTIVE_GENERATION_ID);
+  const stagingGenerationId = 'generation_staging';
+  const stagingDirectory = join(config.generationRootDirectory, stagingGenerationId);
+  await mkdir(stagingDirectory, { recursive: true });
+  const stagingFileIndexes = [...Array.from({ length: 2_000 }).keys()];
+  await Promise.all(
+    stagingFileIndexes.map((index) =>
+      writeFile(join(stagingDirectory, `discard-${index}.tmp`), 'discard'),
+    ),
+  );
+  const activeEntry = {
+    generationId: TEST_ACTIVE_GENERATION_ID,
+    state: RecallGenerationCutoverState.ACTIVE,
+    embeddingProfileId: 'embedding-profile-v1',
+    indexManifestVersion: 6 as const,
+    markerSchemaVersion: 1 as const,
+    sessionProjectionSchemaVersion: 3 as const,
+    indexManifestFingerprint: 'a'.repeat(64),
+    rebuildStartedAtEpochMilliseconds: 1,
+    stateChangedAtEpochMilliseconds: 2,
+    rebuildStartMarkerId: null,
+    rebuildMarkerWatermark: [],
+    validatedAtEpochMilliseconds: 2,
+    retireAfterEpochMilliseconds: null,
+  };
+  const stagingEntry = {
+    ...activeEntry,
+    generationId: stagingGenerationId,
+    state: RecallGenerationCutoverState.FAILED,
+    indexManifestFingerprint: 'b'.repeat(64),
+    rebuildStartedAtEpochMilliseconds: 3,
+    stateChangedAtEpochMilliseconds: 4,
+    validatedAtEpochMilliseconds: null,
+  };
+  await writeRecallGenerationRegistry(config.generationRegistryPath, {
+    version: RECALL_GENERATION_REGISTRY_VERSION,
+    activeGenerationId: TEST_ACTIVE_GENERATION_ID,
+    buildingGenerationId: null,
+    rollbackGenerationId: null,
+    activePointerChecksum: activePointer.checksum,
+    generations: [activeEntry, stagingEntry],
+  });
+  const service = createRecallConversationService(config, {
+    embeddings: {
+      async embedTexts(texts) {
+        return texts.map(() => [1, 0, 0]);
+      },
+    },
+    async loadTokenizer() {
+      return tokenizer;
+    },
+  });
+
+  const discard = service.discardStagingIndexGeneration();
+  while (
+    (await readRecallGenerationRegistry(config.generationRegistryPath))?.generations.find(
+      ({ generationId }) => generationId === stagingGenerationId,
+    )?.state !== RecallGenerationCutoverState.RETIRED
+  ) {
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 1);
+    });
+  }
+  await coordinateRecallWriteWindow(
+    { lockPath: config.lockPath, allowRecovery: false },
+    async () => {
+      while (existsSync(stagingDirectory)) {
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, 1);
+        });
+      }
+      const registry = await readRecallGenerationRegistry(config.generationRegistryPath);
+      assert.ok(registry);
+      assert.ok(
+        registry.generations.some(({ generationId }) => generationId === stagingGenerationId),
+      );
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 50);
+      });
+      assert.ok(
+        (await readRecallGenerationRegistry(config.generationRegistryPath))?.generations.some(
+          ({ generationId }) => generationId === stagingGenerationId,
+        ),
+        'discard must not rewrite the registry while another writer owns the write window',
+      );
+    },
+  );
+
+  assert.equal(await discard, true);
+  assert.equal(
+    (await readRecallGenerationRegistry(config.generationRegistryPath))?.generations.some(
+      ({ generationId }) => generationId === stagingGenerationId,
+    ),
+    false,
   );
 });
 

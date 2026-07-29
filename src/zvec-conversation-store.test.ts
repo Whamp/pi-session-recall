@@ -349,6 +349,34 @@ void test('fresh unoptimized 1, 8, and 32 document batches survive close and rea
   }
 });
 
+void test('physical session projection enumeration supports complete rebuild validation', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-zvec-physical-complete-'));
+  const store = openZvecConversationStore({
+    databasePath: join(directory, 'collection'),
+    dimensions: 3,
+  });
+  t.after(async () => {
+    store.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  const evidenceIndexes = [...Array.from({ length: 33 }).keys()];
+  await store.upsertChunks(
+    evidenceIndexes.map((index) => ({
+      ...baseChunk,
+      id: `physical-complete-evidence-${index.toString().padStart(2, '0')}`,
+      physicalSessionProjectionId: 'physical_complete',
+      embedding: [1, 0, 0],
+    })),
+  );
+
+  const physicalEvidenceIds = await store.listChunkIdsByPhysicalSessionProjectionId(
+    'physical_complete',
+    34,
+  );
+
+  assert.equal(physicalEvidenceIds.length, 33);
+});
+
 void test('physical session projection enumeration returns exact bounded evidence occurrence IDs', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'recall-zvec-physical-filter-'));
   const store = openZvecConversationStore({

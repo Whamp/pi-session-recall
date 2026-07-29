@@ -127,6 +127,7 @@ import {
 } from './recall-rebuild-ownership-lock.js';
 import {
   createLogicalSessionProjectionId,
+  type PhysicalSessionProjection,
   type RecallSessionProjection,
 } from './recall-session-projection.js';
 import { readRecallSessionSourceRange } from './read-recall-session-append-delta.js';
@@ -771,6 +772,77 @@ async function readApprovedRecallRebuildSnapshot(
     return { projections, eligibleContributorEntryIdsBySessionPath };
   } finally {
     store.close();
+  }
+}
+
+async function validateApprovedRebuildEvidenceMembership(
+  store: ZvecConversationStore,
+  approvedRebuildSnapshot: ApprovedRecallRebuildSnapshot,
+  totalChunkCount: number,
+): Promise<void> {
+  const physicalProjectionBySourcePath = new Map<string, PhysicalSessionProjection>();
+  for (const projection of approvedRebuildSnapshot.projections) {
+    if (projection.projectionKind === RecallSessionProjectionKind.PHYSICAL_SESSION) {
+      physicalProjectionBySourcePath.set(projection.sourcePath, projection);
+    }
+  }
+
+  const indexedChunkIds = new Set<string>();
+  for (const [
+    sourcePath,
+    eligibleByLogicalSessionId,
+  ] of approvedRebuildSnapshot.eligibleContributorEntryIdsBySessionPath) {
+    const physicalProjection = physicalProjectionBySourcePath.get(sourcePath);
+    if (physicalProjection === undefined) {
+      throw new Error(`Recall rebuild approved physical projection missing: ${sourcePath}`);
+    }
+    const chunkIds = await store.listChunkIdsByPhysicalSessionProjectionId(
+      physicalProjection.projectionId,
+      totalChunkCount + 1,
+    );
+    const chunks = store.fetchConversationChunks(chunkIds);
+    if (chunks.size !== chunkIds.length) {
+      throw new Error(`Recall rebuild indexed evidence could not be reloaded: ${sourcePath}`);
+    }
+    const unexpectedSourceChunk = [...chunks.values()].find(
+      (chunk) =>
+        chunk.sessionPath !== sourcePath ||
+        chunk.physicalSessionProjectionId !== physicalProjection.projectionId,
+    );
+    if (unexpectedSourceChunk !== undefined) {
+      throw new Error(
+        `Recall rebuild indexed evidence outside approved snapshot: ${unexpectedSourceChunk.sessionPath}`,
+      );
+    }
+    const approvedContributorEntryIds = new Set(
+      [...eligibleByLogicalSessionId.values()].flatMap((entryIds) => [...entryIds]),
+    );
+    const indexedContributorEntryIds = new Set<string>();
+    for (const [chunkId, chunk] of chunks) {
+      indexedChunkIds.add(chunkId);
+      for (const { value } of chunk.contributingEntryIds) {
+        indexedContributorEntryIds.add(value);
+      }
+    }
+    const unexpectedContributorEntryId = [...indexedContributorEntryIds].find(
+      (entryId) => !approvedContributorEntryIds.has(entryId),
+    );
+    if (unexpectedContributorEntryId !== undefined) {
+      throw new Error(
+        `Recall rebuild indexed evidence outside approved snapshot: ${sourcePath}:${unexpectedContributorEntryId}`,
+      );
+    }
+    const missingContributorEntryId = [...approvedContributorEntryIds].find(
+      (entryId) => !indexedContributorEntryIds.has(entryId),
+    );
+    if (missingContributorEntryId !== undefined) {
+      throw new Error(
+        `Recall rebuild approved evidence was not reproduced: ${sourcePath}:${missingContributorEntryId}`,
+      );
+    }
+  }
+  if (indexedChunkIds.size !== totalChunkCount) {
+    throw new Error('Recall rebuild indexed evidence outside approved snapshot: unknown source');
   }
 }
 
@@ -1815,6 +1887,19 @@ export function createRecallConversationService(
                     );
                   }
                 }
+                if (approvedRebuildSnapshot != null) {
+                  const extraSourcePath = [...reproducedApprovedSourcePaths].find(
+                    (sourcePath) =>
+                      !approvedRebuildSnapshot.eligibleContributorEntryIdsBySessionPath.has(
+                        sourcePath,
+                      ),
+                  );
+                  if (extraSourcePath !== undefined) {
+                    throw new Error(
+                      `Recall rebuild indexed physical source outside approved snapshot: ${extraSourcePath}`,
+                    );
+                  }
+                }
                 const result = { indexSummary, totalChunks: store.count() };
                 if (approvedRebuildSnapshot != null) {
                   await validateApprovedRebuildSourceFingerprints(
@@ -1907,6 +1992,13 @@ export function createRecallConversationService(
               try {
                 if (validationStore.count() !== result.totalChunks) {
                   throw new Error('Recall replacement generation count changed during validation');
+                }
+                if (approvedRebuildSnapshot != null) {
+                  await validateApprovedRebuildEvidenceMembership(
+                    validationStore,
+                    approvedRebuildSnapshot,
+                    result.totalChunks,
+                  );
                 }
               } finally {
                 validationStore.close();
@@ -2152,17 +2244,22 @@ export function createRecallConversationService(
           discardedGenerationId,
         );
         await rm(stagingGenerationDirectory, { recursive: true, force: true });
-        const registryAfterRemoval = await readRecallGenerationRegistry(
-          config.generationRegistryPath,
+        await coordinateRecallWriteWindow(
+          { lockPath: config.lockPath, allowRecovery: false },
+          async () => {
+            const registryAfterRemoval = await readRecallGenerationRegistry(
+              config.generationRegistryPath,
+            );
+            if (registryAfterRemoval) {
+              await writeRecallGenerationRegistry(config.generationRegistryPath, {
+                ...registryAfterRemoval,
+                generations: registryAfterRemoval.generations.filter(
+                  ({ generationId }) => generationId !== discardedGenerationId,
+                ),
+              });
+            }
+          },
         );
-        if (registryAfterRemoval) {
-          await writeRecallGenerationRegistry(config.generationRegistryPath, {
-            ...registryAfterRemoval,
-            generations: registryAfterRemoval.generations.filter(
-              ({ generationId }) => generationId !== discardedGenerationId,
-            ),
-          });
-        }
         await markRecallBackgroundIndexGenerationDiscarded(backgroundIndexCoordinatorConfig);
         workerSignal.signalDetachedWorker();
         return true;

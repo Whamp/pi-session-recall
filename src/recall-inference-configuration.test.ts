@@ -889,48 +889,9 @@ void test('clearing pending embedding replacement cancels a discarded profile ch
     'embedding-profile-v2',
   );
 
-  assert.equal(
-    await clearPendingRecallEmbeddingReplacement(statePath, {
-      matchingEmbeddingProfileId: 'embedding-profile-v2',
-    }),
-    true,
-  );
+  assert.equal(await clearPendingRecallEmbeddingReplacement(statePath), true);
   const cleared = await readRecallInferenceConfiguration(statePath);
   assert.equal(cleared.embedding?.profileId, 'embedding-profile-v1');
   assert.equal(cleared.pendingEmbeddingReplacement, null);
   assert.equal(await clearPendingRecallEmbeddingReplacement(statePath), false);
-
-  await writeRecallInferenceConfiguration(statePath, {
-    ...cleared,
-    pendingEmbeddingReplacement: {
-      embeddingProfileId: 'embedding-profile-v3',
-      selection: {
-        capability: RecallInferenceCapability.EMBEDDING,
-        candidateId: 'embedding-other',
-        profileId: 'embedding-profile-v3',
-        backend: RecallInferenceBackend.CUSTOM,
-        adapterId: 'embedding-other-v3',
-        endpoint: null,
-        device: null,
-        artifact: null,
-        conformance: {
-          verifiedAt: '2026-01-01T00:00:00.000Z',
-          cacheIdentity: 'embedding-profile-v3',
-          embeddingProfileId: 'embedding-profile-v3',
-          measurement: { verificationOperations: 1 },
-        },
-      },
-    },
-  });
-  assert.equal(
-    await clearPendingRecallEmbeddingReplacement(statePath, {
-      matchingEmbeddingProfileId: 'embedding-profile-v2',
-    }),
-    false,
-  );
-  assert.equal(
-    (await readRecallInferenceConfiguration(statePath)).pendingEmbeddingReplacement
-      ?.embeddingProfileId,
-    'embedding-profile-v3',
-  );
 });

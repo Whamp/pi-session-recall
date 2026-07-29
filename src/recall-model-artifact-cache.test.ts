@@ -14,6 +14,29 @@ import {
 } from './recall-model-artifact.test-utils.js';
 import { createRecommendedEmbeddingGemmaModelProfile } from './recall-model-profiles.js';
 
+void test('model artifact cache rejects unsafe profile path components', () => {
+  const profile = createRecommendedEmbeddingGemmaModelProfile();
+  const unsafeProfiles = [
+    { ...profile, profileId: '../victim' },
+    { ...profile, profileId: '.' },
+    { ...profile, source: { ...profile.source, revision: '/absolute' } },
+    { ...profile, source: { ...profile.source, revision: 'revision\\child' } },
+    { ...profile, source: { ...profile.source, artifact: 'nested/model.gguf' } },
+    { ...profile, source: { ...profile.source, artifact: '..' } },
+  ];
+
+  for (const unsafeProfile of unsafeProfiles) {
+    assert.throws(
+      () =>
+        createRecallModelArtifactCache({
+          cacheDirectory: '/tmp/recall-model-cache',
+          profile: unsafeProfile,
+        }),
+      /Recall model artifact cache path component invalid/u,
+    );
+  }
+});
+
 void test('model artifact cache reports missing and refuses download without explicit approval', async (t) => {
   const cacheDirectory = await mkdtemp(join(tmpdir(), 'recall-model-cache-'));
   t.after(async () => {

@@ -114,6 +114,29 @@ void test('private recall evaluation config replaces every production mutable an
     /work area overlaps a production path/u,
   );
 
+  await mkdir(workDirectory);
+  const symlinkedProductionDataDirectory = join(directory, 'production-recall-alias');
+  await symlink(workDirectory, symlinkedProductionDataDirectory, 'dir');
+  const symlinkedProductionConfig = await loadRecallConversationConfig({
+    homeDirectory: directory,
+    environment: {
+      PI_RECALL_DATA_DIRECTORY: symlinkedProductionDataDirectory,
+      PI_RECALL_SESSIONS_DIRECTORY: join(directory, 'production-sessions'),
+    },
+  });
+  assert.throws(
+    () =>
+      createPrivateRecallEvaluationConfig({
+        baseConfig: symlinkedProductionConfig,
+        evaluationRootDirectory,
+        workDirectory,
+        sessionsDirectory: snapshotDirectory,
+        immutableInputPaths: [snapshotDirectory],
+        candidateLimits: { dense: 8, lexical: 8, identifier: 8 },
+      }),
+    /work area overlaps a production path/u,
+  );
+
   const physicalPrivateDirectory = join(directory, 'physical-private-evaluation');
   const externalDirectory = join(directory, 'external');
   await mkdir(physicalPrivateDirectory, { recursive: true });

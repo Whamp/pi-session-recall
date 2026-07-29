@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { lstatSync, realpathSync } from 'node:fs';
 import { mkdir, rename, rm, writeFile } from 'node:fs/promises';
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 import { RecallDiagnosticsMode } from './enums.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
@@ -61,6 +61,26 @@ function assertPrivateRecallEvaluationPathHasNoSymlinkAncestor(
         break;
       }
       throw error;
+    }
+  }
+}
+
+function resolvePhysicalPathFromExistingAncestor(path: string): string {
+  let existingAncestor = resolve(path);
+  const missingPathSegments: string[] = [];
+  while (true) {
+    try {
+      return resolve(realpathSync(existingAncestor), ...missingPathSegments);
+    } catch (error) {
+      if (readNodeErrorCode(error) !== 'ENOENT') {
+        throw error;
+      }
+      const parentDirectory = dirname(existingAncestor);
+      if (parentDirectory === existingAncestor) {
+        throw error;
+      }
+      missingPathSegments.unshift(basename(existingAncestor));
+      existingAncestor = parentDirectory;
     }
   }
 }
@@ -129,13 +149,14 @@ export function createPrivateRecallEvaluationConfig(
     throw new Error('Private recall evaluation work area escaped its validated evaluation root');
   }
   assertPrivateRecallEvaluationPathHasNoSymlinkAncestor(evaluationRootDirectory, workDirectory);
+  const physicalWorkDirectory = resolvePhysicalPathFromExistingAncestor(workDirectory);
   for (const [pathName, productionPath] of Object.entries(
     readProductionRecallProtectedPaths(options.baseConfig),
   )) {
-    const resolvedProductionPath = resolve(productionPath);
+    const physicalProductionPath = resolvePhysicalPathFromExistingAncestor(productionPath);
     if (
-      isPathInsideRecallEvaluationArea(resolvedProductionPath, workDirectory) ||
-      isPathInsideRecallEvaluationArea(workDirectory, resolvedProductionPath)
+      isPathInsideRecallEvaluationArea(physicalProductionPath, physicalWorkDirectory) ||
+      isPathInsideRecallEvaluationArea(physicalWorkDirectory, physicalProductionPath)
     ) {
       throw new Error(
         `Private recall evaluation work area overlaps a production path: ${pathName}`,

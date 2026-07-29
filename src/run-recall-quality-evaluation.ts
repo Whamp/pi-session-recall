@@ -13,10 +13,9 @@ import {
 import {
   RECALL_RANK_FUSION_VERSION,
   RECALL_RRF_RANK_CONSTANT,
-} from './fuse-recall-search-candidates.js';
+} from './fuse-recall-ranked-lists.js';
 import type { ConversationIndexSummary } from './incremental-session-indexer.js';
 import { createLocalEmbeddingClient, type LocalEmbeddingClient } from './local-embedding-client.js';
-import type { LocalRerankerClient } from './local-reranker-client.js';
 import {
   measureRecallQuality,
   type RecallQualitySearchObservation,
@@ -31,12 +30,22 @@ import {
   type RecallConversationDependencies,
   type RecallConversationSearchOptions,
 } from './recall-conversation-service.js';
+import type {
+  RecallIdentifiedQueryPlanningProvider,
+  RecallIdentifiedRerankingProvider,
+  RecallQueryPlanningExecutionIdentity,
+  RecallRerankingExecutionIdentity,
+} from './recall-inference-capabilities.js';
 import {
   selectRecallQualityPolicy,
   type RecallQualityConfigurationMeasurement,
   type RecallQualityPolicySelection,
 } from './select-recall-quality-policy.js';
 import { RECALL_ACTIVE_BRANCH_PRIOR } from './rank-recall-search-results.js';
+import type {
+  RecallQueryPlanningModelProfile,
+  RecallRerankingModelProfile,
+} from './recall-model-profiles.js';
 import { RECALL_INDEX_MANIFEST_VERSION } from './recall-index-manifest.js';
 import { INCREMENTAL_RECALL_ELIGIBILITY_POLICY_VERSION } from './reduce-recall-eligibility.js';
 import {
@@ -66,12 +75,21 @@ export interface RecallQualityEvaluationDependencies extends Pick<
   embeddings?: LocalEmbeddingClient;
 }
 
+/** Live planner and reranker boundaries for an optional committed-corpus query-planned lane. */
+export interface RecallQualityQueryPlannedDependencies {
+  queryPlanningProfile: RecallQueryPlanningModelProfile;
+  queryPlanner: RecallIdentifiedQueryPlanningProvider;
+  rerankingProfile: RecallRerankingModelProfile;
+  reranker: RecallIdentifiedRerankingProvider;
+}
+
 /** Inputs for one bounded evaluation run over a checksum-fixed corpus. */
 export interface RunRecallQualityEvaluationOptions {
   corpus: LoadedRecallQualityCorpus;
   baseConfig: RecallConversationConfig;
   workDirectory: string;
   dependencies?: RecallQualityEvaluationDependencies;
+  queryPlannedDependencies?: RecallQualityQueryPlannedDependencies;
 }
 
 /** Index work performed once for one required chunk policy. */
@@ -107,6 +125,8 @@ export interface RecallQualityEvaluationIdentity {
   reciprocalRankConstant: number;
   activeBranchPrior: number;
   candidateLimits: { dense: 8; lexical: 8; identifier: 8 };
+  fusedPoolLimit: 24;
+  rerankPoolLimit: 24;
   finalResultCount: 5;
 }
 
@@ -116,6 +136,21 @@ export interface RecallQualityStorageIdentity {
   zvecSchemaVersion: number;
   indexManifestVersion: number;
   incrementalEligibilityPolicyVersion: number;
+}
+
+/** Live query-planned quality measured independently over the committed corpus. */
+export interface RecallQualityQueryPlannedResult {
+  executionIdentity: {
+    queryPlanning: Readonly<RecallQueryPlanningExecutionIdentity>;
+    reranking: Readonly<RecallRerankingExecutionIdentity>;
+  };
+  configurations: RecallQualityConfigurationMeasurement[];
+  selection: RecallQualityPolicySelection;
+  boundedWork: {
+    executedSearchRequests: number;
+    plannerRequests: number;
+    rerankerRequests: number;
+  };
 }
 
 /** Raw measured configurations, gate selection, and bounded-work evidence from one run. */
@@ -133,6 +168,7 @@ export interface RecallQualityEvaluationResult {
   configurations: RecallQualityConfigurationMeasurement[];
   selection: RecallQualityPolicySelection;
   boundedWork: RecallQualityExecutedWork;
+  queryPlanned?: RecallQualityQueryPlannedResult;
 }
 
 function isPathInside(parentPath: string, childPath: string): boolean {
@@ -238,6 +274,8 @@ function createChunkPolicyConfig(
       lexical: candidateCount,
       identifier: candidateCount,
     },
+    fusedPoolLimit: candidateCount * 3,
+    rerankPoolLimit: candidateCount * 3,
   };
 }
 
@@ -323,10 +361,11 @@ async function createEvaluationProjectResolver(
 }
 
 function createServiceDependencies(
-  reranker: LocalRerankerClient,
+  reranker: RecallConversationDependencies['reranker'],
   resolveProjectIdentity: (workingDirectory: string) => Promise<ResolvedProjectIdentity | null>,
   evaluationDependencies?: RecallQualityEvaluationDependencies,
   embeddings?: LocalEmbeddingClient,
+  queryPlannedDependencies?: RecallQualityQueryPlannedDependencies,
 ): RecallConversationDependencies {
   return {
     ...(evaluationDependencies?.embeddingProfile
@@ -339,7 +378,15 @@ function createServiceDependencies(
       ? { tokenizerIdentity: evaluationDependencies.tokenizerIdentity }
       : {}),
     ...(embeddings ? { embeddings } : {}),
-    reranker,
+    rerankingProfile: queryPlannedDependencies?.rerankingProfile ?? null,
+    reranker: reranker ?? null,
+    rerankerExecutionIdentity: queryPlannedDependencies?.reranker.executionIdentity ?? null,
+    ...(queryPlannedDependencies
+      ? {
+          queryPlanningProfile: queryPlannedDependencies.queryPlanningProfile,
+          queryPlanner: queryPlannedDependencies.queryPlanner,
+        }
+      : {}),
     resolveProjectIdentity,
     ...(evaluationDependencies?.loadTokenizer
       ? { loadTokenizer: evaluationDependencies.loadTokenizer }
@@ -349,13 +396,23 @@ function createServiceDependencies(
 
 function createEvaluationSearchOptions(
   evaluationCase: LoadedRecallQualityCorpus['specification']['cases'][number],
+  mode: 'hybrid' | 'query-planned' = 'hybrid',
 ): RecallConversationSearchOptions {
   return {
-    mode: 'hybrid',
+    mode,
     scope: evaluationCase.scope,
     ...(evaluationCase.invocationDirectory
       ? { invocationDirectory: evaluationCase.invocationDirectory }
       : {}),
+  };
+}
+
+function createHybridPreLimitControlSearchOptions(
+  evaluationCase: LoadedRecallQualityCorpus['specification']['cases'][number],
+): RecallConversationSearchOptions {
+  return {
+    ...createEvaluationSearchOptions(evaluationCase),
+    scope: RecallSearchScope.GLOBAL,
   };
 }
 
@@ -392,14 +449,43 @@ export async function runRecallQualityEvaluation(
   const projectResolver = await createEvaluationProjectResolver(options.corpus, workDirectory);
   const indexRuns: RecallQualityIndexRun[] = [];
   const configurations: RecallQualityConfigurationMeasurement[] = [];
+  const queryPlannedConfigurations: RecallQualityConfigurationMeasurement[] = [];
   let executedSearchRequests = 0;
-  let rerankerRequests = 0;
-  const rejectingReranker: LocalRerankerClient = {
-    async rerankDocuments() {
-      rerankerRequests += 1;
-      throw new Error('Recall quality evaluation attempted an unexpected reranker request');
-    },
-  };
+  let queryPlannedExecutedSearchRequests = 0;
+  let queryPlannedPlannerRequests = 0;
+  let queryPlannedRerankerRequests = 0;
+  const configuredQueryPlannedDependencies = options.queryPlannedDependencies;
+  const measuredQueryPlannedDependencies: RecallQualityQueryPlannedDependencies | undefined =
+    configuredQueryPlannedDependencies
+      ? {
+          ...configuredQueryPlannedDependencies,
+          queryPlanner: {
+            get executionIdentity() {
+              return configuredQueryPlannedDependencies.queryPlanner.executionIdentity;
+            },
+            async planRecallQuery(request, signal) {
+              queryPlannedPlannerRequests += 1;
+              return configuredQueryPlannedDependencies.queryPlanner.planRecallQuery(
+                request,
+                signal,
+              );
+            },
+          },
+          reranker: {
+            get executionIdentity() {
+              return configuredQueryPlannedDependencies.reranker.executionIdentity;
+            },
+            async rerankDocuments(query, documents, signal) {
+              queryPlannedRerankerRequests += 1;
+              return configuredQueryPlannedDependencies.reranker.rerankDocuments(
+                query,
+                documents,
+                signal,
+              );
+            },
+          },
+        }
+      : undefined;
 
   for (const chunkPolicy of specification.chunkPolicies) {
     const firstCandidateCount = specification.candidateCounts[0];
@@ -416,7 +502,7 @@ export async function runRecallQualityEvaluation(
     const indexService = createRecallConversationService(
       indexConfig,
       createServiceDependencies(
-        rejectingReranker,
+        null,
         projectResolver.resolveProjectIdentity,
         options.dependencies,
         embeddings,
@@ -458,10 +544,11 @@ export async function runRecallQualityEvaluation(
       const searchService = createRecallConversationService(
         searchConfig,
         createServiceDependencies(
-          rejectingReranker,
+          measuredQueryPlannedDependencies?.reranker ?? null,
           projectResolver.resolveProjectIdentity,
           options.dependencies,
           embeddings,
+          measuredQueryPlannedDependencies,
         ),
       );
       const warmupCases = specification.cases.filter(
@@ -501,13 +588,7 @@ export async function runRecallQualityEvaluation(
           const globalControl = await searchService.search(
             evaluationCase.query,
             RECALL_QUALITY_FULL_POOL_LIMIT,
-            {
-              mode: 'hybrid',
-              scope: RecallSearchScope.GLOBAL,
-              ...(evaluationCase.invocationDirectory
-                ? { invocationDirectory: evaluationCase.invocationDirectory }
-                : {}),
-            },
+            createHybridPreLimitControlSearchOptions(evaluationCase),
           );
           globalControlResults = globalControl.results;
           executedSearchRequests += 1;
@@ -530,13 +611,61 @@ export async function runRecallQualityEvaluation(
         indexLatencyMilliseconds,
         measurement: measureRecallQuality(observations, specification.finalCounts),
       });
+
+      if (measuredQueryPlannedDependencies) {
+        const queryPlannedObservations: RecallQualitySearchObservation[] = [];
+        for (const evaluationCase of specification.cases) {
+          const queryStarted = performance.now();
+          const search = await searchService.search(
+            evaluationCase.query,
+            RECALL_QUALITY_FULL_POOL_LIMIT,
+            createEvaluationSearchOptions(evaluationCase, 'query-planned'),
+          );
+          const queryLatencyMilliseconds = performance.now() - queryStarted;
+          queryPlannedExecutedSearchRequests += 1;
+          let globalControlResults;
+          if (evaluationCase.preLimitChannelProof) {
+            const globalControl = await searchService.search(
+              evaluationCase.query,
+              RECALL_QUALITY_FULL_POOL_LIMIT,
+              createHybridPreLimitControlSearchOptions(evaluationCase),
+            );
+            globalControlResults = globalControl.results;
+            queryPlannedExecutedSearchRequests += 1;
+          }
+          queryPlannedObservations.push({
+            evaluationCase,
+            results: search.results,
+            searchPolicy: {
+              scope: search.searchPolicy.scope,
+              invocationProjectIdentity: search.searchPolicy.invocationProjectIdentity,
+            },
+            ...(globalControlResults ? { globalControlResults } : {}),
+            queryLatencyMilliseconds,
+          });
+        }
+        queryPlannedConfigurations.push({
+          chunkPolicy: { ...chunkPolicy },
+          candidateCount,
+          totalChunks: indexed.totalChunks,
+          indexLatencyMilliseconds,
+          measurement: measureRecallQuality(queryPlannedObservations, specification.finalCounts),
+        });
+      }
     }
   }
 
-  if (rerankerRequests !== 0) {
-    throw new Error(
-      `Recall quality reranker request bound exceeded: executed ${rerankerRequests}, maximum 0`,
-    );
+  if (options.queryPlannedDependencies) {
+    if (queryPlannedPlannerRequests < 1 || queryPlannedRerankerRequests < 1) {
+      throw new Error(
+        'Recall quality query-planned coverage failed: live planner and reranker must both execute',
+      );
+    }
+    if (queryPlannedExecutedSearchRequests > specification.bounds.maximumSearchRequests) {
+      throw new Error(
+        `Recall quality query-planned search bound exceeded after run: executed ${queryPlannedExecutedSearchRequests}, maximum ${specification.bounds.maximumSearchRequests}`,
+      );
+    }
   }
   if (executedSearchRequests > specification.bounds.maximumSearchRequests) {
     throw new Error(
@@ -575,6 +704,8 @@ export async function runRecallQualityEvaluation(
       reciprocalRankConstant: RECALL_RRF_RANK_CONSTANT,
       activeBranchPrior: RECALL_ACTIVE_BRANCH_PRIOR,
       candidateLimits: { dense: 8, lexical: 8, identifier: 8 },
+      fusedPoolLimit: 24,
+      rerankPoolLimit: 24,
       finalResultCount: 5,
     },
     startedAt: startedAt.toISOString(),
@@ -591,10 +722,30 @@ export async function runRecallQualityEvaluation(
       evaluationCases: specification.cases.length,
       indexRuns: indexRuns.length,
       executedSearchRequests,
-      rerankerRequests,
+      rerankerRequests: 0,
       chunkEmbeddingRequests,
       maximumCandidatesPerSearch: Math.max(...specification.candidateCounts) * 3,
       repositoryIdentityResolutions: projectResolver.repositoryIdentityResolutions,
     },
+    ...(options.queryPlannedDependencies
+      ? {
+          queryPlanned: {
+            executionIdentity: {
+              queryPlanning: options.queryPlannedDependencies.queryPlanner.executionIdentity,
+              reranking: options.queryPlannedDependencies.reranker.executionIdentity,
+            },
+            configurations: queryPlannedConfigurations,
+            selection: selectRecallQualityPolicy(
+              queryPlannedConfigurations,
+              specification.qualityGate,
+            ),
+            boundedWork: {
+              executedSearchRequests: queryPlannedExecutedSearchRequests,
+              plannerRequests: queryPlannedPlannerRequests,
+              rerankerRequests: queryPlannedRerankerRequests,
+            },
+          },
+        }
+      : {}),
   };
 }

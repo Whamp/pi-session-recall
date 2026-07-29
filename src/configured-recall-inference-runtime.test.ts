@@ -185,9 +185,11 @@ void test('configured runtime composes both built-in embeddings with custom rera
         profile: rerankingProfile,
         provider: {
           executionIdentity: createRecallRerankingExecutionIdentity(
-            rerankingProfile.profileId,
+            rerankingProfile,
             customReranking.adapterId,
+            'project-custom-reranking-config-v1',
             RecallInferenceBackend.CUSTOM,
+            60_000,
           ),
           async rerankDocuments(query, documents) {
             assert.ok(query.length > 0);
@@ -362,8 +364,8 @@ void test('configured runtime composes custom embedding with built-in HTTP optio
               message: {
                 role: 'assistant',
                 content: [
-                  'lex: source provenance evidence',
-                  'vec: source provenance in recalled conversations',
+                  'lex: copper finch source provenance evidence',
+                  'vec: copper finch source provenance in recalled conversations',
                 ].join('\n'),
               },
             },
@@ -432,8 +434,8 @@ void test('configured runtime composes custom embedding with built-in HTTP optio
   });
   const queryPlanningVerification = await runtime.service.verifyQueryPlanningCapability({
     expectedPlan: [
-      { type: 'lex', query: 'source provenance evidence' },
-      { type: 'vec', query: 'source provenance in recalled conversations' },
+      { type: 'lex', query: 'copper finch source provenance evidence' },
+      { type: 'vec', query: 'copper finch source provenance in recalled conversations' },
     ],
   });
   await runtime.dispose();

@@ -1,0 +1,380 @@
+{
+  "version": 1,
+  "recordedAgainstCommit": "38aab6722a6fc97dd212e704faee4373af8b363e",
+  "privateManifestSha256": "4b3fb8573bcd52a26d66a2f8e60f5bbba57b098530791b23f55505d3e9a1187e",
+  "controlsSha256": "a5b300c736ddfed35e4e65635fe5752b17b53df2c61a97079229c3ff0b44d605",
+  "embeddingProfile": {
+    "requestModel": "octen-embed",
+    "servedModelId": "Octen/Octen-Embedding-4B",
+    "artifact": "Octen-Embedding-4B.Q8_0.gguf",
+    "dimensions": 2560,
+    "quantization": "Q8_0",
+    "pooling": "last"
+  },
+  "baseline": {
+    "version": 1,
+    "corpusId": "query-planned-real-recall-v1",
+    "privateManifestSha256": "4b3fb8573bcd52a26d66a2f8e60f5bbba57b098530791b23f55505d3e9a1187e",
+    "indexedSnapshotCount": 8,
+    "indexedDocumentCount": 44521,
+    "executedSearchRequests": 16,
+    "cases": [
+      {
+        "caseId": "case-001",
+        "category": "ambiguous_decision",
+        "controlKind": "difficult_case",
+        "normal": {
+          "outcome": "candidate_union_miss",
+          "expectedSourceRanks": [null],
+          "highestRelevantDistractorRank": 7,
+          "provenancePassed": false,
+          "listLimits": {
+            "dense": 8,
+            "lexical": 8,
+            "identifier": 8
+          },
+          "totalCandidatesExamined": 24,
+          "uniqueCandidatesAdmitted": 20,
+          "finalResultCount": 5,
+          "fusedPoolLimit": 24,
+          "rerankPoolLimit": 24,
+          "rankingMode": "hybrid",
+          "rankFusionVersion": 2,
+          "reciprocalRankConstant": 60
+        },
+        "retrievalWorkMatched": {
+          "outcome": "candidate_union_miss",
+          "expectedSourceRanks": [null],
+          "highestRelevantDistractorRank": 4,
+          "provenancePassed": false,
+          "listLimits": {
+            "dense": 34,
+            "lexical": 33,
+            "identifier": 33
+          },
+          "totalCandidatesExamined": 79,
+          "uniqueCandidatesAdmitted": 73,
+          "finalResultCount": 5,
+          "fusedPoolLimit": 100,
+          "rerankPoolLimit": 100,
+          "rankingMode": "hybrid",
+          "rankFusionVersion": 2,
+          "reciprocalRankConstant": 60
+        }
+      },
+      {
+        "caseId": "case-002",
+        "category": "symptom_to_mechanism",
+        "controlKind": "difficult_case",
+        "normal": {
+          "outcome": "candidate_union_miss",
+          "expectedSourceRanks": [null],
+          "highestRelevantDistractorRank": 14,
+          "provenancePassed": false,
+          "listLimits": {
+            "dense": 8,
+            "lexical": 8,
+            "identifier": 8
+          },
+          "totalCandidatesExamined": 24,
+          "uniqueCandidatesAdmitted": 20,
+          "finalResultCount": 5,
+          "fusedPoolLimit": 24,
+          "rerankPoolLimit": 24,
+          "rankingMode": "hybrid",
+          "rankFusionVersion": 2,
+          "reciprocalRankConstant": 60
+        },
+        "retrievalWorkMatched": {
+          "outcome": "final_rank_miss",
+          "expectedSourceRanks": [56],
+          "highestRelevantDistractorRank": 2,
+          "provenancePassed": true,
+          "listLimits": {
+            "dense": 34,
+            "lexical": 33,
+            "identifier": 33
+          },
+          "totalCandidatesExamined": 100,
+          "uniqueCandidatesAdmitted": 86,
+          "finalResultCount": 5,
+          "fusedPoolLimit": 100,
+          "rerankPoolLimit": 100,
+          "rankingMode": "hybrid",
+          "rankFusionVersion": 2,
+          "reciprocalRankConstant": 60
+        }
+      },
+      {
+        "caseId": "case-003",
+        "category": "vocabulary_drift",
+        "controlKind": "successful_baseline_control",
+        "normal": {
+          "outcome": "success",
+          "expectedSourceRanks": [3],
+          "highestRelevantDistractorRank": null,
+          "provenancePassed": true,
+          "listLimits": {
+            "dense": 8,
+            "lexical": 8,
+            "identifier": 8
+          },
+          "totalCandidatesExamined": 18,
+          "uniqueCandidatesAdmitted": 13,
+          "finalResultCount": 5,
+          "fusedPoolLimit": 24,
+          "rerankPoolLimit": 24,
+          "rankingMode": "hybrid",
+          "rankFusionVersion": 2,
+          "reciprocalRankConstant": 60
+        },
+        "retrievalWorkMatched": {
+          "outcome": "success",
+          "expectedSourceRanks": [4],
+          "highestRelevantDistractorRank": null,
+          "provenancePassed": true,
+          "listLimits": {
+            "dense": 34,
+            "lexical": 33,
+            "identifier": 33
+          },
+          "totalCandidatesExamined": 69,
+          "uniqueCandidatesAdmitted": 61,
+          "finalResultCount": 5,
+          "fusedPoolLimit": 100,
+          "rerankPoolLimit": 100,
+          "rankingMode": "hybrid",
+          "rankFusionVersion": 2,
+          "reciprocalRankConstant": 60
+        }
+      },
+      {
+        "caseId": "case-004",
+        "category": "lexical_only_tool_evidence",
+        "controlKind": "difficult_case",
+        "normal": {
+          "outcome": "candidate_union_miss",
+          "expectedSourceRanks": [null],
+          "highestRelevantDistractorRank": 1,
+          "provenancePassed": false,
+          "listLimits": {
+            "dense": 8,
+            "lexical": 8,
+            "identifier": 8
+          },
+          "totalCandidatesExamined": 19,
+          "uniqueCandidatesAdmitted": 11,
+          "finalResultCount": 5,
+          "fusedPoolLimit": 24,
+          "rerankPoolLimit": 24,
+          "rankingMode": "hybrid",
+          "rankFusionVersion": 2,
+          "reciprocalRankConstant": 60
+        },
+        "retrievalWorkMatched": {
+          "outcome": "candidate_union_miss",
+          "expectedSourceRanks": [null],
+          "highestRelevantDistractorRank": 1,
+          "provenancePassed": false,
+          "listLimits": {
+            "dense": 34,
+            "lexical": 33,
+            "identifier": 33
+          },
+          "totalCandidatesExamined": 70,
+          "uniqueCandidatesAdmitted": 53,
+          "finalResultCount": 5,
+          "fusedPoolLimit": 100,
+          "rerankPoolLimit": 100,
+          "rankingMode": "hybrid",
+          "rankFusionVersion": 2,
+          "reciprocalRankConstant": 60
+        }
+      },
+      {
+        "caseId": "case-005",
+        "category": "outcome_to_component",
+        "controlKind": "difficult_case",
+        "normal": {
+          "outcome": "candidate_union_miss",
+          "expectedSourceRanks": [null],
+          "highestRelevantDistractorRank": null,
+          "provenancePassed": false,
+          "listLimits": {
+            "dense": 8,
+            "lexical": 8,
+            "identifier": 8
+          },
+          "totalCandidatesExamined": 19,
+          "uniqueCandidatesAdmitted": 13,
+          "finalResultCount": 5,
+          "fusedPoolLimit": 24,
+          "rerankPoolLimit": 24,
+          "rankingMode": "hybrid",
+          "rankFusionVersion": 2,
+          "reciprocalRankConstant": 60
+        },
+        "retrievalWorkMatched": {
+          "outcome": "candidate_union_miss",
+          "expectedSourceRanks": [null],
+          "highestRelevantDistractorRank": null,
+          "provenancePassed": false,
+          "listLimits": {
+            "dense": 34,
+            "lexical": 33,
+            "identifier": 33
+          },
+          "totalCandidatesExamined": 70,
+          "uniqueCandidatesAdmitted": 64,
+          "finalResultCount": 5,
+          "fusedPoolLimit": 100,
+          "rerankPoolLimit": 100,
+          "rankingMode": "hybrid",
+          "rankFusionVersion": 2,
+          "reciprocalRankConstant": 60
+        }
+      },
+      {
+        "caseId": "case-006",
+        "category": "branch_competition",
+        "controlKind": "difficult_case",
+        "normal": {
+          "outcome": "candidate_union_miss",
+          "expectedSourceRanks": [null],
+          "highestRelevantDistractorRank": 2,
+          "provenancePassed": false,
+          "listLimits": {
+            "dense": 8,
+            "lexical": 8,
+            "identifier": 8
+          },
+          "totalCandidatesExamined": 18,
+          "uniqueCandidatesAdmitted": 15,
+          "finalResultCount": 5,
+          "fusedPoolLimit": 24,
+          "rerankPoolLimit": 24,
+          "rankingMode": "hybrid",
+          "rankFusionVersion": 2,
+          "reciprocalRankConstant": 60
+        },
+        "retrievalWorkMatched": {
+          "outcome": "candidate_union_miss",
+          "expectedSourceRanks": [null],
+          "highestRelevantDistractorRank": 2,
+          "provenancePassed": false,
+          "listLimits": {
+            "dense": 34,
+            "lexical": 33,
+            "identifier": 33
+          },
+          "totalCandidatesExamined": 69,
+          "uniqueCandidatesAdmitted": 66,
+          "finalResultCount": 5,
+          "fusedPoolLimit": 100,
+          "rerankPoolLimit": 100,
+          "rankingMode": "hybrid",
+          "rankFusionVersion": 2,
+          "reciprocalRankConstant": 60
+        }
+      },
+      {
+        "caseId": "case-007",
+        "category": "current_versus_obsolete_summary",
+        "controlKind": "difficult_case",
+        "normal": {
+          "outcome": "final_rank_miss",
+          "expectedSourceRanks": [6],
+          "highestRelevantDistractorRank": 4,
+          "provenancePassed": true,
+          "listLimits": {
+            "dense": 8,
+            "lexical": 8,
+            "identifier": 8
+          },
+          "totalCandidatesExamined": 18,
+          "uniqueCandidatesAdmitted": 14,
+          "finalResultCount": 5,
+          "fusedPoolLimit": 24,
+          "rerankPoolLimit": 24,
+          "rankingMode": "hybrid",
+          "rankFusionVersion": 2,
+          "reciprocalRankConstant": 60
+        },
+        "retrievalWorkMatched": {
+          "outcome": "success",
+          "expectedSourceRanks": [5],
+          "highestRelevantDistractorRank": 7,
+          "provenancePassed": true,
+          "listLimits": {
+            "dense": 34,
+            "lexical": 33,
+            "identifier": 33
+          },
+          "totalCandidatesExamined": 69,
+          "uniqueCandidatesAdmitted": 63,
+          "finalResultCount": 5,
+          "fusedPoolLimit": 100,
+          "rerankPoolLimit": 100,
+          "rankingMode": "hybrid",
+          "rankFusionVersion": 2,
+          "reciprocalRankConstant": 60
+        }
+      },
+      {
+        "caseId": "case-008",
+        "category": "exact_identifier",
+        "controlKind": "successful_baseline_control",
+        "normal": {
+          "outcome": "success",
+          "expectedSourceRanks": [2],
+          "highestRelevantDistractorRank": 1,
+          "provenancePassed": true,
+          "listLimits": {
+            "dense": 8,
+            "lexical": 8,
+            "identifier": 8
+          },
+          "totalCandidatesExamined": 24,
+          "uniqueCandidatesAdmitted": 15,
+          "finalResultCount": 5,
+          "fusedPoolLimit": 24,
+          "rerankPoolLimit": 24,
+          "rankingMode": "hybrid",
+          "rankFusionVersion": 2,
+          "reciprocalRankConstant": 60
+        },
+        "retrievalWorkMatched": {
+          "outcome": "success",
+          "expectedSourceRanks": [5],
+          "highestRelevantDistractorRank": 1,
+          "provenancePassed": true,
+          "listLimits": {
+            "dense": 34,
+            "lexical": 33,
+            "identifier": 33
+          },
+          "totalCandidatesExamined": 100,
+          "uniqueCandidatesAdmitted": 67,
+          "finalResultCount": 5,
+          "fusedPoolLimit": 100,
+          "rerankPoolLimit": 100,
+          "rankingMode": "hybrid",
+          "rankFusionVersion": 2,
+          "reciprocalRankConstant": 60
+        }
+      }
+    ],
+    "outcomeCounts": {
+      "normal": {
+        "candidate_union_miss": 5,
+        "final_rank_miss": 1,
+        "success": 2
+      },
+      "retrievalWorkMatched": {
+        "candidate_union_miss": 4,
+        "final_rank_miss": 1,
+        "success": 3
+      }
+    }
+  }
+}

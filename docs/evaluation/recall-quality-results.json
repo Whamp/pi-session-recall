@@ -560,6 +560,8 @@
         "lexical": 8,
         "identifier": 8
       },
+      "fusedPoolLimit": 24,
+      "rerankPoolLimit": 24,
       "finalResultCount": 5
     },
     "startedAt": "2026-07-28T07:56:39.913Z",

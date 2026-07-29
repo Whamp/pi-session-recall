@@ -21,10 +21,7 @@ import {
 } from '@zvec/zvec';
 
 import { RecallProjectIdentitySource } from './enums.js';
-import type {
-  RecallDenseCandidate,
-  RecallFullTextCandidate,
-} from './fuse-recall-search-candidates.js';
+import type { RecallDenseCandidate, RecallFullTextCandidate } from './fuse-recall-ranked-lists.js';
 import {
   isCanonicalRepositoryIdentity,
   parseProjectIdentity,

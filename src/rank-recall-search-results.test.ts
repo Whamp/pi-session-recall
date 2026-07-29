@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import type { RecallSearchResult } from './fuse-recall-search-candidates.js';
+import type { RecallSearchResult } from './fuse-recall-ranked-lists.js';
 import type { LocalRerankerClient } from './local-reranker-client.js';
 import { createTestRecallSearchResult } from './recall-test-utils.js';
 import {
@@ -96,6 +96,7 @@ void test('recall reranking sends every candidate kind as original text and pres
   const results = await rerankRecallSearchResults({
     query: 'How did Atlas fail?',
     candidates,
+    rerankPoolLimit: candidates.length,
     resultLimit: 5,
     reranker,
     fetchConversationChunks() {
@@ -167,6 +168,7 @@ void test('recall reranking suppresses overlapping sibling slots and preserves t
   const results = await rerankRecallSearchResults({
     query: 'gamma',
     candidates: [second, unrelated, first],
+    rerankPoolLimit: 600,
     resultLimit: 3,
     reranker,
     fetchConversationChunks() {
@@ -234,6 +236,7 @@ void test('recall reranking keeps reciprocal siblings whose overlap text does no
   const results = await rerankRecallSearchResults({
     query: 'gamma',
     candidates: [first, second],
+    rerankPoolLimit: 600,
     resultLimit: 2,
     reranker,
     fetchConversationChunks() {
@@ -284,6 +287,7 @@ void test('recall reranking suppresses exact cross-session copies without confla
   const results = await rerankRecallSearchResults({
     query: 'source provenance',
     candidates: [firstCopy, secondCopy, syntheticSummary, checksumCollision],
+    rerankPoolLimit: 600,
     resultLimit: 4,
     reranker,
     fetchConversationChunks() {
@@ -327,6 +331,7 @@ void test('recall reranking favors an active branch without hiding a stronger ab
   const results = await rerankRecallSearchResults({
     query: 'branch evidence',
     candidates: [abandoned, active],
+    rerankPoolLimit: 600,
     resultLimit: 2,
     reranker,
     fetchConversationChunks() {
@@ -345,6 +350,132 @@ void test('recall reranking favors an active branch without hiding a stronger ab
   assert.equal(results[1]?.activeBranchPrior, 0);
   assert.equal(results[1]?.rankingScore, 0.5);
   assert.equal(results[1]?.isOnActiveBranch, false);
+});
+
+void test('query-planned reranking uses all fused-rank blend bands before active-branch preference', async () => {
+  const candidates = Array.from({ length: 12 }, (_, index) =>
+    createRecallCandidate(`position-${index + 1}`, `Position ${index + 1} evidence.`, {
+      fusedScore: 1 - index / 20,
+      isOnActiveBranch: index === 1,
+    }),
+  );
+  const rerankerScores = candidates.map((_, index) => {
+    if (index === 3) {
+      return 0.5;
+    }
+    if (index === 10) {
+      return 1;
+    }
+    return 0;
+  });
+
+  const results = await rerankRecallSearchResults({
+    query: 'position-aware ranking',
+    candidates,
+    rerankPoolLimit: 40,
+    resultLimit: 12,
+    reranker: {
+      async rerankDocuments(query, documents) {
+        assert.equal(query, 'position-aware ranking');
+        assert.deepEqual(
+          documents,
+          candidates.map((candidate) => candidate.content),
+        );
+        return rerankerScores;
+      },
+    },
+    fetchConversationChunks() {
+      return new Map();
+    },
+    useQueryPlannedPositionBlend: true,
+  });
+  const byId = new Map(results.map((result) => [result.id, result]));
+
+  assert.deepEqual(
+    {
+      rank: byId.get('position-1')?.retrievalPositionRank,
+      position: byId.get('position-1')?.retrievalPositionScore,
+      retrievalWeight: byId.get('position-1')?.retrievalScoreWeight,
+      rerankerWeight: byId.get('position-1')?.rerankerScoreWeight,
+      score: byId.get('position-1')?.rankingScore,
+    },
+    { rank: 1, position: 1, retrievalWeight: 0.75, rerankerWeight: 0.25, score: 0.75 },
+  );
+  assert.deepEqual(
+    {
+      rank: byId.get('position-4')?.retrievalPositionRank,
+      position: byId.get('position-4')?.retrievalPositionScore,
+      retrievalWeight: byId.get('position-4')?.retrievalScoreWeight,
+      rerankerWeight: byId.get('position-4')?.rerankerScoreWeight,
+      score: byId.get('position-4')?.rankingScore,
+    },
+    { rank: 4, position: 0.25, retrievalWeight: 0.6, rerankerWeight: 0.4, score: 0.35 },
+  );
+  assert.deepEqual(
+    {
+      rank: byId.get('position-11')?.retrievalPositionRank,
+      position: byId.get('position-11')?.retrievalPositionScore,
+      retrievalWeight: byId.get('position-11')?.retrievalScoreWeight,
+      rerankerWeight: byId.get('position-11')?.rerankerScoreWeight,
+      score: byId.get('position-11')?.rankingScore,
+    },
+    {
+      rank: 11,
+      position: 1 / 11,
+      retrievalWeight: 0.4,
+      rerankerWeight: 0.6,
+      score: 0.4 / 11 + 0.6,
+    },
+  );
+  assert.equal(byId.get('position-2')?.activeBranchPrior, 0.01);
+  assert.ok(
+    (byId.get('position-11')?.rankingScore ?? 0) > (byId.get('position-2')?.rankingScore ?? 0),
+  );
+  assert.ok(
+    results.findIndex((result) => result.id === 'position-11') <
+      results.findIndex((result) => result.id === 'position-2'),
+  );
+});
+
+void test('query-planned reranking groups duplicates before admitting forty reranker candidates', async () => {
+  const representative = createRecallCandidate('group-representative', 'Copied evidence.', {
+    checksum: 'copied-checksum',
+    fusedScore: 1,
+  });
+  const distinctCandidates = Array.from({ length: 40 }, (_, index) =>
+    createRecallCandidate(`distinct-${index + 1}`, `Distinct evidence ${index + 1}.`, {
+      fusedScore: 0.9 - index / 100,
+    }),
+  );
+  const duplicateOccurrence = createRecallCandidate('group-duplicate', 'Copied evidence.', {
+    checksum: 'copied-checksum',
+    fusedScore: 0.01,
+  });
+  const rerankerDocumentCounts: number[] = [];
+
+  const results = await rerankRecallSearchResults({
+    query: 'duplicate grouping',
+    candidates: [representative, ...distinctCandidates, duplicateOccurrence],
+    rerankPoolLimit: 40,
+    resultLimit: 40,
+    reranker: {
+      async rerankDocuments(query, documents) {
+        void query;
+        rerankerDocumentCounts.push(documents.length);
+        return documents.map(() => 0.5);
+      },
+    },
+    fetchConversationChunks() {
+      return new Map();
+    },
+    useQueryPlannedPositionBlend: true,
+  });
+
+  assert.deepEqual(rerankerDocumentCounts, [40]);
+  assert.equal(results.length, 40);
+  const copiedGroup = results.find((result) => result.id === 'group-representative');
+  assert.equal(copiedGroup?.duplicateOccurrences.length, 1);
+  assert.equal(copiedGroup?.duplicateOccurrences[0]?.id, 'group-duplicate');
 });
 
 void test('recall reranking expands a winning atomic chunk through valid same-run neighbors', async () => {
@@ -410,6 +541,7 @@ void test('recall reranking expands a winning atomic chunk through valid same-ru
   const results = await rerankRecallSearchResults({
     query: 'delta',
     candidates: [winner],
+    rerankPoolLimit: 600,
     resultLimit: 1,
     reranker,
     fetchConversationChunks(ids) {
@@ -482,6 +614,7 @@ void test('recall neighbor expansion rejects a source-offset gap between recipro
   const results = await rerankRecallSearchResults({
     query: 'alpha',
     candidates: [winner],
+    rerankPoolLimit: 600,
     resultLimit: 1,
     reranker,
     fetchConversationChunks() {
@@ -561,6 +694,7 @@ void test('recall neighbor expansion rejects reciprocal pointers across entry, r
   const results = await rerankRecallSearchResults({
     query: 'middle',
     candidates: [winner],
+    rerankPoolLimit: 600,
     resultLimit: 1,
     reranker,
     fetchConversationChunks() {

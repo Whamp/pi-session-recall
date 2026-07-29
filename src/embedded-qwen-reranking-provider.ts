@@ -1,3 +1,4 @@
+import { createCanonicalIdentity } from './create-canonical-identity.js';
 import {
   acquireEmbeddedLlamaRuntimeForBackend,
   initializeEmbeddedProviderResources,
@@ -19,6 +20,7 @@ import {
 } from './enums.js';
 import {
   createRecallRerankingExecutionIdentity,
+  resolveRecallPhysicalDeviceIdentity,
   type RecallIdentifiedRerankingProvider,
   type RecallRerankingExecutionIdentity,
 } from './recall-inference-capabilities.js';
@@ -29,6 +31,7 @@ import type { RecommendedQwenRerankingModelProfile } from './recall-model-profil
 export const QWEN_RERANKER_MAX_GPU_LAYERS = 40;
 
 const NODE_LLAMA_CPP_RERANKING_ADAPTER_ID = 'node-llama-cpp-qwen-reranking-logit-recovery-v1';
+const NODE_LLAMA_CPP_RERANKING_ADAPTER_VERSION = '1';
 const NODE_LLAMA_CPP_EXTRA_SIGMOID_MINIMUM = 0.5;
 const NODE_LLAMA_CPP_EXTRA_SIGMOID_MAXIMUM = 1 / (1 + Math.exp(-1));
 
@@ -92,8 +95,12 @@ export interface EmbeddedQwenRerankingExecutionIdentity extends RecallRerankingE
     | EmbeddedInferenceComputeBackend.CUDA
     | EmbeddedInferenceComputeBackend.VULKAN
     | null;
+  contextSize: number;
+  threads: number | null;
   nodeLlamaCppVersion: typeof EMBEDDED_NODE_LLAMA_CPP_VERSION;
   parallelism: number;
+  idleTimeoutMilliseconds: number;
+  physicalDeviceIdentity: readonly string[];
   probedComputeBackends: readonly (
     | EmbeddedInferenceComputeBackend.METAL
     | EmbeddedInferenceComputeBackend.CUDA
@@ -104,6 +111,8 @@ export interface EmbeddedQwenRerankingExecutionIdentity extends RecallRerankingE
 /** Embedded reranking provider with corrected llama.cpp scores and explicit native disposal. */
 export interface EmbeddedQwenRerankingProvider extends RecallIdentifiedRerankingProvider {
   readonly executionIdentity: Readonly<EmbeddedQwenRerankingExecutionIdentity>;
+  /** Loads native resources far enough to bind resolved compute and physical device identity. */
+  resolveExecutionIdentity(): Promise<Readonly<EmbeddedQwenRerankingExecutionIdentity>>;
   dispose(): Promise<void>;
 }
 
@@ -279,21 +288,49 @@ export function createEmbeddedQwenRerankingProvider(
   const writeWarning =
     options.onWarning ?? ((warning: string) => process.stderr.write(`${warning}\n`));
 
-  const baseExecutionIdentity = createRecallRerankingExecutionIdentity(
-    profile.profileId,
-    NODE_LLAMA_CPP_RERANKING_ADAPTER_ID,
-    RecallInferenceBackend.EMBEDDED,
-  );
+  function createBaseExecutionIdentity(
+    computeBackend: EmbeddedInferenceComputeBackend | 'pending',
+    fallbackFromComputeBackend:
+      | EmbeddedInferenceComputeBackend.METAL
+      | EmbeddedInferenceComputeBackend.CUDA
+      | EmbeddedInferenceComputeBackend.VULKAN
+      | null,
+    physicalDeviceIdentity: readonly string[],
+  ): Readonly<RecallRerankingExecutionIdentity> {
+    return createRecallRerankingExecutionIdentity(
+      profile,
+      NODE_LLAMA_CPP_RERANKING_ADAPTER_ID,
+      createCanonicalIdentity('node-llama-cpp-qwen-reranking-config-v1', {
+        computeBackend,
+        contextSize,
+        devicePolicy,
+        fallbackFromComputeBackend,
+        idleTimeoutMilliseconds,
+        nodeLlamaCppVersion: EMBEDDED_NODE_LLAMA_CPP_VERSION,
+        parallelism,
+        physicalDeviceIdentity,
+        requestTimeoutMilliseconds,
+        threads: options.threads ?? null,
+      }),
+      RecallInferenceBackend.EMBEDDED,
+      requestTimeoutMilliseconds,
+      NODE_LLAMA_CPP_RERANKING_ADAPTER_VERSION,
+    );
+  }
   let executionIdentity: Readonly<EmbeddedQwenRerankingExecutionIdentity> = Object.freeze({
-    ...baseExecutionIdentity,
+    ...createBaseExecutionIdentity('pending', null, []),
     adapterId: NODE_LLAMA_CPP_RERANKING_ADAPTER_ID,
     backend: RecallInferenceBackend.EMBEDDED,
     computeBackend: 'pending',
     deviceNames: [],
     devicePolicy,
     fallbackFromComputeBackend: null,
+    contextSize,
+    threads: options.threads ?? null,
     nodeLlamaCppVersion: EMBEDDED_NODE_LLAMA_CPP_VERSION,
     parallelism,
+    idleTimeoutMilliseconds,
+    physicalDeviceIdentity: [],
     probedComputeBackends: [],
   });
 
@@ -413,16 +450,28 @@ export function createEmbeddedQwenRerankingProvider(
           );
         },
       });
+      const { deviceNames, physicalDeviceIdentity } = resolveRecallPhysicalDeviceIdentity(
+        initialized.selectedComputeBackend,
+        initialized.deviceNames,
+      );
       executionIdentity = Object.freeze({
-        ...baseExecutionIdentity,
+        ...createBaseExecutionIdentity(
+          initialized.selectedComputeBackend,
+          initialized.fallbackFromComputeBackend,
+          physicalDeviceIdentity,
+        ),
         adapterId: NODE_LLAMA_CPP_RERANKING_ADAPTER_ID,
         backend: RecallInferenceBackend.EMBEDDED,
         computeBackend: initialized.selectedComputeBackend,
-        deviceNames: Object.freeze([...initialized.deviceNames]),
+        deviceNames: Object.freeze([...deviceNames]),
         devicePolicy,
         fallbackFromComputeBackend: initialized.fallbackFromComputeBackend,
+        contextSize,
+        threads: options.threads ?? null,
         nodeLlamaCppVersion: EMBEDDED_NODE_LLAMA_CPP_VERSION,
         parallelism,
+        idleTimeoutMilliseconds,
+        physicalDeviceIdentity,
         probedComputeBackends: Object.freeze([...initialized.probedComputeBackends]),
       });
       return initialized;
@@ -456,6 +505,10 @@ export function createEmbeddedQwenRerankingProvider(
 
   return {
     get executionIdentity() {
+      return executionIdentity;
+    },
+    async resolveExecutionIdentity() {
+      await resourceLifecycle.runWithResources(async () => undefined);
       return executionIdentity;
     },
     async rerankDocuments(query, documents, signal) {

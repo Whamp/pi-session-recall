@@ -20,9 +20,11 @@ import {
   RecallDiagnosticsMode,
   RecallEvidenceRelation,
   RecallGenerationCutoverState,
+  RecallInferenceBackend,
   RecallManualMaintenanceTrigger,
   RecallProjectIdentitySource,
   RecallProjectionRepairState,
+  RecallRankedListSource,
   RecallSearchScope,
   RecallSessionProjectionKind,
   RecallSourceAvailability,
@@ -34,7 +36,11 @@ import {
 } from './errors.js';
 import { formatRecallSearchResults } from './format-recall-search-results.js';
 import { isUnknownRecord } from './is-unknown-record.js';
-import type { RecallEmbeddingProvider } from './recall-inference-capabilities.js';
+import {
+  createRecallQueryPlanningExecutionIdentity,
+  type RecallEmbeddingProvider,
+  type RecallQueryPlanningRequest,
+} from './recall-inference-capabilities.js';
 import type { LocalEmbeddingClient } from './local-embedding-client.js';
 import type { LocalRerankerClient } from './local-reranker-client.js';
 import {
@@ -57,7 +63,9 @@ import {
 import {
   createRecallConversationService as createProductionRecallConversationService,
   type RecallConversationConfig,
+  type RecallPlannedRetrievalQuery,
 } from './recall-conversation-service.js';
+import { createRecommendedQmdQueryPlanningModelProfile } from './recall-model-profiles.js';
 import { createRecallOperationDiagnostics } from './recall-operation-diagnostics.js';
 import {
   createLogicalSessionProjectionId,
@@ -2251,6 +2259,37 @@ void test('explicit project scope filters dense, lexical, and identifier candida
   );
   assert.equal(projectSearch.results[0]?.evidenceRelation, 'same_repository');
 
+  const plannedProjectSearch = await service.search(query, 5, {
+    mode: 'query-planned',
+    scope: RecallSearchScope.PROJECT,
+    invocationDirectory: projectDirectory,
+    plan: [
+      { type: 'lex', query },
+      { type: 'vec', query },
+      { type: 'hyde', query: 'The queue uses readNodeErrorCode for permission failures.' },
+    ],
+  });
+  assert.deepEqual(
+    plannedProjectSearch.results.map((result) => result.entryId.value),
+    ['selected-entry'],
+  );
+  assert.equal(plannedProjectSearch.results[0]?.evidenceRelation, 'same_repository');
+  assert.deepEqual(
+    plannedProjectSearch.searchPolicy.queryPlan?.rankedLists.map((list) => ({
+      source: list.source,
+      admittedCandidateCount: list.admittedCandidateCount,
+      candidateLimit: list.candidateLimit,
+    })),
+    [
+      { source: 'dense', admittedCandidateCount: 1, candidateLimit: 20 },
+      { source: 'lexical', admittedCandidateCount: 1, candidateLimit: 20 },
+      { source: 'identifier', admittedCandidateCount: 1, candidateLimit: 20 },
+      { source: 'planned_lex', admittedCandidateCount: 1, candidateLimit: 20 },
+      { source: 'planned_vec', admittedCandidateCount: 1, candidateLimit: 20 },
+      { source: 'planned_hyde', admittedCandidateCount: 1, candidateLimit: 20 },
+    ],
+  );
+
   const globalSearch = await service.search(query, 1, {
     scope: RecallSearchScope.GLOBAL,
     invocationDirectory: projectDirectory,
@@ -2824,6 +2863,9 @@ void test('recall service fuses bounded dense, lexical, and identifier candidate
     rerankerIdentity: null,
     activeBranchPrior: 0.01,
     candidateLimits: { dense: 1, lexical: 1, identifier: 1 },
+    fusedPoolLimit: 3,
+    rerankPoolLimit: 3,
+    finalResultLimit: 1,
   });
   assert.equal(denseResult.results[0]?.entryId.value, 'dense-entry');
   assert.equal(denseResult.results[0]?.sessionPath, sessionPath);
@@ -2992,9 +3034,10 @@ void test('recall service defaults to fused ranking and reranks only in explicit
   );
   const query = 'fusion favorite';
   const rerankerInputs: string[][] = [];
+  const rerankerQueries: string[] = [];
   const reranker: LocalRerankerClient = {
     async rerankDocuments(receivedQuery, documents) {
-      assert.equal(receivedQuery, query);
+      rerankerQueries.push(receivedQuery);
       rerankerInputs.push([...documents]);
       return [0.1, 0.9];
     },
@@ -3031,6 +3074,9 @@ void test('recall service defaults to fused ranking and reranks only in explicit
   assert.equal(defaultSearch.results[0]?.entryId.value, 'fusion-favorite');
   assert.equal(defaultSearch.results[0]?.rerankerScore, null);
   assert.equal(defaultSearch.searchPolicy.rankingMode, 'hybrid');
+  assert.equal(defaultSearch.searchPolicy.fusedPoolLimit, 6);
+  assert.equal(defaultSearch.searchPolicy.rerankPoolLimit, 6);
+  assert.equal(defaultSearch.searchPolicy.finalResultLimit, 1);
 
   const deepSearch = await service.search(query, 1, {
     mode: 'deep-rerank',
@@ -3038,6 +3084,7 @@ void test('recall service defaults to fused ranking and reranks only in explicit
   });
 
   assert.deepEqual(rerankerInputs, [[fusionFavorite, rerankerFavorite]]);
+  assert.deepEqual(rerankerQueries, [query]);
   assert.equal(deepSearch.results.length, 1);
   assert.equal(deepSearch.results[0]?.entryId.value, 'reranker-favorite');
   assert.equal(deepSearch.results[0]?.rerankerScore, 0.9);
@@ -3045,13 +3092,613 @@ void test('recall service defaults to fused ranking and reranks only in explicit
   assert.ok(Number.isFinite(deepSearch.results[0]?.dense?.cosineDistance));
   assert.equal(deepSearch.results[0]?.lexical, null);
   assert.equal(deepSearch.results[0]?.identifier, null);
+  assert.deepEqual(deepSearch.results[0]?.rankedListEvidence, [
+    {
+      source: 'dense',
+      query,
+      rank: 2,
+      nativeScore: deepSearch.results[0]?.dense?.cosineDistance,
+      weight: 1,
+    },
+  ]);
   assert.equal(deepSearch.searchPolicy.rankingMode, 'deep-rerank');
-  assert.deepEqual(deepSearch.searchPolicy.rerankerIdentity, {
-    profileId: 'qwen-reranking:test-reranker-model',
-    adapterId: 'custom-injected-reranking-v1',
-    cacheIdentity: 'qwen-reranking:test-reranker-model:custom-injected-reranking-v1',
-  });
+  assert.equal(
+    deepSearch.searchPolicy.rerankerIdentity?.profileId,
+    'qwen-reranking:test-reranker-model',
+  );
+  assert.equal(deepSearch.searchPolicy.rerankerIdentity?.adapterId, 'custom-injected-reranking-v1');
+  assert.match(
+    deepSearch.searchPolicy.rerankerIdentity?.cacheIdentity ?? '',
+    /^recall-reranking-execution-v1:[a-f0-9]{64}$/u,
+  );
   assert.equal(defaultSearch.searchPolicy.rerankerIdentity, null);
+  assert.equal(deepSearch.searchPolicy.fusedPoolLimit, 6);
+  assert.equal(deepSearch.searchPolicy.rerankPoolLimit, 6);
+  assert.equal(deepSearch.searchPolicy.finalResultLimit, 1);
+
+  const deepSearchWithIntent = await service.search(query, 1, {
+    mode: 'deep-rerank',
+    scope: RecallSearchScope.GLOBAL,
+    intent: 'prefer the final semantic decision',
+  });
+  assert.equal(deepSearchWithIntent.results[0]?.entryId.value, 'reranker-favorite');
+  assert.deepEqual(rerankerQueries, [query, `prefer the final semantic decision\n\n${query}`]);
+
+  const cappedRerankerInputs: string[][] = [];
+  const cappedService = createRecallConversationService(
+    {
+      ...config,
+      fusedPoolLimit: 2,
+      rerankPoolLimit: 1,
+    },
+    {
+      embeddings: {
+        async embedTexts(texts) {
+          return texts.map((text) => {
+            if (text === RECALL_EMBEDDING_CANARY_TEXT) {
+              return [0, 0, 1];
+            }
+            if (text === rerankerFavorite) {
+              return [0.9, 0.1, 0];
+            }
+            return [1, 0, 0];
+          });
+        },
+      },
+      reranker: {
+        async rerankDocuments(receivedQuery, documents) {
+          assert.equal(receivedQuery, query);
+          cappedRerankerInputs.push([...documents]);
+          return documents.map(() => 0.5);
+        },
+      },
+      async loadTokenizer() {
+        return tokenizer;
+      },
+    },
+  );
+  const cappedSearch = await cappedService.search(query, 1, {
+    mode: 'deep-rerank',
+    scope: RecallSearchScope.GLOBAL,
+  });
+
+  assert.deepEqual(cappedRerankerInputs, [[fusionFavorite]]);
+  assert.equal(cappedSearch.results[0]?.entryId.value, 'fusion-favorite');
+  assert.equal(cappedSearch.searchPolicy.fusedPoolLimit, 2);
+  assert.equal(cappedSearch.searchPolicy.rerankPoolLimit, 1);
+  assert.equal(cappedSearch.searchPolicy.finalResultLimit, 1);
+});
+
+void test('query-planned recall routes agent lists through capability-specific embedding operations', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-service-agent-query-plan-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionsDirectory = join(directory, 'sessions');
+  await mkdir(sessionsDirectory);
+  const submittedEvidence = 'submitted needle evidence';
+  const lexicalEvidence = 'lexical waypoint evidence';
+  const vectorEvidence = 'semantic bridge evidence';
+  const hypotheticalEvidence = 'hypothetical answer evidence';
+  await writeFile(
+    join(sessionsDirectory, 'query-planned.jsonl'),
+    [
+      {
+        type: 'session',
+        version: 3,
+        id: 'query-planned-session',
+        timestamp: '2026-07-26T10:00:00Z',
+        cwd: '/query-planned-project',
+      },
+      {
+        type: 'message',
+        id: 'submitted-entry',
+        parentId: null,
+        timestamp: '2026-07-26T10:01:00Z',
+        message: { role: 'assistant', content: submittedEvidence },
+      },
+      {
+        type: 'message',
+        id: 'lexical-entry',
+        parentId: 'submitted-entry',
+        timestamp: '2026-07-26T10:02:00Z',
+        message: { role: 'assistant', content: lexicalEvidence },
+      },
+      {
+        type: 'message',
+        id: 'vector-entry',
+        parentId: 'lexical-entry',
+        timestamp: '2026-07-26T10:03:00Z',
+        message: { role: 'assistant', content: vectorEvidence },
+      },
+      {
+        type: 'message',
+        id: 'hypothetical-entry',
+        parentId: 'vector-entry',
+        timestamp: '2026-07-26T10:04:00Z',
+        message: { role: 'assistant', content: hypotheticalEvidence },
+      },
+    ]
+      .map((entry) => JSON.stringify(entry))
+      .join('\n') + '\n',
+  );
+  const query = 'submitted needle';
+  const plan = [
+    { type: 'lex', query: 'lexical waypoint' },
+    { type: 'vec', query: 'semantic bridge' },
+    { type: 'hyde', query: 'hypothetical answer' },
+  ] as const;
+  const queryEmbeddedTexts: string[] = [];
+  const rerankerQueries: string[] = [];
+  const plannerRequests: RecallQueryPlanningRequest[] = [];
+  const plannerWarnings: string[] = [];
+  let plannerFailure: Error | null = null;
+  let plannerPlan: RecallPlannedRetrievalQuery[] = [...plan];
+  let reverseRerankerPreference = false;
+  const queryPlanningProfile = createRecommendedQmdQueryPlanningModelProfile();
+  function createQueryPlannedTestEmbedding(text: string): number[] {
+    if (text === RECALL_EMBEDDING_CANARY_TEXT) {
+      return [0, 0, 1];
+    }
+    if (text === vectorEvidence || text === 'semantic bridge') {
+      return [0, 1, 0];
+    }
+    if (text === hypotheticalEvidence || text === 'hypothetical answer') {
+      return [-1, 0, 0];
+    }
+    return [1, 0, 0];
+  }
+  const service = createRecallConversationService(
+    {
+      ...createTestConfig(directory, sessionsDirectory),
+      searchCandidateLimits: { dense: 1, lexical: 1, identifier: 1 },
+    },
+    {
+      embeddingProvider: {
+        async embedQuery(text) {
+          queryEmbeddedTexts.push(text);
+          return createQueryPlannedTestEmbedding(text);
+        },
+        async embedDocuments(texts) {
+          return texts.map(createQueryPlannedTestEmbedding);
+        },
+      },
+      reranker: {
+        async rerankDocuments(rerankerQuery, documents) {
+          rerankerQueries.push(rerankerQuery);
+          return documents.map((document, index) =>
+            reverseRerankerPreference ? documents.length - index : document.length / 1_000,
+          );
+        },
+      },
+      queryPlanningProfile,
+      queryPlanner: {
+        executionIdentity: createRecallQueryPlanningExecutionIdentity(
+          queryPlanningProfile,
+          'query-planned-search-test-adapter-v1',
+          'query-planned-search-test-configuration-v1',
+          RecallInferenceBackend.CUSTOM,
+          5_000,
+        ),
+        async planRecallQuery(request) {
+          plannerRequests.push(request);
+          if (plannerFailure) {
+            throw plannerFailure;
+          }
+          return [...plannerPlan];
+        },
+      },
+      notifyWarning(message) {
+        plannerWarnings.push(message);
+      },
+      async loadTokenizer() {
+        return tokenizer;
+      },
+    },
+  );
+  await service.index();
+  queryEmbeddedTexts.length = 0;
+
+  const search = await service.search(query, 10, {
+    mode: 'query-planned',
+    scope: RecallSearchScope.GLOBAL,
+    plan,
+    intent: 'recover the implementation decision',
+  });
+
+  assert.deepEqual(plannerRequests, []);
+  assert.deepEqual(rerankerQueries, [`recover the implementation decision\n\n${query}`]);
+  assert.deepEqual(queryEmbeddedTexts, [query, 'semantic bridge', 'hypothetical answer']);
+  assert.ok(!queryEmbeddedTexts.includes('lexical waypoint'));
+  assert.deepEqual(search.searchPolicy.queryPlan, {
+    source: 'agent',
+    plannerIdentity: null,
+    intent: 'recover the implementation decision',
+    plannedQueries: plan,
+    rankedLists: [
+      { source: 'dense', query, weight: 2, candidateLimit: 20, admittedCandidateCount: 4 },
+      { source: 'lexical', query, weight: 2, candidateLimit: 20, admittedCandidateCount: 1 },
+      { source: 'identifier', query, weight: 2, candidateLimit: 20, admittedCandidateCount: 1 },
+      {
+        source: 'planned_lex',
+        query: 'lexical waypoint',
+        weight: 1,
+        candidateLimit: 20,
+        admittedCandidateCount: 1,
+      },
+      {
+        source: 'planned_vec',
+        query: 'semantic bridge',
+        weight: 1,
+        candidateLimit: 20,
+        admittedCandidateCount: 4,
+      },
+      {
+        source: 'planned_hyde',
+        query: 'hypothetical answer',
+        weight: 1,
+        candidateLimit: 20,
+        admittedCandidateCount: 4,
+      },
+    ],
+    fusionPolicy: {
+      reciprocalRankConstant: 60,
+      submittedQueryListWeight: 2,
+      plannedQueryListWeight: 1,
+      rankOneBonus: 0.05,
+      rankTwoOrThreeBonus: 0.02,
+    },
+    rerankerProfile: {
+      model: 'test-reranker-model',
+      policyVersion: 2,
+      fusedRankBlend: [
+        { firstRank: 1, lastRank: 3, retrievalWeight: 0.75, rerankerWeight: 0.25 },
+        { firstRank: 4, lastRank: 10, retrievalWeight: 0.6, rerankerWeight: 0.4 },
+        { firstRank: 11, lastRank: null, retrievalWeight: 0.4, rerankerWeight: 0.6 },
+      ],
+    },
+  });
+  assert.equal(search.searchPolicy.rankingMode, 'query-planned');
+  assert.equal(search.searchPolicy.fusedPoolLimit, 120);
+  assert.equal(search.searchPolicy.rerankPoolLimit, 40);
+  assert.equal(search.searchPolicy.finalResultLimit, 5);
+  assert.deepEqual(
+    new Set(search.results.map((result) => result.entryId.value)),
+    new Set(['submitted-entry', 'lexical-entry', 'vector-entry', 'hypothetical-entry']),
+  );
+  assert.ok(
+    search.results
+      .find((result) => result.entryId.value === 'lexical-entry')
+      ?.rankedListEvidence.some(
+        (evidence) => evidence.source === RecallRankedListSource.PLANNED_LEX,
+      ),
+  );
+  assert.ok(
+    search.results
+      .find((result) => result.entryId.value === 'vector-entry')
+      ?.rankedListEvidence.some(
+        (evidence) => evidence.source === RecallRankedListSource.PLANNED_VEC,
+      ),
+  );
+  assert.ok(
+    search.results
+      .find((result) => result.entryId.value === 'hypothetical-entry')
+      ?.rankedListEvidence.some(
+        (evidence) => evidence.source === RecallRankedListSource.PLANNED_HYDE,
+      ),
+  );
+
+  reverseRerankerPreference = true;
+  const rerankedAndTruncatedSearch = await service.search(query, 1, {
+    mode: 'query-planned',
+    scope: RecallSearchScope.GLOBAL,
+    plan,
+    intent: 'recover the implementation decision',
+  });
+  assert.equal(rerankedAndTruncatedSearch.results.length, 1);
+  assert.deepEqual(
+    rerankedAndTruncatedSearch.candidateAdmission.map(({ id }) => id),
+    search.candidateAdmission.map(({ id }) => id),
+  );
+  assert.equal(
+    rerankedAndTruncatedSearch.candidateAdmission.some(
+      ({ entryId }) => entryId.value === 'lexical-entry',
+    ),
+    true,
+  );
+  assert.equal(
+    rerankedAndTruncatedSearch.results.some(({ entryId }) => entryId.value === 'lexical-entry'),
+    false,
+  );
+  assert.equal(
+    rerankedAndTruncatedSearch.candidateAdmission.some(
+      ({ entryId }) => entryId.value === 'absent-control-entry',
+    ),
+    false,
+  );
+  reverseRerankerPreference = false;
+
+  queryEmbeddedTexts.length = 0;
+  rerankerQueries.length = 0;
+  const plannerSearch = await service.search(query, 10, {
+    mode: 'query-planned',
+    scope: RecallSearchScope.GLOBAL,
+    intent: 'recover the implementation decision',
+  });
+
+  assert.deepEqual(plannerRequests, [
+    { query, recallIntent: 'recover the implementation decision' },
+  ]);
+  assert.deepEqual(queryEmbeddedTexts, [query, 'semantic bridge', 'hypothetical answer']);
+  assert.deepEqual(rerankerQueries, [`recover the implementation decision\n\n${query}`]);
+  assert.equal(plannerSearch.searchPolicy.queryPlan?.source, 'planner');
+  assert.deepEqual(plannerSearch.searchPolicy.queryPlan?.plannedQueries, plan);
+  const plannerIdentity = plannerSearch.searchPolicy.queryPlan?.plannerIdentity;
+  assert.equal(plannerIdentity?.profileId, queryPlanningProfile.profileId);
+  assert.equal(plannerIdentity?.model, queryPlanningProfile.model);
+  assert.equal(plannerIdentity?.adapterId, 'query-planned-search-test-adapter-v1');
+  assert.equal(plannerIdentity?.backend, RecallInferenceBackend.CUSTOM);
+  assert.equal(plannerIdentity?.promptPolicy, queryPlanningProfile.promptPolicy);
+  assert.equal(plannerIdentity?.grammarVersion, queryPlanningProfile.grammarVersion);
+  assert.match(plannerIdentity?.cacheIdentity ?? '', /^query-plan-v1:[a-f0-9]{64}$/u);
+  const plannerOutput = formatRecallSearchResults(plannerSearch);
+  assert.match(plannerOutput, /Configured planner query plan \(planner\)/u);
+  assert.match(
+    plannerOutput,
+    /Planner identity: planner profile qmd-query-expansion-1\.7b-q4-k-m-v1.*adapter query-planned-search-test-adapter-v1.*cache query-plan-v1:/u,
+  );
+  assert.match(plannerOutput, /lex: lexical waypoint/u);
+  assert.match(plannerOutput, /vec: semantic bridge/u);
+  assert.match(plannerOutput, /hyde: hypothetical answer/u);
+  assert.deepEqual(
+    plannerSearch.searchPolicy.queryPlan?.rankedLists,
+    search.searchPolicy.queryPlan?.rankedLists,
+  );
+  assert.deepEqual(
+    plannerSearch.results.map((result) => result.entryId.value),
+    search.results.map((result) => result.entryId.value),
+  );
+  const changedIntentSearch = await service.search(query, 10, {
+    mode: 'query-planned',
+    scope: RecallSearchScope.GLOBAL,
+    intent: 'recover a different decision',
+  });
+  const changedQuerySearch = await service.search(`${query} revised`, 10, {
+    mode: 'query-planned',
+    scope: RecallSearchScope.GLOBAL,
+    intent: 'recover the implementation decision',
+  });
+  assert.notEqual(
+    changedIntentSearch.searchPolicy.queryPlan?.plannerIdentity?.cacheIdentity,
+    plannerIdentity?.cacheIdentity,
+  );
+  assert.notEqual(
+    changedQuerySearch.searchPolicy.queryPlan?.plannerIdentity?.cacheIdentity,
+    plannerIdentity?.cacheIdentity,
+  );
+
+  const plannerRequestCountBeforeInvalidInput = plannerRequests.length;
+  const plannerWarningCountBeforeInvalidInput = plannerWarnings.length;
+  await assert.rejects(
+    () =>
+      service.search(`${query}\nsecond line`, 10, {
+        mode: 'query-planned',
+        scope: RecallSearchScope.GLOBAL,
+      }),
+    /Recall query-planned query invalid: expected a single-line string/u,
+  );
+  await assert.rejects(
+    () =>
+      service.search(query, 10, {
+        mode: 'query-planned',
+        scope: RecallSearchScope.GLOBAL,
+        intent: 'recover the implementation decision\nwithout planner fallback',
+      }),
+    /Recall query-planned intent invalid: expected a single-line string/u,
+  );
+  assert.equal(plannerRequests.length, plannerRequestCountBeforeInvalidInput);
+  assert.equal(plannerWarnings.length, plannerWarningCountBeforeInvalidInput);
+
+  const deepRerankSearch = await service.search(query, 10, {
+    mode: 'deep-rerank',
+    scope: RecallSearchScope.GLOBAL,
+    intent: 'recover the implementation decision',
+  });
+  plannerFailure = new Error('fixture planner request unavailable');
+  plannerWarnings.length = 0;
+  queryEmbeddedTexts.length = 0;
+  rerankerQueries.length = 0;
+  const fallbackSearch = await service.search(query, 10, {
+    mode: 'query-planned',
+    scope: RecallSearchScope.GLOBAL,
+    intent: 'recover the implementation decision',
+  });
+
+  assert.equal(plannerWarnings.length, 1);
+  assert.match(
+    plannerWarnings[0] ?? '',
+    /Recall query planner failed; using submitted-query deep reranking.*fixture planner request unavailable/u,
+  );
+  assert.deepEqual(queryEmbeddedTexts, [query]);
+  assert.deepEqual(rerankerQueries, [`recover the implementation decision\n\n${query}`]);
+  assert.equal(fallbackSearch.searchPolicy.queryPlan?.source, 'fallback');
+  assert.deepEqual(fallbackSearch.searchPolicy.queryPlan?.plannedQueries, []);
+  assert.deepEqual(
+    fallbackSearch.searchPolicy.queryPlan?.rankedLists.map((list) => list.source),
+    [
+      RecallRankedListSource.DENSE,
+      RecallRankedListSource.LEXICAL,
+      RecallRankedListSource.IDENTIFIER,
+    ],
+  );
+  assert.deepEqual(
+    fallbackSearch.results.map((result) => result.entryId.value),
+    deepRerankSearch.results.map((result) => result.entryId.value),
+  );
+  assert.equal(fallbackSearch.searchPolicy.rerankPolicyVersion, 1);
+  assert.deepEqual(fallbackSearch.searchPolicy.queryPlan?.fusionPolicy, {
+    reciprocalRankConstant: 60,
+    submittedQueryListWeight: 1,
+    plannedQueryListWeight: 1,
+    rankOneBonus: 0,
+    rankTwoOrThreeBonus: 0,
+  });
+  assert.deepEqual(fallbackSearch.searchPolicy.queryPlan?.rerankerProfile, {
+    model: 'test-reranker-model',
+    policyVersion: 1,
+    fusedRankBlend: [],
+  });
+  assert.deepEqual(fallbackSearch.searchPolicy.candidateLimits, {
+    dense: 1,
+    lexical: 1,
+    identifier: 1,
+  });
+  assert.equal(fallbackSearch.searchPolicy.fusedPoolLimit, 3);
+  assert.equal(fallbackSearch.searchPolicy.rerankPoolLimit, 3);
+
+  plannerFailure = null;
+  plannerPlan = [{ type: 'lex', query: 'lexical waypoint' }];
+  plannerWarnings.length = 0;
+  const invalidBoundsFallbackSearch = await service.search(query, 10, {
+    mode: 'query-planned',
+    scope: RecallSearchScope.GLOBAL,
+  });
+
+  assert.equal(invalidBoundsFallbackSearch.searchPolicy.queryPlan?.source, 'fallback');
+  assert.deepEqual(invalidBoundsFallbackSearch.searchPolicy.queryPlan?.plannedQueries, []);
+  assert.equal(plannerWarnings.length, 1);
+  assert.match(plannerWarnings[0] ?? '', /query planning output bounds invalid/u);
+
+  plannerPlan = [
+    { type: 'lex', query: 'lexical waypoint' },
+    { type: 'vec', query: 'semantic\nbridge' },
+  ];
+  plannerWarnings.length = 0;
+  const invalidGrammarFallbackSearch = await service.search(query, 10, {
+    mode: 'query-planned',
+    scope: RecallSearchScope.GLOBAL,
+  });
+  assert.equal(invalidGrammarFallbackSearch.searchPolicy.queryPlan?.source, 'fallback');
+  assert.equal(plannerWarnings.length, 1);
+  assert.match(plannerWarnings[0] ?? '', /query planning output grammar invalid/u);
+
+  plannerPlan = [
+    { type: 'lex', query: 'lexical waypoint one' },
+    { type: 'lex', query: 'lexical waypoint two' },
+    { type: 'lex', query: 'lexical waypoint three' },
+    { type: 'lex', query: 'lexical waypoint four' },
+    { type: 'vec', query: 'semantic bridge' },
+  ];
+  plannerWarnings.length = 0;
+  const excessiveBoundsFallbackSearch = await service.search(query, 10, {
+    mode: 'query-planned',
+    scope: RecallSearchScope.GLOBAL,
+  });
+  assert.equal(excessiveBoundsFallbackSearch.searchPolicy.queryPlan?.source, 'fallback');
+  assert.equal(plannerWarnings.length, 1);
+  assert.match(plannerWarnings[0] ?? '', /query planning output bounds invalid/u);
+});
+
+void test('recall service rejects a missing planner, invalid agent plans, and hybrid intent before index work', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-service-invalid-query-plan-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionsDirectory = join(directory, 'sessions');
+  await mkdir(sessionsDirectory);
+  const service = createRecallConversationService(createTestConfig(directory, sessionsDirectory), {
+    embeddings: {
+      async embedTexts() {
+        assert.fail('Invalid query planning options must fail before embedding work');
+      },
+    },
+  });
+
+  await assert.rejects(
+    () =>
+      service.search('missing plan', 5, {
+        mode: 'query-planned',
+        scope: RecallSearchScope.GLOBAL,
+      }),
+    /Recall query planner is not configured: select and verify a query-planning capability before query-planned search without an agent plan/,
+  );
+  await assert.rejects(
+    () =>
+      service.search('empty plan', 5, {
+        mode: 'query-planned',
+        scope: RecallSearchScope.GLOBAL,
+        plan: [],
+      }),
+    /Recall query plan invalid: expected 1 to 10 entries, received 0/,
+  );
+  await assert.rejects(
+    () =>
+      service.search('blank planned query', 5, {
+        mode: 'query-planned',
+        scope: RecallSearchScope.GLOBAL,
+        plan: [{ type: 'lex', query: '   ' }],
+      }),
+    /entry 1: query must be a nonblank string/,
+  );
+  const malformedPlan = [{ type: 'lex', query: 'valid', unsupported: true }] as const;
+  await assert.rejects(
+    () =>
+      service.search('malformed plan', 5, {
+        mode: 'query-planned',
+        scope: RecallSearchScope.GLOBAL,
+        plan: malformedPlan,
+      }),
+    /entry 1: unsupported field unsupported/,
+  );
+  const unsupportedPlan = [{ type: 'sql', query: 'not a retrieval type' }];
+  await assert.rejects(
+    () =>
+      service.search('unsupported plan', 5, {
+        mode: 'query-planned',
+        scope: RecallSearchScope.GLOBAL,
+        // @ts-expect-error The public boundary must reject unsupported runtime query types.
+        plan: unsupportedPlan,
+      }),
+    /entry 1: unsupported type sql; use lex, vec, or hyde/,
+  );
+  await assert.rejects(
+    () =>
+      service.search('duplicate plan', 5, {
+        mode: 'query-planned',
+        scope: RecallSearchScope.GLOBAL,
+        plan: [
+          { type: 'vec', query: ' repeated semantic query ' },
+          { type: 'vec', query: 'repeated semantic query' },
+        ],
+      }),
+    /entry 2: duplicate vec query matches entry 1; remove one duplicate entry/,
+  );
+  const oversizedPlan: RecallPlannedRetrievalQuery[] = Array.from({ length: 11 }, (_, index) => ({
+    type: 'lex',
+    query: `planned query ${index}`,
+  }));
+  await assert.rejects(
+    () =>
+      service.search('oversized plan', 5, {
+        mode: 'query-planned',
+        scope: RecallSearchScope.GLOBAL,
+        plan: oversizedPlan,
+      }),
+    /expected 1 to 10 entries, received 11/,
+  );
+  await assert.rejects(
+    () =>
+      service.search('hybrid intent', 5, {
+        scope: RecallSearchScope.GLOBAL,
+        intent: 'must not be ignored',
+      }),
+    /Recall hybrid mode does not accept intent/,
+  );
+  await assert.rejects(
+    () =>
+      service.search('wrong plan mode', 5, {
+        mode: 'deep-rerank',
+        scope: RecallSearchScope.GLOBAL,
+        plan: [{ type: 'vec', query: 'semantic reformulation' }],
+      }),
+    /Recall query plan is supported only in query-planned mode/,
+  );
 });
 
 void test('recall service fails clearly when Qwen reranking is unavailable', async (t) => {
@@ -3078,6 +3725,8 @@ void test('recall service fails clearly when Qwen reranking is unavailable', asy
       }),
     ].join('\n') + '\n',
   );
+  const failingPlannerProfile = createRecommendedQmdQueryPlanningModelProfile();
+  const plannerFallbackWarnings: string[] = [];
   const service = createRecallConversationService(createTestConfig(directory, sessionsDirectory), {
     embeddings: {
       async embedTexts(texts) {
@@ -3090,6 +3739,22 @@ void test('recall service fails clearly when Qwen reranking is unavailable', asy
           'Recall reranker request failed at http://reranker.test/v1/rerank: unavailable',
         );
       },
+    },
+    queryPlanningProfile: failingPlannerProfile,
+    queryPlanner: {
+      executionIdentity: createRecallQueryPlanningExecutionIdentity(
+        failingPlannerProfile,
+        'failing-query-planner-v1',
+        'failing-query-planner-configuration-v1',
+        RecallInferenceBackend.CUSTOM,
+        5_000,
+      ),
+      async planRecallQuery() {
+        throw new Error('fixture query planner request unavailable');
+      },
+    },
+    notifyWarning(message) {
+      plannerFallbackWarnings.push(message);
     },
     async loadTokenizer() {
       return tokenizer;
@@ -3110,6 +3775,25 @@ void test('recall service fails clearly when Qwen reranking is unavailable', asy
       }),
     /Recall reranker request failed at http:\/\/reranker\.test\/v1\/rerank: unavailable/,
   );
+  await assert.rejects(
+    () =>
+      service.search('must use planned Qwen', 5, {
+        mode: 'query-planned',
+        scope: RecallSearchScope.GLOBAL,
+        plan: [{ type: 'lex', query: 'Evidence that must not bypass reranking' }],
+      }),
+    /Recall query-planned reranking failed: verify the configured reranker and retry; Recall reranker request failed/,
+  );
+  await assert.rejects(
+    () =>
+      service.search('must fail after planner fallback', 5, {
+        mode: 'query-planned',
+        scope: RecallSearchScope.GLOBAL,
+      }),
+    /Recall reranker request failed at http:\/\/reranker\.test\/v1\/rerank: unavailable/,
+  );
+  assert.equal(plannerFallbackWarnings.length, 1);
+  assert.match(plannerFallbackWarnings[0] ?? '', /using submitted-query deep reranking/u);
 });
 
 void test('recall service retrieves context-dependent replies and reuses turn-context vectors', async (t) => {
@@ -3342,6 +4026,43 @@ void test('recall service fuses lexical-only tool evidence with dense conversati
     RECALL_EMBEDDING_CANARY_TEXT,
     'EPERM readNodeErrorCode',
   ]);
+
+  const embeddingCountBeforePlannedSearch = embeddedInputs.length;
+  const plannedToolSearch = await service.search('file permission diagnosis', 5, {
+    mode: 'query-planned',
+    scope: RecallSearchScope.GLOBAL,
+    plan: [
+      { type: 'lex', query: 'EPERM readNodeErrorCode' },
+      { type: 'vec', query: 'Which semantic diagnosis explained the failure?' },
+      { type: 'hyde', query: 'The failure was diagnosed from a permission error.' },
+    ],
+  });
+  const plannedToolEvidence = plannedToolSearch.results.find(
+    (result) => result.evidencePart === 'result',
+  );
+  assert.ok(plannedToolEvidence);
+  assert.equal(plannedToolEvidence.dense, null);
+  assert.ok(
+    plannedToolEvidence.rankedListEvidence.some(
+      (evidence) => evidence.source === RecallRankedListSource.PLANNED_LEX,
+    ),
+  );
+  assert.ok(
+    plannedToolEvidence.rankedListEvidence.every(
+      (evidence) =>
+        evidence.source !== RecallRankedListSource.PLANNED_VEC &&
+        evidence.source !== RecallRankedListSource.PLANNED_HYDE,
+    ),
+  );
+  const plannedSearchEmbeddingInputs = embeddedInputs.slice(embeddingCountBeforePlannedSearch);
+  assert.ok(plannedSearchEmbeddingInputs.includes('file permission diagnosis'));
+  assert.ok(
+    plannedSearchEmbeddingInputs.includes('Which semantic diagnosis explained the failure?'),
+  );
+  assert.ok(
+    plannedSearchEmbeddingInputs.includes('The failure was diagnosed from a permission error.'),
+  );
+  assert.ok(!plannedSearchEmbeddingInputs.includes('EPERM readNodeErrorCode'));
 
   const exactCommand = await service.search(toolCommand, 2, {
     scope: RecallSearchScope.GLOBAL,

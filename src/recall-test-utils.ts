@@ -1,5 +1,5 @@
 import { RecallEvidenceRelation } from './enums.js';
-import type { RecallSearchResult } from './fuse-recall-search-candidates.js';
+import type { RecallSearchResult } from './fuse-recall-ranked-lists.js';
 import type { RecallConversationSearchResult } from './recall-conversation-service.js';
 import {
   SESSION_CONVERSATION_SCHEMA_VERSION,
@@ -82,6 +82,7 @@ export function createTestRecallSearchResult(
     dense: { rank: 1, cosineDistance: 0.1 },
     lexical: null,
     identifier: null,
+    rankedListEvidence: [],
     fusedScore: 0.02,
     ...options,
   };

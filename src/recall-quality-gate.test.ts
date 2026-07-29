@@ -22,6 +22,8 @@ const CURRENT_EVALUATION_IDENTITY = {
   reciprocalRankConstant: 60,
   activeBranchPrior: 0.01,
   candidateLimits: { dense: 8, lexical: 8, identifier: 8 },
+  fusedPoolLimit: 24,
+  rerankPoolLimit: 24,
   finalResultCount: 5,
 };
 
@@ -266,6 +268,26 @@ void test('quality evidence rejects a stale rank-fusion identity', async (t) => 
       await createPassingQualityEvidence({
         ...CURRENT_EVALUATION_IDENTITY,
         rankFusionVersion: 1,
+      }),
+    ),
+  );
+
+  const decision = await readRecallQualityGateDecision(resultsPath);
+
+  assert.equal(decision.automatedGatePassed, false);
+  assert.match(decision.blockers.join('; '), /ranking identity does not match/i);
+});
+
+void test('quality evidence rejects a stale fused-pool limit', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-quality-fused-limit-gate-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const resultsPath = join(directory, 'results.json');
+  await writeFile(
+    resultsPath,
+    JSON.stringify(
+      await createPassingQualityEvidence({
+        ...CURRENT_EVALUATION_IDENTITY,
+        fusedPoolLimit: 23,
       }),
     ),
   );

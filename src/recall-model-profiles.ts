@@ -61,7 +61,7 @@ export interface RecommendedQmdQueryPlanningModelProfile extends RecallQueryPlan
   profileId: 'qmd-query-expansion-1.7b-q4-k-m-v1';
   model: 'qmd-query-expansion-1.7B-q4_k_m';
   promptPolicy: 'qmd-query-expansion-no-think-v1';
-  grammarVersion: 'qmd-typed-query-plan-v1';
+  grammarVersion: 'qmd-bounded-query-plan-v2';
   purpose: string;
   source: Readonly<RecallModelArtifactSource>;
   license: Readonly<RecallModelLicenseIdentity>;
@@ -196,12 +196,13 @@ export function createRecommendedQmdQueryPlanningModelProfile(): RecommendedQmdQ
     model: 'qmd-query-expansion-1.7B-q4_k_m',
     purpose: 'Plan bounded lexical, semantic, and hypothetical-answer recall queries.',
     promptPolicy: 'qmd-query-expansion-no-think-v1',
-    grammarVersion: 'qmd-typed-query-plan-v1',
+    grammarVersion: 'qmd-bounded-query-plan-v2',
     grammar: [
-      'root ::= line+',
-      'line ::= type ": " content "\\n"',
-      'type ::= "lex" | "vec" | "hyde"',
-      'content ::= [^\\n]+',
+      'root ::= lex lex? lex? vec vec? vec? hyde?',
+      'lex ::= "lex: " content "\\n"',
+      'vec ::= "vec: " content "\\n"',
+      'hyde ::= "hyde: " content "\\n"',
+      'content ::= [^\\n]{1,512}',
     ].join('\n'),
     planBounds: Object.freeze({
       minimumLexQueries: 1,
@@ -220,9 +221,9 @@ export function createRecommendedQmdQueryPlanningModelProfile(): RecommendedQmdQ
       presencePenalty: 0.5,
     }),
     conformanceCanary: Object.freeze({
-      query: 'source provenance',
-      recallIntent: 'Find Pi conversation evidence about retained source provenance.',
-      protectedTerms: Object.freeze(['source', 'provenance']),
+      query: 'Copper Finch',
+      recallIntent: 'Find Pi conversation evidence about the exact Copper Finch recovery entity.',
+      protectedTerms: Object.freeze(['Copper', 'Finch']),
     }),
     source: Object.freeze({
       repository: 'tobil/qmd-query-expansion-1.7B-gguf',

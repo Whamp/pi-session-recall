@@ -171,7 +171,7 @@ export interface RecallOperationDiagnosticRecord {
   manualMaintenanceTrigger: RecallManualMaintenanceTrigger | null;
   processId: number;
   sessionPath: string | null;
-  searchMode: 'hybrid' | 'deep-rerank' | null;
+  searchMode: 'hybrid' | 'deep-rerank' | 'query-planned' | null;
   recallScope: RecallSearchScope | null;
   status: RecallDiagnosticStatus;
   errorCategory: RecallDiagnosticErrorCategory | null;
@@ -255,7 +255,7 @@ export interface RecallManualIndexDiagnostic {
 /** Non-critical recall diagnostic recorder with an explicit test-only drain boundary. */
 export interface RecallOperationDiagnostics {
   startRecallSearch(input: {
-    searchMode: 'hybrid' | 'deep-rerank';
+    searchMode: 'hybrid' | 'deep-rerank' | 'query-planned';
     recallScope: RecallSearchScope;
   }): RecallSearchDiagnosticOperation;
   startManualIndexMaintenance(input: {
@@ -447,7 +447,7 @@ function createRecallDiagnosticStartRecord(input: {
   operationKind: RecallDiagnosticOperationKind;
   manualMaintenanceTrigger: RecallManualMaintenanceTrigger | null;
   sessionPath: string | null;
-  searchMode: 'hybrid' | 'deep-rerank' | null;
+  searchMode: 'hybrid' | 'deep-rerank' | 'query-planned' | null;
   recallScope: RecallSearchScope | null;
 }): RecallOperationDiagnosticRecord {
   return {

@@ -116,6 +116,10 @@ export interface RecallConversationConfig {
   searchWriteWindowWaitMilliseconds: number;
   confirmedDeletionMaxMissingSourceCount: number;
   confirmedDeletionMaxMissingSourceRatio: number;
+  /** Maximum fused candidates admitted before duplicate grouping in hybrid and deep-rerank modes. */
+  fusedPoolLimit?: number;
+  /** Maximum duplicate evidence groups admitted to deep reranking. */
+  rerankPoolLimit?: number;
   chunkPolicy?: RecallChunkPolicy;
 }
 

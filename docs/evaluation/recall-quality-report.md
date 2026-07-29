@@ -17,7 +17,7 @@ Selected **512/64 tokens/overlap**, **8 candidates/channel**, and **5 final resu
 - Project identity policy: v4; metadata schema v3
 - Project lineage policy: v1; digest `02023e9934990f61a81488144cb1b27d9002e0af750c38a1b83adc1de367bc4b`
 - Hybrid ranking: fusion v2, RRF k=60, active prior +0.0100
-- Candidate limits: dense 8, lexical 8, identifier 8; final results 5
+- Ranked-list limits: dense 8, lexical 8, identifier 8; fused pool 24; rerank pool 24; final results 5
 
 ## Frozen quality gate
 

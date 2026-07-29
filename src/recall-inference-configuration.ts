@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 
@@ -11,13 +11,12 @@ import {
   RecallInferenceBackend,
   RecallInferenceCapability,
 } from './enums.js';
-import { isUnknownRecord } from './is-unknown-record.js';
 import { readRecallGenerationRegistry } from './recall-generation-state.js';
+import { tryAcquireRecallRebuildOwnershipLock } from './recall-rebuild-ownership-lock.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
 
 const RECALL_INFERENCE_CONFIGURATION_VERSION = 2;
 const RECALL_INFERENCE_CONFIGURATION_LOCK_RETRY_MILLISECONDS = 25;
-const RECALL_INFERENCE_CONFIGURATION_LOCK_MISSING_OWNER_LIMIT = 4;
 
 const RECALL_INFERENCE_CAPABILITY_SCHEMA = Type.Enum(RecallInferenceCapability);
 const RECALL_INFERENCE_BACKEND_SCHEMA = Type.Enum(RecallInferenceBackend);
@@ -216,73 +215,16 @@ export interface InspectRecallInferenceConfigurationOptions {
   generationRegistryPath?: string;
 }
 
-function isRecallInferenceConfigurationLockOwnerAlive(processId: number): boolean {
-  try {
-    process.kill(processId, 0);
-    return true;
-  } catch (error) {
-    return readNodeErrorCode(error) === 'EPERM';
-  }
-}
-
-async function readRecallInferenceConfigurationLockOwner(
-  ownerPath: string,
-): Promise<number | undefined> {
-  try {
-    const parsed: unknown = JSON.parse(await readFile(ownerPath, 'utf8'));
-    if (!isUnknownRecord(parsed)) {
-      return undefined;
-    }
-    const processId = parsed.processId;
-    return typeof processId === 'number' && Number.isInteger(processId) && processId > 0
-      ? processId
-      : undefined;
-  } catch (error) {
-    if (readNodeErrorCode(error) === 'ENOENT' || error instanceof SyntaxError) {
-      return undefined;
-    }
-    throw error;
-  }
-}
-
 async function acquireRecallInferenceConfigurationLock(
   statePath: string,
 ): Promise<() => Promise<void>> {
   const lockPath = `${statePath}.configuration-lock`;
-  const ownerPath = join(lockPath, 'owner.json');
-  await mkdir(dirname(lockPath), { recursive: true });
-  let missingOwnerCount = 0;
   while (true) {
-    try {
-      await mkdir(lockPath);
-      try {
-        await writeFile(ownerPath, `${JSON.stringify({ processId: process.pid })}\n`, 'utf8');
-      } catch (error) {
-        await rm(lockPath, { recursive: true, force: true });
-        throw error;
-      }
-      return () => rm(lockPath, { recursive: true, force: true });
-    } catch (error) {
-      if (readNodeErrorCode(error) !== 'EEXIST') {
-        throw error;
-      }
-      const ownerProcessId = await readRecallInferenceConfigurationLockOwner(ownerPath);
-      if (ownerProcessId === undefined) {
-        missingOwnerCount += 1;
-        if (missingOwnerCount >= RECALL_INFERENCE_CONFIGURATION_LOCK_MISSING_OWNER_LIMIT) {
-          await rm(lockPath, { recursive: true, force: true });
-          missingOwnerCount = 0;
-          continue;
-        }
-      } else if (!isRecallInferenceConfigurationLockOwnerAlive(ownerProcessId)) {
-        await rm(lockPath, { recursive: true, force: true });
-        missingOwnerCount = 0;
-        continue;
-      } else {
-        missingOwnerCount = 0;
-      }
-      await sleep(RECALL_INFERENCE_CONFIGURATION_LOCK_RETRY_MILLISECONDS);
+    const ownership = await tryAcquireRecallRebuildOwnershipLock(lockPath);
+    if (ownership) {
+      return () => ownership.release();
     }
+    await sleep(RECALL_INFERENCE_CONFIGURATION_LOCK_RETRY_MILLISECONDS);
   }
 }
 

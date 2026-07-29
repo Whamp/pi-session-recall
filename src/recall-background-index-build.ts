@@ -10,12 +10,12 @@ import { Value } from 'typebox/value';
 
 import type { RecallConversationConfig } from './recall-conversation-config.js';
 import { RecallBackgroundIndexProcessState, RecallDiagnosticsMode } from './enums.js';
-import { isUnknownRecord } from './is-unknown-record.js';
 import type {
   ConversationIndexCheckpoint,
   ConversationIndexProgress,
 } from './incremental-session-indexer.js';
 import { readRecallInferenceConfiguration } from './recall-inference-configuration.js';
+import { tryAcquireRecallRebuildOwnershipLock } from './recall-rebuild-ownership-lock.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
 import { normalizeRecallProjectLineages } from './resolve-project-identity.js';
 
@@ -305,52 +305,12 @@ async function writeRecallBackgroundIndexStatusRecord(
 
 async function acquireBackgroundIndexControlLock(statusPath: string): Promise<() => Promise<void>> {
   const lockPath = `${statusPath}.control-lock`;
-  const ownerPath = `${lockPath}/owner.json`;
-  await mkdir(dirname(lockPath), { recursive: true });
-  let unreadableOwnerCount = 0;
   while (true) {
-    try {
-      await mkdir(lockPath);
-      await writeAtomicJson(ownerPath, { pid: process.pid });
-      return () => rm(lockPath, { recursive: true, force: true });
-    } catch (error) {
-      if (readNodeErrorCode(error) !== 'EEXIST') {
-        throw error;
-      }
-      let ownerProcessId: number | undefined;
-      try {
-        const ownerText = await readFile(ownerPath, 'utf8');
-        try {
-          const owner: unknown = JSON.parse(ownerText);
-          if (isUnknownRecord(owner)) {
-            const processId = owner.pid;
-            ownerProcessId =
-              typeof processId === 'number' && Number.isInteger(processId) ? processId : undefined;
-          }
-        } catch {
-          ownerProcessId = undefined;
-        }
-      } catch (readError) {
-        if (readNodeErrorCode(readError) !== 'ENOENT') {
-          throw readError;
-        }
-      }
-      if (ownerProcessId === undefined) {
-        unreadableOwnerCount += 1;
-        if (unreadableOwnerCount >= 4) {
-          await rm(lockPath, { recursive: true, force: true });
-          unreadableOwnerCount = 0;
-          continue;
-        }
-      } else if (!isProcessAlive(ownerProcessId)) {
-        await rm(lockPath, { recursive: true, force: true });
-        unreadableOwnerCount = 0;
-        continue;
-      } else {
-        unreadableOwnerCount = 0;
-      }
-      await sleep(25);
+    const ownership = await tryAcquireRecallRebuildOwnershipLock(lockPath);
+    if (ownership) {
+      return () => ownership.release();
     }
+    await sleep(25);
   }
 }
 

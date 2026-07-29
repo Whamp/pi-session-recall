@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
@@ -10,7 +10,6 @@ import {
   QueryPlannedRecallCaseCategory,
   QueryPlannedRecallBaselineOutcome,
   QueryPlannedRecallControlKind,
-  RecallDiagnosticsMode,
   RecallEvidenceRelation,
   RecallInferenceBackend,
   RecallSearchScope,
@@ -28,17 +27,50 @@ import {
 import {
   createPublishableQueryPlannedRecallControls,
   loadPrivateQueryPlannedRecallCorpus,
+  runPrivateQueryPlannedRecallBaseline,
 } from './query-planned-recall-baseline.js';
 import { isUnknownRecord } from './is-unknown-record.js';
-import type { RecallConversationConfig } from './recall-conversation-service.js';
+import { createRecallConversationService } from './recall-conversation-service.js';
+import { loadRecallConversationConfig } from './recall-conversation-config.js';
 import {
   createRecommendedQmdQueryPlanningModelProfile,
   createRecommendedQwenRerankingModelProfile,
 } from './recall-model-profiles.js';
-import { normalizeRecallProjectLineages } from './resolve-project-identity.js';
 
 function createSha256(content: string): string {
   return createHash('sha256').update(content).digest('hex');
+}
+
+async function readEvaluationContainmentFileTree(
+  rootDirectory: string,
+): Promise<Map<string, string>> {
+  const files = new Map<string, string>();
+  async function visit(directory: string): Promise<void> {
+    const entries = await readdir(directory, { withFileTypes: true });
+    for (const entry of entries) {
+      const entryPath = join(directory, entry.name);
+      if (entry.isDirectory()) {
+        await visit(entryPath);
+      } else if (entry.isFile()) {
+        files.set(relative(rootDirectory, entryPath), (await readFile(entryPath)).toString('hex'));
+      }
+    }
+  }
+  await visit(rootDirectory);
+  return files;
+}
+
+function createEvaluationContainmentTreeSha256(files: ReadonlyMap<string, string>): string {
+  const hash = createHash('sha256');
+  for (const [path, content] of [...files.entries()].toSorted(([left], [right]) =>
+    left.localeCompare(right),
+  )) {
+    hash.update(path);
+    hash.update('\0');
+    hash.update(content);
+    hash.update('\0');
+  }
+  return hash.digest('hex');
 }
 
 void test('committed query-planned recall evidence is deterministic and records a passing source-admission gate', async () => {
@@ -211,45 +243,104 @@ void test('fixed private plans prove new source admission through deterministic 
   assert.equal(published.includes(lexicalPlanQuery), false);
   assert.equal(published.includes(semanticPlanQuery), false);
 
-  const baseConfig: RecallConversationConfig = {
-    sessionsDirectory: join(directory, 'must-not-scan-production-sessions'),
-    databasePath: join(directory, 'unused-zvec'),
-    statePath: join(directory, 'unused-state.json'),
-    manifestPath: join(directory, 'unused-manifest.json'),
-    tokenizerCacheDirectory: join(directory, 'unused-tokenizers'),
-    embeddingCacheDirectory: join(directory, 'unused-embedding-cache'),
-    lockPath: join(directory, 'unused.lock'),
-    diagnosticsMode: RecallDiagnosticsMode.OFF,
-    diagnosticLogPath: join(directory, 'unused-diagnostics.jsonl'),
-    retainedDiagnosticLogPath: join(directory, 'unused-diagnostics.previous.jsonl'),
-    embeddingBaseUrl: 'deterministic://query-planned-evaluation',
-    embeddingModel: 'deterministic-token-hash-v1',
-    embeddingServedModelId: 'deterministic-token-hash-v1',
-    embeddingArtifact: 'none',
-    embeddingQuantization: 'none',
-    embeddingPooling: 'token-hash',
-    embeddingDimensions: 64,
-    embeddingBatchSize: 64,
-    rerankerBaseUrl: 'deterministic://query-planned-evaluation',
-    rerankerModel: 'deterministic-source-admission-v1',
-    projectLineages: normalizeRecallProjectLineages({}),
-    searchCandidateLimits: { dense: 8, lexical: 8, identifier: 8 },
+  const productionSessionsDirectory = join(directory, 'production-sessions');
+  const productionDataDirectory = join(directory, 'production-recall');
+  await mkdir(productionSessionsDirectory);
+  await writeFile(
+    join(productionSessionsDirectory, 'production.jsonl'),
+    `${[
+      {
+        type: 'session',
+        version: 3,
+        id: 'production-session',
+        timestamp: '2026-08-01T09:00:00.000Z',
+        cwd: '/production/project',
+      },
+      {
+        type: 'message',
+        id: 'production-entry',
+        parentId: null,
+        timestamp: '2026-08-01T09:01:00.000Z',
+        message: { role: 'assistant', content: 'Production-only copper albatross evidence.' },
+      },
+    ]
+      .map((record) => JSON.stringify(record))
+      .join('\n')}\n`,
+  );
+  const baseConfig = await loadRecallConversationConfig({
+    homeDirectory: directory,
+    environment: {
+      PI_RECALL_DATA_DIRECTORY: productionDataDirectory,
+      PI_RECALL_SESSIONS_DIRECTORY: productionSessionsDirectory,
+      PI_RECALL_EMBEDDING_BASE_URL: 'deterministic://query-planned-evaluation',
+      PI_RECALL_EMBEDDING_MODEL: 'deterministic-token-hash-v1',
+      PI_RECALL_EMBEDDING_SERVED_MODEL_ID: 'deterministic-token-hash-v1',
+      PI_RECALL_EMBEDDING_ARTIFACT: 'none',
+      PI_RECALL_EMBEDDING_QUANTIZATION: 'none',
+      PI_RECALL_EMBEDDING_POOLING: 'token-hash',
+      PI_RECALL_EMBEDDING_DIMENSIONS: '64',
+      PI_RECALL_EMBEDDING_BATCH_SIZE: '64',
+      PI_RECALL_RERANKER_BASE_URL: 'deterministic://query-planned-evaluation',
+      PI_RECALL_RERANKER_MODEL: 'deterministic-source-admission-v1',
+    },
+  });
+  const loadTokenizer = async () => ({
+    encodeConversationText(text: string) {
+      return { ids: Array.from(text.split(/\\s+/u).filter(Boolean).keys()) };
+    },
+  });
+  const embeddings = {
+    async embedTexts(texts: readonly string[]) {
+      return texts.map(() => [1, ...Array.from({ length: 63 }, () => 0)]);
+    },
   };
+  const productionService = createRecallConversationService(baseConfig, {
+    embeddings,
+    loadTokenizer,
+    rerankingProfile: null,
+    reranker: null,
+  });
+  await productionService.index();
+  await productionService.index({ rebuild: true });
+  assert.equal((await productionService.readIndexGenerationStatus()).active?.kind, 'managed');
+  let productionFilesBeforeEvaluation =
+    await readEvaluationContainmentFileTree(productionDataDirectory);
+  const assertProductionRemainsIsolated = async (): Promise<void> => {
+    const productionFilesAfterEvaluation =
+      await readEvaluationContainmentFileTree(productionDataDirectory);
+    assert.equal(
+      createEvaluationContainmentTreeSha256(productionFilesAfterEvaluation),
+      createEvaluationContainmentTreeSha256(productionFilesBeforeEvaluation),
+    );
+    const productionSearch = await productionService.search('Private mechanism phrase', 20, {
+      scope: RecallSearchScope.GLOBAL,
+    });
+    assert.equal(
+      productionSearch.results.some(({ content }) => content.includes('Private mechanism phrase')),
+      false,
+    );
+    productionFilesBeforeEvaluation =
+      await readEvaluationContainmentFileTree(productionDataDirectory);
+  };
+
+  const baselineWorkDirectory = join(privateDirectory, 'baseline-work');
+  await runPrivateQueryPlannedRecallBaseline({
+    corpus,
+    baseConfig,
+    workDirectory: baselineWorkDirectory,
+    dependencies: { embeddings, loadTokenizer },
+  });
+  await assertProductionRemainsIsolated();
+
+  const deterministicWorkDirectory = join(privateDirectory, 'evaluation-work');
   const evaluation = await runPrivateQueryPlannedRecallEvaluation({
     corpus,
     plans,
     baseConfig,
-    workDirectory: join(privateDirectory, 'evaluation-work'),
-    dependencies: {
-      async loadTokenizer() {
-        return {
-          encodeConversationText(text: string) {
-            return { ids: Array.from(text.split(/\\s+/u).filter(Boolean).keys()) };
-          },
-        };
-      },
-    },
+    workDirectory: deterministicWorkDirectory,
+    dependencies: { loadTokenizer },
   });
+  await assertProductionRemainsIsolated();
   const measuredCase = evaluation.cases[0];
   assert.equal(evaluation.executedSearchRequests, 4);
   assert.equal(
@@ -319,10 +410,11 @@ void test('fixed private plans prove new source admission through deterministic 
   const rerankingProfile = createRecommendedQwenRerankingModelProfile();
   let conformancePlannerRequestCount = 0;
   const liveProgress: string[] = [];
+  const liveWorkDirectory = join(privateDirectory, 'live-evaluation-work');
   const liveEvaluation = await runLiveQueryPlannedProfileEvaluation({
     corpus,
     baseConfig,
-    workDirectory: join(privateDirectory, 'live-evaluation-work'),
+    workDirectory: liveWorkDirectory,
     profileRun: {
       id: 'fixture-embedded-cpu',
       backend: RecallInferenceBackend.EMBEDDED,
@@ -394,6 +486,32 @@ void test('fixed private plans prove new source admission through deterministic 
       },
     },
   });
+  await assertProductionRemainsIsolated();
+  const privateEvaluationFiles = await readEvaluationContainmentFileTree(privateDirectory);
+  const immutablePrivateFiles = new Set([
+    relative(privateDirectory, snapshotPath),
+    relative(privateDirectory, manifestPath),
+    relative(privateDirectory, plansPath),
+  ]);
+  const workDirectoryPrefixes = [
+    relative(privateDirectory, baselineWorkDirectory),
+    relative(privateDirectory, deterministicWorkDirectory),
+    relative(privateDirectory, liveWorkDirectory),
+  ].map((path) => `${path}/`);
+  for (const path of privateEvaluationFiles.keys()) {
+    assert.ok(
+      immutablePrivateFiles.has(path) ||
+        workDirectoryPrefixes.some((prefix) => path.startsWith(prefix)),
+      `Private evaluation write escaped its work area: ${path}`,
+    );
+  }
+  for (const prefix of workDirectoryPrefixes) {
+    assert.ok(
+      [...privateEvaluationFiles.keys()].some((path) => path.startsWith(prefix)),
+      `Private evaluation arm did not write below ${prefix}`,
+    );
+  }
+
   const publishedLiveEvaluation = JSON.stringify(liveEvaluation);
   assert.equal(liveEvaluation.capabilityConformance.queryPlanning.measurement.plannedQueryCount, 2);
   assert.equal(liveEvaluation.capabilityConformance.reranking.measurement.documentCount, 2);

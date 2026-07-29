@@ -9,12 +9,14 @@ import {
   QueryPlannedRecallBaselineOutcome,
   QueryPlannedRecallCaseCategory,
   QueryPlannedRecallControlKind,
-  RecallDiagnosticsMode,
   RecallEvidenceRelation,
   RecallSearchScope,
 } from './enums.js';
 import type { RecallSearchResult } from './fuse-recall-ranked-lists.js';
-import { isPathInsideRecallEvaluationArea } from './recall-evaluation-file-system.js';
+import {
+  createPrivateRecallEvaluationConfig,
+  isPathInsideRecallEvaluationArea,
+} from './recall-evaluation-file-system.js';
 import {
   createRecallConversationService,
   type RecallConversationConfig,
@@ -500,24 +502,13 @@ function createPrivateBaselineConfig(
   workDirectory: string,
   candidateLimits: RecallSearchCandidateLimits,
 ): RecallConversationConfig {
-  const fusedPoolLimit =
-    candidateLimits.dense + candidateLimits.lexical + candidateLimits.identifier;
-  return {
-    ...options.baseConfig,
+  return createPrivateRecallEvaluationConfig({
+    baseConfig: options.baseConfig,
+    workDirectory,
     sessionsDirectory: options.corpus.snapshotDirectory,
-    databasePath: join(workDirectory, 'zvec'),
-    statePath: join(workDirectory, 'index-state.json'),
-    manifestPath: join(workDirectory, 'index-manifest.json'),
-    tokenizerCacheDirectory: join(workDirectory, 'tokenizers'),
-    embeddingCacheDirectory: join(workDirectory, 'embedding-cache'),
-    lockPath: join(workDirectory, 'operation.lock'),
-    diagnosticsMode: RecallDiagnosticsMode.OFF,
-    diagnosticLogPath: join(workDirectory, 'diagnostics.jsonl'),
-    retainedDiagnosticLogPath: join(workDirectory, 'diagnostics.previous.jsonl'),
-    searchCandidateLimits: { ...candidateLimits },
-    fusedPoolLimit,
-    rerankPoolLimit: fusedPoolLimit,
-  };
+    immutableInputPaths: [options.corpus.snapshotDirectory, options.corpus.manifestPath],
+    candidateLimits,
+  });
 }
 
 function createPrivateBaselineDependencies(
@@ -821,14 +812,14 @@ export async function runPrivateQueryPlannedRecallBaseline(
   options: RunPrivateQueryPlannedRecallBaselineOptions,
 ): Promise<PrivateQueryPlannedRecallBaselineResult> {
   const workDirectory = assertPrivateBaselineWorkDirectory(options.corpus, options.workDirectory);
-  await rm(workDirectory, { recursive: true, force: true });
-  await mkdir(workDirectory, { recursive: true, mode: 0o700 });
-  const dependencies = createPrivateBaselineDependencies(options.dependencies);
   const indexConfig = createPrivateBaselineConfig(
     options,
     workDirectory,
     options.corpus.manifest.policy.normalCandidateLimits,
   );
+  await rm(workDirectory, { recursive: true, force: true });
+  await mkdir(workDirectory, { recursive: true, mode: 0o700 });
+  const dependencies = createPrivateBaselineDependencies(options.dependencies);
   const indexService = createRecallConversationService(indexConfig, dependencies);
   const indexed = await indexService.index({ optimize: true });
   if (indexed.indexSummary.failedSessions.length > 0) {

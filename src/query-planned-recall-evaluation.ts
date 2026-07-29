@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { lstat, mkdir, readFile, rm } from 'node:fs/promises';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, dirname, resolve } from 'node:path';
 import { performance } from 'node:perf_hooks';
 
 import { Type } from 'typebox';
@@ -9,7 +9,6 @@ import { Value } from 'typebox/value';
 import {
   QueryPlannedRecallBaselineOutcome,
   QueryPlannedRecallControlKind,
-  RecallDiagnosticsMode,
   RecallInferenceBackend,
 } from './enums.js';
 import type { QueryPlannedRecallCaseCategory } from './enums.js';
@@ -19,7 +18,10 @@ import type {
   RecallIdentifiedQueryPlanningProvider,
   RecallIdentifiedRerankingProvider,
 } from './recall-inference-capabilities.js';
-import { isPathInsideRecallEvaluationArea } from './recall-evaluation-file-system.js';
+import {
+  createPrivateRecallEvaluationConfig,
+  isPathInsideRecallEvaluationArea,
+} from './recall-evaluation-file-system.js';
 import { classifyQueryPlannedRecallContribution } from './query-planned-recall-contribution.js';
 import type {
   LoadedPrivateQueryPlannedRecallCorpus,
@@ -352,31 +354,27 @@ function createPrivateQueryPlannedEvaluationConfig(
   options: PrivateQueryPlannedRecallEvaluationBaseOptions,
   workDirectory: string,
   candidateLimits: RecallSearchCandidateLimits,
+  additionalImmutableInputPaths: readonly string[] = [],
 ): RecallConversationConfig {
-  const fusedPoolLimit =
-    candidateLimits.dense + candidateLimits.lexical + candidateLimits.identifier;
-  return {
-    ...options.baseConfig,
+  return createPrivateRecallEvaluationConfig({
+    baseConfig: options.baseConfig,
+    workDirectory,
     sessionsDirectory: options.corpus.snapshotDirectory,
-    databasePath: join(workDirectory, 'zvec'),
-    statePath: join(workDirectory, 'index-state.json'),
-    manifestPath: join(workDirectory, 'index-manifest.json'),
-    tokenizerCacheDirectory: join(workDirectory, 'tokenizers'),
-    embeddingCacheDirectory: join(workDirectory, 'embedding-cache'),
-    lockPath: join(workDirectory, 'operation.lock'),
-    diagnosticsMode: RecallDiagnosticsMode.OFF,
-    diagnosticLogPath: join(workDirectory, 'diagnostics.jsonl'),
-    retainedDiagnosticLogPath: join(workDirectory, 'diagnostics.previous.jsonl'),
-    embeddingModel: 'deterministic-token-hash-v1',
-    embeddingServedModelId: 'deterministic-token-hash-v1',
-    embeddingArtifact: 'none',
-    embeddingQuantization: 'none',
-    embeddingPooling: 'token-hash',
-    embeddingDimensions: QUERY_PLANNED_RECALL_EVALUATION_EMBEDDING_DIMENSIONS,
-    searchCandidateLimits: { ...candidateLimits },
-    fusedPoolLimit,
-    rerankPoolLimit: fusedPoolLimit,
-  };
+    immutableInputPaths: [
+      options.corpus.snapshotDirectory,
+      options.corpus.manifestPath,
+      ...additionalImmutableInputPaths,
+    ],
+    candidateLimits,
+    embeddingIdentity: {
+      model: 'deterministic-token-hash-v1',
+      servedModelId: 'deterministic-token-hash-v1',
+      artifact: 'none',
+      quantization: 'none',
+      pooling: 'token-hash',
+      dimensions: QUERY_PLANNED_RECALL_EVALUATION_EMBEDDING_DIMENSIONS,
+    },
+  });
 }
 
 function createDeterministicTokenHashVector(text: string, dimensions: number): number[] {
@@ -644,14 +642,16 @@ export async function runPrivateQueryPlannedRecallEvaluation(
     options.corpus,
     options.workDirectory,
   );
-  await rm(workDirectory, { recursive: true, force: true });
-  await mkdir(workDirectory, { recursive: true, mode: 0o700 });
   const normalCandidateLimits = options.corpus.manifest.policy.normalCandidateLimits;
+  const immutableInputPaths = [options.plans.path];
   const indexConfig = createPrivateQueryPlannedEvaluationConfig(
     options,
     workDirectory,
     normalCandidateLimits,
+    immutableInputPaths,
   );
+  await rm(workDirectory, { recursive: true, force: true });
+  await mkdir(workDirectory, { recursive: true, mode: 0o700 });
   const neutralReranker = createControlledEvaluationReranker();
   const indexService = createRecallConversationService(
     indexConfig,
@@ -689,6 +689,7 @@ export async function runPrivateQueryPlannedRecallEvaluation(
         options,
         workDirectory,
         candidateLimits,
+        immutableInputPaths,
       );
       const service = createRecallConversationService(
         config,
@@ -720,6 +721,7 @@ export async function runPrivateQueryPlannedRecallEvaluation(
       options,
       workDirectory,
       normalCandidateLimits,
+      immutableInputPaths,
     );
     const rankedReranker = createControlledEvaluationReranker();
     const rankedService = createRecallConversationService(
@@ -944,14 +946,14 @@ export async function runLiveQueryPlannedProfileEvaluation(
     options.corpus,
     options.workDirectory,
   );
-  await rm(workDirectory, { recursive: true, force: true });
-  await mkdir(workDirectory, { recursive: true, mode: 0o700 });
   const normalCandidateLimits = options.corpus.manifest.policy.normalCandidateLimits;
   const normalConfig = createPrivateQueryPlannedEvaluationConfig(
     options,
     workDirectory,
     normalCandidateLimits,
   );
+  await rm(workDirectory, { recursive: true, force: true });
+  await mkdir(workDirectory, { recursive: true, mode: 0o700 });
   const warnings: string[] = [];
   let planningMilliseconds = 0;
   let rerankingMilliseconds = 0;

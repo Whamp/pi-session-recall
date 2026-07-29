@@ -407,6 +407,15 @@ function createEvaluationSearchOptions(
   };
 }
 
+function createHybridPreLimitControlSearchOptions(
+  evaluationCase: LoadedRecallQualityCorpus['specification']['cases'][number],
+): RecallConversationSearchOptions {
+  return {
+    ...createEvaluationSearchOptions(evaluationCase),
+    scope: RecallSearchScope.GLOBAL,
+  };
+}
+
 function assertBoundedCandidateCount(candidateCount: number): void {
   const maximumCandidates = candidateCount * 3;
   if (maximumCandidates > RECALL_QUALITY_FULL_POOL_LIMIT) {
@@ -579,13 +588,7 @@ export async function runRecallQualityEvaluation(
           const globalControl = await searchService.search(
             evaluationCase.query,
             RECALL_QUALITY_FULL_POOL_LIMIT,
-            {
-              mode: 'hybrid',
-              scope: RecallSearchScope.GLOBAL,
-              ...(evaluationCase.invocationDirectory
-                ? { invocationDirectory: evaluationCase.invocationDirectory }
-                : {}),
-            },
+            createHybridPreLimitControlSearchOptions(evaluationCase),
           );
           globalControlResults = globalControl.results;
           executedSearchRequests += 1;
@@ -625,10 +628,7 @@ export async function runRecallQualityEvaluation(
             const globalControl = await searchService.search(
               evaluationCase.query,
               RECALL_QUALITY_FULL_POOL_LIMIT,
-              {
-                ...createEvaluationSearchOptions(evaluationCase, 'query-planned'),
-                scope: RecallSearchScope.GLOBAL,
-              },
+              createHybridPreLimitControlSearchOptions(evaluationCase),
             );
             globalControlResults = globalControl.results;
             queryPlannedExecutedSearchRequests += 1;

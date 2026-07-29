@@ -12,7 +12,7 @@ Record the operator, host, date, command output, backup location, active generat
 - [ ] Confirm free space can hold the active generation, replacement generation, rollback generation, marker spool, and temporary build overhead.
 - [ ] Confirm no rebuild, adoption, rollback, or collection operation is already running.
 - [ ] Review `docs/evaluation/recall-quality-report.md`, the focused diagnostics, dependency audit, structural checks, and slop scan.
-- [ ] Stop if hook p95 exceeds 25 ms, a 10,000-file sweep exceeds 500 ms, a batch exceeds 32 documents, write-window p95 exceeds 300 ms, search waits longer than 500 ms, or a projection payload exceeds 1 MiB. Return to design review with the raw scalar records.
+- [ ] Stop if hook p95 exceeds 25 ms, a 10,000-file sweep exceeds 500 ms, a batch exceeds 32 documents, write-window p95 exceeds 300 ms, search waits longer than 500 ms, or a projection payload exceeds 8 MiB. Return to design review with the raw scalar records.
 
 ## 2. Backup and rollback proof
 

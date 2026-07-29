@@ -317,7 +317,7 @@ void test('mergeRecallMarkerCheckpoint unions covered IDs and keeps max runtime 
   });
 });
 
-void test('projection serialization accepts exactly 1 MiB and classifies 1 MiB plus one byte', () => {
+void test('projection serialization accepts the exact production bound and rejects one byte more', () => {
   const projection = createLogicalProjection();
   const baseline = encodeRecallSessionProjection(
     { ...projection, labels: [''] },

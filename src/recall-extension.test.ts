@@ -14,7 +14,12 @@ import {
   RecallSearchScope,
 } from './enums.js';
 import { loadRecallConversationConfig } from './recall-conversation-config.js';
-import recallExtension, { createPiRecallToolDetails, searchPiRecall } from './recall-extension.js';
+import recallExtension, {
+  createPiRecallToolDetails,
+  createPiRecallToolResponse,
+  executePiRecallRequest,
+  searchPiRecall,
+} from './recall-extension.js';
 import {
   createRecallConversationService,
   type RecallConversationSearchOptions,
@@ -518,6 +523,8 @@ void test('Pi session recall registers collision-free tool guidance and index co
   assert.match(toolDescriptions[0] ?? '', /query-planned.*configured query planner/);
   assert.match(toolDescriptions[0] ?? '', /labels active and abandoned branches/);
   assert.match(toolDescriptions[0] ?? '', /valid same-run atomic neighbors/);
+  assert.match(toolDescriptions[0] ?? '', /expand one exact evidence occurrence/);
+  assert.match(toolDescriptions[0] ?? '', /exactly one form/);
   assert.match(toolParameterSchemas[0] ?? '', /project/);
   assert.match(toolParameterSchemas[0] ?? '', /global/);
   assert.match(toolParameterSchemas[0] ?? '', /query-planned/);
@@ -527,6 +534,12 @@ void test('Pi session recall registers collision-free tool guidance and index co
   assert.match(toolParameterSchemas[0] ?? '', /"maxItems":10/);
   assert.match(toolParameterSchemas[0] ?? '', /omit.*configured query planner/);
   assert.match(toolParameterSchemas[0] ?? '', /intent/);
+  assert.match(toolParameterSchemas[0] ?? '', /expandSourceNeighborhood/);
+  assert.match(toolParameterSchemas[0] ?? '', /evidenceOccurrenceId/);
+  assert.match(toolParameterSchemas[0] ?? '', /previousEntryCount/);
+  assert.match(toolParameterSchemas[0] ?? '', /nextEntryCount/);
+  assert.match(toolParameterSchemas[0] ?? '', /branchPathLeafEntryId/);
+  assert.ok(!(toolParameterSchemas[0] ?? '').includes('"required":["query"]'));
   assert.ok(!(toolParameterSchemas[0] ?? '').includes('projectPath'));
   assert.ok(!(toolParameterSchemas[0] ?? '').includes('invocationDirectory'));
   assert.ok(!(toolParameterSchemas[0] ?? '').includes('activeSessionPath'));
@@ -536,6 +549,14 @@ void test('Pi session recall registers collision-free tool guidance and index co
       (guideline) =>
         guideline.includes('Use pi-session-recall') &&
         guideline.includes('conversation or detail from a past session'),
+    ),
+  );
+  assert.ok(
+    toolGuidelines.some(
+      (guideline) =>
+        guideline.includes('expandSourceNeighborhood') &&
+        guideline.includes('copied unchanged') &&
+        guideline.includes('omit query'),
     ),
   );
 });
@@ -560,6 +581,84 @@ void test('Pi recall registers five marker events plus runtime shutdown cleanup'
     'session_start',
     'session_shutdown',
   ]);
+});
+
+void test('Pi recall expansion response retains structured provenance under the global output ceiling', () => {
+  const response = createPiRecallToolResponse({
+    operation: 'expansion',
+    expansion: {
+      anchorEvidenceOccurrenceId: 'anchor-occurrence',
+      physicalSourceIdentity: 'physical-source',
+      physicalSessionPath: '/sessions/source.jsonl',
+      sessionsRootRelativePath: 'source.jsonl',
+      logicalSessionOccurrenceId: 'logical-occurrence',
+      rawSessionId: 'raw-session',
+      requestedEntryCounts: { previous: 0, next: 0 },
+      returnedEntryCounts: { previous: 0, next: 0 },
+      branchPathLeafEntryId: null,
+      entries: [
+        {
+          entryAnchorId: 'anchor-record',
+          entryId: 'entry-1',
+          parentEntryId: null,
+          entryType: 'message',
+          timestamp: '2026-08-04T00:00:00.000Z',
+          sourceOrder: 1,
+          pathOrder: 0,
+          placeholder: false,
+          evidence: [
+            {
+              documentKind: 'conversation',
+              summaryKind: null,
+              evidenceKind: 'conversation',
+              evidencePart: 'content',
+              role: 'assistant',
+              content: 'large-source-line\n'.repeat(4_000),
+              contributingEntryIds: ['entry-1'],
+              branchPathLeafEntryIds: ['entry-1'],
+              currentLeafEntryId: 'entry-1',
+              compactedByEntryIds: [],
+              isOnActiveBranch: true,
+              isVisibleInActiveContext: true,
+              toolCallId: null,
+              toolName: null,
+              toolCallEntryId: null,
+              toolResultEntryId: null,
+              toolError: null,
+              compactionFirstKeptEntryId: null,
+              branchSummaryFromEntryId: null,
+              occurrences: [
+                {
+                  evidenceOccurrenceId: 'anchor-occurrence',
+                  sourceLineStart: 2,
+                  sourceLineEnd: 2,
+                  sourceBlockStart: 0,
+                  sourceBlockEnd: 0,
+                  characterStart: 0,
+                  characterEnd: 68_000,
+                  tokenStart: 0,
+                  tokenEnd: 4_000,
+                  textRunIndex: 0,
+                  chunkIndex: 0,
+                  chunkCount: 1,
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    },
+  });
+
+  assert.match(response.text, /Recall output truncated to 50\.0KB/);
+  assert.ok(response.text.split('\n').length <= 2_002);
+  assert.ok('operation' in response.details);
+  assert.equal(response.details.operation, 'expansion');
+  assert.equal(response.details.expansion.anchorEvidenceOccurrenceId, 'anchor-occurrence');
+  assert.equal(
+    response.details.expansion.entries[0]?.evidence[0]?.occurrences[0]?.evidenceOccurrenceId,
+    'anchor-occurrence',
+  );
 });
 
 void test('Pi recall tool details retain ranked-list evidence and every explicit limit', () => {
@@ -701,12 +800,13 @@ void test('Pi recall tool details expose query-plan and position-aware ranking e
   );
 });
 
-void test('Pi recall tool adapter propagates trusted cwd with project default and explicit global scope', async () => {
+void test('Pi recall tool adapter XOR-validates search and exact expansion requests', async () => {
   const calls: Array<{
     query: string;
     limit: number;
     options: RecallConversationSearchOptions;
   }> = [];
+  const expansionCalls: string[] = [];
   const service: RecallConversationService = {
     async verifyEmbeddingCapability() {
       throw new Error('Pi recall adapter test does not verify embeddings');
@@ -747,6 +847,21 @@ void test('Pi recall tool adapter propagates trusted cwd with project default an
           rerankPoolLimit: 24,
           finalResultLimit: limit,
         },
+      };
+    },
+    async expandSourceNeighborhood(options) {
+      expansionCalls.push(options.evidenceOccurrenceId);
+      return {
+        anchorEvidenceOccurrenceId: options.evidenceOccurrenceId,
+        physicalSourceIdentity: 'physical-source',
+        physicalSessionPath: '/sessions/source.jsonl',
+        sessionsRootRelativePath: 'source.jsonl',
+        logicalSessionOccurrenceId: 'logical-occurrence',
+        rawSessionId: 'raw-session',
+        requestedEntryCounts: { previous: 0, next: 1 },
+        returnedEntryCounts: { previous: 0, next: 1 },
+        branchPathLeafEntryId: 'selected-leaf',
+        entries: [],
       };
     },
     async index() {
@@ -845,7 +960,48 @@ void test('Pi recall tool adapter propagates trusted cwd with project default an
     context,
     5,
   );
+  const expansion = await executePiRecallRequest(
+    service,
+    {
+      expandSourceNeighborhood: {
+        evidenceOccurrenceId: 'occurrence-from-search',
+        previousEntryCount: 0,
+        nextEntryCount: 1,
+        branchPathLeafEntryId: 'selected-leaf',
+      },
+    },
+    context,
+    5,
+  );
+  assert.equal(expansion.operation, 'expansion');
+  assert.equal(expansion.expansion.anchorEvidenceOccurrenceId, 'occurrence-from-search');
+  await assert.rejects(executePiRecallRequest(service, {}, context, 5), /exactly one request form/);
+  await assert.rejects(
+    executePiRecallRequest(
+      service,
+      {
+        query: 'must not win by precedence',
+        expandSourceNeighborhood: { evidenceOccurrenceId: 'mixed-occurrence' },
+      },
+      context,
+      5,
+    ),
+    /exactly one request form/,
+  );
+  await assert.rejects(
+    executePiRecallRequest(
+      service,
+      {
+        expandSourceNeighborhood: { evidenceOccurrenceId: 'mixed-search-fields' },
+        scope: 'global',
+      },
+      context,
+      5,
+    ),
+    /search-only field scope/,
+  );
 
+  assert.deepEqual(expansionCalls, ['occurrence-from-search']);
   assert.deepEqual(calls, [
     {
       query: 'project query',

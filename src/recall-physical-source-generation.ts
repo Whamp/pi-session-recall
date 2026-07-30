@@ -262,6 +262,7 @@ function createCommonLexicalFields(options: {
   parentEntryId: string | null;
   childEntryIds: readonly string[];
   branchPathLeafIds: readonly string[];
+  evidenceOccurrenceIds: readonly string[];
   sourceOrder: number;
   entryType: string;
   timestamp: string;
@@ -281,6 +282,7 @@ function createCommonLexicalFields(options: {
     parentEntryId: options.parentEntryId ?? '',
     childEntryIds: [...options.childEntryIds],
     branchPathLeafIds: [...options.branchPathLeafIds],
+    evidenceOccurrenceIds: [...options.evidenceOccurrenceIds],
     sourceOrder: options.sourceOrder,
     entryType: options.entryType,
     timestamp: options.timestamp,
@@ -329,6 +331,39 @@ export async function materializeRecallPhysicalSourceGeneration(
   const logicalSessionProjections: MaterializedRecallPhysicalSourceGeneration['logicalSessionProjections'] =
     [];
   const logicalSessionOccurrenceIds: string[] = [];
+  const occurrenceIdByLogicalChunkId = new Map<string, string>();
+  const occurrenceIdsByLogicalEntryId = new Map<string, string[]>();
+  for (const chunk of imported.chunks) {
+    const logicalSession = findLogicalSessionForChunk(imported.logicalSessions, chunk);
+    const logicalSessionOccurrenceId = createRecallLogicalSessionOccurrenceId(
+      physicalSource.physicalSourceIdentity,
+      logicalSession.sourceLineStart,
+    );
+    const evidenceOccurrenceId = createRecallEvidenceOccurrenceId({
+      physicalSourceIdentity: physicalSource.physicalSourceIdentity,
+      logicalSessionOccurrenceId,
+      entryId: chunk.entryId.value,
+      evidencePart: chunk.evidencePart,
+      sourceLineStart: chunk.sourceLineStart,
+      sourceLineEnd: chunk.sourceLineEnd,
+      sourceBlockStart: chunk.sourceBlockStart,
+      sourceBlockEnd: chunk.sourceBlockEnd,
+      characterStart: chunk.characterStart,
+      characterEnd: chunk.characterEnd,
+      tokenStart: chunk.tokenStart,
+      tokenEnd: chunk.tokenEnd,
+      textRunIndex: chunk.textRunIndex,
+      chunkIndex: chunk.chunkIndex,
+    });
+    occurrenceIdByLogicalChunkId.set(
+      `${logicalSessionOccurrenceId}:${chunk.id}`,
+      evidenceOccurrenceId,
+    );
+    const logicalEntryIdentity = `${logicalSessionOccurrenceId}:${chunk.entryId.value}`;
+    const entryOccurrenceIds = occurrenceIdsByLogicalEntryId.get(logicalEntryIdentity) ?? [];
+    entryOccurrenceIds.push(evidenceOccurrenceId);
+    occurrenceIdsByLogicalEntryId.set(logicalEntryIdentity, entryOccurrenceIds);
+  }
 
   for (const logicalSession of imported.logicalSessions) {
     const logicalProjection = findLogicalProjection(logicalProjections, logicalSession);
@@ -373,6 +408,10 @@ export async function materializeRecallPhysicalSourceGeneration(
         parentEntryId: descriptor.parentEntryId,
         childEntryIds: childIdsByEntryId.get(descriptor.entryId) ?? [],
         branchPathLeafIds: branchLeafIdsByEntryId.get(descriptor.entryId) ?? [],
+        evidenceOccurrenceIds:
+          occurrenceIdsByLogicalEntryId.get(
+            `${logicalSessionOccurrenceId}:${descriptor.entryId}`,
+          ) ?? [],
         sourceOrder: descriptor.sourceLine,
         entryType: descriptor.entryType,
         timestamp: descriptor.timestamp,
@@ -413,6 +452,10 @@ export async function materializeRecallPhysicalSourceGeneration(
           descriptor,
           childEntryIds: childIdsByEntryId.get(descriptor.entryId) ?? [],
           branchPathLeafIds: branchLeafIdsByEntryId.get(descriptor.entryId) ?? [],
+          evidenceOccurrenceIds:
+            occurrenceIdsByLogicalEntryId.get(
+              `${logicalSessionOccurrenceId}:${descriptor.entryId}`,
+            ) ?? [],
         }),
       };
       lexicalSource.push({ id: entryAnchorId, fields: anchorRecord });
@@ -438,34 +481,6 @@ export async function materializeRecallPhysicalSourceGeneration(
         }),
       },
     });
-  }
-
-  const occurrenceIdByLogicalChunkId = new Map<string, string>();
-  for (const chunk of imported.chunks) {
-    const logicalSession = findLogicalSessionForChunk(imported.logicalSessions, chunk);
-    const logicalSessionOccurrenceId = createRecallLogicalSessionOccurrenceId(
-      physicalSource.physicalSourceIdentity,
-      logicalSession.sourceLineStart,
-    );
-    occurrenceIdByLogicalChunkId.set(
-      `${logicalSessionOccurrenceId}:${chunk.id}`,
-      createRecallEvidenceOccurrenceId({
-        physicalSourceIdentity: physicalSource.physicalSourceIdentity,
-        logicalSessionOccurrenceId,
-        entryId: chunk.entryId.value,
-        evidencePart: chunk.evidencePart,
-        sourceLineStart: chunk.sourceLineStart,
-        sourceLineEnd: chunk.sourceLineEnd,
-        sourceBlockStart: chunk.sourceBlockStart,
-        sourceBlockEnd: chunk.sourceBlockEnd,
-        characterStart: chunk.characterStart,
-        characterEnd: chunk.characterEnd,
-        tokenStart: chunk.tokenStart,
-        tokenEnd: chunk.tokenEnd,
-        textRunIndex: chunk.textRunIndex,
-        chunkIndex: chunk.chunkIndex,
-      }),
-    );
   }
 
   for (const chunk of imported.chunks) {
@@ -516,6 +531,9 @@ export async function materializeRecallPhysicalSourceGeneration(
       parentEntryId: chunk.parentEntryId?.value ?? null,
       childEntryIds,
       branchPathLeafIds: branchPathLeafIds ?? [],
+      evidenceOccurrenceIds:
+        occurrenceIdsByLogicalEntryId.get(`${logicalSessionOccurrenceId}:${descriptor.entryId}`) ??
+        [],
       sourceOrder: descriptor.sourceLine,
       entryType: descriptor.entryType,
       timestamp: chunk.timestamp,

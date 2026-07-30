@@ -40,6 +40,11 @@ import {
   type RecallGenerationLexicalEvidence,
 } from './recall-physical-source-generation.js';
 import {
+  expandRecallSourceNeighborhood,
+  type ExpandRecallSourceNeighborhoodOptions,
+  type RecallSourceNeighborhood,
+} from './expand-recall-source-neighborhood.js';
+import {
   RecallBackgroundIndexProcessState,
   RecallDiagnosticErrorCategory,
   RecallDiagnosticStatus,
@@ -484,6 +489,10 @@ export interface RecallConversationService {
     limit: number,
     options?: RecallConversationSearchOptions,
   ): Promise<RecallConversationSearch>;
+  /** Expands one exact occurrence through active lexical/source entry anchors only. */
+  expandSourceNeighborhood(
+    options: ExpandRecallSourceNeighborhoodOptions,
+  ): Promise<RecallSourceNeighborhood>;
   index(options?: RecallConversationIndexOptions): Promise<RecallConversationIndexResult>;
   startBackgroundIndexGeneration(): Promise<RecallBackgroundIndexGenerationStatus>;
   resumeBackgroundIndexGeneration(): Promise<RecallBackgroundIndexGenerationStatus>;
@@ -2390,6 +2399,17 @@ export function createRecallConversationService(
             );
           }),
       });
+    },
+    expandSourceNeighborhood(options) {
+      return runSerialized(() =>
+        coordinateRecallReadWindow(
+          {
+            lockPath: config.lockPath,
+            waitMilliseconds: config.searchWriteWindowWaitMilliseconds,
+          },
+          () => expandRecallSourceNeighborhood(coherentGenerationConfig, options),
+        ),
+      );
     },
     async index(options = {}) {
       assertRecallManualMaintenanceTriggerMatchesIndexOptions(options);

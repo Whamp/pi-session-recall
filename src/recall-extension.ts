@@ -17,8 +17,13 @@ import {
   resolveRecallInferenceConfigurationPath,
 } from './configured-recall-inference-runtime.js';
 import { RecallSearchScope } from './enums.js';
+import type {
+  ExpandRecallSourceNeighborhoodOptions,
+  RecallSourceNeighborhood,
+} from './expand-recall-source-neighborhood.js';
 import type { RecallDetachedWorkerSignal } from './create-recall-detached-worker-signal.js';
 import { formatRecallSearchResults } from './format-recall-search-results.js';
+import { formatRecallSourceNeighborhood } from './format-recall-source-neighborhood.js';
 import { isUnknownRecord } from './is-unknown-record.js';
 import { loadRecallConversationConfig } from './recall-conversation-config.js';
 import {
@@ -56,15 +61,21 @@ import {
   RECALL_QUALITY_RESULTS_PATH,
 } from './recall-quality-gate.js';
 
-/** Model-visible parameters for recall search; invocation directory is intentionally absent. */
+/** Model-visible parameters for exactly one recall search or exact source expansion. */
 export interface PiRecallParameters {
-  query: string;
+  query?: string;
+  expandSourceNeighborhood?: ExpandRecallSourceNeighborhoodOptions;
   limit?: number;
   mode?: RecallSearchMode;
   scope?: 'project' | 'global';
   plan?: readonly RecallPlannedRetrievalQuery[];
   intent?: string;
 }
+
+/** One validated model-facing recall operation selected without precedence. */
+export type PiRecallOperation =
+  | Readonly<{ operation: 'search'; search: RecallConversationSearch }>
+  | Readonly<{ operation: 'expansion'; expansion: RecallSourceNeighborhood }>;
 
 interface PiRecallInvocationContext {
   cwd: ExtensionContext['cwd'];
@@ -129,7 +140,7 @@ export interface RecallExtensionStartupOptions {
 /** Applies trusted Pi tool context and project-default scope to one recall service search. */
 export async function searchPiRecall(
   service: RecallConversationService,
-  parameters: PiRecallParameters,
+  parameters: PiRecallParameters & Readonly<{ query: string }>,
   context: PiRecallInvocationContext,
   defaultResultLimit: number,
   signal?: AbortSignal,
@@ -142,6 +153,57 @@ export async function searchPiRecall(
     ...(parameters.intent !== undefined ? { intent: parameters.intent } : {}),
     ...(signal ? { signal } : {}),
   });
+}
+
+/** XOR-validates and dispatches one model-facing search or exact source expansion request. */
+export async function executePiRecallRequest(
+  service: RecallConversationService,
+  parameters: PiRecallParameters,
+  context: PiRecallInvocationContext,
+  defaultResultLimit: number,
+  signal?: AbortSignal,
+): Promise<PiRecallOperation> {
+  const querySpecified = parameters.query !== undefined;
+  const expansionSpecified = parameters.expandSourceNeighborhood !== undefined;
+  if (querySpecified === expansionSpecified) {
+    throw new Error(
+      'Recall tool request must contain exactly one request form: nonblank query or expandSourceNeighborhood',
+    );
+  }
+  if (expansionSpecified) {
+    const searchOnlyField = (
+      ['limit', 'mode', 'scope', 'plan', 'intent'] satisfies readonly (keyof PiRecallParameters)[]
+    ).find((fieldName) => parameters[fieldName] !== undefined);
+    if (searchOnlyField !== undefined) {
+      throw new Error(
+        `Recall source neighborhood request does not accept search-only field ${searchOnlyField}`,
+      );
+    }
+    const expansion = parameters.expandSourceNeighborhood;
+    if (expansion === undefined) {
+      throw new Error('Recall source neighborhood request missing after validation');
+    }
+    return {
+      operation: 'expansion',
+      expansion: await service.expandSourceNeighborhood(expansion),
+    };
+  }
+  const query = parameters.query?.trim() ?? '';
+  if (!query) {
+    throw new Error('Recall query must not be blank');
+  }
+  const searchParameters: PiRecallParameters & Readonly<{ query: string }> = {
+    query,
+    ...(parameters.limit === undefined ? {} : { limit: parameters.limit }),
+    ...(parameters.mode === undefined ? {} : { mode: parameters.mode }),
+    ...(parameters.scope === undefined ? {} : { scope: parameters.scope }),
+    ...(parameters.plan === undefined ? {} : { plan: parameters.plan }),
+    ...(parameters.intent === undefined ? {} : { intent: parameters.intent }),
+  };
+  return {
+    operation: 'search',
+    search: await searchPiRecall(service, searchParameters, context, defaultResultLimit, signal),
+  };
 }
 
 /** Builds the structured Pi tool details for one source-backed recall search. */
@@ -213,6 +275,28 @@ export function createPiRecallToolDetails(
           characterEnd: chunk.characterEnd,
         })) ?? [],
     })),
+  };
+}
+
+/** Formats and globally truncates one validated model-facing recall operation. */
+export function createPiRecallToolResponse(operation: PiRecallOperation) {
+  const formatted =
+    operation.operation === 'search'
+      ? formatRecallSearchResults(operation.search)
+      : formatRecallSourceNeighborhood(operation.expansion);
+  const truncation = truncateHead(formatted, {
+    maxLines: DEFAULT_MAX_LINES,
+    maxBytes: DEFAULT_MAX_BYTES,
+  });
+  const text = truncation.truncated
+    ? `${truncation.content}\n\n[Recall output truncated to ${formatSize(DEFAULT_MAX_BYTES)}.]`
+    : truncation.content;
+  return {
+    text,
+    details:
+      operation.operation === 'search'
+        ? createPiRecallToolDetails(operation.search)
+        : { operation: 'expansion' as const, expansion: operation.expansion },
   };
 }
 
@@ -425,19 +509,59 @@ export default async function recallExtension(
     name: 'pi-session-recall',
     label: 'Pi Session Recall',
     description:
-      'Search past Pi conversations with dense, lexical, and case-preserving identifier retrieval. It defaults to project scope; choose global explicitly for cross-project evidence. Search defaults to deterministic hybrid ranking; choose deep-rerank only when ambiguous evidence warrants slower local Qwen scoring, or query-planned to route an agent-supplied plan or invoke the configured query planner before bounded QMD fusion and reranking. Excludes hidden reasoning and derived recall output, keeps other raw tool evidence lexical-only, labels active and abandoned branches, and expands only valid same-run atomic neighbors with exact provenance. Use /pi-session-recall-index for explicit catch-up or repair; interactive Pi lifecycle and search operations never perform whole-session maintenance. Output is truncated to 2000 lines or 50KB.',
-    promptSnippet:
-      'Search past Pi conversations by meaning or exact text and recover remembered details',
+      'Search past Pi conversations with dense, lexical, and case-preserving identifier retrieval, or expand one exact evidence occurrence into its indexed source neighborhood without searching or reading session files. Supply exactly one form: query or expandSourceNeighborhood. Search defaults to project scope; it defaults to deterministic hybrid ranking. Choose global explicitly for cross-project evidence, deep-rerank only when ambiguous evidence warrants slower local Qwen scoring, or query-planned to route an agent-supplied plan or invoke the configured query planner before bounded QMD fusion and reranking. Excludes hidden reasoning and derived recall output, keeps other raw tool evidence lexical-only, labels active and abandoned branches, and expands only valid same-run atomic neighbors with exact provenance. Use /pi-session-recall-index for explicit catch-up or repair; interactive Pi lifecycle and search operations never perform whole-session maintenance. Output is truncated to 2000 lines or 50KB.',
+    promptSnippet: 'Search past Pi conversations or expand one exact indexed source occurrence',
     promptGuidelines: [
       'Use pi-session-recall when a task depends on a conversation or detail from a past session and the current context does not contain reliable source evidence.',
       'Treat pi-session-recall results as search leads; cite the primary source, every listed contributing entry, and any duplicate or expanded-chunk provenance used as evidence.',
+      'To inspect nearby source entries, call expandSourceNeighborhood with an Evidence occurrence ID copied unchanged from a prior result and omit query plus all search-only fields.',
     ],
     parameters: Type.Object({
-      query: Type.String({
-        minLength: 1,
-        description:
-          'Natural-language description, exact identifier, filename, command, hash, or quoted text to recover',
-      }),
+      query: Type.Optional(
+        Type.String({
+          minLength: 1,
+          description:
+            'Natural-language description, exact identifier, filename, command, hash, or quoted text to recover. Omit for expandSourceNeighborhood.',
+        }),
+      ),
+      expandSourceNeighborhood: Type.Optional(
+        Type.Object(
+          {
+            evidenceOccurrenceId: Type.String({
+              minLength: 1,
+              description:
+                'Exact evidence occurrence ID returned by a recall search. Copy it unchanged; it must exist in the active generation.',
+            }),
+            previousEntryCount: Type.Optional(
+              Type.Integer({
+                minimum: 0,
+                maximum: 10,
+                description: 'Earlier session-graph entries before the anchor (default 2)',
+              }),
+            ),
+            nextEntryCount: Type.Optional(
+              Type.Integer({
+                minimum: 0,
+                maximum: 10,
+                description:
+                  'Later session-graph entries on the selected descendant path after the anchor (default 2)',
+              }),
+            ),
+            branchPathLeafEntryId: Type.Optional(
+              Type.String({
+                minLength: 1,
+                description:
+                  'Leaf entry selecting the forward branch; required only when requested next entries reach a fork',
+              }),
+            ),
+          },
+          {
+            additionalProperties: false,
+            description:
+              'Return indexed source entries around one exact evidence occurrence from a prior search. Omit query; this operation never searches or reads session files.',
+          },
+        ),
+      ),
       limit: Type.Optional(
         Type.Integer({
           minimum: 1,
@@ -495,24 +619,13 @@ export default async function recallExtension(
       void toolCallId;
       recallWarningHandler = (message) => context.ui.notify(message, 'warning');
       assertRecallInstallationConfigured(await resolveInstallationMode());
-      const query = parameters.query.trim();
-      if (!query) {
-        throw new Error('Recall query must not be blank');
-      }
-      const search = await useServiceRuntime((service) =>
-        searchPiRecall(service, { ...parameters, query }, context, defaultResultLimit, signal),
+      const operation = await useServiceRuntime((service) =>
+        executePiRecallRequest(service, parameters, context, defaultResultLimit, signal),
       );
-      const formatted = formatRecallSearchResults(search);
-      const truncation = truncateHead(formatted, {
-        maxLines: DEFAULT_MAX_LINES,
-        maxBytes: DEFAULT_MAX_BYTES,
-      });
-      const text = truncation.truncated
-        ? `${truncation.content}\n\n[Recall output truncated to ${formatSize(DEFAULT_MAX_BYTES)}.]`
-        : truncation.content;
+      const response = createPiRecallToolResponse(operation);
       return {
-        content: [{ type: 'text', text }],
-        details: createPiRecallToolDetails(search),
+        content: [{ type: 'text', text: response.text }],
+        details: response.details,
       };
     },
   });

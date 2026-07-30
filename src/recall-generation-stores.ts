@@ -97,6 +97,7 @@ const LEXICAL_SOURCE_SCALAR_FIELDS = Object.freeze([
   { name: 'parentEntryId', type: 'string' },
   { name: 'childEntryIds', type: 'array-string' },
   { name: 'branchPathLeafIds', type: 'array-string' },
+  { name: 'evidenceOccurrenceIds', type: 'array-string' },
   { name: 'sourceOrder', type: 'int64' },
   { name: 'entryType', type: 'string' },
   { name: 'timestamp', type: 'string' },

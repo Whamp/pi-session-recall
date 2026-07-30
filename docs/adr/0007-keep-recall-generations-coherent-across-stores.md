@@ -94,7 +94,7 @@ After the health check, rollback rereads generation roles inside the cutover win
 
 The Pi extension exposes model-facing recall reads and publishes cheap recall work markers. It exposes no index-maintenance slash command and sends no maintenance status or progress messages to the TUI.
 
-A standalone `pi-session-recall` CLI is the sole operator control surface for setup, status, explicit catch-up, rebuild control, recovery, rollback, legacy adoption, and retired-generation cleanup. The CLI adapts the same service and named generation transitions used by workers; it does not reimplement lifecycle policy.
+A standalone `pi-session-recall` CLI is the sole operator control surface for setup, status, explicit catch-up, rebuild control, recovery, rollback, and retired-generation cleanup. It creates generations from immutable Pi session sources and never adopts a legacy storage layout. The CLI adapts the same service and named generation transitions used by workers; it does not reimplement lifecycle policy.
 
 ## Consequences
 

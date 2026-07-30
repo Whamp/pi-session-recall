@@ -8,9 +8,17 @@ Conversation Recall turns Pi session history into source-backed evidence that ca
 One source JSONL file under Pi's session store. Historical file reuse can place several logical sessions in one physical session file.
 _Avoid_: Session graph, logical session
 
+**Physical source identity**:
+The stable identity derived from a physical session file's normalized path relative to the configured Pi sessions root. Moving the whole root preserves this identity; copying or renaming a file within the root produces a distinct identity. It never derives from a logical session header, device, or inode.
+_Avoid_: Logical session ID, absolute source path, inode identity
+
 **Logical session**:
 One complete session header and the records that follow it until the next complete header or physical end of file. Each logical session owns one independently validated session graph.
 _Avoid_: Physical session file, segment
+
+**Logical session occurrence**:
+One logical session at one complete-header position within a physical session file. Physical source identity and header position keep repeated raw session IDs distinct.
+_Avoid_: Raw session ID, physical source identity
 
 **Canonical session representation**:
 The in-memory header and physical-line-backed records sent to the strict session graph parser after exact format detection and any deterministic virtual conversion.
@@ -79,6 +87,10 @@ _Avoid_: Chunk type
 **Immutable recall evidence**:
 Source-backed content finalized once when it becomes recall-eligible. Later leaf, branch, compaction, label, or session-name changes do not rewrite it.
 _Avoid_: Session snapshot, mutable chunk
+
+**Entry anchor**:
+The immutable lexical/source-store record for one indexed session-graph entry. It preserves source identity, logical-session occurrence, parent link, source order, source geometry, type, and timestamp even when the entry has no returnable evidence.
+_Avoid_: Evidence occurrence, session projection, conversation chunk
 
 **Session projection**:
 The small mutable account of physical source ingestion and logical session state kept separately from immutable recall evidence.
@@ -180,6 +192,10 @@ _Avoid_: Final match, semantic match
 Readable context formed from a winning atomic conversation chunk and its valid contiguous siblings in the same visible text run. The contributing chunks remain individually identified.
 _Avoid_: Expanded transcript, joined messages
 
+**Source neighborhood**:
+Bounded entry-level context around one exact evidence occurrence on a selected path in one logical session. It follows parent links backward and one selected descendant path forward using entry anchors, and it never searches or reopens the physical session file.
+_Avoid_: Neighbor context, transcript window, repeated search
+
 **Replacement recall generation**:
 One resumable recall generation built and validated beside the active generation. Its registry entry records building, failed, or ready state until atomic activation.
 _Avoid_: Staging index generation, temporary index, partial active index
@@ -269,7 +285,7 @@ The persistence policy for recall diagnostic operations: `slow`, `all`, or `off`
 _Avoid_: Verbosity level, tracing mode
 
 **Recall operator CLI**:
-The standalone shell interface for recall setup, status, explicit catch-up, rebuild control, recovery, rollback, legacy adoption, and cleanup. Pi's TUI is not an operator control or maintenance-progress surface.
+The standalone shell interface for recall setup, status, explicit catch-up, rebuild control, recovery, rollback, and cleanup. It creates generations from immutable Pi session sources and never adopts a legacy storage layout. Pi's TUI is not an operator control or maintenance-progress surface.
 _Avoid_: Slash command, Pi maintenance command, lifecycle trigger
 
 **Manual maintenance trigger**:

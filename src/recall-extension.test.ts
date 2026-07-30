@@ -778,6 +778,15 @@ void test('Pi recall tool adapter propagates trusted cwd with project default an
     async readIndexGenerationStatus() {
       return { active: null, staging: null };
     },
+    async createEmptyRecallGeneration() {
+      throw new Error('Pi recall adapter test does not create generations');
+    },
+    async openValidatedRecallGeneration() {
+      throw new Error('Pi recall adapter test does not open generations');
+    },
+    async deleteUnprotectedRecallGeneration() {
+      throw new Error('Pi recall adapter test does not delete generations');
+    },
     async discardStagingIndexGeneration() {
       return false;
     },

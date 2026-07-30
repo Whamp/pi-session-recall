@@ -25,6 +25,14 @@ import type {
   RecallSearchCandidateLimits,
 } from './recall-conversation-config.js';
 import {
+  createEmptyRecallGeneration as createEmptyCoherentRecallGeneration,
+  deleteUnprotectedRecallGeneration as deleteUnprotectedCoherentRecallGeneration,
+  openValidatedRecallGeneration as openValidatedCoherentRecallGeneration,
+  type CreateEmptyRecallGenerationOptions,
+  type OpenedValidatedRecallGeneration,
+  type RecallCoherentGenerationConfig,
+} from './recall-coherent-generation.js';
+import {
   RecallBackgroundIndexProcessState,
   RecallDiagnosticErrorCategory,
   RecallDiagnosticStatus,
@@ -177,6 +185,10 @@ export type {
   RecallConversationConfig,
   RecallSearchCandidateLimits,
 } from './recall-conversation-config.js';
+export type {
+  CreateEmptyRecallGenerationOptions,
+  OpenedValidatedRecallGeneration,
+} from './recall-coherent-generation.js';
 /** One typed lexical, semantic, or hypothetical-answer query accepted by planned recall. */
 export type { RecallPlannedRetrievalQuery } from './recall-inference-capabilities.js';
 
@@ -463,6 +475,14 @@ export interface RecallConversationService {
   readBackgroundIndexGenerationStatus(): Promise<RecallBackgroundIndexGenerationStatus | null>;
   stopBackgroundIndexGeneration(): Promise<RecallBackgroundIndexGenerationStatus>;
   readIndexGenerationStatus(): Promise<RecallIndexGenerationStatus>;
+  /** Creates and completely validates one inactive empty target-format generation. */
+  createEmptyRecallGeneration(
+    options: CreateEmptyRecallGenerationOptions,
+  ): Promise<OpenedValidatedRecallGeneration>;
+  /** Opens one validated target-format generation without selecting it for search. */
+  openValidatedRecallGeneration(generationId: string): Promise<OpenedValidatedRecallGeneration>;
+  /** Deletes one disposable target-format generation only when no role protects it. */
+  deleteUnprotectedRecallGeneration(generationId: string): Promise<void>;
   discardStagingIndexGeneration(): Promise<boolean>;
   /** Restores the bounded rollback generation and republishes retained markers. */
   rollback(): Promise<void>;
@@ -1257,6 +1277,15 @@ export function createRecallConversationService(
       moduleUrl: import.meta.url,
       exportName: 'createRecallConversationService',
     },
+  };
+  const coherentGenerationConfig: RecallCoherentGenerationConfig = {
+    generationRootDirectory: config.generationRootDirectory,
+    activeGenerationPointerPath: config.activeGenerationPointerPath,
+    generationRegistryPath: config.generationRegistryPath,
+    embeddingProfileId,
+    embeddingProfile,
+    projectLineages: config.projectLineages,
+    ...(config.chunkPolicy ? { chunkPolicy: config.chunkPolicy } : {}),
   };
   const diagnostics =
     dependencies.diagnostics ??
@@ -2703,6 +2732,23 @@ export function createRecallConversationService(
       return stopRecallBackgroundIndexGeneration(backgroundIndexCoordinatorConfig);
     },
     readIndexGenerationStatus: readCanonicalIndexGenerationStatus,
+    createEmptyRecallGeneration(options) {
+      return runSerialized(() =>
+        createEmptyCoherentRecallGeneration(coherentGenerationConfig, options),
+      );
+    },
+    openValidatedRecallGeneration(generationId) {
+      return runSerialized(() =>
+        openValidatedCoherentRecallGeneration(coherentGenerationConfig, generationId),
+      );
+    },
+    deleteUnprotectedRecallGeneration(generationId) {
+      return runSerialized(() =>
+        coordinateRecallWriteWindow({ lockPath: config.lockPath, allowRecovery: false }, () =>
+          deleteUnprotectedCoherentRecallGeneration(coherentGenerationConfig, generationId),
+        ),
+      );
+    },
     async discardStagingIndexGeneration() {
       const status = await readCanonicalIndexGenerationStatus();
       if (!status.staging) {

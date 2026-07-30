@@ -42,7 +42,6 @@ function createPhysicalSourceGenerationTestConfig(
     statePath: join(dataDirectory, 'legacy-index-state.json'),
     manifestPath: join(dataDirectory, 'legacy-index-manifest.json'),
     tokenizerCacheDirectory: join(dataDirectory, 'tokenizers'),
-    embeddingCacheDirectory: join(dataDirectory, 'legacy-embedding-cache'),
     lockPath: join(dataDirectory, 'operation.lock'),
     diagnosticsMode: RecallDiagnosticsMode.OFF,
     diagnosticLogPath: join(dataDirectory, 'diagnostics.jsonl'),
@@ -240,7 +239,7 @@ void test('configured service builds and searches a stored-width dense subset be
   assert.ok(created.storeCounts.dense > 0);
   assert.ok(documentInputs.some((input) => input.includes('dense constellation')));
   assert.ok(documentInputs.every((input) => !input.includes('LEXICAL_ONLY_NEEDLE')));
-  assert.equal(existsSync(config.embeddingCacheDirectory), false);
+  assert.equal(existsSync(join(dataDirectory, 'embedding-cache')), false);
 
   const generationDirectory = join(config.generationRootDirectory, generationId);
   const manifest: unknown = JSON.parse(
@@ -586,7 +585,7 @@ void test('configured service resolves current-build duplicates before copying a
     validatedVectorSourceGenerationId: sourceGenerationId,
   });
   assert.ok(copied.storeCounts.dense >= 2);
-  assert.equal(existsSync(config.embeddingCacheDirectory), false);
+  assert.equal(existsSync(join(dataDirectory, 'embedding-cache')), false);
 });
 
 void test('configured service withholds validation receipt after a reopened path mismatch', async (t) => {

@@ -4,7 +4,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { createEmbeddingVectorCacheIdentity } from './embedding-vector-cache.js';
 import { createEmbeddingGemmaTokenizerManifestIdentity } from './embedded-embeddinggemma-provider.js';
 import {
   assertRecallIndexManifestCompatible,
@@ -45,7 +44,7 @@ void test('index manifest round-trips the complete reproducibility identity atom
   assert.deepEqual(manifest.importPolicy, { version: 3 });
   assert.equal(manifest.markerSchemaVersion, 1);
   assert.equal(manifest.sessionProjectionSchemaVersion, 3);
-  assert.equal(Object.hasOwn(createEmbeddingVectorCacheIdentity(manifest), 'importPolicy'), false);
+  assert.equal(Object.hasOwn(manifest, 'embeddingCacheVersion'), false);
   assert.equal(
     manifest.embedding.canaryFingerprint,
     createRecallEmbeddingCanaryFingerprint(canaryEmbedding, 3),

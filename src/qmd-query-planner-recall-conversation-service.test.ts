@@ -66,7 +66,6 @@ void test('conversation service verifies replacement planners without rebuilding
     statePath: join(directory, 'index-state.json'),
     manifestPath: join(directory, 'index-manifest.json'),
     tokenizerCacheDirectory: join(directory, 'tokenizers'),
-    embeddingCacheDirectory: join(directory, 'embedding-cache'),
     lockPath: join(directory, 'recall.lock'),
     diagnosticsMode: RecallDiagnosticsMode.OFF,
     diagnosticLogPath: join(directory, 'diagnostics.jsonl'),

@@ -70,7 +70,6 @@ async function createPassingQualityEvidence(
     if (typeof newlyEmbeddedChunks !== 'number') {
       throw new Error('Recall quality gate test fixture invalid: expected dense count');
     }
-    Reflect.set(indexSummary, 'cacheHits', 0);
     Reflect.set(indexRun, 'generationId', 'generation_quality_active');
     Reflect.set(indexRun, 'manifestFingerprint', 'a'.repeat(64));
     Reflect.set(indexRun, 'startingSnapshotFingerprint', 'b'.repeat(64));

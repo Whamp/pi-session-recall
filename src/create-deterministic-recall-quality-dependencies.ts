@@ -48,9 +48,13 @@ function createDeterministicRecallQualityVector(text: string): number[] {
 /** Creates network-free deterministic model and tokenizer boundaries for the fixed quality corpus. */
 export function createDeterministicRecallQualityDependencies(): RecallQualityEvaluationDependencies {
   return {
-    embeddings: {
-      async embedTexts(texts) {
-        return texts.map(createDeterministicRecallQualityVector);
+    embeddingProvider: {
+      embedQuery(query) {
+        const vector = createDeterministicRecallQualityVector(query);
+        return Promise.resolve(vector);
+      },
+      async embedDocuments(documents) {
+        return documents.map(createDeterministicRecallQualityVector);
       },
     },
     async loadTokenizer() {

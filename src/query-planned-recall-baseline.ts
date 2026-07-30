@@ -462,7 +462,7 @@ export function createPublishableQueryPlannedRecallControls(
 /** Local providers used to index and search a frozen private baseline corpus. */
 export type PrivateQueryPlannedRecallBaselineDependencies = Pick<
   RecallConversationDependencies,
-  'embeddings' | 'loadTokenizer' | 'resolveProjectIdentity'
+  'embeddingProvider' | 'loadTokenizer' | 'resolveProjectIdentity'
 >;
 
 /** Inputs for one private hybrid baseline run isolated from production recall data. */

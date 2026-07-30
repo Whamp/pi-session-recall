@@ -14,7 +14,7 @@ import { isUnknownRecord } from './is-unknown-record.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
 import { syncRecallDirectory } from './sync-recall-directory.js';
 
-const RECALL_DIAGNOSTIC_RECORD_VERSION = 3;
+const RECALL_DIAGNOSTIC_RECORD_VERSION = 4;
 const DEFAULT_MAXIMUM_DIAGNOSTIC_LOG_BYTES = 10 * 1_024 * 1_024;
 const PROCESS_RECALL_DIAGNOSTIC_PERSISTENCE_STATE = {
   disabled: false,
@@ -55,7 +55,6 @@ export interface RecallIndexDiagnosticMetrics {
   physicalSessionScanMilliseconds: number;
   physicalSessionPreparationMilliseconds: number;
   projectIdentityResolutionMilliseconds: number;
-  embeddingCacheResolutionMilliseconds: number;
   embeddingServerRequestMilliseconds: number;
   databaseWriteMilliseconds: number;
   indexStateCheckpointMilliseconds: number;
@@ -65,7 +64,6 @@ export interface RecallIndexDiagnosticMetrics {
   indexedSessionCount: number;
   removedSessionCount: number;
   failedSessionCount: number;
-  cacheHitCount: number;
   newEmbeddingCount: number;
   embeddingRequestCount: number;
   upsertedDocumentCount: number;
@@ -80,7 +78,6 @@ export interface RecallIndexDiagnosticCompletion {
   indexedSessionCount: number;
   removedSessionCount: number;
   failedSessionCount: number;
-  cacheHitCount: number;
   newEmbeddingCount: number;
   embeddingRequestCount: number;
   deletedDocumentCount: number;
@@ -99,8 +96,6 @@ export interface RecallIncrementalDiagnosticMetrics {
   parsedEntryCount: number;
   eligibleDocumentCount: number;
   tokenizerMilliseconds: number;
-  embeddingCacheHitCount: number;
-  embeddingCacheMissCount: number;
   embeddingRequestCount: number;
   lockWaitMilliseconds: number;
   evidenceOpenMilliseconds: number;
@@ -184,7 +179,6 @@ export interface RecallOperationDiagnosticRecord {
   physicalSessionScanMilliseconds: number | null;
   physicalSessionPreparationMilliseconds: number | null;
   projectIdentityResolutionMilliseconds: number | null;
-  embeddingCacheResolutionMilliseconds: number | null;
   embeddingServerRequestMilliseconds: number | null;
   databaseWriteMilliseconds: number | null;
   indexStateCheckpointMilliseconds: number | null;
@@ -202,7 +196,6 @@ export interface RecallOperationDiagnosticRecord {
   upsertedDocumentCount: number | null;
   deletedDocumentCount: number | null;
   totalDocumentCount: number | null;
-  cacheHitCount: number | null;
   newEmbeddingCount: number | null;
   embeddingRequestCount: number | null;
   markerAgeMilliseconds: number | null;
@@ -214,8 +207,6 @@ export interface RecallOperationDiagnosticRecord {
   parsedEntryCount: number | null;
   eligibleDocumentCount: number | null;
   tokenizerMilliseconds: number | null;
-  embeddingCacheHitCount: number | null;
-  embeddingCacheMissCount: number | null;
   evidenceOpenMilliseconds: number | null;
   evidenceWriteMilliseconds: number | null;
   projectionOpenMilliseconds: number | null;
@@ -352,8 +343,6 @@ export function accumulateRecallIndexMetrics(
     physicalSessionMetrics.physicalSessionPreparationMilliseconds;
   aggregateMetrics.projectIdentityResolutionMilliseconds +=
     physicalSessionMetrics.projectIdentityResolutionMilliseconds;
-  aggregateMetrics.embeddingCacheResolutionMilliseconds +=
-    physicalSessionMetrics.embeddingCacheResolutionMilliseconds;
   aggregateMetrics.embeddingServerRequestMilliseconds +=
     physicalSessionMetrics.embeddingServerRequestMilliseconds;
   aggregateMetrics.databaseWriteMilliseconds += physicalSessionMetrics.databaseWriteMilliseconds;
@@ -361,7 +350,6 @@ export function accumulateRecallIndexMetrics(
   aggregateMetrics.indexedSessionCount += physicalSessionMetrics.indexedSessionCount;
   aggregateMetrics.removedSessionCount += physicalSessionMetrics.removedSessionCount;
   aggregateMetrics.failedSessionCount += physicalSessionMetrics.failedSessionCount;
-  aggregateMetrics.cacheHitCount += physicalSessionMetrics.cacheHitCount;
   aggregateMetrics.newEmbeddingCount += physicalSessionMetrics.newEmbeddingCount;
   aggregateMetrics.embeddingRequestCount += physicalSessionMetrics.embeddingRequestCount;
   aggregateMetrics.upsertedDocumentCount += physicalSessionMetrics.upsertedDocumentCount;
@@ -380,8 +368,6 @@ export function createRecallIncrementalDiagnosticMetrics(): RecallIncrementalDia
     parsedEntryCount: 0,
     eligibleDocumentCount: 0,
     tokenizerMilliseconds: 0,
-    embeddingCacheHitCount: 0,
-    embeddingCacheMissCount: 0,
     embeddingRequestCount: 0,
     lockWaitMilliseconds: 0,
     evidenceOpenMilliseconds: 0,
@@ -422,7 +408,6 @@ export function createRecallIndexMetrics(): RecallIndexDiagnosticMetrics {
     physicalSessionScanMilliseconds: 0,
     physicalSessionPreparationMilliseconds: 0,
     projectIdentityResolutionMilliseconds: 0,
-    embeddingCacheResolutionMilliseconds: 0,
     embeddingServerRequestMilliseconds: 0,
     databaseWriteMilliseconds: 0,
     indexStateCheckpointMilliseconds: 0,
@@ -432,7 +417,6 @@ export function createRecallIndexMetrics(): RecallIndexDiagnosticMetrics {
     indexedSessionCount: 0,
     removedSessionCount: 0,
     failedSessionCount: 0,
-    cacheHitCount: 0,
     newEmbeddingCount: 0,
     embeddingRequestCount: 0,
     upsertedDocumentCount: 0,
@@ -472,7 +456,6 @@ function createRecallDiagnosticStartRecord(input: {
     physicalSessionScanMilliseconds: null,
     physicalSessionPreparationMilliseconds: null,
     projectIdentityResolutionMilliseconds: null,
-    embeddingCacheResolutionMilliseconds: null,
     embeddingServerRequestMilliseconds: null,
     databaseWriteMilliseconds: null,
     indexStateCheckpointMilliseconds: null,
@@ -490,7 +473,6 @@ function createRecallDiagnosticStartRecord(input: {
     upsertedDocumentCount: null,
     deletedDocumentCount: null,
     totalDocumentCount: null,
-    cacheHitCount: null,
     newEmbeddingCount: null,
     embeddingRequestCount: null,
     markerAgeMilliseconds: null,
@@ -502,8 +484,6 @@ function createRecallDiagnosticStartRecord(input: {
     parsedEntryCount: null,
     eligibleDocumentCount: null,
     tokenizerMilliseconds: null,
-    embeddingCacheHitCount: null,
-    embeddingCacheMissCount: null,
     evidenceOpenMilliseconds: null,
     evidenceWriteMilliseconds: null,
     projectionOpenMilliseconds: null,
@@ -538,7 +518,6 @@ function createRecallDiagnosticCompletionRecord(input: {
     metrics.physicalSessionScanMilliseconds +
     metrics.physicalSessionPreparationMilliseconds +
     metrics.projectIdentityResolutionMilliseconds +
-    metrics.embeddingCacheResolutionMilliseconds +
     metrics.embeddingServerRequestMilliseconds +
     metrics.databaseWriteMilliseconds +
     metrics.indexStateCheckpointMilliseconds +
@@ -557,7 +536,6 @@ function createRecallDiagnosticCompletionRecord(input: {
     physicalSessionScanMilliseconds: metrics.physicalSessionScanMilliseconds,
     physicalSessionPreparationMilliseconds: metrics.physicalSessionPreparationMilliseconds,
     projectIdentityResolutionMilliseconds: metrics.projectIdentityResolutionMilliseconds,
-    embeddingCacheResolutionMilliseconds: metrics.embeddingCacheResolutionMilliseconds,
     embeddingServerRequestMilliseconds: metrics.embeddingServerRequestMilliseconds,
     databaseWriteMilliseconds: metrics.databaseWriteMilliseconds,
     indexStateCheckpointMilliseconds: metrics.indexStateCheckpointMilliseconds,
@@ -571,7 +549,6 @@ function createRecallDiagnosticCompletionRecord(input: {
     upsertedDocumentCount: metrics.upsertedDocumentCount,
     deletedDocumentCount: input.completion.deletedDocumentCount,
     totalDocumentCount: input.completion.totalDocumentCount,
-    cacheHitCount: input.completion.cacheHitCount,
     newEmbeddingCount: input.completion.newEmbeddingCount,
     embeddingRequestCount: input.completion.embeddingRequestCount,
   };
@@ -587,7 +564,6 @@ function createRecallPhysicalSessionCompletionRecord(input: {
   const attributedMilliseconds =
     metrics.physicalSessionPreparationMilliseconds +
     metrics.projectIdentityResolutionMilliseconds +
-    metrics.embeddingCacheResolutionMilliseconds +
     metrics.embeddingServerRequestMilliseconds +
     metrics.databaseWriteMilliseconds +
     metrics.indexStateCheckpointMilliseconds;
@@ -610,7 +586,6 @@ function createRecallPhysicalSessionCompletionRecord(input: {
     elapsedMilliseconds,
     physicalSessionPreparationMilliseconds: metrics.physicalSessionPreparationMilliseconds,
     projectIdentityResolutionMilliseconds: metrics.projectIdentityResolutionMilliseconds,
-    embeddingCacheResolutionMilliseconds: metrics.embeddingCacheResolutionMilliseconds,
     embeddingServerRequestMilliseconds: metrics.embeddingServerRequestMilliseconds,
     databaseWriteMilliseconds: metrics.databaseWriteMilliseconds,
     indexStateCheckpointMilliseconds: metrics.indexStateCheckpointMilliseconds,
@@ -621,7 +596,6 @@ function createRecallPhysicalSessionCompletionRecord(input: {
     failedSessionCount: input.completion.failedSessionCount,
     upsertedDocumentCount: metrics.upsertedDocumentCount,
     deletedDocumentCount: metrics.deletedDocumentCount,
-    cacheHitCount: metrics.cacheHitCount,
     newEmbeddingCount: metrics.newEmbeddingCount,
     embeddingRequestCount: metrics.embeddingRequestCount,
   };
@@ -720,8 +694,6 @@ function createRecallIncrementalDiagnosticRecord(input: {
     parsedEntryCount: metrics.parsedEntryCount,
     eligibleDocumentCount: metrics.eligibleDocumentCount,
     tokenizerMilliseconds: metrics.tokenizerMilliseconds,
-    embeddingCacheHitCount: metrics.embeddingCacheHitCount,
-    embeddingCacheMissCount: metrics.embeddingCacheMissCount,
     embeddingRequestCount: metrics.embeddingRequestCount,
     lockWaitMilliseconds: metrics.lockWaitMilliseconds,
     writerLockWaitMilliseconds: metrics.lockWaitMilliseconds,
@@ -742,7 +714,7 @@ function createRecallIncrementalDiagnosticRecord(input: {
   };
 }
 
-/** Reads append-only version-2 and version-3 diagnostic JSONL for local analysis. */
+/** Reads supported append-only diagnostic JSONL versions for local analysis. */
 export async function readRecallOperationDiagnosticRecords(
   path: string,
 ): Promise<Array<Record<string, unknown>>> {
@@ -752,7 +724,10 @@ export async function readRecallOperationDiagnosticRecords(
       continue;
     }
     const value: unknown = JSON.parse(line);
-    if (!isUnknownRecord(value) || (value.version !== 2 && value.version !== 3)) {
+    if (
+      !isUnknownRecord(value) ||
+      (value.version !== 2 && value.version !== 3 && value.version !== 4)
+    ) {
       throw new Error(`Recall diagnostic JSONL line ${lineIndex + 1} has unsupported version`);
     }
     records.push(value);

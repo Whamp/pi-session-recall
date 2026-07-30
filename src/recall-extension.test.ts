@@ -911,7 +911,6 @@ void test('Pi recall tool adapter XOR-validates search and exact expansion reque
           scannedSessions: 0,
           indexedSessions: 0,
           removedSessions: 0,
-          cacheHits: 0,
           newlyEmbeddedChunks: 0,
           embeddingRequestCount: 0,
           deletedChunks: 0,

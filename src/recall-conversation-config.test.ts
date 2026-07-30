@@ -55,7 +55,6 @@ void test('recall config uses local octen embeddings and supports file plus envi
   assert.equal(config.databasePath, join(directory, 'file-data', 'zvec'));
   assert.equal(config.manifestPath, join(directory, 'file-data', 'index-manifest.json'));
   assert.equal(config.tokenizerCacheDirectory, join(directory, 'file-data', 'tokenizers'));
-  assert.equal(config.embeddingCacheDirectory, join(directory, 'file-data', 'embedding-cache'));
   assert.equal(config.generationRootDirectory, join(directory, 'file-data', 'generations'));
   assert.equal(
     config.activeGenerationPointerPath,
@@ -106,7 +105,6 @@ void test('recall config isolates incremental paths from sessions and marker I/O
     config.statePath,
     config.manifestPath,
     config.tokenizerCacheDirectory,
-    config.embeddingCacheDirectory,
     config.lockPath,
     config.diagnosticLogPath,
     config.retainedDiagnosticLogPath,

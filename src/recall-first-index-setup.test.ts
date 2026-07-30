@@ -24,7 +24,6 @@ function createFirstIndexSetupTestConfig(
     statePath: join(dataDirectory, 'index-state.json'),
     manifestPath: join(dataDirectory, 'index-manifest.json'),
     tokenizerCacheDirectory: join(dataDirectory, 'tokenizers'),
-    embeddingCacheDirectory: join(dataDirectory, 'embedding-cache'),
     lockPath: join(dataDirectory, 'operation.lock'),
     markerSpoolDirectory: join(dataDirectory, 'markers', 'pending'),
     markerQuarantineDirectory: join(dataDirectory, 'markers', 'quarantine'),
@@ -188,14 +187,14 @@ void test('conversation service verifies selected embedding semantics without in
   assert.equal(tokenizerLoadCount, 1);
 });
 
-void test('conversation service measures a bounded sample and full rebuild reuses its cached vectors', async (t) => {
+void test('conversation service measures a bounded sample without persisting its vectors', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'recall-first-index-sample-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const sessionsDirectory = join(root, 'sessions');
   await mkdir(sessionsDirectory, { recursive: true });
   await writeFile(
     join(sessionsDirectory, 'small.jsonl'),
-    createFirstIndexSession('small-session', 'sample cache sentinel'),
+    createFirstIndexSession('small-session', 'sample measurement sentinel'),
   );
   await writeFile(
     join(sessionsDirectory, 'large.jsonl'),
@@ -276,7 +275,6 @@ void test('conversation service measures a bounded sample and full rebuild reuse
   assert.equal(measurement.corpus.sessionCount, 2);
   assert.equal(measurement.sampledSessionCount, 1);
   assert.equal(measurement.newlyEmbeddedDocumentCount, 1);
-  assert.equal(measurement.cacheHitCount, 0);
   assert.equal(measurement.coldStartMilliseconds, 45);
   assert.equal(measurement.measuredSampleMilliseconds, 10);
   assert.ok(measurement.sourceBytesPerSecond > 0);
@@ -289,7 +287,6 @@ void test('conversation service measures a bounded sample and full rebuild reuse
 
   const rebuilt = await service.index({ rebuild: true });
 
-  assert.equal(rebuilt.indexSummary.cacheHits, 1);
-  assert.equal(rebuilt.indexSummary.newlyEmbeddedChunks, 1);
-  assert.equal(embeddedDocuments.length, 2);
+  assert.equal(rebuilt.indexSummary.newlyEmbeddedChunks, 2);
+  assert.equal(embeddedDocuments.length, 3);
 });

@@ -20,8 +20,8 @@ import {
   createRecallRerankingExecutionIdentity,
   type RecallEmbeddingProvider,
 } from './recall-inference-capabilities.js';
-import type { LocalEmbeddingClient } from './local-embedding-client.js';
 import { loadRecallQualityCorpus } from './recall-quality-corpus.js';
+import { createTestRecallEmbeddingProvider } from './recall-test-utils.js';
 import {
   createRecallConversationService,
   type RecallConversationConfig,
@@ -55,7 +55,6 @@ void test('committed recall quality corpus remains indexable through the public 
     statePath: join(directory, 'index-state.json'),
     manifestPath: join(directory, 'index-manifest.json'),
     tokenizerCacheDirectory: join(directory, 'tokenizers'),
-    embeddingCacheDirectory: join(directory, 'embedding-cache'),
     lockPath: join(directory, 'operation.lock'),
     diagnosticsMode: RecallDiagnosticsMode.OFF,
     diagnosticLogPath: join(directory, 'diagnostics.jsonl'),
@@ -86,11 +85,9 @@ void test('committed recall quality corpus remains indexable through the public 
     confirmedDeletionMaxMissingSourceRatio: 0.1,
   };
   const service = createRecallConversationService(config, {
-    embeddings: {
-      async embedTexts(texts) {
-        return texts.map((text) => (text === RECALL_EMBEDDING_CANARY_TEXT ? [0, 0, 1] : [1, 0, 0]));
-      },
-    },
+    embeddingProvider: createTestRecallEmbeddingProvider(async (texts) => {
+      return texts.map((text) => (text === RECALL_EMBEDDING_CANARY_TEXT ? [0, 0, 1] : [1, 0, 0]));
+    }),
     workerSignal: { signalDetachedWorker() {} },
     async loadTokenizer() {
       return {
@@ -273,7 +270,6 @@ void test('recall quality runner indexes and searches only the bounded declared 
     statePath: join(protectedDataDirectory, 'index-state.json'),
     manifestPath: join(protectedDataDirectory, 'index-manifest.json'),
     tokenizerCacheDirectory: join(protectedDataDirectory, 'tokenizers'),
-    embeddingCacheDirectory: join(protectedDataDirectory, 'embedding-cache'),
     lockPath: join(protectedDataDirectory, 'operation.lock'),
     diagnosticsMode: RecallDiagnosticsMode.OFF,
     diagnosticLogPath: join(protectedDataDirectory, 'diagnostics.jsonl'),
@@ -304,11 +300,6 @@ void test('recall quality runner indexes and searches only the bounded declared 
     confirmedDeletionMaxMissingSourceRatio: 0.1,
     fusedPoolLimit: 0,
     rerankPoolLimit: 0,
-  };
-  const embeddings: LocalEmbeddingClient = {
-    async embedTexts(texts) {
-      return texts.map((text) => (text === RECALL_EMBEDDING_CANARY_TEXT ? [0, 0, 1] : [1, 0, 0]));
-    },
   };
   const embeddingProfile: RecallEmbeddingModelProfile = {
     identity: {
@@ -362,7 +353,7 @@ void test('recall quality runner indexes and searches only the bounded declared 
     baseConfig,
     workDirectory: join(evaluationDirectory, '.recall-data', 'recall-quality-evaluation'),
     dependencies: {
-      embeddings,
+      embeddingProvider,
       async loadTokenizer() {
         return tokenizer;
       },
@@ -440,7 +431,7 @@ void test('recall quality runner indexes and searches only the bounded declared 
       'recall-quality-evaluation',
     ),
     dependencies: {
-      embeddings,
+      embeddingProvider,
       async loadTokenizer() {
         return tokenizer;
       },

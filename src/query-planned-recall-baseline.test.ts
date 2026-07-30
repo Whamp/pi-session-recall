@@ -19,6 +19,7 @@ import {
   loadPrivateQueryPlannedRecallCorpus,
   runPrivateQueryPlannedRecallBaseline,
 } from './query-planned-recall-baseline.js';
+import { createTestRecallEmbeddingProvider } from './recall-test-utils.js';
 
 function createSha256(content: string): string {
   return createHash('sha256').update(content).digest('hex');
@@ -154,16 +155,14 @@ void test('private query-planned recall corpus stays checksum-fixed and publishe
     },
   });
   const dependencies = {
-    embeddings: {
-      async embedTexts(texts: readonly string[]) {
-        return texts.map((text) => {
-          if (text === RECALL_EMBEDDING_CANARY_TEXT) {
-            return [0, 0, 1];
-          }
-          return text.includes('mechanism') || text === query ? [1, 0, 0] : [0, 1, 0];
-        });
-      },
-    },
+    embeddingProvider: createTestRecallEmbeddingProvider(async (texts: readonly string[]) => {
+      return texts.map((text) => {
+        if (text === RECALL_EMBEDDING_CANARY_TEXT) {
+          return [0, 0, 1];
+        }
+        return text.includes('mechanism') || text === query ? [1, 0, 0] : [0, 1, 0];
+      });
+    }),
     async loadTokenizer() {
       return {
         encodeConversationText(text: string) {

@@ -330,9 +330,12 @@ void test('fixed private plans prove new source admission through deterministic 
       return { ids: Array.from(text.split(/\\s+/u).filter(Boolean).keys()) };
     },
   });
-  const embeddings = {
-    async embedTexts(texts: readonly string[]) {
-      return texts.map(() => [1, ...Array.from({ length: 63 }, () => 0)]);
+  const embeddingProvider = {
+    async embedQuery() {
+      return [1, ...Array.from({ length: 63 }, () => 0)];
+    },
+    async embedDocuments(documents: readonly string[]) {
+      return documents.map(() => [1, ...Array.from({ length: 63 }, () => 0)]);
     },
   };
   const conformanceFixture = {
@@ -375,7 +378,7 @@ void test('fixed private plans prove new source admission through deterministic 
   );
 
   const productionService = createRecallConversationService(baseConfig, {
-    embeddings,
+    embeddingProvider,
     loadTokenizer,
     rerankingProfile: null,
     reranker: null,
@@ -416,7 +419,7 @@ void test('fixed private plans prove new source admission through deterministic 
     corpus,
     baseConfig,
     workDirectory: baselineWorkDirectory,
-    dependencies: { embeddings, loadTokenizer },
+    dependencies: { embeddingProvider, loadTokenizer },
   });
   await assertProductionRemainsIsolated();
 

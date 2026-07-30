@@ -193,7 +193,6 @@ const INDEX_SUMMARY_SCHEMA = Type.Object({
   scannedSessions: NONNEGATIVE_INTEGER_SCHEMA,
   indexedSessions: NONNEGATIVE_INTEGER_SCHEMA,
   removedSessions: NONNEGATIVE_INTEGER_SCHEMA,
-  cacheHits: NONNEGATIVE_INTEGER_SCHEMA,
   newlyEmbeddedChunks: NONNEGATIVE_INTEGER_SCHEMA,
   embeddingRequestCount: NONNEGATIVE_INTEGER_SCHEMA,
   deletedChunks: NONNEGATIVE_INTEGER_SCHEMA,
@@ -436,7 +435,6 @@ export async function readRecallQualityGateDecision(
         storeCounts.sessionProjection >= boundedWork.sessionFiles &&
         indexSummary.scannedSessions === boundedWork.sessionFiles &&
         indexSummary.indexedSessions === boundedWork.sessionFiles &&
-        indexSummary.cacheHits === 0 &&
         indexSummary.failedSessions.length === 0,
     ) &&
     actualConfigurationKeys.size === expectedConfigurationKeys.size &&

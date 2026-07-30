@@ -316,7 +316,7 @@ void test('Qwen HTTP reranking rejects out-of-range scores, timeout, and cancell
         documents: ['candidate'],
         expectedScores: [0.5],
       }),
-    /Recall reranker request timed out after 5 ms/u,
+    /Recall Qwen HTTP reranking request timed out after 5 ms/u,
   );
 
   const cancellation = new AbortController();
@@ -332,7 +332,7 @@ void test('Qwen HTTP reranking rejects out-of-range scores, timeout, and cancell
   cancellation.abort(cancellationReason);
   await assert.rejects(
     () => cancelled,
-    /Recall reranker request failed .*operator cancelled reranker conformance/u,
+    /Recall Qwen HTTP reranking request failed .*operator cancelled reranker conformance/u,
   );
 });
 

@@ -97,7 +97,6 @@ const BACKGROUND_INDEX_SERVICE_CONFIG_SCHEMA = Type.Object(
     statePath: Type.String({ minLength: 1 }),
     manifestPath: Type.String({ minLength: 1 }),
     tokenizerCacheDirectory: Type.String({ minLength: 1 }),
-    embeddingCacheDirectory: Type.String({ minLength: 1 }),
     lockPath: Type.String({ minLength: 1 }),
     markerSpoolDirectory: Type.String({ minLength: 1 }),
     markerQuarantineDirectory: Type.String({ minLength: 1 }),

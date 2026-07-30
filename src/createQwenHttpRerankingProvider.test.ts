@@ -10,7 +10,7 @@ void test('Qwen HTTP reranking provider rejects a non-HTTP endpoint', () => {
       createQwenHttpRerankingProvider(createRecommendedQwenRerankingModelProfile(), {
         baseUrl: 'file:///models',
       }),
-    /reranker base URL invalid protocol/u,
+    /Qwen HTTP reranking base URL invalid protocol/u,
   );
 });
 

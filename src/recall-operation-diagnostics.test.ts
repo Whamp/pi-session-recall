@@ -46,7 +46,6 @@ function completeTestDiagnosticOperation(
     indexedSessionCount: 0,
     removedSessionCount: 0,
     failedSessionCount: status === RecallDiagnosticStatus.FAILED ? 1 : 0,
-    cacheHitCount: 0,
     newEmbeddingCount: 0,
     embeddingRequestCount: 0,
     deletedDocumentCount: 0,
@@ -180,8 +179,6 @@ void test('incremental diagnostics persist versioned scalar worker and write-win
     parsedEntryCount: 12,
     eligibleDocumentCount: 8,
     tokenizerMilliseconds: 5,
-    embeddingCacheHitCount: 6,
-    embeddingCacheMissCount: 2,
     embeddingRequestCount: 1,
     lockWaitMilliseconds: 3,
     evidenceOpenMilliseconds: 4,
@@ -214,7 +211,7 @@ void test('incremental diagnostics persist versioned scalar worker and write-win
     ),
     metrics,
   );
-  assert.equal(records[0]?.version, 3);
+  assert.equal(records[0]?.version, 4);
 
   await writeFile(
     activeLogPath,

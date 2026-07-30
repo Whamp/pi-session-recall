@@ -127,7 +127,6 @@ async function resolveReplayCorpusRoot(corpusRoot: string): Promise<string> {
             explicitConfig.sessionsDirectory,
             explicitConfig.dataDirectory,
             explicitConfig.lockPath,
-            explicitConfig.embeddingCacheDirectory,
             explicitConfig.markerSpoolDirectory,
             explicitConfig.markerQuarantineDirectory,
             explicitConfig.markerControlDirectory,

@@ -4,15 +4,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import {
-  createEmbeddingVectorCache,
-  createEmbeddingVectorCacheIdentity,
-  type EmbeddingVectorCache,
-} from './embedding-vector-cache.js';
 import { indexChangedConversationSessions } from './incremental-session-indexer.js';
-import type { LocalEmbeddingClient } from './local-embedding-client.js';
+import { createTestRecallEmbeddingProvider } from './recall-test-utils.js';
 import { RecallProjectIdentitySource } from './enums.js';
-import { createRecallIndexManifest } from './recall-index-manifest.js';
 import { parseProjectIdentity, type ResolvedProjectIdentity } from './resolve-project-identity.js';
 import type { ConversationTextTokenizer } from './session-conversation-index.js';
 import type {
@@ -52,29 +46,6 @@ const tokenizer: ConversationTextTokenizer = {
   },
 };
 
-function createTestEmbeddingCache(
-  directory: string,
-  embeddings: LocalEmbeddingClient,
-): EmbeddingVectorCache {
-  const manifest = createRecallIndexManifest({
-    embeddingIdentity: {
-      requestModel: 'test-request-model',
-      servedModelId: 'test-served-model',
-      artifact: 'test-model.fp32',
-      dimensions: 3,
-      quantization: 'fp32',
-      pooling: 'last',
-    },
-    canaryEmbedding: [0, 0, 1],
-  });
-  return createEmbeddingVectorCache({
-    cacheDirectory: join(directory, 'embedding-cache'),
-    identity: createEmbeddingVectorCacheIdentity(manifest),
-    embeddingRequestBatchSize: 8,
-    embeddings,
-  });
-}
-
 void test('incremental index embeds only new content and removes deleted sessions', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'recall-indexer-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -102,23 +73,19 @@ void test('incremental index embeds only new content and removes deleted session
 
   const store = new MemoryConversationStore();
   const embeddedBatches: string[][] = [];
-  const embeddings: LocalEmbeddingClient = {
-    async embedTexts(texts) {
-      embeddedBatches.push([...texts]);
-      return texts.map((text) => [text.length, 1, 0]);
-    },
-  };
+  const embeddingProvider = createTestRecallEmbeddingProvider(async (texts) => {
+    embeddedBatches.push([...texts]);
+    return texts.map((text) => [text.length, 1, 0]);
+  });
 
-  const embeddingCache = createTestEmbeddingCache(directory, embeddings);
   const first = await indexChangedConversationSessions({
     sessionsDirectory,
     statePath,
     store,
-    embeddingCache,
+    embeddingProvider,
     tokenizer,
   });
   assert.equal(first.indexedSessions, 1);
-  assert.equal(first.cacheHits, 0);
   assert.equal(first.newlyEmbeddedChunks, 1);
   assert.equal(first.embeddingRequestCount, 1);
   assert.equal(embeddedBatches.length, 1);
@@ -127,11 +94,10 @@ void test('incremental index embeds only new content and removes deleted session
     sessionsDirectory,
     statePath,
     store,
-    embeddingCache,
+    embeddingProvider,
     tokenizer,
   });
   assert.equal(second.indexedSessions, 0);
-  assert.equal(second.cacheHits, 0);
   assert.equal(second.newlyEmbeddedChunks, 0);
   assert.equal(second.embeddingRequestCount, 0);
   assert.equal(embeddedBatches.length, 1);
@@ -151,16 +117,20 @@ void test('incremental index embeds only new content and removes deleted session
     sessionsDirectory,
     statePath,
     store,
-    embeddingCache,
+    embeddingProvider,
     tokenizer,
   });
   assert.equal(third.indexedSessions, 1);
-  assert.equal(third.cacheHits, 1);
-  assert.equal(third.newlyEmbeddedChunks, 2);
-  assert.deepEqual(embeddedBatches.at(-1), [
-    'It is documented in docs/queue.md',
-    'User:\nRemember the durable queue\n\nAssistant:\nIt is documented in docs/queue.md',
-  ]);
+  assert.equal(third.newlyEmbeddedChunks, 3);
+  assert.ok(embeddedBatches.at(-1)?.includes('Remember the durable queue'));
+  assert.ok(embeddedBatches.at(-1)?.includes('It is documented in docs/queue.md'));
+  assert.ok(
+    embeddedBatches
+      .at(-1)
+      ?.includes(
+        'User:\nRemember the durable queue\n\nAssistant:\nIt is documented in docs/queue.md',
+      ),
+  );
   assert.equal(store.count(), 3);
   const refreshedUserChunk = [...store.chunks.values()].find(
     (chunk) => chunk.documentKind === 'conversation' && chunk.entryId.value === 'user-1',
@@ -187,14 +157,13 @@ void test('incremental index embeds only new content and removes deleted session
     sessionsDirectory,
     statePath,
     store,
-    embeddingCache,
+    embeddingProvider,
     tokenizer,
   });
   assert.equal(fourth.indexedSessions, 1);
-  assert.equal(fourth.cacheHits, 3);
-  assert.equal(fourth.newlyEmbeddedChunks, 1);
+  assert.equal(fourth.newlyEmbeddedChunks, 4);
   assert.equal(fourth.embeddingRequestCount, 1);
-  assert.deepEqual(embeddedBatches.at(-1), ['What happened next?']);
+  assert.ok(embeddedBatches.at(-1)?.includes('What happened next?'));
   const refreshedTurnContext = [...store.chunks.values()].find(
     (chunk) => chunk.documentKind === 'turn_context',
   );
@@ -213,7 +182,7 @@ void test('incremental index embeds only new content and removes deleted session
     sessionsDirectory,
     statePath,
     store,
-    embeddingCache,
+    embeddingProvider,
     tokenizer,
   });
   assert.equal(fifth.removedSessions, 1);
@@ -265,10 +234,8 @@ void test('incremental index reconciles every logical session in one physical re
     sessionsDirectory: directory,
     statePath,
     store,
-    embeddingCache: createTestEmbeddingCache(directory, {
-      async embedTexts(texts) {
-        return texts.map((text) => [text.length, 1, 0]);
-      },
+    embeddingProvider: createTestRecallEmbeddingProvider(async (texts) => {
+      return texts.map((text) => [text.length, 1, 0]);
     }),
     tokenizer,
     async resolveProjectIdentity(sessionOrigin: string): Promise<ResolvedProjectIdentity> {
@@ -327,10 +294,8 @@ void test('incremental index rejects state from an older session import policy',
         sessionsDirectory: directory,
         statePath,
         store: new MemoryConversationStore(),
-        embeddingCache: createTestEmbeddingCache(directory, {
-          async embedTexts(texts) {
-            return texts.map((text) => [text.length, 1, 0]);
-          },
+        embeddingProvider: createTestRecallEmbeddingProvider(async (texts) => {
+          return texts.map((text) => [text.length, 1, 0]);
         }),
         tokenizer,
       }),
@@ -368,10 +333,8 @@ void test('incremental index removes stale documents when a changed session grap
     sessionsDirectory: directory,
     statePath,
     store,
-    embeddingCache: createTestEmbeddingCache(directory, {
-      async embedTexts(texts) {
-        return texts.map((text) => [text.length, 1, 0]);
-      },
+    embeddingProvider: createTestRecallEmbeddingProvider(async (texts) => {
+      return texts.map((text) => [text.length, 1, 0]);
     }),
     tokenizer,
   };
@@ -451,18 +414,16 @@ void test('incremental index never sends lexical-only tool evidence to embedding
   );
   const store = new MemoryConversationStore();
   const embeddedBatches: string[][] = [];
-  const embeddings: LocalEmbeddingClient = {
-    async embedTexts(texts) {
-      embeddedBatches.push([...texts]);
-      return texts.map((text) => [text.length, 1, 0]);
-    },
-  };
+  const embeddingProvider = createTestRecallEmbeddingProvider(async (texts) => {
+    embeddedBatches.push([...texts]);
+    return texts.map((text) => [text.length, 1, 0]);
+  });
 
   const summary = await indexChangedConversationSessions({
     sessionsDirectory,
     statePath: join(directory, 'state.json'),
     store,
-    embeddingCache: createTestEmbeddingCache(directory, embeddings),
+    embeddingProvider,
     tokenizer,
   });
   const toolChunks = [...store.chunks.values()].filter((chunk) => chunk.documentKind === 'tool');
@@ -502,21 +463,18 @@ void test('incremental index fails fast when the local embedding model is unavai
     );
   }
   let embeddingCalls = 0;
-  const embeddings: LocalEmbeddingClient = {
-    async embedTexts() {
-      embeddingCalls += 1;
-      throw new Error('Recall embedding request failed (503): unavailable');
-    },
-  };
+  const embeddingProvider = createTestRecallEmbeddingProvider(async () => {
+    embeddingCalls += 1;
+    throw new Error('Recall embedding request failed (503): unavailable');
+  });
 
-  const embeddingCache = createTestEmbeddingCache(directory, embeddings);
   await assert.rejects(
     () =>
       indexChangedConversationSessions({
         sessionsDirectory,
         statePath: join(directory, 'state.json'),
         store: new MemoryConversationStore(),
-        embeddingCache,
+        embeddingProvider,
         tokenizer,
       }),
     /Recall embedding request failed/,
@@ -550,11 +508,9 @@ void test('managed incremental index with retireMissingSourcesImmediately false 
     ]),
   );
   const store = new MemoryConversationStore();
-  const embeddings: LocalEmbeddingClient = {
-    async embedTexts(texts) {
-      return texts.map(() => [1, 0, 0]);
-    },
-  };
+  const embeddingProvider = createTestRecallEmbeddingProvider(async (texts) => {
+    return texts.map(() => [1, 0, 0]);
+  });
   const statePath = join(directory, 'state.json');
 
   // First pass: index the session to establish state with chunks.
@@ -562,7 +518,7 @@ void test('managed incremental index with retireMissingSourcesImmediately false 
     sessionsDirectory,
     statePath,
     store,
-    embeddingCache: createTestEmbeddingCache(directory, embeddings),
+    embeddingProvider,
     tokenizer,
     retireMissingSourcesImmediately: false,
   });
@@ -578,7 +534,7 @@ void test('managed incremental index with retireMissingSourcesImmediately false 
     sessionsDirectory,
     statePath,
     store,
-    embeddingCache: createTestEmbeddingCache(directory, embeddings),
+    embeddingProvider,
     tokenizer,
     retireMissingSourcesImmediately: false,
   });
@@ -617,11 +573,9 @@ void test('incremental index with retireMissingSourcesImmediately default delete
     ]),
   );
   const store = new MemoryConversationStore();
-  const embeddings: LocalEmbeddingClient = {
-    async embedTexts(texts) {
-      return texts.map(() => [1, 0, 0]);
-    },
-  };
+  const embeddingProvider = createTestRecallEmbeddingProvider(async (texts) => {
+    return texts.map(() => [1, 0, 0]);
+  });
   const statePath = join(directory, 'state.json');
 
   // First pass: index the session.
@@ -629,7 +583,7 @@ void test('incremental index with retireMissingSourcesImmediately default delete
     sessionsDirectory,
     statePath,
     store,
-    embeddingCache: createTestEmbeddingCache(directory, embeddings),
+    embeddingProvider,
     tokenizer,
   });
   assert.ok(store.chunks.size > 0);
@@ -642,7 +596,7 @@ void test('incremental index with retireMissingSourcesImmediately default delete
     sessionsDirectory,
     statePath,
     store,
-    embeddingCache: createTestEmbeddingCache(directory, embeddings),
+    embeddingProvider,
     tokenizer,
   });
 

@@ -31,7 +31,6 @@ function createCoherentGenerationTestConfig(
     statePath: join(dataDirectory, 'legacy-index-state.json'),
     manifestPath: join(dataDirectory, 'legacy-index-manifest.json'),
     tokenizerCacheDirectory: join(dataDirectory, 'tokenizers'),
-    embeddingCacheDirectory: join(dataDirectory, 'legacy-embedding-cache'),
     lockPath: join(dataDirectory, 'operation.lock'),
     diagnosticsMode: RecallDiagnosticsMode.OFF,
     diagnosticLogPath: join(dataDirectory, 'diagnostics.jsonl'),

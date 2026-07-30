@@ -231,7 +231,7 @@ function createPreparationFixture(): {
   };
 }
 
-void test('incremental preparation finishes tokenizer, attribution, and cache/model work before returning immutable evidence', async () => {
+void test('incremental preparation finishes tokenizer, attribution, and document embedding before returning immutable evidence', async () => {
   const fixture = createPreparationFixture();
   const tokenizedTexts: string[] = [];
   const embeddedTexts: string[] = [];
@@ -256,18 +256,11 @@ void test('incremental preparation finishes tokenizer, attribution, and cache/mo
         identitySource: RecallProjectIdentitySource.GIT_ORIGIN,
       };
     },
-    embeddingCache: {
-      async resolveEmbeddingVectors(texts) {
-        embeddedTexts.push(...texts);
-        events.push('embedding-cache-resolved');
-        return {
-          vectors: texts.map((text) => [text.includes('CACHE_MISS') ? 0 : 1, 1, 0]),
-          cacheHits: Math.max(0, texts.length - 1),
-          newlyEmbeddedChunks: Math.min(1, texts.length),
-          embeddingRequestCount: texts.length > 0 ? 1 : 0,
-          embeddingCacheResolutionMilliseconds: 2,
-          embeddingServerRequestMilliseconds: 3,
-        };
+    embeddingProvider: {
+      async embedDocuments(documents) {
+        embeddedTexts.push(...documents);
+        events.push('documents-embedded');
+        return documents.map((document) => [document.includes('CACHE_MISS') ? 0 : 1, 1, 0]);
       },
     },
   });
@@ -276,11 +269,7 @@ void test('incremental preparation finishes tokenizer, attribution, and cache/mo
   if (prepared.status !== RecallProjectionEncodingStatus.ENCODED) {
     return;
   }
-  assert.deepEqual(events, [
-    'tokenizer-loaded',
-    'project:/isolated/project',
-    'embedding-cache-resolved',
-  ]);
+  assert.deepEqual(events, ['tokenizer-loaded', 'project:/isolated/project', 'documents-embedded']);
   assert.ok(prepared.documents.some(({ documentKind }) => documentKind === 'turn_context'));
   assert.ok(prepared.documents.some(({ documentKind }) => documentKind === 'summary'));
   const toolDocuments = prepared.documents.filter(({ documentKind }) => documentKind === 'tool');
@@ -309,7 +298,7 @@ void test('incremental preparation finishes tokenizer, attribution, and cache/mo
   );
 });
 
-void test('oversized projection requires reconciliation before tokenizer, cache, lock, or zvec work', async () => {
+void test('oversized projection requires reconciliation before tokenizer, inference, lock, or zvec work', async () => {
   const fixture = createPreparationFixture();
   let forbiddenCallCount = 0;
   const result = await prepareIncrementalRecallTransfer({
@@ -324,10 +313,10 @@ void test('oversized projection requires reconciliation before tokenizer, cache,
       forbiddenCallCount += 1;
       return null;
     },
-    embeddingCache: {
-      async resolveEmbeddingVectors() {
+    embeddingProvider: {
+      async embedDocuments() {
         forbiddenCallCount += 1;
-        throw new Error('embedding cache must not open for projection overflow');
+        throw new Error('embedding provider must not open for projection overflow');
       },
     },
   });
@@ -336,7 +325,7 @@ void test('oversized projection requires reconciliation before tokenizer, cache,
   assert.equal(forbiddenCallCount, 0);
 });
 
-void test('preparation rejects cross-physical marker intent before tokenizer or cache work', async () => {
+void test('preparation rejects cross-physical marker intent before tokenizer or inference work', async () => {
   const fixture = createPreparationFixture();
   const firstWorkItem = fixture.workPlan.workItems[0];
   assert.ok(firstWorkItem);
@@ -364,10 +353,10 @@ void test('preparation rejects cross-physical marker intent before tokenizer or 
           forbiddenCallCount += 1;
           return null;
         },
-        embeddingCache: {
-          async resolveEmbeddingVectors() {
+        embeddingProvider: {
+          async embedDocuments() {
             forbiddenCallCount += 1;
-            throw new Error('cache must not load for mismatched marker intent');
+            throw new Error('embedding provider must not load for mismatched marker intent');
           },
         },
       }),

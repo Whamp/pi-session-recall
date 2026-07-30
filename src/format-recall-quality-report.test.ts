@@ -150,7 +150,6 @@ void test('recall quality report records verdict, measured counts, sources, and 
           scannedSessions: 1,
           indexedSessions: 1,
           removedSessions: 0,
-          cacheHits: 0,
           newlyEmbeddedChunks: 72,
           embeddingRequestCount: 5,
           deletedChunks: 0,

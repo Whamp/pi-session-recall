@@ -55,7 +55,6 @@ function createBackgroundIndexTestConfig(
     statePath: join(directory, 'index-state.json'),
     manifestPath: join(directory, 'index-manifest.json'),
     tokenizerCacheDirectory: join(directory, 'tokenizers'),
-    embeddingCacheDirectory: join(directory, 'embedding-cache'),
     lockPath: join(directory, 'recall.lock'),
     markerSpoolDirectory: join(directory, 'markers', 'pending'),
     markerQuarantineDirectory: join(directory, 'markers', 'quarantine'),
@@ -190,8 +189,13 @@ void test('background rebuild reports progress while active recall remains searc
   const activeService = createRecallConversationService(config, deterministicDependencies);
 
   await writeBackgroundIndexSession(sessionPath, 'active generation evidence');
-  await activeService.index({ rebuild: true });
-  await rm(config.embeddingCacheDirectory, { recursive: true, force: true });
+  const activeGenerationId = 'generation_background_active';
+  await activeService.createRecallGenerationFromPhysicalSources({
+    generationId: activeGenerationId,
+    physicalSessionPaths: [sessionPath],
+  });
+  await activeService.activateValidatedRecallGeneration(activeGenerationId);
+  await writeBackgroundIndexSession(sessionPath, 'background replacement evidence');
   await writeFile(join(directory, 'fixture-pause-embedding'), 'pause\n', 'utf8');
 
   const backgroundService = createRecallConversationService(config, {
@@ -206,6 +210,12 @@ void test('background rebuild reports progress while active recall remains searc
 
   assert.equal(started.processState, 'starting');
   assert.ok(started.processId > 0);
+  const workerRequest: unknown = JSON.parse(
+    await readFile(join(directory, `background-index-request.json.${started.buildId}`), 'utf8'),
+  );
+  assert.ok(isUnknownRecord(workerRequest));
+  assert.ok(isUnknownRecord(workerRequest.serviceConfig));
+  assert.equal(Object.hasOwn(workerRequest.serviceConfig, 'embeddingCacheDirectory'), false);
   await waitForPath(
     join(directory, 'fixture-embedding-started'),
     join(directory, 'background-index-status.json'),

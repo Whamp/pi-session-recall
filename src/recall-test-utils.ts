@@ -1,10 +1,35 @@
 import { RecallEvidenceRelation } from './enums.js';
 import type { RecallSearchResult } from './fuse-recall-ranked-lists.js';
 import type { RecallConversationSearchResult } from './recall-conversation-service.js';
+import type { RecallEmbeddingProvider } from './recall-inference-capabilities.js';
 import {
   SESSION_CONVERSATION_SCHEMA_VERSION,
   type SessionConversationChunk,
 } from './session-conversation-index.js';
+
+/** Creates a capability provider from one deterministic test vector function. */
+export function createTestRecallEmbeddingProvider(
+  embedInputs: (inputs: readonly string[], signal?: AbortSignal) => Promise<number[][]>,
+): RecallEmbeddingProvider {
+  return {
+    async embedQuery(query, signal) {
+      const embedding = (await embedInputs([query], signal))[0];
+      if (!embedding) {
+        throw new Error('Recall test embedding provider missing query vector');
+      }
+      return embedding;
+    },
+    async embedDocuments(documents, signal) {
+      const embeddings = await embedInputs(documents, signal);
+      if (embeddings.length !== documents.length) {
+        throw new Error(
+          `Recall test embedding provider response count mismatch: expected ${documents.length}, received ${embeddings.length}`,
+        );
+      }
+      return embeddings;
+    },
+  };
+}
 
 /** Test-only overrides for one complete recall evidence document fixture. */
 export interface TestSessionConversationChunkOptions extends Partial<SessionConversationChunk> {

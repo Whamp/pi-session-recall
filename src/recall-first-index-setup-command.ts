@@ -53,7 +53,6 @@ const FIRST_INDEX_SAMPLE_MEASUREMENT_SCHEMA = Type.Object(
     measuredSampleMilliseconds: Type.Number({ minimum: 0 }),
     sourceBytesPerSecond: Type.Number({ minimum: 0 }),
     denseDocumentsPerSecond: Type.Number({ minimum: 0 }),
-    cacheHitCount: Type.Integer({ minimum: 0 }),
     newlyEmbeddedDocumentCount: Type.Integer({ minimum: 0 }),
     embeddingRequestCount: Type.Integer({ minimum: 0 }),
     estimatedDurationMilliseconds: Type.Object(

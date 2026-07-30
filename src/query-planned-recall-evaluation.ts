@@ -18,10 +18,10 @@ import {
 } from './enums.js';
 import type { QueryPlannedRecallCaseCategory } from './enums.js';
 import type { RecallSearchResult } from './fuse-recall-ranked-lists.js';
-import type { LocalRerankerClient } from './local-reranker-client.js';
 import type {
   RecallIdentifiedQueryPlanningProvider,
   RecallIdentifiedRerankingProvider,
+  RecallRerankingProvider,
 } from './recall-inference-capabilities.js';
 import {
   createPrivateRecallEvaluationConfig,
@@ -356,7 +356,7 @@ export function selectQueryPlannedSourceProvenance(
 }
 
 interface ControlledEvaluationReranker {
-  reranker: LocalRerankerClient;
+  reranker: RecallRerankingProvider;
   readLastCandidateCount(): number;
 }
 
@@ -438,14 +438,19 @@ function createDeterministicTokenHashVector(text: string, dimensions: number): n
 
 function createDeterministicQueryPlannedEvaluationDependencies(
   options: PrivateQueryPlannedRecallEvaluationBaseOptions,
-  reranker: LocalRerankerClient,
+  reranker: RecallRerankingProvider,
 ): RecallConversationDependencies {
   const dimensions = QUERY_PLANNED_RECALL_EVALUATION_EMBEDDING_DIMENSIONS;
   return {
     ...options.dependencies,
-    embeddings: {
-      async embedTexts(texts) {
-        return texts.map((text) => createDeterministicTokenHashVector(text, dimensions));
+    embeddingProvider: {
+      async embedQuery(query) {
+        return createDeterministicTokenHashVector(query, dimensions);
+      },
+      async embedDocuments(documents) {
+        return documents.map((document) =>
+          createDeterministicTokenHashVector(document, dimensions),
+        );
       },
     },
     reranker,

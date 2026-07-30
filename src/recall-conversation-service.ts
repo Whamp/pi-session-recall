@@ -27,10 +27,6 @@ import {
   type RecallDetachedWorkerSignal,
 } from './create-recall-detached-worker-signal.js';
 import { createRecallSessionProjectionBaseline } from './create-recall-session-projection-baseline.js';
-import {
-  createEmbeddingVectorCache,
-  createEmbeddingVectorCacheIdentity,
-} from './embedding-vector-cache.js';
 import type {
   RecallConversationConfig,
   RecallSearchCandidateLimits,
@@ -105,7 +101,6 @@ import {
 import { createLlamaCppHttpEmbeddingProvider } from './createLlamaCppHttpEmbeddingProvider.js';
 import { createQwenHttpRerankingProvider } from './createQwenHttpRerankingProvider.js';
 import { isUnknownRecord } from './is-unknown-record.js';
-import type { LocalEmbeddingClient } from './local-embedding-client.js';
 import { loadOctenConversationTokenizer } from './octen-conversation-tokenizer.js';
 import { openActiveRecallGenerationSearchStore } from './open-active-recall-generation-search-store.js';
 import { openRecallZvecValidationStore } from './open-recall-zvec-validation-store.js';
@@ -435,7 +430,7 @@ export interface RecallFirstIndexSampleOptions {
   signal?: AbortSignal;
 }
 
-/** Cold start, throughput, cache reuse, and duration range from one bounded corpus sample. */
+/** Cold start, throughput, model work, and duration range from one bounded corpus sample. */
 export interface RecallFirstIndexSampleMeasurement {
   corpus: RecallConversationCorpusInspection;
   sampledSessionCount: number;
@@ -445,7 +440,6 @@ export interface RecallFirstIndexSampleMeasurement {
   measuredSampleMilliseconds: number;
   sourceBytesPerSecond: number;
   denseDocumentsPerSecond: number;
-  cacheHitCount: number;
   newlyEmbeddedDocumentCount: number;
   embeddingRequestCount: number;
   estimatedDurationMilliseconds: { minimum: number; maximum: number };
@@ -635,8 +629,6 @@ export interface RecallConversationService {
 export interface RecallConversationDependencies {
   embeddingProfile?: RecallEmbeddingModelProfile;
   embeddingProvider?: RecallEmbeddingProvider;
-  /** @deprecated Use embeddingProvider so query and document semantics stay distinct. */
-  embeddings?: LocalEmbeddingClient;
   rerankingProfile?: RecallRerankingModelProfile | null;
   reranker?: RecallRerankingProvider | null;
   rerankerExecutionIdentity?: RecallRerankingExecutionIdentity | null;
@@ -932,7 +924,6 @@ async function runManualIndexWithDiagnostics(
       indexedSessionCount: diagnosticMetrics.indexedSessionCount,
       removedSessionCount: diagnosticMetrics.removedSessionCount,
       failedSessionCount: diagnosticMetrics.failedSessionCount,
-      cacheHitCount: diagnosticMetrics.cacheHitCount,
       newEmbeddingCount: diagnosticMetrics.newEmbeddingCount,
       embeddingRequestCount: diagnosticMetrics.embeddingRequestCount,
       deletedDocumentCount: diagnosticMetrics.deletedDocumentCount,
@@ -949,7 +940,6 @@ async function runManualIndexWithDiagnostics(
     indexedSessionCount: result.indexSummary.indexedSessions,
     removedSessionCount: result.indexSummary.removedSessions,
     failedSessionCount: result.indexSummary.failedSessions.length,
-    cacheHitCount: result.indexSummary.cacheHits,
     newEmbeddingCount: result.indexSummary.newlyEmbeddedChunks,
     embeddingRequestCount: result.indexSummary.embeddingRequestCount,
     deletedDocumentCount: result.indexSummary.deletedChunks,
@@ -1278,26 +1268,12 @@ export function createRecallConversationService(
       'Recall embedding profile canary incompatible: dimensions and normalization must match the embedding identity',
     );
   }
-  const legacyEmbeddings = dependencies.embeddings;
   const embeddingProvider: RecallEmbeddingProvider =
     dependencies.embeddingProvider ??
-    (legacyEmbeddings
-      ? {
-          async embedQuery(query, signal) {
-            const embedding = (await legacyEmbeddings.embedTexts([query], signal))[0];
-            if (!embedding) {
-              throw new Error('Recall embedding response missing query vector');
-            }
-            return embedding;
-          },
-          embedDocuments(documents, signal) {
-            return legacyEmbeddings.embedTexts([...documents], signal);
-          },
-        }
-      : createLlamaCppHttpEmbeddingProvider(embeddingProfile, {
-          baseUrl: config.embeddingBaseUrl,
-          batchSize: config.embeddingBatchSize,
-        }));
+    createLlamaCppHttpEmbeddingProvider(embeddingProfile, {
+      baseUrl: config.embeddingBaseUrl,
+      batchSize: config.embeddingBatchSize,
+    });
   const rerankingDisabled =
     dependencies.rerankingProfile === null && dependencies.reranker === null;
   if (
@@ -1415,7 +1391,6 @@ export function createRecallConversationService(
     Boolean(
       dependencies.embeddingProfile ||
       dependencies.embeddingProvider ||
-      dependencies.embeddings ||
       dependencies.tokenizerIdentity ||
       dependencies.loadTokenizer ||
       dependencies.openStore ||
@@ -1711,7 +1686,7 @@ export function createRecallConversationService(
     retireMissingSourcesImmediately?: boolean,
   ): Promise<ConversationIndexSummary> {
     let modelPreflighted = embeddingModelPreflighted;
-    async function embedTextsAfterModelPreflight(
+    async function embedDocumentsAfterModelPreflight(
       texts: string[],
       embeddingSignal?: AbortSignal,
     ): Promise<number[][]> {
@@ -1722,20 +1697,10 @@ export function createRecallConversationService(
       }
       return embeddingProvider.embedDocuments(texts, embeddingSignal);
     }
-    const preflightedEmbeddings: LocalEmbeddingClient = {
-      embedTexts: embedTextsAfterModelPreflight,
-    };
-    const embeddingCache = createEmbeddingVectorCache({
-      cacheDirectory: config.embeddingCacheDirectory,
-      identity: createEmbeddingVectorCacheIdentity(manifest),
-      embeddingRequestBatchSize: config.embeddingBatchSize,
-      embeddings: preflightedEmbeddings,
-      diagnosticsClock,
-    });
     const indexerOptions = {
       statePath: targetPaths.statePath,
       store,
-      embeddingCache,
+      embeddingProvider: { embedDocuments: embedDocumentsAfterModelPreflight },
       tokenizer,
       chunkPolicy: {
         maxTokens: manifest.chunkPolicy.maxTokens,
@@ -1858,15 +1823,7 @@ export function createRecallConversationService(
           diagnosticsClock.monotonicMilliseconds() - coldStartStartedAtMilliseconds,
           0,
         );
-        const embeddingCache = createEmbeddingVectorCache({
-          cacheDirectory: config.embeddingCacheDirectory,
-          identity: createEmbeddingVectorCacheIdentity(manifest),
-          embeddingRequestBatchSize: config.embeddingBatchSize,
-          embeddings: { embedTexts: embeddingProvider.embedDocuments.bind(embeddingProvider) },
-          diagnosticsClock,
-        });
         let sampledDenseDocumentCount = 0;
-        let cacheHitCount = 0;
         let newlyEmbeddedDocumentCount = 0;
         let embeddingRequestCount = 0;
         const measuredSampleStartedAtMilliseconds = diagnosticsClock.monotonicMilliseconds();
@@ -1886,13 +1843,15 @@ export function createRecallConversationService(
             .map((chunk) => chunk.content);
           sampledDenseDocumentCount += denseDocuments.length;
           for (let start = 0; start < denseDocuments.length; start += 128) {
-            const cacheResult = await embeddingCache.resolveEmbeddingVectors(
-              denseDocuments.slice(start, start + 128),
-              options.signal,
-            );
-            cacheHitCount += cacheResult.cacheHits;
-            newlyEmbeddedDocumentCount += cacheResult.newlyEmbeddedChunks;
-            embeddingRequestCount += cacheResult.embeddingRequestCount;
+            const documentBatch = denseDocuments.slice(start, start + 128);
+            const vectors = await embeddingProvider.embedDocuments(documentBatch, options.signal);
+            if (vectors.length !== documentBatch.length) {
+              throw new Error(
+                `Recall first-index sample embedding response count mismatch: expected ${documentBatch.length}, received ${vectors.length}`,
+              );
+            }
+            newlyEmbeddedDocumentCount += documentBatch.length;
+            embeddingRequestCount += 1;
           }
         }
         const measuredSampleMilliseconds = Math.max(
@@ -1923,7 +1882,6 @@ export function createRecallConversationService(
           measuredSampleMilliseconds,
           sourceBytesPerSecond,
           denseDocumentsPerSecond,
-          cacheHitCount,
           newlyEmbeddedDocumentCount,
           embeddingRequestCount,
           estimatedDurationMilliseconds: {
@@ -2717,9 +2675,7 @@ export function createRecallConversationService(
                 store = undefined;
                 const shouldOptimize =
                   options.optimize === true &&
-                  (indexSummary.cacheHits > 0 ||
-                    indexSummary.newlyEmbeddedChunks > 0 ||
-                    indexSummary.deletedChunks > 0);
+                  (indexSummary.newlyEmbeddedChunks > 0 || indexSummary.deletedChunks > 0);
                 return {
                   result,
                   ...(shouldOptimize

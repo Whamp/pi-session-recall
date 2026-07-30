@@ -87,7 +87,6 @@ export function createDeterministicRecallQualityConfig(
     statePath: join(protectedDirectory, 'index-state.json'),
     manifestPath: join(protectedDirectory, 'index-manifest.json'),
     tokenizerCacheDirectory: join(protectedDirectory, 'tokenizers'),
-    embeddingCacheDirectory: join(protectedDirectory, 'embedding-cache'),
     lockPath: join(protectedDirectory, 'operation.lock'),
     diagnosticsMode: RecallDiagnosticsMode.OFF,
     diagnosticLogPath: join(protectedDirectory, 'diagnostics.jsonl'),

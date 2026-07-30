@@ -46,7 +46,6 @@ function createExpansionTestConfig(
     statePath: join(dataDirectory, 'unused-legacy-state.json'),
     manifestPath: join(dataDirectory, 'unused-legacy-manifest.json'),
     tokenizerCacheDirectory: join(dataDirectory, 'tokenizers'),
-    embeddingCacheDirectory: join(dataDirectory, 'unused-legacy-embedding-cache'),
     lockPath: join(dataDirectory, 'operation.lock'),
     diagnosticsMode: RecallDiagnosticsMode.OFF,
     diagnosticLogPath: join(dataDirectory, 'diagnostics.jsonl'),

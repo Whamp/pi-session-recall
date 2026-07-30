@@ -15,7 +15,7 @@ import {
   RECALL_RRF_RANK_CONSTANT,
 } from './fuse-recall-ranked-lists.js';
 import type { ConversationIndexSummary } from './incremental-session-indexer.js';
-import { createLocalEmbeddingClient, type LocalEmbeddingClient } from './local-embedding-client.js';
+import { createLlamaCppHttpEmbeddingProvider } from './createLlamaCppHttpEmbeddingProvider.js';
 import {
   measureRecallQuality,
   type RecallQualitySearchObservation,
@@ -31,6 +31,7 @@ import {
   type RecallConversationSearchOptions,
 } from './recall-conversation-service.js';
 import type {
+  RecallEmbeddingProvider,
   RecallIdentifiedQueryPlanningProvider,
   RecallIdentifiedRerankingProvider,
   RecallQueryPlanningExecutionIdentity,
@@ -42,11 +43,11 @@ import {
   type RecallQualityPolicySelection,
 } from './select-recall-quality-policy.js';
 import { RECALL_ACTIVE_BRANCH_PRIOR } from './rank-recall-search-results.js';
-import type {
-  RecallQueryPlanningModelProfile,
-  RecallRerankingModelProfile,
+import {
+  createOctenEmbeddingModelProfile,
+  type RecallQueryPlanningModelProfile,
+  type RecallRerankingModelProfile,
 } from './recall-model-profiles.js';
-import { RECALL_EMBEDDING_CANARY_TEXT } from './recall-index-manifest.js';
 import { RECALL_GENERATION_FORMAT_VERSION } from './recall-generation-manifest.js';
 import {
   createRecallGenerationComponentPaths,
@@ -73,13 +74,10 @@ const RECALL_QUALITY_WORK_DIRECTORY_NAME = 'recall-quality-evaluation';
 const RECALL_QUALITY_GENERATION_ID = 'generation_quality_active';
 
 /** Profile-aware inference and tokenizer boundaries for bounded quality evaluation. */
-export interface RecallQualityEvaluationDependencies extends Pick<
+export type RecallQualityEvaluationDependencies = Pick<
   RecallConversationDependencies,
   'embeddingProfile' | 'embeddingProvider' | 'tokenizerIdentity' | 'loadTokenizer'
-> {
-  /** @deprecated Use embeddingProvider for profile-aware query and document semantics. */
-  embeddings?: LocalEmbeddingClient;
-}
+>;
 
 /** Live planner and reranker boundaries for an optional committed-corpus query-planned lane. */
 export interface RecallQualityQueryPlannedDependencies {
@@ -215,7 +213,6 @@ async function assertSafeRecallQualityPaths(
       baseConfig.statePath,
       baseConfig.manifestPath,
       baseConfig.tokenizerCacheDirectory,
-      baseConfig.embeddingCacheDirectory,
       baseConfig.lockPath,
       baseConfig.diagnosticLogPath,
       baseConfig.retainedDiagnosticLogPath,
@@ -232,18 +229,22 @@ async function assertSafeRecallQualityPaths(
   });
 }
 
-function createEvaluationEmbeddingClient(
+function createEvaluationEmbeddingProvider(
   config: RecallConversationConfig,
-  dependency?: LocalEmbeddingClient,
-): LocalEmbeddingClient {
-  return (
-    dependency ??
-    createLocalEmbeddingClient({
-      baseUrl: config.embeddingBaseUrl,
-      model: config.embeddingModel,
+): RecallEmbeddingProvider {
+  return createLlamaCppHttpEmbeddingProvider(
+    createOctenEmbeddingModelProfile({
+      requestModel: config.embeddingModel,
+      servedModelId: config.embeddingServedModelId,
+      artifact: config.embeddingArtifact,
       dimensions: config.embeddingDimensions,
+      quantization: config.embeddingQuantization,
+      pooling: config.embeddingPooling,
+    }),
+    {
+      baseUrl: config.embeddingBaseUrl,
       batchSize: config.embeddingBatchSize,
-    })
+    },
   );
 }
 
@@ -265,7 +266,6 @@ function createChunkPolicyConfig(
     projectionDatabasePath: join(generationDirectory, 'session-projections'),
     statePath: join(generationDirectory, 'index-state.json'),
     manifestPath: join(generationDirectory, 'index-manifest.json'),
-    embeddingCacheDirectory: join(policyDirectory, 'embedding-cache'),
     lockPath: join(policyDirectory, 'operation.lock'),
     generationRootDirectory,
     activeGenerationPointerPath: join(policyDirectory, 'active-generation.json'),
@@ -308,44 +308,21 @@ interface MeasuredRecallQualityDependencies {
 }
 
 function createMeasuredRecallQualityDependencies(
+  embeddingProvider: RecallEmbeddingProvider,
   dependencies?: RecallQualityEvaluationDependencies,
 ): MeasuredRecallQualityDependencies {
   let documentEmbeddingRequestCount = 0;
-  if (dependencies?.embeddingProvider) {
-    const embeddingProvider = dependencies.embeddingProvider;
-    return {
-      dependencies: {
-        ...dependencies,
-        embeddingProvider: {
-          embedQuery: (query, signal) => embeddingProvider.embedQuery(query, signal),
-          async embedDocuments(documents, signal) {
-            documentEmbeddingRequestCount += 1;
-            return embeddingProvider.embedDocuments(documents, signal);
-          },
-        },
-      },
-      readDocumentEmbeddingRequestCount: () => documentEmbeddingRequestCount,
-    };
-  }
-  if (dependencies?.embeddings) {
-    const embeddings = dependencies.embeddings;
-    return {
-      dependencies: {
-        ...dependencies,
-        embeddings: {
-          async embedTexts(texts, signal) {
-            if (texts.some((text) => text !== RECALL_EMBEDDING_CANARY_TEXT)) {
-              documentEmbeddingRequestCount += 1;
-            }
-            return embeddings.embedTexts(texts, signal);
-          },
-        },
-      },
-      readDocumentEmbeddingRequestCount: () => documentEmbeddingRequestCount,
-    };
-  }
   return {
-    ...(dependencies ? { dependencies } : {}),
+    dependencies: {
+      ...dependencies,
+      embeddingProvider: {
+        embedQuery: (query, signal) => embeddingProvider.embedQuery(query, signal),
+        async embedDocuments(documents, signal) {
+          documentEmbeddingRequestCount += 1;
+          return embeddingProvider.embedDocuments(documents, signal);
+        },
+      },
+    },
     readDocumentEmbeddingRequestCount: () => documentEmbeddingRequestCount,
   };
 }
@@ -435,7 +412,6 @@ function createServiceDependencies(
   reranker: RecallConversationDependencies['reranker'],
   resolveProjectIdentity: (workingDirectory: string) => Promise<ResolvedProjectIdentity | null>,
   evaluationDependencies?: RecallQualityEvaluationDependencies,
-  embeddings?: LocalEmbeddingClient,
   queryPlannedDependencies?: RecallQualityQueryPlannedDependencies,
 ): RecallConversationDependencies {
   return {
@@ -448,7 +424,6 @@ function createServiceDependencies(
     ...(evaluationDependencies?.tokenizerIdentity
       ? { tokenizerIdentity: evaluationDependencies.tokenizerIdentity }
       : {}),
-    ...(embeddings ? { embeddings } : {}),
     rerankingProfile: queryPlannedDependencies?.rerankingProfile ?? null,
     reranker: reranker ?? null,
     rerankerExecutionIdentity: queryPlannedDependencies?.reranker.executionIdentity ?? null,
@@ -518,9 +493,9 @@ export async function runRecallQualityEvaluation(
     workDirectory,
   );
 
-  const embeddings = options.dependencies?.embeddingProvider
-    ? undefined
-    : createEvaluationEmbeddingClient(options.baseConfig, options.dependencies?.embeddings);
+  const embeddingProvider =
+    options.dependencies?.embeddingProvider ??
+    createEvaluationEmbeddingProvider(options.baseConfig);
   const projectResolver = await createEvaluationProjectResolver(options.corpus, workDirectory);
   const indexRuns: RecallQualityIndexRun[] = [];
   const configurations: RecallQualityConfigurationMeasurement[] = [];
@@ -575,14 +550,16 @@ export async function runRecallQualityEvaluation(
       chunkPolicy,
       firstCandidateCount,
     );
-    const measuredDependencies = createMeasuredRecallQualityDependencies(options.dependencies);
+    const measuredDependencies = createMeasuredRecallQualityDependencies(
+      embeddingProvider,
+      options.dependencies,
+    );
     const indexService = createRecallConversationService(
       indexConfig,
       createServiceDependencies(
         null,
         projectResolver.resolveProjectIdentity,
         measuredDependencies.dependencies,
-        measuredDependencies.dependencies?.embeddings ?? embeddings,
       ),
     );
     const physicalSessionPaths = options.corpus.sessionFiles.map(({ fileName }) =>
@@ -605,7 +582,6 @@ export async function runRecallQualityEvaluation(
       scannedSessions: physicalSessionPaths.length,
       indexedSessions: physicalSessionPaths.length,
       removedSessions: 0,
-      cacheHits: 0,
       newlyEmbeddedChunks: opened.storeCounts.dense,
       embeddingRequestCount: measuredDependencies.readDocumentEmbeddingRequestCount(),
       deletedChunks: 0,
@@ -637,8 +613,7 @@ export async function runRecallQualityEvaluation(
         createServiceDependencies(
           measuredQueryPlannedDependencies?.reranker ?? null,
           projectResolver.resolveProjectIdentity,
-          options.dependencies,
-          embeddings,
+          { ...options.dependencies, embeddingProvider },
           measuredQueryPlannedDependencies,
         ),
       );

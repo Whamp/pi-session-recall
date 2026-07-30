@@ -40,9 +40,8 @@ import {
   createRecallQueryPlanningExecutionIdentity,
   type RecallEmbeddingProvider,
   type RecallQueryPlanningRequest,
+  type RecallRerankingProvider,
 } from './recall-inference-capabilities.js';
-import type { LocalEmbeddingClient } from './local-embedding-client.js';
-import type { LocalRerankerClient } from './local-reranker-client.js';
 import {
   createRecallEmbeddingCanaryFingerprint,
   createRecallIndexManifest,
@@ -78,6 +77,7 @@ import {
   normalizeRecallProjectLineages,
   parseRepositoryIdentity,
 } from './resolve-project-identity.js';
+import { createTestRecallEmbeddingProvider } from './recall-test-utils.js';
 import type {
   ConversationTextTokenizer,
   SessionConversationChunk,
@@ -120,7 +120,6 @@ function createTestConfig(directory: string, sessionsDirectory: string) {
     statePath: join(generationDirectory, 'index-state.json'),
     manifestPath: join(generationDirectory, 'index-manifest.json'),
     tokenizerCacheDirectory: join(directory, 'tokenizers'),
-    embeddingCacheDirectory: join(directory, 'embedding-cache'),
     lockPath: join(directory, 'recall.lock'),
     diagnosticsMode: RecallDiagnosticsMode.OFF,
     diagnosticLogPath: join(directory, 'diagnostics.jsonl'),
@@ -152,7 +151,7 @@ function createTestConfig(directory: string, sessionsDirectory: string) {
   };
 }
 
-const PRESERVE_FUSION_ORDER_RERANKER: LocalRerankerClient = {
+const PRESERVE_FUSION_ORDER_RERANKER: RecallRerankingProvider = {
   async rerankDocuments(query, documents) {
     void query;
     const scores: number[] = [];
@@ -239,12 +238,10 @@ void test('slow diagnostics retain fast manual incremental index start and compl
   const service = createRecallConversationService(config, {
     diagnostics,
     diagnosticsClock,
-    embeddings: {
-      async embedTexts(texts) {
-        monotonicMilliseconds += texts.includes(RECALL_EMBEDDING_CANARY_TEXT) ? 7 : 13;
-        return texts.map(() => [1, 0, 0]);
-      },
-    },
+    embeddingProvider: createTestRecallEmbeddingProvider(async (texts) => {
+      monotonicMilliseconds += texts.includes(RECALL_EMBEDDING_CANARY_TEXT) ? 7 : 13;
+      return texts.map(() => [1, 0, 0]);
+    }),
     loadTokenizer: async () => tokenizer,
   });
 
@@ -382,11 +379,9 @@ void test('all diagnostics record changed and unchanged physical session checks'
   const service = createRecallConversationService(config, {
     diagnostics,
     diagnosticsClock,
-    embeddings: {
-      async embedTexts(texts) {
-        return texts.map(() => [1, 0, 0]);
-      },
-    },
+    embeddingProvider: createTestRecallEmbeddingProvider(async (texts) => {
+      return texts.map(() => [1, 0, 0]);
+    }),
     loadTokenizer: async () => tokenizer,
   });
 
@@ -445,7 +440,6 @@ void test('all diagnostics record changed and unchanged physical session checks'
   assert.equal(changedPhysicalSessionRecord?.status, RecallDiagnosticStatus.SUCCEEDED);
   assert.equal(changedPhysicalSessionRecord?.elapsedMilliseconds, 0);
   assert.equal(changedPhysicalSessionRecord?.upsertedDocumentCount, changed.totalChunks);
-  assert.equal(changedPhysicalSessionRecord?.cacheHitCount, 0);
   assert.ok(readTestDiagnosticNumber(changedPhysicalSessionRecord, 'newEmbeddingCount') > 1);
   assert.ok(readTestDiagnosticNumber(changedPhysicalSessionRecord, 'embeddingRequestCount') > 1);
   assert.deepEqual(
@@ -457,7 +451,6 @@ void test('all diagnostics record changed and unchanged physical session checks'
       status: physicalSessionRecords[1]?.status,
       elapsedMilliseconds: physicalSessionRecords[1]?.elapsedMilliseconds,
       upsertedDocumentCount: physicalSessionRecords[1]?.upsertedDocumentCount,
-      cacheHitCount: physicalSessionRecords[1]?.cacheHitCount,
       newEmbeddingCount: physicalSessionRecords[1]?.newEmbeddingCount,
       embeddingRequestCount: physicalSessionRecords[1]?.embeddingRequestCount,
     },
@@ -469,7 +462,6 @@ void test('all diagnostics record changed and unchanged physical session checks'
       status: RecallDiagnosticStatus.SUCCEEDED,
       elapsedMilliseconds: 0,
       upsertedDocumentCount: 0,
-      cacheHitCount: 0,
       newEmbeddingCount: 0,
       embeddingRequestCount: 0,
     },
@@ -529,14 +521,12 @@ void test('slow diagnostics retain only threshold physical session checks', asyn
   const service = createRecallConversationService(config, {
     diagnostics,
     diagnosticsClock,
-    embeddings: {
-      async embedTexts(texts) {
-        if (texts.some((text) => text.includes('slow physical session evidence'))) {
-          monotonicMilliseconds += 1_000;
-        }
-        return texts.map(() => [1, 0, 0]);
-      },
-    },
+    embeddingProvider: createTestRecallEmbeddingProvider(async (texts) => {
+      if (texts.some((text) => text.includes('slow physical session evidence'))) {
+        monotonicMilliseconds += 1_000;
+      }
+      return texts.map(() => [1, 0, 0]);
+    }),
     loadTokenizer: async () => tokenizer,
   });
 
@@ -601,11 +591,9 @@ void test('manual index diagnostics report continued physical session parse fail
   });
   const service = createRecallConversationService(config, {
     diagnostics,
-    embeddings: {
-      async embedTexts(texts) {
-        return texts.map(() => [1, 0, 0]);
-      },
-    },
+    embeddingProvider: createTestRecallEmbeddingProvider(async (texts) => {
+      return texts.map(() => [1, 0, 0]);
+    }),
     loadTokenizer: async () => tokenizer,
   });
 
@@ -688,15 +676,13 @@ void test('manual index diagnostics retain partial counts for fatal embedding fa
   const service = createRecallConversationService(config, {
     diagnostics,
     diagnosticsClock,
-    embeddings: {
-      async embedTexts(texts) {
-        if (!texts.includes(RECALL_EMBEDDING_CANARY_TEXT)) {
-          monotonicMilliseconds += 29;
-          throw new Error('private fatal embedding model response sentinel 26');
-        }
-        return texts.map(() => [1, 0, 0]);
-      },
-    },
+    embeddingProvider: createTestRecallEmbeddingProvider(async (texts) => {
+      if (!texts.includes(RECALL_EMBEDDING_CANARY_TEXT)) {
+        monotonicMilliseconds += 29;
+        throw new Error('private fatal embedding model response sentinel 26');
+      }
+      return texts.map(() => [1, 0, 0]);
+    }),
     loadTokenizer: async () => tokenizer,
   });
 
@@ -823,12 +809,10 @@ void test('manual rebuild diagnostics isolate final database optimization durati
   const service = createRecallConversationService(config, {
     diagnostics,
     diagnosticsClock,
-    embeddings: {
-      async embedTexts(texts) {
-        monotonicMilliseconds += texts.includes(RECALL_EMBEDDING_CANARY_TEXT) ? 7 : 13;
-        return texts.map(() => [1, 0, 0]);
-      },
-    },
+    embeddingProvider: createTestRecallEmbeddingProvider(async (texts) => {
+      monotonicMilliseconds += texts.includes(RECALL_EMBEDDING_CANARY_TEXT) ? 7 : 13;
+      return texts.map(() => [1, 0, 0]);
+    }),
     async loadTokenizer() {
       monotonicMilliseconds += 5;
       return tokenizer;
@@ -952,7 +936,6 @@ void test('manual rebuild diagnostics isolate final database optimization durati
   assert.equal(records[1]?.writerLockWaitMilliseconds, 0);
   assert.equal(records[1]?.manifestStorePreparationMilliseconds, 8);
   assert.equal(records[1]?.physicalSessionScanMilliseconds, 31);
-  assert.equal(records[1]?.embeddingCacheResolutionMilliseconds, 0);
   assert.equal(records[1]?.embeddingServerRequestMilliseconds, 20);
   assert.equal(records[1]?.databaseWriteMilliseconds, 17);
   assert.equal(records[1]?.indexStateCheckpointMilliseconds, 0);
@@ -1008,11 +991,9 @@ void test('approved rebuild excludes physical sources added after snapshot appro
   >();
   let injectUnexpectedEvidence = false;
   const service = createRecallConversationService(config, {
-    embeddings: {
-      async embedTexts(texts) {
-        return texts.map(() => [1, 0, 0]);
-      },
-    },
+    embeddingProvider: createTestRecallEmbeddingProvider(async (texts) => {
+      return texts.map(() => [1, 0, 0]);
+    }),
     async loadTokenizer() {
       return tokenizer;
     },
@@ -1243,11 +1224,9 @@ void test('rebuild preserves the active generation when an approved physical sou
   projectionStore.close();
   let removedApprovedSource = false;
   const service = createRecallConversationService(config, {
-    embeddings: {
-      async embedTexts(texts) {
-        return texts.map(() => [1, 0, 0]);
-      },
-    },
+    embeddingProvider: createTestRecallEmbeddingProvider(async (texts) => {
+      return texts.map(() => [1, 0, 0]);
+    }),
     async loadTokenizer() {
       return tokenizer;
     },
@@ -1356,11 +1335,9 @@ void test('staging discard holds the write window while removing its registry en
     generations: [activeEntry, stagingEntry],
   });
   const service = createRecallConversationService(config, {
-    embeddings: {
-      async embedTexts(texts) {
-        return texts.map(() => [1, 0, 0]);
-      },
-    },
+    embeddingProvider: createTestRecallEmbeddingProvider(async (texts) => {
+      return texts.map(() => [1, 0, 0]);
+    }),
     async loadTokenizer() {
       return tokenizer;
     },
@@ -1458,11 +1435,9 @@ void test('manual index diagnostics preserve optimization failure and release th
   const service = createRecallConversationService(config, {
     diagnostics,
     diagnosticsClock,
-    embeddings: {
-      async embedTexts(texts) {
-        return texts.map(() => [1, 0, 0]);
-      },
-    },
+    embeddingProvider: createTestRecallEmbeddingProvider(async (texts) => {
+      return texts.map(() => [1, 0, 0]);
+    }),
     loadTokenizer: async () => tokenizer,
     openStore() {
       return {
@@ -1634,18 +1609,16 @@ void test('deep search diagnostics isolate reranker time and exclude private sea
   const service = createRecallConversationService(config, {
     diagnostics,
     diagnosticsClock,
-    embeddings: {
-      async embedTexts(texts) {
-        return texts.map((text) => {
-          if (recordSearchCosts && text === RECALL_EMBEDDING_CANARY_TEXT) {
-            monotonicMilliseconds += 7;
-          } else if (recordSearchCosts && text === querySentinel) {
-            monotonicMilliseconds += 11;
-          }
-          return text === RECALL_EMBEDDING_CANARY_TEXT ? [0, 0, 1] : [queryVectorSentinel, 0.5, 0];
-        });
-      },
-    },
+    embeddingProvider: createTestRecallEmbeddingProvider(async (texts) => {
+      return texts.map((text) => {
+        if (recordSearchCosts && text === RECALL_EMBEDDING_CANARY_TEXT) {
+          monotonicMilliseconds += 7;
+        } else if (recordSearchCosts && text === querySentinel) {
+          monotonicMilliseconds += 11;
+        }
+        return text === RECALL_EMBEDDING_CANARY_TEXT ? [0, 0, 1] : [queryVectorSentinel, 0.5, 0];
+      });
+    }),
     reranker: {
       async rerankDocuments(receivedQuery, documents) {
         assert.equal(receivedQuery, querySentinel);
@@ -1752,19 +1725,17 @@ void test('slow search diagnostics omit 999 milliseconds and retain the 1000 mil
   const service = createRecallConversationService(config, {
     diagnostics,
     diagnosticsClock,
-    embeddings: {
-      async embedTexts(texts) {
-        for (const text of texts) {
-          if (recordSearchCosts && text === 'fast-search') {
-            monotonicMilliseconds += 999;
-          }
-          if (recordSearchCosts && text === 'threshold-search') {
-            monotonicMilliseconds += 1_000;
-          }
+    embeddingProvider: createTestRecallEmbeddingProvider(async (texts) => {
+      for (const text of texts) {
+        if (recordSearchCosts && text === 'fast-search') {
+          monotonicMilliseconds += 999;
         }
-        return texts.map((text) => (text === RECALL_EMBEDDING_CANARY_TEXT ? [0, 0, 1] : [1, 0, 0]));
-      },
-    },
+        if (recordSearchCosts && text === 'threshold-search') {
+          monotonicMilliseconds += 1_000;
+        }
+      }
+      return texts.map((text) => (text === RECALL_EMBEDDING_CANARY_TEXT ? [0, 0, 1] : [1, 0, 0]));
+    }),
     async loadTokenizer() {
       return tokenizer;
     },
@@ -1841,14 +1812,12 @@ void test('slow diagnostics retain failed searches, omit fast cancellation, and 
   const service = createRecallConversationService(config, {
     diagnostics,
     diagnosticsClock,
-    embeddings: {
-      async embedTexts(texts, signal) {
-        if (signal?.aborted) {
-          throw cancellationError;
-        }
-        return texts.map((text) => (text === RECALL_EMBEDDING_CANARY_TEXT ? [0, 0, 1] : [1, 0, 0]));
-      },
-    },
+    embeddingProvider: createTestRecallEmbeddingProvider(async (texts, signal) => {
+      if (signal?.aborted) {
+        throw cancellationError;
+      }
+      return texts.map((text) => (text === RECALL_EMBEDDING_CANARY_TEXT ? [0, 0, 1] : [1, 0, 0]));
+    }),
     reranker: {
       async rerankDocuments() {
         monotonicMilliseconds += 17;
@@ -1920,11 +1889,9 @@ void test('read-only search opens the pointer-selected store and awaits retrieva
   const config = createTestConfig(directory, sessionsDirectory);
   const events: string[] = [];
   const service = createRecallConversationService(config, {
-    embeddings: {
-      async embedTexts(texts) {
-        return texts.map((text) => (text === RECALL_EMBEDDING_CANARY_TEXT ? [0, 0, 1] : [1, 0, 0]));
-      },
-    },
+    embeddingProvider: createTestRecallEmbeddingProvider(async (texts) => {
+      return texts.map((text) => (text === RECALL_EMBEDDING_CANARY_TEXT ? [0, 0, 1] : [1, 0, 0]));
+    }),
     openStore(mode, databasePath) {
       assert.equal(mode, 'read');
       assert.equal(databasePath, config.databasePath);
@@ -2054,11 +2021,9 @@ void test('search waits only for one write window and reports busy, recovery, po
     notifyWarning(message) {
       warnings.push(message);
     },
-    embeddings: {
-      async embedTexts(texts) {
-        return texts.map((text) => (text === RECALL_EMBEDDING_CANARY_TEXT ? [0, 0, 1] : [1, 0, 0]));
-      },
-    },
+    embeddingProvider: createTestRecallEmbeddingProvider(async (texts) => {
+      return texts.map((text) => (text === RECALL_EMBEDDING_CANARY_TEXT ? [0, 0, 1] : [1, 0, 0]));
+    }),
     loadTokenizer: async () => tokenizer,
   });
   await service.index();
@@ -2085,11 +2050,9 @@ void test('search waits only for one write window and reports busy, recovery, po
 
   const busyConfig = { ...config, searchWriteWindowWaitMilliseconds: 500 };
   const busyService = createRecallConversationService(busyConfig, {
-    embeddings: {
-      async embedTexts(texts) {
-        return texts.map((text) => (text === RECALL_EMBEDDING_CANARY_TEXT ? [0, 0, 1] : [1, 0, 0]));
-      },
-    },
+    embeddingProvider: createTestRecallEmbeddingProvider(async (texts) => {
+      return texts.map((text) => (text === RECALL_EMBEDDING_CANARY_TEXT ? [0, 0, 1] : [1, 0, 0]));
+    }),
     loadTokenizer: async () => tokenizer,
   });
   const busyEntered = Promise.withResolvers<void>();
@@ -2221,19 +2184,17 @@ void test('explicit project scope filters dense, lexical, and identifier candida
   );
   const query = 'queue readNodeErrorCode';
   const service = createRecallConversationService(createTestConfig(directory, sessionsDirectory), {
-    embeddings: {
-      async embedTexts(texts) {
-        return texts.map((text) => {
-          if (text === RECALL_EMBEDDING_CANARY_TEXT) {
-            return [0, 0, 1];
-          }
-          if (text === query || text.includes('queue queue')) {
-            return [1, 0, 0];
-          }
-          return [0.8, 0.2, 0];
-        });
-      },
-    },
+    embeddingProvider: createTestRecallEmbeddingProvider(async (texts) => {
+      return texts.map((text) => {
+        if (text === RECALL_EMBEDDING_CANARY_TEXT) {
+          return [0, 0, 1];
+        }
+        if (text === query || text.includes('queue queue')) {
+          return [1, 0, 0];
+        }
+        return [0.8, 0.2, 0];
+      });
+    }),
     async loadTokenizer() {
       return tokenizer;
     },
@@ -2372,16 +2333,14 @@ void test('configured project lineage admits exact, descendant, deleted, and Git
     searchCandidateLimits: { dense: 3, lexical: 3, identifier: 3 },
   };
   const service = createRecallConversationService(config, {
-    embeddings: {
-      async embedTexts(texts) {
-        return texts.map((text) => {
-          if (text === RECALL_EMBEDDING_CANARY_TEXT) {
-            return [0, 0, 1];
-          }
-          return text.includes('queue queue') || text === query ? [1, 0, 0] : [0.8, 0.2, 0];
-        });
-      },
-    },
+    embeddingProvider: createTestRecallEmbeddingProvider(async (texts) => {
+      return texts.map((text) => {
+        if (text === RECALL_EMBEDDING_CANARY_TEXT) {
+          return [0, 0, 1];
+        }
+        return text.includes('queue queue') || text === query ? [1, 0, 0] : [0.8, 0.2, 0];
+      });
+    }),
     async loadTokenizer() {
       return tokenizer;
     },
@@ -2499,11 +2458,9 @@ void test('omitted scope admits only the exact non-Git session origin', async (t
     searchCandidateLimits: { dense: 4, lexical: 4, identifier: 4 },
   };
   const service = createRecallConversationService(config, {
-    embeddings: {
-      async embedTexts(texts) {
-        return texts.map((text) => (text === RECALL_EMBEDDING_CANARY_TEXT ? [0, 0, 1] : [1, 0, 0]));
-      },
-    },
+    embeddingProvider: createTestRecallEmbeddingProvider(async (texts) => {
+      return texts.map((text) => (text === RECALL_EMBEDDING_CANARY_TEXT ? [0, 0, 1] : [1, 0, 0]));
+    }),
     async loadTokenizer() {
       return tokenizer;
     },
@@ -2598,11 +2555,9 @@ void test('indexing resolves each distinct session origin once and keeps unresol
     searchCandidateLimits: { dense: 3, lexical: 3, identifier: 3 },
   };
   const service = createRecallConversationService(config, {
-    embeddings: {
-      async embedTexts(texts) {
-        return texts.map((text) => (text === RECALL_EMBEDDING_CANARY_TEXT ? [0, 0, 1] : [1, 0, 0]));
-      },
-    },
+    embeddingProvider: createTestRecallEmbeddingProvider(async (texts) => {
+      return texts.map((text) => (text === RECALL_EMBEDDING_CANARY_TEXT ? [0, 0, 1] : [1, 0, 0]));
+    }),
     async loadTokenizer() {
       return tokenizer;
     },
@@ -2637,7 +2592,7 @@ void test('indexing resolves each distinct session origin once and keeps unresol
   );
 });
 
-void test('lineage metadata rebuild rejects stale policy and reuses cached vectors', async (t) => {
+void test('lineage metadata rebuild rejects stale policy and recomputes vectors', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'recall-service-lineage-metadata-rebuild-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const sessionsDirectory = join(directory, 'sessions');
@@ -2666,12 +2621,10 @@ void test('lineage metadata rebuild rejects stale policy and reuses cached vecto
   );
   const embeddedInputs: string[] = [];
   const dependencies = {
-    embeddings: {
-      async embedTexts(texts: string[]) {
-        embeddedInputs.push(...texts);
-        return texts.map((text) => (text === RECALL_EMBEDDING_CANARY_TEXT ? [0, 0, 1] : [1, 0, 0]));
-      },
-    },
+    embeddingProvider: createTestRecallEmbeddingProvider(async (texts) => {
+      embeddedInputs.push(...texts);
+      return texts.map((text) => (text === RECALL_EMBEDDING_CANARY_TEXT ? [0, 0, 1] : [1, 0, 0]));
+    }),
     async loadTokenizer() {
       return tokenizer;
     },
@@ -2706,9 +2659,8 @@ void test('lineage metadata rebuild rejects stale policy and reuses cached vecto
   });
 
   assert.equal(first.indexSummary.newlyEmbeddedChunks, 1);
-  assert.equal(rebuilt.indexSummary.cacheHits, 1);
-  assert.equal(rebuilt.indexSummary.newlyEmbeddedChunks, 0);
-  assert.equal(rebuilt.indexSummary.embeddingRequestCount, 0);
+  assert.equal(rebuilt.indexSummary.newlyEmbeddedChunks, 1);
+  assert.equal(rebuilt.indexSummary.embeddingRequestCount, 1);
   assert.equal(
     search.results[0]?.projectAttribution?.projectIdentity,
     'git-origin:github.com/Whamp/after-relocation',
@@ -2716,7 +2668,7 @@ void test('lineage metadata rebuild rejects stale policy and reuses cached vecto
   assert.equal(search.results[0]?.projectAttribution?.identitySource, 'configured_project_lineage');
   assert.equal(
     embeddedInputs.filter((text) => text === 'Lineage metadata must reuse this vector.').length,
-    1,
+    2,
   );
 });
 
@@ -2751,11 +2703,9 @@ void test('recall service builds a temporary index with an explicit chunk policy
     chunkPolicy: { maxTokens: 3, overlapTokens: 1 },
   };
   const service = createRecallConversationService(config, {
-    embeddings: {
-      async embedTexts(texts) {
-        return texts.map((text) => [text.length, 1, 0]);
-      },
-    },
+    embeddingProvider: createTestRecallEmbeddingProvider(async (texts) => {
+      return texts.map((text) => [text.length, 1, 0]);
+    }),
     async loadTokenizer() {
       return tokenizer;
     },
@@ -2826,23 +2776,21 @@ void test('recall service fuses bounded dense, lexical, and identifier candidate
   const semanticParaphraseQuery = 'How did we make background task delivery resilient?';
   const identifierQuery = 'readNodeErrorCode';
   const service = createRecallConversationService(createTestConfig(directory, sessionsDirectory), {
-    embeddings: {
-      async embedTexts(texts) {
-        return texts.map((text) => {
-          if (text === RECALL_EMBEDDING_CANARY_TEXT) {
-            return [0, 0, 1];
-          }
-          if (
-            text === identifierContent ||
-            text === quotedPhraseContent ||
-            text === separatedPhraseContent
-          ) {
-            return [0, 1, 0];
-          }
-          return [1, 0, 0];
-        });
-      },
-    },
+    embeddingProvider: createTestRecallEmbeddingProvider(async (texts) => {
+      return texts.map((text) => {
+        if (text === RECALL_EMBEDDING_CANARY_TEXT) {
+          return [0, 0, 1];
+        }
+        if (
+          text === identifierContent ||
+          text === quotedPhraseContent ||
+          text === separatedPhraseContent
+        ) {
+          return [0, 1, 0];
+        }
+        return [1, 0, 0];
+      });
+    }),
     async loadTokenizer() {
       return tokenizer;
     },
@@ -3035,7 +2983,7 @@ void test('recall service defaults to fused ranking and reranks only in explicit
   const query = 'fusion favorite';
   const rerankerInputs: string[][] = [];
   const rerankerQueries: string[] = [];
-  const reranker: LocalRerankerClient = {
+  const reranker: RecallRerankingProvider = {
     async rerankDocuments(receivedQuery, documents) {
       rerankerQueries.push(receivedQuery);
       rerankerInputs.push([...documents]);
@@ -3047,19 +2995,17 @@ void test('recall service defaults to fused ranking and reranks only in explicit
     searchCandidateLimits: { dense: 2, lexical: 2, identifier: 2 },
   };
   const service = createRecallConversationService(config, {
-    embeddings: {
-      async embedTexts(texts) {
-        return texts.map((text) => {
-          if (text === RECALL_EMBEDDING_CANARY_TEXT) {
-            return [0, 0, 1];
-          }
-          if (text === rerankerFavorite) {
-            return [0.9, 0.1, 0];
-          }
-          return [1, 0, 0];
-        });
-      },
-    },
+    embeddingProvider: createTestRecallEmbeddingProvider(async (texts) => {
+      return texts.map((text) => {
+        if (text === RECALL_EMBEDDING_CANARY_TEXT) {
+          return [0, 0, 1];
+        }
+        if (text === rerankerFavorite) {
+          return [0.9, 0.1, 0];
+        }
+        return [1, 0, 0];
+      });
+    }),
     reranker,
     async loadTokenizer() {
       return tokenizer;
@@ -3132,19 +3078,17 @@ void test('recall service defaults to fused ranking and reranks only in explicit
       rerankPoolLimit: 1,
     },
     {
-      embeddings: {
-        async embedTexts(texts) {
-          return texts.map((text) => {
-            if (text === RECALL_EMBEDDING_CANARY_TEXT) {
-              return [0, 0, 1];
-            }
-            if (text === rerankerFavorite) {
-              return [0.9, 0.1, 0];
-            }
-            return [1, 0, 0];
-          });
-        },
-      },
+      embeddingProvider: createTestRecallEmbeddingProvider(async (texts) => {
+        return texts.map((text) => {
+          if (text === RECALL_EMBEDDING_CANARY_TEXT) {
+            return [0, 0, 1];
+          }
+          if (text === rerankerFavorite) {
+            return [0.9, 0.1, 0];
+          }
+          return [1, 0, 0];
+        });
+      }),
       reranker: {
         async rerankDocuments(receivedQuery, documents) {
           assert.equal(receivedQuery, query);
@@ -3603,11 +3547,9 @@ void test('recall service rejects a missing planner, invalid agent plans, and hy
   const sessionsDirectory = join(directory, 'sessions');
   await mkdir(sessionsDirectory);
   const service = createRecallConversationService(createTestConfig(directory, sessionsDirectory), {
-    embeddings: {
-      async embedTexts() {
-        assert.fail('Invalid query planning options must fail before embedding work');
-      },
-    },
+    embeddingProvider: createTestRecallEmbeddingProvider(async () => {
+      assert.fail('Invalid query planning options must fail before embedding work');
+    }),
   });
 
   await assert.rejects(
@@ -3728,11 +3670,9 @@ void test('recall service fails clearly when Qwen reranking is unavailable', asy
   const failingPlannerProfile = createRecommendedQmdQueryPlanningModelProfile();
   const plannerFallbackWarnings: string[] = [];
   const service = createRecallConversationService(createTestConfig(directory, sessionsDirectory), {
-    embeddings: {
-      async embedTexts(texts) {
-        return texts.map((text) => (text === RECALL_EMBEDDING_CANARY_TEXT ? [0, 0, 1] : [1, 0, 0]));
-      },
-    },
+    embeddingProvider: createTestRecallEmbeddingProvider(async (texts) => {
+      return texts.map((text) => (text === RECALL_EMBEDDING_CANARY_TEXT ? [0, 0, 1] : [1, 0, 0]));
+    }),
     reranker: {
       async rerankDocuments() {
         throw new Error(
@@ -3870,23 +3810,21 @@ void test('recall service retrieves context-dependent replies and reuses turn-co
   );
   const embeddingInputs: string[][] = [];
   const query = 'Atlas Yes';
-  const embeddings: LocalEmbeddingClient = {
-    async embedTexts(texts) {
-      embeddingInputs.push([...texts]);
-      return texts.map((text) => {
-        if (text === RECALL_EMBEDDING_CANARY_TEXT) {
-          return [0, 0, 1];
-        }
-        if (text === query || text.startsWith('User:\nShip release Atlas')) {
-          return [1, 0, 0];
-        }
-        return [0, 1, 0];
-      });
-    },
-  };
+  const embeddingProvider = createTestRecallEmbeddingProvider(async (texts) => {
+    embeddingInputs.push([...texts]);
+    return texts.map((text) => {
+      if (text === RECALL_EMBEDDING_CANARY_TEXT) {
+        return [0, 0, 1];
+      }
+      if (text === query || text.startsWith('User:\nShip release Atlas')) {
+        return [1, 0, 0];
+      }
+      return [0, 1, 0];
+    });
+  });
   const config = createTestConfig(directory, sessionsDirectory);
   const service = createRecallConversationService(config, {
-    embeddings,
+    embeddingProvider,
     async loadTokenizer() {
       return tokenizer;
     },
@@ -3897,7 +3835,6 @@ void test('recall service retrieves context-dependent replies and reuses turn-co
   const turnContext = recalled.results[0];
 
   assert.equal(indexed.totalChunks, 7);
-  assert.equal(indexed.indexSummary.cacheHits, 0);
   assert.equal(indexed.indexSummary.newlyEmbeddedChunks, 4);
   assert.equal(indexed.indexSummary.embeddingRequestCount, 1);
   assert.equal(turnContext?.documentKind, 'turn_context');
@@ -3921,10 +3858,9 @@ void test('recall service retrieves context-dependent replies and reuses turn-co
   const rebuilt = await service.index();
 
   assert.equal(rebuilt.totalChunks, 7);
-  assert.equal(rebuilt.indexSummary.cacheHits, 4);
-  assert.equal(rebuilt.indexSummary.newlyEmbeddedChunks, 0);
-  assert.equal(rebuilt.indexSummary.embeddingRequestCount, 0);
-  assert.equal(embeddingInputs.length, requestsBeforeRebuild);
+  assert.equal(rebuilt.indexSummary.newlyEmbeddedChunks, 4);
+  assert.equal(rebuilt.indexSummary.embeddingRequestCount, 1);
+  assert.equal(embeddingInputs.length, requestsBeforeRebuild + 1);
 });
 
 void test('recall service fuses lexical-only tool evidence with dense conversation results', async (t) => {
@@ -3985,12 +3921,10 @@ void test('recall service fuses lexical-only tool evidence with dense conversati
   );
   const embeddedInputs: string[] = [];
   const service = createRecallConversationService(createTestConfig(directory, sessionsDirectory), {
-    embeddings: {
-      async embedTexts(texts) {
-        embeddedInputs.push(...texts);
-        return texts.map((text) => (text === RECALL_EMBEDDING_CANARY_TEXT ? [0, 0, 1] : [1, 0, 0]));
-      },
-    },
+    embeddingProvider: createTestRecallEmbeddingProvider(async (texts) => {
+      embeddedInputs.push(...texts);
+      return texts.map((text) => (text === RECALL_EMBEDDING_CANARY_TEXT ? [0, 0, 1] : [1, 0, 0]));
+    }),
     async loadTokenizer() {
       return tokenizer;
     },
@@ -4088,66 +4022,6 @@ void test('recall service fuses lexical-only tool evidence with dense conversati
   );
 });
 
-void test('fresh zvec rebuild reuses unchanged cached chunk vectors without embedding requests', async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), 'recall-service-cache-rebuild-'));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const sessionsDirectory = join(directory, 'sessions');
-  await mkdir(sessionsDirectory);
-  const sessionPath = join(sessionsDirectory, 'one.jsonl');
-  await writeFile(
-    sessionPath,
-    [
-      JSON.stringify({
-        type: 'session',
-        version: 3,
-        id: 'session-1',
-        timestamp: '2026-07-24T10:00:00Z',
-        cwd: '/project',
-      }),
-      JSON.stringify({
-        type: 'message',
-        id: 'entry-1',
-        parentId: null,
-        timestamp: '2026-07-24T10:01:00Z',
-        message: { role: 'user', content: 'Reuse this durable vector.' },
-      }),
-    ].join('\n') + '\n',
-  );
-
-  const embeddingInputs: string[][] = [];
-  const embeddings: LocalEmbeddingClient = {
-    async embedTexts(texts) {
-      embeddingInputs.push([...texts]);
-      return texts.map((text) =>
-        text === RECALL_EMBEDDING_CANARY_TEXT ? [0, 0, 1] : [text.length, 1, 0],
-      );
-    },
-  };
-  const config = createTestConfig(directory, sessionsDirectory);
-  const service = createRecallConversationService(config, {
-    embeddings,
-    async loadTokenizer() {
-      return tokenizer;
-    },
-  });
-
-  const first = await service.index();
-  assert.equal(first.indexSummary.cacheHits, 0);
-  assert.equal(first.indexSummary.newlyEmbeddedChunks, 1);
-  assert.equal(first.indexSummary.embeddingRequestCount, 1);
-  assert.equal(embeddingInputs.length, 2);
-
-  await rm(config.databasePath, { recursive: true });
-  await rm(config.statePath);
-
-  const rebuilt = await service.index();
-  assert.equal(rebuilt.totalChunks, 1);
-  assert.equal(rebuilt.indexSummary.cacheHits, 1);
-  assert.equal(rebuilt.indexSummary.newlyEmbeddedChunks, 0);
-  assert.equal(rebuilt.indexSummary.embeddingRequestCount, 0);
-  assert.equal(embeddingInputs.length, 2);
-});
-
 void test('schema migration keeps canonical cache identity across tolerated canary jitter', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'recall-service-canary-jitter-rebuild-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -4177,17 +4051,15 @@ void test('schema migration keeps canonical cache identity across tolerated cana
   let workerSignalCalls = 0;
   const config = createTestConfig(directory, sessionsDirectory);
   const service = createRecallConversationService(config, {
-    embeddings: {
-      async embedTexts(texts) {
-        return texts.map((text) => {
-          if (text === RECALL_EMBEDDING_CANARY_TEXT) {
-            canaryRequests += 1;
-            return useJitteredCanary ? [1, 0.001, 0] : [1, 0, 0];
-          }
-          return [0, 1, 0];
-        });
-      },
-    },
+    embeddingProvider: createTestRecallEmbeddingProvider(async (texts) => {
+      return texts.map((text) => {
+        if (text === RECALL_EMBEDDING_CANARY_TEXT) {
+          canaryRequests += 1;
+          return useJitteredCanary ? [1, 0.001, 0] : [1, 0, 0];
+        }
+        return [0, 1, 0];
+      });
+    }),
     async loadTokenizer() {
       return tokenizer;
     },
@@ -4210,9 +4082,8 @@ void test('schema migration keeps canonical cache identity across tolerated cana
   const rebuiltManifest = await readRecallIndexManifest(rebuiltSelection.manifestPath);
 
   assert.equal(first.indexSummary.newlyEmbeddedChunks, 1);
-  assert.equal(rebuilt.indexSummary.cacheHits, 1);
-  assert.equal(rebuilt.indexSummary.newlyEmbeddedChunks, 0);
-  assert.equal(rebuilt.indexSummary.embeddingRequestCount, 0);
+  assert.equal(rebuilt.indexSummary.newlyEmbeddedChunks, 1);
+  assert.equal(rebuilt.indexSummary.embeddingRequestCount, 1);
   assert.equal(
     rebuiltManifest?.embedding.canaryFingerprint,
     firstManifest?.embedding.canaryFingerprint,
@@ -4230,15 +4101,13 @@ void test('explicit indexing retries a transient embedding-canary failure in the
   let canaryRequests = 0;
   let tokenizerLoads = 0;
   const service = createRecallConversationService(createTestConfig(directory, sessionsDirectory), {
-    embeddings: {
-      async embedTexts() {
-        canaryRequests += 1;
-        if (canaryRequests === 1) {
-          throw new Error('temporary canary failure');
-        }
-        return [[0, 0, 1]];
-      },
-    },
+    embeddingProvider: createTestRecallEmbeddingProvider(async () => {
+      canaryRequests += 1;
+      if (canaryRequests === 1) {
+        throw new Error('temporary canary failure');
+      }
+      return [[0, 0, 1]];
+    }),
     async loadTokenizer() {
       tokenizerLoads += 1;
       return tokenizer;
@@ -4261,14 +4130,12 @@ void test('recall search refuses a missing manifest before opening or mutating i
   let embeddingRequests = 0;
   let tokenizerLoads = 0;
   let storeOpens = 0;
-  const embeddings: LocalEmbeddingClient = {
-    async embedTexts() {
-      embeddingRequests += 1;
-      return [[0, 0, 1]];
-    },
-  };
+  const embeddingProvider = createTestRecallEmbeddingProvider(async () => {
+    embeddingRequests += 1;
+    return [[0, 0, 1]];
+  });
   const service = createRecallConversationService(createTestConfig(directory, sessionsDirectory), {
-    embeddings,
+    embeddingProvider,
     async loadTokenizer() {
       tokenizerLoads += 1;
       return tokenizer;
@@ -4297,17 +4164,15 @@ void test('recall search detects an embedding model swap in the same service pro
   let canaryRequests = 0;
   const config = createTestConfig(directory, sessionsDirectory);
   const service = createRecallConversationService(config, {
-    embeddings: {
-      async embedTexts(texts) {
-        return texts.map((text) => {
-          if (text === RECALL_EMBEDDING_CANARY_TEXT) {
-            canaryRequests += 1;
-            return modelSwapped ? [0, 1, 0] : [0, 0, 1];
-          }
-          return [1, 0, 0];
-        });
-      },
-    },
+    embeddingProvider: createTestRecallEmbeddingProvider(async (texts) => {
+      return texts.map((text) => {
+        if (text === RECALL_EMBEDDING_CANARY_TEXT) {
+          canaryRequests += 1;
+          return modelSwapped ? [0, 1, 0] : [0, 0, 1];
+        }
+        return [1, 0, 0];
+      });
+    }),
     async loadTokenizer() {
       return tokenizer;
     },
@@ -4343,17 +4208,15 @@ void test('ordinary indexing detects a model swap before embedding new session c
   let modelSwapped = false;
   let contentEmbeddingRequests = 0;
   const service = createRecallConversationService(createTestConfig(directory, sessionsDirectory), {
-    embeddings: {
-      async embedTexts(texts) {
-        return texts.map((text) => {
-          if (text === RECALL_EMBEDDING_CANARY_TEXT) {
-            return modelSwapped ? [0, 0, 1] : [1, 0, 0];
-          }
-          contentEmbeddingRequests += 1;
-          return [0, 1, 0];
-        });
-      },
-    },
+    embeddingProvider: createTestRecallEmbeddingProvider(async (texts) => {
+      return texts.map((text) => {
+        if (text === RECALL_EMBEDDING_CANARY_TEXT) {
+          return modelSwapped ? [0, 0, 1] : [1, 0, 0];
+        }
+        contentEmbeddingRequests += 1;
+        return [0, 1, 0];
+      });
+    }),
     async loadTokenizer() {
       return tokenizer;
     },
@@ -4407,13 +4270,11 @@ void test('recall search reports an incompatible manifest before opening zvec', 
   await writeRecallIndexManifest(config.manifestPath, actualManifest);
   let storeOpens = 0;
   let tokenizerLoads = 0;
-  const embeddings: LocalEmbeddingClient = {
-    async embedTexts() {
-      return [[0, 0, 1]];
-    },
-  };
+  const embeddingProvider = createTestRecallEmbeddingProvider(async () => {
+    return [[0, 0, 1]];
+  });
   const service = createRecallConversationService(config, {
-    embeddings,
+    embeddingProvider,
     async loadTokenizer() {
       tokenizerLoads += 1;
       return tokenizer;
@@ -4430,52 +4291,6 @@ void test('recall search reports an incompatible manifest before opening zvec', 
   );
   assert.equal(storeOpens, 0);
   assert.equal(tokenizerLoads, 0);
-});
-
-void test('explicit rebuild replaces incompatible index metadata while preserving vector cache', async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), 'recall-service-explicit-rebuild-'));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const sessionsDirectory = join(directory, 'sessions');
-  await mkdir(sessionsDirectory);
-  const config = createTestConfig(directory, sessionsDirectory);
-  const incompatibleManifest = createRecallIndexManifest({
-    embeddingIdentity: {
-      requestModel: config.embeddingModel,
-      servedModelId: config.embeddingServedModelId,
-      artifact: config.embeddingArtifact,
-      dimensions: config.embeddingDimensions,
-      quantization: config.embeddingQuantization,
-      pooling: 'mean',
-    },
-    canaryEmbedding: [0, 0, 1],
-  });
-  await writeRecallIndexManifest(config.manifestPath, incompatibleManifest);
-  await mkdir(config.databasePath, { recursive: true });
-  await writeFile(config.statePath, '{"version":1,"sessions":{}}\n');
-  await mkdir(config.embeddingCacheDirectory, { recursive: true });
-  const cacheSentinelPath = join(config.embeddingCacheDirectory, 'preserve-me');
-  await writeFile(cacheSentinelPath, 'durable vector cache');
-  const service = createRecallConversationService(config, {
-    embeddings: {
-      async embedTexts() {
-        return [[0, 0, 1]];
-      },
-    },
-    async loadTokenizer() {
-      return tokenizer;
-    },
-  });
-
-  const rebuilt = await service.index({ rebuild: true });
-  const rebuiltSelection = await readRecallActiveGenerationSelection(
-    config.activeGenerationPointerPath,
-    config.generationRootDirectory,
-  );
-  const rebuiltManifest = await readRecallIndexManifest(rebuiltSelection.manifestPath);
-
-  assert.equal(rebuilt.totalChunks, 0);
-  assert.equal(rebuiltManifest?.embedding.pooling, 'last');
-  assert.equal(await readFile(cacheSentinelPath, 'utf8'), 'durable vector cache');
 });
 
 void test('explicit rebuild preserves the old generation when model preflight fails', async (t) => {
@@ -4502,11 +4317,9 @@ void test('explicit rebuild preserves the old generation when model preflight fa
   const databaseSentinelPath = join(config.databasePath, 'old-generation');
   await writeFile(databaseSentinelPath, 'preserve old generation');
   const service = createRecallConversationService(config, {
-    embeddings: {
-      async embedTexts() {
-        throw new Error('embedding preflight unavailable');
-      },
-    },
+    embeddingProvider: createTestRecallEmbeddingProvider(async () => {
+      throw new Error('embedding preflight unavailable');
+    }),
     async loadTokenizer() {
       return tokenizer;
     },
@@ -4526,11 +4339,9 @@ void test('explicit rebuild preserves the old generation when model preflight fa
   assert.equal(await readFile(databaseSentinelPath, 'utf8'), 'preserve old generation');
 
   const invalidCanaryService = createRecallConversationService(config, {
-    embeddings: {
-      async embedTexts() {
-        return [[0, 1]];
-      },
-    },
+    embeddingProvider: createTestRecallEmbeddingProvider(async () => {
+      return [[0, 1]];
+    }),
     async loadTokenizer() {
       return tokenizer;
     },
@@ -4562,12 +4373,10 @@ void test('explicit indexing refuses unmanifested legacy state before tokenizer 
   let tokenizerLoads = 0;
   let storeOpens = 0;
   const service = createRecallConversationService(config, {
-    embeddings: {
-      async embedTexts() {
-        embeddingRequests += 1;
-        return [[0, 0, 1]];
-      },
-    },
+    embeddingProvider: createTestRecallEmbeddingProvider(async () => {
+      embeddingRequests += 1;
+      return [[0, 0, 1]];
+    }),
     async loadTokenizer() {
       tokenizerLoads += 1;
       return tokenizer;
@@ -4742,11 +4551,9 @@ void test('rebuild rejects when approved projection fingerprint no longer matche
   await writeFile(sessionPath, modifiedContent);
 
   const service = createRecallConversationService(config, {
-    embeddings: {
-      async embedTexts(texts) {
-        return texts.map(() => [1, 0, 0]);
-      },
-    },
+    embeddingProvider: createTestRecallEmbeddingProvider(async (texts) => {
+      return texts.map(() => [1, 0, 0]);
+    }),
     async loadTokenizer() {
       return tokenizer;
     },

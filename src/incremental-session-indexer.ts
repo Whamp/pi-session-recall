@@ -4,8 +4,8 @@ import { dirname } from 'node:path';
 import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 
-import type { EmbeddingVectorCache } from './embedding-vector-cache.js';
 import { RecallDiagnosticErrorCategory, RecallDiagnosticStatus } from './enums.js';
+import type { RecallEmbeddingProvider } from './recall-inference-capabilities.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
 import { listRecallConversationSessionFiles } from './recall-conversation-corpus.js';
 import type { RecallChunkPolicy } from './recall-chunk-policy.js';
@@ -98,7 +98,6 @@ export interface ConversationIndexSummary {
   scannedSessions: number;
   indexedSessions: number;
   removedSessions: number;
-  cacheHits: number;
   newlyEmbeddedChunks: number;
   embeddingRequestCount: number;
   deletedChunks: number;
@@ -110,7 +109,7 @@ export interface IncrementalSessionIndexerOptions {
   sessionsDirectory: string;
   statePath: string;
   store: ConversationChunkStore;
-  embeddingCache: EmbeddingVectorCache;
+  embeddingProvider: Pick<RecallEmbeddingProvider, 'embedDocuments'>;
   tokenizer: ConversationTextTokenizer;
   chunkPolicy?: RecallChunkPolicy;
   resolveProjectIdentity?: (sessionOrigin: string) => Promise<ResolvedProjectIdentity | null>;
@@ -227,7 +226,6 @@ function createConversationIndexSummary(): ConversationIndexSummary {
     scannedSessions: 0,
     indexedSessions: 0,
     removedSessions: 0,
-    cacheHits: 0,
     newlyEmbeddedChunks: 0,
     embeddingRequestCount: 0,
     deletedChunks: 0,
@@ -395,56 +393,36 @@ async function indexChangedConversationSessionFile(
   for (let start = 0; start < attributedChunks.length; start += 128) {
     const chunkBatch = attributedChunks.slice(start, start + 128);
     const denseChunkBatch = chunkBatch.filter((chunk) => chunk.isDenseSearchable);
-    const cacheResolutionStartedAtMilliseconds = options.diagnosticsClock?.monotonicMilliseconds();
-    const diagnosticMetrics = options.diagnosticMetrics;
-    const serverRequestMillisecondsBefore =
-      diagnosticMetrics?.embeddingServerRequestMilliseconds ?? 0;
-    let cacheResult: Awaited<ReturnType<EmbeddingVectorCache['resolveEmbeddingVectors']>>;
-    try {
-      cacheResult = await options.embeddingCache.resolveEmbeddingVectors(
-        denseChunkBatch.map((chunk) => chunk.content),
-        options.signal,
-        diagnosticMetrics
-          ? {
-              recordEmbeddingServerRequest(milliseconds) {
-                diagnosticMetrics.embeddingServerRequestMilliseconds += milliseconds;
-                diagnosticMetrics.embeddingRequestCount += 1;
-              },
-            }
-          : undefined,
+    const embeddingStartedAtMilliseconds = options.diagnosticsClock?.monotonicMilliseconds();
+    const vectors =
+      denseChunkBatch.length === 0
+        ? []
+        : await options.embeddingProvider.embedDocuments(
+            denseChunkBatch.map((chunk) => chunk.content),
+            options.signal,
+          );
+    if (vectors.length !== denseChunkBatch.length) {
+      throw new Error(
+        `Recall document embedding response count mismatch: expected ${denseChunkBatch.length}, received ${vectors.length}`,
       );
-    } catch (error) {
-      if (
-        options.diagnosticMetrics &&
-        options.diagnosticsClock &&
-        cacheResolutionStartedAtMilliseconds !== undefined
-      ) {
-        const totalResolutionMilliseconds = Math.max(
-          options.diagnosticsClock.monotonicMilliseconds() - cacheResolutionStartedAtMilliseconds,
-          0,
-        );
-        const serverRequestMilliseconds =
-          options.diagnosticMetrics.embeddingServerRequestMilliseconds -
-          serverRequestMillisecondsBefore;
-        options.diagnosticMetrics.embeddingCacheResolutionMilliseconds += Math.max(
-          totalResolutionMilliseconds - serverRequestMilliseconds,
+    }
+    const embeddingRequestCount = denseChunkBatch.length === 0 ? 0 : 1;
+    if (options.diagnosticMetrics) {
+      options.diagnosticMetrics.embeddingRequestCount += embeddingRequestCount;
+      options.diagnosticMetrics.newEmbeddingCount += denseChunkBatch.length;
+      if (options.diagnosticsClock && embeddingStartedAtMilliseconds !== undefined) {
+        options.diagnosticMetrics.embeddingServerRequestMilliseconds += Math.max(
+          options.diagnosticsClock.monotonicMilliseconds() - embeddingStartedAtMilliseconds,
           0,
         );
       }
-      throw error;
-    }
-    if (options.diagnosticMetrics) {
-      options.diagnosticMetrics.embeddingCacheResolutionMilliseconds +=
-        cacheResult.embeddingCacheResolutionMilliseconds;
-      options.diagnosticMetrics.cacheHitCount += cacheResult.cacheHits;
-      options.diagnosticMetrics.newEmbeddingCount += cacheResult.newlyEmbeddedChunks;
     }
     let denseChunkIndex = 0;
     const indexedChunks: IndexedSessionConversationChunk[] = chunkBatch.map((chunk) => {
       if (!chunk.isDenseSearchable) {
         return { ...chunk, isDenseSearchable: false };
       }
-      const embedding = cacheResult.vectors[denseChunkIndex];
+      const embedding = vectors[denseChunkIndex];
       denseChunkIndex += 1;
       if (!embedding) {
         throw new Error(`Recall embedding missing for conversation chunk ${chunk.id}`);
@@ -459,9 +437,8 @@ async function indexChangedConversationSessionFile(
     if (options.diagnosticMetrics) {
       options.diagnosticMetrics.upsertedDocumentCount += indexedChunks.length;
     }
-    summary.cacheHits += cacheResult.cacheHits;
-    summary.newlyEmbeddedChunks += cacheResult.newlyEmbeddedChunks;
-    summary.embeddingRequestCount += cacheResult.embeddingRequestCount;
+    summary.newlyEmbeddedChunks += denseChunkBatch.length;
+    summary.embeddingRequestCount += embeddingRequestCount;
   }
 
   state.sessions[sessionPath] = {

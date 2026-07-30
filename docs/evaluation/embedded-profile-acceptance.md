@@ -78,17 +78,17 @@ This is the expected fail-closed result. It supplies no live quality or performa
 
 ## Acceptance matrix
 
-| Criterion                                            | Current evidence                                                                | Status                                  |
-| ---------------------------------------------------- | ------------------------------------------------------------------------------- | --------------------------------------- |
-| Preserve Octen quality result as Octen-only evidence | Existing files and SHA-256 values unchanged                                     | Pass                                    |
-| EmbeddingGemma regression corpus                     | Real runner implemented; artifact absent                                        | Pending external                        |
-| Embedded Qwen score semantics and deep reranking     | Deterministic conformance and public service integration pass                   | Deterministic pass; live parity pending |
-| Planner capability conformance                       | Deterministic embedded/HTTP conformance passes                                  | Deterministic pass; live parity pending |
-| Complete identity evidence                           | Ledger records known fields; live embedding cache/device identity remains unset | Pending live fields                     |
-| Cold/warm, throughput, storage, CPU, accelerator     | Real measurement writer implemented; no model/device run approved               | Pending external                        |
-| Background interruption and activation               | Child-process tests pass across all required phases                             | Pass                                    |
-| Distribution terms and notices                       | Review packet records obligations and missing files                             | Maintainer approval pending             |
-| Full validation                                      | Recorded in the implementing commit's verification                              | See final verification                  |
+| Criterion                                            | Current evidence                                                  | Status                                  |
+| ---------------------------------------------------- | ----------------------------------------------------------------- | --------------------------------------- |
+| Preserve Octen quality result as Octen-only evidence | Existing files and SHA-256 values unchanged                       | Pass                                    |
+| EmbeddingGemma regression corpus                     | Real runner implemented; artifact absent                          | Pending external                        |
+| Embedded Qwen score semantics and deep reranking     | Deterministic conformance and public service integration pass     | Deterministic pass; live parity pending |
+| Planner capability conformance                       | Deterministic embedded/HTTP conformance passes                    | Deterministic pass; live parity pending |
+| Complete identity evidence                           | Ledger records known fields; live device identity remains unset   | Pending live fields                     |
+| Cold/warm, throughput, storage, CPU, accelerator     | Real measurement writer implemented; no model/device run approved | Pending external                        |
+| Background interruption and activation               | Child-process tests pass across all required phases               | Pass                                    |
+| Distribution terms and notices                       | Review packet records obligations and missing files               | Maintainer approval pending             |
+| Full validation                                      | Recorded in the implementing commit's verification                | See final verification                  |
 
 ## Exact external evidence still required
 

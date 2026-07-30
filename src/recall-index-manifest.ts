@@ -6,10 +6,6 @@ import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 
 import { RECALL_INDEX_MANIFEST_VERSION } from './enums.js';
-import {
-  EMBEDDING_TEXT_NORMALIZATION_VERSION,
-  EMBEDDING_VECTOR_CACHE_VERSION,
-} from './embedding-vector-cache.js';
 import { assertRecallChunkPolicy, type RecallChunkPolicy } from './recall-chunk-policy.js';
 import { isUnknownRecord } from './is-unknown-record.js';
 import {
@@ -45,6 +41,8 @@ export const RECALL_EMBEDDING_CANARY_MINIMUM_COSINE_SIMILARITY = 0.9995;
 /** Fixed probe whose FP32 embedding fingerprint detects served-model drift across restarts. */
 export const RECALL_EMBEDDING_CANARY_TEXT =
   'pi-session-recall embedding identity canary v1: durable source provenance';
+
+const RECALL_EMBEDDING_TEXT_NORMALIZATION_VERSION = 'unicode-nfc-v1';
 
 export type { RecallChunkPolicy } from './recall-chunk-policy.js';
 
@@ -119,7 +117,6 @@ export interface RecallIndexManifest {
   };
   conversationSchemaVersion: number;
   provenanceSchemaVersion: number;
-  embeddingCacheVersion: number;
   projectIdentity: {
     policyVersion: number;
     metadataSchemaVersion: number;
@@ -234,7 +231,6 @@ const recallIndexManifestSchema = Type.Object(
     ),
     conversationSchemaVersion: Type.Integer({ minimum: 1 }),
     provenanceSchemaVersion: Type.Integer({ minimum: 1 }),
-    embeddingCacheVersion: Type.Integer({ minimum: 1 }),
     projectIdentity: Type.Object(
       {
         policyVersion: Type.Literal(PROJECT_IDENTITY_POLICY_VERSION),
@@ -397,11 +393,10 @@ export function createRecallIndexManifest(options: {
       maxTokens: chunkPolicy.maxTokens,
       overlapTokens: chunkPolicy.overlapTokens,
       boundaryAlgorithm: 'markdown-structure-v1',
-      normalization: EMBEDDING_TEXT_NORMALIZATION_VERSION,
+      normalization: RECALL_EMBEDDING_TEXT_NORMALIZATION_VERSION,
     },
     conversationSchemaVersion: SESSION_CONVERSATION_SCHEMA_VERSION,
     provenanceSchemaVersion: SESSION_CONVERSATION_SCHEMA_VERSION,
-    embeddingCacheVersion: EMBEDDING_VECTOR_CACHE_VERSION,
     projectIdentity: {
       policyVersion: PROJECT_IDENTITY_POLICY_VERSION,
       metadataSchemaVersion: PROJECT_IDENTITY_METADATA_SCHEMA_VERSION,

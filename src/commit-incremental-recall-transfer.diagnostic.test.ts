@@ -99,8 +99,7 @@ function createDiagnosticTransfer(markerSpoolDirectory: string): PreparedIncreme
     })),
     checkpointIntent: { physicalProjection, logicalProjections: [] },
     workPlan,
-    cacheHits: 32,
-    newlyEmbeddedChunks: 0,
+    newlyEmbeddedChunks: 32,
     embeddingRequestCount: 0,
   };
 }

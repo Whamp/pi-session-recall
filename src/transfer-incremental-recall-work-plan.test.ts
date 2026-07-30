@@ -49,7 +49,6 @@ function createTransferTestConfig(root: string): RecallConversationConfig {
     statePath: join(dataDirectory, 'legacy-state.json'),
     manifestPath: join(dataDirectory, 'legacy-manifest.json'),
     tokenizerCacheDirectory: join(dataDirectory, 'tokenizers'),
-    embeddingCacheDirectory: join(dataDirectory, 'legacy-cache'),
     lockPath: join(dataDirectory, 'operation.lock'),
     diagnosticsMode: RecallDiagnosticsMode.OFF,
     diagnosticLogPath: join(dataDirectory, 'diagnostics.jsonl'),

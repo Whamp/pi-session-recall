@@ -82,7 +82,6 @@ export interface RecallConversationConfig {
   statePath: string;
   manifestPath: string;
   tokenizerCacheDirectory: string;
-  embeddingCacheDirectory: string;
   lockPath: string;
   diagnosticsMode: RecallDiagnosticsMode;
   diagnosticLogPath: string;
@@ -250,7 +249,6 @@ export async function loadRecallConversationConfig(
     statePath: join(dataDirectory, 'index-state.json'),
     manifestPath: join(dataDirectory, 'index-manifest.json'),
     tokenizerCacheDirectory: join(dataDirectory, 'tokenizers'),
-    embeddingCacheDirectory: join(dataDirectory, 'embedding-cache'),
     lockPath: join(dataDirectory, 'operation.lock'),
     backgroundIndexStatusPath: join(dataDirectory, 'background-index-status.json'),
     backgroundIndexRequestPath: join(dataDirectory, 'background-index-request.json'),

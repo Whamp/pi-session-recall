@@ -12,10 +12,6 @@ import {
   type EmbeddedEmbeddingGemmaExecutionIdentity,
 } from './embedded-embeddinggemma-provider.js';
 import { EmbeddedInferenceDevicePolicy } from './enums.js';
-import {
-  createEmbeddingVectorCacheIdentity,
-  type EmbeddingVectorCacheIdentity,
-} from './embedding-vector-cache.js';
 import { loadRecallConversationConfig } from './recall-conversation-config.js';
 import {
   createRecallConversationService,
@@ -81,7 +77,6 @@ export interface EmbeddingGemmaQualityEvidence {
     executionIdentity: Readonly<EmbeddedEmbeddingGemmaExecutionIdentity>;
   };
   tokenizer: RecallTokenizerManifestIdentity;
-  embeddingCacheIdentity: EmbeddingVectorCacheIdentity;
   candidatePolicy: RecallQualityEvaluationIdentity;
   capabilityVerification: RecallEmbeddingCapabilityVerification;
   measurements: {
@@ -93,7 +88,6 @@ export interface EmbeddingGemmaQualityEvidence {
       denseDocumentsPerSecond: number;
     };
     indexSizeBytes: number;
-    embeddingCacheSizeBytes: number;
   };
   quality: RecallQualityEvaluationResult;
   limitations: readonly string[];
@@ -264,7 +258,6 @@ export async function evaluateEmbeddingGemmaRecallQuality(
         executionIdentity: provider.executionIdentity,
       },
       tokenizer: tokenizerIdentity,
-      embeddingCacheIdentity: createEmbeddingVectorCacheIdentity(manifest),
       candidatePolicy: quality.evaluationIdentity,
       capabilityVerification,
       measurements: {
@@ -277,9 +270,6 @@ export async function evaluateEmbeddingGemmaRecallQuality(
             indexSeconds > 0 ? indexRun.indexSummary.newlyEmbeddedChunks / indexSeconds : 0,
         },
         indexSizeBytes: await measureDirectoryByteSize(join(policyDirectory, 'zvec')),
-        embeddingCacheSizeBytes: await measureDirectoryByteSize(
-          join(policyDirectory, 'embedding-cache'),
-        ),
       },
       quality,
       limitations: [

@@ -1,6 +1,6 @@
 import { compareRecallDocumentIds } from './compare-recall-document-ids.js';
 import type { RecallSearchResult } from './fuse-recall-ranked-lists.js';
-import type { LocalRerankerClient } from './local-reranker-client.js';
+import type { RecallRerankingProvider } from './recall-inference-capabilities.js';
 import type { SessionConversationChunk } from './session-conversation-index.js';
 
 /** Version of Qwen reranking, duplicate suppression, and active-branch scoring policy. */
@@ -60,7 +60,7 @@ export interface RerankRecallSearchResultsOptions {
   candidates: readonly RecallSearchResult[];
   rerankPoolLimit: number;
   resultLimit: number;
-  reranker: LocalRerankerClient;
+  reranker: RecallRerankingProvider;
   fetchConversationChunks: (ids: string[]) => Map<string, SessionConversationChunk>;
   useQueryPlannedPositionBlend?: boolean;
   signal?: AbortSignal;

@@ -11,11 +11,12 @@ void test('deterministic quality dependencies are stable and network-free', asyn
     'How do queued deliveries survive a worker crash?',
     'Use an append-only SQLite outbox with remote acknowledgement.',
   ];
-  const first = await dependencies.embeddings?.embedTexts(texts);
-  const second = await dependencies.embeddings?.embedTexts(texts);
+  const first = await dependencies.embeddingProvider?.embedDocuments(texts);
+  const second = await dependencies.embeddingProvider?.embedDocuments(texts);
   const tokenizer = await dependencies.loadTokenizer?.();
 
   assert.deepEqual(second, first);
+  assert.deepEqual(await dependencies.embeddingProvider?.embedQuery(texts[1] ?? ''), first?.[1]);
   assert.equal(
     first?.every((vector) => vector.length === 64),
     true,

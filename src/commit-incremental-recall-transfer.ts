@@ -422,8 +422,6 @@ export async function commitIncrementalRecallTransfer(
     metrics.elapsedMilliseconds =
       diagnostic.lockWaitMilliseconds + diagnostic.writeWindowMilliseconds;
     metrics.eligibleDocumentCount = diagnostic.documentCount;
-    metrics.embeddingCacheHitCount = index === 0 ? options.prepared.cacheHits : 0;
-    metrics.embeddingCacheMissCount = index === 0 ? options.prepared.newlyEmbeddedChunks : 0;
     metrics.embeddingRequestCount = index === 0 ? options.prepared.embeddingRequestCount : 0;
     metrics.lockWaitMilliseconds = diagnostic.lockWaitMilliseconds;
     metrics.evidenceOpenMilliseconds = diagnostic.evidenceOpenMilliseconds;

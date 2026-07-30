@@ -1,6 +1,6 @@
 import type { RecallMarkerReplayWorkPlan } from './coordinate-recall-marker-replay.js';
-import type { EmbeddingVectorCache } from './embedding-vector-cache.js';
 import { RecallProjectionEncodingStatus, RecallProjectionRepairReason } from './enums.js';
+import type { RecallEmbeddingProvider } from './recall-inference-capabilities.js';
 import type { IncrementalRecallEligibleGraphView } from './materialize-incremental-recall-eligible-graph-view.js';
 import type { RecallChunkPolicy } from './recall-chunk-policy.js';
 import {
@@ -31,14 +31,13 @@ export interface IncrementalRecallCheckpointIntent {
   readonly logicalProjections: readonly LogicalSessionProjection[];
 }
 
-/** Immutable evidence, checkpoint intent, and cache accounting prepared outside zvec. */
+/** Immutable evidence, checkpoint intent, and embedding accounting prepared outside zvec. */
 export interface PreparedIncrementalRecallTransfer {
   readonly status: RecallProjectionEncodingStatus.ENCODED;
   readonly targetGenerationId: string;
   readonly documents: readonly IndexedSessionConversationChunk[];
   readonly checkpointIntent: IncrementalRecallCheckpointIntent;
   readonly workPlan: RecallMarkerReplayWorkPlan;
-  readonly cacheHits: number;
   readonly newlyEmbeddedChunks: number;
   readonly embeddingRequestCount: number;
 }
@@ -63,7 +62,7 @@ export interface PrepareIncrementalRecallTransferOptions {
   chunkPolicy: RecallChunkPolicy;
   loadTokenizer(): Promise<ConversationTextTokenizer>;
   resolveProjectIdentity(sessionOrigin: string): Promise<ResolvedProjectIdentity | null>;
-  embeddingCache: Pick<EmbeddingVectorCache, 'resolveEmbeddingVectors'>;
+  embeddingProvider: Pick<RecallEmbeddingProvider, 'embedDocuments'>;
   maxProjectionPayloadBytes?: number;
   signal?: AbortSignal;
 }
@@ -189,21 +188,28 @@ async function resolvePreparedRecallEmbeddings(
   options: PrepareIncrementalRecallTransferOptions,
 ): Promise<{
   documents: IndexedSessionConversationChunk[];
-  cacheHits: number;
   newlyEmbeddedChunks: number;
   embeddingRequestCount: number;
 }> {
   const denseDocuments = documents.filter(({ isDenseSearchable }) => isDenseSearchable);
-  const cacheResult = await options.embeddingCache.resolveEmbeddingVectors(
-    denseDocuments.map(({ content }) => content),
-    options.signal,
-  );
+  const vectors =
+    denseDocuments.length === 0
+      ? []
+      : await options.embeddingProvider.embedDocuments(
+          denseDocuments.map(({ content }) => content),
+          options.signal,
+        );
+  if (vectors.length !== denseDocuments.length) {
+    throw new Error(
+      `Recall incremental preparation embedding response count mismatch: expected ${denseDocuments.length}, received ${vectors.length}`,
+    );
+  }
   let denseIndex = 0;
   const indexedDocuments: IndexedSessionConversationChunk[] = documents.map((document) => {
     if (!document.isDenseSearchable) {
       return { ...document, isDenseSearchable: false };
     }
-    const embedding = cacheResult.vectors[denseIndex];
+    const embedding = vectors[denseIndex];
     denseIndex += 1;
     if (embedding === undefined) {
       throw new Error(`Recall incremental preparation embedding missing for ${document.id}`);
@@ -212,14 +218,13 @@ async function resolvePreparedRecallEmbeddings(
   });
   return {
     documents: indexedDocuments,
-    cacheHits: cacheResult.cacheHits,
-    newlyEmbeddedChunks: cacheResult.newlyEmbeddedChunks,
-    embeddingRequestCount: cacheResult.embeddingRequestCount,
+    newlyEmbeddedChunks: denseDocuments.length,
+    embeddingRequestCount: denseDocuments.length === 0 ? 0 : 1,
   };
 }
 
 /**
- * Resolves exact tokenization, project identity, cache hits, and model requests before any write lock.
+ * Resolves exact tokenization, project identity, and document embeddings before any write lock.
  * Only documents touched by newly eligible contributors are materialized.
  */
 export async function prepareIncrementalRecallTransfer(
@@ -267,7 +272,6 @@ export async function prepareIncrementalRecallTransfer(
     documents,
     checkpointIntent,
     workPlan: options.workPlan,
-    cacheHits: resolved.cacheHits,
     newlyEmbeddedChunks: resolved.newlyEmbeddedChunks,
     embeddingRequestCount: resolved.embeddingRequestCount,
   });

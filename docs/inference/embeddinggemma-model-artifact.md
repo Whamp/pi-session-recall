@@ -60,7 +60,7 @@ A download streams into a unique sibling `*.partial-<uuid>` path. It must match 
 | `incompatible` | Pinned bytes validate, but the activation receipt is missing, malformed, or belongs to another profile. | Approve repair to bind the verified bytes to this profile; no download is needed. |
 | `valid`        | Artifact bytes, GGUF structure, and profile receipt all validate.                                       | No repair required.                                                               |
 
-Removal deletes only this profile's model-cache directory. It does not alter an index generation, tokenizer cache, embedding-vector cache, or recall configuration.
+Removal deletes only this profile's model-cache directory. It does not alter an index generation, tokenizer cache, or recall configuration.
 
 ## Evidence boundary
 

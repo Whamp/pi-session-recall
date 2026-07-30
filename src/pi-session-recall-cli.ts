@@ -15,6 +15,7 @@ import {
   createOctenEmbeddingModelProfile,
   createRecommendedEmbeddingGemmaModelProfile,
 } from './recall-model-profiles.js';
+import { runRecallFirstIndexSetupCli } from './runRecallFirstIndexSetupCli.js';
 
 const PI_SESSION_RECALL_USAGE =
   'usage: pi-session-recall <setup|status|catch-up|rebuild|stop|resume|discard|recover|rollback|cleanup>';
@@ -116,11 +117,15 @@ export async function runPiSessionRecallCli(
     configuredOutput === undefined
       ? (value: string) => process.stdout.write(`${value}\n`)
       : (value: string) => configuredOutput(value);
-  if (command === 'setup' && commandArguments.length === 0) {
-    await loadRecallConversationConfig();
-    writeOutput(
-      JSON.stringify({ command: 'setup', profiles: createRecallSetupProfilePresentations() }),
-    );
+  if (command === 'setup') {
+    if (commandArguments.length === 0) {
+      await loadRecallConversationConfig();
+      writeOutput(
+        JSON.stringify({ command: 'setup', profiles: createRecallSetupProfilePresentations() }),
+      );
+      return;
+    }
+    await runRecallFirstIndexSetupCli(commandArguments);
     return;
   }
   const knownCommand =

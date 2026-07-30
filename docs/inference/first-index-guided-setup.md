@@ -17,7 +17,13 @@ Current defaults:
 - EmbeddingGemma: 768 stored dimensions; 512, 256, and 128 are verified reductions.
 - Octen 4B: 1,024 stored dimensions; any positive width through 2,560 is mechanically supported by vendor-documented prefix truncation.
 
-A reduced vector keeps the first N native components and then L2-normalizes that prefix. Stored width changes semantic profile and generation identity. Backend URL, device, and adapter location do not change vector compatibility when capability semantics remain unchanged.
+Select and verify an EmbeddingGemma width through the same standalone setup command. Model download remains an explicit consent gate:
+
+```bash
+pi-session-recall setup select-embeddinggemma --stored-dimensions 512 --approve-download
+```
+
+The accepted candidate identity persists the selected width, so later standalone rebuild workers reconstruct the same verified profile semantics. A reduced vector keeps the first N native components and then L2-normalizes that prefix. Stored width changes semantic profile and generation identity. Backend URL, device, and adapter location do not change vector compatibility when capability semantics remain unchanged.
 
 ## Configure inference
 

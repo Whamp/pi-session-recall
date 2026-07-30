@@ -21,8 +21,16 @@ import type {
   RecallInferenceDeviceStatus,
 } from './recall-inference-configuration.js';
 import { createRecallModelArtifactCache } from './recall-model-artifact-cache.js';
-import { createRecommendedEmbeddingGemmaModelProfile } from './recall-model-profiles.js';
+import {
+  createRecommendedEmbeddingGemmaModelProfile,
+  type RecommendedEmbeddingGemmaModelProfile,
+} from './recall-model-profiles.js';
 import { createRecommendedEmbeddingGemmaConversationRuntime } from './recommended-embeddinggemma-conversation-service.js';
+
+const CONFIGURED_BACKGROUND_INDEX_SERVICE_FACTORY = {
+  moduleUrl: new URL('./configured-recall-inference-runtime.ts', import.meta.url).href,
+  exportName: 'createConfiguredRecallBackgroundService',
+};
 
 function mapRecallModelArtifactState(state: string): RecallInferenceArtifactState {
   if (state === String(RecallInferenceArtifactState.VALID)) {
@@ -43,11 +51,25 @@ function mapRecallModelArtifactState(state: string): RecallInferenceArtifactStat
   throw new Error(`Recall EmbeddingGemma artifact state unsupported: ${state}`);
 }
 
+type RecommendedEmbeddingGemmaStoredDimensions = 768 | 512 | 256 | 128;
+
+function createRecommendedEmbeddingGemmaCandidateId(
+  backend: RecallInferenceBackend.EMBEDDED | RecallInferenceBackend.LLAMA_CPP_HTTP,
+  storedDimensions: RecommendedEmbeddingGemmaStoredDimensions,
+): string {
+  const base =
+    backend === RecallInferenceBackend.EMBEDDED
+      ? 'recommended-embeddinggemma-embedded'
+      : 'recommended-embeddinggemma-http';
+  return storedDimensions === 768 ? base : `${base}-${storedDimensions}`;
+}
+
 /** Creates the built-in embedded EmbeddingGemma setup candidate and its public conformance seam. */
 export function createRecommendedEmbeddingGemmaInferenceCandidate(
   config: RecallConversationConfig,
+  storedDimensions: RecommendedEmbeddingGemmaStoredDimensions = 768,
 ): RecallInferenceConfigurationCandidate {
-  const profile = createRecommendedEmbeddingGemmaModelProfile();
+  const profile = createRecommendedEmbeddingGemmaModelProfile(storedDimensions);
   const modelCacheDirectory = join(dirname(config.manifestPath), 'models');
   const artifactCache = createRecallModelArtifactCache({
     cacheDirectory: modelCacheDirectory,
@@ -64,7 +86,12 @@ export function createRecommendedEmbeddingGemmaInferenceCandidate(
       runtime: ReturnType<typeof createRecommendedEmbeddingGemmaConversationRuntime>,
     ) => Promise<T>,
   ): Promise<T> {
-    const runtime = createRecommendedEmbeddingGemmaConversationRuntime(config);
+    const runtime = createRecommendedEmbeddingGemmaConversationRuntime(
+      config,
+      {},
+      profile,
+      CONFIGURED_BACKGROUND_INDEX_SERVICE_FACTORY,
+    );
     try {
       return await operation(runtime);
     } finally {
@@ -74,7 +101,10 @@ export function createRecommendedEmbeddingGemmaInferenceCandidate(
 
   return {
     capability: RecallInferenceCapability.EMBEDDING,
-    candidateId: 'recommended-embeddinggemma-embedded',
+    candidateId: createRecommendedEmbeddingGemmaCandidateId(
+      RecallInferenceBackend.EMBEDDED,
+      storedDimensions,
+    ),
     profileId: profile.profileId,
     backend: RecallInferenceBackend.EMBEDDED,
     adapterId: 'node-llama-cpp-embedded-v2',
@@ -126,11 +156,13 @@ export function createRecommendedEmbeddingGemmaInferenceCandidate(
   };
 }
 
-function createRecommendedEmbeddingGemmaHttpServiceRuntime(config: RecallConversationConfig): {
+function createRecommendedEmbeddingGemmaHttpServiceRuntime(
+  config: RecallConversationConfig,
+  profile: RecommendedEmbeddingGemmaModelProfile = createRecommendedEmbeddingGemmaModelProfile(),
+): {
   service: RecallConversationService;
   dispose(): Promise<void>;
 } {
-  const profile = createRecommendedEmbeddingGemmaModelProfile();
   const modelCacheDirectory = join(dirname(config.manifestPath), 'models');
   const tokenizerProvider = createEmbeddedEmbeddingGemmaProvider(profile, {
     modelCacheDirectory,
@@ -144,10 +176,7 @@ function createRecommendedEmbeddingGemmaHttpServiceRuntime(config: RecallConvers
     }),
     tokenizerIdentity: createEmbeddingGemmaTokenizerManifestIdentity(profile),
     loadTokenizer: () => tokenizerProvider.loadConversationTokenizer(),
-    backgroundIndexServiceFactory: {
-      moduleUrl: import.meta.url,
-      exportName: 'createRecommendedEmbeddingGemmaHttpBackgroundService',
-    },
+    backgroundIndexServiceFactory: CONFIGURED_BACKGROUND_INDEX_SERVICE_FACTORY,
   });
   return { service, dispose: () => tokenizerProvider.dispose() };
 }
@@ -155,8 +184,9 @@ function createRecommendedEmbeddingGemmaHttpServiceRuntime(config: RecallConvers
 /** Creates the built-in llama.cpp HTTP candidate for the same EmbeddingGemma profile. */
 export function createRecommendedEmbeddingGemmaHttpInferenceCandidate(
   config: RecallConversationConfig,
+  storedDimensions: RecommendedEmbeddingGemmaStoredDimensions = 768,
 ): RecallInferenceConfigurationCandidate {
-  const profile = createRecommendedEmbeddingGemmaModelProfile();
+  const profile = createRecommendedEmbeddingGemmaModelProfile(storedDimensions);
   const modelCacheDirectory = join(dirname(config.manifestPath), 'models');
   const artifactCache = createRecallModelArtifactCache({
     cacheDirectory: modelCacheDirectory,
@@ -168,7 +198,7 @@ export function createRecommendedEmbeddingGemmaHttpInferenceCandidate(
       runtime: ReturnType<typeof createRecommendedEmbeddingGemmaHttpServiceRuntime>,
     ) => Promise<T>,
   ): Promise<T> {
-    const runtime = createRecommendedEmbeddingGemmaHttpServiceRuntime(config);
+    const runtime = createRecommendedEmbeddingGemmaHttpServiceRuntime(config, profile);
     try {
       return await operation(runtime);
     } finally {
@@ -178,7 +208,10 @@ export function createRecommendedEmbeddingGemmaHttpInferenceCandidate(
 
   return {
     capability: RecallInferenceCapability.EMBEDDING,
-    candidateId: 'recommended-embeddinggemma-http',
+    candidateId: createRecommendedEmbeddingGemmaCandidateId(
+      RecallInferenceBackend.LLAMA_CPP_HTTP,
+      storedDimensions,
+    ),
     profileId: profile.profileId,
     backend: RecallInferenceBackend.LLAMA_CPP_HTTP,
     adapterId: 'llama-cpp-http-embedding-v1',

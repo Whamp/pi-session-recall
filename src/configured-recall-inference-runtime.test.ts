@@ -202,7 +202,9 @@ void test('configured runtime composes both built-in embeddings with custom rera
   };
   const embeddingCandidates = [
     createRecommendedEmbeddingGemmaInferenceCandidate(config),
+    createRecommendedEmbeddingGemmaInferenceCandidate(config, 512),
     createRecommendedEmbeddingGemmaHttpInferenceCandidate(config),
+    createRecommendedEmbeddingGemmaHttpInferenceCandidate(config, 512),
   ];
 
   for (const embedding of embeddingCandidates) {

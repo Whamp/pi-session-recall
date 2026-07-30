@@ -123,6 +123,48 @@ void test('standalone setup presents stored-width defaults and evidence status',
   ]);
 });
 
+void test('standalone setup routes guided status and stored-width selection arguments', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-operator-guided-setup-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const environment = {
+    ...process.env,
+    PI_RECALL_DATA_DIRECTORY: join(root, 'data'),
+    PI_RECALL_SESSIONS_DIRECTORY: join(root, 'sessions'),
+  };
+
+  const statusResult = await EXEC_FILE_ASYNC(
+    process.execPath,
+    ['--import', 'tsx', CLI_PATH, 'setup', 'status'],
+    { env: environment },
+  );
+  const status: unknown = JSON.parse(statusResult.stdout);
+  assert.ok(isUnknownRecord(status));
+  assert.equal(status.action, 'status');
+  assert.deepEqual(status.configuration, { state: 'unconfigured', embedding: null });
+
+  await assert.rejects(
+    () =>
+      EXEC_FILE_ASYNC(
+        process.execPath,
+        [
+          '--import',
+          'tsx',
+          CLI_PATH,
+          'setup',
+          'select-embeddinggemma',
+          '--stored-dimensions',
+          '512',
+        ],
+        { env: environment },
+      ),
+    (error: unknown) => {
+      assert.ok(isUnknownRecord(error));
+      assert.match(String(error.stderr), /requires explicit --approve-download/u);
+      return true;
+    },
+  );
+});
+
 void test('standalone status reports fresh recall as not ready without opening generation stores', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'recall-operator-status-'));
   t.after(() => rm(root, { recursive: true, force: true }));

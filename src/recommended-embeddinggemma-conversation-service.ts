@@ -6,12 +6,16 @@ import {
   type EmbeddedEmbeddingGemmaExecutionIdentity,
   type EmbeddedEmbeddingGemmaProviderOptions,
 } from './embedded-embeddinggemma-provider.js';
+import type { RecallBackgroundIndexServiceFactory } from './recall-background-index-build.js';
 import type { RecallConversationConfig } from './recall-conversation-config.js';
 import {
   createRecallConversationService,
   type RecallConversationService,
 } from './recall-conversation-service.js';
-import { createRecommendedEmbeddingGemmaModelProfile } from './recall-model-profiles.js';
+import {
+  createRecommendedEmbeddingGemmaModelProfile,
+  type RecommendedEmbeddingGemmaModelProfile,
+} from './recall-model-profiles.js';
 
 /** Service plus disposable local provider used by guided first-index setup operations. */
 export interface RecommendedEmbeddingGemmaConversationRuntime {
@@ -24,8 +28,9 @@ export interface RecommendedEmbeddingGemmaConversationRuntime {
 export function createRecommendedEmbeddingGemmaConversationRuntime(
   config: RecallConversationConfig,
   providerOptions: Partial<EmbeddedEmbeddingGemmaProviderOptions> = {},
+  profile: RecommendedEmbeddingGemmaModelProfile = createRecommendedEmbeddingGemmaModelProfile(),
+  backgroundIndexServiceFactory?: RecallBackgroundIndexServiceFactory,
 ): RecommendedEmbeddingGemmaConversationRuntime {
-  const profile = createRecommendedEmbeddingGemmaModelProfile();
   const modelCacheDirectory =
     providerOptions.modelCacheDirectory ?? join(dirname(config.manifestPath), 'models');
   const provider = createEmbeddedEmbeddingGemmaProvider(profile, {
@@ -37,7 +42,7 @@ export function createRecommendedEmbeddingGemmaConversationRuntime(
     embeddingProvider: provider,
     tokenizerIdentity: createEmbeddingGemmaTokenizerManifestIdentity(profile),
     loadTokenizer: () => provider.loadConversationTokenizer(),
-    backgroundIndexServiceFactory: {
+    backgroundIndexServiceFactory: backgroundIndexServiceFactory ?? {
       moduleUrl: import.meta.url,
       exportName: 'createRecommendedEmbeddingGemmaBackgroundService',
     },

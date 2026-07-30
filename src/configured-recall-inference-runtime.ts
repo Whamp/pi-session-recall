@@ -244,53 +244,63 @@ export function createRecommendedRecallInferenceAdapterRegistry(
   options: RecommendedOptionalInferenceCandidateOptions = {},
 ): RecallInferenceAdapterRegistry {
   const candidates = createRecommendedOptionalInferenceCandidates(config, options);
-  const embeddingProfile = createRecommendedEmbeddingGemmaModelProfile();
   const rerankingProfile = createRecommendedQwenRerankingModelProfile();
   const queryPlanningProfile = createRecommendedQmdQueryPlanningModelProfile();
   const modelCacheDirectory = join(dirname(config.manifestPath), 'models');
+  const storedDimensionChoices = [768, 512, 256, 128] as const;
+  const embeddingRegistrations: RecallInferenceAdapterRegistration[] =
+    storedDimensionChoices.flatMap((storedDimensions) => {
+      const embeddingProfile = createRecommendedEmbeddingGemmaModelProfile(storedDimensions);
+      return [
+        {
+          candidate: createRecommendedEmbeddingGemmaInferenceCandidate(config, storedDimensions),
+          createConfiguredCapability({ selection, onWarning }) {
+            const provider = createEmbeddedEmbeddingGemmaProvider(embeddingProfile, {
+              modelCacheDirectory,
+              device: readEmbeddedDevicePolicy('embedding', selection.device?.policy),
+              ...(onWarning ? { onWarning } : {}),
+            });
+            return {
+              capability: RecallInferenceCapability.EMBEDDING,
+              profile: embeddingProfile,
+              provider,
+              tokenizerIdentity: createEmbeddingGemmaTokenizerManifestIdentity(embeddingProfile),
+              loadTokenizer: () => provider.loadConversationTokenizer(),
+              embeddingDimensions: embeddingProfile.identity.dimensions,
+              dispose: () => provider.dispose(),
+            };
+          },
+        },
+        {
+          candidate: createRecommendedEmbeddingGemmaHttpInferenceCandidate(
+            config,
+            storedDimensions,
+          ),
+          createConfiguredCapability({ selection, onWarning }) {
+            const tokenizerProvider = createEmbeddedEmbeddingGemmaProvider(embeddingProfile, {
+              modelCacheDirectory,
+              device: EmbeddedInferenceDevicePolicy.CPU,
+              ...(onWarning ? { onWarning } : {}),
+            });
+            return {
+              capability: RecallInferenceCapability.EMBEDDING,
+              profile: embeddingProfile,
+              provider: createLlamaCppHttpEmbeddingProvider(embeddingProfile, {
+                baseUrl: readRequiredHttpEndpoint('embedding', selection.endpoint),
+                batchSize: config.embeddingBatchSize,
+              }),
+              tokenizerIdentity: createEmbeddingGemmaTokenizerManifestIdentity(embeddingProfile),
+              loadTokenizer: () => tokenizerProvider.loadConversationTokenizer(),
+              embeddingDimensions: embeddingProfile.identity.dimensions,
+              dispose: () => tokenizerProvider.dispose(),
+            };
+          },
+        },
+      ];
+    });
   return {
     registrations: [
-      {
-        candidate: createRecommendedEmbeddingGemmaInferenceCandidate(config),
-        createConfiguredCapability({ selection, onWarning }) {
-          const provider = createEmbeddedEmbeddingGemmaProvider(embeddingProfile, {
-            modelCacheDirectory,
-            device: readEmbeddedDevicePolicy('embedding', selection.device?.policy),
-            ...(onWarning ? { onWarning } : {}),
-          });
-          return {
-            capability: RecallInferenceCapability.EMBEDDING,
-            profile: embeddingProfile,
-            provider,
-            tokenizerIdentity: createEmbeddingGemmaTokenizerManifestIdentity(embeddingProfile),
-            loadTokenizer: () => provider.loadConversationTokenizer(),
-            embeddingDimensions: embeddingProfile.identity.dimensions,
-            dispose: () => provider.dispose(),
-          };
-        },
-      },
-      {
-        candidate: createRecommendedEmbeddingGemmaHttpInferenceCandidate(config),
-        createConfiguredCapability({ selection, onWarning }) {
-          const tokenizerProvider = createEmbeddedEmbeddingGemmaProvider(embeddingProfile, {
-            modelCacheDirectory,
-            device: EmbeddedInferenceDevicePolicy.CPU,
-            ...(onWarning ? { onWarning } : {}),
-          });
-          return {
-            capability: RecallInferenceCapability.EMBEDDING,
-            profile: embeddingProfile,
-            provider: createLlamaCppHttpEmbeddingProvider(embeddingProfile, {
-              baseUrl: readRequiredHttpEndpoint('embedding', selection.endpoint),
-              batchSize: config.embeddingBatchSize,
-            }),
-            tokenizerIdentity: createEmbeddingGemmaTokenizerManifestIdentity(embeddingProfile),
-            loadTokenizer: () => tokenizerProvider.loadConversationTokenizer(),
-            embeddingDimensions: embeddingProfile.identity.dimensions,
-            dispose: () => tokenizerProvider.dispose(),
-          };
-        },
-      },
+      ...embeddingRegistrations,
       {
         candidate: findBuiltInInferenceCandidate(
           candidates,

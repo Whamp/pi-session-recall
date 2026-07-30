@@ -525,11 +525,11 @@ export async function configureRecallInferenceCapability(
     if (
       candidate.capability === RecallInferenceCapability.EMBEDDING &&
       previousSelection &&
-      previousSelection.profileId !== candidate.profileId
+      previousSelection.conformance.embeddingProfileId !== conformance.embeddingProfileId
     ) {
       if (!options.approvedEmbeddingReplacement) {
         throw new Error(
-          `Recall embedding profile change from ${previousSelection.profileId} to ${candidate.profileId} requires explicit embedding replacement approval`,
+          `Recall embedding profile change from ${previousSelection.conformance.embeddingProfileId} to ${conformance.embeddingProfileId} requires explicit embedding replacement approval`,
         );
       }
       const generationService = candidate.generationService;

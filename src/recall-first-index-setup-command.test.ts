@@ -81,7 +81,7 @@ void test('first-index setup preserves a concurrent inference selection after mo
   const config = createSetupCommandTestConfig(root);
   const statePath = join(root, 'data', 'first-index-setup.json');
   const inferenceConfigurationPath = join(root, 'data', 'inference-configuration.json');
-  const profile = createRecommendedEmbeddingGemmaModelProfile();
+  const profile = createRecommendedEmbeddingGemmaModelProfile(512);
   const artifactPath = join(root, 'models', profile.source.artifact);
   let downloadCount = 0;
   let verificationCount = 0;
@@ -305,6 +305,10 @@ void test('first-index setup preserves a concurrent inference selection after mo
   assert.equal(disposeCount, 1);
   const inferenceConfiguration = await readRecallInferenceConfiguration(inferenceConfigurationPath);
   assert.equal(inferenceConfiguration.embedding?.profileId, profile.profileId);
+  assert.equal(
+    inferenceConfiguration.embedding?.candidateId,
+    'recommended-embeddinggemma-embedded-512',
+  );
   assert.equal(inferenceConfiguration.embedding?.backend, 'embedded');
   assert.equal(inferenceConfiguration.embedding?.artifact?.state, 'valid');
   assert.equal(inferenceConfiguration.reranking?.profileId, 'concurrent-reranking-profile-v1');

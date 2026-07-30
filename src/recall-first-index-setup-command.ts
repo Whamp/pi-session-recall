@@ -33,7 +33,7 @@ import { createRecommendedEmbeddingGemmaConversationRuntime } from './recommende
 
 const RECALL_FIRST_INDEX_SETUP_STATE_VERSION = 1;
 const RECALL_FIRST_INDEX_SETUP_USAGE =
-  'usage: setup:recall [status|select-embeddinggemma --approve-download|estimate [--measure --sample-sessions N]|start --approve-build|defer]';
+  'usage: setup:recall [status|select-embeddinggemma [--stored-dimensions 768|512|256|128] --approve-download|estimate [--measure --sample-sessions N]|start --approve-build|defer]';
 
 const CORPUS_INSPECTION_SCHEMA = Type.Object(
   {
@@ -156,7 +156,11 @@ export interface RecallFirstIndexSetupCommandOptions {
 
 type RecallFirstIndexSetupAction =
   | { action: 'status' }
-  | { action: 'select-embeddinggemma'; approvedDownload: boolean }
+  | {
+      action: 'select-embeddinggemma';
+      approvedDownload: boolean;
+      storedDimensions?: 768 | 512 | 256 | 128;
+    }
   | { action: 'estimate'; measure: boolean; maximumSessionCount?: number }
   | { action: 'start'; approvedBuild: boolean }
   | { action: 'defer' };
@@ -169,12 +173,34 @@ function parseRecallFirstIndexSetupAction(
   }
   const [action, ...flags] = argumentsList;
   if (action === 'select-embeddinggemma') {
-    if (flags.length === 0) {
-      return { action, approvedDownload: false };
+    let approvedDownload = false;
+    let storedDimensions: 768 | 512 | 256 | 128 | undefined;
+    for (let index = 0; index < flags.length; index += 1) {
+      const flag = flags[index];
+      if (flag === '--approve-download' && !approvedDownload) {
+        approvedDownload = true;
+        continue;
+      }
+      if (flag === '--stored-dimensions' && storedDimensions === undefined) {
+        const value = Number(flags[index + 1]);
+        if (value !== 768 && value !== 512 && value !== 256 && value !== 128) {
+          throw new Error(
+            `Recall first-index setup stored dimensions invalid: ${flags[index + 1] ?? 'missing'}; ${RECALL_FIRST_INDEX_SETUP_USAGE}`,
+          );
+        }
+        storedDimensions = value;
+        index += 1;
+        continue;
+      }
+      throw new Error(
+        `Recall first-index setup arguments invalid: ${argumentsList.join(' ')}; ${RECALL_FIRST_INDEX_SETUP_USAGE}`,
+      );
     }
-    if (flags.length === 1 && flags[0] === '--approve-download') {
-      return { action, approvedDownload: true };
-    }
+    return {
+      action,
+      approvedDownload,
+      ...(storedDimensions === undefined ? {} : { storedDimensions }),
+    };
   }
   if (action === 'estimate') {
     let measure = false;
@@ -309,7 +335,10 @@ export async function runRecallFirstIndexSetupCommand(
   options: RecallFirstIndexSetupCommandOptions,
 ): Promise<void> {
   const parsedAction = parseRecallFirstIndexSetupAction(argumentsList);
-  const profile = options.profile ?? createRecommendedEmbeddingGemmaModelProfile();
+  const selectedStoredDimensions =
+    parsedAction.action === 'select-embeddinggemma' ? parsedAction.storedDimensions : undefined;
+  const profile =
+    options.profile ?? createRecommendedEmbeddingGemmaModelProfile(selectedStoredDimensions);
   const dataDirectory = dirname(options.config.manifestPath);
   const statePath = options.statePath ?? resolveRecallFirstIndexSetupStatePath(options.config);
   const modelCacheDirectory = options.modelCacheDirectory ?? join(dataDirectory, 'models');
@@ -320,7 +349,7 @@ export async function runRecallFirstIndexSetupCommand(
     options.metadataService ?? createRecallConversationService(options.config);
   const createSelectedServiceRuntime =
     options.createSelectedServiceRuntime ??
-    (() => createRecommendedEmbeddingGemmaConversationRuntime(options.config));
+    (() => createRecommendedEmbeddingGemmaConversationRuntime(options.config, {}, profile));
   const createConfiguredServiceRuntime =
     options.createConfiguredServiceRuntime ?? createSelectedServiceRuntime;
   const nowIsoTimestamp = options.nowIsoTimestamp ?? (() => new Date().toISOString());
@@ -418,7 +447,10 @@ export async function runRecallFirstIndexSetupCommand(
       inferenceConfigurationPath,
       {
         capability: RecallInferenceCapability.EMBEDDING,
-        candidateId: 'recommended-embeddinggemma-embedded',
+        candidateId:
+          profile.storedDimensions === 768
+            ? 'recommended-embeddinggemma-embedded'
+            : `recommended-embeddinggemma-embedded-${profile.storedDimensions}`,
         profileId: profile.profileId,
         backend: RecallInferenceBackend.EMBEDDED,
         adapterId: selection.executionIdentity.adapter,

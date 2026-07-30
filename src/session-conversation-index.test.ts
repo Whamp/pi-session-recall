@@ -439,6 +439,58 @@ void test('turn-context documents follow parent paths across tool activity', asy
   assert.equal(abandonedTurnChunks[0]?.isOnActiveBranch, false);
 });
 
+void test('turn-context documents balance long roles instead of emitting one-token fragments', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-turn-context-balanced-budget-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionPath = join(directory, 'session.jsonl');
+  await writeFile(
+    sessionPath,
+    [
+      {
+        type: 'session',
+        version: 3,
+        id: 'session-turn-balanced-budget',
+        timestamp: '2026-07-24T10:00:00Z',
+        cwd: '/project',
+      },
+      {
+        type: 'message',
+        id: 'long-user',
+        parentId: null,
+        timestamp: '2026-07-24T10:01:00Z',
+        message: {
+          role: 'user',
+          content: Array.from({ length: 40 }, (_, index) => `user-${index + 1}`).join(' '),
+        },
+      },
+      {
+        type: 'message',
+        id: 'near-limit-assistant',
+        parentId: 'long-user',
+        timestamp: '2026-07-24T10:02:00Z',
+        message: {
+          role: 'assistant',
+          content: Array.from({ length: 13 }, (_, index) => `assistant-${index + 1}`).join(' '),
+        },
+      },
+    ]
+      .map((entry) => JSON.stringify(entry))
+      .join('\n') + '\n',
+  );
+
+  const chunks = await readSessionConversationChunks(sessionPath, {
+    tokenizer: createWhitespaceConversationTokenizer(),
+    maxTokens: 16,
+    overlapTokens: 0,
+  });
+  const turnContexts = chunks.filter((chunk) => chunk.documentKind === 'turn_context');
+
+  assert.equal(turnContexts.length, 6);
+  assert.ok(turnContexts.every((chunk) => chunk.tokenCount <= 16));
+  assert.ok(turnContexts.every((chunk) => chunk.content.includes('User:')));
+  assert.ok(turnContexts.every((chunk) => chunk.content.includes('Assistant:')));
+});
+
 void test('turn-context documents reject a token budget that cannot contain both roles', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'recall-turn-context-budget-'));
   const sessionPath = join(directory, 'session.jsonl');

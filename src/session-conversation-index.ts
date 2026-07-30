@@ -1024,18 +1024,36 @@ function createTokenBoundedTurnContextTexts(
   }
   const userTokenCount = countConversationTokens(turnContextText.userText, tokenizer);
   const assistantTokenCount = countConversationTokens(turnContextText.assistantText, tokenizer);
-  let userMaxTokens: number;
-  let assistantMaxTokens: number;
+  const balancedUserMaxTokens = Math.floor(availableTextTokens / 2);
+  const budgetCandidates: Array<{ userMaxTokens: number; assistantMaxTokens: number }> = [];
   if (userTokenCount <= availableTextTokens - 1) {
-    userMaxTokens = Math.max(1, userTokenCount);
-    assistantMaxTokens = availableTextTokens - userMaxTokens;
-  } else if (assistantTokenCount <= availableTextTokens - 1) {
-    assistantMaxTokens = Math.max(1, assistantTokenCount);
-    userMaxTokens = availableTextTokens - assistantMaxTokens;
-  } else {
-    userMaxTokens = Math.floor(availableTextTokens / 2);
-    assistantMaxTokens = availableTextTokens - userMaxTokens;
+    budgetCandidates.push({
+      userMaxTokens: Math.max(1, userTokenCount),
+      assistantMaxTokens: availableTextTokens - Math.max(1, userTokenCount),
+    });
   }
+  if (assistantTokenCount <= availableTextTokens - 1) {
+    budgetCandidates.push({
+      userMaxTokens: availableTextTokens - Math.max(1, assistantTokenCount),
+      assistantMaxTokens: Math.max(1, assistantTokenCount),
+    });
+  }
+  budgetCandidates.push({
+    userMaxTokens: balancedUserMaxTokens,
+    assistantMaxTokens: availableTextTokens - balancedUserMaxTokens,
+  });
+  const estimatePairCount = (candidate: {
+    userMaxTokens: number;
+    assistantMaxTokens: number;
+  }): number =>
+    Math.max(
+      Math.ceil(userTokenCount / candidate.userMaxTokens),
+      Math.ceil(assistantTokenCount / candidate.assistantMaxTokens),
+    );
+  const selectedBudget = budgetCandidates.reduce((selected, candidate) =>
+    estimatePairCount(candidate) < estimatePairCount(selected) ? candidate : selected,
+  );
+  let { userMaxTokens, assistantMaxTokens } = selectedBudget;
 
   while (userMaxTokens >= 1 && assistantMaxTokens >= 1) {
     const pairedTexts = createTurnContextTextsForBudgets(

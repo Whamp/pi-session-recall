@@ -309,7 +309,7 @@ export function formatRecallQualityReport(
     '',
     '## Reproduce',
     '',
-    'Prerequisites: the pinned Octen tokenizer assets and configured local embedding endpoint must be available. The optional reranker is not called. The command deletes and recreates only the dedicated ignored evaluation work directory.',
+    'Prerequisites: install the repository dependencies. The harness uses deterministic in-process embeddings and a synchronous fixture tokenizer; it makes no model endpoint request. The command deletes and recreates only the dedicated ignored evaluation work directory.',
     '',
     '```bash',
     environment.command,
@@ -344,6 +344,7 @@ export function formatRecallQualityReport(
     '',
     '- The corpus is a committed synthetic-but-session-shaped fixture, not a sample of private production logs. It covers the required retrieval and project-identity classes but cannot estimate all real-corpus failure modes.',
     '- Deterministic fixture embeddings prove retrieval plumbing, channel fusion, evidence shaping, and scope policy. They do not measure production embedding-model semantics.',
+    '- The harness copies committed fixtures into a disposable sessions root, removes that copy before target reads, and never opens the production recall generation or original Pi session files.',
     ...(hasNoDiscriminatingRecallQualityVariance(result.selection.combinations)
       ? [
           '- The measured grid has no discriminating quality variance across gated recall, context, source-preservation, and visible-duplicate metrics; it can identify the smallest passing candidate pool but cannot rank quality among passing pools.',

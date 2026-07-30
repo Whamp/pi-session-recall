@@ -244,6 +244,9 @@ void test('recall quality report records verdict, measured counts, sources, and 
     /Ranked-list limits: dense 8, lexical 8, identifier 8; fused pool 24; rerank pool 24; final results 5/,
   );
   assert.match(report, /semantic-context\.jsonl#queue-answer/);
+  assert.match(report, /coherent generation v1, store format v1, validation receipt v1/);
+  assert.match(report, /c{64}/u);
+  assert.match(report, /never opens the production recall generation or original Pi session files/);
   assert.match(report, /npm run evaluate:recall/);
   assert.match(report, /Full corpus backfill remains blocked pending human approval\./);
   assert.match(report, /no discriminating quality variance/);

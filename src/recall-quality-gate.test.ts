@@ -84,12 +84,16 @@ async function createPassingQualityEvidence(
   return evidence;
 }
 
-void test('committed legacy-storage quality evidence approves no target policy', async () => {
+void test('committed target-generation quality evidence approves its measured policy', async () => {
   const decision = await readRecallQualityGateDecision(RECALL_QUALITY_RESULTS_PATH);
 
-  assert.equal(decision.automatedGatePassed, false);
-  assert.equal(decision.selectedPolicy, null);
-  assert.match(decision.blockers.join('; '), /evidence version 5.*rerun/i);
+  assert.equal(decision.automatedGatePassed, true);
+  assert.deepEqual(decision.selectedPolicy, {
+    chunkPolicy: { id: '512-64', maxTokens: 512, overlapTokens: 64 },
+    candidateCount: 8,
+    finalCount: 5,
+  });
+  assert.deepEqual(decision.blockers, []);
 });
 
 void test('clean target-generation quality evidence approves its measured policy', async (t) => {

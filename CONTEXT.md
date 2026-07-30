@@ -85,8 +85,8 @@ The small mutable account of physical source ingestion and logical session state
 _Avoid_: Conversation index, evidence document, global index state
 
 **Physical session projection**:
-The session projection for one physical session file's append boundary, logical-session membership, source availability, generation, and repair status.
-_Avoid_: Logical session projection, process lease, file snapshot
+The sole durable per-source account of one physical session file's processed position, logical-session membership, source availability, marker coverage, expected store contents, and repair status.
+_Avoid_: Logical session projection, process lease, file snapshot, global progress record
 
 **Logical session projection**:
 The session projection for one logical session's effective leaf, active context, branches, compaction boundary, labels, eligible spans, and repair status.
@@ -205,31 +205,39 @@ Whether one complete active recall generation is available for search; selected 
 _Avoid_: Setup complete, model ready
 
 **Index manifest**:
-The versioned identity of the model, tokenizer, chunk policy, provenance schema, and zvec schema used by one index generation.
-_Avoid_: Index state, configuration
+The fixed versioned identity and compatibility contract for one recall generation's three store schemas and indexes, text and provenance policies, embedding profile, dimensions, and canaries. It never records mutable progress, backlog, or counts.
+_Avoid_: Index state, configuration, progress record
+
+**Generation validation receipt**:
+The immutable proof that a closed replacement generation matched its starting source snapshot and passed complete cross-store validation. It records validation evidence, not later incremental progress.
+_Avoid_: Index manifest, background status, mutable certification
 
 **Recall generation**:
-One self-contained, validated recall evidence store, session projection store, index state, and index manifest. A replacement generation is built beside the searchable generation rather than overwriting it.
-_Avoid_: Database, index directory, mutable release
+One self-contained lexical/source store, dense store, session projection store, and fixed index manifest, plus a successful validation receipt once it becomes valid. A replacement generation is built beside the searchable generation rather than overwriting it.
+_Avoid_: Database, index directory, mutable release, shared vector store
 
 **Active generation pointer**:
 The checksummed atomic selection of the sole recall generation served by search and targeted by incremental commits.
 _Avoid_: Latest directory, generation scan, fallback generation
 
+**Generation replay snapshot**:
+The immutable set of pending and quarantined recall work marker IDs captured for one activation or rollback transition. Only those marker IDs gate that transition's replay; newer markers remain ordinary backlog.
+_Avoid_: Live marker queue, freshness barrier, rebuild source snapshot
+
 **Replay-pending generation**:
-A newly active generation whose retained generation-independent work markers have not all been covered by durable session projection checkpoints. Search may serve it while the ordinary incremental worker completes replay. It cannot become active while any marker remains pending or quarantined.
-_Avoid_: Building generation, dual-write generation, failed generation
+A newly active generation whose current generation replay snapshot has not yet been covered by durable physical session projections or still names unresolved quarantined markers. Search may serve it while the ordinary incremental worker completes that fixed snapshot.
+_Avoid_: Building generation, dual-write generation, failed generation, stale generation
 
 **Rollback generation**:
-The one validated former active generation retained for a bounded period after cutover. Restoring it is explicit and republishes retained markers before incremental writes resume.
-_Avoid_: Backup copy, automatic fallback, second write target
+The one validated former active generation retained for a bounded period after cutover. Restoring it is an explicit quick switch followed by replay of one fixed generation replay snapshot.
+_Avoid_: Backup copy, automatic fallback, second write target, rebuild
 
 **Recall work marker**:
 One immutable, atomically published event file telling an external worker that a physical session may contain newly eligible evidence. The worker orders and coalesces markers; Pi processes never overwrite them.
 _Avoid_: Index job, mutable session marker, session lock
 
 **Recall marker quarantine**:
-The retained holding area for a corrupt or unsupported recall work marker removed from ordinary replay. Its diagnostics expose only a failure category, count, and age; the original marker remains available for inspection, and unresolved quarantine blocks replay completion.
+The retained holding area for a corrupt or unsupported recall work marker removed from ordinary processing. Its diagnostics expose only a failure category, count, and age; an unresolved quarantined marker blocks any generation replay snapshot that names it.
 _Avoid_: Failed marker deletion, retry queue, marker contents diagnostic
 
 **Metadata recovery sweep**:
@@ -241,28 +249,16 @@ The sole writer for deferred incremental transfer. This short-lived process runs
 _Avoid_: Daemon, Pi lifecycle handler, full indexer
 
 **Recall maintenance class**:
-The cost and scheduling category of recall work: immediate bookkeeping, deferred incremental transfer, or explicit reconciliation. Measured work size separates prompt small transfers from transfers that wait for a longer quiet period.
-_Avoid_: Worker priority, ingestion mode, adaptive scheduler
+The cost and scheduling category of recall work: immediate bookkeeping, deferred incremental transfer, or explicit reconciliation. Deferred work may be delayed and combined without a freshness deadline.
+_Avoid_: Worker priority, ingestion mode, adaptive scheduler, freshness class
 
 **Recall write window**:
-The bounded period when an incremental recall worker owns zvec exclusively to commit prepared evidence and session projection changes. A search may wait for the current window but never for the worker to finish all pending ingestion.
+The bounded period when one writer owns the active generation exclusively to commit prepared evidence and session projection changes. Search may wait for the current window but never for pending ingestion.
 _Avoid_: Maintenance outage, freshness barrier, indexing run
 
-**Recall work marker**:
-One immutable, atomically published event file telling an external worker that a physical session may contain newly eligible evidence. The worker orders and coalesces markers; Pi processes never overwrite them.
-_Avoid_: Index job, mutable session marker, session lock
-
-**Incremental recall worker**:
-The sole writer for deferred incremental transfer. This short-lived process runs outside Pi, drains recall work markers, processes eligible append deltas, and exits when no work remains.
-_Avoid_: Daemon, Pi lifecycle handler, full indexer
-
-**Recall maintenance class**:
-The cost and scheduling category of recall work: immediate bookkeeping, deferred incremental transfer, or explicit reconciliation. Measured work size separates prompt small transfers from transfers that wait for a longer quiet period.
-_Avoid_: Worker priority, ingestion mode, adaptive scheduler
-
-**Recall write window**:
-The bounded period when an incremental recall worker owns zvec exclusively to commit prepared evidence and session projection changes. A search may wait for the current window but never for the worker to finish all pending ingestion.
-_Avoid_: Maintenance outage, freshness barrier, indexing run
+**Recall recovery record**:
+The durable generation-local description of one bounded store mutation that must be verified or replayed before read-only use. Its presence means the affected generation is not safe to search.
+_Avoid_: Writer lock, batch backlog, progress record
 
 **Recall diagnostic operation**:
 One bounded, local account of recall work and its costs, identified independently from the session or query that caused it.
@@ -272,9 +268,13 @@ _Avoid_: Trace, span, telemetry
 The persistence policy for recall diagnostic operations: `slow`, `all`, or `off`.
 _Avoid_: Verbosity level, tracing mode
 
+**Recall operator CLI**:
+The standalone shell interface for recall setup, status, explicit catch-up, rebuild control, recovery, rollback, legacy adoption, and cleanup. Pi's TUI is not an operator control or maintenance-progress surface.
+_Avoid_: Slash command, Pi maintenance command, lifecycle trigger
+
 **Manual maintenance trigger**:
-The explicit index command mode that requested a full corpus catch-up: incremental indexing or rebuilding.
-_Avoid_: Lifecycle trigger, rebuild flag
+The explicit operation intent distinguishing a user-requested incremental catch-up from a rebuild. It originates from the recall operator CLI, never from Pi lifecycle activity.
+_Avoid_: Lifecycle trigger, slash-command flag
 
 **Physical session check**:
 One determination of whether a physical session file changed and therefore needs reconciliation work.
@@ -313,8 +313,8 @@ A source absence observed again on a later metadata sweep while the session root
 _Avoid_: Missing source, one-sweep deletion, retained historical memory
 
 **Material recall backlog**:
-Eligible ingestion work whose oldest marker exceeds the service objective, whose latest attempt failed, or whose rebuild still serves an older generation. Search remains available on the last durable generation and reports only scalar backlog state.
-_Avoid_: Active-tail delay, freshness barrier, pending activity marker
+Eligible source work not yet reflected in the active generation, including failed attempts and work that arrived during a rebuild. Its size or age measures staleness, not generation validity, and has no freshness deadline.
+_Avoid_: Active-tail delay, freshness barrier, recovery-required state
 
 **Derived recall evidence**:
 The `pi-session-recall` tool call and its result. The index excludes both because they restate search inputs or previously indexed evidence and would create a feedback loop.

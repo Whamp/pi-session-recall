@@ -11,6 +11,7 @@ import {
   ZVecOpen,
   type ZVecCollection,
   type ZVecFieldSchema,
+  type ZVecVector,
   type ZVecVectorSchema,
 } from '@zvec/zvec';
 
@@ -531,6 +532,123 @@ export function validateRecallGenerationStores(
     for (const collection of collections) {
       collection.closeSync();
     }
+  }
+}
+
+function readRecallGenerationVectorValues(vector: ZVecVector | undefined): number[] {
+  if (vector === undefined) {
+    return [];
+  }
+  if (Array.isArray(vector)) {
+    return [...vector];
+  }
+  if (vector instanceof Float32Array || vector instanceof Int8Array) {
+    return Array.from(vector);
+  }
+  return Object.values(vector);
+}
+
+/** Validates the reopened dense store as the exact profile-bound lexical/source subset. */
+export function validateRecallGenerationDenseSubset(
+  paths: Readonly<RecallGenerationComponentPaths>,
+  expectedGenerationId: string,
+  expectedEmbeddingProfileId: string,
+  expectedStoredDimensions: number,
+  recordIds: Readonly<{
+    lexicalSource: readonly string[];
+    dense: readonly string[];
+  }>,
+): void {
+  const lexicalSource = ZVecOpen(paths.lexicalSourceStorePath, { readOnly: true });
+  const dense = ZVecOpen(paths.denseStorePath, { readOnly: true });
+  try {
+    const lexicalRecords = lexicalSource.fetchSync({
+      ids: [...recordIds.lexicalSource],
+      outputFields: ['recordKind', 'isDenseSearchable', 'evidenceOccurrenceId', 'evidenceChecksum'],
+      includeVector: false,
+    });
+    const denseEvidenceChecksums = new Map<string, unknown>();
+    for (const record of Object.values(lexicalRecords)) {
+      if (record.fields.recordKind === 'evidence' && record.fields.isDenseSearchable === true) {
+        denseEvidenceChecksums.set(record.id, record.fields.evidenceChecksum);
+      }
+    }
+    const expectedDenseRecordIds = [...denseEvidenceChecksums.keys()].toSorted();
+    if (
+      JSON.stringify(expectedDenseRecordIds) !== JSON.stringify([...recordIds.dense].toSorted())
+    ) {
+      throw new Error(
+        `Recall coherent generation dense subset membership mismatch for ${expectedGenerationId}`,
+      );
+    }
+    if (recordIds.dense.length === 0) {
+      return;
+    }
+    const denseRecords = dense.fetchSync({
+      ids: [...recordIds.dense],
+      outputFields: [
+        'generationId',
+        'evidenceOccurrenceId',
+        'embeddingProfileId',
+        'storedDimensions',
+        'evidenceChecksum',
+        'embeddingInputChecksum',
+        'vectorChecksum',
+      ],
+      includeVector: true,
+    });
+    for (const recordId of recordIds.dense) {
+      const record = denseRecords[recordId];
+      if (record === undefined) {
+        throw new Error(
+          `Recall coherent generation dense subset row missing for ${expectedGenerationId}: ${recordId}`,
+        );
+      }
+      if (
+        record.fields.generationId !== expectedGenerationId ||
+        record.fields.evidenceOccurrenceId !== recordId
+      ) {
+        throw new Error(
+          `Recall coherent generation dense occurrence identity mismatch for ${recordId}`,
+        );
+      }
+      if (record.fields.embeddingProfileId !== expectedEmbeddingProfileId) {
+        throw new Error(
+          `Recall coherent generation dense embedding profile mismatch for ${recordId}`,
+        );
+      }
+      if (record.fields.storedDimensions !== expectedStoredDimensions) {
+        throw new Error(`Recall coherent generation dense stored width mismatch for ${recordId}`);
+      }
+      if (record.fields.evidenceChecksum !== denseEvidenceChecksums.get(recordId)) {
+        throw new Error(
+          `Recall coherent generation dense evidence checksum mismatch for ${recordId}`,
+        );
+      }
+      if (!/^[a-f0-9]{64}$/u.test(String(record.fields.embeddingInputChecksum))) {
+        throw new Error(
+          `Recall coherent generation dense embedding input checksum mismatch for ${recordId}`,
+        );
+      }
+      const vector = readRecallGenerationVectorValues(record.vectors.embedding);
+      if (
+        vector.length !== expectedStoredDimensions ||
+        vector.some((value) => !Number.isFinite(value))
+      ) {
+        throw new Error(`Recall coherent generation dense vector width mismatch for ${recordId}`);
+      }
+      const vectorChecksum = createHash('sha256')
+        .update(Buffer.from(new Float32Array(vector).buffer))
+        .digest('hex');
+      if (record.fields.vectorChecksum !== vectorChecksum) {
+        throw new Error(
+          `Recall coherent generation dense vector checksum mismatch for ${recordId}`,
+        );
+      }
+    }
+  } finally {
+    lexicalSource.closeSync();
+    dense.closeSync();
   }
 }
 

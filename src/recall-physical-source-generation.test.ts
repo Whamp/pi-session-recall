@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -8,7 +9,12 @@ import { ZVecOpen } from '@zvec/zvec';
 
 import type { RecallConversationConfig } from './recall-conversation-config.js';
 import { RecallDiagnosticsMode } from './enums.js';
+import { isUnknownRecord } from './is-unknown-record.js';
 import { createRecallConversationService } from './recall-conversation-service.js';
+import {
+  createOctenEmbeddingModelProfile,
+  type RecallEmbeddingModelProfile,
+} from './recall-model-profiles.js';
 import { resolveRecallPhysicalSourceIdentity } from './recall-source-identity.js';
 import { normalizeRecallProjectLineages } from './resolve-project-identity.js';
 import type { ConversationTextTokenizer } from './session-conversation-index.js';
@@ -122,6 +128,217 @@ async function writeJsonl(
 ): Promise<void> {
   await writeFile(path, `${records.map((record) => JSON.stringify(record)).join('\n')}\n`);
 }
+
+void test('configured service builds and searches a stored-width dense subset beside lexical-only evidence', async (t) => {
+  const disposableRoot = await mkdtemp(join(tmpdir(), 'recall-dense-source-generation-'));
+  t.after(() => rm(disposableRoot, { recursive: true, force: true }));
+  const sessionsDirectory = join(disposableRoot, 'sessions');
+  const dataDirectory = join(disposableRoot, 'recall');
+  const projectDirectory = join(disposableRoot, 'project');
+  const sourcePath = join(sessionsDirectory, 'mixed.jsonl');
+  await Promise.all([mkdir(sessionsDirectory), mkdir(dataDirectory), mkdir(projectDirectory)]);
+  await writeJsonl(sourcePath, [
+    {
+      type: 'session',
+      version: 3,
+      id: 'mixed-session',
+      timestamp: '2026-08-02T00:00:00.000Z',
+      cwd: projectDirectory,
+    },
+    {
+      type: 'message',
+      id: 'mixed-assistant',
+      parentId: null,
+      timestamp: '2026-08-02T00:00:01.000Z',
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'The dense constellation records the retained design decision.' },
+          {
+            type: 'toolCall',
+            id: 'mixed-call',
+            name: 'read',
+            arguments: { path: '/tmp/LEXICAL_ONLY_NEEDLE.txt' },
+          },
+        ],
+      },
+    },
+    {
+      type: 'message',
+      id: 'mixed-result',
+      parentId: 'mixed-assistant',
+      timestamp: '2026-08-02T00:00:02.000Z',
+      message: {
+        role: 'toolResult',
+        toolCallId: 'mixed-call',
+        toolName: 'read',
+        isError: false,
+        content: [{ type: 'text', text: 'LEXICAL_ONLY_NEEDLE source evidence' }],
+      },
+    },
+  ]);
+
+  const baseProfile = createOctenEmbeddingModelProfile(
+    {
+      requestModel: 'fixture-native-model',
+      servedModelId: 'fixture/native-model',
+      artifact: 'fixture-native-model.fp32',
+      artifactSha256: 'a'.repeat(64),
+      dimensions: 3,
+      quantization: 'fp32',
+      pooling: 'last',
+      normalization: 'l2',
+    },
+    2,
+  );
+  const profile: RecallEmbeddingModelProfile = Object.freeze({
+    ...baseProfile,
+    canary: Object.freeze({
+      policy: 'repeat-cosine-v1',
+      operation: 'query',
+      query: 'fixture stored-width canary',
+      expectedDimensions: 3,
+      expectedNormalization: 'l2',
+      minimumRepeatCosineSimilarity: 0.9995,
+    }),
+  });
+  const documentInputs: string[] = [];
+  const queryInputs: string[] = [];
+  const config = createPhysicalSourceGenerationTestConfig(dataDirectory, sessionsDirectory);
+  const service = createRecallConversationService(config, {
+    embeddingProfile: profile,
+    embeddingProvider: {
+      async embedDocuments(documents) {
+        documentInputs.push(...documents);
+        return documents.map((document) =>
+          document.includes('dense constellation') ? [0, 4, 100] : [4, 0, 100],
+        );
+      },
+      async embedQuery(query) {
+        queryInputs.push(query);
+        return [0, 5, 200];
+      },
+    },
+    tokenizerIdentity: {
+      model: 'fixture-tokenizer',
+      revision: 'fixture-revision',
+      library: { name: 'fixture-tokenizer', version: '1' },
+      encodeOptions: { addSpecialTokens: false, returnTokenTypeIds: false },
+      assets: [{ fileName: 'fixture-tokenizer.json', sha256: 'b'.repeat(64) }],
+    },
+    loadTokenizer: async () => tokenizer,
+    rerankingProfile: null,
+    reranker: null,
+    workerSignal: { signalDetachedWorker() {} },
+  });
+
+  const generationId = 'generation_stored_width';
+  const created = await service.createRecallGenerationFromPhysicalSources({
+    generationId,
+    physicalSessionPaths: [sourcePath],
+  });
+  assert.ok(created.storeCounts.dense > 0);
+  assert.ok(documentInputs.some((input) => input.includes('dense constellation')));
+  assert.ok(documentInputs.every((input) => !input.includes('LEXICAL_ONLY_NEEDLE')));
+  assert.equal(existsSync(config.embeddingCacheDirectory), false);
+
+  const generationDirectory = join(config.generationRootDirectory, generationId);
+  const manifest: unknown = JSON.parse(
+    await readFile(join(generationDirectory, 'index-manifest.json'), 'utf8'),
+  );
+  assert.ok(isUnknownRecord(manifest));
+  const embeddingProfile: unknown = manifest.embeddingProfile;
+  assert.ok(isUnknownRecord(embeddingProfile));
+  assert.equal(embeddingProfile.nativeDimensions, 3);
+  assert.equal(embeddingProfile.storedDimensions, 2);
+  assert.equal(embeddingProfile.reduction, 'first-n-then-l2');
+  assert.ok(isUnknownRecord(embeddingProfile.canary));
+  assert.equal(embeddingProfile.canary.expectedNativeDimensions, 3);
+  assert.equal(embeddingProfile.canary.expectedStoredDimensions, 2);
+
+  const dense = ZVecOpen(join(generationDirectory, 'dense'), { readOnly: true });
+  try {
+    assert.equal(dense.schema.vectors()[0]?.dimension, 2);
+    assert.equal(dense.stats.docCount, created.storeCounts.dense);
+    const denseRows = await dense.query({
+      topk: dense.stats.docCount,
+      outputFields: [
+        'evidenceOccurrenceId',
+        'embeddingProfileId',
+        'storedDimensions',
+        'evidenceChecksum',
+        'embeddingInputChecksum',
+        'vectorChecksum',
+      ],
+      includeVector: true,
+    });
+    assert.ok(denseRows.every((row) => Object.keys(row.vectors.embedding ?? {}).length === 2));
+    assert.ok(denseRows.every((row) => row.fields.storedDimensions === 2));
+    assert.ok(denseRows.every((row) => row.fields.evidenceOccurrenceId === row.id));
+    assert.ok(denseRows.every((row) => String(row.fields.evidenceChecksum).length === 64));
+    assert.ok(denseRows.every((row) => String(row.fields.embeddingInputChecksum).length === 64));
+    assert.ok(denseRows.every((row) => String(row.fields.vectorChecksum).length === 64));
+  } finally {
+    dense.closeSync();
+  }
+
+  const results = await service.searchRecallGenerationHybrid(
+    generationId,
+    'LEXICAL_ONLY_NEEDLE constellation',
+    10,
+  );
+  assert.deepEqual(queryInputs, [
+    'fixture stored-width canary',
+    'fixture stored-width canary',
+    'LEXICAL_ONLY_NEEDLE constellation',
+  ]);
+  assert.ok(results.some((result) => result.denseRank !== null));
+  assert.ok(
+    results.some(
+      (result) => result.lexicalRank !== null && result.evidence.isDenseSearchable === false,
+    ),
+  );
+  assert.ok(
+    results.every((result) => result.evidence.evidenceOccurrenceId.startsWith('occurrence_')),
+  );
+  assert.ok(results.every((result) => result.evidence.sessionsRootRelativePath === 'mixed.jsonl'));
+
+  const damagedDense = ZVecOpen(join(generationDirectory, 'dense'));
+  try {
+    const [row] = await damagedDense.query({
+      topk: 1,
+      outputFields: [
+        'schemaVersion',
+        'generationId',
+        'evidenceOccurrenceId',
+        'physicalSourceIdentity',
+        'logicalSessionOccurrenceId',
+        'embeddingProfileId',
+        'storedDimensions',
+        'evidenceChecksum',
+        'embeddingInputChecksum',
+        'vectorChecksum',
+        'projectIdentity',
+      ],
+      includeVector: true,
+    });
+    assert.ok(row);
+    const [status] = damagedDense.upsertSync([
+      {
+        id: row.id,
+        fields: { ...row.fields, evidenceChecksum: '0'.repeat(64) },
+        vectors: row.vectors,
+      },
+    ]);
+    assert.equal(status?.ok, true);
+  } finally {
+    damagedDense.closeSync();
+  }
+  await assert.rejects(
+    service.openValidatedRecallGeneration(generationId),
+    /Recall coherent generation dense evidence checksum mismatch/u,
+  );
+});
 
 void test('configured service keys lexical evidence, anchors, and projections by physical source identity', async (t) => {
   const disposableRoot = await mkdtemp(join(tmpdir(), 'recall-physical-source-generation-'));

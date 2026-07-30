@@ -115,6 +115,7 @@ import {
 import {
   createOctenEmbeddingModelProfile,
   createQwenRerankingModelProfile,
+  createRecallEmbeddingProfileIdentity,
   type RecallEmbeddingModelProfile,
   type RecallQueryPlanningModelProfile,
   type RecallRerankingModelProfile,
@@ -182,6 +183,11 @@ import {
   readSessionConversationChunks,
   type ConversationTextTokenizer,
 } from './session-conversation-index.js';
+import {
+  searchRecallGenerationHybrid,
+  type RecallGenerationHybridSearchResult,
+} from './search-recall-generation-hybrid.js';
+import { createStoredRecallEmbedding } from './recall-stored-embedding.js';
 import {
   openZvecConversationStore,
   type ZvecConversationStore,
@@ -486,10 +492,16 @@ export interface RecallConversationService {
   createEmptyRecallGeneration(
     options: CreateEmptyRecallGenerationOptions,
   ): Promise<OpenedValidatedRecallGeneration>;
-  /** Creates one validated inactive generation from lexical-only physical sources. */
+  /** Creates one validated inactive generation from mixed lexical and dense physical sources. */
   createRecallGenerationFromPhysicalSources(
     options: CreateRecallGenerationFromPhysicalSourcesOptions,
   ): Promise<OpenedValidatedRecallGeneration>;
+  /** Searches dense and lexical evidence in one explicitly named inactive target generation. */
+  searchRecallGenerationHybrid(
+    generationId: string,
+    query: string,
+    limit: number,
+  ): Promise<RecallGenerationHybridSearchResult[]>;
   /** Searches lexical evidence in one explicitly named inactive target generation. */
   searchRecallGenerationLexical(
     generationId: string,
@@ -1251,6 +1263,7 @@ export function createRecallConversationService(
       }),
     )
     .digest('hex')}`;
+  const targetEmbeddingProfileId = createRecallEmbeddingProfileIdentity(embeddingProfile);
   const openStore =
     dependencies.openStore ??
     ((mode, databasePath = config.databasePath) =>
@@ -1305,7 +1318,7 @@ export function createRecallConversationService(
     generationRootDirectory: config.generationRootDirectory,
     activeGenerationPointerPath: config.activeGenerationPointerPath,
     generationRegistryPath: config.generationRegistryPath,
-    embeddingProfileId,
+    embeddingProfileId: targetEmbeddingProfileId,
     embeddingProfile,
     projectLineages: config.projectLineages,
     ...(config.chunkPolicy ? { chunkPolicy: config.chunkPolicy } : {}),
@@ -2764,9 +2777,28 @@ export function createRecallConversationService(
       return runSerialized(async () =>
         createRecallGenerationFromPhysicalSources(coherentGenerationConfig, options, {
           tokenizer: await getConversationTokenizer(),
+          embeddingProvider,
           resolveProjectIdentity: resolveSearchProjectIdentity,
         }),
       );
+    },
+    searchRecallGenerationHybrid(generationId, query, limit) {
+      return runSerialized(async () => {
+        const nativeQueryEmbedding = await embeddingProvider.embedQuery(query);
+        const storedQueryEmbedding = createStoredRecallEmbedding(nativeQueryEmbedding, {
+          nativeDimensions: embeddingProfile.identity.dimensions,
+          storedDimensions:
+            embeddingProfile.storedDimensions ?? embeddingProfile.identity.dimensions,
+          source: `generation ${generationId} query`,
+        });
+        return searchRecallGenerationHybrid(
+          coherentGenerationConfig,
+          generationId,
+          query,
+          storedQueryEmbedding,
+          limit,
+        );
+      });
     },
     searchRecallGenerationLexical(generationId, query, limit) {
       return runSerialized(() =>

@@ -16,6 +16,7 @@ import {
   createRecallGenerationStoreContracts,
   readRecallGenerationStoreRecordMembership,
   validateEmptyRecallGenerationStores,
+  validateRecallGenerationDenseSubset,
   validateRecallGenerationStores,
   type RecallGenerationComponentPaths,
   type RecallGenerationStoreCounts,
@@ -138,6 +139,13 @@ export async function openValidatedRecallGeneration(
     }
   }
   const storeCounts = validateRecallGenerationStores(paths, contracts, generationId, recordIds);
+  validateRecallGenerationDenseSubset(
+    paths,
+    generationId,
+    expectedManifest.embeddingProfile.profileId,
+    expectedManifest.embeddingProfile.storedDimensions,
+    recordIds,
+  );
   const expectedReceipt = createRecallGenerationValidationReceipt({
     generationId,
     manifestFingerprint: fingerprint,

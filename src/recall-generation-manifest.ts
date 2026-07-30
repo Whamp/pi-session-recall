@@ -10,7 +10,10 @@ import {
   type RecallEmbeddingModelIdentity,
 } from './recall-index-manifest.js';
 import { SESSION_IMPORT_POLICY_VERSION } from './import-session-jsonl.js';
-import type { RecallEmbeddingModelProfile } from './recall-model-profiles.js';
+import {
+  resolveRecallStoredDimensionSelection,
+  type RecallEmbeddingModelProfile,
+} from './recall-model-profiles.js';
 import {
   createLineageDigest,
   PROJECT_IDENTITY_METADATA_SCHEMA_VERSION,
@@ -70,10 +73,21 @@ export interface RecallGenerationManifest {
     modelIdentity: Readonly<RecallEmbeddingModelIdentity>;
     nativeDimensions: number;
     storedDimensions: number;
-    reduction: 'none';
-    normalization: 'l2' | 'none';
+    storedDimensionEvidenceStatus:
+      | 'native-width'
+      | 'verified-mrl'
+      | 'vendor-supported-prefix'
+      | 'unverified-override';
+    storedDimensionEvidenceSources: readonly string[];
+    reduction: 'first-n-then-l2';
+    normalization: 'l2';
     queryInputPrefix: string;
     documentInputPrefix: string;
+    canary: Readonly<{
+      expectedNativeDimensions: number;
+      expectedStoredDimensions: number;
+      minimumRepeatCosineSimilarity: number;
+    }> | null;
   }>;
   validationPolicy: Readonly<{
     version: 1;
@@ -221,10 +235,28 @@ const recallGenerationManifestSchema = Type.Object(
         modelIdentity: embeddingModelIdentitySchema,
         nativeDimensions: Type.Integer({ minimum: 1 }),
         storedDimensions: Type.Integer({ minimum: 1 }),
-        reduction: Type.Literal('none'),
-        normalization: Type.Union([Type.Literal('l2'), Type.Literal('none')]),
+        storedDimensionEvidenceStatus: Type.Union([
+          Type.Literal('native-width'),
+          Type.Literal('verified-mrl'),
+          Type.Literal('vendor-supported-prefix'),
+          Type.Literal('unverified-override'),
+        ]),
+        storedDimensionEvidenceSources: Type.Array(Type.String({ minLength: 1 })),
+        reduction: Type.Literal('first-n-then-l2'),
+        normalization: Type.Literal('l2'),
         queryInputPrefix: Type.String(),
         documentInputPrefix: Type.String(),
+        canary: Type.Union([
+          Type.Object(
+            {
+              expectedNativeDimensions: Type.Integer({ minimum: 1 }),
+              expectedStoredDimensions: Type.Integer({ minimum: 1 }),
+              minimumRepeatCosineSimilarity: Type.Number({ minimum: -1, maximum: 1 }),
+            },
+            { additionalProperties: false },
+          ),
+          Type.Null(),
+        ]),
       },
       { additionalProperties: false },
     ),
@@ -301,8 +333,9 @@ export function createRecallGenerationManifest(options: {
       'Recall coherent generation chunk policy invalid: overlap must be smaller than maximum tokens',
     );
   }
-  const dimensions = options.embeddingProfile.identity.dimensions;
-  const stores = createRecallGenerationStoreContracts(options.generationId, dimensions);
+  const storedDimensionSelection = resolveRecallStoredDimensionSelection(options.embeddingProfile);
+  const { nativeDimensions, storedDimensions } = storedDimensionSelection;
+  const stores = createRecallGenerationStoreContracts(options.generationId, storedDimensions);
   const manifest: RecallGenerationManifest = {
     generationFormatVersion: RECALL_GENERATION_FORMAT_VERSION,
     generationId: options.generationId,
@@ -344,12 +377,22 @@ export function createRecallGenerationManifest(options: {
     embeddingProfile: {
       profileId: options.embeddingProfileId,
       modelIdentity: structuredClone(options.embeddingProfile.identity),
-      nativeDimensions: dimensions,
-      storedDimensions: dimensions,
-      reduction: 'none',
-      normalization: options.embeddingProfile.identity.normalization ?? 'none',
+      nativeDimensions,
+      storedDimensions,
+      storedDimensionEvidenceStatus: storedDimensionSelection.evidenceStatus,
+      storedDimensionEvidenceSources: [...storedDimensionSelection.evidenceSources],
+      reduction: 'first-n-then-l2',
+      normalization: 'l2',
       queryInputPrefix: options.embeddingProfile.queryInputPrefix,
       documentInputPrefix: options.embeddingProfile.documentInputPrefix,
+      canary: options.embeddingProfile.canary
+        ? {
+            expectedNativeDimensions: options.embeddingProfile.canary.expectedDimensions,
+            expectedStoredDimensions: storedDimensions,
+            minimumRepeatCosineSimilarity:
+              options.embeddingProfile.canary.minimumRepeatCosineSimilarity,
+          }
+        : null,
     },
     validationPolicy: {
       version: 1,

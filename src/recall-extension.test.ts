@@ -784,6 +784,9 @@ void test('Pi recall tool adapter propagates trusted cwd with project default an
     async createRecallGenerationFromPhysicalSources() {
       throw new Error('Pi recall adapter test does not create source generations');
     },
+    async searchRecallGenerationHybrid() {
+      throw new Error('Pi recall adapter test does not hybrid-search source generations');
+    },
     async searchRecallGenerationLexical() {
       throw new Error('Pi recall adapter test does not search source generations');
     },

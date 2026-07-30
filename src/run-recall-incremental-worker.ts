@@ -24,9 +24,11 @@ import {
   decodeRecallBacklogSummary,
   readRecallActiveGenerationSelection,
   readRecallGenerationRegistry,
+  resolveRecallGenerationDirectory,
   writeRecallBacklogSummary,
   RECALL_BACKLOG_SUMMARY_VERSION,
 } from './recall-generation-state.js';
+import { readRecallGenerationReplaySnapshot } from './recall-generation-replay-snapshot.js';
 import {
   persistRecallIncrementalWorkerSchedule,
   readRecallIncrementalWorkerSchedule,
@@ -430,16 +432,38 @@ export async function runRecallIncrementalWorker(
     throw new Error('Recall incremental worker target does not match the generation registry');
   }
   const buildingInProgress = registry?.buildingGenerationId != null;
+  const activeGenerationEntry = registry?.generations.find(
+    ({ generationId }) => generationId === registry.activeGenerationId,
+  );
   const activeGenerationIsLegacy =
-    registry?.generations.find(({ generationId }) => generationId === registry.activeGenerationId)
-      ?.state === RecallGenerationCutoverState.LEGACY_READ_ONLY;
+    activeGenerationEntry?.state === RecallGenerationCutoverState.LEGACY_READ_ONLY;
   const commitsFrozen = buildingInProgress || activeGenerationIsLegacy;
   let metadataSweepFollowUpRequired = options.metadataSweepRequested ?? false;
+  let fixedReplayMarkerIds: readonly string[] | undefined;
+  if (
+    activeGenerationEntry?.state === RecallGenerationCutoverState.REPLAY_PENDING &&
+    options.generationReplayCompletion?.generationRootDirectory !== undefined
+  ) {
+    const generationDirectory = await resolveRecallGenerationDirectory(
+      options.generationReplayCompletion.generationRootDirectory,
+      options.targetGenerationId,
+    );
+    const replaySnapshot = await readRecallGenerationReplaySnapshot(
+      join(generationDirectory, 'generation-replay-snapshot.json'),
+    );
+    if (replaySnapshot.generationId !== options.targetGenerationId) {
+      throw new Error(
+        `Recall incremental worker replay snapshot identity mismatch: expected ${options.targetGenerationId}, received ${replaySnapshot.generationId}`,
+      );
+    }
+    fixedReplayMarkerIds = replaySnapshot.pendingMarkerIds;
+  }
   const workPlan = await coordinateRecallMarkerReplay({
     markerSpoolDirectory: options.markerSpoolDirectory,
     markerQuarantineDirectory: options.markerQuarantineDirectory,
     targetGenerationId: options.targetGenerationId,
     trustedSessionRoots: options.trustedSessionRoots,
+    ...(fixedReplayMarkerIds === undefined ? {} : { fixedReplayMarkerIds }),
     ...(options.retainedMarkerDirectory
       ? { retainedMarkerDirectory: options.retainedMarkerDirectory }
       : {}),
@@ -492,7 +516,15 @@ export async function runRecallIncrementalWorker(
       metadataSweepFollowUpRequired
         ? [nowEpochMilliseconds()]
         : [];
-    const wakeDeadlines = [...deferredDeadlines, ...continuationDeadlines];
+    const ordinaryBacklogDeadlines =
+      result.generationReplayCompleted === true && (workPlan.ordinaryBacklogMarkerCount ?? 0) > 0
+        ? [nowEpochMilliseconds()]
+        : [];
+    const wakeDeadlines = [
+      ...deferredDeadlines,
+      ...continuationDeadlines,
+      ...ordinaryBacklogDeadlines,
+    ];
     return {
       ...result,
       metadataSweepFollowUpRequired,
@@ -714,12 +746,21 @@ export async function runRecallIncrementalWorker(
       }
     }
   }
+  const generationReplayCompleted =
+    activeGenerationEntry?.state === RecallGenerationCutoverState.REPLAY_PENDING &&
+    options.generationReplayCompletion
+      ? await completeRecallGenerationReplay({
+          ...options.generationReplayCompletion,
+          markerSpoolDirectory: options.markerSpoolDirectory,
+          markerQuarantineDirectory: options.markerQuarantineDirectory,
+        })
+      : null;
   return finishWorkerResult({
     workPlan,
     metadataSweep,
     heavyDependenciesLoaded: true,
     commitsFrozen: false,
-    generationReplayCompleted: null,
+    generationReplayCompleted,
     transferOutcomes,
     largeTransferDeferrals,
   });
@@ -1096,6 +1137,7 @@ async function runConfiguredRecallIncrementalWorkerExecutable(
         activeGenerationPointerPath: config.activeGenerationPointerPath,
         generationRegistryPath: config.generationRegistryPath,
         backlogSummaryPath: config.backlogSummaryPath,
+        generationRootDirectory: config.generationRootDirectory,
         lockPath: config.lockPath,
       },
       ...(registry?.rollbackGenerationId

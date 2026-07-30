@@ -54,6 +54,7 @@ export interface OpenedValidatedRecallGeneration {
   validationReceiptPath: string;
   manifestFingerprint: string;
   startingSnapshotFingerprint: string;
+  validatedAtEpochMilliseconds: number;
   storeCounts: RecallGenerationStoreCounts;
 }
 
@@ -231,6 +232,7 @@ export async function openValidatedRecallGeneration(
     validationReceiptPath: paths.validationReceiptPath,
     manifestFingerprint: fingerprint,
     startingSnapshotFingerprint: receipt.startingSnapshot.fingerprint,
+    validatedAtEpochMilliseconds: receipt.validatedAtEpochMilliseconds,
     storeCounts,
   };
 }

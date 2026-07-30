@@ -253,6 +253,13 @@ export enum RecallGenerationCutoverState {
   FAILED = 'failed',
 }
 
+/** Durable publication boundary exposed only for deterministic target activation fault probes. */
+export enum RecallValidatedGenerationActivationStage {
+  AFTER_READY_REGISTRY = 'after_ready_registry',
+  AFTER_POINTER_SWAP = 'after_pointer_swap',
+  AFTER_ACTIVATED_REGISTRY = 'after_activated_registry',
+}
+
 /** Privacy-safe failure category exposed by the scalar material backlog summary. */
 export enum RecallBacklogFailureCategory {
   MARKER_DECODE_FAILED = 'marker_decode_failed',

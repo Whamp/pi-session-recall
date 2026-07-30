@@ -912,6 +912,15 @@ void test('Pi recall tool adapter XOR-validates search and exact expansion reque
     async openValidatedRecallGeneration() {
       throw new Error('Pi recall adapter test does not open generations');
     },
+    async activateValidatedRecallGeneration() {
+      throw new Error('Pi recall adapter test does not activate generations');
+    },
+    async completeRecallGenerationReplay() {
+      throw new Error('Pi recall adapter test does not complete generation replay');
+    },
+    async recoverRecallGenerationCutover() {
+      throw new Error('Pi recall adapter test does not recover generation cutover');
+    },
     async deleteUnprotectedRecallGeneration() {
       throw new Error('Pi recall adapter test does not delete generations');
     },

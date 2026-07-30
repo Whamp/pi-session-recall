@@ -3,9 +3,14 @@ import { existsSync } from 'node:fs';
 import { readFile, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
+import {
+  activateValidatedRecallGeneration,
+  type ActivatedValidatedRecallGeneration,
+} from './activate-validated-recall-generation.js';
 import { adoptLegacyRecallGeneration } from './adopt-legacy-recall-generation.js';
 import { buildRecallFixedSnapshotGeneration } from './build-recall-fixed-snapshot-generation.js';
 import { collectRetiredRecallGenerations } from './collect-retired-recall-generations.js';
+import { completeRecallGenerationReplay as completeConfiguredRecallGenerationReplay } from './complete-recall-generation-replay.js';
 import {
   coordinateRecallReadWindow,
   coordinateRecallWriteWindow,
@@ -55,6 +60,8 @@ import {
   RecallRankedListSource,
   RecallSearchScope,
   RecallSessionProjectionKind,
+  RECALL_INDEX_MANIFEST_VERSION,
+  type RecallValidatedGenerationActivationStage,
 } from './enums.js';
 import {
   fuseRecallRankedLists,
@@ -148,6 +155,7 @@ import {
   type RecallRerankingProviderConformanceMeasurement,
 } from './recall-inference-conformance.js';
 import { rebuildRecallGeneration } from './rebuild-recall-generation.js';
+import { recoverRecallGenerationCutover as recoverConfiguredRecallGenerationCutover } from './recover-recall-generation-cutover.js';
 import {
   recallRebuildOwnershipLockPath,
   tryAcquireRecallRebuildOwnershipLock,
@@ -534,6 +542,14 @@ export interface RecallConversationService {
   ): Promise<RecallGenerationLexicalEvidence[]>;
   /** Opens one validated target-format generation without selecting it for search. */
   openValidatedRecallGeneration(generationId: string): Promise<OpenedValidatedRecallGeneration>;
+  /** Activates one validated target and fixes the replay work present at cutover. */
+  activateValidatedRecallGeneration(
+    generationId: string,
+  ): Promise<ActivatedValidatedRecallGeneration>;
+  /** Completes fixed replay only after captured work has durable projection coverage. */
+  completeRecallGenerationReplay(): Promise<boolean>;
+  /** Recovers one interrupted named generation cutover without scanning generation directories. */
+  recoverRecallGenerationCutover(): Promise<boolean>;
   /** Deletes one disposable target-format generation only when no role protects it. */
   deleteUnprotectedRecallGeneration(generationId: string): Promise<void>;
   discardStagingIndexGeneration(): Promise<boolean>;
@@ -570,6 +586,8 @@ export interface RecallConversationDependencies {
     stage: 'after-snapshot-capture' | 'after-dense-write' | 'before-validation-receipt',
     context: Readonly<{ generationDirectory: string; physicalSourceIdentity?: string }>,
   ) => void | Promise<void>;
+  /** Deterministic publication fault boundary for validated target activation tests. */
+  activationFault?: (stage: RecallValidatedGenerationActivationStage) => void | Promise<void>;
   /** Disposable-test source reader for proving bounded incremental append reads. */
   incrementalTransferReadRange?: RecallSessionSourceRangeReader;
   /** Deterministic storage interruption probe for target incremental transfer tests. */
@@ -1308,6 +1326,7 @@ export function createRecallConversationService(
   const workerSignal =
     dependencies.workerSignal ?? createRecallDetachedWorkerSignal(config.workerOwnershipLockPath);
   const fixedSnapshotBuildFault = dependencies.fixedSnapshotBuildFault;
+  const activationFault = dependencies.activationFault;
   const incrementalTransferReadRange = dependencies.incrementalTransferReadRange;
   const incrementalTransferFault = dependencies.incrementalTransferFault;
   const backgroundIndexStatusPath =
@@ -2897,6 +2916,63 @@ export function createRecallConversationService(
       return runSerialized(() =>
         openValidatedCoherentRecallGeneration(coherentGenerationConfig, generationId),
       );
+    },
+    activateValidatedRecallGeneration(generationId) {
+      return runSerialized(async () => {
+        const activation = await coordinateRecallWriteWindow(
+          { lockPath: config.lockPath, allowRecovery: false },
+          (writeWindow) =>
+            activateValidatedRecallGeneration({
+              generation: coherentGenerationConfig,
+              generationId,
+              activeGenerationPointerPath: config.activeGenerationPointerPath,
+              generationRegistryPath: config.generationRegistryPath,
+              backlogSummaryPath: config.backlogSummaryPath,
+              markerSpoolDirectory: config.markerSpoolDirectory,
+              markerQuarantineDirectory: config.markerQuarantineDirectory,
+              retainRecoveryRequired: () => writeWindow.retainRecoveryRequired(),
+              ...(activationFault ? { activationFault } : {}),
+            }),
+        );
+        workerSignal.signalDetachedWorker();
+        return activation;
+      });
+    },
+    completeRecallGenerationReplay() {
+      return runSerialized(() =>
+        completeConfiguredRecallGenerationReplay({
+          activeGenerationPointerPath: config.activeGenerationPointerPath,
+          generationRegistryPath: config.generationRegistryPath,
+          backlogSummaryPath: config.backlogSummaryPath,
+          markerSpoolDirectory: config.markerSpoolDirectory,
+          markerQuarantineDirectory: config.markerQuarantineDirectory,
+          generationRootDirectory: config.generationRootDirectory,
+          lockPath: config.lockPath,
+        }),
+      );
+    },
+    recoverRecallGenerationCutover() {
+      return runSerialized(async () => {
+        const registry = await readRecallGenerationRegistry(config.generationRegistryPath);
+        const targetGenerationId = registry?.buildingGenerationId ?? registry?.activeGenerationId;
+        const targetEntry = registry?.generations.find(
+          ({ generationId }) => generationId === targetGenerationId,
+        );
+        if (targetEntry?.indexManifestVersion === RECALL_INDEX_MANIFEST_VERSION) {
+          await openValidatedCoherentRecallGeneration(
+            coherentGenerationConfig,
+            targetEntry.generationId,
+          );
+        }
+        return recoverConfiguredRecallGenerationCutover({
+          activeGenerationPointerPath: config.activeGenerationPointerPath,
+          generationRegistryPath: config.generationRegistryPath,
+          generationRootDirectory: config.generationRootDirectory,
+          backlogSummaryPath: config.backlogSummaryPath,
+          lockPath: config.lockPath,
+          embeddingDimensions: embeddingProfile.identity.dimensions,
+        });
+      });
     },
     deleteUnprotectedRecallGeneration(generationId) {
       return runSerialized(() =>

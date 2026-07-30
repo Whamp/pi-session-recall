@@ -2,11 +2,21 @@ import type { Dirent } from 'node:fs';
 import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import { coordinateRecallWriteWindow } from './coordinate-recall-write-window.js';
-import { readNodeErrorCode } from './read-node-error-code.js';
-import { completeRecallGenerationReplayTransition } from './recall-generation-transitions.js';
+import { ZVecOpen } from '@zvec/zvec';
 
-/** Registry, spool, and scalar-warning inputs for proving replacement replay complete. */
+import { coordinateRecallWriteWindow } from './coordinate-recall-write-window.js';
+import { RecallSessionProjectionKind } from './enums.js';
+import {
+  readRecallActiveGenerationPointer,
+  resolveRecallGenerationDirectory,
+} from './recall-generation-state.js';
+import { readRecallGenerationReplaySnapshot } from './recall-generation-replay-snapshot.js';
+import { createRecallGenerationComponentPaths } from './recall-generation-stores.js';
+import { completeRecallGenerationReplayTransition } from './recall-generation-transitions.js';
+import { readNodeErrorCode } from './read-node-error-code.js';
+import { decodeRecallSessionProjection } from './recall-session-projection.js';
+
+/** Registry, spool, and fixed-snapshot inputs for proving replacement replay complete. */
 export interface CompleteRecallGenerationReplayOptions {
   activeGenerationPointerPath: string;
   generationRegistryPath: string;
@@ -14,8 +24,12 @@ export interface CompleteRecallGenerationReplayOptions {
   markerSpoolDirectory: string;
   markerQuarantineDirectory: string;
   lockPath: string;
+  /** Target generation root; omission retains the transitional legacy empty-spool proof. */
+  generationRootDirectory?: string;
   nowEpochMilliseconds?: () => number;
 }
+
+const QUARANTINED_MARKER_FILE_PATTERN = /^([A-Za-z0-9_-]+)\.json(?:\..+)?$/u;
 
 async function hasPendingRecallMarkers(markerSpoolDirectory: string): Promise<boolean> {
   try {
@@ -30,16 +44,19 @@ async function hasPendingRecallMarkers(markerSpoolDirectory: string): Promise<bo
   }
 }
 
-async function hasQuarantinedRecallMarkers(markerQuarantineDirectory: string): Promise<boolean> {
+async function listQuarantinedRecallMarkerIds(
+  markerQuarantineDirectory: string,
+): Promise<Set<string>> {
   let categoryEntries: Dirent[];
   try {
     categoryEntries = await readdir(markerQuarantineDirectory, { withFileTypes: true });
   } catch (error) {
     if (readNodeErrorCode(error) === 'ENOENT') {
-      return false;
+      return new Set();
     }
     throw error;
   }
+  const markerIds = new Set<string>();
   for (const categoryEntry of categoryEntries) {
     if (!categoryEntry.isDirectory()) {
       continue;
@@ -47,14 +64,124 @@ async function hasQuarantinedRecallMarkers(markerQuarantineDirectory: string): P
     const quarantinedEntries = await readdir(join(markerQuarantineDirectory, categoryEntry.name), {
       withFileTypes: true,
     });
-    if (quarantinedEntries.some((entry) => entry.isFile())) {
-      return true;
+    for (const entry of quarantinedEntries) {
+      if (!entry.isFile()) {
+        continue;
+      }
+      const markerId = QUARANTINED_MARKER_FILE_PATTERN.exec(entry.name)?.[1];
+      if (markerId !== undefined) {
+        markerIds.add(markerId);
+      }
     }
   }
-  return false;
+  return markerIds;
 }
 
-/** Clears replay state only after the lock-held caller proves pointer agreement and empty spool. */
+async function hasQuarantinedRecallMarkers(markerQuarantineDirectory: string): Promise<boolean> {
+  return (await listQuarantinedRecallMarkerIds(markerQuarantineDirectory)).size > 0;
+}
+
+function readTargetPhysicalProjectionCoveredMarkerIds(
+  generationDirectory: string,
+  generationId: string,
+): Set<string> {
+  const paths = createRecallGenerationComponentPaths(generationDirectory);
+  const collection = ZVecOpen(paths.sessionProjectionStorePath, { readOnly: true });
+  try {
+    if (collection.stats.docCount === 0) {
+      return new Set();
+    }
+    const records = collection.querySync({
+      topk: collection.stats.docCount,
+      outputFields: ['projectionKind', 'projectionJson'],
+      includeVector: false,
+    });
+    const coveredMarkerIds = new Set<string>();
+    for (const record of records) {
+      if (
+        record.fields.projectionKind !== RecallSessionProjectionKind.PHYSICAL_SESSION ||
+        typeof record.fields.projectionJson !== 'string'
+      ) {
+        continue;
+      }
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(record.fields.projectionJson);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(
+          `Recall generation replay physical projection JSON invalid for ${record.id}: ${message}`,
+          { cause: error },
+        );
+      }
+      if (
+        typeof parsed !== 'object' ||
+        parsed === null ||
+        !('ingestionProjectionPayload' in parsed)
+      ) {
+        throw new Error(`Recall generation replay ingestion projection missing for ${record.id}`);
+      }
+      const projection = decodeRecallSessionProjection(parsed.ingestionProjectionPayload, {
+        expectedGenerationId: generationId,
+      });
+      if (projection.projectionKind !== RecallSessionProjectionKind.PHYSICAL_SESSION) {
+        throw new Error(
+          `Recall generation replay physical projection kind mismatch for ${record.id}`,
+        );
+      }
+      for (const markerId of projection.markerCheckpoint.coveredMarkerIds) {
+        coveredMarkerIds.add(markerId);
+      }
+    }
+    return coveredMarkerIds;
+  } finally {
+    collection.closeSync();
+  }
+}
+
+async function proveFixedRecallGenerationReplayComplete(
+  options: CompleteRecallGenerationReplayOptions & { generationRootDirectory: string },
+): Promise<boolean> {
+  const pointer = await readRecallActiveGenerationPointer(options.activeGenerationPointerPath);
+  if (pointer === null) {
+    throw new Error('Recall generation replay fixed-snapshot proof requires an active pointer');
+  }
+  const generationDirectory = await resolveRecallGenerationDirectory(
+    options.generationRootDirectory,
+    pointer.activeGenerationId,
+  );
+  const snapshot = await readRecallGenerationReplaySnapshot(
+    join(generationDirectory, 'generation-replay-snapshot.json'),
+  );
+  if (snapshot.generationId !== pointer.activeGenerationId) {
+    throw new Error(
+      `Recall generation replay snapshot identity mismatch: expected ${pointer.activeGenerationId}, received ${snapshot.generationId}`,
+    );
+  }
+  const coveredMarkerIds = readTargetPhysicalProjectionCoveredMarkerIds(
+    generationDirectory,
+    pointer.activeGenerationId,
+  );
+  const quarantinedMarkerIds = await listQuarantinedRecallMarkerIds(
+    options.markerQuarantineDirectory,
+  );
+  return (
+    snapshot.pendingMarkerIds.every((markerId) => coveredMarkerIds.has(markerId)) &&
+    snapshot.quarantinedMarkerIds.every((markerId) => !quarantinedMarkerIds.has(markerId))
+  );
+}
+
+async function proveLegacyRecallGenerationReplayComplete(
+  options: CompleteRecallGenerationReplayOptions,
+): Promise<boolean> {
+  const [hasPending, hasQuarantined] = await Promise.all([
+    hasPendingRecallMarkers(options.markerSpoolDirectory),
+    hasQuarantinedRecallMarkers(options.markerQuarantineDirectory),
+  ]);
+  return !hasPending && !hasQuarantined;
+}
+
+/** Clears replay state only after the lock-held caller proves the selected replay contract. */
 export async function completeRecallGenerationReplayWithinWriteWindow(
   options: CompleteRecallGenerationReplayOptions,
 ): Promise<boolean> {
@@ -63,16 +190,17 @@ export async function completeRecallGenerationReplayWithinWriteWindow(
     generationRegistryPath: options.generationRegistryPath,
     backlogSummaryPath: options.backlogSummaryPath,
     ...(options.nowEpochMilliseconds ? { nowEpochMilliseconds: options.nowEpochMilliseconds } : {}),
-    async proveReplayWorkComplete() {
-      return (
-        !(await hasPendingRecallMarkers(options.markerSpoolDirectory)) &&
-        !(await hasQuarantinedRecallMarkers(options.markerQuarantineDirectory))
-      );
-    },
+    proveReplayWorkComplete: () =>
+      options.generationRootDirectory === undefined
+        ? proveLegacyRecallGenerationReplayComplete(options)
+        : proveFixedRecallGenerationReplayComplete({
+            ...options,
+            generationRootDirectory: options.generationRootDirectory,
+          }),
   });
 }
 
-/** Completes replay under the operation lock so rebuild state cannot be overwritten. */
+/** Completes replay under the operation lock so generation state cannot be overwritten. */
 export async function completeRecallGenerationReplay(
   options: CompleteRecallGenerationReplayOptions,
 ): Promise<boolean> {

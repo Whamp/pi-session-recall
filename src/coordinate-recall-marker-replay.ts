@@ -31,6 +31,8 @@ export interface RecallGenerationReplayCompletionPaths {
   generationRegistryPath: string;
   backlogSummaryPath: string;
   markerQuarantineDirectory: string;
+  /** Target generation root used to prove fixed replay from physical projections. */
+  generationRootDirectory?: string;
   lockPath: string;
 }
 
@@ -44,6 +46,8 @@ export interface RecallMarkerReplayWorkPlan {
   sourceMarkerIds: string[];
   workItems: RecallMarkerReplayWorkItem[];
   quarantineDiagnostics: RecallMarkerQuarantineDiagnostic[];
+  /** Marker files deliberately excluded because they arrived after the fixed replay snapshot. */
+  ordinaryBacklogMarkerCount?: number;
 }
 
 /** Spool, generation, trust, and diagnostic-clock boundaries for marker replay coordination. */
@@ -53,6 +57,8 @@ export interface CoordinateRecallMarkerReplayOptions extends RecallWorkMarkerCod
   retainedMarkerDirectory?: string;
   generationReplayCompletion?: RecallGenerationReplayCompletionPaths;
   targetGenerationId: string;
+  /** Exact marker IDs eligible while the target generation remains replay-pending. */
+  fixedReplayMarkerIds?: readonly string[];
   nowEpochMilliseconds?: () => number;
 }
 
@@ -195,8 +201,8 @@ async function readRecallMarkerSpoolNames(markerSpoolDirectory: string): Promise
 
 async function discoverRecallWorkMarkers(
   options: CoordinateRecallMarkerReplayOptions,
+  markerNames: readonly string[],
 ): Promise<RecallMarkerDiscoveryResult> {
-  const markerNames = await readRecallMarkerSpoolNames(options.markerSpoolDirectory);
   const markersById = new Map<string, RecallWorkMarker>();
   const quarantineByCategory = new Map<
     RecallMarkerQuarantineCategory,
@@ -255,7 +261,16 @@ async function discoverRecallWorkMarkers(
 export async function coordinateRecallMarkerReplay(
   options: CoordinateRecallMarkerReplayOptions,
 ): Promise<RecallMarkerReplayWorkPlan> {
-  const discovery = await discoverRecallWorkMarkers(options);
+  const allMarkerNames = await readRecallMarkerSpoolNames(options.markerSpoolDirectory);
+  const fixedReplayMarkerIds =
+    options.fixedReplayMarkerIds === undefined ? null : new Set(options.fixedReplayMarkerIds);
+  const markerNames =
+    fixedReplayMarkerIds === null
+      ? allMarkerNames
+      : allMarkerNames.filter((markerName) =>
+          fixedReplayMarkerIds.has(markerName.slice(0, -'.json'.length)),
+        );
+  const discovery = await discoverRecallWorkMarkers(options, markerNames);
   return {
     targetGenerationId: options.targetGenerationId,
     markerSpoolDirectory: options.markerSpoolDirectory,
@@ -269,5 +284,6 @@ export async function coordinateRecallMarkerReplay(
     sourceMarkerIds: discovery.markers.map(({ markerId }) => markerId),
     workItems: coalesceRecallWorkMarkers(discovery.markers),
     quarantineDiagnostics: discovery.quarantineDiagnostics,
+    ordinaryBacklogMarkerCount: allMarkerNames.length - markerNames.length,
   };
 }

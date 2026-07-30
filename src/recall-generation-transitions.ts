@@ -47,34 +47,47 @@ function activateRecallReplacementInRegistry(
   rollbackRetentionMilliseconds: number,
 ): RecallGenerationRegistry {
   const previousGenerationId = registry.activeGenerationId;
+  const previousGeneration = registry.generations.find(
+    ({ generationId }) => generationId === previousGenerationId,
+  );
+  const rollbackGenerationId =
+    previousGeneration?.indexManifestVersion === RECALL_INDEX_MANIFEST_VERSION
+      ? previousGeneration.generationId
+      : null;
   return {
     ...registry,
     activeGenerationId: replacement.generationId,
     buildingGenerationId: null,
-    rollbackGenerationId: previousGenerationId,
+    rollbackGenerationId,
     activePointerChecksum: pointerChecksum,
-    generations: registry.generations.map((entry): RecallGenerationRegistryEntry => {
-      if (entry.generationId === replacement.generationId) {
-        return {
-          ...replacement,
-          state: RecallGenerationCutoverState.REPLAY_PENDING,
-          stateChangedAtEpochMilliseconds: activatedAtEpochMilliseconds,
-        };
-      }
-      if (entry.generationId === previousGenerationId) {
-        return {
-          ...entry,
-          state: RecallGenerationCutoverState.ROLLBACK,
-          stateChangedAtEpochMilliseconds: activatedAtEpochMilliseconds,
-          retireAfterEpochMilliseconds:
-            activatedAtEpochMilliseconds + rollbackRetentionMilliseconds,
-        };
-      }
-      if (entry.state === RecallGenerationCutoverState.ROLLBACK) {
-        return { ...entry, state: RecallGenerationCutoverState.RETIRED };
-      }
-      return entry;
-    }),
+    generations: registry.generations
+      .filter(
+        (entry) =>
+          entry.generationId !== previousGenerationId ||
+          entry.indexManifestVersion === RECALL_INDEX_MANIFEST_VERSION,
+      )
+      .map((entry): RecallGenerationRegistryEntry => {
+        if (entry.generationId === replacement.generationId) {
+          return {
+            ...replacement,
+            state: RecallGenerationCutoverState.REPLAY_PENDING,
+            stateChangedAtEpochMilliseconds: activatedAtEpochMilliseconds,
+          };
+        }
+        if (entry.generationId === rollbackGenerationId) {
+          return {
+            ...entry,
+            state: RecallGenerationCutoverState.ROLLBACK,
+            stateChangedAtEpochMilliseconds: activatedAtEpochMilliseconds,
+            retireAfterEpochMilliseconds:
+              activatedAtEpochMilliseconds + rollbackRetentionMilliseconds,
+          };
+        }
+        if (entry.state === RecallGenerationCutoverState.ROLLBACK) {
+          return { ...entry, state: RecallGenerationCutoverState.RETIRED };
+        }
+        return entry;
+      }),
   };
 }
 
@@ -205,6 +218,21 @@ export interface FailRecallGenerationBuildTransitionOptions {
   failedAtEpochMilliseconds: number;
 }
 
+interface PrepareValidatedRecallGenerationActivationTransitionOptions {
+  registry: RecallGenerationRegistry | null;
+  activePointer: Awaited<ReturnType<typeof readRecallActiveGenerationPointer>>;
+  generationId: string;
+  embeddingProfileId: string;
+  indexManifestFingerprint: string;
+  readyAtEpochMilliseconds: number;
+  replayMarkerIds: readonly string[];
+}
+
+interface PrepareValidatedRecallGenerationActivationTransitionResult {
+  readyEntry: RecallGenerationRegistryEntry;
+  readyRegistry: RecallGenerationRegistry;
+}
+
 /** Validated build evidence required to create one READY replacement snapshot. */
 export interface CreateReadyRecallGenerationTransitionOptions {
   registry: RecallGenerationRegistry;
@@ -225,13 +253,15 @@ export interface ActivateReadyRecallGenerationTransitionOptions {
   activeGenerationPointerPath: string;
   generationRegistryPath: string;
   expectedActivePointer: Awaited<ReturnType<typeof readRecallActiveGenerationPointer>>;
-  expectedFrozenRegistry: RecallGenerationRegistry;
+  expectedFrozenRegistry: RecallGenerationRegistry | null;
   readyRegistry: RecallGenerationRegistry;
   readyEntry: RecallGenerationRegistryEntry;
   rollbackRetentionMilliseconds?: number;
   activatedAtEpochMilliseconds: number;
   beforePointerSwap?(): Promise<void>;
+  afterReadyRegistry?(): Promise<void>;
   afterPointerSwap?(): Promise<void>;
+  afterActivatedRegistry?(): Promise<void>;
   throwIfCancelled(): void;
   retainRecoveryRequired(): void;
 }
@@ -481,10 +511,60 @@ export async function recoverRecallGenerationCutoverTransition(
     return { stateChanged: true, activeGenerationId: pointer.activeGenerationId };
   }
   if (
+    pointer === null &&
+    registry !== null &&
+    registry.activeGenerationId === null &&
+    buildingGenerationEntry?.state === RecallGenerationCutoverState.READY &&
+    buildingGenerationEntry.validatedAtEpochMilliseconds !== undefined &&
+    buildingGenerationEntry.validatedAtEpochMilliseconds !== null
+  ) {
+    const replacementPointer = createRecallActiveGenerationPointer(
+      buildingGenerationEntry.generationId,
+    );
+    const recoveredRegistry = activateRecallReplacementInRegistry(
+      registry,
+      buildingGenerationEntry,
+      replacementPointer.checksum,
+      options.recoveredAtEpochMilliseconds,
+      options.rollbackRetentionMilliseconds ?? DEFAULT_ROLLBACK_RETENTION_MILLISECONDS,
+    );
+    await writeRecallActiveGenerationPointer(
+      options.activeGenerationPointerPath,
+      replacementPointer,
+    );
+    await writeRecallGenerationRegistry(options.generationRegistryPath, recoveredRegistry);
+    await writeRecallBacklogSummary(
+      options.backlogSummaryPath,
+      createReplayPendingActivationBacklogSummary(
+        buildingGenerationEntry,
+        options.recoveredAtEpochMilliseconds,
+      ),
+    );
+    return { stateChanged: true, activeGenerationId: buildingGenerationEntry.generationId };
+  }
+  if (
     pointerAndRegistrySelectSameGeneration &&
     pointer !== null &&
+    registry !== null &&
     buildingGenerationEntry?.state !== RecallGenerationCutoverState.READY
   ) {
+    const activeEntry = registry.generations.find(
+      ({ generationId }) => generationId === pointer.activeGenerationId,
+    );
+    if (
+      activeEntry?.state === RecallGenerationCutoverState.REPLAY_PENDING &&
+      (backlog?.activeGenerationId !== pointer.activeGenerationId ||
+        backlog.generationState !== RecallGenerationCutoverState.REPLAY_PENDING)
+    ) {
+      await writeRecallBacklogSummary(
+        options.backlogSummaryPath,
+        createReplayPendingActivationBacklogSummary(
+          activeEntry,
+          options.recoveredAtEpochMilliseconds,
+        ),
+      );
+      return { stateChanged: true, activeGenerationId: pointer.activeGenerationId };
+    }
     return { stateChanged: false, activeGenerationId: pointer.activeGenerationId };
   }
   if (
@@ -875,6 +955,58 @@ export async function failRecallGenerationBuildTransition(
   return rebuildError;
 }
 
+/** Prepares a validated inactive target for registry-first READY publication. */
+export function prepareValidatedRecallGenerationActivationTransition(
+  options: PrepareValidatedRecallGenerationActivationTransitionOptions,
+): PrepareValidatedRecallGenerationActivationTransitionResult {
+  const registry = options.registry ?? {
+    version: RECALL_GENERATION_REGISTRY_VERSION,
+    activeGenerationId: null,
+    buildingGenerationId: null,
+    rollbackGenerationId: null,
+    activePointerChecksum: null,
+    generations: [],
+  };
+  assertRecallGenerationPointerAgreement(
+    registry,
+    options.activePointer,
+    'Recall validated generation activation found pointer and registry disagreement',
+  );
+  if (registry.buildingGenerationId !== null) {
+    throw new Error(
+      `Recall validated generation activation found another replacement: ${registry.buildingGenerationId}`,
+    );
+  }
+  if (registry.generations.some(({ generationId }) => generationId === options.generationId)) {
+    throw new Error(
+      `Recall validated generation activation target is already registered: ${options.generationId}`,
+    );
+  }
+  const readyEntry: RecallGenerationRegistryEntry = {
+    generationId: options.generationId,
+    state: RecallGenerationCutoverState.READY,
+    embeddingProfileId: options.embeddingProfileId,
+    indexManifestVersion: RECALL_INDEX_MANIFEST_VERSION,
+    markerSchemaVersion: RECALL_WORK_MARKER_VERSION,
+    sessionProjectionSchemaVersion: RECALL_SESSION_PROJECTION_SCHEMA_VERSION,
+    indexManifestFingerprint: options.indexManifestFingerprint,
+    rebuildStartedAtEpochMilliseconds: options.readyAtEpochMilliseconds,
+    stateChangedAtEpochMilliseconds: options.readyAtEpochMilliseconds,
+    rebuildStartMarkerId: options.replayMarkerIds[0] ?? null,
+    rebuildMarkerWatermark: [...options.replayMarkerIds],
+    validatedAtEpochMilliseconds: options.readyAtEpochMilliseconds,
+    retireAfterEpochMilliseconds: null,
+  };
+  return {
+    readyEntry,
+    readyRegistry: {
+      ...registry,
+      buildingGenerationId: options.generationId,
+      generations: [...registry.generations, readyEntry],
+    },
+  };
+}
+
 /** Creates a READY replacement entry without publishing cutover state. */
 export function createReadyRecallGenerationTransition(
   options: CreateReadyRecallGenerationTransitionOptions,
@@ -915,9 +1047,11 @@ export async function activateReadyRecallGenerationTransition(
   if (
     currentPointer?.activeGenerationId !== options.expectedActivePointer?.activeGenerationId ||
     currentPointer?.checksum !== options.expectedActivePointer?.checksum ||
-    currentRegistry === null ||
-    encodeRecallGenerationRegistry(currentRegistry) !==
-      encodeRecallGenerationRegistry(options.expectedFrozenRegistry)
+    (options.expectedFrozenRegistry === null
+      ? currentRegistry !== null
+      : currentRegistry === null ||
+        encodeRecallGenerationRegistry(currentRegistry) !==
+          encodeRecallGenerationRegistry(options.expectedFrozenRegistry))
   ) {
     throw new Error('Recall generation state changed before pointer cutover');
   }
@@ -934,12 +1068,14 @@ export async function activateReadyRecallGenerationTransition(
   options.throwIfCancelled();
   try {
     await writeRecallGenerationRegistry(options.generationRegistryPath, options.readyRegistry);
+    await options.afterReadyRegistry?.();
     await writeRecallActiveGenerationPointer(
       options.activeGenerationPointerPath,
       replacementPointer,
     );
     await options.afterPointerSwap?.();
     await writeRecallGenerationRegistry(options.generationRegistryPath, activatedRegistry);
+    await options.afterActivatedRegistry?.();
   } catch (error) {
     options.retainRecoveryRequired();
     throw error;

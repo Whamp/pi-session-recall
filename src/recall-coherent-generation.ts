@@ -2,6 +2,9 @@ import { existsSync } from 'node:fs';
 import { mkdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 
+import { ZVecOpen } from '@zvec/zvec';
+
+import { RecallSessionProjectionKind } from './enums.js';
 import type { RecallChunkPolicy } from './recall-chunk-policy.js';
 import {
   assertRecallGenerationManifestCompatible,
@@ -35,6 +38,7 @@ import {
   resolveRecallGenerationDirectory,
 } from './recall-generation-state.js';
 import type { RecallEmbeddingModelProfile } from './recall-model-profiles.js';
+import { decodeRecallSessionProjection } from './recall-session-projection.js';
 import type { RecallProjectLineages } from './resolve-project-identity.js';
 
 /** Explicit identifier for creating one inactive empty coherent recall generation. */
@@ -99,7 +103,49 @@ async function resolveCoherentRecallGenerationPaths(
   return createRecallGenerationComponentPaths(generationDirectory);
 }
 
-/** Opens and completely validates one empty generation without session or cache access. */
+function hasMarkerCoveredIncrementalProjection(
+  paths: Readonly<RecallGenerationComponentPaths>,
+  generationId: string,
+): boolean {
+  const collection = ZVecOpen(paths.sessionProjectionStorePath, { readOnly: true });
+  try {
+    if (collection.stats.docCount === 0) {
+      return false;
+    }
+    const records = collection.querySync({
+      topk: collection.stats.docCount,
+      outputFields: ['projectionKind', 'projectionJson'],
+      includeVector: false,
+    });
+    return records.some(({ fields }) => {
+      if (
+        fields.projectionKind !== RecallSessionProjectionKind.PHYSICAL_SESSION ||
+        typeof fields.projectionJson !== 'string'
+      ) {
+        return false;
+      }
+      const parsed: unknown = JSON.parse(fields.projectionJson);
+      if (
+        typeof parsed !== 'object' ||
+        parsed === null ||
+        !('ingestionProjectionPayload' in parsed)
+      ) {
+        return false;
+      }
+      const projection = decodeRecallSessionProjection(parsed.ingestionProjectionPayload, {
+        expectedGenerationId: generationId,
+      });
+      return (
+        projection.projectionKind === RecallSessionProjectionKind.PHYSICAL_SESSION &&
+        projection.markerCheckpoint.coveredMarkerIds.length > 0
+      );
+    });
+  } finally {
+    collection.closeSync();
+  }
+}
+
+/** Opens and validates one received generation plus any verified incremental checkpoints. */
 export async function openValidatedRecallGeneration(
   config: Readonly<RecallCoherentGenerationConfig>,
   generationId: string,
@@ -123,7 +169,7 @@ export async function openValidatedRecallGeneration(
   );
   const recordIds = await readRecallGenerationStoreRecordMembership(paths);
   const receiptCounts = receipt.exactMembership;
-  for (const [responsibility, expectedCount, actualCount] of [
+  const membershipMismatches = [
     ['lexical-source', receiptCounts.lexicalSource.count, recordIds.lexicalSource.length],
     ['dense-evidence', receiptCounts.dense.count, recordIds.dense.length],
     [
@@ -131,8 +177,19 @@ export async function openValidatedRecallGeneration(
       receiptCounts.sessionProjection.count,
       recordIds.sessionProjection.length,
     ],
-  ] as const) {
-    if (actualCount !== expectedCount) {
+  ] as const;
+  const membershipCountsMatchReceipt = membershipMismatches.every(
+    ([, expectedCount, actualCount]) => expectedCount === actualCount,
+  );
+  if (
+    !membershipCountsMatchReceipt &&
+    !hasMarkerCoveredIncrementalProjection(paths, generationId)
+  ) {
+    const mismatch = membershipMismatches.find(
+      ([, expectedCount, actualCount]) => expectedCount !== actualCount,
+    );
+    if (mismatch !== undefined) {
+      const [responsibility, expectedCount, actualCount] = mismatch;
       throw new Error(
         `Recall coherent generation ${responsibility} membership mismatch: expected ${expectedCount} rows, received ${actualCount}`,
       );
@@ -146,20 +203,27 @@ export async function openValidatedRecallGeneration(
     expectedManifest.embeddingProfile.storedDimensions,
     recordIds,
   );
-  const expectedReceipt = createRecallGenerationValidationReceipt({
-    generationId,
-    manifestFingerprint: fingerprint,
-    membership: {
-      startingSnapshotFingerprint: receipt.startingSnapshot.fingerprint,
-      physicalSourceCount: receipt.startingSnapshot.physicalSourceCount,
-      logicalSessionOccurrenceCount: receipt.startingSnapshot.logicalSessionOccurrenceCount,
-      lexicalSourceRecordIds: recordIds.lexicalSource,
-      denseRecordIds: recordIds.dense,
-      sessionProjectionRecordIds: recordIds.sessionProjection,
-    },
-    validatedAtEpochMilliseconds: receipt.validatedAtEpochMilliseconds,
-  });
-  assertRecallGenerationValidationReceipt(receipt, expectedReceipt, paths.validationReceiptPath);
+  if (receipt.generationId !== generationId || receipt.manifestFingerprint !== fingerprint) {
+    throw new Error(
+      `Recall coherent generation validation receipt identity mismatch at ${paths.validationReceiptPath}`,
+    );
+  }
+  if (membershipCountsMatchReceipt) {
+    const expectedReceipt = createRecallGenerationValidationReceipt({
+      generationId,
+      manifestFingerprint: fingerprint,
+      membership: {
+        startingSnapshotFingerprint: receipt.startingSnapshot.fingerprint,
+        physicalSourceCount: receipt.startingSnapshot.physicalSourceCount,
+        logicalSessionOccurrenceCount: receipt.startingSnapshot.logicalSessionOccurrenceCount,
+        lexicalSourceRecordIds: recordIds.lexicalSource,
+        denseRecordIds: recordIds.dense,
+        sessionProjectionRecordIds: recordIds.sessionProjection,
+      },
+      validatedAtEpochMilliseconds: receipt.validatedAtEpochMilliseconds,
+    });
+    assertRecallGenerationValidationReceipt(receipt, expectedReceipt, paths.validationReceiptPath);
+  }
   return {
     generationId,
     generationDirectory: paths.generationDirectory,

@@ -538,7 +538,8 @@ export function validateRecallGenerationStores(
   }
 }
 
-function readRecallGenerationVectorValues(vector: ZVecVector | undefined): number[] {
+/** Normalizes any zvec vector representation for checksum and width verification. */
+export function readRecallGenerationVectorValues(vector: ZVecVector | undefined): number[] {
   if (vector === undefined) {
     return [];
   }

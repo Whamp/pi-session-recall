@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import { ZVecOpen, type ZVecCollection, type ZVecStatus, type ZVecVector } from '@zvec/zvec';
+import { ZVecOpen, type ZVecCollection, type ZVecStatus } from '@zvec/zvec';
 import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 
@@ -22,6 +22,7 @@ import {
   createRecallGenerationComponentPaths,
   createRecallGenerationStoreContracts,
   readRecallGenerationStoreRecordMembership,
+  readRecallGenerationVectorValues,
   validateRecallGenerationDenseSubset,
   validateRecallGenerationStores,
 } from './recall-generation-stores.js';
@@ -185,19 +186,6 @@ function assertCheckedBuildStatuses(
   }
 }
 
-function readVectorValues(vector: ZVecVector | undefined): number[] {
-  if (vector === undefined) {
-    return [];
-  }
-  if (Array.isArray(vector)) {
-    return [...vector];
-  }
-  if (vector instanceof Float32Array || vector instanceof Int8Array) {
-    return Array.from(vector);
-  }
-  return Object.values(vector);
-}
-
 function fieldsMatch(
   actual: Readonly<Record<string, unknown>>,
   expected: Readonly<Record<string, unknown>>,
@@ -232,7 +220,7 @@ function verifyDenseCandidate(
   ) {
     return null;
   }
-  const embedding = readVectorValues(candidate.vectors.embedding);
+  const embedding = readRecallGenerationVectorValues(candidate.vectors.embedding);
   const expectedDimensions = expectation.fields.storedDimensions;
   if (
     typeof expectedDimensions !== 'number' ||
@@ -443,7 +431,9 @@ function upsertRowsInBoundedBatches(
       return false;
     }
     const actualVectorChecksum = calculateSha256(
-      Buffer.from(new Float32Array(readVectorValues(actual.vectors.embedding)).buffer),
+      Buffer.from(
+        new Float32Array(readRecallGenerationVectorValues(actual.vectors.embedding)).buffer,
+      ),
     );
     return actualVectorChecksum !== row.fields.vectorChecksum;
   });

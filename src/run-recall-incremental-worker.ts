@@ -59,11 +59,7 @@ import {
   type RecallSessionMetadataSweepResult,
 } from './scan-recall-session-metadata.js';
 import { scheduleRecallWorkPlanEligibility } from './schedule-recall-work-plan-eligibility.js';
-import type {
-  IncrementalRecallWorkPlanTransferOutcome,
-  TransferIncrementalRecallWorkPlanOptions,
-} from './transfer-incremental-recall-work-plan.js';
-import type { EmbeddingVectorCache } from './embedding-vector-cache.js';
+import type { IncrementalRecallWorkPlanTransferOutcome } from './transfer-incremental-recall-work-plan.js';
 import type { ConversationTextTokenizer } from './session-conversation-index.js';
 
 /** Existing scalar sinks and executable callback protected by the detached-worker failure boundary. */
@@ -984,82 +980,108 @@ async function runConfiguredRecallIncrementalWorkerExecutable(
   let configuredRuntime: { dispose(): Promise<void> } | undefined;
   let productionTransferDependencies:
     | Promise<{
-        embeddingCache: EmbeddingVectorCache;
-        chunkPolicy: TransferIncrementalRecallWorkPlanOptions['chunkPolicy'];
-        embeddingDimensions: number;
-        loadTokenizer: () => Promise<ConversationTextTokenizer>;
         transferWorkPlan(
-          options: TransferIncrementalRecallWorkPlanOptions,
+          workPlan: RecallMarkerReplayWorkPlan,
         ): Promise<IncrementalRecallWorkPlanTransferOutcome>;
       }>
     | undefined;
   const loadProductionTransferDependencies = () => {
-    productionTransferDependencies ??= Promise.all([
-      import('./embedding-vector-cache.js'),
-      import('./configured-recall-inference-runtime.js'),
-      import('./recall-inference-configuration.js'),
-      import('./recall-index-manifest.js'),
-      import('./transfer-incremental-recall-work-plan.js'),
-    ]).then(
-      async ([
+    productionTransferDependencies ??= (async () => {
+      let rawManifest: unknown;
+      try {
+        rawManifest = JSON.parse(await readFile(activeSelection.manifestPath, 'utf8'));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(
+          `Recall incremental worker active generation manifest unreadable: ${message}`,
+          { cause: error },
+        );
+      }
+      if (isUnknownRecord(rawManifest) && rawManifest.generationFormatVersion === 1) {
+        const inferenceRuntimeModule = await import('./configured-recall-inference-runtime.js');
+        const runtime = await inferenceRuntimeModule.createConfiguredRecallInferenceRuntime(config);
+        configuredRuntime = runtime;
+        return {
+          transferWorkPlan: (workPlan: RecallMarkerReplayWorkPlan) =>
+            runtime.service.transferIncrementalRecallWorkPlan(workPlan),
+        };
+      }
+      const [
         embeddingCacheModule,
         inferenceRuntimeModule,
         inferenceConfigModule,
         manifestModule,
         transferModule,
-      ]) => {
-        const manifest = await manifestModule.readRecallIndexManifest(activeSelection.manifestPath);
-        if (manifest === null) {
-          throw new Error('Recall incremental worker active generation manifest missing');
-        }
-        const inferenceConfigPath =
-          inferenceRuntimeModule.resolveRecallInferenceConfigurationPath(config);
-        const inferenceConfig = await inferenceConfigModule.readRecallInferenceConfiguration(
-          inferenceConfigPath,
-          { generationRegistryPath: config.generationRegistryPath },
+      ] = await Promise.all([
+        import('./embedding-vector-cache.js'),
+        import('./configured-recall-inference-runtime.js'),
+        import('./recall-inference-configuration.js'),
+        import('./recall-index-manifest.js'),
+        import('./transfer-legacy-incremental-recall-work-plan.js'),
+      ]);
+      const manifest = await manifestModule.readRecallIndexManifest(activeSelection.manifestPath);
+      if (manifest === null) {
+        throw new Error('Recall incremental worker active generation manifest missing');
+      }
+      const inferenceConfigPath =
+        inferenceRuntimeModule.resolveRecallInferenceConfigurationPath(config);
+      const inferenceConfig = await inferenceConfigModule.readRecallInferenceConfiguration(
+        inferenceConfigPath,
+        { generationRegistryPath: config.generationRegistryPath },
+      );
+      let loadTokenizer: () => Promise<ConversationTextTokenizer>;
+      let embeddings: { embedTexts(texts: string[], signal?: AbortSignal): Promise<number[][]> };
+      if (inferenceConfig.embedding !== null) {
+        const runtime = await inferenceRuntimeModule.createConfiguredRecallInferenceRuntime(
+          config,
+          {
+            inferenceConfigurationPath: inferenceConfigPath,
+          },
         );
-        let loadTokenizer: () => Promise<ConversationTextTokenizer>;
-        let embeddings: { embedTexts(texts: string[], signal?: AbortSignal): Promise<number[][]> };
-        if (inferenceConfig.embedding !== null) {
-          const runtime = await inferenceRuntimeModule.createConfiguredRecallInferenceRuntime(
-            config,
-            { inferenceConfigurationPath: inferenceConfigPath },
-          );
-          configuredRuntime = runtime;
-          loadTokenizer = () => runtime.loadTokenizer();
-          embeddings = {
-            embedTexts: (texts, signal) => runtime.embeddingProvider.embedDocuments(texts, signal),
-          };
-        } else {
-          const [embeddingClientModule, tokenizerModule] = await Promise.all([
-            import('./local-embedding-client.js'),
-            import('./octen-conversation-tokenizer.js'),
-          ]);
-          embeddings = embeddingClientModule.createLocalEmbeddingClient({
-            baseUrl: config.embeddingBaseUrl,
-            model: config.embeddingModel,
-            dimensions: config.embeddingDimensions,
-            batchSize: config.embeddingBatchSize,
-          });
-          loadTokenizer = () =>
-            tokenizerModule.loadOctenConversationTokenizer({
-              cacheDirectory: config.tokenizerCacheDirectory,
-            });
-        }
-        return {
-          embeddingCache: embeddingCacheModule.createEmbeddingVectorCache({
-            cacheDirectory: config.embeddingCacheDirectory,
-            identity: embeddingCacheModule.createEmbeddingVectorCacheIdentity(manifest),
-            embeddingRequestBatchSize: config.embeddingBatchSize,
-            embeddings,
-          }),
-          chunkPolicy: manifest.chunkPolicy,
-          embeddingDimensions: manifest.embedding.dimensions,
-          loadTokenizer,
-          transferWorkPlan: transferModule.transferIncrementalRecallWorkPlan,
+        configuredRuntime = runtime;
+        loadTokenizer = () => runtime.loadTokenizer();
+        embeddings = {
+          embedTexts: (texts, signal) => runtime.embeddingProvider.embedDocuments(texts, signal),
         };
-      },
-    );
+      } else {
+        const [embeddingClientModule, tokenizerModule] = await Promise.all([
+          import('./local-embedding-client.js'),
+          import('./octen-conversation-tokenizer.js'),
+        ]);
+        embeddings = embeddingClientModule.createLocalEmbeddingClient({
+          baseUrl: config.embeddingBaseUrl,
+          model: config.embeddingModel,
+          dimensions: config.embeddingDimensions,
+          batchSize: config.embeddingBatchSize,
+        });
+        loadTokenizer = () =>
+          tokenizerModule.loadOctenConversationTokenizer({
+            cacheDirectory: config.tokenizerCacheDirectory,
+          });
+      }
+      const embeddingCache = embeddingCacheModule.createEmbeddingVectorCache({
+        cacheDirectory: config.embeddingCacheDirectory,
+        identity: embeddingCacheModule.createEmbeddingVectorCacheIdentity(manifest),
+        embeddingRequestBatchSize: config.embeddingBatchSize,
+        embeddings,
+      });
+      return {
+        transferWorkPlan: (workPlan: RecallMarkerReplayWorkPlan) =>
+          transferModule.transferLegacyIncrementalRecallWorkPlan({
+            workPlan,
+            lockPath: config.lockPath,
+            evidenceDatabasePath: activeSelection.databasePath,
+            projectionDatabasePath: activeSelection.projectionDatabasePath,
+            embeddingDimensions: manifest.embedding.dimensions,
+            chunkPolicy: manifest.chunkPolicy,
+            loadTokenizer,
+            resolveProjectIdentity: resolveWorkerProjectIdentity,
+            embeddingCache,
+            operationDiagnostics,
+            nowEpochMilliseconds: Date.now,
+          }),
+      };
+    })();
     return productionTransferDependencies;
   };
   let deletionReconciliationHalted = false;
@@ -1087,19 +1109,7 @@ async function runConfiguredRecallIncrementalWorkerExecutable(
       metadataSweepRequested: persistedSchedule?.metadataSweepRequested ?? false,
       async transferWorkPlan(workPlan) {
         const dependencies = await loadProductionTransferDependencies();
-        return dependencies.transferWorkPlan({
-          workPlan,
-          lockPath: config.lockPath,
-          evidenceDatabasePath: activeSelection.databasePath,
-          projectionDatabasePath: activeSelection.projectionDatabasePath,
-          embeddingDimensions: dependencies.embeddingDimensions,
-          chunkPolicy: dependencies.chunkPolicy,
-          loadTokenizer: dependencies.loadTokenizer,
-          resolveProjectIdentity: resolveWorkerProjectIdentity,
-          embeddingCache: dependencies.embeddingCache,
-          operationDiagnostics,
-          nowEpochMilliseconds: Date.now,
-        });
+        return dependencies.transferWorkPlan(workPlan);
       },
       loadKnownSourceInventory: () =>
         loadRecallKnownSourceInventory(

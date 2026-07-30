@@ -900,14 +900,14 @@ void test('Pi recall tool adapter XOR-validates search and exact expansion reque
     async createRecallGenerationFromPhysicalSources() {
       throw new Error('Pi recall adapter test does not create source generations');
     },
+    async transferIncrementalRecallWorkPlan() {
+      throw new Error('Pi recall adapter test does not transfer incremental work');
+    },
     async searchRecallGenerationHybrid() {
       throw new Error('Pi recall adapter test does not hybrid-search source generations');
     },
     async searchRecallGenerationLexical() {
       throw new Error('Pi recall adapter test does not search source generations');
-    },
-    async deleteRecallGenerationPhysicalSource() {
-      throw new Error('Pi recall adapter test does not delete physical sources');
     },
     async openValidatedRecallGeneration() {
       throw new Error('Pi recall adapter test does not open generations');

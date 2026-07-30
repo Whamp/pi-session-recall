@@ -1,13 +1,13 @@
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { rm, stat, writeFile } from 'node:fs/promises';
+import { stat } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import { ZVecIndexType, ZVecOpen, type ZVecCollection, type ZVecStatus } from '@zvec/zvec';
+import { ZVecIndexType, ZVecOpen } from '@zvec/zvec';
 import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 
-import { RecallSessionProjectionKind } from './enums.js';
+import { RecallProjectionEncodingStatus, RecallSessionProjectionKind } from './enums.js';
 import { createRecallSessionProjectionBaselineFromImport } from './create-recall-session-projection-baseline.js';
 import type { RecallCoherentGenerationConfig } from './recall-coherent-generation.js';
 import {
@@ -24,7 +24,12 @@ import {
   resolveRecallPhysicalSourceIdentity,
 } from './recall-source-identity.js';
 import type { RecallEmbeddingProvider } from './recall-inference-capabilities.js';
-import type { LogicalSessionProjection } from './recall-session-projection.js';
+import {
+  encodeRecallSessionProjection,
+  type LogicalSessionProjection,
+  type PhysicalSessionProjection,
+  type RecallSessionProjection,
+} from './recall-session-projection.js';
 import type { ResolvedProjectIdentity } from './resolve-project-identity.js';
 import {
   readSessionConversationImport,
@@ -164,25 +169,6 @@ function createRecallProjectIdentityDigest(projectIdentity: string): string {
   return projectIdentity ? createHash('sha256').update(projectIdentity).digest('hex') : '';
 }
 
-function assertCheckedZvecStatuses(
-  operation: string,
-  recordIds: readonly string[],
-  statuses: readonly ZVecStatus[],
-): void {
-  if (statuses.length !== recordIds.length) {
-    throw new Error(
-      `Recall physical source generation ${operation} status mismatch: expected ${recordIds.length}, received ${statuses.length}`,
-    );
-  }
-  for (const [index, status] of statuses.entries()) {
-    if (!status.ok) {
-      throw new Error(
-        `Recall physical source generation ${operation} failed for ${recordIds[index] ?? 'unknown record'}: ${status.message}`,
-      );
-    }
-  }
-}
-
 function findLogicalSessionForChunk(
   logicalSessions: readonly SessionConversationLogicalSession[],
   chunk: SessionConversationChunk,
@@ -250,6 +236,16 @@ function createBranchLeafIdsByEntryId(
   return result;
 }
 
+function encodeTargetIngestionProjection(projection: RecallSessionProjection) {
+  const encoded = encodeRecallSessionProjection(projection);
+  if (encoded.status !== RecallProjectionEncodingStatus.ENCODED) {
+    throw new Error(
+      `Recall physical source generation projection exceeds bounded payload: ${projection.projectionId}`,
+    );
+  }
+  return encoded.payload;
+}
+
 function createCommonLexicalFields(options: {
   generationId: string;
   physicalSourceIdentity: string;
@@ -303,7 +299,10 @@ export async function materializeRecallPhysicalSourceGeneration(
     config.sessionsDirectory,
     physicalSessionPath,
   );
-  const sourceByteSize = (await stat(sourceReadPath)).size;
+  const [sourceByteSize, physicalSourceMetadata] = await Promise.all([
+    stat(sourceReadPath).then(({ size }) => size),
+    stat(physicalSessionPath, { bigint: true }),
+  ]);
   const imported = await readSessionConversationImport(sourceReadPath, {
     tokenizer: dependencies.tokenizer,
     ...(config.chunkPolicy ?? {}),
@@ -320,6 +319,21 @@ export async function materializeRecallPhysicalSourceGeneration(
     (projection): projection is LogicalSessionProjection =>
       projection.projectionKind === RecallSessionProjectionKind.LOGICAL_SESSION,
   );
+  const physicalProjection = sourceProjections.find(
+    (projection): projection is PhysicalSessionProjection =>
+      projection.projectionKind === RecallSessionProjectionKind.PHYSICAL_SESSION,
+  );
+  if (physicalProjection === undefined) {
+    throw new Error(
+      `Recall physical source generation physical projection missing for ${physicalSessionPath}`,
+    );
+  }
+  const targetPhysicalProjection: PhysicalSessionProjection = {
+    ...physicalProjection,
+    sourcePath: physicalSessionPath,
+    sourceDevice: physicalSourceMetadata.dev.toString(),
+    sourceInode: physicalSourceMetadata.ino.toString(),
+  };
   const lexicalSource: MaterializedRecallPhysicalSourceGeneration['lexicalSource'] = [];
   const denseInputs: Array<{
     chunk: SessionConversationChunk;
@@ -478,6 +492,7 @@ export async function materializeRecallPhysicalSourceGeneration(
           headerSourceLine: logicalSession.sourceLineStart,
           projectAttribution,
           entryAnchorIds,
+          ingestionProjectionPayload: encodeTargetIngestionProjection(logicalProjection),
         }),
       },
     });
@@ -668,6 +683,7 @@ export async function materializeRecallPhysicalSourceGeneration(
             physicalSessionProjectionId,
           ]),
         },
+        ingestionProjectionPayload: encodeTargetIngestionProjection(targetPhysicalProjection),
       }),
     },
   };
@@ -762,80 +778,4 @@ export async function searchRecallGenerationLexical(
   } finally {
     collection.closeSync();
   }
-}
-
-async function listPhysicalSourceRecordIds(
-  collection: ZVecCollection,
-  physicalSourceIdentity: string,
-): Promise<string[]> {
-  if (collection.stats.docCount === 0) {
-    return [];
-  }
-  const documents = await collection.query({
-    filter: `physicalSourceIdentity = '${physicalSourceIdentity}'`,
-    topk: collection.stats.docCount,
-    outputFields: [],
-    includeVector: false,
-  });
-  return documents.map(({ id }) => id);
-}
-
-/** Deletes rows joined to exactly one physical source, with dense evidence removed first. */
-export async function deleteRecallGenerationPhysicalSource(
-  config: Readonly<RecallCoherentGenerationConfig>,
-  generationId: string,
-  physicalSourceIdentity: string,
-): Promise<void> {
-  const paths = createRecallGenerationComponentPaths(
-    join(config.generationRootDirectory, generationId),
-  );
-  const dense = ZVecOpen(paths.denseStorePath);
-  const lexicalSource = ZVecOpen(paths.lexicalSourceStorePath);
-  const sessionProjection = ZVecOpen(paths.sessionProjectionStorePath);
-  try {
-    const [denseIds, lexicalSourceIds, projectionIds] = await Promise.all([
-      listPhysicalSourceRecordIds(dense, physicalSourceIdentity),
-      listPhysicalSourceRecordIds(lexicalSource, physicalSourceIdentity),
-      listPhysicalSourceRecordIds(sessionProjection, physicalSourceIdentity),
-    ]);
-    await writeFile(
-      paths.recoveryRecordPath,
-      `${JSON.stringify(
-        {
-          version: 1,
-          generationId,
-          operation: 'delete-physical-source',
-          physicalSourceIdentity,
-          denseIds,
-          lexicalSourceIds,
-          projectionIds,
-        },
-        null,
-        2,
-      )}\n`,
-      { encoding: 'utf8', flag: 'wx' },
-    );
-    if (denseIds.length > 0) {
-      assertCheckedZvecStatuses('dense deletion', denseIds, dense.deleteSync(denseIds));
-    }
-    if (lexicalSourceIds.length > 0) {
-      assertCheckedZvecStatuses(
-        'lexical/source deletion',
-        lexicalSourceIds,
-        lexicalSource.deleteSync(lexicalSourceIds),
-      );
-    }
-    if (projectionIds.length > 0) {
-      assertCheckedZvecStatuses(
-        'session projection deletion',
-        projectionIds,
-        sessionProjection.deleteSync(projectionIds),
-      );
-    }
-  } finally {
-    dense.closeSync();
-    lexicalSource.closeSync();
-    sessionProjection.closeSync();
-  }
-  await rm(paths.recoveryRecordPath);
 }

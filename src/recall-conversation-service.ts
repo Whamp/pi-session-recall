@@ -34,7 +34,6 @@ import {
   type RecallCoherentGenerationConfig,
 } from './recall-coherent-generation.js';
 import {
-  deleteRecallGenerationPhysicalSource,
   searchRecallGenerationLexical,
   type CreateRecallGenerationFromPhysicalSourcesOptions,
   type RecallGenerationLexicalEvidence,
@@ -101,6 +100,7 @@ import {
   readRecallIndexManifest,
   readRecallSearchManifest,
   recoverRecallEmbeddingCanaryFromManifest,
+  DEFAULT_RECALL_CHUNK_POLICY,
   RECALL_EMBEDDING_CANARY_TEXT,
   writeRecallIndexManifest,
   type RecallEmbeddingModelIdentity,
@@ -157,7 +157,10 @@ import {
   type PhysicalSessionProjection,
   type RecallSessionProjection,
 } from './recall-session-projection.js';
-import { readRecallSessionSourceRange } from './read-recall-session-append-delta.js';
+import {
+  readRecallSessionSourceRange,
+  type RecallSessionSourceRangeReader,
+} from './read-recall-session-append-delta.js';
 import {
   createRecallIndexMetrics,
   createRecallOperationDiagnostics,
@@ -193,6 +196,12 @@ import {
   searchRecallGenerationHybrid,
   type RecallGenerationHybridSearchResult,
 } from './search-recall-generation-hybrid.js';
+import {
+  transferIncrementalRecallWorkPlan,
+  type IncrementalRecallWorkPlanRequest,
+  type IncrementalRecallWorkPlanTransferOutcome,
+  type TransferIncrementalRecallWorkPlanOptions,
+} from './transfer-incremental-recall-work-plan.js';
 import { createStoredRecallEmbedding } from './recall-stored-embedding.js';
 import {
   openZvecConversationStore,
@@ -507,6 +516,10 @@ export interface RecallConversationService {
   createRecallGenerationFromPhysicalSources(
     options: CreateRecallGenerationFromPhysicalSourcesOptions,
   ): Promise<OpenedValidatedRecallGeneration>;
+  /** Transfers one marker-backed physical-source plan through the active target generation. */
+  transferIncrementalRecallWorkPlan(
+    request: IncrementalRecallWorkPlanRequest,
+  ): Promise<IncrementalRecallWorkPlanTransferOutcome>;
   /** Searches dense and lexical evidence in one explicitly named inactive target generation. */
   searchRecallGenerationHybrid(
     generationId: string,
@@ -519,11 +532,6 @@ export interface RecallConversationService {
     query: string,
     limit: number,
   ): Promise<RecallGenerationLexicalEvidence[]>;
-  /** Deletes evidence, anchors, and projections joined to exactly one physical source. */
-  deleteRecallGenerationPhysicalSource(
-    generationId: string,
-    physicalSourceIdentity: string,
-  ): Promise<void>;
   /** Opens one validated target-format generation without selecting it for search. */
   openValidatedRecallGeneration(generationId: string): Promise<OpenedValidatedRecallGeneration>;
   /** Deletes one disposable target-format generation only when no role protects it. */
@@ -562,6 +570,10 @@ export interface RecallConversationDependencies {
     stage: 'after-snapshot-capture' | 'after-dense-write' | 'before-validation-receipt',
     context: Readonly<{ generationDirectory: string; physicalSourceIdentity?: string }>,
   ) => void | Promise<void>;
+  /** Disposable-test source reader for proving bounded incremental append reads. */
+  incrementalTransferReadRange?: RecallSessionSourceRangeReader;
+  /** Deterministic storage interruption probe for target incremental transfer tests. */
+  incrementalTransferFault?: TransferIncrementalRecallWorkPlanOptions['incrementalTransferFault'];
   /** Reconstructs the same configured inference runtime inside a detached rebuild worker. */
   backgroundIndexServiceFactory?: RecallBackgroundIndexServiceFactory;
 }
@@ -1296,6 +1308,8 @@ export function createRecallConversationService(
   const workerSignal =
     dependencies.workerSignal ?? createRecallDetachedWorkerSignal(config.workerOwnershipLockPath);
   const fixedSnapshotBuildFault = dependencies.fixedSnapshotBuildFault;
+  const incrementalTransferReadRange = dependencies.incrementalTransferReadRange;
+  const incrementalTransferFault = dependencies.incrementalTransferFault;
   const backgroundIndexStatusPath =
     config.backgroundIndexStatusPath ?? join(config.dataDirectory, 'background-index-status.json');
   const backgroundIndexRequestPath =
@@ -2837,6 +2851,25 @@ export function createRecallConversationService(
         }),
       );
     },
+    transferIncrementalRecallWorkPlan(request) {
+      return runSerialized(() => {
+        const services = {
+          generation: { ...coherentGenerationConfig, lockPath: config.lockPath },
+          chunkPolicy: config.chunkPolicy ?? DEFAULT_RECALL_CHUNK_POLICY,
+          loadTokenizer: getConversationTokenizer,
+          embeddingProvider,
+          resolveProjectIdentity: resolveSearchProjectIdentity,
+          ...(incrementalTransferReadRange ? { readRange: incrementalTransferReadRange } : {}),
+          ...(incrementalTransferFault ? { incrementalTransferFault } : {}),
+        };
+        return 'confirmedPhysicalSourceDeletion' in request
+          ? transferIncrementalRecallWorkPlan({
+              ...services,
+              confirmedPhysicalSourceDeletion: request.confirmedPhysicalSourceDeletion,
+            })
+          : transferIncrementalRecallWorkPlan({ ...services, workPlan: request });
+      });
+    },
     searchRecallGenerationHybrid(generationId, query, limit) {
       return runSerialized(async () => {
         const nativeQueryEmbedding = await embeddingProvider.embedQuery(query);
@@ -2858,17 +2891,6 @@ export function createRecallConversationService(
     searchRecallGenerationLexical(generationId, query, limit) {
       return runSerialized(() =>
         searchRecallGenerationLexical(coherentGenerationConfig, generationId, query, limit),
-      );
-    },
-    deleteRecallGenerationPhysicalSource(generationId, physicalSourceIdentity) {
-      return runSerialized(() =>
-        coordinateRecallWriteWindow({ lockPath: config.lockPath, allowRecovery: false }, () =>
-          deleteRecallGenerationPhysicalSource(
-            coherentGenerationConfig,
-            generationId,
-            physicalSourceIdentity,
-          ),
-        ),
       );
     },
     openValidatedRecallGeneration(generationId) {

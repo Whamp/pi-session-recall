@@ -889,10 +889,12 @@ void test('configured service keys lexical evidence, anchors, and projections by
     projections.closeSync();
   }
 
-  await service.deleteRecallGenerationPhysicalSource(
-    generationId,
-    firstSource.physicalSourceIdentity,
-  );
+  await service.transferIncrementalRecallWorkPlan({
+    confirmedPhysicalSourceDeletion: {
+      targetGenerationId: generationId,
+      physicalSourceIdentity: firstSource.physicalSourceIdentity,
+    },
+  });
   assert.deepEqual(
     await service.searchRecallGenerationLexical(generationId, 'alpha_token', 10),
     [],

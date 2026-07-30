@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "candidateCommit": "b9700249289fe7d869dafdb66e024b811a74a9e7",
-  "completedAt": "2026-07-30T13:01:31.105Z",
+  "candidateCommit": "9db5c434e4d7ae576ce93446db644ddcd38dfeff",
+  "completedAt": "2026-07-30T13:47:54.488Z",
   "environment": {
     "nodeVersion": "v24.16.0",
     "platform": "linux",
@@ -36,25 +36,25 @@
     {
       "name": "write, recovery, lifecycle, and bounded-policy matrix",
       "command": "/home/will/.local/share/mise/installs/node/24.16.0/bin/node --import tsx --test src/recall-generation-mutation-ownership.test.ts src/transfer-incremental-recall-work-plan.test.ts src/recall-background-index-conversation-service.test.ts src/pi-session-recall-cli.test.ts src/activate-validated-recall-generation.test.ts src/rollback-recall-generation.test.ts src/run-recall-incremental-worker.test.ts src/coordinate-recall-marker-replay.test.ts src/scan-recall-session-metadata.test.ts src/recall-session-projection.test.ts src/coordinate-recall-write-window.test.ts",
-      "durationMilliseconds": 16962.377474,
+      "durationMilliseconds": 18302.723927,
       "passed": true
     },
     {
       "name": "marker publication and detached spawn diagnostic",
       "command": "/home/will/.local/share/mise/installs/node/24.16.0/bin/node --import tsx --test src/publish-recall-work-marker.diagnostic.test.ts",
-      "durationMilliseconds": 347.8275390000017,
+      "durationMilliseconds": 380.06626900000265,
       "passed": true
     },
     {
       "name": "metadata sweep diagnostic",
       "command": "/home/will/.local/share/mise/installs/node/24.16.0/bin/node --import tsx --test src/scan-recall-session-metadata.diagnostic.test.ts",
-      "durationMilliseconds": 1056.6617189999997,
+      "durationMilliseconds": 1054.1959720000013,
       "passed": true
     },
     {
       "name": "close/reopen write-window diagnostic",
       "command": "/home/will/.local/share/mise/installs/node/24.16.0/bin/node --import tsx --test src/commit-incremental-recall-transfer.diagnostic.test.ts",
-      "durationMilliseconds": 1461.5163079999984,
+      "durationMilliseconds": 1551.8370639999994,
       "passed": true
     }
   ],
@@ -87,13 +87,13 @@
   },
   "foregroundBounds": {
     "markerPublicationAndDetachedSpawn": {
-      "combinedP95Milliseconds": 3.6820299999999975,
+      "combinedP95Milliseconds": 3.1906290000000013,
       "acceptanceBoundMilliseconds": 25,
       "accepted": true
     },
     "metadataSweep": {
       "fileCount": 10000,
-      "p95Milliseconds": 43.35761500000001,
+      "p95Milliseconds": 39.305251999999996,
       "acceptanceBoundMilliseconds": 500,
       "accepted": true
     },
@@ -102,7 +102,7 @@
     "writeWindow": {
       "sampleCount": 20,
       "p95": {
-        "writeWindowMilliseconds": 72.38874599999986
+        "writeWindowMilliseconds": 64.32906899999989
       },
       "targetWriteWindowMilliseconds": 300
     },

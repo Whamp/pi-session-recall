@@ -713,6 +713,11 @@ async function writePrivateProgress(path: string, value: Record<string, unknown>
   await writeFile(path, `${JSON.stringify(value)}\n`, { encoding: 'utf8', mode: 0o600 });
 }
 
+function reportBenchmarkCleanupFailure(component: string, error: unknown): void {
+  const message = error instanceof Error ? error.message : String(error);
+  console.error(`[cleanup] failed to close ${component}: ${message}`);
+}
+
 async function runBenchmarkLane(options: RunLaneOptions): Promise<BenchmarkLaneResult> {
   console.log(`\n[${options.lane}] evicting scratch source pages`);
   await evictScratchPageCache([join(dirname(options.sample.privateManifestPath))]);
@@ -1013,18 +1018,18 @@ async function runBenchmarkLane(options: RunLaneOptions): Promise<BenchmarkLaneR
   } catch (error) {
     try {
       projectionStore.close();
-    } catch {
-      // The original benchmark failure remains primary.
+    } catch (cleanupError) {
+      reportBenchmarkCleanupFailure('projection store', cleanupError);
     }
     try {
       stores.close();
-    } catch {
-      // The original benchmark failure remains primary.
+    } catch (cleanupError) {
+      reportBenchmarkCleanupFailure('split stores', cleanupError);
     }
     try {
       transferSource?.close();
-    } catch {
-      // The original benchmark failure remains primary.
+    } catch (cleanupError) {
+      reportBenchmarkCleanupFailure('transfer source', cleanupError);
     }
     throw error;
   }

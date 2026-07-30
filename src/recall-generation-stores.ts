@@ -109,6 +109,7 @@ const LEXICAL_SOURCE_SCALAR_FIELDS = Object.freeze([
   { name: 'isDenseSearchable', type: 'boolean' },
   { name: 'evidenceChecksum', type: 'string' },
   { name: 'projectIdentity', type: 'string' },
+  { name: 'projectIdentityDigest', type: 'string' },
   { name: 'sourceLineStart', type: 'int32' },
   { name: 'sourceLineEnd', type: 'int32' },
   { name: 'sourceBlockStart', type: 'int32' },
@@ -144,6 +145,7 @@ const DENSE_SCALAR_FIELDS = Object.freeze([
   { name: 'embeddingInputChecksum', type: 'string' },
   { name: 'vectorChecksum', type: 'string' },
   { name: 'projectIdentity', type: 'string' },
+  { name: 'projectIdentityDigest', type: 'string' },
 ] satisfies readonly RecallGenerationScalarFieldContract[]);
 
 const SESSION_PROJECTION_SCALAR_FIELDS = Object.freeze([

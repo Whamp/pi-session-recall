@@ -10,7 +10,6 @@ import {
   ZVecMetricType,
   ZVecOpen,
   type ZVecCollection,
-  type ZVecDoc,
   type ZVecFieldSchema,
   type ZVecFtsIndexParams,
   type ZVecFtsQuery,
@@ -76,12 +75,8 @@ export interface ConversationChunkStore {
   deleteChunks(ids: readonly string[]): Promise<void>;
 }
 
-/** Durable conversation operations plus zvec evolution and bounded-query capabilities. */
-export interface ZvecConversationStore extends ConversationChunkStore {
-  listChunkIdsByPhysicalSessionProjectionId(
-    physicalSessionProjectionId: string,
-    limit: number,
-  ): Promise<string[]>;
+/** Read-only retrieval shape shared by legacy and coherent-generation search stores. */
+export interface RecallConversationSearchStore {
   searchDenseCandidates(
     embedding: number[],
     limit: number,
@@ -98,6 +93,17 @@ export interface ZvecConversationStore extends ConversationChunkStore {
     projectIdentity?: ProjectIdentity,
   ): Promise<RecallFullTextCandidate[]>;
   fetchConversationChunks(this: void, ids: string[]): Map<string, SessionConversationChunk>;
+  close(): void;
+  count(): number;
+}
+
+/** Durable conversation operations plus zvec evolution and bounded-query capabilities. */
+export interface ZvecConversationStore
+  extends ConversationChunkStore, RecallConversationSearchStore {
+  listChunkIdsByPhysicalSessionProjectionId(
+    physicalSessionProjectionId: string,
+    limit: number,
+  ): Promise<string[]>;
   fetchVectors(ids: string[]): Map<string, number[]>;
   groupDenseCandidates(
     embedding: number[],
@@ -109,8 +115,6 @@ export interface ZvecConversationStore extends ConversationChunkStore {
   alterColumn(columnName: string, fieldSchema: ZVecFieldSchema): void;
   createIndex(fieldName: string, indexParams: ZVecInvertIndexParams | ZVecFtsIndexParams): void;
   optimize(): Promise<void>;
-  close(): void;
-  count(): number;
 }
 
 const RECALL_FIELD_SCHEMAS: ZVecFieldSchema[] = [
@@ -208,7 +212,10 @@ function serializeNullableEntryId(value: PiSessionEntryId | null): string {
   return value?.value ?? '';
 }
 
-function serializeConversationChunk(chunk: SessionConversationChunk): Record<string, unknown> {
+/** Serializes one mature search document for storage behind either recall layout. */
+export function serializeStoredConversationChunk(
+  chunk: SessionConversationChunk,
+): Record<string, unknown> {
   return {
     schemaVersion: chunk.schemaVersion,
     documentKind: chunk.documentKind,
@@ -432,8 +439,11 @@ function parseProjectAttribution(
   return { projectIdentity: parsedIdentity, identitySource: parsedSource };
 }
 
-function deserializeConversationChunk(doc: ZVecDoc): SessionConversationChunk {
-  const fields: Record<string, unknown> = doc.fields;
+/** Deserializes one mature search document while validating every persisted field. */
+export function deserializeStoredConversationChunk(
+  id: string,
+  fields: Record<string, unknown>,
+): SessionConversationChunk {
   return {
     schemaVersion: readNumberField(fields, 'schemaVersion'),
     documentKind: parseRecallDocumentKind(readStringField(fields, 'documentKind')),
@@ -441,7 +451,7 @@ function deserializeConversationChunk(doc: ZVecDoc): SessionConversationChunk {
     evidenceKind: parseRecallEvidenceKind(readStringField(fields, 'evidenceKind')),
     evidencePart: parseRecallEvidencePart(readStringField(fields, 'evidencePart')),
     isDenseSearchable: readBooleanField(fields, 'isDenseSearchable'),
-    id: doc.id,
+    id,
     checksum: readStringField(fields, 'checksum'),
     sessionId: { value: readStringField(fields, 'sessionId') } satisfies PiSessionId,
     sessionPath: readStringField(fields, 'sessionPath'),
@@ -558,7 +568,8 @@ function createRecallProjectIdentityFilter(projectIdentity?: ProjectIdentity): s
   return identityDigest ? `projectIdentityDigest = '${identityDigest}'` : undefined;
 }
 
-function createRecallFullTextQuery(query: string): ZVecFtsQuery {
+/** Preserves quoted-phrase handling for ordinary and identifier zvec retrieval. */
+export function createRecallZvecFullTextQuery(query: string): ZVecFtsQuery {
   const openingQuote = query.indexOf('"');
   const closingQuote = query.indexOf('"', openingQuote + 1);
   const hasOneQuotePair =
@@ -638,7 +649,7 @@ export function openZvecConversationStore(config: {
     const projectFilter = createRecallProjectIdentityFilter(projectIdentity);
     const documents = await collection.query({
       fieldName,
-      fts: createRecallFullTextQuery(query),
+      fts: createRecallZvecFullTextQuery(query),
       topk: limit,
       outputFields: RECALL_OUTPUT_FIELDS,
       includeVector: false,
@@ -646,7 +657,7 @@ export function openZvecConversationStore(config: {
       params: { indexType: ZVecIndexType.FTS, defaultOperator },
     });
     return documents.map((doc) => ({
-      ...deserializeConversationChunk(doc),
+      ...deserializeStoredConversationChunk(doc.id, doc.fields),
       fullTextScore: doc.score,
     }));
   };
@@ -671,13 +682,13 @@ export function openZvecConversationStore(config: {
             return {
               id: chunk.id,
               vectors: { embedding },
-              fields: serializeConversationChunk(chunk),
+              fields: serializeStoredConversationChunk(chunk),
             };
           }
           return {
             id: indexedChunk.id,
             vectors: { embedding: new Array<number>(storedDimensions).fill(0) },
-            fields: serializeConversationChunk(indexedChunk),
+            fields: serializeStoredConversationChunk(indexedChunk),
           };
         }),
       );
@@ -720,7 +731,7 @@ export function openZvecConversationStore(config: {
         params: { indexType: ZVecIndexType.HNSW, ef: ZVEC_HNSW_EF_SEARCH },
       });
       return documents.map((doc) => ({
-        ...deserializeConversationChunk(doc),
+        ...deserializeStoredConversationChunk(doc.id, doc.fields),
         cosineDistance: doc.score,
       }));
     },
@@ -746,7 +757,12 @@ export function openZvecConversationStore(config: {
         outputFields: RECALL_OUTPUT_FIELDS,
         includeVector: false,
       });
-      return new Map(Object.values(docs).map((doc) => [doc.id, deserializeConversationChunk(doc)]));
+      return new Map(
+        Object.values(docs).map((doc) => [
+          doc.id,
+          deserializeStoredConversationChunk(doc.id, doc.fields),
+        ]),
+      );
     },
     fetchVectors(ids) {
       if (ids.length === 0) {

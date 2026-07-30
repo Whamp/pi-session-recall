@@ -71,6 +71,7 @@ void test('recall results include concise excerpts and exact source provenance',
     output,
     /2026-07-24T10:00:00Z · assistant · atomic conversation · active branch · session origin \/project · unrestricted global evidence/,
   );
+  assert.match(output, /Evidence occurrence ID: chunk-1/);
   assert.match(output, /Source: \/sessions\/one\.jsonl#entry-1/);
   assert.match(output, /ranking 0\.9223/);
   assert.match(output, /Qwen reranker 0\.9123/);

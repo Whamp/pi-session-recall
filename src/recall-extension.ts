@@ -152,6 +152,7 @@ export function createPiRecallToolDetails(
     totalChunks: search.totalChunks,
     searchPolicy: search.searchPolicy,
     sources: search.results.map((result) => ({
+      evidenceOccurrenceId: result.id,
       documentKind: result.documentKind,
       summaryKind: result.summaryKind,
       evidenceKind: result.evidenceKind,
@@ -181,6 +182,7 @@ export function createPiRecallToolDetails(
       lexical: result.lexical,
       identifier: result.identifier,
       duplicateOccurrences: result.duplicateOccurrences.map((occurrence) => ({
+        evidenceOccurrenceId: occurrence.id,
         documentId: occurrence.id,
         documentKind: occurrence.documentKind,
         summaryKind: occurrence.summaryKind,
@@ -200,6 +202,7 @@ export function createPiRecallToolDetails(
       })),
       expandedChunks:
         result.neighborContext?.chunks.map((chunk) => ({
+          evidenceOccurrenceId: chunk.id,
           documentId: chunk.id,
           sessionPath: chunk.sessionPath,
           entryId: chunk.entryId.value,

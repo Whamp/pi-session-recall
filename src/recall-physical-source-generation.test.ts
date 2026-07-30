@@ -319,6 +319,7 @@ void test('configured service builds and searches a stored-width dense subset be
         'embeddingInputChecksum',
         'vectorChecksum',
         'projectIdentity',
+        'projectIdentityDigest',
       ],
       includeVector: true,
     });

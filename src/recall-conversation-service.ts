@@ -87,6 +87,7 @@ import { createQwenHttpRerankingProvider } from './createQwenHttpRerankingProvid
 import { isUnknownRecord } from './is-unknown-record.js';
 import type { LocalEmbeddingClient } from './local-embedding-client.js';
 import { loadOctenConversationTokenizer } from './octen-conversation-tokenizer.js';
+import { openActiveRecallGenerationSearchStore } from './open-active-recall-generation-search-store.js';
 import { openRecallZvecValidationStore } from './open-recall-zvec-validation-store.js';
 import {
   assertRecallIndexManifestCompatible,
@@ -190,6 +191,7 @@ import {
 import { createStoredRecallEmbedding } from './recall-stored-embedding.js';
 import {
   openZvecConversationStore,
+  type RecallConversationSearchStore,
   type ZvecConversationStore,
 } from './zvec-conversation-store.js';
 import { openZvecSessionProjectionStore } from './zvec-session-projection-store.js';
@@ -1546,6 +1548,14 @@ export function createRecallConversationService(
     return actual;
   }
 
+  async function manifestDeclaresTargetRecallGeneration(manifestPath: string): Promise<boolean> {
+    if (!existsSync(manifestPath)) {
+      return false;
+    }
+    const manifestSource = await readFile(manifestPath, 'utf8');
+    return /"generationFormatVersion"\s*:/u.test(manifestSource);
+  }
+
   async function prepareIndexForWrite(
     targetPaths: RecallIndexTargetPaths,
     signal?: AbortSignal,
@@ -1987,13 +1997,21 @@ export function createRecallConversationService(
                   config.activeGenerationPointerPath,
                   config.generationRootDirectory,
                 );
+                let useTargetGeneration = false;
                 try {
-                  const actualManifest = await readRequiredManifest(activeGeneration.manifestPath);
-                  assertRecallIndexManifestCompatible(
-                    actualManifest,
-                    expectedManifest,
+                  useTargetGeneration = await manifestDeclaresTargetRecallGeneration(
                     activeGeneration.manifestPath,
                   );
+                  if (!useTargetGeneration) {
+                    const actualManifest = await readRequiredManifest(
+                      activeGeneration.manifestPath,
+                    );
+                    assertRecallIndexManifestCompatible(
+                      actualManifest,
+                      expectedManifest,
+                      activeGeneration.manifestPath,
+                    );
+                  }
                 } finally {
                   diagnosticMetrics.embeddingModelVerificationMilliseconds += Math.max(
                     diagnosticsClock.monotonicMilliseconds() - manifestReadStartedAtMilliseconds,
@@ -2016,7 +2034,12 @@ export function createRecallConversationService(
                   void backlogError;
                 }
 
-                const store = openStore('read', activeGeneration.databasePath);
+                const store: RecallConversationSearchStore = useTargetGeneration
+                  ? await openActiveRecallGenerationSearchStore(
+                      coherentGenerationConfig,
+                      activeGeneration.activeGenerationId,
+                    )
+                  : openStore('read', activeGeneration.databasePath);
                 try {
                   const retrievalStartedAtMilliseconds = diagnosticsClock.monotonicMilliseconds();
                   const deepRerankStartedWithMilliseconds =

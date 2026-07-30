@@ -505,6 +505,7 @@ async function resolveDenseRows(
             'embeddingInputChecksum',
             'vectorChecksum',
             'projectIdentity',
+            'projectIdentityDigest',
           ],
           includeVector: true,
         });
@@ -525,6 +526,7 @@ async function resolveDenseRows(
             'embeddingInputChecksum',
             'vectorChecksum',
             'projectIdentity',
+            'projectIdentityDigest',
           ],
           includeVector: true,
         });
@@ -727,6 +729,7 @@ async function writeExpectedPhysicalSource(
               'embeddingInputChecksum',
               'vectorChecksum',
               'projectIdentity',
+              'projectIdentityDigest',
             ],
             includeVector: true,
           });
@@ -803,6 +806,7 @@ async function validateExpectedFixedSnapshotArtifacts(
                 'embeddingInputChecksum',
                 'vectorChecksum',
                 'projectIdentity',
+                'projectIdentityDigest',
               ],
               includeVector: true,
             });

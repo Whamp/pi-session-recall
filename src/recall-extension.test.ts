@@ -611,6 +611,7 @@ void test('Pi recall tool details retain ranked-list evidence and every explicit
     finalResultLimit: 5,
   });
   assert.deepEqual(details.sources[0]?.rankedListEvidence, [evidence]);
+  assert.equal(details.sources[0]?.evidenceOccurrenceId, 'tool-details-result');
   assert.ok(!('topRankBonus' in (details.sources[0] ?? {})));
   assert.ok(!('retrievalPositionRank' in (details.sources[0] ?? {})));
 });

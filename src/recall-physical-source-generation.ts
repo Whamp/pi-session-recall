@@ -32,6 +32,10 @@ import {
   type SessionConversationChunk,
   type SessionConversationLogicalSession,
 } from './session-conversation-index.js';
+import {
+  deserializeStoredConversationChunk,
+  serializeStoredConversationChunk,
+} from './zvec-conversation-store.js';
 
 /** Fixed physical-source snapshot selected for one resumable inactive target generation. */
 export interface CreateRecallGenerationFromPhysicalSourcesOptions {
@@ -95,6 +99,13 @@ const recallGenerationLexicalEvidenceSchema = Type.Object(
   },
   { additionalProperties: false },
 );
+const recallGenerationEvidenceRecordSchema = Type.Object(
+  {
+    evidence: recallGenerationLexicalEvidenceSchema,
+    searchDocument: Type.Record(Type.String(), Type.Unknown()),
+  },
+  { additionalProperties: false },
+);
 
 /** Runtime dependencies needed to materialize and fault-probe a fixed source snapshot. */
 export interface RecallPhysicalSourceGenerationDependencies {
@@ -147,6 +158,10 @@ function createRecallPhysicalSourceMembership(recordIds: readonly string[]): Rea
     count: sortedRecordIds.length,
     digest: createHash('sha256').update(JSON.stringify(sortedRecordIds)).digest('hex'),
   };
+}
+
+function createRecallProjectIdentityDigest(projectIdentity: string): string {
+  return projectIdentity ? createHash('sha256').update(projectIdentity).digest('hex') : '';
 }
 
 function assertCheckedZvecStatuses(
@@ -374,6 +389,9 @@ export async function materializeRecallPhysicalSourceGeneration(
         isDenseSearchable: false,
         evidenceChecksum: '',
         projectIdentity: projectAttribution?.projectIdentity ?? '',
+        projectIdentityDigest: createRecallProjectIdentityDigest(
+          projectAttribution?.projectIdentity ?? '',
+        ),
         sourceLineStart: descriptor.sourceLine,
         sourceLineEnd: descriptor.sourceLine,
         sourceBlockStart: -1,
@@ -422,6 +440,34 @@ export async function materializeRecallPhysicalSourceGeneration(
     });
   }
 
+  const occurrenceIdByLogicalChunkId = new Map<string, string>();
+  for (const chunk of imported.chunks) {
+    const logicalSession = findLogicalSessionForChunk(imported.logicalSessions, chunk);
+    const logicalSessionOccurrenceId = createRecallLogicalSessionOccurrenceId(
+      physicalSource.physicalSourceIdentity,
+      logicalSession.sourceLineStart,
+    );
+    occurrenceIdByLogicalChunkId.set(
+      `${logicalSessionOccurrenceId}:${chunk.id}`,
+      createRecallEvidenceOccurrenceId({
+        physicalSourceIdentity: physicalSource.physicalSourceIdentity,
+        logicalSessionOccurrenceId,
+        entryId: chunk.entryId.value,
+        evidencePart: chunk.evidencePart,
+        sourceLineStart: chunk.sourceLineStart,
+        sourceLineEnd: chunk.sourceLineEnd,
+        sourceBlockStart: chunk.sourceBlockStart,
+        sourceBlockEnd: chunk.sourceBlockEnd,
+        characterStart: chunk.characterStart,
+        characterEnd: chunk.characterEnd,
+        tokenStart: chunk.tokenStart,
+        tokenEnd: chunk.tokenEnd,
+        textRunIndex: chunk.textRunIndex,
+        chunkIndex: chunk.chunkIndex,
+      }),
+    );
+  }
+
   for (const chunk of imported.chunks) {
     const logicalSession = findLogicalSessionForChunk(imported.logicalSessions, chunk);
     const logicalProjection = findLogicalProjection(logicalProjections, logicalSession);
@@ -445,22 +491,14 @@ export async function materializeRecallPhysicalSourceGeneration(
       startByte: descriptor.startByte,
       endByte: descriptor.endByte,
     });
-    const evidenceOccurrenceId = createRecallEvidenceOccurrenceId({
-      physicalSourceIdentity: physicalSource.physicalSourceIdentity,
-      logicalSessionOccurrenceId,
-      entryId: chunk.entryId.value,
-      evidencePart: chunk.evidencePart,
-      sourceLineStart: chunk.sourceLineStart,
-      sourceLineEnd: chunk.sourceLineEnd,
-      sourceBlockStart: chunk.sourceBlockStart,
-      sourceBlockEnd: chunk.sourceBlockEnd,
-      characterStart: chunk.characterStart,
-      characterEnd: chunk.characterEnd,
-      tokenStart: chunk.tokenStart,
-      tokenEnd: chunk.tokenEnd,
-      textRunIndex: chunk.textRunIndex,
-      chunkIndex: chunk.chunkIndex,
-    });
+    const evidenceOccurrenceId = occurrenceIdByLogicalChunkId.get(
+      `${logicalSessionOccurrenceId}:${chunk.id}`,
+    );
+    if (evidenceOccurrenceId === undefined) {
+      throw new Error(
+        `Recall physical source generation occurrence missing for ${physicalSessionPath}:${chunk.id}`,
+      );
+    }
     const projectAttribution = await dependencies.resolveProjectIdentity(chunk.cwd);
     const childEntryIds = logicalSession.entryIds.filter(
       (_, index) => logicalSession.parentEntryIds[index] === chunk.entryId.value,
@@ -484,6 +522,29 @@ export async function materializeRecallPhysicalSourceGeneration(
       entryStartByte: descriptor.startByte,
       entryEndByte: descriptor.endByte,
     });
+    const mapSiblingOccurrenceId = (chunkId: string): string => {
+      const occurrenceId = occurrenceIdByLogicalChunkId.get(
+        `${logicalSessionOccurrenceId}:${chunkId}`,
+      );
+      if (occurrenceId === undefined) {
+        throw new Error(
+          `Recall physical source generation sibling occurrence missing for ${physicalSessionPath}:${chunkId}`,
+        );
+      }
+      return occurrenceId;
+    };
+    const targetSearchChunk: SessionConversationChunk = {
+      ...chunk,
+      id: evidenceOccurrenceId,
+      sessionPath: physicalSessionPath,
+      physicalSessionProjectionId: physicalSource.physicalSourceIdentity,
+      projectAttribution,
+      siblingIds: chunk.siblingIds.map(mapSiblingOccurrenceId),
+      previousSiblingId:
+        chunk.previousSiblingId === null ? null : mapSiblingOccurrenceId(chunk.previousSiblingId),
+      nextSiblingId:
+        chunk.nextSiblingId === null ? null : mapSiblingOccurrenceId(chunk.nextSiblingId),
+    };
     const evidence: RecallGenerationLexicalEvidence = {
       evidenceOccurrenceId,
       physicalSourceIdentity: physicalSource.physicalSourceIdentity,
@@ -513,6 +574,7 @@ export async function materializeRecallPhysicalSourceGeneration(
         isDenseSearchable: chunk.isDenseSearchable,
         evidenceChecksum: chunk.checksum,
         projectIdentity: evidence.projectIdentity,
+        projectIdentityDigest: createRecallProjectIdentityDigest(evidence.projectIdentity),
         sourceLineStart: chunk.sourceLineStart,
         sourceLineEnd: chunk.sourceLineEnd,
         sourceBlockStart: chunk.sourceBlockStart ?? -1,
@@ -525,7 +587,10 @@ export async function materializeRecallPhysicalSourceGeneration(
         chunkIndex: chunk.chunkIndex,
         content: chunk.content,
         identifierContent: chunk.content,
-        recordJson: JSON.stringify(evidence),
+        recordJson: JSON.stringify({
+          evidence,
+          searchDocument: serializeStoredConversationChunk(targetSearchChunk),
+        }),
       },
     });
     if (chunk.isDenseSearchable) {
@@ -558,6 +623,7 @@ export async function materializeRecallPhysicalSourceGeneration(
         .digest('hex'),
       vectorChecksum: '',
       projectIdentity: input.projectIdentity,
+      projectIdentityDigest: createRecallProjectIdentityDigest(input.projectIdentity),
     },
   }));
   const physicalSessionProjectionId = `projection_${physicalSource.physicalSourceIdentity}`;
@@ -597,10 +663,7 @@ export async function materializeRecallPhysicalSourceGeneration(
   };
 }
 
-/** Parses one source-faithful evidence payload fetched through a target read adapter. */
-export function parseRecallGenerationLexicalEvidence(
-  recordJson: unknown,
-): RecallGenerationLexicalEvidence {
+function parseRecallGenerationEvidenceRecord(recordJson: unknown) {
   if (typeof recordJson !== 'string') {
     throw new Error('Recall physical source generation evidence record JSON missing');
   }
@@ -614,13 +677,34 @@ export function parseRecallGenerationLexicalEvidence(
     });
   }
   try {
-    return Value.Parse(recallGenerationLexicalEvidenceSchema, parsed);
+    return Value.Parse(recallGenerationEvidenceRecordSchema, parsed);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`Recall physical source generation evidence record invalid: ${message}`, {
       cause: error,
     });
   }
+}
+
+/** Parses one source-faithful evidence payload fetched through a target read adapter. */
+export function parseRecallGenerationLexicalEvidence(
+  recordJson: unknown,
+): RecallGenerationLexicalEvidence {
+  return parseRecallGenerationEvidenceRecord(recordJson).evidence;
+}
+
+/** Restores one mature search document with its stable evidence occurrence ID. */
+export function parseRecallGenerationSearchDocument(
+  evidenceOccurrenceId: string,
+  recordJson: unknown,
+): SessionConversationChunk {
+  const record = parseRecallGenerationEvidenceRecord(recordJson);
+  if (record.evidence.evidenceOccurrenceId !== evidenceOccurrenceId) {
+    throw new Error(
+      `Recall physical source generation occurrence mismatch: expected ${evidenceOccurrenceId}, received ${record.evidence.evidenceOccurrenceId}`,
+    );
+  }
+  return deserializeStoredConversationChunk(evidenceOccurrenceId, record.searchDocument);
 }
 
 /** Searches ordinary lexical evidence in one explicitly named validated inactive generation. */

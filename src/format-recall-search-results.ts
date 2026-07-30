@@ -182,7 +182,10 @@ export function formatRecallSearchResults(
     for (const duplicateOccurrence of result.duplicateOccurrences) {
       lines.push(formatRecallDuplicateOccurrence(duplicateOccurrence));
     }
-    lines.push(`Source: ${result.sessionPath}#${result.entryId.value}`);
+    lines.push(
+      `Evidence occurrence ID: ${result.id}`,
+      `Source: ${result.sessionPath}#${result.entryId.value}`,
+    );
   }
   return lines.join('\n');
 }

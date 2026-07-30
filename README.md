@@ -69,7 +69,7 @@ pi-session-recall cleanup
 - `rollback` switches to the one retained validated target generation.
 - `cleanup` removes only generations made collectible by policy.
 
-The first target activation has no legacy rollback generation. Rollback becomes available only after two validated target-format generations have existed.
+The first target activation has no rollback generation. Rollback becomes available only after two validated target-format generations have existed.
 
 ## Model tool
 
@@ -165,6 +165,8 @@ The quality evaluation uses only committed fixtures and disposable roots:
 ```bash
 npm run evaluate:recall
 ```
+
+See the [final target-generation acceptance evidence](docs/evaluation/final-target-generation-acceptance.md) for the complete read, write, fault, measurement, and authorization record.
 
 Development checks:
 

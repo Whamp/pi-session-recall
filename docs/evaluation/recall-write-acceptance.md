@@ -2,9 +2,9 @@
 
 **Result:** PASS
 
-- Candidate commit: `0b4461ad76a561342adcce7eec438f3af29ee3af`
-- Completed: 2026-07-30T10:56:37.523Z
-- Source snapshot: `293d59eaf07fd9185ef648ba8cf48421ebe294d7b7ef8c1de387fda27e85be1a`
+- Candidate commit: `5279c669330bf71297d17ac9270685a8f9b29af0`
+- Completed: 2026-07-30T12:20:44.116Z
+- Source snapshot: `802ba8c5fade8ae495eb4770d46e386e0becab5d8d0a9396c8d629ee508d8b09`
 - Runtime: v24.16.0 on linux/x64
 - CPU: AMD Ryzen 7 8845HS w/ Radeon 780M Graphics
 - zvec: 0.6.0
@@ -19,11 +19,11 @@ A real detached child received SIGKILL and resumed the same generation identity 
 
 | Bound                                      | Measured or enforced |           Limit | Result |
 | ------------------------------------------ | -------------------: | --------------: | ------ |
-| Marker publication plus detached spawn p95 |             3.126 ms |           25 ms | PASS   |
-| Metadata sweep p95 at 10,000 files         |            33.713 ms |          500 ms | PASS   |
+| Marker publication plus detached spawn p95 |             3.710 ms |           25 ms | PASS   |
+| Metadata sweep p95 at 10,000 files         |            35.203 ms |          500 ms | PASS   |
 | Projection payload                         |             enforced | 8,388,608 bytes | PASS   |
 | Evidence batch                             |             enforced |    32 documents | PASS   |
-| Close/reopen write-window p95 (20 samples) |            65.095 ms |          300 ms | PASS   |
+| Close/reopen write-window p95 (20 samples) |            74.326 ms |          300 ms | PASS   |
 | Search wait for current write window       |             enforced |          500 ms | PASS   |
 
 ## Reproduction
@@ -36,7 +36,7 @@ npm run evidence:target-writes
 
 The command runs these subprocess checks:
 
-- `/home/will/.local/share/mise/installs/node/24.16.0/bin/node --import tsx --test src/recall-generation-mutation-ownership.test.ts src/transfer-incremental-recall-work-plan.test.ts src/recall-background-index-conversation-service.test.ts src/pi-session-recall-cli.test.ts src/activate-validated-recall-generation.test.ts src/rollback-recall-generation.test.ts src/run-recall-incremental-worker.test.ts src/reconcile-confirmed-session-deletion.test.ts src/coordinate-recall-marker-replay.test.ts src/scan-recall-session-metadata.test.ts src/recall-session-projection.test.ts src/coordinate-recall-write-window.test.ts src/commit-incremental-recall-transfer.test.ts`
+- `/home/will/.local/share/mise/installs/node/24.16.0/bin/node --import tsx --test src/recall-generation-mutation-ownership.test.ts src/transfer-incremental-recall-work-plan.test.ts src/recall-background-index-conversation-service.test.ts src/pi-session-recall-cli.test.ts src/activate-validated-recall-generation.test.ts src/rollback-recall-generation.test.ts src/run-recall-incremental-worker.test.ts src/coordinate-recall-marker-replay.test.ts src/scan-recall-session-metadata.test.ts src/recall-session-projection.test.ts src/coordinate-recall-write-window.test.ts`
 - `/home/will/.local/share/mise/installs/node/24.16.0/bin/node --import tsx --test src/publish-recall-work-marker.diagnostic.test.ts`
 - `/home/will/.local/share/mise/installs/node/24.16.0/bin/node --import tsx --test src/scan-recall-session-metadata.diagnostic.test.ts`
 - `/home/will/.local/share/mise/installs/node/24.16.0/bin/node --import tsx --test src/commit-incremental-recall-transfer.diagnostic.test.ts`

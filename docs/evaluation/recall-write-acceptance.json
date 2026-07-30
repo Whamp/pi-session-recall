@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "candidateCommit": "0b4461ad76a561342adcce7eec438f3af29ee3af",
-  "completedAt": "2026-07-30T10:56:37.523Z",
+  "candidateCommit": "5279c669330bf71297d17ac9270685a8f9b29af0",
+  "completedAt": "2026-07-30T12:20:44.116Z",
   "environment": {
     "nodeVersion": "v24.16.0",
     "platform": "linux",
@@ -11,7 +11,7 @@
   },
   "disposableSourceSnapshot": {
     "kind": "repository-fixtures-and-generated-test-sources",
-    "sha256": "293d59eaf07fd9185ef648ba8cf48421ebe294d7b7ef8c1de387fda27e85be1a",
+    "sha256": "802ba8c5fade8ae495eb4770d46e386e0becab5d8d0a9396c8d629ee508d8b09",
     "inputPaths": [
       "src/recall-generation-mutation-ownership.test.ts",
       "src/transfer-incremental-recall-work-plan.test.ts",
@@ -20,12 +20,10 @@
       "src/activate-validated-recall-generation.test.ts",
       "src/rollback-recall-generation.test.ts",
       "src/run-recall-incremental-worker.test.ts",
-      "src/reconcile-confirmed-session-deletion.test.ts",
       "src/coordinate-recall-marker-replay.test.ts",
       "src/scan-recall-session-metadata.test.ts",
       "src/recall-session-projection.test.ts",
       "src/coordinate-recall-write-window.test.ts",
-      "src/commit-incremental-recall-transfer.test.ts",
       "src/createRecallBackgroundIndexWorkerFixtureService.ts",
       "src/pi-session-recall-cli.test-utils.ts",
       "src/fixtures/session-import/canonical-unicode-separators.jsonl",
@@ -37,26 +35,26 @@
   "commands": [
     {
       "name": "write, recovery, lifecycle, and bounded-policy matrix",
-      "command": "/home/will/.local/share/mise/installs/node/24.16.0/bin/node --import tsx --test src/recall-generation-mutation-ownership.test.ts src/transfer-incremental-recall-work-plan.test.ts src/recall-background-index-conversation-service.test.ts src/pi-session-recall-cli.test.ts src/activate-validated-recall-generation.test.ts src/rollback-recall-generation.test.ts src/run-recall-incremental-worker.test.ts src/reconcile-confirmed-session-deletion.test.ts src/coordinate-recall-marker-replay.test.ts src/scan-recall-session-metadata.test.ts src/recall-session-projection.test.ts src/coordinate-recall-write-window.test.ts src/commit-incremental-recall-transfer.test.ts",
-      "durationMilliseconds": 15610.265415,
+      "command": "/home/will/.local/share/mise/installs/node/24.16.0/bin/node --import tsx --test src/recall-generation-mutation-ownership.test.ts src/transfer-incremental-recall-work-plan.test.ts src/recall-background-index-conversation-service.test.ts src/pi-session-recall-cli.test.ts src/activate-validated-recall-generation.test.ts src/rollback-recall-generation.test.ts src/run-recall-incremental-worker.test.ts src/coordinate-recall-marker-replay.test.ts src/scan-recall-session-metadata.test.ts src/recall-session-projection.test.ts src/coordinate-recall-write-window.test.ts",
+      "durationMilliseconds": 15856.375148,
       "passed": true
     },
     {
       "name": "marker publication and detached spawn diagnostic",
       "command": "/home/will/.local/share/mise/installs/node/24.16.0/bin/node --import tsx --test src/publish-recall-work-marker.diagnostic.test.ts",
-      "durationMilliseconds": 350.33791500000007,
+      "durationMilliseconds": 350.2227210000001,
       "passed": true
     },
     {
       "name": "metadata sweep diagnostic",
       "command": "/home/will/.local/share/mise/installs/node/24.16.0/bin/node --import tsx --test src/scan-recall-session-metadata.diagnostic.test.ts",
-      "durationMilliseconds": 946.7044710000009,
+      "durationMilliseconds": 936.4751049999995,
       "passed": true
     },
     {
       "name": "close/reopen write-window diagnostic",
       "command": "/home/will/.local/share/mise/installs/node/24.16.0/bin/node --import tsx --test src/commit-incremental-recall-transfer.diagnostic.test.ts",
-      "durationMilliseconds": 1432.3371540000007,
+      "durationMilliseconds": 1695.8510370000004,
       "passed": true
     }
   ],
@@ -89,13 +87,13 @@
   },
   "foregroundBounds": {
     "markerPublicationAndDetachedSpawn": {
-      "combinedP95Milliseconds": 3.125698,
+      "combinedP95Milliseconds": 3.710140999999993,
       "acceptanceBoundMilliseconds": 25,
       "accepted": true
     },
     "metadataSweep": {
       "fileCount": 10000,
-      "p95Milliseconds": 33.71330499999999,
+      "p95Milliseconds": 35.20312999999999,
       "acceptanceBoundMilliseconds": 500,
       "accepted": true
     },
@@ -104,7 +102,7 @@
     "writeWindow": {
       "sampleCount": 20,
       "p95": {
-        "writeWindowMilliseconds": 65.09482400000002
+        "writeWindowMilliseconds": 74.325759
       },
       "targetWriteWindowMilliseconds": 300
     },

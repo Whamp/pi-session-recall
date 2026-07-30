@@ -75,7 +75,7 @@ export interface ConversationChunkStore {
   deleteChunks(ids: readonly string[]): Promise<void>;
 }
 
-/** Read-only retrieval shape shared by legacy and coherent-generation search stores. */
+/** Read-only retrieval shape implemented by the active generation search adapter. */
 export interface RecallConversationSearchStore {
   searchDenseCandidates(
     embedding: number[],

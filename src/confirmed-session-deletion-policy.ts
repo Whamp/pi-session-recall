@@ -184,4 +184,3 @@ export interface ConfirmedSessionDeletionReconciliationResult {
   acknowledgedCheckpointCount: number;
   haltCategoryCounts: Readonly<Partial<Record<RecallConfirmedDeletionHaltCategory, number>>>;
 }
-

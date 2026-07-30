@@ -31,7 +31,7 @@ Record the operator, host, date, installed commit, command output, active genera
 - [ ] Verify replay covers only marker IDs captured at activation; newer markers remain ordinary backlog.
 - [ ] Run `pi-session-recall catch-up` as needed until the fixed replay completes.
 - [ ] If recovery is required, run `pi-session-recall recover` and verify the generation reopens before search resumes.
-- [ ] For the first target activation, verify no legacy generation appears as rollback material.
+- [ ] For the first target activation, verify no rollback generation exists.
 - [ ] After later target-to-target activation, verify exactly one validated former target generation has the rollback role.
 
 ## 4. Smoke checks

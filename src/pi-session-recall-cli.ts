@@ -17,7 +17,7 @@ import {
 } from './recall-model-profiles.js';
 
 const PI_SESSION_RECALL_USAGE =
-  'usage: pi-session-recall <setup|status|rebuild|stop|resume|discard>';
+  'usage: pi-session-recall <setup|status|catch-up|rebuild|stop|resume|discard|recover|rollback|cleanup>';
 
 interface RecallSetupProfilePresentation {
   profile: string;
@@ -31,9 +31,13 @@ interface RecallSetupProfilePresentation {
 interface PiSessionRecallCliServiceRuntime {
   service: Pick<
     RecallConversationService,
+    | 'catchUpRecallGeneration'
+    | 'collectRetired'
     | 'discardStagingIndexGeneration'
     | 'readOperatorStatus'
+    | 'recoverRecallMaintenance'
     | 'resumeBackgroundIndexGeneration'
+    | 'rollback'
     | 'startBackgroundIndexGeneration'
     | 'stopBackgroundIndexGeneration'
   >;
@@ -121,10 +125,14 @@ export async function runPiSessionRecallCli(
   }
   const knownCommand =
     command === 'status' ||
+    command === 'catch-up' ||
     command === 'rebuild' ||
     command === 'stop' ||
     command === 'resume' ||
-    command === 'discard';
+    command === 'discard' ||
+    command === 'recover' ||
+    command === 'rollback' ||
+    command === 'cleanup';
   if (!knownCommand || commandArguments.length !== 0) {
     throw new Error(
       `Pi session recall command invalid: ${argumentsList.join(' ') || 'missing'}; ${PI_SESSION_RECALL_USAGE}`,
@@ -133,12 +141,29 @@ export async function runPiSessionRecallCli(
   const config = await loadRecallConversationConfig();
   const configuredRuntimeFactory = options.createServiceRuntime;
   const runtime = await (configuredRuntimeFactory === undefined
-    ? createDefaultRecallOperatorRuntime(config, command === 'rebuild' || command === 'resume')
-    : configuredRuntimeFactory(config, command === 'rebuild' || command === 'resume'));
+    ? createDefaultRecallOperatorRuntime(
+        config,
+        command === 'catch-up' ||
+          command === 'rebuild' ||
+          command === 'resume' ||
+          command === 'recover',
+      )
+    : configuredRuntimeFactory(
+        config,
+        command === 'catch-up' ||
+          command === 'rebuild' ||
+          command === 'resume' ||
+          command === 'recover',
+      ));
   try {
     if (command === 'status') {
       const status = await runtime.service.readOperatorStatus();
       writeOutput(JSON.stringify({ command: 'status', ...status }));
+      return;
+    }
+    if (command === 'catch-up') {
+      const catchUp = await runtime.service.catchUpRecallGeneration();
+      writeOutput(JSON.stringify({ command: 'catch-up', ...catchUp }));
       return;
     }
     if (command === 'rebuild') {
@@ -154,6 +179,21 @@ export async function runPiSessionRecallCli(
     if (command === 'stop') {
       const processStatus = await runtime.service.stopBackgroundIndexGeneration();
       writeOutput(JSON.stringify({ command: 'stop', process: processStatus }));
+      return;
+    }
+    if (command === 'recover') {
+      const recovery = await runtime.service.recoverRecallMaintenance();
+      writeOutput(JSON.stringify({ command: 'recover', ...recovery }));
+      return;
+    }
+    if (command === 'rollback') {
+      const rollback = await runtime.service.rollback();
+      writeOutput(JSON.stringify({ command: 'rollback', ...rollback }));
+      return;
+    }
+    if (command === 'cleanup') {
+      const cleanup = await runtime.service.collectRetired();
+      writeOutput(JSON.stringify({ command: 'cleanup', ...cleanup }));
       return;
     }
     const discarded = await runtime.service.discardStagingIndexGeneration();

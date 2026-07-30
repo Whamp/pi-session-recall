@@ -20,6 +20,7 @@ import {
   coordinateRecallReadWindow,
   coordinateRecallWriteWindow,
   createRecallWriteWindowAcquisitionSignal,
+  inspectRecallWriteWindow,
   type RecallWriteWindow,
 } from './coordinate-recall-write-window.js';
 import {
@@ -61,6 +62,7 @@ import {
   RecallEvidenceRelation,
   RecallGenerationCutoverState,
   RecallInferenceBackend,
+  RecallIncrementalTransferOutcomeKind,
   RecallManualMaintenanceTrigger,
   RecallProjectIdentitySource,
   RecallRankedListSource,
@@ -165,12 +167,14 @@ import {
   type RecallRerankingProviderConformanceMeasurement,
 } from './recall-inference-conformance.js';
 import { rebuildRecallGeneration } from './rebuild-recall-generation.js';
+import { runConfiguredRecallIncrementalWorker } from './run-recall-incremental-worker.js';
 import { RECALL_ACTIVATION_REPLAY_SNAPSHOT_FILE_NAME } from './recall-generation-replay-snapshot.js';
 import { createRecallGenerationComponentPaths } from './recall-generation-stores.js';
 import { recoverRecallGenerationCutover as recoverConfiguredRecallGenerationCutover } from './recover-recall-generation-cutover.js';
 import {
   recallRebuildOwnershipLockPath,
   tryAcquireRecallRebuildOwnershipLock,
+  tryAcquireRecallRebuildOwnershipLock as tryAcquireRecallIncrementalWorkerOwnershipLock,
 } from './recall-rebuild-ownership-lock.js';
 import {
   createLogicalSessionProjectionId,
@@ -512,6 +516,20 @@ export interface BuildReplacementRecallGenerationOptions {
   ): void;
 }
 
+/** Bounded result from one explicit short-lived incremental catch-up. */
+export interface RecallCatchUpResult {
+  activeGenerationId: string | null;
+  processedPhysicalSourceCount: number;
+  remainingEligibleSessionCount: number;
+  replayCompleted: boolean | null;
+}
+
+/** Bounded shell result from explicit incremental-write or cutover recovery. */
+export interface RecallMaintenanceRecoveryResult {
+  recovered: boolean;
+  recoveryKind: 'none' | 'incremental-write' | 'generation-cutover';
+}
+
 /** Bounded control-plane status for the standalone recall operator CLI. */
 export interface RecallOperatorStatus {
   readiness: 'ready' | 'not-ready';
@@ -561,6 +579,8 @@ export interface RecallConversationService {
   resumeBackgroundIndexGeneration(): Promise<RecallBackgroundIndexGenerationStatus>;
   readBackgroundIndexGenerationStatus(): Promise<RecallBackgroundIndexGenerationStatus | null>;
   stopBackgroundIndexGeneration(): Promise<RecallBackgroundIndexGenerationStatus>;
+  /** Drains one eligible marker snapshot through the active generation-targeted worker. */
+  catchUpRecallGeneration(): Promise<RecallCatchUpResult>;
   readIndexGenerationStatus(): Promise<RecallIndexGenerationStatus>;
   /** Reads bounded operator diagnostics without opening source files or generation stores. */
   readOperatorStatus(): Promise<RecallOperatorStatus>;
@@ -600,6 +620,8 @@ export interface RecallConversationService {
   ): Promise<ActivatedValidatedRecallGeneration>;
   /** Completes fixed replay only after captured work has durable projection coverage. */
   completeRecallGenerationReplay(): Promise<boolean>;
+  /** Recovers one isolated incremental write or interrupted named generation cutover. */
+  recoverRecallMaintenance(): Promise<RecallMaintenanceRecoveryResult>;
   /** Recovers one interrupted named generation cutover without scanning generation directories. */
   recoverRecallGenerationCutover(): Promise<boolean>;
   /** Deletes one disposable target-format generation only when no role protects it. */
@@ -1763,6 +1785,59 @@ export function createRecallConversationService(
     });
   }
 
+  async function recoverConfiguredGenerationCutover(): Promise<boolean> {
+    const registry = await readRecallGenerationRegistry(config.generationRegistryPath);
+    const targetGenerationId = registry?.buildingGenerationId ?? registry?.activeGenerationId;
+    const targetEntry = registry?.generations.find(
+      ({ generationId }) => generationId === targetGenerationId,
+    );
+    if (targetEntry?.indexManifestVersion === RECALL_INDEX_MANIFEST_VERSION) {
+      if (
+        targetEntry.replaySnapshotFileName !== undefined &&
+        targetEntry.replaySnapshotFileName !== RECALL_ACTIVATION_REPLAY_SNAPSHOT_FILE_NAME
+      ) {
+        await checkRecallGenerationRollbackHealth({
+          generationRootDirectory: config.generationRootDirectory,
+          generationId: targetEntry.generationId,
+          expectedManifestFingerprint: targetEntry.indexManifestFingerprint,
+        });
+      } else {
+        await openValidatedCoherentRecallGeneration(
+          coherentGenerationConfig,
+          targetEntry.generationId,
+        );
+      }
+    }
+    return recoverConfiguredRecallGenerationCutover({
+      activeGenerationPointerPath: config.activeGenerationPointerPath,
+      generationRegistryPath: config.generationRegistryPath,
+      generationRootDirectory: config.generationRootDirectory,
+      backlogSummaryPath: config.backlogSummaryPath,
+      lockPath: config.lockPath,
+      embeddingDimensions: embeddingProfile.identity.dimensions,
+    });
+  }
+
+  function transferConfiguredIncrementalRecallWorkPlan(
+    request: IncrementalRecallWorkPlanRequest,
+  ): Promise<IncrementalRecallWorkPlanTransferOutcome> {
+    const services = {
+      generation: { ...coherentGenerationConfig, lockPath: config.lockPath },
+      chunkPolicy: config.chunkPolicy ?? DEFAULT_RECALL_CHUNK_POLICY,
+      loadTokenizer: getConversationTokenizer,
+      embeddingProvider,
+      resolveProjectIdentity: resolveSearchProjectIdentity,
+      ...(incrementalTransferReadRange ? { readRange: incrementalTransferReadRange } : {}),
+      ...(incrementalTransferFault ? { incrementalTransferFault } : {}),
+    };
+    return 'confirmedPhysicalSourceDeletion' in request
+      ? transferIncrementalRecallWorkPlan({
+          ...services,
+          confirmedPhysicalSourceDeletion: request.confirmedPhysicalSourceDeletion,
+        })
+      : transferIncrementalRecallWorkPlan({ ...services, workPlan: request });
+  }
+
   return {
     async verifyEmbeddingCapability(options = {}) {
       const canary = await readCurrentEmbeddingCanary(options.signal);
@@ -2912,31 +2987,99 @@ export function createRecallConversationService(
     stopBackgroundIndexGeneration() {
       return stopRecallBackgroundIndexGeneration(backgroundIndexCoordinatorConfig);
     },
+    async catchUpRecallGeneration() {
+      const generationStatus = await readCanonicalIndexGenerationStatus();
+      if (generationStatus.active === null) {
+        return {
+          activeGenerationId: null,
+          processedPhysicalSourceCount: 0,
+          remainingEligibleSessionCount: 0,
+          replayCompleted: null,
+        };
+      }
+      const activeGenerationId = generationStatus.active.generationId;
+      const recoveryRecordPath = createRecallGenerationComponentPaths(
+        join(config.generationRootDirectory, activeGenerationId),
+      ).recoveryRecordPath;
+      const writeWindowState = await inspectRecallWriteWindow(config.lockPath);
+      if (existsSync(recoveryRecordPath) || writeWindowState.recoveryRequired) {
+        throw new Error(
+          'Recall catch-up refused: recovery required; run pi-session-recall recover',
+        );
+      }
+      const ownership = await tryAcquireRecallIncrementalWorkerOwnershipLock(
+        config.workerOwnershipLockPath,
+      );
+      if (ownership === null) {
+        throw new Error('Recall catch-up refused: incremental worker is already running');
+      }
+      try {
+        const worker = await runConfiguredRecallIncrementalWorker(config, diagnostics, {
+          transferWorkPlan: transferConfiguredIncrementalRecallWorkPlan,
+        });
+        if (worker === null) {
+          return {
+            activeGenerationId: null,
+            processedPhysicalSourceCount: 0,
+            remainingEligibleSessionCount: 0,
+            replayCompleted: null,
+          };
+        }
+        const physicalSourceCount = new Set(
+          worker.result.workPlan.workItems.map(({ marker }) => marker.physicalSessionId),
+        ).size;
+        const processedPhysicalSourceCount = worker.result.transferOutcomes.filter(
+          ({ kind }) => kind === RecallIncrementalTransferOutcomeKind.COMMITTED,
+        ).length;
+        const deferredPhysicalSourceCount = worker.result.transferOutcomes.filter(
+          ({ kind }) => kind === RecallIncrementalTransferOutcomeKind.DEFERRED,
+        ).length;
+        return {
+          activeGenerationId: worker.activeGenerationId,
+          processedPhysicalSourceCount,
+          remainingEligibleSessionCount: worker.result.commitsFrozen
+            ? physicalSourceCount
+            : Math.max(
+                physicalSourceCount - processedPhysicalSourceCount - deferredPhysicalSourceCount,
+                0,
+              ),
+          replayCompleted: worker.result.generationReplayCompleted,
+        };
+      } finally {
+        await ownership.release();
+      }
+    },
     readIndexGenerationStatus: readCanonicalIndexGenerationStatus,
     async readOperatorStatus() {
       const processStatus = await readRecallBackgroundIndexGenerationStatus(
         backgroundIndexCoordinatorConfig,
       );
-      const [generationStatus, registry, backlog] = await Promise.all([
+      const [generationStatus, registry, backlog, writeWindowState] = await Promise.all([
         readCanonicalIndexGenerationStatus(),
         readRecallGenerationRegistry(config.generationRegistryPath),
         readRecallBacklogSummary(config.backlogSummaryPath),
+        inspectRecallWriteWindow(config.lockPath),
       ]);
       const generationIds = [
         generationStatus.active?.generationId,
         generationStatus.staging?.generationId,
       ].filter((generationId): generationId is string => generationId !== undefined);
-      const recoveryGenerationIds = [
-        ...new Set(
-          generationIds.filter((generationId) =>
-            existsSync(
-              createRecallGenerationComponentPaths(
-                join(config.generationRootDirectory, generationId),
-              ).recoveryRecordPath,
-            ),
+      const recoveryGenerationIdSet = new Set(
+        generationIds.filter((generationId) =>
+          existsSync(
+            createRecallGenerationComponentPaths(join(config.generationRootDirectory, generationId))
+              .recoveryRecordPath,
           ),
         ),
-      ];
+      );
+      if (writeWindowState.recoveryRequired) {
+        const cutoverGenerationId =
+          registry?.buildingGenerationId ?? registry?.activeGenerationId ?? null;
+        if (cutoverGenerationId !== null) {
+          recoveryGenerationIdSet.add(cutoverGenerationId);
+        }
+      }
+      const recoveryGenerationIds = [...recoveryGenerationIdSet].toSorted();
       const activeEntry = registry?.generations.find(
         ({ generationId }) => generationId === generationStatus.active?.generationId,
       );
@@ -3038,23 +3181,7 @@ export function createRecallConversationService(
       );
     },
     transferIncrementalRecallWorkPlan(request) {
-      return runSerialized(() => {
-        const services = {
-          generation: { ...coherentGenerationConfig, lockPath: config.lockPath },
-          chunkPolicy: config.chunkPolicy ?? DEFAULT_RECALL_CHUNK_POLICY,
-          loadTokenizer: getConversationTokenizer,
-          embeddingProvider,
-          resolveProjectIdentity: resolveSearchProjectIdentity,
-          ...(incrementalTransferReadRange ? { readRange: incrementalTransferReadRange } : {}),
-          ...(incrementalTransferFault ? { incrementalTransferFault } : {}),
-        };
-        return 'confirmedPhysicalSourceDeletion' in request
-          ? transferIncrementalRecallWorkPlan({
-              ...services,
-              confirmedPhysicalSourceDeletion: request.confirmedPhysicalSourceDeletion,
-            })
-          : transferIncrementalRecallWorkPlan({ ...services, workPlan: request });
-      });
+      return runSerialized(() => transferConfiguredIncrementalRecallWorkPlan(request));
     },
     searchRecallGenerationHybrid(generationId, query, limit) {
       return runSerialized(async () => {
@@ -3118,39 +3245,44 @@ export function createRecallConversationService(
         }),
       );
     },
-    recoverRecallGenerationCutover() {
-      return runSerialized(async () => {
-        const registry = await readRecallGenerationRegistry(config.generationRegistryPath);
-        const targetGenerationId = registry?.buildingGenerationId ?? registry?.activeGenerationId;
-        const targetEntry = registry?.generations.find(
-          ({ generationId }) => generationId === targetGenerationId,
+    async recoverRecallMaintenance() {
+      const generationStatus = await readCanonicalIndexGenerationStatus();
+      const activeGenerationId = generationStatus.active?.generationId;
+      const recoveryRecordPath =
+        activeGenerationId === undefined
+          ? null
+          : createRecallGenerationComponentPaths(
+              join(config.generationRootDirectory, activeGenerationId),
+            ).recoveryRecordPath;
+      if (recoveryRecordPath !== null && existsSync(recoveryRecordPath)) {
+        const ownership = await tryAcquireRecallIncrementalWorkerOwnershipLock(
+          config.workerOwnershipLockPath,
         );
-        if (targetEntry?.indexManifestVersion === RECALL_INDEX_MANIFEST_VERSION) {
-          if (
-            targetEntry.replaySnapshotFileName !== undefined &&
-            targetEntry.replaySnapshotFileName !== RECALL_ACTIVATION_REPLAY_SNAPSHOT_FILE_NAME
-          ) {
-            await checkRecallGenerationRollbackHealth({
-              generationRootDirectory: config.generationRootDirectory,
-              generationId: targetEntry.generationId,
-              expectedManifestFingerprint: targetEntry.indexManifestFingerprint,
-            });
-          } else {
-            await openValidatedCoherentRecallGeneration(
-              coherentGenerationConfig,
-              targetEntry.generationId,
-            );
-          }
+        if (ownership === null) {
+          throw new Error('Recall recovery refused: incremental worker is already running');
         }
-        return recoverConfiguredRecallGenerationCutover({
-          activeGenerationPointerPath: config.activeGenerationPointerPath,
-          generationRegistryPath: config.generationRegistryPath,
-          generationRootDirectory: config.generationRootDirectory,
-          backlogSummaryPath: config.backlogSummaryPath,
-          lockPath: config.lockPath,
-          embeddingDimensions: embeddingProfile.identity.dimensions,
-        });
-      });
+        try {
+          await runConfiguredRecallIncrementalWorker(config, diagnostics, {
+            transferWorkPlan: transferConfiguredIncrementalRecallWorkPlan,
+          });
+        } finally {
+          await ownership.release();
+        }
+        if (existsSync(recoveryRecordPath)) {
+          throw new Error(
+            `Recall incremental recovery incomplete for ${activeGenerationId}: recovery record remains`,
+          );
+        }
+        return { recovered: true, recoveryKind: 'incremental-write' };
+      }
+      const recovered = await runSerialized(recoverConfiguredGenerationCutover);
+      return {
+        recovered,
+        recoveryKind: recovered ? 'generation-cutover' : 'none',
+      };
+    },
+    recoverRecallGenerationCutover() {
+      return runSerialized(recoverConfiguredGenerationCutover);
     },
     deleteUnprotectedRecallGeneration(generationId) {
       return runSerialized(() =>

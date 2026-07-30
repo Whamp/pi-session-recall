@@ -1,20 +1,39 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import {
+  access,
+  appendFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  utimes,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { promisify } from 'node:util';
 
-import { RecallBackgroundIndexProcessState, RecallGenerationCutoverState } from './enums.js';
+import {
+  RecallBackgroundIndexProcessState,
+  RecallGenerationCutoverState,
+  RecallWorkMarkerTrigger,
+} from './enums.js';
+import { createRecallBackgroundIndexWorkerFixtureService } from './createRecallBackgroundIndexWorkerFixtureService.js';
 import { isUnknownRecord } from './is-unknown-record.js';
+import { publishRecallWorkMarker } from './publish-recall-work-marker.js';
+import { loadRecallConversationConfig } from './recall-conversation-config.js';
+import { tryAcquireRecallRebuildOwnershipLock } from './recall-rebuild-ownership-lock.js';
 import {
   createRecallActiveGenerationPointer,
+  readRecallGenerationRegistry,
   writeRecallActiveGenerationPointer,
   writeRecallBacklogSummary,
   writeRecallGenerationRegistry,
 } from './recall-generation-state.js';
+import { createRecallWorkMarkerId, type RecallWorkMarker } from './recall-work-marker.js';
 
 const EXEC_FILE_ASYNC = promisify(execFile);
 const CLI_PATH = new URL('./pi-session-recall-cli.ts', import.meta.url).pathname;
@@ -411,6 +430,473 @@ void test('standalone status detects a crashed detached owner and permits abando
     sessionsDirectory,
   );
   assert.deepEqual(JSON.parse(discarded.stdout), { command: 'discard', discarded: true });
+});
+
+void test('standalone catch-up reports no active work and refuses a concurrent worker owner', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-operator-catch-up-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const dataDirectory = join(root, 'data');
+  const sessionsDirectory = join(root, 'sessions');
+
+  const noWork = await runRecallOperatorCommand(
+    CLI_TEST_PATH,
+    ['catch-up'],
+    dataDirectory,
+    sessionsDirectory,
+  );
+  assert.deepEqual(JSON.parse(noWork.stdout), {
+    command: 'catch-up',
+    activeGenerationId: null,
+    processedPhysicalSourceCount: 0,
+    remainingEligibleSessionCount: 0,
+    replayCompleted: null,
+  });
+
+  const generationId = 'generation_active';
+  await mkdir(join(dataDirectory, 'generations', generationId), { recursive: true });
+  const pointer = createRecallActiveGenerationPointer(generationId);
+  await writeRecallActiveGenerationPointer(join(dataDirectory, 'active-generation.json'), pointer);
+  await writeRecallGenerationRegistry(join(dataDirectory, 'generation-registry.json'), {
+    version: 1,
+    activeGenerationId: generationId,
+    buildingGenerationId: null,
+    rollbackGenerationId: null,
+    activePointerChecksum: pointer.checksum,
+    generations: [
+      {
+        generationId,
+        state: RecallGenerationCutoverState.ACTIVE,
+        embeddingProfileId: 'embedding-profile-active',
+        indexManifestVersion: 6,
+        markerSchemaVersion: 1,
+        sessionProjectionSchemaVersion: 3,
+        indexManifestFingerprint: 'a'.repeat(64),
+        rebuildStartedAtEpochMilliseconds: 100,
+        stateChangedAtEpochMilliseconds: 200,
+        rebuildStartMarkerId: 'marker_1',
+        rebuildMarkerWatermark: ['marker_1'],
+        validatedAtEpochMilliseconds: 150,
+        retireAfterEpochMilliseconds: null,
+      },
+    ],
+  });
+  const owner = await tryAcquireRecallRebuildOwnershipLock(
+    join(dataDirectory, 'incremental-worker.lock'),
+  );
+  assert.ok(owner);
+  try {
+    await assert.rejects(
+      () => runRecallOperatorCommand(CLI_TEST_PATH, ['catch-up'], dataDirectory, sessionsDirectory),
+      (error: unknown) => {
+        assert.ok(isUnknownRecord(error));
+        assert.equal(error.code, 1);
+        assert.match(String(error.stderr), /incremental worker is already running/u);
+        return true;
+      },
+    );
+  } finally {
+    await owner.release();
+  }
+});
+
+void test('standalone catch-up drains one marker through the configured target worker', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-operator-catch-up-target-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const dataDirectory = join(root, 'data');
+  const sessionsDirectory = join(root, 'sessions');
+  const sessionPath = join(sessionsDirectory, 'catch-up-session.jsonl');
+  await mkdir(sessionsDirectory, { recursive: true });
+  await writeFile(
+    sessionPath,
+    `${JSON.stringify({
+      type: 'session',
+      version: 3,
+      id: 'catch-up-session',
+      timestamp: '2026-08-12T10:00:00.000Z',
+      cwd: '/operator-project',
+    })}\n${JSON.stringify({
+      type: 'message',
+      id: 'catch-up-entry',
+      parentId: null,
+      timestamp: '2026-08-12T10:00:01.000Z',
+      message: { role: 'assistant', content: 'catch up target evidence' },
+    })}\n`,
+    'utf8',
+  );
+  await utimes(sessionPath, 1, 1);
+  const config = await loadRecallConversationConfig({
+    environment: {
+      PI_RECALL_DATA_DIRECTORY: dataDirectory,
+      PI_RECALL_SESSIONS_DIRECTORY: sessionsDirectory,
+      PI_RECALL_EMBEDDING_DIMENSIONS: '3',
+    },
+  });
+  const service = createRecallBackgroundIndexWorkerFixtureService(config);
+  const generationId = 'generation_catch_up';
+  const opened = await service.createEmptyRecallGeneration({ generationId });
+  const rawManifest: unknown = JSON.parse(await readFile(opened.manifestPath, 'utf8'));
+  assert.ok(isUnknownRecord(rawManifest));
+  assert.ok(isUnknownRecord(rawManifest.embeddingProfile));
+  const embeddingProfileId = rawManifest.embeddingProfile.profileId;
+  assert.ok(typeof embeddingProfileId === 'string');
+  const pointer = createRecallActiveGenerationPointer(generationId);
+  await writeRecallActiveGenerationPointer(config.activeGenerationPointerPath, pointer);
+  await writeRecallGenerationRegistry(config.generationRegistryPath, {
+    version: 1,
+    activeGenerationId: generationId,
+    buildingGenerationId: null,
+    rollbackGenerationId: null,
+    activePointerChecksum: pointer.checksum,
+    generations: [
+      {
+        generationId,
+        state: RecallGenerationCutoverState.ACTIVE,
+        embeddingProfileId,
+        indexManifestVersion: 6,
+        markerSchemaVersion: 1,
+        sessionProjectionSchemaVersion: 3,
+        indexManifestFingerprint: opened.manifestFingerprint,
+        rebuildStartedAtEpochMilliseconds: 100,
+        stateChangedAtEpochMilliseconds: 200,
+        rebuildStartMarkerId: 'marker_build',
+        rebuildMarkerWatermark: [],
+        validatedAtEpochMilliseconds: opened.validatedAtEpochMilliseconds,
+        retireAfterEpochMilliseconds: null,
+      },
+    ],
+  });
+  const markerIdentity = {
+    version: 1 as const,
+    physicalSessionId: 'catch-up-session',
+    physicalSessionPath: sessionPath,
+    runtimeInstanceId: 'runtime-catch-up',
+    runtimeSequence: 1,
+    createdAtEpochMilliseconds: Date.now() - 120_000,
+    trigger: {
+      kind: RecallWorkMarkerTrigger.DEPARTURE,
+      logicalSessionId: 'catch-up-session',
+      leafEntryId: 'catch-up-entry',
+    },
+  } as const;
+  const marker: RecallWorkMarker = {
+    ...markerIdentity,
+    markerId: createRecallWorkMarkerId(markerIdentity),
+  };
+  await publishRecallWorkMarker(marker, {
+    markerSpoolDirectory: config.markerSpoolDirectory,
+    trustedSessionRoots: [sessionsDirectory],
+    workerSignal: { signalDetachedWorker() {} },
+  });
+
+  const caughtUp = await runRecallOperatorCommand(
+    CLI_TEST_PATH,
+    ['catch-up'],
+    dataDirectory,
+    sessionsDirectory,
+  );
+  assert.deepEqual(JSON.parse(caughtUp.stdout), {
+    command: 'catch-up',
+    activeGenerationId: generationId,
+    processedPhysicalSourceCount: 1,
+    remainingEligibleSessionCount: 0,
+    replayCompleted: null,
+  });
+  const caughtUpStatus = await runRecallOperatorCommand(
+    CLI_PATH,
+    ['status'],
+    dataDirectory,
+    sessionsDirectory,
+  );
+  const caughtUpStatusOutput: unknown = JSON.parse(caughtUpStatus.stdout);
+  assert.ok(isUnknownRecord(caughtUpStatusOutput));
+  assert.ok(isUnknownRecord(caughtUpStatusOutput.backlog));
+  assert.equal(caughtUpStatusOutput.backlog.pendingEligibleSessionCount, 0);
+  const lexical = await service.searchRecallGenerationLexical(
+    generationId,
+    'catch up target evidence',
+    5,
+  );
+  assert.equal(lexical[0]?.content, 'catch up target evidence');
+
+  await appendFile(
+    sessionPath,
+    `${JSON.stringify({
+      type: 'message',
+      id: 'recovery-entry',
+      parentId: 'catch-up-entry',
+      timestamp: '2026-08-12T10:00:02.000Z',
+      message: { role: 'assistant', content: 'recovered target evidence' },
+    })}\n`,
+    'utf8',
+  );
+  await utimes(sessionPath, 1, 1);
+  const recoveryMarkerIdentity = {
+    ...markerIdentity,
+    runtimeSequence: 2,
+    createdAtEpochMilliseconds: Date.now() - 120_000,
+    trigger: {
+      kind: RecallWorkMarkerTrigger.DEPARTURE,
+      logicalSessionId: 'catch-up-session',
+      leafEntryId: 'recovery-entry',
+    },
+  } as const;
+  const recoveryMarker: RecallWorkMarker = {
+    ...recoveryMarkerIdentity,
+    markerId: createRecallWorkMarkerId(recoveryMarkerIdentity),
+  };
+  await publishRecallWorkMarker(recoveryMarker, {
+    markerSpoolDirectory: config.markerSpoolDirectory,
+    trustedSessionRoots: [sessionsDirectory],
+    workerSignal: { signalDetachedWorker() {} },
+  });
+  await writeFile(
+    join(dataDirectory, 'fixture-interrupt-incremental-after-lexical-source-write'),
+    'interrupt\n',
+    'utf8',
+  );
+
+  await assert.rejects(
+    () => runRecallOperatorCommand(CLI_TEST_PATH, ['catch-up'], dataDirectory, sessionsDirectory),
+    (error: unknown) => {
+      assert.ok(isUnknownRecord(error));
+      assert.match(String(error.stderr), /fixture incremental interruption/u);
+      return true;
+    },
+  );
+  const recoveryRecordPath = join(
+    dataDirectory,
+    'generations',
+    generationId,
+    'write-recovery.json',
+  );
+  const validRecoveryRecord = await readFile(recoveryRecordPath, 'utf8');
+  const recoveryStatus = await runRecallOperatorCommand(
+    CLI_PATH,
+    ['status'],
+    dataDirectory,
+    sessionsDirectory,
+  );
+  const recoveryStatusOutput: unknown = JSON.parse(recoveryStatus.stdout);
+  assert.ok(isUnknownRecord(recoveryStatusOutput));
+  assert.deepEqual(recoveryStatusOutput.recovery, {
+    required: true,
+    generationIds: [generationId],
+  });
+  await assert.rejects(
+    () => runRecallOperatorCommand(CLI_TEST_PATH, ['catch-up'], dataDirectory, sessionsDirectory),
+    (error: unknown) => {
+      assert.ok(isUnknownRecord(error));
+      assert.match(String(error.stderr), /recovery required; run pi-session-recall recover/u);
+      return true;
+    },
+  );
+
+  await writeFile(recoveryRecordPath, '{}\n', 'utf8');
+  await assert.rejects(
+    () => runRecallOperatorCommand(CLI_TEST_PATH, ['recover'], dataDirectory, sessionsDirectory),
+    (error: unknown) => {
+      assert.ok(isUnknownRecord(error));
+      assert.match(String(error.stderr), /incremental recovery record does not match/u);
+      return true;
+    },
+  );
+  await writeFile(recoveryRecordPath, validRecoveryRecord, 'utf8');
+  const recovered = await runRecallOperatorCommand(
+    CLI_TEST_PATH,
+    ['recover'],
+    dataDirectory,
+    sessionsDirectory,
+  );
+  assert.deepEqual(JSON.parse(recovered.stdout), {
+    command: 'recover',
+    recovered: true,
+    recoveryKind: 'incremental-write',
+  });
+  const recoveredLexical = await service.searchRecallGenerationLexical(
+    generationId,
+    'recovered target evidence',
+    5,
+  );
+  assert.equal(recoveredLexical[0]?.content, 'recovered target evidence');
+});
+
+void test('standalone rollback recovers interruption and cleanup deletes only collectible generations', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-operator-rollback-cleanup-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const dataDirectory = join(root, 'data');
+  const sessionsDirectory = join(root, 'sessions');
+  await mkdir(sessionsDirectory, { recursive: true });
+  const config = await loadRecallConversationConfig({
+    environment: {
+      PI_RECALL_DATA_DIRECTORY: dataDirectory,
+      PI_RECALL_SESSIONS_DIRECTORY: sessionsDirectory,
+      PI_RECALL_EMBEDDING_DIMENSIONS: '3',
+    },
+  });
+  const service = createRecallBackgroundIndexWorkerFixtureService(config);
+  const firstGenerationId = 'generation_cli_rollback_a';
+  const secondGenerationId = 'generation_cli_rollback_b';
+  const thirdGenerationId = 'generation_cli_rollback_c';
+  await service.createEmptyRecallGeneration({ generationId: firstGenerationId });
+  await service.activateValidatedRecallGeneration(firstGenerationId);
+  assert.equal(await service.completeRecallGenerationReplay(), true);
+  await service.createEmptyRecallGeneration({ generationId: secondGenerationId });
+  await service.activateValidatedRecallGeneration(secondGenerationId);
+  assert.equal(await service.completeRecallGenerationReplay(), true);
+
+  await writeFile(join(dataDirectory, 'fixture-interrupt-rollback-after_registry'), 'interrupt\n');
+  await assert.rejects(
+    () => runRecallOperatorCommand(CLI_TEST_PATH, ['rollback'], dataDirectory, sessionsDirectory),
+    (error: unknown) => {
+      assert.ok(isUnknownRecord(error));
+      assert.match(String(error.stderr), /fixture rollback interruption/u);
+      return true;
+    },
+  );
+  const interruptedStatus = await runRecallOperatorCommand(
+    CLI_PATH,
+    ['status'],
+    dataDirectory,
+    sessionsDirectory,
+  );
+  const interruptedStatusOutput: unknown = JSON.parse(interruptedStatus.stdout);
+  assert.ok(isUnknownRecord(interruptedStatusOutput));
+  assert.deepEqual(interruptedStatusOutput.recovery, {
+    required: true,
+    generationIds: [firstGenerationId],
+  });
+  const recovered = await runRecallOperatorCommand(
+    CLI_TEST_PATH,
+    ['recover'],
+    dataDirectory,
+    sessionsDirectory,
+  );
+  assert.deepEqual(JSON.parse(recovered.stdout), {
+    command: 'recover',
+    recovered: true,
+    recoveryKind: 'generation-cutover',
+  });
+  assert.equal(await service.completeRecallGenerationReplay(), true);
+
+  const switchedBack = await runRecallOperatorCommand(
+    CLI_TEST_PATH,
+    ['rollback'],
+    dataDirectory,
+    sessionsDirectory,
+  );
+  assert.deepEqual(JSON.parse(switchedBack.stdout), {
+    command: 'rollback',
+    activeGenerationId: secondGenerationId,
+    rollbackGenerationId: firstGenerationId,
+    restoredMarkerCount: 0,
+  });
+  assert.equal(await service.completeRecallGenerationReplay(), true);
+  const protectedCleanup = await runRecallOperatorCommand(
+    CLI_PATH,
+    ['cleanup'],
+    dataDirectory,
+    sessionsDirectory,
+  );
+  assert.deepEqual(JSON.parse(protectedCleanup.stdout), {
+    command: 'cleanup',
+    deletedGenerationIds: [],
+  });
+  await access(join(config.generationRootDirectory, firstGenerationId));
+
+  await service.createEmptyRecallGeneration({ generationId: thirdGenerationId });
+  await service.activateValidatedRecallGeneration(thirdGenerationId);
+  assert.equal(await service.completeRecallGenerationReplay(), true);
+  const registry = await readRecallGenerationRegistry(config.generationRegistryPath);
+  assert.ok(registry);
+  await writeRecallGenerationRegistry(config.generationRegistryPath, {
+    ...registry,
+    generations: registry.generations.map((entry) =>
+      entry.generationId === firstGenerationId
+        ? { ...entry, retireAfterEpochMilliseconds: 0 }
+        : entry,
+    ),
+  });
+  const cleaned = await runRecallOperatorCommand(
+    CLI_PATH,
+    ['cleanup'],
+    dataDirectory,
+    sessionsDirectory,
+  );
+  assert.deepEqual(JSON.parse(cleaned.stdout), {
+    command: 'cleanup',
+    deletedGenerationIds: [firstGenerationId],
+  });
+  await assert.rejects(() => access(join(config.generationRootDirectory, firstGenerationId)), {
+    code: 'ENOENT',
+  });
+});
+
+void test('standalone maintenance reports no-op recovery and cleanup and unavailable rollback', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-operator-maintenance-empty-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const dataDirectory = join(root, 'data');
+  const sessionsDirectory = join(root, 'sessions');
+
+  const recovered = await runRecallOperatorCommand(
+    CLI_TEST_PATH,
+    ['recover'],
+    dataDirectory,
+    sessionsDirectory,
+  );
+  assert.deepEqual(JSON.parse(recovered.stdout), {
+    command: 'recover',
+    recovered: false,
+    recoveryKind: 'none',
+  });
+
+  const generationId = 'generation_active';
+  const pointer = createRecallActiveGenerationPointer(generationId);
+  await writeRecallActiveGenerationPointer(join(dataDirectory, 'active-generation.json'), pointer);
+  await writeRecallGenerationRegistry(join(dataDirectory, 'generation-registry.json'), {
+    version: 1,
+    activeGenerationId: generationId,
+    buildingGenerationId: null,
+    rollbackGenerationId: null,
+    activePointerChecksum: pointer.checksum,
+    generations: [
+      {
+        generationId,
+        state: RecallGenerationCutoverState.ACTIVE,
+        embeddingProfileId: 'embedding-profile-active',
+        indexManifestVersion: 6,
+        markerSchemaVersion: 1,
+        sessionProjectionSchemaVersion: 3,
+        indexManifestFingerprint: 'a'.repeat(64),
+        rebuildStartedAtEpochMilliseconds: 100,
+        stateChangedAtEpochMilliseconds: 200,
+        rebuildStartMarkerId: 'marker_1',
+        rebuildMarkerWatermark: ['marker_1'],
+        validatedAtEpochMilliseconds: 150,
+        retireAfterEpochMilliseconds: null,
+      },
+    ],
+  });
+
+  const cleaned = await runRecallOperatorCommand(
+    CLI_PATH,
+    ['cleanup'],
+    dataDirectory,
+    sessionsDirectory,
+  );
+  assert.deepEqual(JSON.parse(cleaned.stdout), {
+    command: 'cleanup',
+    deletedGenerationIds: [],
+  });
+
+  await assert.rejects(
+    () => runRecallOperatorCommand(CLI_PATH, ['rollback'], dataDirectory, sessionsDirectory),
+    (error: unknown) => {
+      assert.ok(isUnknownRecord(error));
+      assert.equal(error.code, 1);
+      assert.match(String(error.stderr), /no retained target generation/u);
+      return true;
+    },
+  );
 });
 
 void test('standalone CLI rejects unknown commands with a machine-detectable exit status', async () => {

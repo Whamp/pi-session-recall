@@ -993,10 +993,26 @@ export async function writeRecallIncrementalWorkerFailureBacklog(
   }
 }
 
-async function runConfiguredRecallIncrementalWorkerExecutable(
+/** Public service callback used when an operator process already owns configured inference. */
+export interface RunConfiguredRecallIncrementalWorkerOptions {
+  transferWorkPlan?(
+    this: void,
+    workPlan: RecallMarkerReplayWorkPlan,
+  ): Promise<IncrementalRecallWorkPlanTransferOutcome>;
+}
+
+/** One generation-targeted configured worker pass and its bounded public result. */
+export interface ConfiguredRecallIncrementalWorkerResult {
+  activeGenerationId: string;
+  result: RecallIncrementalWorkerResult;
+}
+
+/** Runs the production short-lived worker orchestration without acquiring process ownership. */
+export async function runConfiguredRecallIncrementalWorker(
   config: Awaited<ReturnType<typeof loadRecallConversationConfig>>,
   operationDiagnostics: RecallOperationDiagnostics,
-): Promise<void> {
+  options: RunConfiguredRecallIncrementalWorkerOptions = {},
+): Promise<ConfiguredRecallIncrementalWorkerResult | null> {
   await recoverRecallGenerationCutover({
     activeGenerationPointerPath: config.activeGenerationPointerPath,
     generationRegistryPath: config.generationRegistryPath,
@@ -1009,7 +1025,7 @@ async function runConfiguredRecallIncrementalWorkerExecutable(
     await access(config.activeGenerationPointerPath);
   } catch (error) {
     if (readNodeErrorCode(error) === 'ENOENT') {
-      return;
+      return null;
     }
     throw error;
   }
@@ -1034,6 +1050,9 @@ async function runConfiguredRecallIncrementalWorkerExecutable(
     | undefined;
   const loadProductionTransferDependencies = () => {
     productionTransferDependencies ??= (async () => {
+      if (options.transferWorkPlan !== undefined) {
+        return { transferWorkPlan: options.transferWorkPlan };
+      }
       let rawManifest: unknown;
       try {
         rawManifest = JSON.parse(await readFile(activeSelection.manifestPath, 'utf8'));
@@ -1132,8 +1151,9 @@ async function runConfiguredRecallIncrementalWorkerExecutable(
     return productionTransferDependencies;
   };
   let deletionReconciliationHalted = false;
+  let result: RecallIncrementalWorkerResult;
   try {
-    const result = await runRecallIncrementalWorker({
+    result = await runRecallIncrementalWorker({
       markerSpoolDirectory: config.markerSpoolDirectory,
       markerQuarantineDirectory: config.markerQuarantineDirectory,
       controlDirectory: config.markerControlDirectory,
@@ -1209,6 +1229,15 @@ async function runConfiguredRecallIncrementalWorkerExecutable(
         return deletionResult;
       },
     });
+    const remainingWorkPlan = await coordinateRecallMarkerReplay({
+      markerSpoolDirectory: config.markerSpoolDirectory,
+      markerQuarantineDirectory: config.markerQuarantineDirectory,
+      targetGenerationId: activeSelection.activeGenerationId,
+      trustedSessionRoots: [config.sessionsDirectory],
+      ...(registry?.rollbackGenerationId
+        ? { retainedMarkerDirectory: resolve(config.markerControlDirectory, 'rollback-retained') }
+        : {}),
+    });
     const shouldSignalWake = await persistRecallIncrementalWorkerSchedule({
       schedulePath,
       nowEpochMilliseconds: Date.now(),
@@ -1236,11 +1265,12 @@ async function runConfiguredRecallIncrementalWorkerExecutable(
       deletionReconciliationHalted
         ? RecallBacklogFailureCategory.CONFIRMED_DELETION_HALTED
         : result.replayBlockingFailureCategory,
-      result,
+      { workPlan: remainingWorkPlan },
     );
   } finally {
     await configuredRuntime?.dispose();
   }
+  return { activeGenerationId: activeSelection.activeGenerationId, result };
 }
 
 async function runRecallIncrementalWorkerExecutable(): Promise<void> {
@@ -1272,7 +1302,7 @@ async function runRecallIncrementalWorkerExecutable(): Promise<void> {
           failureBacklogPaths,
           RecallBacklogFailureCategory.INCREMENTAL_WORKER_FAILED,
         ),
-      run: () => runConfiguredRecallIncrementalWorkerExecutable(config, operationDiagnostics),
+      run: () => runConfiguredRecallIncrementalWorker(config, operationDiagnostics).then(() => {}),
     });
   } catch (error) {
     if (!failureVisibilityInitialized) {

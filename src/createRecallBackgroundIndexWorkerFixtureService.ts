@@ -91,6 +91,25 @@ export function createRecallBackgroundIndexWorkerFixtureService(
         interruptAtFixturePhase('pre-activation');
       }
     },
+    incrementalTransferFault(stage) {
+      const triggerPath = join(dataDirectory, `fixture-interrupt-incremental-${stage}`);
+      const interruptedPath = `${triggerPath}.completed`;
+      if (!existsSync(triggerPath) || existsSync(interruptedPath)) {
+        return;
+      }
+      writeFileSync(interruptedPath, `${process.pid}\n`, 'utf8');
+      throw new Error(`Recall fixture incremental interruption: ${stage}`);
+    },
+    rollbackFault(stage) {
+      const triggerPath = join(dataDirectory, `fixture-interrupt-rollback-${stage}`);
+      const interruptedPath = `${triggerPath}.completed`;
+      if (!existsSync(triggerPath) || existsSync(interruptedPath)) {
+        return;
+      }
+      writeFileSync(interruptedPath, `${process.pid}\n`, 'utf8');
+      throw new Error(`Recall fixture rollback interruption: ${stage}`);
+    },
+    workerSignal: { signalDetachedWorker() {} },
     openStore(mode, databasePath = config.databasePath) {
       const store = openZvecConversationStore({
         databasePath,

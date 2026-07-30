@@ -891,6 +891,9 @@ void test('Pi recall tool adapter XOR-validates search and exact expansion reque
     async stopBackgroundIndexGeneration() {
       throw new Error('Pi recall adapter test does not stop background indexing');
     },
+    async catchUpRecallGeneration() {
+      throw new Error('Pi recall adapter test does not catch up generations');
+    },
     async readIndexGenerationStatus() {
       return { active: null, staging: null };
     },
@@ -923,6 +926,9 @@ void test('Pi recall tool adapter XOR-validates search and exact expansion reque
     },
     async completeRecallGenerationReplay() {
       throw new Error('Pi recall adapter test does not complete generation replay');
+    },
+    async recoverRecallMaintenance() {
+      throw new Error('Pi recall adapter test does not recover maintenance');
     },
     async recoverRecallGenerationCutover() {
       throw new Error('Pi recall adapter test does not recover generation cutover');

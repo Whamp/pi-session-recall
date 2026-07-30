@@ -175,6 +175,13 @@ void test(
       targetWriteWindowMilliseconds: WRITE_WINDOW_P95_TARGET_MILLISECONDS,
     };
     process.stdout.write(`${JSON.stringify(report)}\n`);
+    const evidenceOutputDirectory = process.env.PI_RECALL_EVIDENCE_OUTPUT_DIRECTORY;
+    if (evidenceOutputDirectory !== undefined) {
+      await writeFile(
+        join(evidenceOutputDirectory, 'write-window.json'),
+        `${JSON.stringify(report, null, 2)}\n`,
+      );
+    }
     assert.ok(
       report.p95.writeWindowMilliseconds <= WRITE_WINDOW_P95_TARGET_MILLISECONDS,
       `Recall write-window p95 ${report.p95.writeWindowMilliseconds} ms exceeds ${WRITE_WINDOW_P95_TARGET_MILLISECONDS} ms; return to design review`,

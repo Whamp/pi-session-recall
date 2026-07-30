@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
@@ -110,6 +110,13 @@ void test(
   async () => {
     const report = await measureRecallMetadataSweep();
     process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+    const evidenceOutputDirectory = process.env.PI_RECALL_EVIDENCE_OUTPUT_DIRECTORY;
+    if (evidenceOutputDirectory !== undefined) {
+      await writeFile(
+        join(evidenceOutputDirectory, 'metadata-sweep.json'),
+        `${JSON.stringify(report, null, 2)}\n`,
+      );
+    }
     assert.equal(report.accepted, true, JSON.stringify(report));
   },
 );

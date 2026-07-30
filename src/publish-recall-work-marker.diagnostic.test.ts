@@ -121,6 +121,13 @@ void test(
   async () => {
     const report = await measureRecallMarkerPublication();
     process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+    const evidenceOutputDirectory = process.env.PI_RECALL_EVIDENCE_OUTPUT_DIRECTORY;
+    if (evidenceOutputDirectory !== undefined) {
+      await writeFile(
+        join(evidenceOutputDirectory, 'marker-publication.json'),
+        `${JSON.stringify(report, null, 2)}\n`,
+      );
+    }
     assert.equal(report.accepted, true, JSON.stringify(report));
   },
 );

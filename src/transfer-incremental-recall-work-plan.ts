@@ -97,6 +97,7 @@ interface IncrementalRecallTransferServices {
   readRange?: RecallSessionSourceRangeReader;
   incrementalTransferFault?: (
     stage:
+      | 'before-recovery-record'
       | 'after-recovery-record'
       | 'after-lexical-source-write'
       | 'after-dense-write'
@@ -1122,6 +1123,13 @@ async function commitPreparedTargetTransfer(
         ...(options.signal ? { signal: options.signal } : {}),
       },
       async (writeWindow) => {
+        await invokeIncrementalTransferFault(
+          options,
+          'before-recovery-record',
+          prepared,
+          batchIndex,
+          evidenceBatch.length,
+        );
         await writeRecoveryRecord(paths.recoveryRecordPath, recovery);
         await invokeIncrementalTransferFault(
           options,
@@ -1398,6 +1406,7 @@ async function transferConfirmedPhysicalSourceDeletion(
           projectionIds,
         };
       }
+      await invokeDeletionTransferFault(options, 'before-recovery-record');
       await writeRecoveryRecord(paths.recoveryRecordPath, recovery);
       await invokeDeletionTransferFault(options, 'after-recovery-record');
       let lexicalSource: ZVecCollection | undefined;

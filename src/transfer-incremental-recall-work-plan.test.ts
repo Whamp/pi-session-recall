@@ -108,6 +108,7 @@ void test('configured transfer appends target evidence before acknowledging its 
   const transferEvents: string[] = [];
   const transferWindowDocumentCounts: number[] = [];
   let rejectedTransferStage: string | null = null;
+  let rejectedTransferBatchIndex: number | null = null;
   const service = createRecallConversationService(config, {
     embeddingProfile: profile,
     embeddingProvider: {
@@ -156,7 +157,10 @@ void test('configured transfer appends target evidence before acknowledging its 
       if (stage === 'after-recovery-record') {
         transferWindowDocumentCounts.push(context.evidenceDocumentCount);
       }
-      if (stage === rejectedTransferStage) {
+      if (
+        stage === rejectedTransferStage &&
+        (rejectedTransferBatchIndex === null || context.batchIndex === rejectedTransferBatchIndex)
+      ) {
         throw new Error(`fixture transfer interruption: ${stage}`);
       }
     },
@@ -435,14 +439,34 @@ void test('configured transfer appends target evidence before acknowledging its 
   await writeFile(join(config.markerSpoolDirectory, `${largeMarker.markerId}.json`), '{}\n');
   transferEvents.length = 0;
   transferWindowDocumentCounts.length = 0;
-  const largeOutcome = await service.transferIncrementalRecallWorkPlan({
+  const largeWorkPlan = {
     targetGenerationId: generationId,
     markerSpoolDirectory: config.markerSpoolDirectory,
     discoveredMarkerCount: 1,
     sourceMarkerIds: [largeMarker.markerId],
     workItems: [{ marker: largeMarker, coveredMarkerIds: [largeMarker.markerId] }],
     quarantineDiagnostics: [],
-  });
+  };
+  rejectedTransferStage = 'after-recovery-clear';
+  rejectedTransferBatchIndex = 0;
+  await assert.rejects(
+    () => service.transferIncrementalRecallWorkPlan(largeWorkPlan),
+    /fixture transfer interruption: after-recovery-clear/u,
+  );
+  rejectedTransferStage = null;
+  rejectedTransferBatchIndex = null;
+  await assert.rejects(() => access(recoveryRecordPath), { code: 'ENOENT' });
+  await access(join(config.markerSpoolDirectory, `${largeMarker.markerId}.json`));
+  const searchBetweenBatches = await service.searchRecallGenerationLexical(
+    generationId,
+    'large bounded',
+    64,
+  );
+  assert.ok(searchBetweenBatches.length > 0);
+  assert.deepEqual(transferWindowDocumentCounts, [32]);
+  transferEvents.length = 0;
+  transferWindowDocumentCounts.length = 0;
+  const largeOutcome = await service.transferIncrementalRecallWorkPlan(largeWorkPlan);
   assert.deepEqual(largeOutcome, {
     kind: RecallIncrementalTransferOutcomeKind.COMMITTED,
     committedDocumentCount: 33,
@@ -483,6 +507,7 @@ void test('configured transfer appends target evidence before acknowledging its 
     committedDocumentCount: 0,
   });
   assert.deepEqual(transferEvents, [
+    'before-recovery-record',
     'after-recovery-record',
     'after-dense-delete',
     'after-lexical-source-delete',
@@ -591,7 +616,9 @@ void test('configured transfer appends target evidence before acknowledging its 
     'write-recovery.json',
   );
   const interruptionStages = [
+    'before-recovery-record',
     'after-recovery-record',
+    'after-lexical-source-write',
     'after-dense-write',
     'after-logical-projection-write',
     'after-physical-projection-write',
@@ -643,13 +670,24 @@ void test('configured transfer appends target evidence before acknowledging its 
     await assert.rejects(() => service.transferIncrementalRecallWorkPlan(stagedWorkPlan));
     rejectedTransferStage = null;
     const recoveryExistsAfterFault = ![
+      'before-recovery-record',
       'after-recovery-clear',
       'after-marker-acknowledgement',
     ].includes(interruptionStage);
     if (recoveryExistsAfterFault) {
       await access(builtRecoveryRecordPath);
+      await assert.rejects(
+        () => service.searchRecallGenerationLexical(builtGenerationId, 'post build', 5),
+        /recovery required/u,
+      );
     } else {
       await assert.rejects(() => access(builtRecoveryRecordPath), { code: 'ENOENT' });
+      const readable = await service.searchRecallGenerationLexical(
+        builtGenerationId,
+        'post build',
+        5,
+      );
+      assert.equal(readable[0]?.content, 'post build incremental evidence');
     }
     if (interruptionStage === 'after-marker-acknowledgement') {
       await assert.rejects(() => access(stagedMarkerPath), { code: 'ENOENT' });
@@ -678,15 +716,36 @@ void test('configured transfer appends target evidence before acknowledging its 
       physicalSourceIdentity: builtPhysicalSourceIdentity,
     },
   };
-  rejectedTransferStage = 'after-dense-delete';
-  await assert.rejects(
-    () => service.transferIncrementalRecallWorkPlan(interruptedDeletion),
-    /Recall target incremental deletion or close failed/u,
-  );
-  await access(builtRecoveryRecordPath);
-  rejectedTransferStage = null;
-  await service.transferIncrementalRecallWorkPlan(interruptedDeletion);
-  await assert.rejects(() => access(builtRecoveryRecordPath), { code: 'ENOENT' });
+  const deletionInterruptionStages = [
+    'before-recovery-record',
+    'after-recovery-record',
+    'after-dense-delete',
+    'after-lexical-source-delete',
+    'after-projection-delete',
+    'after-store-close',
+    'after-reopened-verification',
+    'after-recovery-clear',
+  ] as const;
+  for (const interruptionStage of deletionInterruptionStages) {
+    rejectedTransferStage = interruptionStage;
+    await assert.rejects(() => service.transferIncrementalRecallWorkPlan(interruptedDeletion));
+    rejectedTransferStage = null;
+    const recoveryExistsAfterFault = !['before-recovery-record', 'after-recovery-clear'].includes(
+      interruptionStage,
+    );
+    if (recoveryExistsAfterFault) {
+      await access(builtRecoveryRecordPath);
+      await assert.rejects(
+        () => service.searchRecallGenerationLexical(builtGenerationId, 'post build', 5),
+        /recovery required/u,
+      );
+    } else {
+      await assert.rejects(() => access(builtRecoveryRecordPath), { code: 'ENOENT' });
+      await service.searchRecallGenerationLexical(builtGenerationId, 'post build', 5);
+    }
+    await service.transferIncrementalRecallWorkPlan(interruptedDeletion);
+    await assert.rejects(() => access(builtRecoveryRecordPath), { code: 'ENOENT' });
+  }
   for (const storeDirectory of ['lexical-source', 'dense', 'session-projections']) {
     const collection = ZVecOpen(
       join(config.generationRootDirectory, builtGenerationId, storeDirectory),

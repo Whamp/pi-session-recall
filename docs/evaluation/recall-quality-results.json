@@ -2,7 +2,7 @@
   "version": 2,
   "environment": {
     "command": "npm run evidence:target-reads",
-    "gitCommit": "5279c669330bf71297d17ac9270685a8f9b29af0",
+    "gitCommit": "b9700249289fe7d869dafdb66e024b811a74a9e7",
     "gitDirty": false,
     "nodeVersion": "v24.16.0",
     "platform": "linux",
@@ -564,9 +564,9 @@
       "rerankPoolLimit": 24,
       "finalResultCount": 5
     },
-    "startedAt": "2026-07-30T12:19:50.291Z",
-    "completedAt": "2026-07-30T12:19:56.311Z",
-    "durationMilliseconds": 6019.871916,
+    "startedAt": "2026-07-30T13:01:38.553Z",
+    "completedAt": "2026-07-30T13:01:44.953Z",
+    "durationMilliseconds": 6399.987918000001,
     "specificationPath": "/home/will/projects/pi-session-recall/.worktrees/issue-122-coherent-generations/evaluation/recall-quality-cases.json",
     "specificationSha256": "6208cfc632c8ff53815567dd5385297bb6cc513f62e3d50a5bfa8ae687c34439",
     "corpusId": "recall-quality-project-scoped-bounded-v3",
@@ -579,7 +579,7 @@
         },
         "generationId": "generation_quality_active",
         "manifestFingerprint": "0511bb2a5e207f255c742749d08cb8949e08922025107fe538dfa005f7e50e8a",
-        "startingSnapshotFingerprint": "5e756bddee4b3b4df005056359610fa64766e8631706e7d363927a1e52ba22d0",
+        "startingSnapshotFingerprint": "8c14a52207b3f5a82fbe7cdf749a5753ef011e870cd879f63a8a2ce0c941a1f6",
         "storeCounts": {
           "lexicalSource": 208,
           "dense": 113,
@@ -587,7 +587,7 @@
         },
         "totalChunks": 116,
         "generationSizeBytes": 82156578,
-        "indexLatencyMilliseconds": 3450.305671,
+        "indexLatencyMilliseconds": 3650.614225,
         "indexSummary": {
           "scannedSessions": 15,
           "indexedSessions": 15,
@@ -608,23 +608,23 @@
         },
         "candidateCount": 8,
         "totalChunks": 116,
-        "indexLatencyMilliseconds": 3450.305671,
+        "indexLatencyMilliseconds": 3650.614225,
         "measurement": {
           "caseCount": 17,
           "candidatePoolRecall": 1,
           "candidatePoolDuplicateRate": 0.007936507936507936,
           "queryLatencyMilliseconds": {
-            "median": 121.98883599999954,
-            "p95": 128.08544999999958
+            "median": 130.3987649999999,
+            "p95": 140.46144300000014
           },
           "queryLatencyByScope": {
             "project": {
-              "median": 121.78853299999992,
-              "p95": 128.08544999999958
+              "median": 129.34385199999997,
+              "p95": 135.69926299999952
             },
             "global": {
-              "median": 121.98883599999954,
-              "p95": 123.4725870000002
+              "median": 130.4604900000004,
+              "p95": 140.46144300000014
             }
           },
           "policyFailureCaseIds": [],
@@ -643,7 +643,7 @@
               "rawCandidateCount": 8,
               "groupedCandidateCount": 8,
               "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 120.72916900000018,
+              "queryLatencyMilliseconds": 132.08252300000004,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -673,7 +673,7 @@
               "rawCandidateCount": 10,
               "groupedCandidateCount": 10,
               "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 122.05886499999997,
+              "queryLatencyMilliseconds": 140.46144300000014,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -703,7 +703,7 @@
               "rawCandidateCount": 3,
               "groupedCandidateCount": 3,
               "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 121.57716199999959,
+              "queryLatencyMilliseconds": 134.88559499999974,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -733,7 +733,7 @@
               "rawCandidateCount": 8,
               "groupedCandidateCount": 8,
               "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 122.18470800000068,
+              "queryLatencyMilliseconds": 138.19315199999983,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -763,7 +763,7 @@
               "rawCandidateCount": 9,
               "groupedCandidateCount": 9,
               "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 121.98883599999954,
+              "queryLatencyMilliseconds": 135.8489499999996,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -793,7 +793,7 @@
               "rawCandidateCount": 8,
               "groupedCandidateCount": 8,
               "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 123.27116300000034,
+              "queryLatencyMilliseconds": 130.4604900000004,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -823,7 +823,7 @@
               "rawCandidateCount": 9,
               "groupedCandidateCount": 9,
               "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 121.4014959999995,
+              "queryLatencyMilliseconds": 130.08081700000002,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -853,7 +853,7 @@
               "rawCandidateCount": 8,
               "groupedCandidateCount": 8,
               "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 123.4725870000002,
+              "queryLatencyMilliseconds": 124.27144699999917,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -883,7 +883,7 @@
               "rawCandidateCount": 8,
               "groupedCandidateCount": 8,
               "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 121.99049800000012,
+              "queryLatencyMilliseconds": 123.4516480000002,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -913,7 +913,7 @@
               "rawCandidateCount": 8,
               "groupedCandidateCount": 7,
               "candidatePoolDuplicateSlots": 1,
-              "queryLatencyMilliseconds": 120.8306679999996,
+              "queryLatencyMilliseconds": 123.49919599999976,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -965,7 +965,7 @@
               "rawCandidateCount": 3,
               "groupedCandidateCount": 3,
               "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 120.6900569999998,
+              "queryLatencyMilliseconds": 135.69926299999952,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -995,7 +995,7 @@
               "rawCandidateCount": 9,
               "groupedCandidateCount": 9,
               "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 122.3000919999995,
+              "queryLatencyMilliseconds": 131.36804100000063,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -1025,7 +1025,7 @@
               "rawCandidateCount": 9,
               "groupedCandidateCount": 9,
               "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 126.94658900000013,
+              "queryLatencyMilliseconds": 122.14713200000006,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -1055,7 +1055,7 @@
               "rawCandidateCount": 8,
               "groupedCandidateCount": 8,
               "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 120.62271199999941,
+              "queryLatencyMilliseconds": 129.34385199999997,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -1085,7 +1085,7 @@
               "rawCandidateCount": 7,
               "groupedCandidateCount": 7,
               "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 128.08544999999958,
+              "queryLatencyMilliseconds": 126.07545800000025,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -1115,7 +1115,7 @@
               "rawCandidateCount": 3,
               "groupedCandidateCount": 3,
               "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 121.78853299999992,
+              "queryLatencyMilliseconds": 130.3987649999999,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -1145,7 +1145,7 @@
               "rawCandidateCount": 8,
               "groupedCandidateCount": 8,
               "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 120.82146099999954,
+              "queryLatencyMilliseconds": 129.09525099999973,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -1199,7 +1199,7 @@
         "candidateCount": 8,
         "finalCount": 5,
         "totalChunks": 116,
-        "indexLatencyMilliseconds": 3450.305671,
+        "indexLatencyMilliseconds": 3650.614225,
         "candidatePoolRecall": 1,
         "candidatePoolDuplicateRate": 0.007936507936507936,
         "finalRecall": 1,
@@ -1211,17 +1211,17 @@
         "branchVerification": 1,
         "finalDuplicateRate": 0,
         "queryLatencyMilliseconds": {
-          "median": 121.98883599999954,
-          "p95": 128.08544999999958
+          "median": 130.3987649999999,
+          "p95": 140.46144300000014
         },
         "queryLatencyByScope": {
           "project": {
-            "median": 121.78853299999992,
-            "p95": 128.08544999999958
+            "median": 129.34385199999997,
+            "p95": 135.69926299999952
           },
           "global": {
-            "median": 121.98883599999954,
-            "p95": 123.4725870000002
+            "median": 130.4604900000004,
+            "p95": 140.46144300000014
           }
         },
         "policyFailureCaseIds": [],
@@ -1239,7 +1239,7 @@
           "candidateCount": 8,
           "finalCount": 5,
           "totalChunks": 116,
-          "indexLatencyMilliseconds": 3450.305671,
+          "indexLatencyMilliseconds": 3650.614225,
           "candidatePoolRecall": 1,
           "candidatePoolDuplicateRate": 0.007936507936507936,
           "finalRecall": 1,
@@ -1251,17 +1251,17 @@
           "branchVerification": 1,
           "finalDuplicateRate": 0,
           "queryLatencyMilliseconds": {
-            "median": 121.98883599999954,
-            "p95": 128.08544999999958
+            "median": 130.3987649999999,
+            "p95": 140.46144300000014
           },
           "queryLatencyByScope": {
             "project": {
-              "median": 121.78853299999992,
-              "p95": 128.08544999999958
+              "median": 129.34385199999997,
+              "p95": 135.69926299999952
             },
             "global": {
-              "median": 121.98883599999954,
-              "p95": 123.4725870000002
+              "median": 130.4604900000004,
+              "p95": 140.46144300000014
             }
           },
           "policyFailureCaseIds": [],

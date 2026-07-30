@@ -4,13 +4,13 @@
 
 **Safe reproducible evidence: PASS. Release evidence: BLOCKED.**
 
-The complete #132 read matrix and #133 write, recovery, lifecycle, and foreground-bound matrix passed against clean candidate commit `5279c669330bf71297d17ac9270685a8f9b29af0`. Both commands used copied repository fixtures, generated test sources, disposable temporary roots, and real zvec stores.
+The complete #132 read matrix and #133 write, recovery, lifecycle, and foreground-bound matrix passed against clean runtime candidate commit `b9700249289fe7d869dafdb66e024b811a74a9e7`. Both commands used copied repository fixtures, generated test sources, disposable temporary roots, and real zvec stores. The required full-suite and structural-signature gates remain red, so #135 is not complete.
 
 No owner-approved immutable full-corpus snapshot is named in #135, #122, or the governing #115 decision. The committed 15-file quality corpus is approved only as a bounded retrieval evaluation. A full-corpus generation size and rebuild duration therefore remain unmeasured. Production rebuild and activation remain separate human-approved operations.
 
 ## Candidate and environment
 
-- Candidate commit: `5279c669330bf71297d17ac9270685a8f9b29af0`
+- Runtime candidate commit: `b9700249289fe7d869dafdb66e024b811a74a9e7`
 - Node: `v24.16.0`
 - Platform: `linux/x64`
 - CPU: AMD Ryzen 7 8845HS w/ Radeon 780M Graphics
@@ -18,14 +18,15 @@ No owner-approved immutable full-corpus snapshot is named in #135, #122, or the 
 - Quality specification: `evaluation/recall-quality-cases.json`
 - Quality specification SHA-256: `6208cfc632c8ff53815567dd5385297bb6cc513f62e3d50a5bfa8ae687c34439`
 - Bounded corpus: 15 checksum-fixed JSONL files, 44,784 source bytes, 17 evaluation cases
-- Bounded starting snapshot: `5e756bddee4b3b4df005056359610fa64766e8631706e7d363927a1e52ba22d0`
-- Write-fixture snapshot: `802ba8c5fade8ae495eb4770d46e386e0becab5d8d0a9396c8d629ee508d8b09`
+- Bounded starting snapshot: `8c14a52207b3f5a82fbe7cdf749a5753ef011e870cd879f63a8a2ce0c941a1f6`
+- Write-fixture snapshot: `77c9e6ec9415ad0c8aa3d01c31c5c867e0374b5702dc0af8015165aaee683332`
 
 ## Commands
 
 ```bash
 npm run evidence:target-reads
 npm run evidence:target-writes
+npm test
 npm run typecheck
 npm run lint
 npm run format:check
@@ -43,7 +44,7 @@ slop-scan delta \
   --fail-on added,worsened
 ```
 
-`npm test` was not run in this implementation phase. The workflow requires the full suite to run once after review.
+`npm test` was run once against the clean runtime candidate. It reported 604 tests: 569 passed, 31 failed, and 4 skipped. The failures keep release acceptance blocked; this evidence does not relabel them as accepted.
 
 ## Read and retrieval evidence
 
@@ -58,9 +59,9 @@ slop-scan delta \
 | Exact source-neighborhood expansion and model-facing tool adapter                                    | PASS   |
 | Reads during replay, replacement work, and target-to-target rollback                                 | PASS   |
 
-The fixed policy remained 512/64 tokens/overlap, eight candidates per channel, and five final results. Candidate-pool recall, final recall, context usefulness, source-occurrence preservation, and provenance were 100%; final duplicate rate was 0%. Query p95 was 128.085 ms against the 2,000 ms limit.
+The fixed policy remained 512/64 tokens/overlap, eight candidates per channel, and five final results. Candidate-pool recall, final recall, context usefulness, source-occurrence preservation, and provenance were 100%; final duplicate rate was 0%. Query p95 was 140.461 ms against the 2,000 ms limit.
 
-The fresh bounded replacement generation contained 208 lexical/source rows, 113 dense rows, and 30 projection rows. Its on-disk generation size was 82,156,578 bytes. Fresh build and activation took 3,450.306 ms; the complete build-and-evaluation command took 6,019.872 ms. Size and rebuild duration are reported values, not pass thresholds.
+The fresh bounded replacement generation contained 208 lexical/source rows, 113 dense rows, and 30 projection rows. Its on-disk generation size was 82,156,578 bytes. Fresh build and activation took 3,650.614 ms; the complete build-and-evaluation command took 6,399.988 ms. Size and rebuild duration are reported values, not pass thresholds.
 
 Detailed artifacts:
 
@@ -69,7 +70,7 @@ Detailed artifacts:
 
 ## Write, recovery, and lifecycle evidence
 
-`npm run evidence:target-writes` passed 101 composed behavior tests plus the marker, metadata-sweep, and close/reopen write-window diagnostics.
+`npm run evidence:target-writes` passed 102 composed behavior tests plus the marker, metadata-sweep, and close/reopen write-window diagnostics.
 
 The incremental fault matrix passed these boundaries:
 
@@ -90,11 +91,11 @@ A real detached child received `SIGKILL`, resumed the same generation, and compl
 
 | Foreground bound                           | Measured or enforced |           Limit | Result |
 | ------------------------------------------ | -------------------: | --------------: | ------ |
-| Marker publication plus detached spawn p95 |             3.710 ms |           25 ms | PASS   |
-| Metadata sweep p95 at 10,000 files         |            35.203 ms |          500 ms | PASS   |
+| Marker publication plus detached spawn p95 |             3.682 ms |           25 ms | PASS   |
+| Metadata sweep p95 at 10,000 files         |            43.358 ms |          500 ms | PASS   |
 | Projection payload                         |             enforced | 8,388,608 bytes | PASS   |
 | Evidence batch                             |             enforced |    32 documents | PASS   |
-| Close/reopen write-window p95, 20 samples  |            74.326 ms |          300 ms | PASS   |
+| Close/reopen write-window p95, 20 samples  |            72.389 ms |          300 ms | PASS   |
 | Search wait for the current write window   |             enforced |          500 ms | PASS   |
 
 Detailed artifacts:
@@ -104,15 +105,18 @@ Detailed artifacts:
 
 ## Final gates
 
-- Focused measurement and report tests: 4/4 PASS.
+- Target read matrix: 88/88 PASS.
+- Target write matrix: 102/102 PASS; all three foreground diagnostics PASS.
+- Review-fix focused tests: 32/32 PASS.
 - TypeScript typecheck: PASS.
 - Type-aware oxlint over `src`: PASS.
-- oxfmt over the repository: PASS after removing one accumulated trailing blank line.
+- oxfmt over the repository: PASS.
 - CodeGraph: no file-level cycles; only the four pre-existing function-level cycles remain.
-- Base-wide CodeGraph cycle and boundary predicates: PASS. Its signature predicate reports the intentional accumulated #122 contract changes rather than a new #135 regression.
+- Base-wide CodeGraph cycle and boundary predicates: PASS. Signature predicate: FAIL on the accumulated #122 public contract changes.
 - Slop-scan delta: 0 added, 0 worsened.
-- Exact search found no retained `EmbeddingVectorCache`, `LocalEmbeddingClient`, `LocalRerankerClient`, `pi-session-recall-index`, `adoptLegacy`, or `exactVersion5` implementation path outside negative tests.
-- Full `npm test`: DEFERRED until after review by workflow instruction.
+- Full `npm test`: FAIL — 569 passed, 31 failed, 4 skipped out of 604 tests.
+
+Because #135 requires every final gate to pass, the red full suite and signature predicate keep release acceptance blocked even though the fresh target read, write, recovery, lifecycle, quality, foreground-bound, type, lint, format, cycle, boundary, and slop evidence passed.
 
 ## Safety declaration
 
@@ -120,4 +124,4 @@ No production recall generation was opened or mutated. No original Pi session fi
 
 ## Required authorization
 
-To complete the blocked full-corpus evidence, the owner must identify an immutable, checksum-bound full-corpus snapshot and explicitly authorize copying that snapshot into a disposable sessions root. The authorization must not permit opening the production recall generation or mutating original Pi session files. After review, run the full test suite once against the final branch. Review of the resulting evidence must precede any production rebuild or activation.
+To complete release acceptance, the red full-suite and CodeGraph signature gates must first pass. The owner must also identify an immutable, checksum-bound full-corpus snapshot and explicitly authorize copying it into a disposable sessions root. The authorization must not permit opening the production recall generation or mutating original Pi session files. Review of replacement evidence must precede any production rebuild or activation.

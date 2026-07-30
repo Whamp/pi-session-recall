@@ -4,15 +4,15 @@
 
 **Safe reproducible evidence: PASS. Release evidence: BLOCKED on two owner decisions.**
 
-The complete #132 read matrix passed against repaired runtime candidate `693424def7a1565ddd104395b8eb31f9d2818653`. The #133 write, recovery, lifecycle, and foreground-bound matrix passed against `9db5c434e4d7ae576ce93446db644ddcd38dfeff`, whose only change from the runtime candidate was regenerated read-evidence documentation. The full suite and every executable static or behavioral gate now pass. Both evidence commands used copied repository fixtures, generated test sources, disposable temporary roots, and real zvec stores.
+The complete #132 read matrix passed against final reviewed runtime candidate `cc991d144953791b8cd798fb84b207bcd34624b7`. The #133 write, recovery, lifecycle, and foreground-bound matrix passed against `67abdc772a19be01620c3cb7951561e546385947`, whose only change from the runtime candidate was regenerated read-evidence documentation. The full suite and every executable static or behavioral gate now pass. Both evidence commands used copied repository fixtures, generated test sources, disposable temporary roots, and real zvec stores.
 
 Release acceptance remains blocked for two reasons. First, no owner-approved immutable full-corpus snapshot is named in #135, #122, or the governing #115 decision. The committed 15-file quality corpus is approved only as a bounded retrieval evaluation, so full-corpus generation size and rebuild duration remain unmeasured. Second, #135 says the base-wide CodeGraph signature check must pass, but that predicate means “no declaration line changed” and therefore rejects the new and retired APIs required by #122. Production rebuild and activation remain separate human-approved operations.
 
 ## Candidate and environment
 
-- Runtime candidate commit: `693424def7a1565ddd104395b8eb31f9d2818653`
-- Read-evidence commit: `693424def7a1565ddd104395b8eb31f9d2818653`
-- Write-evidence commit: `9db5c434e4d7ae576ce93446db644ddcd38dfeff` (read-evidence documentation only after the runtime candidate)
+- Runtime candidate commit: `cc991d144953791b8cd798fb84b207bcd34624b7`
+- Read-evidence commit: `cc991d144953791b8cd798fb84b207bcd34624b7`
+- Write-evidence commit: `67abdc772a19be01620c3cb7951561e546385947` (read-evidence documentation only after the runtime candidate)
 - Node: `v24.16.0`
 - Platform: `linux/x64`
 - CPU: AMD Ryzen 7 8845HS w/ Radeon 780M Graphics
@@ -20,8 +20,8 @@ Release acceptance remains blocked for two reasons. First, no owner-approved imm
 - Quality specification: `evaluation/recall-quality-cases.json`
 - Quality specification SHA-256: `6208cfc632c8ff53815567dd5385297bb6cc513f62e3d50a5bfa8ae687c34439`
 - Bounded corpus: 15 checksum-fixed JSONL files, 44,784 source bytes, 17 evaluation cases
-- Bounded starting snapshot: `3d021beb6918e09b510e394efb55470da8548ac145f6ba6d7559933d969f1176`
-- Write-fixture snapshot: `77c9e6ec9415ad0c8aa3d01c31c5c867e0374b5702dc0af8015165aaee683332`
+- Bounded starting snapshot: `d7386a54a1ac11c2be0d86e184907bfc501bf129bc2553055b4d1b0bfb431cd7`
+- Write-fixture snapshot: `25863553fddd9c86f11935cf80a1a48d31eafadb22d9ee2235674134ad7e1c64`
 
 ## Commands
 
@@ -38,7 +38,7 @@ codegraph diff-impact b9667308b871faef28c2c8574e2ccf541c2a2cd8 -T
 codegraph diff-impact b9667308b871faef28c2c8574e2ccf541c2a2cd8 --include-tests
 codegraph cycles -T
 codegraph cycles -T --functions
-codegraph check 693424def7a1565ddd104395b8eb31f9d2818653 -T --cycles --signatures --boundaries
+codegraph check cc991d144953791b8cd798fb84b207bcd34624b7 -T --cycles --signatures --boundaries
 codegraph check b9667308b871faef28c2c8574e2ccf541c2a2cd8 -T --cycles --signatures --boundaries
 
 slop-scan delta \
@@ -47,11 +47,11 @@ slop-scan delta \
   --fail-on added,worsened
 ```
 
-`npm test` passed against the clean repaired runtime candidate. It reported 604 tests: 600 passed, 0 failed, and 4 expected skips.
+`npm test` passed against the clean final reviewed runtime candidate. It reported 605 tests: 601 passed, 0 failed, and 4 expected skips.
 
 ## Read and retrieval evidence
 
-`npm run evidence:target-reads` passed its frozen quality gate and all 88 composed target-read tests.
+`npm run evidence:target-reads` passed its frozen quality gate and all 89 composed target-read tests.
 
 | Obligation                                                                                           | Result |
 | ---------------------------------------------------------------------------------------------------- | ------ |
@@ -62,9 +62,9 @@ slop-scan delta \
 | Exact source-neighborhood expansion and model-facing tool adapter                                    | PASS   |
 | Reads during replay, replacement work, and target-to-target rollback                                 | PASS   |
 
-The fixed policy remained 512/64 tokens/overlap, eight candidates per channel, and five final results. Candidate-pool recall, final recall, context usefulness, source-occurrence preservation, and provenance were 100%; final duplicate rate was 0%. Query p95 was 160.227 ms against the 2,000 ms limit.
+The fixed policy remained 512/64 tokens/overlap, eight candidates per channel, and five final results. Candidate-pool recall, final recall, context usefulness, source-occurrence preservation, and provenance were 100%; final duplicate rate was 0%. Query p95 was 152.220 ms against the 2,000 ms limit.
 
-The fresh bounded replacement generation contained 208 lexical/source rows, 113 dense rows, and 30 projection rows. Its on-disk generation size was 82,156,578 bytes. Fresh build and activation took 5,590.861 ms; the complete build-and-evaluation command took 8,859.540 ms. Size and rebuild duration are reported values, not pass thresholds.
+The fresh bounded replacement generation contained 208 lexical/source rows, 113 dense rows, and 30 projection rows. Its on-disk generation size was 82,156,578 bytes. Fresh build and activation took 3,676.508 ms; the complete build-and-evaluation command took 6,572.479 ms. Size and rebuild duration are reported values, not pass thresholds.
 
 Detailed artifacts:
 
@@ -73,7 +73,7 @@ Detailed artifacts:
 
 ## Write, recovery, and lifecycle evidence
 
-`npm run evidence:target-writes` passed 102 composed behavior tests plus the marker, metadata-sweep, and close/reopen write-window diagnostics.
+`npm run evidence:target-writes` passed 103 composed behavior tests plus the marker, metadata-sweep, and close/reopen write-window diagnostics.
 
 The incremental fault matrix passed these boundaries:
 
@@ -94,11 +94,11 @@ A real detached child received `SIGKILL`, resumed the same generation, and compl
 
 | Foreground bound                           | Measured or enforced |           Limit | Result |
 | ------------------------------------------ | -------------------: | --------------: | ------ |
-| Marker publication plus detached spawn p95 |             3.191 ms |           25 ms | PASS   |
-| Metadata sweep p95 at 10,000 files         |            39.305 ms |          500 ms | PASS   |
+| Marker publication plus detached spawn p95 |             3.316 ms |           25 ms | PASS   |
+| Metadata sweep p95 at 10,000 files         |            40.005 ms |          500 ms | PASS   |
 | Projection payload                         |             enforced | 8,388,608 bytes | PASS   |
 | Evidence batch                             |             enforced |    32 documents | PASS   |
-| Close/reopen write-window p95, 20 samples  |            64.329 ms |          300 ms | PASS   |
+| Close/reopen write-window p95, 20 samples  |            63.358 ms |          300 ms | PASS   |
 | Search wait for the current write window   |             enforced |          500 ms | PASS   |
 
 Detailed artifacts:
@@ -106,21 +106,30 @@ Detailed artifacts:
 - [`recall-write-acceptance.md`](recall-write-acceptance.md)
 - [`recall-write-acceptance.json`](recall-write-acceptance.json)
 
+## Final paired review
+
+Paired Sol and GLM reviewers independently checked Standards and Spec, followed by a separate Sol synthesis. Standards passed after the synthesis rejected three style or dead-surface suggestions that lacked observable harm or would have expanded cleanup scope. The Spec synthesis retained two bounded defects and rejected no additional implementation scope:
+
+1. Lifecycle and metadata-sweep work markers carried raw logical session IDs instead of sessions-root-relative physical source identity. The final candidate derives marker identity from the source path while retaining the raw logical ID only in trigger provenance.
+2. The bounded rollback health check validated dense checksum syntax but did not read the selected vector. The final candidate verifies one projection-selected vector checksum and cross-checks its evidence checksum against the authoritative lexical/source occurrence.
+
+Both fixes were developed red-green. Their affected configured-service, lifecycle, worker, transfer, rollback, tool, and target-generation surface passed 74/74 tests before the final full suite.
+
 ## Final gates
 
-- Target read matrix: 88/88 PASS.
-- Target write matrix: 102/102 PASS; all three foreground diagnostics PASS.
-- Review-fix focused tests: 32/32 PASS.
+- Target read matrix: 89/89 PASS.
+- Target write matrix: 103/103 PASS; all three foreground diagnostics PASS.
+- Final-review affected tests: 74/74 PASS.
 - TypeScript typecheck: PASS.
 - Type-aware oxlint over `src`: PASS.
 - oxfmt over the repository: PASS.
 - CodeGraph: no file-level cycles; only the four pre-existing function-level cycles remain.
 - Runtime-candidate-to-evidence CodeGraph cycle, boundary, and signature predicates: PASS.
 - Base-wide CodeGraph cycle and boundary predicates: PASS.
-- Base-wide CodeGraph signature predicate: EXPECTED FAIL — it reports 278 declaration-line changes because #122 intentionally adds the target-generation contracts and retires the legacy contracts. The predicate detects any declaration change; it does not distinguish a reviewed required API from an accidental incompatible change.
-- Base-wide CodeGraph impact review: 858 changed functions, 306 affected callers, 69 application files; no file-level cycles and only the four pre-existing function-level cycles.
+- Base-wide CodeGraph signature predicate: EXPECTED FAIL — it reports 281 declaration-line changes because #122 intentionally adds the target-generation contracts and retires the legacy contracts. The predicate detects any declaration change; it does not distinguish a reviewed required API from an accidental incompatible change.
+- Base-wide CodeGraph impact review: 861 changed functions, 313 affected callers, 70 application files; no file-level cycles and only the four pre-existing function-level cycles.
 - Slop-scan delta from an exact detached base worktree: 0 added, 0 worsened.
-- Full `npm test`: PASS — 600 passed, 0 failed, 4 expected skips out of 604 tests.
+- Full `npm test`: PASS — 601 passed, 0 failed, 4 expected skips out of 605 tests.
 
 All executable behavioral and static gates pass. #135 remains blocked because its literal base-wide no-signature-change criterion contradicts the required contract replacement and because no authorized full-corpus snapshot is available.
 

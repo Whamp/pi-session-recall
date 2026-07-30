@@ -1305,9 +1305,17 @@ ${validationRows}
 
 ${result.caveats.map((caveat) => `- ${caveat}`).join('\n')}
 
-## Decision
+## Measured implication
 
-Human review required. The prototype records the tradeoff; it does not silently convert a relative benchmark into a cache-retention policy.
+The persistent cache removed the cold model phase, but it did not improve the normal replacement path. Verified transfer completed the whole replacement in ${formatMilliseconds(result.lanes.find(({ lane }) => lane === 'previous_generation_transfer')?.phases.totalMilliseconds ?? 0)}, while the warm-cache replacement took ${formatMilliseconds(result.lanes.find(({ lane }) => lane === 'warm_shared_cache')?.phases.totalMilliseconds ?? 0)}. Direct vector transfer was ${result.comparisons.warmCacheToTransferVectorResolutionRatio.toFixed(3)}× faster than reading the cold file cache.
+
+The cache added ${formatBytes(result.cacheSeed.cacheSize.allocatedBytes)} and ${result.cacheSeed.cacheSize.files.toLocaleString()} files—${result.comparisons.persistentCacheToDenseStoreAllocatedBytesRatio.toFixed(3)}× the allocated size of the searchable dense store it duplicated.
+
+## Recommendation
+
+Do not retain a persistent embedding cache in the new topology. Use the active or interrupted generation as the verified vector source, deduplicate cold builds against vectors already written to their dense store, and recompute from immutable sessions when no valid vector source survives.
+
+Reconsider only if future evidence shows that cold source-only rebuilds happen often enough for their avoided model time to outweigh a second vector corpus and its lifecycle.
 `;
 }
 

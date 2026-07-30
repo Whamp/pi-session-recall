@@ -28,7 +28,10 @@ import {
   writeRecallBacklogSummary,
   RECALL_BACKLOG_SUMMARY_VERSION,
 } from './recall-generation-state.js';
-import { readRecallGenerationReplaySnapshot } from './recall-generation-replay-snapshot.js';
+import {
+  readRecallGenerationReplaySnapshot,
+  RECALL_ACTIVATION_REPLAY_SNAPSHOT_FILE_NAME,
+} from './recall-generation-replay-snapshot.js';
 import {
   persistRecallIncrementalWorkerSchedule,
   readRecallIncrementalWorkerSchedule,
@@ -449,7 +452,10 @@ export async function runRecallIncrementalWorker(
       options.targetGenerationId,
     );
     const replaySnapshot = await readRecallGenerationReplaySnapshot(
-      join(generationDirectory, 'generation-replay-snapshot.json'),
+      join(
+        generationDirectory,
+        activeGenerationEntry.replaySnapshotFileName ?? RECALL_ACTIVATION_REPLAY_SNAPSHOT_FILE_NAME,
+      ),
     );
     if (replaySnapshot.generationId !== options.targetGenerationId) {
       throw new Error(

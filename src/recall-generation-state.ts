@@ -67,6 +67,8 @@ export interface RecallGenerationRegistryEntry {
   stateChangedAtEpochMilliseconds: number;
   rebuildStartMarkerId: string | null;
   rebuildMarkerWatermark?: string[];
+  /** Immutable generation-local snapshot file governing the current fixed replay. */
+  replaySnapshotFileName?: string;
   validatedAtEpochMilliseconds?: number | null;
   retireAfterEpochMilliseconds?: number | null;
 }
@@ -164,6 +166,9 @@ const recallGenerationRegistryEntrySchema = Type.Object(
     stateChangedAtEpochMilliseconds: Type.Integer({ minimum: 0 }),
     rebuildStartMarkerId: Type.Union([generationIdentifierSchema, Type.Null()]),
     rebuildMarkerWatermark: Type.Optional(Type.Array(generationIdentifierSchema)),
+    replaySnapshotFileName: Type.Optional(
+      Type.String({ pattern: '^generation-replay-snapshot(?:-[A-Za-z0-9_-]+)?\\.json$' }),
+    ),
     validatedAtEpochMilliseconds: Type.Optional(
       Type.Union([Type.Integer({ minimum: 0 }), Type.Null()]),
     ),

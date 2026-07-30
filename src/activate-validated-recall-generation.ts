@@ -1,4 +1,3 @@
-import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { openValidatedRecallGeneration } from './recall-coherent-generation.js';
@@ -14,10 +13,14 @@ import {
   publishRecallGenerationActivationBacklogTransition,
 } from './recall-generation-transitions.js';
 import {
+  listPendingRecallMarkerIds,
+  listQuarantinedRecallMarkerIds,
+} from './recall-generation-replay-markers.js';
+import {
+  RECALL_ACTIVATION_REPLAY_SNAPSHOT_FILE_NAME,
   RECALL_GENERATION_REPLAY_SNAPSHOT_VERSION,
   writeRecallGenerationReplaySnapshot,
 } from './recall-generation-replay-snapshot.js';
-import { readNodeErrorCode } from './read-node-error-code.js';
 
 /** Configured state, marker, and fault boundaries for target generation activation. */
 export interface ActivateValidatedRecallGenerationOptions {
@@ -40,49 +43,6 @@ export interface ActivatedValidatedRecallGeneration {
   replayQuarantinedMarkerCount: number;
 }
 
-const PENDING_MARKER_FILE_PATTERN = /^([A-Za-z0-9_-]+)\.json$/u;
-const QUARANTINED_MARKER_FILE_PATTERN = /^([A-Za-z0-9_-]+)\.json(?:\..+)?$/u;
-
-async function listPendingMarkerIds(markerSpoolDirectory: string): Promise<string[]> {
-  try {
-    return (await readdir(markerSpoolDirectory, { withFileTypes: true }))
-      .filter((entry) => entry.isFile())
-      .map((entry) => PENDING_MARKER_FILE_PATTERN.exec(entry.name)?.[1])
-      .filter((markerId) => markerId !== undefined)
-      .toSorted();
-  } catch (error) {
-    if (readNodeErrorCode(error) === 'ENOENT') {
-      return [];
-    }
-    throw error;
-  }
-}
-
-async function listQuarantinedMarkerIds(markerQuarantineDirectory: string): Promise<string[]> {
-  let categories;
-  try {
-    categories = await readdir(markerQuarantineDirectory, { withFileTypes: true });
-  } catch (error) {
-    if (readNodeErrorCode(error) === 'ENOENT') {
-      return [];
-    }
-    throw error;
-  }
-  const markerIds = (
-    await Promise.all(
-      categories
-        .filter((entry) => entry.isDirectory())
-        .map(async (category) =>
-          (await readdir(join(markerQuarantineDirectory, category.name), { withFileTypes: true }))
-            .filter((entry) => entry.isFile())
-            .map((entry) => QUARANTINED_MARKER_FILE_PATTERN.exec(entry.name)?.[1])
-            .filter((markerId) => markerId !== undefined),
-        ),
-    )
-  ).flat();
-  return [...new Set(markerIds)].toSorted();
-}
-
 /** Authenticates, snapshots, and activates one validated target through named transitions. */
 export async function activateValidatedRecallGeneration(
   options: ActivateValidatedRecallGenerationOptions,
@@ -92,8 +52,8 @@ export async function activateValidatedRecallGeneration(
     await Promise.all([
       readRecallActiveGenerationPointer(options.activeGenerationPointerPath),
       readRecallGenerationRegistry(options.generationRegistryPath),
-      listPendingMarkerIds(options.markerSpoolDirectory),
-      listQuarantinedMarkerIds(options.markerQuarantineDirectory),
+      listPendingRecallMarkerIds(options.markerSpoolDirectory),
+      listQuarantinedRecallMarkerIds(options.markerQuarantineDirectory),
     ]);
   const activatedAtEpochMilliseconds = options.nowEpochMilliseconds?.() ?? Date.now();
   const readiness = prepareValidatedRecallGenerationActivationTransition({
@@ -104,9 +64,10 @@ export async function activateValidatedRecallGeneration(
     indexManifestFingerprint: opened.manifestFingerprint,
     readyAtEpochMilliseconds: opened.validatedAtEpochMilliseconds,
     replayMarkerIds: pendingMarkerIds,
+    replaySnapshotFileName: RECALL_ACTIVATION_REPLAY_SNAPSHOT_FILE_NAME,
   });
   await writeRecallGenerationReplaySnapshot(
-    join(opened.generationDirectory, 'generation-replay-snapshot.json'),
+    join(opened.generationDirectory, RECALL_ACTIVATION_REPLAY_SNAPSHOT_FILE_NAME),
     {
       snapshotVersion: RECALL_GENERATION_REPLAY_SNAPSHOT_VERSION,
       generationId: options.generationId,

@@ -260,6 +260,13 @@ export enum RecallValidatedGenerationActivationStage {
   AFTER_ACTIVATED_REGISTRY = 'after_activated_registry',
 }
 
+/** Durable publication boundary exposed only for deterministic target rollback fault probes. */
+export enum RecallTargetGenerationRollbackStage {
+  AFTER_REGISTRY = 'after_registry',
+  AFTER_POINTER = 'after_pointer',
+  AFTER_BACKLOG = 'after_backlog',
+}
+
 /** Privacy-safe failure category exposed by the scalar material backlog summary. */
 export enum RecallBacklogFailureCategory {
   MARKER_DECODE_FAILED = 'marker_decode_failed',

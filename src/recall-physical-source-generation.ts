@@ -15,6 +15,7 @@ import {
   createRecallGenerationManifest,
   readRecallGenerationManifest,
 } from './recall-generation-manifest.js';
+import { createRecallPhysicalSourceStoreMembership } from './recall-generation-physical-projection.js';
 import { createRecallGenerationComponentPaths } from './recall-generation-stores.js';
 import { readRecallGenerationValidationReceipt } from './recall-generation-validation-receipt.js';
 import {
@@ -152,17 +153,6 @@ export function createExpectedRecallPhysicalSourceManifest(
     projectLineages: config.projectLineages,
     ...(config.chunkPolicy ? { chunkPolicy: config.chunkPolicy } : {}),
   });
-}
-
-function createRecallPhysicalSourceMembership(recordIds: readonly string[]): Readonly<{
-  count: number;
-  digest: string;
-}> {
-  const sortedRecordIds = [...recordIds].toSorted();
-  return {
-    count: sortedRecordIds.length,
-    digest: createHash('sha256').update(JSON.stringify(sortedRecordIds)).digest('hex'),
-  };
 }
 
 function createRecallProjectIdentityDigest(projectIdentity: string): string {
@@ -676,9 +666,11 @@ export async function materializeRecallPhysicalSourceGeneration(
         sourceByteSize,
         logicalSessionOccurrenceIds,
         expectedMembership: {
-          lexicalSource: createRecallPhysicalSourceMembership(lexicalSource.map(({ id }) => id)),
-          dense: createRecallPhysicalSourceMembership(dense.map(({ id }) => id)),
-          sessionProjection: createRecallPhysicalSourceMembership([
+          lexicalSource: createRecallPhysicalSourceStoreMembership(
+            lexicalSource.map(({ id }) => id),
+          ),
+          dense: createRecallPhysicalSourceStoreMembership(dense.map(({ id }) => id)),
+          sessionProjection: createRecallPhysicalSourceStoreMembership([
             ...logicalSessionProjections.map(({ id }) => id),
             physicalSessionProjectionId,
           ]),

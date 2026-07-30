@@ -927,9 +927,17 @@ void test('Pi recall tool adapter XOR-validates search and exact expansion reque
     async discardStagingIndexGeneration() {
       return false;
     },
-    async rollback() {},
+    async rollback() {
+      return {
+        activeGenerationId: 'generation_restored',
+        rollbackGenerationId: 'generation_replaced',
+        restoredMarkerCount: 0,
+      };
+    },
     async adoptLegacy() {},
-    async collectRetired() {},
+    async collectRetired() {
+      return { deletedGenerationIds: [] };
+    },
   };
   const context = {
     cwd: '/trusted/invocation',

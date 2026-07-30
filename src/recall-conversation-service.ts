@@ -9,7 +9,12 @@ import {
 } from './activate-validated-recall-generation.js';
 import { adoptLegacyRecallGeneration } from './adopt-legacy-recall-generation.js';
 import { buildRecallFixedSnapshotGeneration } from './build-recall-fixed-snapshot-generation.js';
-import { collectRetiredRecallGenerations } from './collect-retired-recall-generations.js';
+import { checkRecallGenerationRollbackHealth } from './check-recall-generation-rollback-health.js';
+import {
+  collectRetiredRecallGenerations,
+  type CollectRetiredRecallGenerationsOptions,
+  type CollectRetiredRecallGenerationsResult,
+} from './collect-retired-recall-generations.js';
 import { completeRecallGenerationReplay as completeConfiguredRecallGenerationReplay } from './complete-recall-generation-replay.js';
 import {
   coordinateRecallReadWindow,
@@ -61,6 +66,7 @@ import {
   RecallSearchScope,
   RecallSessionProjectionKind,
   RECALL_INDEX_MANIFEST_VERSION,
+  type RecallTargetGenerationRollbackStage,
   type RecallValidatedGenerationActivationStage,
 } from './enums.js';
 import {
@@ -155,6 +161,7 @@ import {
   type RecallRerankingProviderConformanceMeasurement,
 } from './recall-inference-conformance.js';
 import { rebuildRecallGeneration } from './rebuild-recall-generation.js';
+import { RECALL_ACTIVATION_REPLAY_SNAPSHOT_FILE_NAME } from './recall-generation-replay-snapshot.js';
 import { recoverRecallGenerationCutover as recoverConfiguredRecallGenerationCutover } from './recover-recall-generation-cutover.js';
 import {
   recallRebuildOwnershipLockPath,
@@ -185,7 +192,10 @@ import {
   type ProjectIdentity,
   type ResolvedProjectIdentity,
 } from './resolve-project-identity.js';
-import { rollbackRecallGeneration } from './rollback-recall-generation.js';
+import {
+  rollbackRecallGeneration,
+  type RollbackRecallGenerationResult,
+} from './rollback-recall-generation.js';
 import {
   QUERY_PLANNED_RECALL_FUSED_RANK_BLEND,
   QUERY_PLANNED_RECALL_RERANK_POLICY_VERSION,
@@ -553,12 +563,12 @@ export interface RecallConversationService {
   /** Deletes one disposable target-format generation only when no role protects it. */
   deleteUnprotectedRecallGeneration(generationId: string): Promise<void>;
   discardStagingIndexGeneration(): Promise<boolean>;
-  /** Restores the bounded rollback generation and republishes retained markers. */
-  rollback(): Promise<void>;
+  /** Restores the bounded target rollback generation with one fixed marker replay snapshot. */
+  rollback(): Promise<RollbackRecallGenerationResult>;
   /** Explicitly adopts the exact pre-generation version-5 layout as read-only. */
   adoptLegacy(): Promise<void>;
-  /** Collects only expired validated generations after replay completes. */
-  collectRetired(): Promise<void>;
+  /** Collects only generations prepared as collectible by named transition policy. */
+  collectRetired(): Promise<CollectRetiredRecallGenerationsResult>;
 }
 
 /** Injectable inference, tokenizer, zvec, generation worker, and diagnostic boundaries. */
@@ -588,6 +598,10 @@ export interface RecallConversationDependencies {
   ) => void | Promise<void>;
   /** Deterministic publication fault boundary for validated target activation tests. */
   activationFault?: (stage: RecallValidatedGenerationActivationStage) => void | Promise<void>;
+  /** Deterministic publication fault boundary for target rollback recovery tests. */
+  rollbackFault?: (stage: RecallTargetGenerationRollbackStage) => void | Promise<void>;
+  /** Deterministic filesystem fault boundary for target collection recovery tests. */
+  generationCollectionFault?: CollectRetiredRecallGenerationsOptions['generationCollectionFault'];
   /** Disposable-test source reader for proving bounded incremental append reads. */
   incrementalTransferReadRange?: RecallSessionSourceRangeReader;
   /** Deterministic storage interruption probe for target incremental transfer tests. */
@@ -1327,6 +1341,8 @@ export function createRecallConversationService(
     dependencies.workerSignal ?? createRecallDetachedWorkerSignal(config.workerOwnershipLockPath);
   const fixedSnapshotBuildFault = dependencies.fixedSnapshotBuildFault;
   const activationFault = dependencies.activationFault;
+  const rollbackFault = dependencies.rollbackFault;
+  const generationCollectionFault = dependencies.generationCollectionFault;
   const incrementalTransferReadRange = dependencies.incrementalTransferReadRange;
   const incrementalTransferFault = dependencies.incrementalTransferFault;
   const backgroundIndexStatusPath =
@@ -2959,10 +2975,21 @@ export function createRecallConversationService(
           ({ generationId }) => generationId === targetGenerationId,
         );
         if (targetEntry?.indexManifestVersion === RECALL_INDEX_MANIFEST_VERSION) {
-          await openValidatedCoherentRecallGeneration(
-            coherentGenerationConfig,
-            targetEntry.generationId,
-          );
+          if (
+            targetEntry.replaySnapshotFileName !== undefined &&
+            targetEntry.replaySnapshotFileName !== RECALL_ACTIVATION_REPLAY_SNAPSHOT_FILE_NAME
+          ) {
+            await checkRecallGenerationRollbackHealth({
+              generationRootDirectory: config.generationRootDirectory,
+              generationId: targetEntry.generationId,
+              expectedManifestFingerprint: targetEntry.indexManifestFingerprint,
+            });
+          } else {
+            await openValidatedCoherentRecallGeneration(
+              coherentGenerationConfig,
+              targetEntry.generationId,
+            );
+          }
         }
         return recoverConfiguredRecallGenerationCutover({
           activeGenerationPointerPath: config.activeGenerationPointerPath,
@@ -3037,15 +3064,17 @@ export function createRecallConversationService(
       }
     },
     async rollback() {
-      await rollbackRecallGeneration({
+      return rollbackRecallGeneration({
         activeGenerationPointerPath: config.activeGenerationPointerPath,
         generationRegistryPath: config.generationRegistryPath,
         generationRootDirectory: config.generationRootDirectory,
         backlogSummaryPath: config.backlogSummaryPath,
         markerSpoolDirectory: config.markerSpoolDirectory,
+        markerQuarantineDirectory: config.markerQuarantineDirectory,
         retainedMarkerDirectory: join(config.markerControlDirectory, 'rollback-retained'),
         lockPath: config.lockPath,
         workerSignal,
+        ...(rollbackFault ? { rollbackFault } : {}),
       });
     },
     async adoptLegacy() {
@@ -3071,12 +3100,13 @@ export function createRecallConversationService(
       });
     },
     async collectRetired() {
-      await collectRetiredRecallGenerations({
+      return collectRetiredRecallGenerations({
         activeGenerationPointerPath: config.activeGenerationPointerPath,
         generationRegistryPath: config.generationRegistryPath,
         generationRootDirectory: config.generationRootDirectory,
         lockPath: config.lockPath,
         retainedMarkerDirectory: join(config.markerControlDirectory, 'rollback-retained'),
+        ...(generationCollectionFault ? { generationCollectionFault } : {}),
       });
     },
   };

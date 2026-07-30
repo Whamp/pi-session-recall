@@ -25,6 +25,7 @@ import {
   assertRecallGenerationManifestCompatible,
   readRecallGenerationManifest,
 } from './recall-generation-manifest.js';
+import { createRecallPhysicalSourceStoreMembership } from './recall-generation-physical-projection.js';
 import {
   createRecallGenerationComponentPaths,
   createRecallGenerationStoreContracts,
@@ -859,6 +860,14 @@ async function materializePreparedTargetTransfer(
             projection.headerDescriptor.sourceLine,
           ),
         ),
+        expectedMembership: {
+          lexicalSource: createRecallPhysicalSourceStoreMembership(lexicalRows.map(({ id }) => id)),
+          dense: createRecallPhysicalSourceStoreMembership(denseRows.map(({ id }) => id)),
+          sessionProjection: createRecallPhysicalSourceStoreMembership([
+            ...logicalProjectionRows.map(({ id }) => id),
+            `projection_${physicalSource.physicalSourceIdentity}`,
+          ]),
+        },
         ingestionProjectionPayload: encodedPhysical.payload,
       }),
     },

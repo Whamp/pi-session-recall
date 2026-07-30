@@ -9,6 +9,9 @@ import { syncRecallDirectory } from './sync-recall-directory.js';
 /** Current immutable generation replay snapshot format. */
 export const RECALL_GENERATION_REPLAY_SNAPSHOT_VERSION = 1;
 
+/** Fixed filename retained for the first activation replay snapshot contract. */
+export const RECALL_ACTIVATION_REPLAY_SNAPSHOT_FILE_NAME = 'generation-replay-snapshot.json';
+
 /** Exact pending and quarantined marker IDs fixed at one generation cutover boundary. */
 export interface RecallGenerationReplaySnapshot {
   snapshotVersion: 1;

@@ -473,9 +473,13 @@ void test('rollback transition validates target then publishes registry pointer 
     async validateRollbackGeneration(generationId) {
       events.push(`validate:${generationId}`);
     },
-    async restoreRetainedMarkers() {
+    async prepareRollbackReplay() {
       events.push('restore-markers');
-      return 2;
+      return {
+        restoredMarkerCount: 2,
+        replayMarkerIds: ['marker_replay'],
+        replaySnapshotFileName: 'generation-replay-snapshot-transition.json',
+      };
     },
     retainRecoveryRequired() {
       events.push('retain-recovery');

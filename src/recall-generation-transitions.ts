@@ -226,6 +226,7 @@ interface PrepareValidatedRecallGenerationActivationTransitionOptions {
   indexManifestFingerprint: string;
   readyAtEpochMilliseconds: number;
   replayMarkerIds: readonly string[];
+  replaySnapshotFileName: string;
 }
 
 interface PrepareValidatedRecallGenerationActivationTransitionResult {
@@ -316,7 +317,14 @@ export interface RollbackRecallGenerationTransitionOptions {
   rollbackRetentionMilliseconds?: number;
   nowEpochMilliseconds?: () => number;
   validateRollbackGeneration(generationId: string): Promise<void>;
-  restoreRetainedMarkers(): Promise<number>;
+  prepareRollbackReplay(generationId: string): Promise<{
+    restoredMarkerCount: number;
+    replayMarkerIds: string[];
+    replaySnapshotFileName: string;
+  }>;
+  afterRollbackRegistry?(): Promise<void>;
+  afterRollbackPointer?(): Promise<void>;
+  afterRollbackBacklog?(): Promise<void>;
   retainRecoveryRequired(): void;
 }
 
@@ -994,6 +1002,7 @@ export function prepareValidatedRecallGenerationActivationTransition(
     stateChangedAtEpochMilliseconds: options.readyAtEpochMilliseconds,
     rebuildStartMarkerId: options.replayMarkerIds[0] ?? null,
     rebuildMarkerWatermark: [...options.replayMarkerIds],
+    replaySnapshotFileName: options.replaySnapshotFileName,
     validatedAtEpochMilliseconds: options.readyAtEpochMilliseconds,
     retireAfterEpochMilliseconds: null,
   };
@@ -1254,10 +1263,14 @@ export async function rollbackRecallGenerationTransition(
     rollbackEntry.indexManifestVersion === 5
       ? RecallGenerationCutoverState.LEGACY_READ_ONLY
       : RecallGenerationCutoverState.REPLAY_PENDING;
+  const replay = await options.prepareRollbackReplay(rollbackEntry.generationId);
   const activeReplacement: RecallGenerationRegistryEntry = {
     ...rollbackEntry,
     state: targetState,
     stateChangedAtEpochMilliseconds: rolledBackAt,
+    rebuildStartMarkerId: replay.replayMarkerIds[0] ?? null,
+    rebuildMarkerWatermark: [...replay.replayMarkerIds],
+    replaySnapshotFileName: replay.replaySnapshotFileName,
     retireAfterEpochMilliseconds: null,
   };
   const rollbackReplacement: RecallGenerationRegistryEntry = {
@@ -1284,10 +1297,12 @@ export async function rollbackRecallGenerationTransition(
       return entry;
     }),
   };
-  const restoredMarkerCount = await options.restoreRetainedMarkers();
+  const restoredMarkerCount = replay.restoredMarkerCount;
   try {
     await writeRecallGenerationRegistry(options.generationRegistryPath, nextRegistry);
+    await options.afterRollbackRegistry?.();
     await writeRecallActiveGenerationPointer(options.activeGenerationPointerPath, targetPointer);
+    await options.afterRollbackPointer?.();
     await writeRecallBacklogSummary(options.backlogSummaryPath, {
       version: RECALL_BACKLOG_SUMMARY_VERSION,
       pendingEligibleSessionCount: restoredMarkerCount,
@@ -1300,6 +1315,7 @@ export async function rollbackRecallGenerationTransition(
       lastFailureCategory: null,
       observedAtEpochMilliseconds: rolledBackAt,
     });
+    await options.afterRollbackBacklog?.();
   } catch (error) {
     options.retainRecoveryRequired();
     throw error;

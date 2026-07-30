@@ -20,7 +20,10 @@ import {
   resolveRecallGenerationDirectory,
 } from './recall-generation-state.js';
 import { readRecallGenerationManifest } from './recall-generation-manifest.js';
-import { readRecallGenerationReplaySnapshot } from './recall-generation-replay-snapshot.js';
+import {
+  readRecallGenerationReplaySnapshot,
+  RECALL_ACTIVATION_REPLAY_SNAPSHOT_FILE_NAME,
+} from './recall-generation-replay-snapshot.js';
 import { createRecallGenerationComponentPaths } from './recall-generation-stores.js';
 import { recoverRecallGenerationCutoverTransition } from './recall-generation-transitions.js';
 import { readRecallGenerationValidationReceipt } from './recall-generation-validation-receipt.js';
@@ -199,7 +202,10 @@ async function validateTargetRecallCutoverArtifacts(
     readRecallGenerationManifest(paths.manifestPath),
     readRecallGenerationValidationReceipt(paths.validationReceiptPath),
     readRecallGenerationReplaySnapshot(
-      join(generationDirectory, 'generation-replay-snapshot.json'),
+      join(
+        generationDirectory,
+        readyEntry.replaySnapshotFileName ?? RECALL_ACTIVATION_REPLAY_SNAPSHOT_FILE_NAME,
+      ),
     ),
   ]);
   if (

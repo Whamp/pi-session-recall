@@ -274,6 +274,11 @@ void test('recall index command performs explicit rollback without rerunning the
       },
       async rollback() {
         rollbackCalls += 1;
+        return {
+          activeGenerationId: 'generation_restored',
+          rollbackGenerationId: 'generation_replaced',
+          restoredMarkerCount: 0,
+        };
       },
     },
     ui: {

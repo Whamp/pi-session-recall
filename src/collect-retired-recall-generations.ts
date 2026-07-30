@@ -19,6 +19,10 @@ export interface CollectRetiredRecallGenerationsOptions {
   generationRootDirectory: string;
   lockPath: string;
   retainedMarkerDirectory?: string;
+  generationCollectionFault?: (
+    stage: 'after_generation_directory_delete',
+    generationId: string,
+  ) => void | Promise<void>;
   nowEpochMilliseconds?: () => number;
 }
 
@@ -59,6 +63,7 @@ async function collectRetiredRecallGenerationsWithLock(
     );
     await rm(generationDirectory, { recursive: true });
     deletedGenerationIds.push(generationId);
+    await options.generationCollectionFault?.('after_generation_directory_delete', generationId);
   }
   const completion = await completeRetiredRecallGenerationCollectionTransition({
     activeGenerationPointerPath: options.activeGenerationPointerPath,

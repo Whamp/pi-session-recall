@@ -1,4 +1,3 @@
-import type { Dirent } from 'node:fs';
 import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
@@ -8,9 +7,14 @@ import { coordinateRecallWriteWindow } from './coordinate-recall-write-window.js
 import { RecallSessionProjectionKind } from './enums.js';
 import {
   readRecallActiveGenerationPointer,
+  readRecallGenerationRegistry,
   resolveRecallGenerationDirectory,
 } from './recall-generation-state.js';
-import { readRecallGenerationReplaySnapshot } from './recall-generation-replay-snapshot.js';
+import { listQuarantinedRecallMarkerIds } from './recall-generation-replay-markers.js';
+import {
+  readRecallGenerationReplaySnapshot,
+  RECALL_ACTIVATION_REPLAY_SNAPSHOT_FILE_NAME,
+} from './recall-generation-replay-snapshot.js';
 import { createRecallGenerationComponentPaths } from './recall-generation-stores.js';
 import { completeRecallGenerationReplayTransition } from './recall-generation-transitions.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
@@ -29,8 +33,6 @@ export interface CompleteRecallGenerationReplayOptions {
   nowEpochMilliseconds?: () => number;
 }
 
-const QUARANTINED_MARKER_FILE_PATTERN = /^([A-Za-z0-9_-]+)\.json(?:\..+)?$/u;
-
 async function hasPendingRecallMarkers(markerSpoolDirectory: string): Promise<boolean> {
   try {
     return (await readdir(markerSpoolDirectory, { withFileTypes: true })).some(
@@ -44,41 +46,8 @@ async function hasPendingRecallMarkers(markerSpoolDirectory: string): Promise<bo
   }
 }
 
-async function listQuarantinedRecallMarkerIds(
-  markerQuarantineDirectory: string,
-): Promise<Set<string>> {
-  let categoryEntries: Dirent[];
-  try {
-    categoryEntries = await readdir(markerQuarantineDirectory, { withFileTypes: true });
-  } catch (error) {
-    if (readNodeErrorCode(error) === 'ENOENT') {
-      return new Set();
-    }
-    throw error;
-  }
-  const markerIds = new Set<string>();
-  for (const categoryEntry of categoryEntries) {
-    if (!categoryEntry.isDirectory()) {
-      continue;
-    }
-    const quarantinedEntries = await readdir(join(markerQuarantineDirectory, categoryEntry.name), {
-      withFileTypes: true,
-    });
-    for (const entry of quarantinedEntries) {
-      if (!entry.isFile()) {
-        continue;
-      }
-      const markerId = QUARANTINED_MARKER_FILE_PATTERN.exec(entry.name)?.[1];
-      if (markerId !== undefined) {
-        markerIds.add(markerId);
-      }
-    }
-  }
-  return markerIds;
-}
-
 async function hasQuarantinedRecallMarkers(markerQuarantineDirectory: string): Promise<boolean> {
-  return (await listQuarantinedRecallMarkerIds(markerQuarantineDirectory)).size > 0;
+  return (await listQuarantinedRecallMarkerIds(markerQuarantineDirectory)).length > 0;
 }
 
 function readTargetPhysicalProjectionCoveredMarkerIds(
@@ -142,7 +111,10 @@ function readTargetPhysicalProjectionCoveredMarkerIds(
 async function proveFixedRecallGenerationReplayComplete(
   options: CompleteRecallGenerationReplayOptions & { generationRootDirectory: string },
 ): Promise<boolean> {
-  const pointer = await readRecallActiveGenerationPointer(options.activeGenerationPointerPath);
+  const [pointer, registry] = await Promise.all([
+    readRecallActiveGenerationPointer(options.activeGenerationPointerPath),
+    readRecallGenerationRegistry(options.generationRegistryPath),
+  ]);
   if (pointer === null) {
     throw new Error('Recall generation replay fixed-snapshot proof requires an active pointer');
   }
@@ -150,8 +122,14 @@ async function proveFixedRecallGenerationReplayComplete(
     options.generationRootDirectory,
     pointer.activeGenerationId,
   );
+  const activeEntry = registry?.generations.find(
+    ({ generationId }) => generationId === pointer.activeGenerationId,
+  );
   const snapshot = await readRecallGenerationReplaySnapshot(
-    join(generationDirectory, 'generation-replay-snapshot.json'),
+    join(
+      generationDirectory,
+      activeEntry?.replaySnapshotFileName ?? RECALL_ACTIVATION_REPLAY_SNAPSHOT_FILE_NAME,
+    ),
   );
   if (snapshot.generationId !== pointer.activeGenerationId) {
     throw new Error(
@@ -162,8 +140,8 @@ async function proveFixedRecallGenerationReplayComplete(
     generationDirectory,
     pointer.activeGenerationId,
   );
-  const quarantinedMarkerIds = await listQuarantinedRecallMarkerIds(
-    options.markerQuarantineDirectory,
+  const quarantinedMarkerIds = new Set(
+    await listQuarantinedRecallMarkerIds(options.markerQuarantineDirectory),
   );
   return (
     snapshot.pendingMarkerIds.every((markerId) => coveredMarkerIds.has(markerId)) &&

@@ -372,11 +372,10 @@ function assertRecallGenerationVectorSchema(
   }
 }
 
-function openAndValidateRecallGenerationStore(
+/** Opens one store read-only and checks only declared identity, schema, and indexes. */
+export function openRecallGenerationStoreForBoundedCheck(
   storePath: string,
   contract: Readonly<RecallGenerationStoreContract>,
-  expectedGenerationId: string,
-  expectedRecordIds: readonly string[],
 ): ZVecCollection {
   if (!existsSync(storePath)) {
     throw new Error(
@@ -401,6 +400,21 @@ function openAndValidateRecallGenerationStore(
     }
     assertRecallGenerationScalarSchema(collection, contract);
     assertRecallGenerationVectorSchema(collection, contract);
+    return collection;
+  } catch (error) {
+    collection.closeSync();
+    throw error;
+  }
+}
+
+function openAndValidateRecallGenerationStore(
+  storePath: string,
+  contract: Readonly<RecallGenerationStoreContract>,
+  expectedGenerationId: string,
+  expectedRecordIds: readonly string[],
+): ZVecCollection {
+  const collection = openRecallGenerationStoreForBoundedCheck(storePath, contract);
+  try {
     if (collection.stats.docCount !== expectedRecordIds.length) {
       throw new Error(
         `Recall coherent generation ${contract.responsibility} membership mismatch: expected ${expectedRecordIds.length} rows, received ${collection.stats.docCount}`,

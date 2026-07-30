@@ -3,9 +3,22 @@ import { constants } from 'node:fs';
 import { access, copyFile, mkdir, open, readdir, rename, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 
+import { checkRecallGenerationRollbackHealth } from './check-recall-generation-rollback-health.js';
 import { coordinateRecallWriteWindow } from './coordinate-recall-write-window.js';
 import type { RecallDetachedWorkerSignal } from './create-recall-detached-worker-signal.js';
-import { resolveRecallGenerationDirectory } from './recall-generation-state.js';
+import { RECALL_INDEX_MANIFEST_VERSION, RecallTargetGenerationRollbackStage } from './enums.js';
+import {
+  listPendingRecallMarkerIds,
+  listQuarantinedRecallMarkerIds,
+} from './recall-generation-replay-markers.js';
+import {
+  RECALL_GENERATION_REPLAY_SNAPSHOT_VERSION,
+  writeRecallGenerationReplaySnapshot,
+} from './recall-generation-replay-snapshot.js';
+import {
+  readRecallGenerationRegistry,
+  resolveRecallGenerationDirectory,
+} from './recall-generation-state.js';
 import {
   recallGenerationTransitionRequiresReplaySignal,
   rollbackRecallGenerationTransition,
@@ -20,10 +33,12 @@ export interface RollbackRecallGenerationOptions {
   generationRootDirectory: string;
   backlogSummaryPath: string;
   markerSpoolDirectory: string;
+  markerQuarantineDirectory: string;
   retainedMarkerDirectory: string;
   lockPath: string;
   workerSignal: RecallDetachedWorkerSignal;
   rollbackRetentionMilliseconds?: number;
+  rollbackFault?: (stage: RecallTargetGenerationRollbackStage) => void | Promise<void>;
   signal?: AbortSignal;
   nowEpochMilliseconds?: () => number;
 }
@@ -105,6 +120,21 @@ async function restoreRetainedRecallMarkers(
 export async function rollbackRecallGeneration(
   options: RollbackRecallGenerationOptions,
 ): Promise<RollbackRecallGenerationResult> {
+  const inspectedRegistry = await readRecallGenerationRegistry(options.generationRegistryPath);
+  const inspectedRollbackEntry = inspectedRegistry?.generations.find(
+    ({ generationId }) => generationId === inspectedRegistry.rollbackGenerationId,
+  );
+  if (
+    inspectedRollbackEntry === undefined ||
+    inspectedRollbackEntry.indexManifestVersion !== RECALL_INDEX_MANIFEST_VERSION
+  ) {
+    throw new Error('Recall generation rollback unavailable: no retained target generation');
+  }
+  await checkRecallGenerationRollbackHealth({
+    generationRootDirectory: options.generationRootDirectory,
+    generationId: inspectedRollbackEntry.generationId,
+    expectedManifestFingerprint: inspectedRollbackEntry.indexManifestFingerprint,
+  });
   let restoredMarkerCountBeforeFailure = 0;
   let rollback: {
     result: RollbackRecallGenerationResult;
@@ -129,16 +159,54 @@ export async function rollbackRecallGeneration(
             ? { nowEpochMilliseconds: options.nowEpochMilliseconds }
             : {}),
           async validateRollbackGeneration(generationId) {
-            await resolveRecallGenerationDirectory(options.generationRootDirectory, generationId);
+            if (generationId !== inspectedRollbackEntry.generationId) {
+              throw new Error(
+                `Recall rollback health target changed before cutover: expected ${inspectedRollbackEntry.generationId}, received ${generationId}`,
+              );
+            }
           },
-          restoreRetainedMarkers: () =>
-            restoreRetainedRecallMarkers(
+          async prepareRollbackReplay(generationId) {
+            const generationDirectory = await resolveRecallGenerationDirectory(
+              options.generationRootDirectory,
+              generationId,
+            );
+            const restoredMarkerCount = await restoreRetainedRecallMarkers(
               options.retainedMarkerDirectory,
               options.markerSpoolDirectory,
               (restoredCount) => {
                 restoredMarkerCountBeforeFailure = restoredCount;
               },
-            ),
+            );
+            const [pendingMarkerIds, quarantinedMarkerIds] = await Promise.all([
+              listPendingRecallMarkerIds(options.markerSpoolDirectory),
+              listQuarantinedRecallMarkerIds(options.markerQuarantineDirectory),
+            ]);
+            const replaySnapshotFileName = `generation-replay-snapshot-${randomUUID()}.json`;
+            await writeRecallGenerationReplaySnapshot(
+              join(generationDirectory, replaySnapshotFileName),
+              {
+                snapshotVersion: RECALL_GENERATION_REPLAY_SNAPSHOT_VERSION,
+                generationId,
+                pendingMarkerIds,
+                quarantinedMarkerIds,
+                capturedAtEpochMilliseconds: options.nowEpochMilliseconds?.() ?? Date.now(),
+              },
+            );
+            return {
+              restoredMarkerCount,
+              replayMarkerIds: pendingMarkerIds,
+              replaySnapshotFileName,
+            };
+          },
+          async afterRollbackRegistry() {
+            await options.rollbackFault?.(RecallTargetGenerationRollbackStage.AFTER_REGISTRY);
+          },
+          async afterRollbackPointer() {
+            await options.rollbackFault?.(RecallTargetGenerationRollbackStage.AFTER_POINTER);
+          },
+          async afterRollbackBacklog() {
+            await options.rollbackFault?.(RecallTargetGenerationRollbackStage.AFTER_BACKLOG);
+          },
           retainRecoveryRequired() {
             writeWindow.retainRecoveryRequired();
           },

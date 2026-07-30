@@ -8,6 +8,7 @@ import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 
 import { isUnknownRecord } from './is-unknown-record.js';
+import { openRecallZvecValidationStore } from './open-recall-zvec-validation-store.js';
 import {
   openValidatedRecallGeneration,
   type OpenedValidatedRecallGeneration,
@@ -158,7 +159,11 @@ function throwIfFixedSnapshotBuildCancelled(signal?: AbortSignal): void {
 
 async function invokeFixedSnapshotBuildFault(
   dependencies: Readonly<RecallPhysicalSourceGenerationDependencies>,
-  stage: 'after-snapshot-capture' | 'after-dense-write' | 'before-validation-receipt',
+  stage:
+    | 'after-snapshot-capture'
+    | 'after-dense-write'
+    | 'after-store-close'
+    | 'before-validation-receipt',
   generationDirectory: string,
   physicalSourceIdentity?: string,
 ): Promise<void> {
@@ -703,12 +708,29 @@ async function writeExpectedPhysicalSource(
     dense.closeSync();
     sessionProjection.closeSync();
   }
-  const reopenedLexicalSource = ZVecOpen(paths.lexicalSourceStorePath, { readOnly: true });
-  const reopenedDense = ZVecOpen(paths.denseStorePath, { readOnly: true });
-  const reopenedSessionProjection = ZVecOpen(paths.sessionProjectionStorePath, {
-    readOnly: true,
-  });
+  await invokeFixedSnapshotBuildFault(
+    dependencies,
+    'after-store-close',
+    generationDirectory,
+    artifact.physicalSourceIdentity,
+  );
+  const reopenedCollections: ZVecCollection[] = [];
   try {
+    const reopenedLexicalSource = await openRecallZvecValidationStore(
+      () => ZVecOpen(paths.lexicalSourceStorePath, { readOnly: true }),
+      signal,
+    );
+    reopenedCollections.push(reopenedLexicalSource);
+    const reopenedDense = await openRecallZvecValidationStore(
+      () => ZVecOpen(paths.denseStorePath, { readOnly: true }),
+      signal,
+    );
+    reopenedCollections.push(reopenedDense);
+    const reopenedSessionProjection = await openRecallZvecValidationStore(
+      () => ZVecOpen(paths.sessionProjectionStorePath, { readOnly: true }),
+      signal,
+    );
+    reopenedCollections.push(reopenedSessionProjection);
     verifyExpectedScalarRows(
       reopenedLexicalSource,
       'lexical/source checkpoint',
@@ -751,9 +773,9 @@ async function writeExpectedPhysicalSource(
       }
     }
   } finally {
-    reopenedLexicalSource.closeSync();
-    reopenedDense.closeSync();
-    reopenedSessionProjection.closeSync();
+    for (const collection of reopenedCollections) {
+      collection.closeSync();
+    }
   }
   await rm(paths.recoveryRecordPath);
 }

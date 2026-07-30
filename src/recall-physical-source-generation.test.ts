@@ -496,6 +496,100 @@ void test('configured service resumes one fixed source snapshot after an interru
   assert.deepEqual(await service.openValidatedRecallGeneration(generationId), resumed);
 });
 
+void test('configured fixed-snapshot build waits for a transient checkpoint store lock', async (t) => {
+  const disposableRoot = await mkdtemp(join(tmpdir(), 'recall-fixed-snapshot-lock-'));
+  const sessionsDirectory = join(disposableRoot, 'sessions');
+  const dataDirectory = join(disposableRoot, 'recall');
+  const projectDirectory = join(disposableRoot, 'project');
+  const sourcePath = join(sessionsDirectory, 'checkpoint-lock.jsonl');
+  let checkpointLock: ReturnType<typeof ZVecOpen> | undefined;
+  let releaseTimer: ReturnType<typeof setTimeout> | undefined;
+  t.after(async () => {
+    if (releaseTimer !== undefined) {
+      clearTimeout(releaseTimer);
+    }
+    checkpointLock?.closeSync();
+    await rm(disposableRoot, { recursive: true, force: true });
+  });
+  await Promise.all([mkdir(sessionsDirectory), mkdir(dataDirectory), mkdir(projectDirectory)]);
+  await writeJsonl(sourcePath, [
+    {
+      type: 'session',
+      version: 3,
+      id: 'checkpoint-lock-session',
+      timestamp: '2026-08-04T00:00:00.000Z',
+      cwd: projectDirectory,
+    },
+    {
+      type: 'message',
+      id: 'checkpoint-lock-message',
+      parentId: null,
+      timestamp: '2026-08-04T00:00:01.000Z',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'TRANSIENT_CHECKPOINT_LOCK remains recoverable.' }],
+      },
+    },
+  ]);
+
+  const profile = createOctenEmbeddingModelProfile(
+    {
+      requestModel: 'fixture-native-model',
+      servedModelId: 'fixture/native-model',
+      artifact: 'fixture-native-model.fp32',
+      artifactSha256: 'e'.repeat(64),
+      dimensions: 3,
+      quantization: 'fp32',
+      pooling: 'last',
+      normalization: 'l2',
+    },
+    2,
+  );
+  const config = createPhysicalSourceGenerationTestConfig(dataDirectory, sessionsDirectory);
+  let checkpointLockCount = 0;
+  const service = createRecallConversationService(config, {
+    embeddingProfile: profile,
+    embeddingProvider: {
+      async embedDocuments(documents) {
+        return documents.map(() => [3, 4, 100]);
+      },
+      async embedQuery() {
+        return [3, 4, 100];
+      },
+    },
+    tokenizerIdentity: {
+      model: 'fixture-tokenizer',
+      revision: 'fixture-revision',
+      library: { name: 'fixture-tokenizer', version: '1' },
+      encodeOptions: { addSpecialTokens: false, returnTokenTypeIds: false },
+      assets: [{ fileName: 'fixture-tokenizer.json', sha256: 'f'.repeat(64) }],
+    },
+    loadTokenizer: async () => tokenizer,
+    workerSignal: { signalDetachedWorker() {} },
+    fixedSnapshotBuildFault(stage, context) {
+      if (stage !== 'after-store-close') {
+        return;
+      }
+      checkpointLockCount += 1;
+      checkpointLock = ZVecOpen(join(context.generationDirectory, 'lexical-source'));
+      releaseTimer = setTimeout(() => {
+        checkpointLock?.closeSync();
+        checkpointLock = undefined;
+        releaseTimer = undefined;
+      }, 75);
+    },
+  });
+
+  const generationId = 'generation_transient_checkpoint_lock';
+  const created = await service.createRecallGenerationFromPhysicalSources({
+    generationId,
+    physicalSessionPaths: [sourcePath],
+  });
+  assert.equal(checkpointLockCount, 1);
+  assert.equal(checkpointLock, undefined);
+  assert.deepEqual(await service.openValidatedRecallGeneration(generationId), created);
+});
+
 void test('configured service resolves current-build duplicates before copying a validated compatible generation', async (t) => {
   const disposableRoot = await mkdtemp(join(tmpdir(), 'recall-fixed-snapshot-vector-lanes-'));
   t.after(() => rm(disposableRoot, { recursive: true, force: true }));

@@ -131,7 +131,11 @@ export interface RecallPhysicalSourceGenerationDependencies {
   embeddingProvider: RecallEmbeddingProvider;
   resolveProjectIdentity(workingDirectory: string): Promise<ResolvedProjectIdentity | null>;
   fixedSnapshotBuildFault?: (
-    stage: 'after-snapshot-capture' | 'after-dense-write' | 'before-validation-receipt',
+    stage:
+      | 'after-snapshot-capture'
+      | 'after-dense-write'
+      | 'after-store-close'
+      | 'before-validation-receipt',
     context: Readonly<{ generationDirectory: string; physicalSourceIdentity?: string }>,
   ) => void | Promise<void>;
 }

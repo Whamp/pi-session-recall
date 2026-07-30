@@ -645,7 +645,11 @@ export interface RecallConversationDependencies {
   workerSignal?: RecallDetachedWorkerSignal;
   /** Deterministic storage fault probe for disposable fixed-snapshot build tests. */
   fixedSnapshotBuildFault?: (
-    stage: 'after-snapshot-capture' | 'after-dense-write' | 'before-validation-receipt',
+    stage:
+      | 'after-snapshot-capture'
+      | 'after-dense-write'
+      | 'after-store-close'
+      | 'before-validation-receipt',
     context: Readonly<{ generationDirectory: string; physicalSourceIdentity?: string }>,
   ) => void | Promise<void>;
   /** Deterministic publication fault boundary for validated target activation tests. */

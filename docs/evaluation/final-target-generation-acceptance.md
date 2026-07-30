@@ -2,11 +2,11 @@
 
 ## Decision
 
-**Safe reproducible evidence: PASS. Release evidence: BLOCKED on two owner decisions.**
+**Safe reproducible evidence: PASS. Release evidence: PENDING FULL-CORPUS MEASUREMENT.**
 
 The complete #132 read matrix passed against final reviewed runtime candidate `cc991d144953791b8cd798fb84b207bcd34624b7`. The #133 write, recovery, lifecycle, and foreground-bound matrix passed against `67abdc772a19be01620c3cb7951561e546385947`, whose only change from the runtime candidate was regenerated read-evidence documentation. The full suite and every executable static or behavioral gate now pass. Both evidence commands used copied repository fixtures, generated test sources, disposable temporary roots, and real zvec stores.
 
-Release acceptance remains blocked for two reasons. First, no owner-approved immutable full-corpus snapshot is named in #135, #122, or the governing #115 decision. The committed 15-file quality corpus is approved only as a bounded retrieval evaluation, so full-corpus generation size and rebuild duration remain unmeasured. Second, #135 says the base-wide CodeGraph signature check must pass, but that predicate means “no declaration line changed” and therefore rejects the new and retired APIs required by #122. Production rebuild and activation remain separate human-approved operations.
+Release evidence remains incomplete because no immutable full-corpus snapshot of the existing Pi session JSONL source corpus has been identified for the disposable build. The committed 15-file quality corpus is approved only as a bounded retrieval evaluation, so full-corpus generation size and rebuild duration remain unmeasured. The required snapshot is source input: it is not the legacy recall database or a new synthetic corpus. The build output will be a new target-format generation in disposable storage. Production rebuild and activation remain separate human-approved operations.
 
 ## Candidate and environment
 
@@ -32,14 +32,6 @@ npm test
 npm run typecheck
 npm run lint
 npm run format:check
-
-codegraph build .
-codegraph diff-impact b9667308b871faef28c2c8574e2ccf541c2a2cd8 -T
-codegraph diff-impact b9667308b871faef28c2c8574e2ccf541c2a2cd8 --include-tests
-codegraph cycles -T
-codegraph cycles -T --functions
-codegraph check cc991d144953791b8cd798fb84b207bcd34624b7 -T --cycles --signatures --boundaries
-codegraph check b9667308b871faef28c2c8574e2ccf541c2a2cd8 -T --cycles --signatures --boundaries
 
 slop-scan delta \
   --base /home/will/projects/pi-session-recall \
@@ -123,25 +115,17 @@ Both fixes were developed red-green. Their affected configured-service, lifecycl
 - TypeScript typecheck: PASS.
 - Type-aware oxlint over `src`: PASS.
 - oxfmt over the repository: PASS.
-- CodeGraph: no file-level cycles; only the four pre-existing function-level cycles remain.
-- Runtime-candidate-to-evidence CodeGraph cycle, boundary, and signature predicates: PASS.
-- Base-wide CodeGraph cycle and boundary predicates: PASS.
-- Base-wide CodeGraph signature predicate: EXPECTED FAIL — it reports 281 declaration-line changes because #122 intentionally adds the target-generation contracts and retires the legacy contracts. The predicate detects any declaration change; it does not distinguish a reviewed required API from an accidental incompatible change.
-- Base-wide CodeGraph impact review: 861 changed functions, 313 affected callers, 70 application files; no file-level cycles and only the four pre-existing function-level cycles.
 - Slop-scan delta from an exact detached base worktree: 0 added, 0 worsened.
 - Full `npm test`: PASS — 601 passed, 0 failed, 4 expected skips out of 605 tests.
 
-All executable behavioral and static gates pass. #135 remains blocked because its literal base-wide no-signature-change criterion contradicts the required contract replacement and because no authorized full-corpus snapshot is available.
+All executable behavioral and static gates pass. #135 remains incomplete only because final target-generation size and full rebuild duration have not been measured against a fixed snapshot of the existing Pi session source corpus.
 
 ## Safety declaration
 
 No production recall generation was opened or mutated. No original Pi session file was opened or mutated. The harness copied committed fixtures into disposable roots, removed the copied source before target reads where required, and deleted generated stores after each run.
 
-## Required authorization
+## Remaining evidence input
 
-To complete release acceptance, the owner must make two explicit decisions:
+Identify a checksum-bound snapshot of the existing Pi session JSONL source corpus. Do not use the legacy recall database or a new synthetic corpus. Use an existing immutable copy, or explicitly authorize a one-time read-only copy into a disposable sessions root. The replacement build must read only that disposable snapshot and must not open production recall storage or mutate original Pi session files.
 
-1. Amend or waive #135's base-wide no-signature-change predicate. The recommended criterion is to accept the reviewed #122 contract delta, retain the passing base-wide cycle and boundary predicates, and require the runtime-candidate-to-evidence signature predicate to stay green.
-2. Identify an immutable, checksum-bound full-corpus snapshot and explicitly authorize copying it into a disposable sessions root. The authorization must not permit opening the production recall generation or mutating original Pi session files.
-
-After those decisions, rerun the full replacement build against the authorized snapshot and record its total duration and final generation size. Review that evidence before any production rebuild or activation.
+Then run the full replacement build against the snapshot and record its total duration and final generation size. Review that evidence before any production rebuild or activation.

@@ -8,14 +8,31 @@ import { fileURLToPath } from 'node:url';
 import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 
+import { coordinateRecallWriteWindow } from './coordinate-recall-write-window.js';
 import type { RecallConversationConfig } from './recall-conversation-config.js';
 import { RecallBackgroundIndexProcessState, RecallDiagnosticsMode } from './enums.js';
 import type {
   ConversationIndexCheckpoint,
   ConversationIndexProgress,
 } from './incremental-session-indexer.js';
+import { listRecallConversationSessionFiles } from './recall-conversation-corpus.js';
+import { listPendingRecallMarkerIds } from './recall-generation-replay-markers.js';
+import {
+  readRecallActiveGenerationPointer,
+  readRecallGenerationRegistry,
+} from './recall-generation-state.js';
+import {
+  assertRecallGenerationBuildStateUnchangedTransition,
+  failRecallGenerationBuildTransition,
+  prepareRecallGenerationBuildStartTransition,
+  publishReadyRecallGenerationBuildTransition,
+  startRecallGenerationBuildTransition,
+} from './recall-generation-transitions.js';
 import { readRecallInferenceConfiguration } from './recall-inference-configuration.js';
-import { tryAcquireRecallRebuildOwnershipLock } from './recall-rebuild-ownership-lock.js';
+import {
+  recallRebuildOwnershipLockPath,
+  tryAcquireRecallRebuildOwnershipLock,
+} from './recall-rebuild-ownership-lock.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
 import { normalizeRecallProjectLineages } from './resolve-project-identity.js';
 
@@ -55,6 +72,9 @@ const BACKGROUND_INDEX_STATUS_SCHEMA = Type.Object(
           checkpointedSessions: Type.Integer({ minimum: 0 }),
           totalSessions: Type.Integer({ minimum: 0 }),
           sessionPath: Type.String({ maxLength: MAX_RECALL_BACKGROUND_STATUS_TEXT_LENGTH }),
+          physicalSourceIdentity: Type.Optional(
+            Type.String({ maxLength: MAX_RECALL_BACKGROUND_STATUS_TEXT_LENGTH }),
+          ),
         },
         { additionalProperties: false },
       ),
@@ -135,6 +155,7 @@ const BACKGROUND_INDEX_WORKER_REQUEST_SCHEMA = Type.Object(
     buildId: Type.String({ minLength: 1 }),
     statusPath: Type.String({ minLength: 1 }),
     generationId: Type.Union([Type.String({ minLength: 1 }), Type.Null()]),
+    resumeExistingGeneration: Type.Boolean(),
     serviceConfig: BACKGROUND_INDEX_SERVICE_CONFIG_SCHEMA,
     serviceFactory: Type.Object(
       {
@@ -159,7 +180,11 @@ export interface RecallBackgroundIndexGenerationStatus {
   updatedAt: string;
   completedAt: string | null;
   progress: ConversationIndexProgress | null;
-  latestCheckpoint: ConversationIndexCheckpoint | null;
+  latestCheckpoint:
+    | (ConversationIndexCheckpoint & {
+        physicalSourceIdentity?: string;
+      })
+    | null;
   latestActionableError: string | null;
 }
 
@@ -175,6 +200,7 @@ export interface RecallBackgroundIndexWorkerRequest {
   buildId: string;
   statusPath: string;
   generationId: string | null;
+  resumeExistingGeneration: boolean;
   serviceConfig: RecallConversationConfig;
   serviceFactory: RecallBackgroundIndexServiceFactory;
 }
@@ -186,7 +212,7 @@ export interface RecallBackgroundIndexGenerationControl {
     staging: {
       generationId: string;
       embeddingProfileId: string;
-      status: 'building' | 'resumable';
+      status: 'building' | 'ready' | 'resumable';
     } | null;
   }>;
 }
@@ -199,6 +225,31 @@ export interface RecallBackgroundIndexCoordinatorConfig {
   requestPath: string;
   embeddingProfileId: string;
   serviceFactory: RecallBackgroundIndexServiceFactory;
+}
+
+/** Target build callback inputs frozen before the detached worker begins model work. */
+export interface RecallReplacementGenerationBuildInput {
+  generationId: string;
+  physicalSessionPaths: readonly string[];
+  resumeExistingGeneration: boolean;
+  signal?: AbortSignal;
+}
+
+/** Validated target result returned before its READY registry role is published. */
+export interface RecallReplacementGenerationBuildResult<Result> {
+  result: Result;
+  indexManifestFingerprint: string;
+}
+
+/** Configured target builder invoked under crash-released replacement ownership. */
+export interface RunRecallReplacementGenerationBuildOptions<Result> {
+  config: RecallBackgroundIndexCoordinatorConfig;
+  generationId: string;
+  resumeExistingGeneration: boolean;
+  signal?: AbortSignal;
+  buildGeneration(
+    input: RecallReplacementGenerationBuildInput,
+  ): Promise<RecallReplacementGenerationBuildResult<Result>>;
 }
 
 function truncateBackgroundStatusText(value: string): string {
@@ -373,9 +424,137 @@ async function refreshBackgroundIndexStatus(
   return refreshed;
 }
 
+function throwIfReplacementGenerationBuildCancelled(signal?: AbortSignal): void {
+  if (!signal?.aborted) {
+    return;
+  }
+  throw signal.reason instanceof Error
+    ? signal.reason
+    : new Error('Recall replacement generation build cancelled', { cause: signal.reason });
+}
+
+/** Builds and validates one inactive target generation without activating it. */
+export async function runRecallReplacementGenerationBuild<Result>(
+  options: RunRecallReplacementGenerationBuildOptions<Result>,
+): Promise<Result> {
+  const ownership = await tryAcquireRecallRebuildOwnershipLock(
+    recallRebuildOwnershipLockPath(options.config.serviceConfig.lockPath),
+  );
+  if (ownership === null) {
+    throw new Error('Recall replacement generation build already in progress');
+  }
+  const startedAtEpochMilliseconds = Date.now();
+  let frozenBuild: Awaited<ReturnType<typeof startRecallGenerationBuildTransition>> | undefined;
+  try {
+    throwIfReplacementGenerationBuildCancelled(options.signal);
+    const [activePointer, persistedRegistry] = await Promise.all([
+      readRecallActiveGenerationPointer(options.config.serviceConfig.activeGenerationPointerPath),
+      readRecallGenerationRegistry(options.config.serviceConfig.generationRegistryPath),
+    ]);
+    const prepared = prepareRecallGenerationBuildStartTransition({
+      registry: persistedRegistry,
+      activePointer,
+      generationId: options.generationId,
+      resumeExistingGeneration: options.resumeExistingGeneration,
+      inspectedAtEpochMilliseconds: startedAtEpochMilliseconds,
+    });
+    const physicalSessionPaths = options.resumeExistingGeneration
+      ? []
+      : await listRecallConversationSessionFiles(options.config.serviceConfig.sessionsDirectory);
+    const rebuildMarkerWatermark = await listPendingRecallMarkerIds(
+      options.config.serviceConfig.markerSpoolDirectory,
+    );
+    frozenBuild = await coordinateRecallWriteWindow(
+      {
+        lockPath: options.config.serviceConfig.lockPath,
+        allowRecovery: false,
+        ...(options.signal ? { signal: options.signal } : {}),
+      },
+      async () => {
+        await assertRecallGenerationBuildStateUnchangedTransition({
+          activeGenerationPointerPath: options.config.serviceConfig.activeGenerationPointerPath,
+          generationRegistryPath: options.config.serviceConfig.generationRegistryPath,
+          expectedActivePointer: activePointer,
+          expectedPersistedRegistry: persistedRegistry,
+        });
+        return startRecallGenerationBuildTransition({
+          generationRegistryPath: options.config.serviceConfig.generationRegistryPath,
+          backlogSummaryPath: options.config.serviceConfig.backlogSummaryPath,
+          registry: prepared.registry,
+          generationId: options.generationId,
+          ...(prepared.resumableEntry ? { resumableEntry: prepared.resumableEntry } : {}),
+          embeddingProfileId: options.config.embeddingProfileId,
+          rebuildMarkerWatermark,
+          startedAtEpochMilliseconds,
+        });
+      },
+    );
+    if (frozenBuild === undefined) {
+      throw new Error('Recall replacement generation BUILDING publication missing');
+    }
+    const publishedBuild = frozenBuild;
+    throwIfReplacementGenerationBuildCancelled(options.signal);
+    const built = await options.buildGeneration({
+      generationId: options.generationId,
+      physicalSessionPaths,
+      resumeExistingGeneration: options.resumeExistingGeneration,
+      ...(options.signal ? { signal: options.signal } : {}),
+    });
+    throwIfReplacementGenerationBuildCancelled(options.signal);
+    const readyMarkerWatermark = [
+      ...new Set([
+        ...rebuildMarkerWatermark,
+        ...(await listPendingRecallMarkerIds(options.config.serviceConfig.markerSpoolDirectory)),
+      ]),
+    ].toSorted();
+    await coordinateRecallWriteWindow(
+      {
+        lockPath: options.config.serviceConfig.lockPath,
+        allowRecovery: false,
+        ...(options.signal ? { signal: options.signal } : {}),
+      },
+      () =>
+        publishReadyRecallGenerationBuildTransition({
+          activeGenerationPointerPath: options.config.serviceConfig.activeGenerationPointerPath,
+          generationRegistryPath: options.config.serviceConfig.generationRegistryPath,
+          backlogSummaryPath: options.config.serviceConfig.backlogSummaryPath,
+          expectedActivePointer: activePointer,
+          frozenRegistry: publishedBuild.registry,
+          buildingEntry: publishedBuild.buildingEntry,
+          indexManifestFingerprint: built.indexManifestFingerprint,
+          rebuildMarkerWatermark: readyMarkerWatermark,
+          readyAtEpochMilliseconds: Date.now(),
+        }),
+    );
+    return built.result;
+  } catch (error) {
+    const buildFailure =
+      error instanceof Error ? error : new Error('Recall replacement build failed');
+    if (frozenBuild !== undefined) {
+      const failure = await failRecallGenerationBuildTransition({
+        generationRegistryPath: options.config.serviceConfig.generationRegistryPath,
+        backlogSummaryPath: options.config.serviceConfig.backlogSummaryPath,
+        registry: frozenBuild.registry,
+        buildingEntry: frozenBuild.buildingEntry,
+        buildFailure,
+        pendingMarkerWatermark: await listPendingRecallMarkerIds(
+          options.config.serviceConfig.markerSpoolDirectory,
+        ),
+        rebuildStartedAtEpochMilliseconds: startedAtEpochMilliseconds,
+        failedAtEpochMilliseconds: Date.now(),
+      });
+      throw failure;
+    }
+    throw buildFailure;
+  } finally {
+    await ownership.release();
+  }
+}
+
 async function spawnBackgroundIndexWorker(
   config: RecallBackgroundIndexCoordinatorConfig,
-  generationId: string | null,
+  generationId: string,
+  resumeExistingGeneration: boolean,
 ): Promise<RecallBackgroundIndexGenerationStatus> {
   const embeddingProfileId = await resolveBackgroundIndexEmbeddingProfileId(config);
   const buildId = randomUUID();
@@ -385,6 +564,7 @@ async function spawnBackgroundIndexWorker(
     buildId,
     statusPath: config.statusPath,
     generationId,
+    resumeExistingGeneration,
     serviceConfig: {
       ...config.serviceConfig,
       projectLineages: Object.fromEntries(config.serviceConfig.projectLineages),
@@ -444,7 +624,11 @@ export async function startRecallBackgroundIndexGeneration(
         `Recall staging generation ${generationStatus.staging.generationId} already exists; resume or discard it explicitly`,
       );
     }
-    return await spawnBackgroundIndexWorker(config, null);
+    return await spawnBackgroundIndexWorker(
+      config,
+      `generation_${Date.now()}_${randomUUID().replaceAll('-', '')}`,
+      false,
+    );
   } finally {
     await releaseControlLock();
   }
@@ -466,13 +650,18 @@ export async function resumeRecallBackgroundIndexGeneration(
     if (!generationStatus.staging) {
       throw new Error('Recall background index resume requires a staging generation');
     }
+    if (generationStatus.staging.status !== 'resumable') {
+      throw new Error(
+        `Recall background index resume requires resumable state, received ${generationStatus.staging.status}`,
+      );
+    }
     const embeddingProfileId = await resolveBackgroundIndexEmbeddingProfileId(config);
     if (generationStatus.staging.embeddingProfileId !== embeddingProfileId) {
       throw new Error(
         `Recall staging generation uses embedding profile ${generationStatus.staging.embeddingProfileId}, not ${embeddingProfileId}`,
       );
     }
-    return await spawnBackgroundIndexWorker(config, generationStatus.staging.generationId);
+    return await spawnBackgroundIndexWorker(config, generationStatus.staging.generationId, true);
   } finally {
     await releaseControlLock();
   }

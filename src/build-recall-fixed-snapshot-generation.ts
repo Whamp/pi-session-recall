@@ -7,6 +7,7 @@ import { ZVecOpen, type ZVecCollection, type ZVecStatus } from '@zvec/zvec';
 import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 
+import { isUnknownRecord } from './is-unknown-record.js';
 import {
   openValidatedRecallGeneration,
   type OpenedValidatedRecallGeneration,
@@ -306,6 +307,25 @@ async function readFixedSnapshotDescriptor(
       {
         cause: error,
       },
+    );
+  }
+}
+
+async function readFixedSnapshotRecoveryPhysicalSourceIdentity(
+  recoveryRecordPath: string,
+  generationId: string,
+): Promise<string> {
+  try {
+    const recovery: unknown = JSON.parse(await readFile(recoveryRecordPath, 'utf8'));
+    if (!isUnknownRecord(recovery) || typeof recovery.physicalSourceIdentity !== 'string') {
+      throw new Error('physical source identity missing');
+    }
+    return recovery.physicalSourceIdentity;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `Recall fixed snapshot generation recovery record invalid at ${recoveryRecordPath} for ${generationId}: ${message}`,
+      { cause: error },
     );
   }
 }
@@ -849,7 +869,7 @@ export async function buildRecallFixedSnapshotGeneration(
   dependencies: Readonly<RecallPhysicalSourceGenerationDependencies>,
 ): Promise<OpenedValidatedRecallGeneration> {
   createRecallActiveGenerationPointer(options.generationId);
-  if (options.physicalSessionPaths.length === 0) {
+  if (!options.resumeExistingGeneration && options.physicalSessionPaths.length === 0) {
     throw new Error('Recall fixed snapshot generation requires at least one physical session');
   }
   throwIfFixedSnapshotBuildCancelled(options.signal);
@@ -900,7 +920,9 @@ export async function buildRecallFixedSnapshotGeneration(
         `Recall fixed snapshot generation resume identity mismatch for ${options.generationId}`,
       );
     }
-    assertRequestedSourcesMatchSnapshot(config, options.physicalSessionPaths, snapshot);
+    if (!options.resumeExistingGeneration) {
+      assertRequestedSourcesMatchSnapshot(config, options.physicalSessionPaths, snapshot);
+    }
     const contracts = createRecallGenerationStoreContracts(
       options.generationId,
       expectedManifest.embeddingProfile.storedDimensions,
@@ -932,7 +954,29 @@ export async function buildRecallFixedSnapshotGeneration(
     );
   }
   try {
-    for (const source of snapshot.sources) {
+    let sourcesInBuildOrder = snapshot.sources;
+    if (options.resumeExistingGeneration && existsSync(paths.recoveryRecordPath)) {
+      const recoveryPhysicalSourceIdentity = await readFixedSnapshotRecoveryPhysicalSourceIdentity(
+        paths.recoveryRecordPath,
+        options.generationId,
+      );
+      const recoveringSource = snapshot.sources.find(
+        ({ physicalSourceIdentity }) => physicalSourceIdentity === recoveryPhysicalSourceIdentity,
+      );
+      if (recoveringSource === undefined) {
+        throw new Error(
+          `Recall fixed snapshot generation recovery source missing for ${options.generationId}: ${recoveryPhysicalSourceIdentity}`,
+        );
+      }
+      sourcesInBuildOrder = [
+        recoveringSource,
+        ...snapshot.sources.filter(
+          ({ physicalSourceIdentity }) =>
+            physicalSourceIdentity !== recoveringSource.physicalSourceIdentity,
+        ),
+      ];
+    }
+    for (const source of sourcesInBuildOrder) {
       throwIfFixedSnapshotBuildCancelled(options.signal);
       const expected = await materializeExpectedPhysicalSource(
         config,
@@ -952,10 +996,24 @@ export async function buildRecallFixedSnapshotGeneration(
         validatedVectorSource,
         options.signal,
       );
+      options.onPhysicalSourceCheckpoint?.({
+        physicalSourceIdentity: source.physicalSourceIdentity,
+        sessionsRootRelativePath: source.sessionsRootRelativePath,
+        completedPhysicalSourceCount: artifacts.length,
+        totalPhysicalSourceCount: snapshot.sources.length,
+      });
     }
   } finally {
     validatedVectorSource?.closeSync();
   }
+  const snapshotSourceOrder = new Map(
+    snapshot.sources.map(({ physicalSourceIdentity }, index) => [physicalSourceIdentity, index]),
+  );
+  artifacts.sort(
+    (left, right) =>
+      (snapshotSourceOrder.get(left.artifact.physicalSourceIdentity) ?? 0) -
+      (snapshotSourceOrder.get(right.artifact.physicalSourceIdentity) ?? 0),
+  );
 
   const expectedRecordIds = {
     lexicalSource: artifacts

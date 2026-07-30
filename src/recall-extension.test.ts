@@ -894,6 +894,12 @@ void test('Pi recall tool adapter XOR-validates search and exact expansion reque
     async readIndexGenerationStatus() {
       return { active: null, staging: null };
     },
+    async readOperatorStatus() {
+      throw new Error('Pi recall adapter test does not read operator status');
+    },
+    async buildReplacementRecallGeneration() {
+      throw new Error('Pi recall adapter test does not build replacement generations');
+    },
     async createEmptyRecallGeneration() {
       throw new Error('Pi recall adapter test does not create generations');
     },

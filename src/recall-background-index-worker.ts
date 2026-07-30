@@ -1,6 +1,6 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 
-import { RecallBackgroundIndexProcessState, RecallManualMaintenanceTrigger } from './enums.js';
+import { RecallBackgroundIndexProcessState } from './enums.js';
 import {
   readRecallBackgroundIndexStatusRecord,
   readRecallBackgroundIndexWorkerRequest,
@@ -86,13 +86,14 @@ async function runRecallBackgroundIndexWorker(REQUEST_PATH: string): Promise<voi
       );
     }
     const service = await factory(request.serviceConfig);
-    const result = await service.index({
-      rebuild: true,
-      manualMaintenanceTrigger: RecallManualMaintenanceTrigger.MANUAL_REBUILD,
-      optimize: true,
-      ...(request.generationId ? { resumeGenerationId: request.generationId } : {}),
+    if (request.generationId === null) {
+      throw new Error('Recall background index worker request generation ID missing');
+    }
+    const result = await service.buildReplacementRecallGeneration({
+      generationId: request.generationId,
+      resumeExistingGeneration: request.resumeExistingGeneration,
       signal: cancellation.signal,
-      onProgress(progress) {
+      onPhysicalSourceCheckpoint(checkpoint) {
         queueStatusUpdate((current) => ({
           ...current,
           processState:
@@ -101,29 +102,24 @@ async function runRecallBackgroundIndexWorker(REQUEST_PATH: string): Promise<voi
               : current.processState,
           updatedAt: new Date().toISOString(),
           progress: {
-            ...progress,
-            sessionPath: progress.sessionPath.slice(0, 4096),
+            scannedSessions: checkpoint.completedPhysicalSourceCount,
+            totalSessions: checkpoint.totalPhysicalSourceCount,
+            sessionPath: checkpoint.sessionsRootRelativePath.slice(0, 4096),
           },
-        }));
-      },
-      onCheckpoint(checkpoint) {
-        queueStatusUpdate((current) => ({
-          ...current,
-          updatedAt: new Date().toISOString(),
           latestCheckpoint: {
-            ...checkpoint,
-            sessionPath: checkpoint.sessionPath.slice(0, 4096),
+            checkpointedSessions: checkpoint.completedPhysicalSourceCount,
+            totalSessions: checkpoint.totalPhysicalSourceCount,
+            sessionPath: checkpoint.sessionsRootRelativePath.slice(0, 4096),
+            physicalSourceIdentity: checkpoint.physicalSourceIdentity.slice(0, 4096),
           },
         }));
       },
     });
-    void result;
     await statusWrites;
-    const generationStatus = await service.readIndexGenerationStatus();
     const completedAt = new Date().toISOString();
     queueStatusUpdate((current) => ({
       ...current,
-      generationId: generationStatus.active?.generationId ?? current.generationId,
+      generationId: result.generationId,
       processState: RecallBackgroundIndexProcessState.SUCCEEDED,
       updatedAt: completedAt,
       completedAt,

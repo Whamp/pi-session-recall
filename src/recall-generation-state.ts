@@ -512,6 +512,20 @@ export async function readRecallGenerationRegistry(
   }
 }
 
+/** Reads the bounded diagnostic backlog summary without treating it as generation authority. */
+export async function readRecallBacklogSummary(
+  backlogSummaryPath: string,
+): Promise<RecallBacklogSummary | null> {
+  try {
+    return decodeRecallBacklogSummary(await readFile(backlogSummaryPath, 'utf8'));
+  } catch (error) {
+    if (readNodeErrorCode(error) === 'ENOENT') {
+      return null;
+    }
+    throw error;
+  }
+}
+
 function isPathWithinRoot(candidatePath: string, rootPath: string): boolean {
   const relativePath = relative(rootPath, candidatePath);
   return (

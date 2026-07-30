@@ -46,6 +46,7 @@ import {
 import {
   searchRecallGenerationLexical,
   type CreateRecallGenerationFromPhysicalSourcesOptions,
+  type RecallFixedSnapshotPhysicalSourceCheckpoint,
   type RecallGenerationLexicalEvidence,
 } from './recall-physical-source-generation.js';
 import {
@@ -81,6 +82,7 @@ import {
   readRecallBackgroundIndexGenerationStatus,
   readRecallBackgroundIndexStatusRecord,
   resumeRecallBackgroundIndexGeneration,
+  runRecallReplacementGenerationBuild,
   startRecallBackgroundIndexGeneration,
   stopRecallBackgroundIndexGeneration,
   type RecallBackgroundIndexCoordinatorConfig,
@@ -123,9 +125,11 @@ import {
 import {
   readRecallActiveGenerationPointer,
   readRecallActiveGenerationSelection,
+  readRecallBacklogSummary,
   readRecallGenerationRegistry,
   readRecallMaterialBacklogWarning,
   resolveRecallGenerationDirectory,
+  type RecallBacklogSummary,
 } from './recall-generation-state.js';
 import {
   completeStagingRecallGenerationDiscardTransition,
@@ -162,6 +166,7 @@ import {
 } from './recall-inference-conformance.js';
 import { rebuildRecallGeneration } from './rebuild-recall-generation.js';
 import { RECALL_ACTIVATION_REPLAY_SNAPSHOT_FILE_NAME } from './recall-generation-replay-snapshot.js';
+import { createRecallGenerationComponentPaths } from './recall-generation-stores.js';
 import { recoverRecallGenerationCutover as recoverConfiguredRecallGenerationCutover } from './recover-recall-generation-cutover.js';
 import {
   recallRebuildOwnershipLockPath,
@@ -491,9 +496,40 @@ export interface RecallIndexGenerationStatus {
     kind?: 'managed';
     generationId: string;
     embeddingProfileId: string;
-    status: 'building' | 'resumable';
+    status: 'building' | 'ready' | 'resumable';
     manifestPath?: string;
   } | null;
+}
+
+/** Detached worker inputs for one fresh or same-generation replacement build. */
+export interface BuildReplacementRecallGenerationOptions {
+  generationId: string;
+  resumeExistingGeneration?: boolean;
+  signal?: AbortSignal;
+  onPhysicalSourceCheckpoint?(
+    this: void,
+    checkpoint: Readonly<RecallFixedSnapshotPhysicalSourceCheckpoint>,
+  ): void;
+}
+
+/** Bounded control-plane status for the standalone recall operator CLI. */
+export interface RecallOperatorStatus {
+  readiness: 'ready' | 'not-ready';
+  activeGeneration: RecallIndexGenerationStatus['active'];
+  stagingGeneration: RecallIndexGenerationStatus['staging'];
+  process: RecallBackgroundIndexGenerationStatus | null;
+  sourceProgress: RecallBackgroundIndexGenerationStatus['progress'];
+  latestDurablePhysicalProjection: RecallBackgroundIndexGenerationStatus['latestCheckpoint'];
+  replay: {
+    state: 'none' | 'complete' | 'pending';
+    snapshotFileName: string | null;
+  };
+  recovery: {
+    required: boolean;
+    generationIds: string[];
+  };
+  backlog: RecallBacklogSummary | null;
+  latestActionableError: string | null;
 }
 
 /** Search, inference verification, detached rebuild control, and generation recovery. */
@@ -526,6 +562,12 @@ export interface RecallConversationService {
   readBackgroundIndexGenerationStatus(): Promise<RecallBackgroundIndexGenerationStatus | null>;
   stopBackgroundIndexGeneration(): Promise<RecallBackgroundIndexGenerationStatus>;
   readIndexGenerationStatus(): Promise<RecallIndexGenerationStatus>;
+  /** Reads bounded operator diagnostics without opening source files or generation stores. */
+  readOperatorStatus(): Promise<RecallOperatorStatus>;
+  /** Builds and registers one validated inactive replacement generation. */
+  buildReplacementRecallGeneration(
+    options: BuildReplacementRecallGenerationOptions,
+  ): Promise<OpenedValidatedRecallGeneration>;
   /** Creates and completely validates one inactive empty target-format generation. */
   createEmptyRecallGeneration(
     options: CreateEmptyRecallGenerationOptions,
@@ -1451,7 +1493,12 @@ export function createRecallConversationService(
       (backgroundStatus.processState === RecallBackgroundIndexProcessState.STARTING ||
         backgroundStatus.processState === RecallBackgroundIndexProcessState.RUNNING ||
         backgroundStatus.processState === RecallBackgroundIndexProcessState.STOPPING);
-    const stagingStatus = buildingEntry && backgroundOwnsBuildingEntry ? 'building' : 'resumable';
+    const stagingStatus =
+      buildingEntry?.state === RecallGenerationCutoverState.READY
+        ? 'ready'
+        : buildingEntry && backgroundOwnsBuildingEntry
+          ? 'building'
+          : 'resumable';
     const activeGenerationDirectory = pointer
       ? await resolveRecallGenerationDirectory(
           config.generationRootDirectory,
@@ -2866,6 +2913,110 @@ export function createRecallConversationService(
       return stopRecallBackgroundIndexGeneration(backgroundIndexCoordinatorConfig);
     },
     readIndexGenerationStatus: readCanonicalIndexGenerationStatus,
+    async readOperatorStatus() {
+      const processStatus = await readRecallBackgroundIndexGenerationStatus(
+        backgroundIndexCoordinatorConfig,
+      );
+      const [generationStatus, registry, backlog] = await Promise.all([
+        readCanonicalIndexGenerationStatus(),
+        readRecallGenerationRegistry(config.generationRegistryPath),
+        readRecallBacklogSummary(config.backlogSummaryPath),
+      ]);
+      const generationIds = [
+        generationStatus.active?.generationId,
+        generationStatus.staging?.generationId,
+      ].filter((generationId): generationId is string => generationId !== undefined);
+      const recoveryGenerationIds = [
+        ...new Set(
+          generationIds.filter((generationId) =>
+            existsSync(
+              createRecallGenerationComponentPaths(
+                join(config.generationRootDirectory, generationId),
+              ).recoveryRecordPath,
+            ),
+          ),
+        ),
+      ];
+      const activeEntry = registry?.generations.find(
+        ({ generationId }) => generationId === generationStatus.active?.generationId,
+      );
+      const replayPending = activeEntry?.state === RecallGenerationCutoverState.REPLAY_PENDING;
+      return {
+        readiness: generationStatus.active === null ? 'not-ready' : 'ready',
+        activeGeneration: generationStatus.active,
+        stagingGeneration: generationStatus.staging,
+        process: processStatus,
+        sourceProgress: processStatus?.progress ?? null,
+        latestDurablePhysicalProjection: processStatus?.latestCheckpoint ?? null,
+        replay: {
+          state: activeEntry === undefined ? 'none' : replayPending ? 'pending' : 'complete',
+          snapshotFileName: activeEntry?.replaySnapshotFileName ?? null,
+        },
+        recovery: {
+          required: recoveryGenerationIds.length > 0,
+          generationIds: recoveryGenerationIds,
+        },
+        backlog,
+        latestActionableError:
+          processStatus?.latestActionableError ??
+          (recoveryGenerationIds.length > 0
+            ? `Recall generation recovery required: ${recoveryGenerationIds.join(', ')}`
+            : null),
+      };
+    },
+    buildReplacementRecallGeneration(options) {
+      return runSerialized(async () => {
+        const generationStatus = await readCanonicalIndexGenerationStatus();
+        const activeVectorSourceGenerationId =
+          generationStatus.active?.kind === 'managed' &&
+          generationStatus.active.manifestPath !== undefined &&
+          (await manifestDeclaresTargetRecallGeneration(generationStatus.active.manifestPath))
+            ? generationStatus.active.generationId
+            : undefined;
+        const onPhysicalSourceCheckpoint = options.onPhysicalSourceCheckpoint;
+        return runRecallReplacementGenerationBuild({
+          config: backgroundIndexCoordinatorConfig,
+          generationId: options.generationId,
+          resumeExistingGeneration: options.resumeExistingGeneration === true,
+          ...(options.signal ? { signal: options.signal } : {}),
+          async buildGeneration(input) {
+            const opened = await buildRecallFixedSnapshotGeneration(
+              coherentGenerationConfig,
+              {
+                generationId: input.generationId,
+                physicalSessionPaths: input.physicalSessionPaths,
+                resumeExistingGeneration: input.resumeExistingGeneration,
+                ...(activeVectorSourceGenerationId
+                  ? { validatedVectorSourceGenerationId: activeVectorSourceGenerationId }
+                  : {}),
+                ...(input.signal ? { signal: input.signal } : {}),
+                ...(onPhysicalSourceCheckpoint
+                  ? {
+                      onPhysicalSourceCheckpoint: (checkpoint) =>
+                        onPhysicalSourceCheckpoint(checkpoint),
+                    }
+                  : {}),
+              },
+              {
+                tokenizer: await getConversationTokenizer(),
+                embeddingProvider,
+                resolveProjectIdentity: resolveSearchProjectIdentity,
+                ...(fixedSnapshotBuildFault
+                  ? {
+                      fixedSnapshotBuildFault: (stage, context) =>
+                        fixedSnapshotBuildFault(stage, context),
+                    }
+                  : {}),
+              },
+            );
+            return {
+              result: opened,
+              indexManifestFingerprint: opened.manifestFingerprint,
+            };
+          },
+        });
+      });
+    },
     createEmptyRecallGeneration(options) {
       return runSerialized(() =>
         createEmptyCoherentRecallGeneration(coherentGenerationConfig, options),

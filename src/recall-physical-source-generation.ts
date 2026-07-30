@@ -43,12 +43,24 @@ import {
   serializeStoredConversationChunk,
 } from './zvec-conversation-store.js';
 
+/** Durable source progress emitted only after one physical projection reopens successfully. */
+export interface RecallFixedSnapshotPhysicalSourceCheckpoint {
+  physicalSourceIdentity: string;
+  sessionsRootRelativePath: string;
+  completedPhysicalSourceCount: number;
+  totalPhysicalSourceCount: number;
+}
+
 /** Fixed physical-source snapshot selected for one resumable inactive target generation. */
 export interface CreateRecallGenerationFromPhysicalSourcesOptions {
   generationId: string;
   physicalSessionPaths: readonly string[];
   validatedVectorSourceGenerationId?: string;
+  resumeExistingGeneration?: boolean;
   signal?: AbortSignal;
+  onPhysicalSourceCheckpoint?(
+    checkpoint: Readonly<RecallFixedSnapshotPhysicalSourceCheckpoint>,
+  ): void;
 }
 
 /** Source-faithful lexical evidence returned from one explicitly named inactive generation. */

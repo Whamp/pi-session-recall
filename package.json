@@ -8,6 +8,9 @@
     "pi-package",
     "zvec"
   ],
+  "bin": {
+    "pi-session-recall": "./src/pi-session-recall-cli.ts"
+  },
   "type": "module",
   "scripts": {
     "test": "node --import tsx --test src/**/*.test.ts",

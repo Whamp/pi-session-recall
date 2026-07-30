@@ -82,6 +82,15 @@ export function createRecallBackgroundIndexWorkerFixtureService(
       await appendFile(projectResolutionLogPath, `${JSON.stringify(sessionOrigin)}\n`, 'utf8');
       return null;
     },
+    fixedSnapshotBuildFault(stage) {
+      if (stage === 'after-dense-write') {
+        interruptAtFixturePhase('store-write');
+      }
+      if (stage === 'before-validation-receipt') {
+        interruptAtFixturePhase('optimization');
+        interruptAtFixturePhase('pre-activation');
+      }
+    },
     openStore(mode, databasePath = config.databasePath) {
       const store = openZvecConversationStore({
         databasePath,

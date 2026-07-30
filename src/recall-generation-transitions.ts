@@ -249,6 +249,19 @@ export interface CreateReadyRecallGenerationTransitionResult {
   readyRegistry: RecallGenerationRegistry;
 }
 
+/** Fixed state and validation evidence for publishing an inactive completed replacement build. */
+export interface PublishReadyRecallGenerationBuildTransitionOptions {
+  activeGenerationPointerPath: string;
+  generationRegistryPath: string;
+  backlogSummaryPath: string;
+  expectedActivePointer: Awaited<ReturnType<typeof readRecallActiveGenerationPointer>>;
+  frozenRegistry: RecallGenerationRegistry;
+  buildingEntry: RecallGenerationRegistryEntry;
+  indexManifestFingerprint: string;
+  rebuildMarkerWatermark: readonly string[];
+  readyAtEpochMilliseconds: number;
+}
+
 /** Durable READY activation inputs and fault callbacks owned by the rebuild coordinator. */
 export interface ActivateReadyRecallGenerationTransitionOptions {
   activeGenerationPointerPath: string;
@@ -1043,6 +1056,55 @@ export function createReadyRecallGenerationTransition(
       ),
     },
   };
+}
+
+/** Publishes one validated replacement as READY without selecting it for search. */
+export async function publishReadyRecallGenerationBuildTransition(
+  options: PublishReadyRecallGenerationBuildTransitionOptions,
+): Promise<CreateReadyRecallGenerationTransitionResult> {
+  const [currentPointer, currentRegistry] = await Promise.all([
+    readRecallActiveGenerationPointer(options.activeGenerationPointerPath),
+    readRecallGenerationRegistry(options.generationRegistryPath),
+  ]);
+  if (
+    currentPointer?.checksum !== options.expectedActivePointer?.checksum ||
+    currentRegistry === null ||
+    encodeRecallGenerationRegistry(currentRegistry) !==
+      encodeRecallGenerationRegistry(options.frozenRegistry)
+  ) {
+    throw new Error('Recall generation state changed before READY build publication');
+  }
+  assertRecallGenerationPointerAgreement(
+    currentRegistry,
+    currentPointer,
+    'Recall generation registry and active pointer disagree before READY build publication',
+  );
+  const ready = createReadyRecallGenerationTransition({
+    registry: currentRegistry,
+    buildingEntry: options.buildingEntry,
+    indexManifestFingerprint: options.indexManifestFingerprint,
+    rebuildMarkerWatermark: options.rebuildMarkerWatermark,
+    readyAtEpochMilliseconds: options.readyAtEpochMilliseconds,
+  });
+  await writeRecallGenerationRegistry(options.generationRegistryPath, ready.readyRegistry);
+  if (ready.readyRegistry.activeGenerationId !== null) {
+    await writeRecallBacklogSummary(options.backlogSummaryPath, {
+      version: RECALL_BACKLOG_SUMMARY_VERSION,
+      pendingEligibleSessionCount: options.rebuildMarkerWatermark.length,
+      oldestEligibleMarkerAgeMilliseconds: null,
+      activeGenerationId: ready.readyRegistry.activeGenerationId,
+      buildingGenerationId: ready.readyEntry.generationId,
+      generationState: RecallGenerationCutoverState.READY,
+      activeGenerationAgeMilliseconds: 0,
+      rebuildAgeMilliseconds: Math.max(
+        0,
+        options.readyAtEpochMilliseconds - ready.readyEntry.rebuildStartedAtEpochMilliseconds,
+      ),
+      lastFailureCategory: null,
+      observedAtEpochMilliseconds: options.readyAtEpochMilliseconds,
+    });
+  }
+  return ready;
 }
 
 /** Publishes READY registry, active pointer, then activated registry inside the cutover window. */

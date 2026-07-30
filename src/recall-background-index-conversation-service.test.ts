@@ -149,14 +149,17 @@ async function waitForBackgroundProcessState(
   service: ReturnType<typeof createRecallConversationService>,
   expectedState: RecallBackgroundIndexProcessState,
 ) {
+  let latestStatus: Awaited<ReturnType<typeof service.readBackgroundIndexGenerationStatus>> = null;
   for (let attempt = 0; attempt < 500; attempt += 1) {
-    const status = await service.readBackgroundIndexGenerationStatus();
-    if (status?.processState === expectedState) {
-      return status;
+    latestStatus = await service.readBackgroundIndexGenerationStatus();
+    if (latestStatus?.processState === expectedState) {
+      return latestStatus;
     }
     await sleep(20);
   }
-  assert.fail(`Timed out waiting for background index state ${expectedState}`);
+  assert.fail(
+    `Timed out waiting for background index state ${expectedState}; latest ${JSON.stringify(latestStatus)}`,
+  );
 }
 
 void test('background rebuild reports progress while active recall remains searchable', async (t) => {
@@ -210,8 +213,8 @@ void test('background rebuild reports progress while active recall remains searc
   const running = await backgroundService.readBackgroundIndexGenerationStatus();
   assert.equal(running?.processState, 'running');
   assert.ok(running?.generationId);
-  assert.equal(running?.progress?.scannedSessions, 1);
-  assert.equal(running?.progress?.totalSessions, 1);
+  assert.equal(running?.progress, null);
+  assert.equal(running?.latestCheckpoint, null);
   assert.equal(running?.latestActionableError, null);
 
   const activeSearch = await activeService.search('active generation evidence', 5, {
@@ -351,6 +354,13 @@ void test('stopped background rebuild resumes from its durable session checkpoin
   assert.equal(stopped.generationId, running.generationId);
   assert.equal(stopped.latestCheckpoint?.checkpointedSessions, 1);
   assert.equal(stopped.latestActionableError, null);
+  const checkpointedAResolutionCount = (
+    await readFile(join(directory, 'fixture-project-resolutions.jsonl'), 'utf8')
+  )
+    .trim()
+    .split('\n')
+    .map(parseJsonString)
+    .filter((cwd) => cwd === '/project/a').length;
 
   await writeFile(releasePath, 'release\n', 'utf8');
   const resumed = await service.resumeBackgroundIndexGeneration();
@@ -362,8 +372,9 @@ void test('stopped background rebuild resumes from its durable session checkpoin
   assert.equal(completed.generationId, running.generationId);
   assert.equal(completed.latestCheckpoint?.checkpointedSessions, 2);
   const generationStatus = await service.readIndexGenerationStatus();
-  assert.equal(generationStatus.active?.generationId, running.generationId);
-  assert.equal(generationStatus.staging, null);
+  assert.equal(generationStatus.active, null);
+  assert.equal(generationStatus.staging?.generationId, running.generationId);
+  assert.equal(generationStatus.staging?.status, 'ready');
 
   const projectResolutions = (
     await readFile(join(directory, 'fixture-project-resolutions.jsonl'), 'utf8')
@@ -371,11 +382,17 @@ void test('stopped background rebuild resumes from its durable session checkpoin
     .trim()
     .split('\n')
     .map(parseJsonString);
-  assert.equal(projectResolutions.filter((cwd) => cwd === '/project/a').length, 1);
-  const search = await service.search('background replacement evidence', 5, {
-    scope: RecallSearchScope.GLOBAL,
-  });
-  assert.equal(search.results[0]?.content, 'background replacement evidence');
+  assert.equal(
+    projectResolutions.filter((cwd) => cwd === '/project/a').length,
+    checkpointedAResolutionCount,
+  );
+  assert.ok(running.generationId);
+  const search = await service.searchRecallGenerationLexical(
+    running.generationId,
+    'background replacement evidence',
+    5,
+  );
+  assert.equal(search[0]?.content, 'background replacement evidence');
 });
 
 void test('background worker bootstrap failure persists one bounded actionable error', async (t) => {
@@ -706,8 +723,9 @@ void test('crashed workers at every staging phase remain resumable and idempoten
       );
       assert.equal(completed.generationId, crashed.generationId);
       const generationStatus = await service.readIndexGenerationStatus();
-      assert.equal(generationStatus.active?.generationId, crashed.generationId);
-      assert.equal(generationStatus.staging, null);
+      assert.equal(generationStatus.active, null);
+      assert.equal(generationStatus.staging?.generationId, crashed.generationId);
+      assert.equal(generationStatus.staging?.status, 'ready');
 
       if (phase === 'store-write') {
         const embeddingRequests = (

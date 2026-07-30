@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdir, rm, stat, writeFile } from 'node:fs/promises';
+import { rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { ZVecIndexType, ZVecOpen, type ZVecCollection, type ZVecStatus } from '@zvec/zvec';
@@ -8,29 +8,15 @@ import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 
 import { RecallSessionProjectionKind } from './enums.js';
-import { createRecallSessionProjectionBaseline } from './create-recall-session-projection-baseline.js';
-import type {
-  OpenedValidatedRecallGeneration,
-  RecallCoherentGenerationConfig,
-} from './recall-coherent-generation.js';
+import { createRecallSessionProjectionBaselineFromImport } from './create-recall-session-projection-baseline.js';
+import type { RecallCoherentGenerationConfig } from './recall-coherent-generation.js';
 import {
   assertRecallGenerationManifestCompatible,
   createRecallGenerationManifest,
   readRecallGenerationManifest,
-  writeRecallGenerationManifest,
 } from './recall-generation-manifest.js';
-import {
-  createEmptyRecallGenerationStores,
-  createRecallGenerationComponentPaths,
-  createRecallGenerationStoreContracts,
-  validateRecallGenerationStores,
-} from './recall-generation-stores.js';
-import {
-  createRecallGenerationValidationReceipt,
-  readRecallGenerationValidationReceipt,
-  writeRecallGenerationValidationReceipt,
-} from './recall-generation-validation-receipt.js';
-import { createRecallActiveGenerationPointer } from './recall-generation-state.js';
+import { createRecallGenerationComponentPaths } from './recall-generation-stores.js';
+import { readRecallGenerationValidationReceipt } from './recall-generation-validation-receipt.js';
 import {
   createRecallEntryAnchorId,
   createRecallEvidenceOccurrenceId,
@@ -41,20 +27,18 @@ import type { RecallEmbeddingProvider } from './recall-inference-capabilities.js
 import type { LogicalSessionProjection } from './recall-session-projection.js';
 import type { ResolvedProjectIdentity } from './resolve-project-identity.js';
 import {
-  assertRepeatableStoredRecallEmbeddings,
-  createStoredRecallEmbedding,
-} from './recall-stored-embedding.js';
-import {
   readSessionConversationImport,
   type ConversationTextTokenizer,
   type SessionConversationChunk,
   type SessionConversationLogicalSession,
 } from './session-conversation-index.js';
 
-/** Physical files selected for one inactive lexical-only target generation. */
+/** Fixed physical-source snapshot selected for one resumable inactive target generation. */
 export interface CreateRecallGenerationFromPhysicalSourcesOptions {
   generationId: string;
   physicalSessionPaths: readonly string[];
+  validatedVectorSourceGenerationId?: string;
+  signal?: AbortSignal;
 }
 
 /** Source-faithful lexical evidence returned from one explicitly named inactive generation. */
@@ -112,28 +96,36 @@ const recallGenerationLexicalEvidenceSchema = Type.Object(
   { additionalProperties: false },
 );
 
-/** Runtime dependencies needed to materialize source identities at the canonical import boundary. */
+/** Runtime dependencies needed to materialize and fault-probe a fixed source snapshot. */
 export interface RecallPhysicalSourceGenerationDependencies {
   tokenizer: ConversationTextTokenizer;
   embeddingProvider: RecallEmbeddingProvider;
   resolveProjectIdentity(workingDirectory: string): Promise<ResolvedProjectIdentity | null>;
+  fixedSnapshotBuildFault?: (
+    stage: 'after-snapshot-capture' | 'after-dense-write' | 'before-validation-receipt',
+    context: Readonly<{ generationDirectory: string; physicalSourceIdentity?: string }>,
+  ) => void | Promise<void>;
 }
 
-interface RecallGenerationDenseRow {
+/** One dense row contract captured before its vector is resolved. */
+export interface RecallGenerationDenseExpectation {
   id: string;
   fields: Record<string, unknown>;
-  vectors: { embedding: number[] };
+  embeddingInput: string;
 }
 
-interface MaterializedRecallGenerationRows {
+/** Exact target rows captured from one canonical physical-source import. */
+export interface MaterializedRecallPhysicalSourceGeneration {
   lexicalSource: Array<{ id: string; fields: Record<string, unknown> }>;
-  dense: RecallGenerationDenseRow[];
-  sessionProjection: Array<{ id: string; fields: Record<string, unknown> }>;
+  dense: RecallGenerationDenseExpectation[];
+  logicalSessionProjections: Array<{ id: string; fields: Record<string, unknown> }>;
+  physicalSessionProjection: { id: string; fields: Record<string, unknown> };
   physicalSourceIdentities: string[];
   logicalSessionOccurrenceIds: string[];
 }
 
-function createExpectedManifest(
+/** Creates the configured fixed manifest shared by target build and read operations. */
+export function createExpectedRecallPhysicalSourceManifest(
   config: Readonly<RecallCoherentGenerationConfig>,
   generationId: string,
 ) {
@@ -144,6 +136,17 @@ function createExpectedManifest(
     projectLineages: config.projectLineages,
     ...(config.chunkPolicy ? { chunkPolicy: config.chunkPolicy } : {}),
   });
+}
+
+function createRecallPhysicalSourceMembership(recordIds: readonly string[]): Readonly<{
+  count: number;
+  digest: string;
+}> {
+  const sortedRecordIds = [...recordIds].toSorted();
+  return {
+    count: sortedRecordIds.length,
+    digest: createHash('sha256').update(JSON.stringify(sortedRecordIds)).digest('hex'),
+  };
 }
 
 function assertCheckedZvecStatuses(
@@ -271,35 +274,36 @@ function createCommonLexicalFields(options: {
   };
 }
 
-async function materializePhysicalSourceRows(
+/** Materializes expected target rows through one canonical import and tokenization pass. */
+export async function materializeRecallPhysicalSourceGeneration(
   config: Readonly<RecallCoherentGenerationConfig>,
   generationId: string,
   physicalSessionPath: string,
   dependencies: Readonly<RecallPhysicalSourceGenerationDependencies>,
-): Promise<MaterializedRecallGenerationRows> {
+  sourceReadPath = physicalSessionPath,
+): Promise<MaterializedRecallPhysicalSourceGeneration> {
   const physicalSource = resolveRecallPhysicalSourceIdentity(
     config.sessionsDirectory,
     physicalSessionPath,
   );
-  const sourceByteSize = (await stat(physicalSessionPath)).size;
-  const [imported, sourceProjections] = await Promise.all([
-    readSessionConversationImport(physicalSessionPath, {
-      tokenizer: dependencies.tokenizer,
-      ...(config.chunkPolicy ?? {}),
-    }),
-    createRecallSessionProjectionBaseline({
-      physicalSessionPath,
-      generationId,
-      tokenizer: dependencies.tokenizer,
-      ...(config.chunkPolicy ?? {}),
-      expectedSourceByteSize: sourceByteSize,
-    }),
-  ]);
+  const sourceByteSize = (await stat(sourceReadPath)).size;
+  const imported = await readSessionConversationImport(sourceReadPath, {
+    tokenizer: dependencies.tokenizer,
+    ...(config.chunkPolicy ?? {}),
+  });
+  const sourceProjections = await createRecallSessionProjectionBaselineFromImport({
+    physicalSessionPath: sourceReadPath,
+    generationId,
+    tokenizer: dependencies.tokenizer,
+    ...(config.chunkPolicy ? { chunkPolicy: config.chunkPolicy } : {}),
+    expectedSourceByteSize: sourceByteSize,
+    imported,
+  });
   const logicalProjections = sourceProjections.filter(
     (projection): projection is LogicalSessionProjection =>
       projection.projectionKind === RecallSessionProjectionKind.LOGICAL_SESSION,
   );
-  const lexicalSource: MaterializedRecallGenerationRows['lexicalSource'] = [];
+  const lexicalSource: MaterializedRecallPhysicalSourceGeneration['lexicalSource'] = [];
   const denseInputs: Array<{
     chunk: SessionConversationChunk;
     evidenceOccurrenceId: string;
@@ -307,7 +311,8 @@ async function materializePhysicalSourceRows(
     logicalSessionOccurrenceId: string;
     projectIdentity: string;
   }> = [];
-  const sessionProjection: MaterializedRecallGenerationRows['sessionProjection'] = [];
+  const logicalSessionProjections: MaterializedRecallPhysicalSourceGeneration['logicalSessionProjections'] =
+    [];
   const logicalSessionOccurrenceIds: string[] = [];
 
   for (const logicalSession of imported.logicalSessions) {
@@ -394,7 +399,7 @@ async function materializePhysicalSourceRows(
       };
       lexicalSource.push({ id: entryAnchorId, fields: anchorRecord });
     }
-    sessionProjection.push({
+    logicalSessionProjections.push({
       id: `projection_${logicalSessionOccurrenceId}`,
       fields: {
         schemaVersion: 1,
@@ -534,58 +539,30 @@ async function materializePhysicalSourceRows(
     }
   }
 
-  const dense: RecallGenerationDenseRow[] = [];
-  if (denseInputs.length > 0) {
-    const nativeVectors = await dependencies.embeddingProvider.embedDocuments(
-      denseInputs.map(({ chunk }) => chunk.content),
-    );
-    if (nativeVectors.length !== denseInputs.length) {
-      throw new Error(
-        `Recall physical source generation document embedding count mismatch at ${physicalSessionPath}: expected ${denseInputs.length}, received ${nativeVectors.length}`,
-      );
-    }
-    const nativeDimensions = config.embeddingProfile.identity.dimensions;
-    const storedDimensions = config.embeddingProfile.storedDimensions ?? nativeDimensions;
-    for (const [index, input] of denseInputs.entries()) {
-      const nativeVector = nativeVectors[index];
-      if (nativeVector === undefined) {
-        throw new Error(
-          `Recall physical source generation document embedding missing at ${physicalSessionPath}:${input.chunk.sourceLineStart}`,
-        );
-      }
-      const embedding = createStoredRecallEmbedding(nativeVector, {
-        nativeDimensions,
-        storedDimensions,
-        source: `${physicalSessionPath}:${input.chunk.sourceLineStart}:${input.evidenceOccurrenceId}`,
-      });
-      const embeddingInputChecksum = createHash('sha256')
+  const storedDimensions =
+    config.embeddingProfile.storedDimensions ?? config.embeddingProfile.identity.dimensions;
+  const dense: RecallGenerationDenseExpectation[] = denseInputs.map((input) => ({
+    id: input.evidenceOccurrenceId,
+    embeddingInput: input.chunk.content,
+    fields: {
+      schemaVersion: 1,
+      generationId,
+      evidenceOccurrenceId: input.evidenceOccurrenceId,
+      physicalSourceIdentity: input.physicalSourceIdentity,
+      logicalSessionOccurrenceId: input.logicalSessionOccurrenceId,
+      embeddingProfileId: config.embeddingProfileId,
+      storedDimensions,
+      evidenceChecksum: input.chunk.checksum,
+      embeddingInputChecksum: createHash('sha256')
         .update(`${config.embeddingProfile.documentInputPrefix}${input.chunk.content}`)
-        .digest('hex');
-      const vectorChecksum = createHash('sha256')
-        .update(Buffer.from(new Float32Array(embedding).buffer))
-        .digest('hex');
-      dense.push({
-        id: input.evidenceOccurrenceId,
-        vectors: { embedding },
-        fields: {
-          schemaVersion: 1,
-          generationId,
-          evidenceOccurrenceId: input.evidenceOccurrenceId,
-          physicalSourceIdentity: input.physicalSourceIdentity,
-          logicalSessionOccurrenceId: input.logicalSessionOccurrenceId,
-          embeddingProfileId: config.embeddingProfileId,
-          storedDimensions,
-          evidenceChecksum: input.chunk.checksum,
-          embeddingInputChecksum,
-          vectorChecksum,
-          projectIdentity: input.projectIdentity,
-        },
-      });
-    }
-  }
-
-  sessionProjection.push({
-    id: `projection_${physicalSource.physicalSourceIdentity}`,
+        .digest('hex'),
+      vectorChecksum: '',
+      projectIdentity: input.projectIdentity,
+    },
+  }));
+  const physicalSessionProjectionId = `projection_${physicalSource.physicalSourceIdentity}`;
+  const physicalSessionProjection = {
+    id: physicalSessionProjectionId,
     fields: {
       schemaVersion: 1,
       generationId,
@@ -599,13 +576,22 @@ async function materializePhysicalSourceRows(
         physicalSource,
         sourceByteSize,
         logicalSessionOccurrenceIds,
+        expectedMembership: {
+          lexicalSource: createRecallPhysicalSourceMembership(lexicalSource.map(({ id }) => id)),
+          dense: createRecallPhysicalSourceMembership(dense.map(({ id }) => id)),
+          sessionProjection: createRecallPhysicalSourceMembership([
+            ...logicalSessionProjections.map(({ id }) => id),
+            physicalSessionProjectionId,
+          ]),
+        },
       }),
     },
-  });
+  };
   return {
     lexicalSource,
     dense,
-    sessionProjection,
+    logicalSessionProjections,
+    physicalSessionProjection,
     physicalSourceIdentities: [physicalSource.physicalSourceIdentity],
     logicalSessionOccurrenceIds,
   };
@@ -637,147 +623,6 @@ export function parseRecallGenerationLexicalEvidence(
   }
 }
 
-/** Creates and completely validates one inactive mixed lexical and dense generation. */
-export async function createRecallGenerationFromPhysicalSources(
-  config: Readonly<RecallCoherentGenerationConfig>,
-  options: Readonly<CreateRecallGenerationFromPhysicalSourcesOptions>,
-  dependencies: Readonly<RecallPhysicalSourceGenerationDependencies>,
-): Promise<OpenedValidatedRecallGeneration> {
-  createRecallActiveGenerationPointer(options.generationId);
-  if (options.physicalSessionPaths.length === 0) {
-    throw new Error('Recall physical source generation requires at least one physical session');
-  }
-  await mkdir(config.generationRootDirectory, { recursive: true });
-  const generationDirectory = join(config.generationRootDirectory, options.generationId);
-  await mkdir(generationDirectory);
-  const paths = createRecallGenerationComponentPaths(generationDirectory);
-  try {
-    const manifest = createExpectedManifest(config, options.generationId);
-    if (config.embeddingProfile.canary) {
-      const [firstNativeCanary, repeatedNativeCanary] = await Promise.all([
-        dependencies.embeddingProvider.embedQuery(config.embeddingProfile.canary.query),
-        dependencies.embeddingProvider.embedQuery(config.embeddingProfile.canary.query),
-      ]);
-      const canaryOptions = {
-        nativeDimensions: manifest.embeddingProfile.nativeDimensions,
-        storedDimensions: manifest.embeddingProfile.storedDimensions,
-        source: `generation ${options.generationId} query canary`,
-      };
-      const firstStoredCanary = createStoredRecallEmbedding(firstNativeCanary, canaryOptions);
-      const repeatedStoredCanary = createStoredRecallEmbedding(repeatedNativeCanary, canaryOptions);
-      assertRepeatableStoredRecallEmbeddings(firstStoredCanary, repeatedStoredCanary, {
-        minimumCosineSimilarity: config.embeddingProfile.canary.minimumRepeatCosineSimilarity,
-        source: `generation ${options.generationId} query canary`,
-      });
-    }
-    const manifestFingerprint = await writeRecallGenerationManifest(paths.manifestPath, manifest);
-    const contracts = createRecallGenerationStoreContracts(
-      options.generationId,
-      manifest.embeddingProfile.storedDimensions,
-    );
-    createEmptyRecallGenerationStores(paths, contracts);
-    const materializedSources = await Promise.all(
-      options.physicalSessionPaths.map((physicalSessionPath) =>
-        materializePhysicalSourceRows(
-          config,
-          options.generationId,
-          physicalSessionPath,
-          dependencies,
-        ),
-      ),
-    );
-    const rows: MaterializedRecallGenerationRows = {
-      lexicalSource: materializedSources.flatMap(({ lexicalSource }) => lexicalSource),
-      dense: materializedSources.flatMap(({ dense }) => dense),
-      sessionProjection: materializedSources.flatMap(({ sessionProjection }) => sessionProjection),
-      physicalSourceIdentities: materializedSources.flatMap(
-        ({ physicalSourceIdentities }) => physicalSourceIdentities,
-      ),
-      logicalSessionOccurrenceIds: materializedSources.flatMap(
-        ({ logicalSessionOccurrenceIds }) => logicalSessionOccurrenceIds,
-      ),
-    };
-    if (
-      new Set(rows.physicalSourceIdentities).size !== rows.physicalSourceIdentities.length ||
-      new Set(rows.lexicalSource.map(({ id }) => id)).size !== rows.lexicalSource.length ||
-      new Set(rows.dense.map(({ id }) => id)).size !== rows.dense.length ||
-      new Set(rows.sessionProjection.map(({ id }) => id)).size !== rows.sessionProjection.length
-    ) {
-      throw new Error('Recall physical source generation contains duplicate source identities');
-    }
-    const lexicalCollection = ZVecOpen(paths.lexicalSourceStorePath);
-    const denseCollection = ZVecOpen(paths.denseStorePath);
-    const projectionCollection = ZVecOpen(paths.sessionProjectionStorePath);
-    try {
-      assertCheckedZvecStatuses(
-        'lexical/source write',
-        rows.lexicalSource.map(({ id }) => id),
-        lexicalCollection.upsertSync(rows.lexicalSource),
-      );
-      assertCheckedZvecStatuses(
-        'dense write',
-        rows.dense.map(({ id }) => id),
-        denseCollection.upsertSync(rows.dense),
-      );
-      assertCheckedZvecStatuses(
-        'session projection write',
-        rows.sessionProjection.map(({ id }) => id),
-        projectionCollection.upsertSync(rows.sessionProjection),
-      );
-    } finally {
-      lexicalCollection.closeSync();
-      denseCollection.closeSync();
-      projectionCollection.closeSync();
-    }
-    const expectedRecordIds = {
-      lexicalSource: rows.lexicalSource.map(({ id }) => id).toSorted(),
-      dense: rows.dense.map(({ id }) => id).toSorted(),
-      sessionProjection: rows.sessionProjection.map(({ id }) => id).toSorted(),
-    };
-    const storeCounts = validateRecallGenerationStores(
-      paths,
-      contracts,
-      options.generationId,
-      expectedRecordIds,
-    );
-    const startingSnapshotFingerprint = createHash('sha256')
-      .update(
-        JSON.stringify({
-          physicalSourceIdentities: rows.physicalSourceIdentities.toSorted(),
-          logicalSessionOccurrenceIds: rows.logicalSessionOccurrenceIds.toSorted(),
-          expectedRecordIds,
-        }),
-      )
-      .digest('hex');
-    const receipt = createRecallGenerationValidationReceipt({
-      generationId: options.generationId,
-      manifestFingerprint,
-      membership: {
-        startingSnapshotFingerprint,
-        physicalSourceCount: rows.physicalSourceIdentities.length,
-        logicalSessionOccurrenceCount: rows.logicalSessionOccurrenceIds.length,
-        lexicalSourceRecordIds: expectedRecordIds.lexicalSource,
-        denseRecordIds: expectedRecordIds.dense,
-        sessionProjectionRecordIds: expectedRecordIds.sessionProjection,
-      },
-      validatedAtEpochMilliseconds: (config.nowEpochMilliseconds ?? Date.now)(),
-    });
-    await writeRecallGenerationValidationReceipt(paths.validationReceiptPath, receipt);
-    return {
-      generationId: options.generationId,
-      generationDirectory,
-      manifestPath: paths.manifestPath,
-      validationReceiptPath: paths.validationReceiptPath,
-      manifestFingerprint,
-      startingSnapshotFingerprint,
-      storeCounts,
-    };
-  } catch (error) {
-    await rm(generationDirectory, { recursive: true, force: true });
-    throw error;
-  }
-}
-
 /** Searches ordinary lexical evidence in one explicitly named validated inactive generation. */
 export async function searchRecallGenerationLexical(
   config: Readonly<RecallCoherentGenerationConfig>,
@@ -796,7 +641,7 @@ export async function searchRecallGenerationLexical(
   if (existsSync(paths.recoveryRecordPath)) {
     throw new Error(`Recall coherent generation recovery required for ${generationId}`);
   }
-  const expectedManifest = createExpectedManifest(config, generationId);
+  const expectedManifest = createExpectedRecallPhysicalSourceManifest(config, generationId);
   const { manifest } = await readRecallGenerationManifest(paths.manifestPath);
   assertRecallGenerationManifestCompatible(manifest, expectedManifest, paths.manifestPath);
   await readRecallGenerationValidationReceipt(paths.validationReceiptPath);

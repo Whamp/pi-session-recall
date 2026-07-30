@@ -32,6 +32,7 @@ import {
 import {
   readSessionConversationImport,
   type ConversationTextTokenizer,
+  type SessionConversationImport,
 } from './session-conversation-index.js';
 
 /** Scalar identity required to start projecting one physical source from byte zero. */
@@ -141,15 +142,15 @@ function eligibleSpanForDescriptor(
   };
 }
 
-/** Rebuilds scalar projections for one source and marks exactly its indexed contributors eligible. */
-export async function createRecallSessionProjectionBaseline(
-  options: CreateRecallSessionProjectionBaselineOptions,
+interface CreateRecallSessionProjectionBaselineFromImportOptions extends CreateRecallSessionProjectionBaselineOptions {
+  imported: Readonly<SessionConversationImport>;
+}
+
+/** Projects scalar source checkpoints from the same canonical import used for evidence. */
+export async function createRecallSessionProjectionBaselineFromImport(
+  options: CreateRecallSessionProjectionBaselineFromImportOptions,
 ): Promise<RecallSessionProjection[]> {
-  const imported = await readSessionConversationImport(options.physicalSessionPath, {
-    tokenizer: options.tokenizer,
-    ...(options.chunkPolicy ?? {}),
-  });
-  const firstLogicalSession = imported.logicalSessions[0];
+  const firstLogicalSession = options.imported.logicalSessions[0];
   if (firstLogicalSession === undefined) {
     throw new Error(
       `Recall rebuild source contains no logical session: ${options.physicalSessionPath}`,
@@ -169,7 +170,7 @@ export async function createRecallSessionProjectionBaseline(
     effectiveAppendDelta = appendDeltaResult;
   } else if (
     appendDeltaResult.repairReason === RecallProjectionRepairReason.UNSUPPORTED_LAYOUT &&
-    imported.format === SessionImportFormat.PI_V1_LINEAR
+    options.imported.format === SessionImportFormat.PI_V1_LINEAR
   ) {
     effectiveAppendDelta = await synthesizePiV1AppendDelta(options.physicalSessionPath);
   } else {
@@ -196,8 +197,8 @@ export async function createRecallSessionProjectionBaseline(
     );
   }
   const eligibleContributorIdsByLogicalSession = new Map<string, Set<string>>();
-  for (const chunk of imported.chunks) {
-    const matchingLogicalSessions = imported.logicalSessions.filter(
+  for (const chunk of options.imported.chunks) {
+    const matchingLogicalSessions = options.imported.logicalSessions.filter(
       ({ sourceLineStart, sourceLineEnd }) =>
         chunk.sourceLineStart >= sourceLineStart && chunk.sourceLineStart <= sourceLineEnd,
     );
@@ -236,4 +237,15 @@ export async function createRecallSessionProjectionBaseline(
     };
   });
   return [projected.physicalProjection, ...logicalProjections];
+}
+
+/** Rebuilds scalar projections for one source and marks exactly its indexed contributors eligible. */
+export async function createRecallSessionProjectionBaseline(
+  options: CreateRecallSessionProjectionBaselineOptions,
+): Promise<RecallSessionProjection[]> {
+  const imported = await readSessionConversationImport(options.physicalSessionPath, {
+    tokenizer: options.tokenizer,
+    ...(options.chunkPolicy ?? {}),
+  });
+  return createRecallSessionProjectionBaselineFromImport({ ...options, imported });
 }

@@ -340,6 +340,365 @@ void test('configured service builds and searches a stored-width dense subset be
   );
 });
 
+void test('configured service resumes one fixed source snapshot after an interrupted dense write', async (t) => {
+  const disposableRoot = await mkdtemp(join(tmpdir(), 'recall-fixed-snapshot-resume-'));
+  t.after(() => rm(disposableRoot, { recursive: true, force: true }));
+  const sessionsDirectory = join(disposableRoot, 'sessions');
+  const dataDirectory = join(disposableRoot, 'recall');
+  const projectDirectory = join(disposableRoot, 'project');
+  const sourcePath = join(sessionsDirectory, 'snapshot.jsonl');
+  await Promise.all([mkdir(sessionsDirectory), mkdir(dataDirectory), mkdir(projectDirectory)]);
+  await writeJsonl(sourcePath, [
+    {
+      type: 'session',
+      version: 3,
+      id: 'snapshot-session',
+      timestamp: '2026-08-03T00:00:00.000Z',
+      cwd: projectDirectory,
+    },
+    {
+      type: 'message',
+      id: 'snapshot-message',
+      parentId: null,
+      timestamp: '2026-08-03T00:00:01.000Z',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'ORIGINAL_SNAPSHOT_NEEDLE remains recoverable.' }],
+      },
+    },
+  ]);
+
+  const profile = createOctenEmbeddingModelProfile(
+    {
+      requestModel: 'fixture-native-model',
+      servedModelId: 'fixture/native-model',
+      artifact: 'fixture-native-model.fp32',
+      artifactSha256: 'c'.repeat(64),
+      dimensions: 3,
+      quantization: 'fp32',
+      pooling: 'last',
+      normalization: 'l2',
+    },
+    2,
+  );
+  const embeddedDocuments: string[] = [];
+  let interruptDenseWrite = true;
+  const config = createPhysicalSourceGenerationTestConfig(dataDirectory, sessionsDirectory);
+  const service = createRecallConversationService(config, {
+    embeddingProfile: profile,
+    embeddingProvider: {
+      async embedDocuments(documents) {
+        embeddedDocuments.push(...documents);
+        return documents.map(() => [3, 4, 100]);
+      },
+      async embedQuery() {
+        return [3, 4, 100];
+      },
+    },
+    tokenizerIdentity: {
+      model: 'fixture-tokenizer',
+      revision: 'fixture-revision',
+      library: { name: 'fixture-tokenizer', version: '1' },
+      encodeOptions: { addSpecialTokens: false, returnTokenTypeIds: false },
+      assets: [{ fileName: 'fixture-tokenizer.json', sha256: 'd'.repeat(64) }],
+    },
+    loadTokenizer: async () => tokenizer,
+    rerankingProfile: null,
+    reranker: null,
+    workerSignal: { signalDetachedWorker() {} },
+    async fixedSnapshotBuildFault(stage) {
+      if (stage === 'after-dense-write' && interruptDenseWrite) {
+        interruptDenseWrite = false;
+        throw new Error('fixture interrupted dense write');
+      }
+    },
+  });
+
+  const generationId = 'generation_fixed_snapshot_resume';
+  await assert.rejects(
+    service.createRecallGenerationFromPhysicalSources({
+      generationId,
+      physicalSessionPaths: [sourcePath],
+    }),
+    /fixture interrupted dense write/u,
+  );
+  const generationDirectory = join(config.generationRootDirectory, generationId);
+  assert.equal(existsSync(join(generationDirectory, 'write-recovery.json')), true);
+  assert.equal(existsSync(join(generationDirectory, 'validation-receipt.json')), false);
+
+  await writeJsonl(sourcePath, [
+    {
+      type: 'session',
+      version: 3,
+      id: 'changed-session',
+      timestamp: '2026-08-04T00:00:00.000Z',
+      cwd: projectDirectory,
+    },
+    {
+      type: 'message',
+      id: 'changed-message',
+      parentId: null,
+      timestamp: '2026-08-04T00:00:01.000Z',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'LATER_SOURCE_CHANGE must remain outside the build.' }],
+      },
+    },
+  ]);
+
+  const addedSourcePath = join(sessionsDirectory, 'added-after-snapshot.jsonl');
+  await writeJsonl(
+    addedSourcePath,
+    createToolOnlyLogicalSession(
+      'added-session',
+      'added',
+      projectDirectory,
+      'ADDED_AFTER_SNAPSHOT',
+    ),
+  );
+  await assert.rejects(
+    service.createRecallGenerationFromPhysicalSources({
+      generationId,
+      physicalSessionPaths: [sourcePath, addedSourcePath],
+    }),
+    /Recall fixed snapshot generation resume source snapshot mismatch/u,
+  );
+  await rm(sourcePath);
+
+  const resumed = await service.createRecallGenerationFromPhysicalSources({
+    generationId,
+    physicalSessionPaths: [sourcePath],
+  });
+  assert.deepEqual(await service.openValidatedRecallGeneration(generationId), resumed);
+  assert.equal(existsSync(join(generationDirectory, 'write-recovery.json')), false);
+  assert.equal(existsSync(join(generationDirectory, 'validation-receipt.json')), true);
+  assert.ok(
+    (await service.searchRecallGenerationLexical(generationId, 'ORIGINAL_SNAPSHOT_NEEDLE', 10))
+      .length >= 1,
+  );
+  assert.deepEqual(
+    await service.searchRecallGenerationLexical(generationId, 'LATER_SOURCE_CHANGE', 10),
+    [],
+  );
+  assert.deepEqual(
+    await service.searchRecallGenerationLexical(generationId, 'ADDED_AFTER_SNAPSHOT', 10),
+    [],
+  );
+  assert.equal(
+    embeddedDocuments.filter((document) => document.includes('ORIGINAL_SNAPSHOT_NEEDLE')).length,
+    1,
+  );
+
+  await rm(join(generationDirectory, 'build-sources'), { recursive: true });
+  assert.deepEqual(await service.openValidatedRecallGeneration(generationId), resumed);
+});
+
+void test('configured service resolves current-build duplicates before copying a validated compatible generation', async (t) => {
+  const disposableRoot = await mkdtemp(join(tmpdir(), 'recall-fixed-snapshot-vector-lanes-'));
+  t.after(() => rm(disposableRoot, { recursive: true, force: true }));
+  const sessionsDirectory = join(disposableRoot, 'sessions');
+  const dataDirectory = join(disposableRoot, 'recall');
+  const projectDirectory = join(disposableRoot, 'project');
+  const sourcePath = join(sessionsDirectory, 'duplicates.jsonl');
+  await Promise.all([mkdir(sessionsDirectory), mkdir(dataDirectory), mkdir(projectDirectory)]);
+  await writeJsonl(sourcePath, [
+    {
+      type: 'session',
+      version: 3,
+      id: 'duplicate-session',
+      timestamp: '2026-08-05T00:00:00.000Z',
+      cwd: projectDirectory,
+    },
+    {
+      type: 'message',
+      id: 'duplicate-first',
+      parentId: null,
+      timestamp: '2026-08-05T00:00:01.000Z',
+      message: { role: 'assistant', content: 'BUILD_LOCAL_DUPLICATE' },
+    },
+    {
+      type: 'message',
+      id: 'duplicate-second',
+      parentId: 'duplicate-first',
+      timestamp: '2026-08-05T00:00:02.000Z',
+      message: { role: 'assistant', content: 'BUILD_LOCAL_DUPLICATE' },
+    },
+  ]);
+
+  const profile = createOctenEmbeddingModelProfile(
+    {
+      requestModel: 'fixture-native-model',
+      servedModelId: 'fixture/native-model',
+      artifact: 'fixture-native-model.fp32',
+      artifactSha256: 'e'.repeat(64),
+      dimensions: 3,
+      quantization: 'fp32',
+      pooling: 'last',
+      normalization: 'l2',
+    },
+    2,
+  );
+  const embeddedDocuments: string[] = [];
+  let permitRecomputation = true;
+  const config = createPhysicalSourceGenerationTestConfig(dataDirectory, sessionsDirectory);
+  const service = createRecallConversationService(config, {
+    embeddingProfile: profile,
+    embeddingProvider: {
+      async embedDocuments(documents) {
+        if (!permitRecomputation) {
+          throw new Error('fixture recomputation forbidden');
+        }
+        embeddedDocuments.push(...documents);
+        return documents.map(() => [6, 8, 100]);
+      },
+      async embedQuery() {
+        return [6, 8, 100];
+      },
+    },
+    tokenizerIdentity: {
+      model: 'fixture-tokenizer',
+      revision: 'fixture-revision',
+      library: { name: 'fixture-tokenizer', version: '1' },
+      encodeOptions: { addSpecialTokens: false, returnTokenTypeIds: false },
+      assets: [{ fileName: 'fixture-tokenizer.json', sha256: 'f'.repeat(64) }],
+    },
+    loadTokenizer: async () => tokenizer,
+    rerankingProfile: null,
+    reranker: null,
+    workerSignal: { signalDetachedWorker() {} },
+  });
+
+  const sourceGenerationId = 'generation_validated_vector_source';
+  await service.createRecallGenerationFromPhysicalSources({
+    generationId: sourceGenerationId,
+    physicalSessionPaths: [sourcePath],
+  });
+  assert.equal(
+    embeddedDocuments.filter((document) => document === 'BUILD_LOCAL_DUPLICATE').length,
+    1,
+  );
+
+  permitRecomputation = false;
+  const copied = await service.createRecallGenerationFromPhysicalSources({
+    generationId: 'generation_copied_vectors',
+    physicalSessionPaths: [sourcePath],
+    validatedVectorSourceGenerationId: sourceGenerationId,
+  });
+  assert.ok(copied.storeCounts.dense >= 2);
+  assert.equal(existsSync(config.embeddingCacheDirectory), false);
+});
+
+void test('configured service withholds validation receipt after a reopened path mismatch', async (t) => {
+  const disposableRoot = await mkdtemp(join(tmpdir(), 'recall-fixed-snapshot-validation-fault-'));
+  t.after(() => rm(disposableRoot, { recursive: true, force: true }));
+  const sessionsDirectory = join(disposableRoot, 'sessions');
+  const dataDirectory = join(disposableRoot, 'recall');
+  const projectDirectory = join(disposableRoot, 'project');
+  const sourcePath = join(sessionsDirectory, 'validation.jsonl');
+  await Promise.all([mkdir(sessionsDirectory), mkdir(dataDirectory), mkdir(projectDirectory)]);
+  await writeJsonl(
+    sourcePath,
+    createToolOnlyLogicalSession(
+      'validation-session',
+      'validation',
+      projectDirectory,
+      'VALIDATION_PATH_NEEDLE',
+    ),
+  );
+
+  const config = createPhysicalSourceGenerationTestConfig(dataDirectory, sessionsDirectory);
+  const service = createRecallConversationService(config, {
+    loadTokenizer: async () => tokenizer,
+    rerankingProfile: null,
+    reranker: null,
+    workerSignal: { signalDetachedWorker() {} },
+    async fixedSnapshotBuildFault(stage, context) {
+      if (stage !== 'before-validation-receipt') {
+        return;
+      }
+      const lexicalSource = ZVecOpen(join(context.generationDirectory, 'lexical-source'));
+      try {
+        const [row] = await lexicalSource.query({
+          filter: "recordKind = 'entry-anchor'",
+          topk: 1,
+          outputFields: lexicalSource.schema.fields().map(({ name }) => name),
+          includeVector: false,
+        });
+        assert.ok(row);
+        const [status] = lexicalSource.upsertSync([
+          {
+            id: row.id,
+            fields: { ...row.fields, sessionsRootRelativePath: 'wrong/path.jsonl' },
+          },
+        ]);
+        assert.equal(status?.ok, true);
+      } finally {
+        lexicalSource.closeSync();
+      }
+    },
+  });
+
+  const generationId = 'generation_validation_path_fault';
+  await assert.rejects(
+    service.createRecallGenerationFromPhysicalSources({
+      generationId,
+      physicalSessionPaths: [sourcePath],
+    }),
+    /Recall fixed snapshot generation lexical\/source validation row mismatch/u,
+  );
+  assert.equal(
+    existsSync(join(config.generationRootDirectory, generationId, 'validation-receipt.json')),
+    false,
+  );
+});
+
+void test('configured service never receipts a build cancelled at validation', async (t) => {
+  const disposableRoot = await mkdtemp(join(tmpdir(), 'recall-fixed-snapshot-cancelled-'));
+  t.after(() => rm(disposableRoot, { recursive: true, force: true }));
+  const sessionsDirectory = join(disposableRoot, 'sessions');
+  const dataDirectory = join(disposableRoot, 'recall');
+  const projectDirectory = join(disposableRoot, 'project');
+  const sourcePath = join(sessionsDirectory, 'cancelled.jsonl');
+  await Promise.all([mkdir(sessionsDirectory), mkdir(dataDirectory), mkdir(projectDirectory)]);
+  await writeJsonl(
+    sourcePath,
+    createToolOnlyLogicalSession(
+      'cancelled-session',
+      'cancelled',
+      projectDirectory,
+      'CANCELLED_VALIDATION_NEEDLE',
+    ),
+  );
+
+  const controller = new AbortController();
+  const config = createPhysicalSourceGenerationTestConfig(dataDirectory, sessionsDirectory);
+  const service = createRecallConversationService(config, {
+    loadTokenizer: async () => tokenizer,
+    rerankingProfile: null,
+    reranker: null,
+    workerSignal: { signalDetachedWorker() {} },
+    fixedSnapshotBuildFault(stage) {
+      if (stage === 'before-validation-receipt') {
+        controller.abort();
+      }
+    },
+  });
+
+  const generationId = 'generation_cancelled_validation';
+  await assert.rejects(
+    service.createRecallGenerationFromPhysicalSources({
+      generationId,
+      physicalSessionPaths: [sourcePath],
+      signal: controller.signal,
+    }),
+    /Recall fixed snapshot generation build cancelled/u,
+  );
+  assert.equal(
+    existsSync(join(config.generationRootDirectory, generationId, 'validation-receipt.json')),
+    false,
+  );
+});
+
 void test('configured service keys lexical evidence, anchors, and projections by physical source identity', async (t) => {
   const disposableRoot = await mkdtemp(join(tmpdir(), 'recall-physical-source-generation-'));
   t.after(() => rm(disposableRoot, { recursive: true, force: true }));
@@ -504,6 +863,25 @@ void test('configured service keys lexical evidence, anchors, and projections by
       sourceProjectionRows.filter((row) => row.fields.projectionKind === 'logical_session').length,
       2,
     );
+    const physicalProjectionRow = sourceProjectionRows.find(
+      (row) => row.fields.projectionKind === 'physical_session',
+    );
+    assert.ok(physicalProjectionRow);
+    const physicalProjection: unknown = JSON.parse(
+      String(physicalProjectionRow.fields.projectionJson),
+    );
+    assert.ok(isUnknownRecord(physicalProjection));
+    const expectedMembership: unknown = physicalProjection.expectedMembership;
+    assert.ok(isUnknownRecord(expectedMembership));
+    assert.ok(isUnknownRecord(expectedMembership.lexicalSource));
+    assert.equal(expectedMembership.lexicalSource.count, 10);
+    assert.match(String(expectedMembership.lexicalSource.digest), /^[a-f0-9]{64}$/u);
+    assert.ok(isUnknownRecord(expectedMembership.dense));
+    assert.equal(expectedMembership.dense.count, 0);
+    assert.equal(String(expectedMembership.dense.digest).length, 64);
+    assert.ok(isUnknownRecord(expectedMembership.sessionProjection));
+    assert.equal(expectedMembership.sessionProjection.count, 3);
+    assert.equal(String(expectedMembership.sessionProjection.digest).length, 64);
   } finally {
     lexicalSource.closeSync();
     dense.closeSync();

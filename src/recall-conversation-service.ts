@@ -4,6 +4,7 @@ import { readFile, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
 import { adoptLegacyRecallGeneration } from './adopt-legacy-recall-generation.js';
+import { buildRecallFixedSnapshotGeneration } from './build-recall-fixed-snapshot-generation.js';
 import { collectRetiredRecallGenerations } from './collect-retired-recall-generations.js';
 import {
   coordinateRecallReadWindow,
@@ -33,7 +34,6 @@ import {
   type RecallCoherentGenerationConfig,
 } from './recall-coherent-generation.js';
 import {
-  createRecallGenerationFromPhysicalSources,
   deleteRecallGenerationPhysicalSource,
   searchRecallGenerationLexical,
   type CreateRecallGenerationFromPhysicalSourcesOptions,
@@ -492,7 +492,7 @@ export interface RecallConversationService {
   createEmptyRecallGeneration(
     options: CreateEmptyRecallGenerationOptions,
   ): Promise<OpenedValidatedRecallGeneration>;
-  /** Creates one validated inactive generation from mixed lexical and dense physical sources. */
+  /** Builds or resumes one validated inactive generation from one fixed physical-source snapshot. */
   createRecallGenerationFromPhysicalSources(
     options: CreateRecallGenerationFromPhysicalSourcesOptions,
   ): Promise<OpenedValidatedRecallGeneration>;
@@ -546,6 +546,11 @@ export interface RecallConversationDependencies {
   diagnosticsClock?: RecallDiagnosticsClock;
   notifyWarning?: (message: string) => void;
   workerSignal?: RecallDetachedWorkerSignal;
+  /** Deterministic storage fault probe for disposable fixed-snapshot build tests. */
+  fixedSnapshotBuildFault?: (
+    stage: 'after-snapshot-capture' | 'after-dense-write' | 'before-validation-receipt',
+    context: Readonly<{ generationDirectory: string; physicalSourceIdentity?: string }>,
+  ) => void | Promise<void>;
   /** Reconstructs the same configured inference runtime inside a detached rebuild worker. */
   backgroundIndexServiceFactory?: RecallBackgroundIndexServiceFactory;
 }
@@ -1279,6 +1284,7 @@ export function createRecallConversationService(
   };
   const workerSignal =
     dependencies.workerSignal ?? createRecallDetachedWorkerSignal(config.workerOwnershipLockPath);
+  const fixedSnapshotBuildFault = dependencies.fixedSnapshotBuildFault;
   const backgroundIndexStatusPath =
     config.backgroundIndexStatusPath ?? join(config.dataDirectory, 'background-index-status.json');
   const backgroundIndexRequestPath =
@@ -2775,10 +2781,16 @@ export function createRecallConversationService(
     },
     createRecallGenerationFromPhysicalSources(options) {
       return runSerialized(async () =>
-        createRecallGenerationFromPhysicalSources(coherentGenerationConfig, options, {
+        buildRecallFixedSnapshotGeneration(coherentGenerationConfig, options, {
           tokenizer: await getConversationTokenizer(),
           embeddingProvider,
           resolveProjectIdentity: resolveSearchProjectIdentity,
+          ...(fixedSnapshotBuildFault
+            ? {
+                fixedSnapshotBuildFault: (stage, context) =>
+                  fixedSnapshotBuildFault(stage, context),
+              }
+            : {}),
         }),
       );
     },

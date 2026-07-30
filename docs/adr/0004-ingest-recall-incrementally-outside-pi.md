@@ -59,7 +59,7 @@ Validated activation writes one immutable generation replay snapshot of pending 
 
 A generation-specific recovery-required record makes an interrupted batch unsafe for read-only open. Recovery re-derives the recorded batch, fetches and verifies existing IDs and checksums, inserts missing rows, repairs only isolated damage, verifies the physical session projection, closes and reopens stores, and clears recovery state before acknowledging markers. Damage that cannot be isolated requires explicit rollback or rebuild rather than textual repair.
 
-The standalone `pi-session-recall` CLI owns rebuild control, recovery, rollback, exact legacy adoption, and retired-generation cleanup. Rollback performs the quick integrity check in ADR 0007 and switches to the retained generation without scanning session files or rebuilding vectors. Cleanup removes only generations that are no longer active, building, replay-pending, or retained for rollback.
+The standalone `pi-session-recall` CLI owns rebuild control, recovery, rollback, and retired-generation cleanup. It never adopts a legacy storage layout; first and replacement generations are rebuilt from immutable Pi session sources. Rollback performs the quick integrity check in ADR 0007 and switches to the retained generation without scanning session files or rebuilding vectors. Cleanup removes only generations that are no longer active, building, replay-pending, or retained for rollback.
 
 ## Measured host policy
 
@@ -78,7 +78,7 @@ Diagnostics record marker age, sweep work, bounded append and parse counts, elig
 
 Parsing, tokenization, embedding, and store writes stay outside Pi's interactive work. Active tails remain in model context until they cross the recall horizon. Search remains available against coherent durable evidence while ingestion or a rebuild is stale. The CLI may report scalar backlog and failures; the Pi TUI receives no maintenance progress or status messages.
 
-Full repair, confirmed deletion reconciliation, migration, optimization, rebuild, rollback, and retired-generation cleanup remain explicit maintenance. Production rollout follows [`docs/operations/incremental-recall-rollout.md`](../operations/incremental-recall-rollout.md) and requires human approval.
+Full repair, confirmed deletion reconciliation, optimization, rebuild, rollback, and retired-generation cleanup remain explicit maintenance. There is no in-place migration or legacy-layout adoption; an incompatible layout requires a fresh generation built from immutable Pi session sources. Production rollout follows [`docs/operations/incremental-recall-rollout.md`](../operations/incremental-recall-rollout.md) and requires human approval.
 
 We rejected whole-session lifecycle reconciliation, search-triggered ingestion, filesystem watchers, process-liveness leases, permanent workers, dual-generation writes, a persistent embedding cache, transactional staging around per-document zvec writes, heuristic text repair, automatic optimization, and a freshness service objective.
 

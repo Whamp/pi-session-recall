@@ -36,6 +36,10 @@ function formatMilliseconds(value: number): string {
   return `${value.toFixed(1)} ms`;
 }
 
+function formatDurationMilliseconds(value: number): string {
+  return `${(value / 1_000).toFixed(1)} s`;
+}
+
 function formatChunkPolicy(chunkPolicy: { maxTokens: number; overlapTokens: number }): string {
   return `${chunkPolicy.maxTokens}/${chunkPolicy.overlapTokens}`;
 }
@@ -273,15 +277,17 @@ export function formatRecallQualityReport(
     '',
     '## Chunk-policy generation comparison',
     '',
-    '| Chunk | Evidence occurrences | Lexical/source rows | Dense rows | Projection rows | Source snapshot | Generation time |',
-    '| ---: | ---: | ---: | ---: | ---: | --- | ---: |',
+    '| Chunk | Evidence occurrences | Lexical/source rows | Dense rows | Projection rows | Source snapshot | On-disk size | Fresh build duration |',
+    '| ---: | ---: | ---: | ---: | ---: | --- | ---: | ---: |',
   );
   for (const indexRun of result.indexRuns) {
     lines.push(
-      `| ${formatChunkPolicy(indexRun.chunkPolicy)} | ${indexRun.totalChunks} | ${indexRun.storeCounts.lexicalSource} | ${indexRun.storeCounts.dense} | ${indexRun.storeCounts.sessionProjection} | \`${indexRun.startingSnapshotFingerprint}\` | ${formatMilliseconds(indexRun.indexLatencyMilliseconds)} |`,
+      `| ${formatChunkPolicy(indexRun.chunkPolicy)} | ${indexRun.totalChunks} | ${indexRun.storeCounts.lexicalSource} | ${indexRun.storeCounts.dense} | ${indexRun.storeCounts.sessionProjection} | \`${indexRun.startingSnapshotFingerprint}\` | ${indexRun.generationSizeBytes.toLocaleString('en-US')} bytes | ${formatDurationMilliseconds(indexRun.indexLatencyMilliseconds)} |`,
     );
   }
   lines.push(
+    '',
+    'Generation size and fresh-build duration are reported values; reported values have no pass threshold.',
     '',
     '## Quality and latency matrix',
     '',

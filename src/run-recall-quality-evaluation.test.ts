@@ -397,6 +397,7 @@ void test('recall quality runner indexes and searches only the bounded declared 
     dense: 1,
     sessionProjection: 2,
   });
+  assert.ok((result.indexRuns[0]?.generationSizeBytes ?? 0) > 0);
   assert.equal(result.configurations.length, 1);
   assert.equal(result.selection.passed, true);
   assert.equal(result.selection.selected?.candidateCount, 8);

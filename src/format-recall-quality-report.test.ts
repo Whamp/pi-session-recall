@@ -145,6 +145,7 @@ void test('recall quality report records verdict, measured counts, sources, and 
         startingSnapshotFingerprint: 'c'.repeat(64),
         storeCounts: { lexicalSource: 80, dense: 72, sessionProjection: 2 },
         totalChunks: 72,
+        generationSizeBytes: 1_234_567,
         indexLatencyMilliseconds: 1_200,
         indexSummary: {
           scannedSessions: 1,
@@ -244,6 +245,9 @@ void test('recall quality report records verdict, measured counts, sources, and 
   );
   assert.match(report, /semantic-context\.jsonl#queue-answer/);
   assert.match(report, /coherent generation v1, store format v1, validation receipt v1/);
+  assert.match(report, /1,234,567 bytes/);
+  assert.match(report, /1\.2 s/);
+  assert.match(report, /reported values have no pass threshold/);
   assert.match(report, /c{64}/u);
   assert.match(report, /never opens the production recall generation or original Pi session files/);
   assert.match(report, /npm run evaluate:recall/);

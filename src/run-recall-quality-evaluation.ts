@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { copyFile, mkdir, rm } from 'node:fs/promises';
+import { copyFile, mkdir, readdir, rm, stat } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { promisify } from 'node:util';
@@ -104,6 +104,7 @@ export interface RecallQualityIndexRun {
   startingSnapshotFingerprint: string;
   storeCounts: RecallGenerationStoreCounts;
   totalChunks: number;
+  generationSizeBytes: number;
   indexLatencyMilliseconds: number;
   indexSummary: ConversationIndexSummary;
 }
@@ -182,6 +183,19 @@ export interface RecallQualityEvaluationResult {
 function isPathInside(parentPath: string, childPath: string): boolean {
   const pathFromParent = relative(parentPath, childPath);
   return pathFromParent === '' || (!pathFromParent.startsWith('..') && !isAbsolute(pathFromParent));
+}
+
+async function measureRecallGenerationOnDiskBytes(generationDirectory: string): Promise<number> {
+  let totalBytes = 0;
+  for (const entry of await readdir(generationDirectory, { withFileTypes: true })) {
+    const entryPath = join(generationDirectory, entry.name);
+    if (entry.isDirectory()) {
+      totalBytes += await measureRecallGenerationOnDiskBytes(entryPath);
+    } else if (entry.isFile()) {
+      totalBytes += (await stat(entryPath)).size;
+    }
+  }
+  return totalBytes;
 }
 
 async function assertSafeRecallQualityPaths(
@@ -578,6 +592,9 @@ export async function runRecallQualityEvaluation(
     const totalChunks = recordMembership.lexicalSource.filter((recordId) =>
       recordId.startsWith('occurrence_'),
     ).length;
+    const generationSizeBytes = await measureRecallGenerationOnDiskBytes(
+      opened.generationDirectory,
+    );
     const indexSummary: ConversationIndexSummary = {
       scannedSessions: physicalSessionPaths.length,
       indexedSessions: physicalSessionPaths.length,
@@ -594,6 +611,7 @@ export async function runRecallQualityEvaluation(
       startingSnapshotFingerprint: opened.startingSnapshotFingerprint,
       storeCounts: opened.storeCounts,
       totalChunks,
+      generationSizeBytes,
       indexLatencyMilliseconds,
       indexSummary,
     });

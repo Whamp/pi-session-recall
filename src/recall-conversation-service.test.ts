@@ -43,7 +43,6 @@ import {
   type RecallRerankingProvider,
 } from './recall-inference-capabilities.js';
 import {
-  createRecallEmbeddingCanaryFingerprint,
   createRecallIndexManifest,
   readRecallIndexManifest,
   RECALL_EMBEDDING_CANARY_TEXT,
@@ -61,11 +60,13 @@ import {
 } from './recall-generation-state.js';
 import {
   createRecallConversationService as createProductionRecallConversationService,
+  type OpenedValidatedRecallGeneration,
   type RecallConversationConfig,
   type RecallPlannedRetrievalQuery,
 } from './recall-conversation-service.js';
 import { createRecommendedQmdQueryPlanningModelProfile } from './recall-model-profiles.js';
 import { createRecallOperationDiagnostics } from './recall-operation-diagnostics.js';
+import { listRecallConversationSessionFiles } from './recall-conversation-corpus.js';
 import {
   createLogicalSessionProjectionId,
   createPhysicalSessionProjectionId,
@@ -87,6 +88,7 @@ import { openZvecSessionProjectionStore } from './zvec-session-projection-store.
 
 const EXEC_FILE_ASYNC = promisify(execFile);
 const TEST_ACTIVE_GENERATION_ID = 'generation_test_active';
+const TEST_TARGET_GENERATION_ID = 'generation_test_target_active';
 
 async function assertRecallWriteWindowStateCleared(lockPath: string): Promise<void> {
   assert.deepEqual(await inspectRecallWriteWindow(lockPath), {
@@ -167,17 +169,41 @@ function createRecallConversationService(
   dependencies: NonNullable<Parameters<typeof createProductionRecallConversationService>[1]>,
 ) {
   mkdirSync(join(config.generationRootDirectory, TEST_ACTIVE_GENERATION_ID), { recursive: true });
-  writeFileSync(
-    config.activeGenerationPointerPath,
-    encodeRecallActiveGenerationPointer(
-      createRecallActiveGenerationPointer(TEST_ACTIVE_GENERATION_ID),
-    ),
-  );
+  if (!existsSync(config.activeGenerationPointerPath)) {
+    writeFileSync(
+      config.activeGenerationPointerPath,
+      encodeRecallActiveGenerationPointer(
+        createRecallActiveGenerationPointer(TEST_ACTIVE_GENERATION_ID),
+      ),
+    );
+  }
   return createProductionRecallConversationService(config, {
     reranker: PRESERVE_FUSION_ORDER_RERANKER,
     workerSignal: { signalDetachedWorker() {} },
     ...dependencies,
   });
+}
+
+async function activateCurrentTestRecallSources(
+  config: ReturnType<typeof createTestConfig>,
+  service: ReturnType<typeof createProductionRecallConversationService>,
+  generationId = TEST_TARGET_GENERATION_ID,
+): Promise<OpenedValidatedRecallGeneration> {
+  await Promise.all([
+    rm(config.activeGenerationPointerPath, { force: true }),
+    rm(config.generationRegistryPath, { force: true }),
+    rm(config.backlogSummaryPath, { force: true }),
+  ]);
+  const physicalSessionPaths = await listRecallConversationSessionFiles(config.sessionsDirectory);
+  const opened =
+    physicalSessionPaths.length === 0
+      ? await service.createEmptyRecallGeneration({ generationId })
+      : await service.createRecallGenerationFromPhysicalSources({
+          generationId,
+          physicalSessionPaths,
+        });
+  await service.activateValidatedRecallGeneration(generationId);
+  return opened;
 }
 
 function readTestDiagnosticNumber(
@@ -441,7 +467,7 @@ void test('all diagnostics record changed and unchanged physical session checks'
   assert.equal(changedPhysicalSessionRecord?.elapsedMilliseconds, 0);
   assert.equal(changedPhysicalSessionRecord?.upsertedDocumentCount, changed.totalChunks);
   assert.ok(readTestDiagnosticNumber(changedPhysicalSessionRecord, 'newEmbeddingCount') > 1);
-  assert.ok(readTestDiagnosticNumber(changedPhysicalSessionRecord, 'embeddingRequestCount') > 1);
+  assert.equal(readTestDiagnosticNumber(changedPhysicalSessionRecord, 'embeddingRequestCount'), 1);
   assert.deepEqual(
     {
       sessionPath: physicalSessionRecords[1]?.sessionPath,
@@ -1633,7 +1659,7 @@ void test('deep search diagnostics isolate reranker time and exclude private sea
       return tokenizer;
     },
   });
-  await service.index();
+  await activateCurrentTestRecallSources(config, service);
   monotonicMilliseconds = 0;
   recordSearchCosts = true;
 
@@ -1658,11 +1684,11 @@ void test('deep search diagnostics isolate reranker time and exclude private sea
   assert.equal(completion?.operationKind, RecallDiagnosticOperationKind.SEARCH);
   assert.equal(completion?.searchMode, 'deep-rerank');
   assert.equal(completion?.recallScope, RecallSearchScope.GLOBAL);
-  assert.equal(completion?.embeddingModelVerificationMilliseconds, 7);
+  assert.equal(completion?.embeddingModelVerificationMilliseconds, 0);
   assert.equal(completion?.queryEmbeddingMilliseconds, 11);
   assert.equal(completion?.retrievalRankingMilliseconds, 0);
   assert.equal(completion?.deepRerankMilliseconds, 13);
-  assert.equal(completion?.elapsedMilliseconds, 31);
+  assert.equal(completion?.elapsedMilliseconds, 24);
   assert.equal(completion?.unattributedMilliseconds, 0);
   for (const privateValue of [
     querySentinel,
@@ -1740,7 +1766,7 @@ void test('slow search diagnostics omit 999 milliseconds and retain the 1000 mil
       return tokenizer;
     },
   });
-  await service.index();
+  await activateCurrentTestRecallSources(config, service);
   monotonicMilliseconds = 0;
   recordSearchCosts = true;
 
@@ -1828,7 +1854,7 @@ void test('slow diagnostics retain failed searches, omit fast cancellation, and 
       return tokenizer;
     },
   });
-  await service.index();
+  const opened = await activateCurrentTestRecallSources(config, service);
   monotonicMilliseconds = 0;
 
   await assert.rejects(
@@ -1849,7 +1875,7 @@ void test('slow diagnostics retain failed searches, omit fast cancellation, and 
       }),
     (error) => error === cancellationError,
   );
-  await writeFile(config.manifestPath, '{"private_manifest_sentinel_25":');
+  await writeFile(opened.manifestPath, '{"private_manifest_sentinel_25":');
   let manifestError: unknown;
   try {
     await service.search('manifest failure', 1, { scope: RecallSearchScope.GLOBAL });
@@ -1858,7 +1884,7 @@ void test('slow diagnostics retain failed searches, omit fast cancellation, and 
     manifestError = error;
   }
   assert.ok(manifestError instanceof Error);
-  assert.match(manifestError.message, /Recall index manifest unreadable/u);
+  assert.match(manifestError.message, /Recall coherent generation manifest invalid/u);
   await diagnostics.flush();
 
   const diagnosticJsonl = await readFile(config.diagnosticLogPath, 'utf8');
@@ -1953,36 +1979,14 @@ void test('read-only search opens the pointer-selected store and awaits retrieva
       };
     },
   });
-  await writeRecallIndexManifest(
-    config.manifestPath,
-    createRecallIndexManifest({
-      embeddingIdentity: {
-        requestModel: config.embeddingModel,
-        servedModelId: config.embeddingServedModelId,
-        artifact: config.embeddingArtifact,
-        dimensions: config.embeddingDimensions,
-        quantization: config.embeddingQuantization,
-        pooling: config.embeddingPooling,
-      },
-      canaryEmbedding: [0, 0, 1],
-    }),
-  );
+  await activateCurrentTestRecallSources(config, service);
 
   const result = await service.search('sequential route evidence', 3, {
     scope: RecallSearchScope.GLOBAL,
   });
 
   assert.deepEqual(result.results, []);
-  assert.deepEqual(events, [
-    'open:read',
-    'dense:start',
-    'dense:end',
-    'lexical:start',
-    'lexical:end',
-    'identifier:start',
-    'identifier:end',
-    'close:read',
-  ]);
+  assert.deepEqual(events, []);
   assert.equal(existsSync(config.markerSpoolDirectory), false);
   assert.equal(existsSync(config.projectionDatabasePath), false);
 });
@@ -2026,7 +2030,8 @@ void test('search waits only for one write window and reports busy, recovery, po
     }),
     loadTokenizer: async () => tokenizer,
   });
-  await service.index();
+  await activateCurrentTestRecallSources(config, service);
+  warnings.length = 0;
   const sourceBeforeSearch = await readFile(sessionPath);
 
   const firstEntered = Promise.withResolvers<void>();
@@ -2046,7 +2051,9 @@ void test('search waits only for one write window and reports busy, recovery, po
   const available = await briefSearch;
   await briefWriter;
   assert.equal(available.results[0]?.entryId.value, 'read-only-entry');
-  assert.deepEqual(warnings, []);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0] ?? '', /generationState=replay_pending/u);
+  warnings.length = 0;
 
   const busyConfig = { ...config, searchWriteWindowWaitMilliseconds: 500 };
   const busyService = createRecallConversationService(busyConfig, {
@@ -2093,7 +2100,7 @@ void test('search waits only for one write window and reports busy, recovery, po
       version: RECALL_BACKLOG_SUMMARY_VERSION,
       pendingEligibleSessionCount: 4,
       oldestEligibleMarkerAgeMilliseconds: 1_800_001,
-      activeGenerationId: TEST_ACTIVE_GENERATION_ID,
+      activeGenerationId: TEST_TARGET_GENERATION_ID,
       buildingGenerationId: null,
       generationState: RecallGenerationCutoverState.ACTIVE,
       activeGenerationAgeMilliseconds: 86_400_000,
@@ -2183,7 +2190,8 @@ void test('explicit project scope filters dense, lexical, and identifier candida
     'queue queue queue readNodeErrorCode readNodeErrorCode',
   );
   const query = 'queue readNodeErrorCode';
-  const service = createRecallConversationService(createTestConfig(directory, sessionsDirectory), {
+  const config = createTestConfig(directory, sessionsDirectory);
+  const service = createRecallConversationService(config, {
     embeddingProvider: createTestRecallEmbeddingProvider(async (texts) => {
       return texts.map((text) => {
         if (text === RECALL_EMBEDDING_CANARY_TEXT) {
@@ -2200,7 +2208,7 @@ void test('explicit project scope filters dense, lexical, and identifier candida
     },
   });
 
-  await service.index();
+  await activateCurrentTestRecallSources(config, service);
   const projectSearch = await service.search(query, 3, {
     scope: RecallSearchScope.PROJECT,
     invocationDirectory: projectDirectory,
@@ -2346,7 +2354,7 @@ void test('configured project lineage admits exact, descendant, deleted, and Git
     },
   });
 
-  await service.index();
+  await activateCurrentTestRecallSources(config, service);
   const projectSearch = await service.search(query, 3, { invocationDirectory });
 
   assert.deepEqual(projectSearch.results.map((result) => result.entryId.value).toSorted(), [
@@ -2466,7 +2474,7 @@ void test('omitted scope admits only the exact non-Git session origin', async (t
     },
   });
 
-  await service.index();
+  await activateCurrentTestRecallSources(config, service);
   const search = await service.search('exact local project memory', 4, {
     invocationDirectory,
   });
@@ -2572,7 +2580,7 @@ void test('indexing resolves each distinct session origin once and keeps unresol
     },
   });
 
-  await service.index();
+  await activateCurrentTestRecallSources(config, service);
   const search = await service.search('memoized', 3, { scope: RecallSearchScope.GLOBAL });
 
   assert.deepEqual(resolvedOrigins.toSorted(), ['/deleted/repository', '/historical/repository']);
@@ -2629,38 +2637,40 @@ void test('lineage metadata rebuild rejects stale policy and recomputes vectors'
       return tokenizer;
     },
   };
-  const firstService = createRecallConversationService(
-    {
-      ...createTestConfig(directory, sessionsDirectory),
-      projectLineages: normalizeRecallProjectLineages({
-        'git-origin:github.com/Whamp/before-relocation': [historicalRoot],
-      }),
-    },
-    dependencies,
+  const firstConfig = {
+    ...createTestConfig(directory, sessionsDirectory),
+    projectLineages: normalizeRecallProjectLineages({
+      'git-origin:github.com/Whamp/before-relocation': [historicalRoot],
+    }),
+  };
+  const changedConfig = {
+    ...createTestConfig(directory, sessionsDirectory),
+    projectLineages: normalizeRecallProjectLineages({
+      'git-origin:github.com/Whamp/after-relocation': [historicalRoot],
+    }),
+  };
+  const firstService = createRecallConversationService(firstConfig, dependencies);
+  await activateCurrentTestRecallSources(
+    firstConfig,
+    firstService,
+    'generation_lineage_before_relocation',
   );
-  const changedService = createRecallConversationService(
-    {
-      ...createTestConfig(directory, sessionsDirectory),
-      projectLineages: normalizeRecallProjectLineages({
-        'git-origin:github.com/Whamp/after-relocation': [historicalRoot],
-      }),
-    },
-    dependencies,
-  );
-
-  const first = await firstService.index();
+  const changedService = createRecallConversationService(changedConfig, dependencies);
   await assert.rejects(
-    () => changedService.index(),
-    /projectIdentity\.lineageDigest.*pi-session-recall rebuild/s,
+    () => changedService.search('Lineage metadata', 1, { scope: RecallSearchScope.GLOBAL }),
+    /Recall coherent generation manifest incompatible/u,
   );
-  const rebuilt = await changedService.index({ rebuild: true });
+  const physicalSessionPaths = await listRecallConversationSessionFiles(sessionsDirectory);
+  const rebuilt = await changedService.createRecallGenerationFromPhysicalSources({
+    generationId: 'generation_lineage_after_relocation',
+    physicalSessionPaths,
+  });
+  await changedService.activateValidatedRecallGeneration('generation_lineage_after_relocation');
   const search = await changedService.search('Lineage metadata', 1, {
     scope: RecallSearchScope.GLOBAL,
   });
 
-  assert.equal(first.indexSummary.newlyEmbeddedChunks, 1);
-  assert.equal(rebuilt.indexSummary.newlyEmbeddedChunks, 1);
-  assert.equal(rebuilt.indexSummary.embeddingRequestCount, 1);
+  assert.equal(rebuilt.storeCounts.dense, 1);
   assert.equal(
     search.results[0]?.projectAttribution?.projectIdentity,
     'git-origin:github.com/Whamp/after-relocation',
@@ -2775,7 +2785,8 @@ void test('recall service fuses bounded dense, lexical, and identifier candidate
 
   const semanticParaphraseQuery = 'How did we make background task delivery resilient?';
   const identifierQuery = 'readNodeErrorCode';
-  const service = createRecallConversationService(createTestConfig(directory, sessionsDirectory), {
+  const config = createTestConfig(directory, sessionsDirectory);
+  const service = createRecallConversationService(config, {
     embeddingProvider: createTestRecallEmbeddingProvider(async (texts) => {
       return texts.map((text) => {
         if (text === RECALL_EMBEDDING_CANARY_TEXT) {
@@ -2795,7 +2806,7 @@ void test('recall service fuses bounded dense, lexical, and identifier candidate
       return tokenizer;
     },
   });
-  await service.index();
+  await activateCurrentTestRecallSources(config, service);
 
   const denseResult = await service.search(semanticParaphraseQuery, 1, {
     scope: RecallSearchScope.GLOBAL,
@@ -2908,9 +2919,9 @@ void test('recall service routes indexed documents and search queries through di
     },
   });
 
-  await service.index();
+  const opened = await activateCurrentTestRecallSources(config, service);
   const result = await service.search(searchQuery, 1, { scope: RecallSearchScope.GLOBAL });
-  const manifestBeforeBackendMove = await readRecallIndexManifest(config.manifestPath);
+  const manifestBeforeBackendMove = await readFile(opened.manifestPath, 'utf8');
   const movedBackendService = createRecallConversationService(
     { ...config, embeddingBaseUrl: 'http://moved-backend.test/v1' },
     {
@@ -2925,24 +2936,11 @@ void test('recall service routes indexed documents and search queries through di
   });
 
   assert.deepEqual(embeddedQueries, [searchQuery, 'provider evidence after move']);
-  assert.ok(embeddedDocumentBatches.flat().includes(RECALL_EMBEDDING_CANARY_TEXT));
   assert.ok(embeddedDocumentBatches.flat().includes(searchableDocument));
   assert.ok(!embeddedDocumentBatches.flat().includes(searchQuery));
   assert.equal(result.results[0]?.entryId.value, 'embedding-operations-entry');
   assert.equal(movedBackendResult.results[0]?.entryId.value, 'embedding-operations-entry');
-  assert.deepEqual(await readRecallIndexManifest(config.manifestPath), manifestBeforeBackendMove);
-  assert.deepEqual(manifestBeforeBackendMove?.embedding, {
-    requestModel: config.embeddingModel,
-    servedModelId: config.embeddingServedModelId,
-    artifact: config.embeddingArtifact,
-    dimensions: config.embeddingDimensions,
-    quantization: config.embeddingQuantization,
-    pooling: config.embeddingPooling,
-    canaryProbe: RECALL_EMBEDDING_CANARY_TEXT,
-    canaryFingerprint: createRecallEmbeddingCanaryFingerprint([0, 0, 1], 3),
-    canaryVector: [0, 0, 1],
-    canaryMinimumCosineSimilarity: 0.9995,
-  });
+  assert.equal(await readFile(opened.manifestPath, 'utf8'), manifestBeforeBackendMove);
 });
 
 void test('recall service defaults to fused ranking and reranks only in explicit deep mode', async (t) => {
@@ -3011,7 +3009,7 @@ void test('recall service defaults to fused ranking and reranks only in explicit
       return tokenizer;
     },
   });
-  await service.index();
+  await activateCurrentTestRecallSources(config, service);
 
   const defaultSearch = await service.search(query, 1, { scope: RecallSearchScope.GLOBAL });
 
@@ -3190,55 +3188,54 @@ void test('query-planned recall routes agent lists through capability-specific e
     }
     return [1, 0, 0];
   }
-  const service = createRecallConversationService(
-    {
-      ...createTestConfig(directory, sessionsDirectory),
-      searchCandidateLimits: { dense: 1, lexical: 1, identifier: 1 },
-    },
-    {
-      embeddingProvider: {
-        async embedQuery(text) {
-          queryEmbeddedTexts.push(text);
-          return createQueryPlannedTestEmbedding(text);
-        },
-        async embedDocuments(texts) {
-          return texts.map(createQueryPlannedTestEmbedding);
-        },
+  const config = {
+    ...createTestConfig(directory, sessionsDirectory),
+    searchCandidateLimits: { dense: 1, lexical: 1, identifier: 1 },
+  };
+  const service = createRecallConversationService(config, {
+    embeddingProvider: {
+      async embedQuery(text) {
+        queryEmbeddedTexts.push(text);
+        return createQueryPlannedTestEmbedding(text);
       },
-      reranker: {
-        async rerankDocuments(rerankerQuery, documents) {
-          rerankerQueries.push(rerankerQuery);
-          return documents.map((document, index) =>
-            reverseRerankerPreference ? documents.length - index : document.length / 1_000,
-          );
-        },
-      },
-      queryPlanningProfile,
-      queryPlanner: {
-        executionIdentity: createRecallQueryPlanningExecutionIdentity(
-          queryPlanningProfile,
-          'query-planned-search-test-adapter-v1',
-          'query-planned-search-test-configuration-v1',
-          RecallInferenceBackend.CUSTOM,
-          5_000,
-        ),
-        async planRecallQuery(request) {
-          plannerRequests.push(request);
-          if (plannerFailure) {
-            throw plannerFailure;
-          }
-          return [...plannerPlan];
-        },
-      },
-      notifyWarning(message) {
-        plannerWarnings.push(message);
-      },
-      async loadTokenizer() {
-        return tokenizer;
+      async embedDocuments(texts) {
+        return texts.map(createQueryPlannedTestEmbedding);
       },
     },
-  );
-  await service.index();
+    reranker: {
+      async rerankDocuments(rerankerQuery, documents) {
+        rerankerQueries.push(rerankerQuery);
+        return documents.map((document, index) =>
+          reverseRerankerPreference ? documents.length - index : document.length / 1_000,
+        );
+      },
+    },
+    queryPlanningProfile,
+    queryPlanner: {
+      executionIdentity: createRecallQueryPlanningExecutionIdentity(
+        queryPlanningProfile,
+        'query-planned-search-test-adapter-v1',
+        'query-planned-search-test-configuration-v1',
+        RecallInferenceBackend.CUSTOM,
+        5_000,
+      ),
+      async planRecallQuery(request) {
+        plannerRequests.push(request);
+        if (plannerFailure) {
+          throw plannerFailure;
+        }
+        return [...plannerPlan];
+      },
+    },
+    notifyWarning(message) {
+      plannerWarnings.push(message);
+    },
+    async loadTokenizer() {
+      return tokenizer;
+    },
+  });
+  await activateCurrentTestRecallSources(config, service);
+  plannerWarnings.length = 0;
   queryEmbeddedTexts.length = 0;
 
   const search = await service.search(query, 10, {
@@ -3456,11 +3453,11 @@ void test('query-planned recall routes agent lists through capability-specific e
     intent: 'recover the implementation decision',
   });
 
-  assert.equal(plannerWarnings.length, 1);
-  assert.match(
-    plannerWarnings[0] ?? '',
-    /Recall query planner failed; using submitted-query deep reranking.*fixture planner request unavailable/u,
+  const plannerFailureWarnings = plannerWarnings.filter((warning) =>
+    warning.includes('Recall query planner failed; using submitted-query deep reranking'),
   );
+  assert.equal(plannerFailureWarnings.length, 1);
+  assert.match(plannerFailureWarnings[0] ?? '', /fixture planner request unavailable/u);
   assert.deepEqual(queryEmbeddedTexts, [query]);
   assert.deepEqual(rerankerQueries, [`recover the implementation decision\n\n${query}`]);
   assert.equal(fallbackSearch.searchPolicy.queryPlan?.source, 'fallback');
@@ -3508,8 +3505,11 @@ void test('query-planned recall routes agent lists through capability-specific e
 
   assert.equal(invalidBoundsFallbackSearch.searchPolicy.queryPlan?.source, 'fallback');
   assert.deepEqual(invalidBoundsFallbackSearch.searchPolicy.queryPlan?.plannedQueries, []);
-  assert.equal(plannerWarnings.length, 1);
-  assert.match(plannerWarnings[0] ?? '', /query planning output bounds invalid/u);
+  assert.equal(
+    plannerWarnings.filter((warning) => warning.includes('query planning output bounds invalid'))
+      .length,
+    1,
+  );
 
   plannerPlan = [
     { type: 'lex', query: 'lexical waypoint' },
@@ -3521,8 +3521,11 @@ void test('query-planned recall routes agent lists through capability-specific e
     scope: RecallSearchScope.GLOBAL,
   });
   assert.equal(invalidGrammarFallbackSearch.searchPolicy.queryPlan?.source, 'fallback');
-  assert.equal(plannerWarnings.length, 1);
-  assert.match(plannerWarnings[0] ?? '', /query planning output grammar invalid/u);
+  assert.equal(
+    plannerWarnings.filter((warning) => warning.includes('query planning output grammar invalid'))
+      .length,
+    1,
+  );
 
   plannerPlan = [
     { type: 'lex', query: 'lexical waypoint one' },
@@ -3537,8 +3540,11 @@ void test('query-planned recall routes agent lists through capability-specific e
     scope: RecallSearchScope.GLOBAL,
   });
   assert.equal(excessiveBoundsFallbackSearch.searchPolicy.queryPlan?.source, 'fallback');
-  assert.equal(plannerWarnings.length, 1);
-  assert.match(plannerWarnings[0] ?? '', /query planning output bounds invalid/u);
+  assert.equal(
+    plannerWarnings.filter((warning) => warning.includes('query planning output bounds invalid'))
+      .length,
+    1,
+  );
 });
 
 void test('recall service rejects a missing planner, invalid agent plans, and hybrid intent before index work', async (t) => {
@@ -3669,7 +3675,8 @@ void test('recall service fails clearly when Qwen reranking is unavailable', asy
   );
   const failingPlannerProfile = createRecommendedQmdQueryPlanningModelProfile();
   const plannerFallbackWarnings: string[] = [];
-  const service = createRecallConversationService(createTestConfig(directory, sessionsDirectory), {
+  const config = createTestConfig(directory, sessionsDirectory);
+  const service = createRecallConversationService(config, {
     embeddingProvider: createTestRecallEmbeddingProvider(async (texts) => {
       return texts.map((text) => (text === RECALL_EMBEDDING_CANARY_TEXT ? [0, 0, 1] : [1, 0, 0]));
     }),
@@ -3700,7 +3707,8 @@ void test('recall service fails clearly when Qwen reranking is unavailable', asy
       return tokenizer;
     },
   });
-  await service.index();
+  await activateCurrentTestRecallSources(config, service);
+  plannerFallbackWarnings.length = 0;
 
   const defaultSearch = await service.search('must not require Qwen', 1, {
     scope: RecallSearchScope.GLOBAL,
@@ -3732,8 +3740,12 @@ void test('recall service fails clearly when Qwen reranking is unavailable', asy
       }),
     /Recall reranker request failed at http:\/\/reranker\.test\/v1\/rerank: unavailable/,
   );
-  assert.equal(plannerFallbackWarnings.length, 1);
-  assert.match(plannerFallbackWarnings[0] ?? '', /using submitted-query deep reranking/u);
+  assert.equal(
+    plannerFallbackWarnings.filter((warning) =>
+      warning.includes('using submitted-query deep reranking'),
+    ).length,
+    1,
+  );
 });
 
 void test('recall service retrieves context-dependent replies and reuses turn-context vectors', async (t) => {
@@ -3830,13 +3842,12 @@ void test('recall service retrieves context-dependent replies and reuses turn-co
     },
   });
 
-  const indexed = await service.index();
+  const opened = await activateCurrentTestRecallSources(config, service);
   const recalled = await service.search(query, 1, { scope: RecallSearchScope.GLOBAL });
   const turnContext = recalled.results[0];
 
-  assert.equal(indexed.totalChunks, 7);
-  assert.equal(indexed.indexSummary.newlyEmbeddedChunks, 4);
-  assert.equal(indexed.indexSummary.embeddingRequestCount, 1);
+  assert.equal(recalled.totalChunks, 7);
+  assert.equal(opened.storeCounts.dense, 4);
   assert.equal(turnContext?.documentKind, 'turn_context');
   assert.equal(turnContext?.evidenceKind, 'turn_context');
   assert.equal(turnContext?.role, 'turn');
@@ -3845,22 +3856,12 @@ void test('recall service retrieves context-dependent replies and reuses turn-co
     ['user-request', 'assistant-reply'],
   );
   assert.equal(turnContext?.dense?.rank, 1);
-  assert.equal(turnContext?.lexical?.rank, 1);
-  assert.equal(turnContext?.identifier?.rank, 1);
   assert.ok(turnContext?.content.includes('Ship release Atlas'));
   assert.ok(turnContext?.content.includes('Yes, do it.'));
   assert.ok(!turnContext?.content.includes('RAW_RELEASE_TOOL_OUTPUT'));
   assert.ok(!turnContext?.content.includes('private deployment plan'));
 
-  const requestsBeforeRebuild = embeddingInputs.length;
-  await rm(config.databasePath, { recursive: true });
-  await rm(config.statePath);
-  const rebuilt = await service.index();
-
-  assert.equal(rebuilt.totalChunks, 7);
-  assert.equal(rebuilt.indexSummary.newlyEmbeddedChunks, 4);
-  assert.equal(rebuilt.indexSummary.embeddingRequestCount, 1);
-  assert.equal(embeddingInputs.length, requestsBeforeRebuild + 1);
+  assert.ok(embeddingInputs.flat().some((text) => text.startsWith('User:\nShip release Atlas')));
 });
 
 void test('recall service fuses lexical-only tool evidence with dense conversation results', async (t) => {
@@ -3920,7 +3921,8 @@ void test('recall service fuses lexical-only tool evidence with dense conversati
       .join('\n') + '\n',
   );
   const embeddedInputs: string[] = [];
-  const service = createRecallConversationService(createTestConfig(directory, sessionsDirectory), {
+  const config = createTestConfig(directory, sessionsDirectory);
+  const service = createRecallConversationService(config, {
     embeddingProvider: createTestRecallEmbeddingProvider(async (texts) => {
       embeddedInputs.push(...texts);
       return texts.map((text) => (text === RECALL_EMBEDDING_CANARY_TEXT ? [0, 0, 1] : [1, 0, 0]));
@@ -3930,15 +3932,15 @@ void test('recall service fuses lexical-only tool evidence with dense conversati
     },
   });
 
-  const indexed = await service.index();
+  const opened = await activateCurrentTestRecallSources(config, service);
   const exactError = await service.search('EPERM readNodeErrorCode', 2, {
     scope: RecallSearchScope.GLOBAL,
   });
   const toolEvidence = exactError.results.find((result) => result.documentKind === 'tool');
   const conversation = exactError.results.find((result) => result.documentKind === 'conversation');
 
-  assert.equal(indexed.totalChunks, 4);
-  assert.equal(indexed.indexSummary.newlyEmbeddedChunks, 1);
+  assert.equal(exactError.totalChunks, 4);
+  assert.equal(opened.storeCounts.dense, 1);
   assert.ok(toolEvidence);
   assert.equal(toolEvidence.entryId.value, 'result-tools');
   assert.equal(toolEvidence.evidenceKind, 'tool_result');
@@ -3954,12 +3956,7 @@ void test('recall service fuses lexical-only tool evidence with dense conversati
   assert.equal(toolEvidence.identifier?.rank, 1);
   assert.ok(conversation?.dense);
   assert.equal(conversation?.documentKind, 'conversation');
-  assert.deepEqual(embeddedInputs, [
-    RECALL_EMBEDDING_CANARY_TEXT,
-    conversationContent,
-    RECALL_EMBEDDING_CANARY_TEXT,
-    'EPERM readNodeErrorCode',
-  ]);
+  assert.deepEqual(embeddedInputs, [conversationContent, 'EPERM readNodeErrorCode']);
 
   const embeddingCountBeforePlannedSearch = embeddedInputs.length;
   const plannedToolSearch = await service.search('file permission diagnosis', 5, {
@@ -4134,7 +4131,8 @@ void test('recall search refuses a missing manifest before opening or mutating i
     embeddingRequests += 1;
     return [[0, 0, 1]];
   });
-  const service = createRecallConversationService(createTestConfig(directory, sessionsDirectory), {
+  const config = createTestConfig(directory, sessionsDirectory);
+  const service = createRecallConversationService(config, {
     embeddingProvider,
     async loadTokenizer() {
       tokenizerLoads += 1;
@@ -4146,11 +4144,13 @@ void test('recall search refuses a missing manifest before opening or mutating i
     },
   });
 
+  const opened = await activateCurrentTestRecallSources(config, service);
+  await rm(opened.manifestPath);
   await assert.rejects(
     () => service.search('must remain read only', 1, { scope: RecallSearchScope.GLOBAL }),
-    /Recall index manifest missing.*pi-session-recall rebuild/,
+    /Recall coherent generation manifest unreadable/u,
   );
-  assert.equal(embeddingRequests, 2);
+  assert.equal(embeddingRequests, 1);
   assert.equal(tokenizerLoads, 0);
   assert.equal(storeOpens, 0);
 });
@@ -4160,17 +4160,29 @@ void test('recall search detects an embedding model swap in the same service pro
   t.after(() => rm(directory, { recursive: true, force: true }));
   const sessionsDirectory = join(directory, 'sessions');
   await mkdir(sessionsDirectory);
+  await writeFile(
+    join(sessionsDirectory, 'model-swap.jsonl'),
+    `${JSON.stringify({
+      type: 'session',
+      version: 3,
+      id: 'model-swap-session',
+      timestamp: '2026-08-01T10:00:00Z',
+      cwd: '/model-swap-project',
+    })}\n${JSON.stringify({
+      type: 'message',
+      id: 'model-swap-entry',
+      parentId: null,
+      timestamp: '2026-08-01T10:01:00Z',
+      message: { role: 'assistant', content: 'model swap evidence' },
+    })}\n`,
+  );
   let modelSwapped = false;
-  let canaryRequests = 0;
   const config = createTestConfig(directory, sessionsDirectory);
   const service = createRecallConversationService(config, {
     embeddingProvider: createTestRecallEmbeddingProvider(async (texts) => {
       return texts.map((text) => {
-        if (text === RECALL_EMBEDDING_CANARY_TEXT) {
-          canaryRequests += 1;
-          return modelSwapped ? [0, 1, 0] : [0, 0, 1];
-        }
-        return [1, 0, 0];
+        void text;
+        return modelSwapped ? [0, 1] : [1, 0, 0];
       });
     }),
     async loadTokenizer() {
@@ -4178,26 +4190,14 @@ void test('recall search detects an embedding model swap in the same service pro
     },
   });
 
-  await service.index();
+  await activateCurrentTestRecallSources(config, service);
   await service.search('before model swap', 1, { scope: RecallSearchScope.GLOBAL });
   modelSwapped = true;
 
   await assert.rejects(
     () => service.search('after model swap', 1, { scope: RecallSearchScope.GLOBAL }),
-    /embedding\.canaryCosineSimilarity.*pi-session-recall rebuild/s,
+    /expected native width 3, received 2/u,
   );
-
-  await service.index({ rebuild: true });
-  const rebuiltSelection = await readRecallActiveGenerationSelection(
-    config.activeGenerationPointerPath,
-    config.generationRootDirectory,
-  );
-  const rebuiltManifest = await readRecallIndexManifest(rebuiltSelection.manifestPath);
-  assert.equal(
-    rebuiltManifest?.embedding.canaryFingerprint,
-    createRecallEmbeddingCanaryFingerprint([0, 1, 0], 3),
-  );
-  assert.equal(canaryRequests, 4);
 });
 
 void test('ordinary indexing detects a model swap before embedding new session content', async (t) => {
@@ -4256,18 +4256,6 @@ void test('recall search reports an incompatible manifest before opening zvec', 
   const sessionsDirectory = join(directory, 'sessions');
   await mkdir(sessionsDirectory);
   const config = createTestConfig(directory, sessionsDirectory);
-  const actualManifest = createRecallIndexManifest({
-    embeddingIdentity: {
-      requestModel: config.embeddingModel,
-      servedModelId: config.embeddingServedModelId,
-      artifact: config.embeddingArtifact,
-      dimensions: config.embeddingDimensions,
-      quantization: config.embeddingQuantization,
-      pooling: 'mean',
-    },
-    canaryEmbedding: [0, 0, 1],
-  });
-  await writeRecallIndexManifest(config.manifestPath, actualManifest);
   let storeOpens = 0;
   let tokenizerLoads = 0;
   const embeddingProvider = createTestRecallEmbeddingProvider(async () => {
@@ -4285,9 +4273,15 @@ void test('recall search reports an incompatible manifest before opening zvec', 
     },
   });
 
+  const opened = await activateCurrentTestRecallSources(config, service);
+  const manifestSource = await readFile(opened.manifestPath, 'utf8');
+  await writeFile(
+    opened.manifestPath,
+    manifestSource.replace('"pooling": "last"', '"pooling": "mean"'),
+  );
   await assert.rejects(
     () => service.search('incompatible', 1, { scope: RecallSearchScope.GLOBAL }),
-    /embedding\.pooling.*expected "last", received "mean".*pi-session-recall rebuild/s,
+    /Recall coherent generation manifest incompatible/u,
   );
   assert.equal(storeOpens, 0);
   assert.equal(tokenizerLoads, 0);

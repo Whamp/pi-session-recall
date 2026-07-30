@@ -12,7 +12,6 @@ import {
   QueryPlannedRecallCaseCategory,
   QueryPlannedRecallControlKind,
   RecallEvidenceRelation,
-  RecallManualMaintenanceTrigger,
   RecallSearchScope,
 } from './enums.js';
 import type { RecallSearchResult } from './fuse-recall-ranked-lists.js';
@@ -927,21 +926,15 @@ export async function runPrivateQueryPlannedRecallBaseline(
   );
   const dependencies = createPrivateBaselineDependencies(options.dependencies);
   const indexService = createRecallConversationService(indexConfig, dependencies);
-  const indexed = await indexService.index({
-    rebuild: true,
-    manualMaintenanceTrigger: RecallManualMaintenanceTrigger.MANUAL_REBUILD,
-    optimize: true,
+  const generationId = 'generation_private_query_planned_baseline';
+  await indexService.createRecallGenerationFromPhysicalSources({
+    generationId,
+    physicalSessionPaths: stagedCorpus.snapshots.map(({ path }) => path),
   });
-  if (indexed.indexSummary.failedSessions.length > 0) {
-    throw new Error(
-      `Private query-planned recall baseline index failed for ${indexed.indexSummary.failedSessions.length} snapshot(s)`,
-    );
-  }
-  if (indexed.indexSummary.scannedSessions !== stagedCorpus.snapshots.length) {
-    throw new Error(
-      `Private query-planned recall baseline scan mismatch: expected ${stagedCorpus.snapshots.length}, received ${indexed.indexSummary.scannedSessions}`,
-    );
-  }
+  await indexService.activateValidatedRecallGeneration(generationId);
+  const indexedDocumentCount = (
+    await indexService.search('recall corpus count', 1, { scope: RecallSearchScope.GLOBAL })
+  ).totalChunks;
 
   const snapshotsById = new Map(
     options.corpus.snapshots.map((snapshot) => [snapshot.id, snapshot]),
@@ -992,7 +985,7 @@ export async function runPrivateQueryPlannedRecallBaseline(
     privateManifestSha256: options.corpus.manifestSha256,
     indexedSnapshotCount: stagedCorpus.snapshots.length,
     indexedSnapshotSha256: stagedCorpus.snapshots.map(({ sha256 }) => sha256),
-    indexedDocumentCount: indexed.totalChunks,
+    indexedDocumentCount,
     executedSearchRequests,
     cases,
     outcomeCounts: {

@@ -19,7 +19,7 @@ const RERANKER_FAILURE_SEMANTIC_TEST: RequiredRecallEvaluationSemanticTest = {
 const PI_TOOL_CONTRACT_SEMANTIC_TESTS: readonly RequiredRecallEvaluationSemanticTest[] = [
   {
     file: 'src/recall-extension.test.ts',
-    identity: 'Pi session recall registers collision-free tool guidance and index command',
+    identity: 'Pi session recall registers only the model-facing tool and standalone CLI guidance',
   },
   {
     file: 'src/recall-extension.test.ts',

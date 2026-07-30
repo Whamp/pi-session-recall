@@ -209,8 +209,8 @@ void test('fixed private plans prove new source admission through deterministic 
       },
     ],
     relevantDistractors: [],
-    plannedRetrievalLists: { lexical: 1, semantic: 1, hypotheticalAnswer: 0 },
-    retrievalWorkMatchedCandidateLimits: { dense: 34, lexical: 33, identifier: 33 },
+    plannedRetrievalLists: { lexical: 2, semantic: 1, hypotheticalAnswer: 0 },
+    retrievalWorkMatchedCandidateLimits: { dense: 40, lexical: 40, identifier: 40 },
   };
   const manifestContent = `${JSON.stringify(
     {
@@ -241,7 +241,8 @@ void test('fixed private plans prove new source admission through deterministic 
   const corpus = await loadPrivateQueryPlannedRecallCorpus(manifestPath);
 
   const lexicalPlanQuery = 'Private mechanism';
-  const semanticPlanQuery = 'mechanism behind the symptom';
+  const secondLexicalPlanQuery = 'mechanism phrase';
+  const semanticPlanQuery = 'Private mechanism phrase';
   const plansContent = `${JSON.stringify(
     {
       version: 1,
@@ -252,6 +253,7 @@ void test('fixed private plans prove new source admission through deterministic 
           caseId: 'case-001',
           queries: [
             { type: 'lex', query: lexicalPlanQuery },
+            { type: 'lex', query: secondLexicalPlanQuery },
             { type: 'vec', query: semanticPlanQuery },
           ],
         },
@@ -274,10 +276,12 @@ void test('fixed private plans prove new source admission through deterministic 
     caseId: 'case-001',
     plannedQueries: [
       { type: 'lex', querySha256: createSha256(lexicalPlanQuery) },
+      { type: 'lex', querySha256: createSha256(secondLexicalPlanQuery) },
       { type: 'vec', querySha256: createSha256(semanticPlanQuery) },
     ],
   });
   assert.equal(published.includes(lexicalPlanQuery), false);
+  assert.equal(published.includes(secondLexicalPlanQuery), false);
   assert.equal(published.includes(semanticPlanQuery), false);
   const immutablePrivateInputBytes = new Map<string, string>();
   for (const path of [snapshotPath, manifestPath, plansPath]) {
@@ -382,8 +386,14 @@ void test('fixed private plans prove new source admission through deterministic 
     loadTokenizer,
     rerankingProfile: null,
     reranker: null,
+    workerSignal: { signalDetachedWorker() {} },
   });
-  await productionService.index({ rebuild: true });
+  const productionGenerationId = 'generation_private_evaluation_isolation';
+  await productionService.createRecallGenerationFromPhysicalSources({
+    generationId: productionGenerationId,
+    physicalSessionPaths: [join(productionSessionsDirectory, 'production.jsonl')],
+  });
+  await productionService.activateValidatedRecallGeneration(productionGenerationId);
   assert.equal((await productionService.readIndexGenerationStatus()).active?.kind, 'managed');
   let productionFilesBeforeEvaluation =
     await readEvaluationContainmentFileTree(productionDataDirectory);
@@ -449,7 +459,7 @@ void test('fixed private plans prove new source admission through deterministic 
   assert.deepEqual(measuredCase?.queryPlanned.sourceProvenance, [
     { selectedFrom: 'ranked_result', passed: true },
   ]);
-  assert.equal(measuredCase?.queryPlanned.fusedPoolLimit, 100);
+  assert.equal(measuredCase?.queryPlanned.fusedPoolLimit, 120);
   assert.equal(measuredCase?.queryPlanned.rerankPoolLimit, 40);
   assert.deepEqual(measuredCase?.queryPlanned.rerankerPolicy, {
     version: 2,
@@ -482,7 +492,7 @@ void test('fixed private plans prove new source admission through deterministic 
   assert.match(report, /normal hybrid/u);
   assert.match(report, /retrieval-work-matched original query/u);
   assert.match(report, /neutral-fused-order-v1/u);
-  assert.match(report, /Fused-document limits before duplicate grouping: 100/u);
+  assert.match(report, /Fused-document limits before duplicate grouping: 120/u);
   assert.match(report, /Duplicate-group rerank limit \/ final results: 40 \/ 5/u);
   assert.equal(JSON.stringify(evidence).includes(lexicalPlanQuery), false);
   assert.equal(report.includes('Private mechanism phrase'), false);

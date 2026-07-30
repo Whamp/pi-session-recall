@@ -14,8 +14,7 @@ import {
 } from './embedded-embeddinggemma-provider.js';
 import { RecallDiagnosticsMode, RecallSearchScope } from './enums.js';
 import { createLlamaCppHttpEmbeddingProvider } from './createLlamaCppHttpEmbeddingProvider.js';
-import { readRecallActiveGenerationSelection } from './recall-generation-state.js';
-import { readRecallIndexManifest } from './recall-index-manifest.js';
+import { readRecallGenerationManifest } from './recall-generation-manifest.js';
 import {
   createRecallConversationService,
   type RecallConversationConfig,
@@ -185,13 +184,18 @@ void test('recall service builds and searches one embedded-profile generation ac
     loadTokenizer: () => embeddedProvider.loadConversationTokenizer(),
   });
 
-  const indexed = await embeddedService.index({ rebuild: true });
+  const generationId = 'generation_embeddinggemma_service';
+  const indexed = await embeddedService.createRecallGenerationFromPhysicalSources({
+    generationId,
+    physicalSessionPaths: [join(sessionsDirectory, 'embeddinggemma.jsonl')],
+  });
+  await embeddedService.activateValidatedRecallGeneration(generationId);
   const embeddedSearch = await embeddedService.search('atlas architecture rationale', 2, {
     scope: RecallSearchScope.GLOBAL,
   });
 
-  assert.equal(indexed.indexSummary.newlyEmbeddedChunks, 1);
-  assert.equal(indexed.totalChunks, 4);
+  assert.equal(indexed.storeCounts.dense, 1);
+  assert.equal(embeddedSearch.totalChunks, 4);
   assert.equal(embeddedSearch.results[0]?.entryId.value, 'embeddinggemma-assistant');
   assert.ok(embeddedInputs.includes(`${profile.queryInputPrefix}${profile.canary.query}`));
   assert.ok(
@@ -207,15 +211,10 @@ void test('recall service builds and searches one embedded-profile generation ac
   );
   assert.ok(embeddedInputs.every((input) => !input.includes('/tmp/atlas.txt')));
 
-  const activeGeneration = await readRecallActiveGenerationSelection(
-    config.activeGenerationPointerPath,
-    config.generationRootDirectory,
-  );
-  const manifest = await readRecallIndexManifest(activeGeneration.manifestPath);
-  assert.equal(manifest?.embedding.dimensions, 768);
-  assert.equal(manifest?.embedding.normalization, 'l2');
-  assert.equal(manifest?.embedding.artifactSha256, profile.source.sha256);
-  assert.deepEqual(manifest?.tokenizer, tokenizerIdentity);
+  const { manifest } = await readRecallGenerationManifest(indexed.manifestPath);
+  assert.equal(manifest.embeddingProfile.nativeDimensions, 768);
+  assert.equal(manifest.embeddingProfile.normalization, 'l2');
+  assert.equal(manifest.embeddingProfile.modelIdentity.artifactSha256, profile.source.sha256);
 
   const httpRequests: Array<{ model: string; input: string[] }> = [];
   const server = createServer((request, response) => {
@@ -262,13 +261,9 @@ void test('recall service builds and searches one embedded-profile generation ac
   assert.equal(httpSearch.results[0]?.entryId.value, 'embeddinggemma-assistant');
   assert.deepEqual(
     httpRequests.map((request) => request.input),
-    [
-      [`${profile.queryInputPrefix}${profile.canary.query}`],
-      [`${profile.queryInputPrefix}${profile.canary.query}`],
-      [`${profile.queryInputPrefix}atlas architecture rationale`],
-    ],
+    [[`${profile.queryInputPrefix}atlas architecture rationale`]],
   );
-  assert.match(await readFile(activeGeneration.manifestPath, 'utf8'), /"dimensions": 768/u);
+  assert.match(await readFile(indexed.manifestPath, 'utf8'), /"nativeDimensions": 768/u);
 
   const octenService = createRecallConversationService(config, {
     embeddingProvider: {
@@ -283,7 +278,7 @@ void test('recall service builds and searches one embedded-profile generation ac
   await assert.rejects(
     () =>
       octenService.search('atlas architecture rationale', 1, { scope: RecallSearchScope.GLOBAL }),
-    /Recall index manifest incompatible.*embedding\.(?:requestModel|dimensions).*--rebuild/su,
+    /Recall target generation active embedding profile mismatch/u,
   );
 });
 
@@ -292,6 +287,17 @@ void test('recall service indexes with the same profile after automatic accelera
   t.after(() => rm(directory, { recursive: true, force: true }));
   const sessionsDirectory = join(directory, 'sessions');
   await mkdir(sessionsDirectory);
+  const sessionPath = join(sessionsDirectory, 'fallback.jsonl');
+  await writeFile(
+    sessionPath,
+    `${JSON.stringify({
+      type: 'session',
+      version: 3,
+      id: 'fallback-session',
+      timestamp: '2026-08-01T10:00:00Z',
+      cwd: '/embeddinggemma-project',
+    })}\n`,
+  );
   const profile = createRecommendedEmbeddingGemmaModelProfile();
   const requestedComputeBackends: unknown[] = [];
   const warnings: string[] = [];
@@ -357,9 +363,12 @@ void test('recall service indexes with the same profile after automatic accelera
     },
   );
 
-  const indexed = await service.index({ rebuild: true });
+  const indexed = await service.createRecallGenerationFromPhysicalSources({
+    generationId: 'generation_embeddinggemma_fallback',
+    physicalSessionPaths: [sessionPath],
+  });
 
-  assert.equal(indexed.totalChunks, 0);
+  assert.equal(indexed.storeCounts.dense, 0);
   assert.deepEqual(requestedComputeBackends, ['cuda', false]);
   assert.equal(modelLoadCount, 1);
   assert.equal(warnings.length, 1);
@@ -377,6 +386,17 @@ void test('recall service rejects a non-repeatable EmbeddingGemma canary before 
   t.after(() => rm(directory, { recursive: true, force: true }));
   const sessionsDirectory = join(directory, 'sessions');
   await mkdir(sessionsDirectory);
+  const sessionPath = join(sessionsDirectory, 'canary.jsonl');
+  await writeFile(
+    sessionPath,
+    `${JSON.stringify({
+      type: 'session',
+      version: 3,
+      id: 'canary-session',
+      timestamp: '2026-08-01T10:00:00Z',
+      cwd: '/embeddinggemma-project',
+    })}\n`,
+  );
   const profile = createRecommendedEmbeddingGemmaModelProfile();
   let queryCount = 0;
   const service = createRecallConversationService(
@@ -396,13 +416,21 @@ void test('recall service rejects a non-repeatable EmbeddingGemma canary before 
         },
       },
       async loadTokenizer() {
-        assert.fail('tokenizer must not load after canary rejection');
+        return {
+          encodeConversationText(text) {
+            return { ids: Array.from(text, (character, index) => character.length + index) };
+          },
+        };
       },
     },
   );
 
   await assert.rejects(
-    () => service.index({ rebuild: true }),
-    /Recall embedding canary repeatability mismatch: expected cosine similarity at least 0\.9995, received 0/u,
+    () =>
+      service.createRecallGenerationFromPhysicalSources({
+        generationId: 'generation_embeddinggemma_canary',
+        physicalSessionPaths: [sessionPath],
+      }),
+    /Recall stored embedding repeatability mismatch.*expected cosine similarity at least 0\.9995, received 0/u,
   );
 });

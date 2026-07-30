@@ -936,6 +936,22 @@ export async function buildRecallFixedSnapshotGeneration(
     artifact: RecallExpectedPhysicalSourceArtifact;
     fingerprint: string;
   }> = [];
+  const projectIdentityBySessionOrigin = new Map<
+    string,
+    ReturnType<RecallPhysicalSourceGenerationDependencies['resolveProjectIdentity']>
+  >();
+  const buildDependencies: RecallPhysicalSourceGenerationDependencies = {
+    ...dependencies,
+    resolveProjectIdentity(sessionOrigin) {
+      const existing = projectIdentityBySessionOrigin.get(sessionOrigin);
+      if (existing !== undefined) {
+        return existing;
+      }
+      const resolution = dependencies.resolveProjectIdentity(sessionOrigin);
+      projectIdentityBySessionOrigin.set(sessionOrigin, resolution);
+      return resolution;
+    },
+  };
   const buildVectorsByReuseKey = new Map<string, number[]>();
   let validatedVectorSource: ZVecCollection | null = null;
   if (options.validatedVectorSourceGenerationId !== undefined) {
@@ -983,7 +999,7 @@ export async function buildRecallFixedSnapshotGeneration(
         options.generationId,
         generationDirectory,
         source,
-        dependencies,
+        buildDependencies,
       );
       artifacts.push(expected);
       await writeExpectedPhysicalSource(
@@ -992,7 +1008,7 @@ export async function buildRecallFixedSnapshotGeneration(
         expected.artifact,
         expected.fingerprint,
         buildVectorsByReuseKey,
-        dependencies,
+        buildDependencies,
         validatedVectorSource,
         options.signal,
       );

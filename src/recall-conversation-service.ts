@@ -1349,17 +1349,7 @@ export function createRecallConversationService(
     config.projectLineages,
     dependencies.resolveProjectIdentity ?? resolveProjectIdentity,
   );
-  const embeddingProfileId = `embedding-profile-${createHash('sha256')
-    .update(
-      JSON.stringify({
-        identity: embeddingProfile.identity,
-        queryInputPrefix: embeddingProfile.queryInputPrefix,
-        documentInputPrefix: embeddingProfile.documentInputPrefix,
-        canary: embeddingProfile.canary ?? null,
-      }),
-    )
-    .digest('hex')}`;
-  const targetEmbeddingProfileId = createRecallEmbeddingProfileIdentity(embeddingProfile);
+  const embeddingProfileId = createRecallEmbeddingProfileIdentity(embeddingProfile);
   const openStore =
     dependencies.openStore ??
     ((mode, databasePath = config.databasePath) =>
@@ -1419,7 +1409,7 @@ export function createRecallConversationService(
     generationRootDirectory: config.generationRootDirectory,
     activeGenerationPointerPath: config.activeGenerationPointerPath,
     generationRegistryPath: config.generationRegistryPath,
-    embeddingProfileId: targetEmbeddingProfileId,
+    embeddingProfileId,
     embeddingProfile,
     projectLineages: config.projectLineages,
     ...(config.chunkPolicy ? { chunkPolicy: config.chunkPolicy } : {}),

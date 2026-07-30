@@ -119,7 +119,12 @@ void test('conversation service verifies replacement planners without rebuilding
     queryPlanner: firstPlanner,
     loadTokenizer: async () => TOKENIZER,
   });
-  await firstService.index({ rebuild: true });
+  const generationId = 'generation_qmd_planner_service';
+  await firstService.createRecallGenerationFromPhysicalSources({
+    generationId,
+    physicalSessionPaths: [join(sessionsDirectory, 'planner.jsonl')],
+  });
+  await firstService.activateValidatedRecallGeneration(generationId);
 
   const firstVerification = await firstService.verifyQueryPlanningCapability();
   const firstSearch = await firstService.search('source provenance', 1, {

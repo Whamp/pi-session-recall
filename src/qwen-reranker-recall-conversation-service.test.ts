@@ -173,7 +173,12 @@ void test('deep-rerank works end to end with built-in HTTP and embedded Qwen ada
     documents: [fusionFavorite, rerankerFavorite],
     expectedScores: [0.1, 0.9],
   });
-  await httpService.index({ rebuild: true });
+  const generationId = 'generation_qwen_reranker_service';
+  await httpService.createRecallGenerationFromPhysicalSources({
+    generationId,
+    physicalSessionPaths: [join(sessionsDirectory, 'reranking.jsonl')],
+  });
+  await httpService.activateValidatedRecallGeneration(generationId);
 
   assert.equal(httpVerification.profileId, profile.profileId);
   assert.deepEqual(httpVerification.executionIdentity, httpProvider.executionIdentity);

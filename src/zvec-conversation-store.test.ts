@@ -278,11 +278,11 @@ void test('zvec conversation store rejects an old scalar schema before a schema-
 
   assert.throws(
     () => openZvecConversationStore({ databasePath, dimensions: 3 }),
-    /scalar schema mismatch.*reindex/u,
+    /scalar schema mismatch.*fresh generation.*pi-session-recall rebuild/u,
   );
 });
 
-void test('zvec conversation store rejects an embedding dimension change that requires reindexing', async (t) => {
+void test('zvec conversation store rejects an embedding dimension change that requires a fresh generation', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'recall-zvec-dimension-'));
   const databasePath = join(directory, 'collection');
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -292,7 +292,7 @@ void test('zvec conversation store rejects an embedding dimension change that re
 
   assert.throws(
     () => openZvecConversationStore({ databasePath, dimensions: 2 }),
-    /Recall zvec dimension mismatch.*reindex/,
+    /Recall zvec dimension mismatch.*fresh generation.*pi-session-recall rebuild/u,
   );
 });
 

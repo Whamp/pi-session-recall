@@ -87,7 +87,6 @@ void test('incremental recall contract values keep their persisted wire spelling
     'ready',
     'active',
     'replay_pending',
-    'legacy_read_only',
     'rollback',
     'retired',
     'failed',

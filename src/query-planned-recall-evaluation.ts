@@ -14,7 +14,7 @@ import {
   QueryPlannedRecallBaselineOutcome,
   QueryPlannedRecallControlKind,
   RecallInferenceBackend,
-  RecallManualMaintenanceTrigger,
+  RecallSearchScope,
 } from './enums.js';
 import type { QueryPlannedRecallCaseCategory } from './enums.js';
 import type { RecallSearchResult } from './fuse-recall-ranked-lists.js';
@@ -760,19 +760,15 @@ export async function runPrivateQueryPlannedRecallEvaluation(
     indexConfig,
     createDeterministicQueryPlannedEvaluationDependencies(options, neutralReranker.reranker),
   );
-  const indexed = await indexService.index({
-    rebuild: true,
-    manualMaintenanceTrigger: RecallManualMaintenanceTrigger.MANUAL_REBUILD,
-    optimize: true,
+  const generationId = 'generation_private_query_planned_evaluation';
+  await indexService.createRecallGenerationFromPhysicalSources({
+    generationId,
+    physicalSessionPaths: stagedCorpus.snapshots.map(({ path }) => path),
   });
-  if (
-    indexed.indexSummary.failedSessions.length > 0 ||
-    indexed.indexSummary.scannedSessions !== stagedCorpus.snapshots.length
-  ) {
-    throw new Error(
-      'Private query-planned recall deterministic index did not cover every snapshot',
-    );
-  }
+  await indexService.activateValidatedRecallGeneration(generationId);
+  const indexedDocumentCount = (
+    await indexService.search('recall corpus count', 1, { scope: RecallSearchScope.GLOBAL })
+  ).totalChunks;
 
   const plansByCaseId = new Map(
     options.plans.document.cases.map((plannedCase) => [plannedCase.caseId, plannedCase]),
@@ -887,7 +883,7 @@ export async function runPrivateQueryPlannedRecallEvaluation(
     },
     indexedSnapshotCount: stagedCorpus.snapshots.length,
     indexedSnapshotSha256: stagedCorpus.snapshots.map(({ sha256 }) => sha256),
-    indexedDocumentCount: indexed.totalChunks,
+    indexedDocumentCount,
     executedSearchRequests,
     cases,
     contributionCounts: {
@@ -1393,17 +1389,15 @@ export async function runLiveQueryPlannedProfileEvaluation(
     normalConfig,
     createDeterministicQueryPlannedEvaluationDependencies(options, indexReranker.reranker),
   );
-  const indexed = await indexService.index({
-    rebuild: true,
-    manualMaintenanceTrigger: RecallManualMaintenanceTrigger.MANUAL_REBUILD,
-    optimize: true,
+  const generationId = 'generation_live_query_planned_profile';
+  await indexService.createRecallGenerationFromPhysicalSources({
+    generationId,
+    physicalSessionPaths: stagedCorpus.snapshots.map(({ path }) => path),
   });
-  if (
-    indexed.indexSummary.failedSessions.length > 0 ||
-    indexed.indexSummary.scannedSessions !== stagedCorpus.snapshots.length
-  ) {
-    throw new Error('Live query-planned profile index did not cover every private snapshot');
-  }
+  await indexService.activateValidatedRecallGeneration(generationId);
+  const indexedDocumentCount = (
+    await indexService.search('recall corpus count', 1, { scope: RecallSearchScope.GLOBAL })
+  ).totalChunks;
 
   const snapshotsById = new Map(
     options.corpus.snapshots.map((snapshot) => [snapshot.id, snapshot]),
@@ -1541,7 +1535,7 @@ export async function runLiveQueryPlannedProfileEvaluation(
       privateManifestSha256: options.corpus.manifestSha256,
       snapshotCount: stagedCorpus.snapshots.length,
       snapshotSha256: stagedCorpus.snapshots.map(({ sha256 }) => sha256),
-      indexedDocumentCount: indexed.totalChunks,
+      indexedDocumentCount,
       caseCount: cases.length,
     },
     profileIdentity: createLiveQueryPlannedProfileIdentity({

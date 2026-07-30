@@ -393,29 +393,39 @@ async function indexChangedConversationSessionFile(
   for (let start = 0; start < attributedChunks.length; start += 128) {
     const chunkBatch = attributedChunks.slice(start, start + 128);
     const denseChunkBatch = chunkBatch.filter((chunk) => chunk.isDenseSearchable);
-    const embeddingStartedAtMilliseconds = options.diagnosticsClock?.monotonicMilliseconds();
-    const vectors =
-      denseChunkBatch.length === 0
-        ? []
-        : await options.embeddingProvider.embedDocuments(
-            denseChunkBatch.map((chunk) => chunk.content),
-            options.signal,
-          );
-    if (vectors.length !== denseChunkBatch.length) {
-      throw new Error(
-        `Recall document embedding response count mismatch: expected ${denseChunkBatch.length}, received ${vectors.length}`,
-      );
-    }
     const embeddingRequestCount = denseChunkBatch.length === 0 ? 0 : 1;
     if (options.diagnosticMetrics) {
       options.diagnosticMetrics.embeddingRequestCount += embeddingRequestCount;
-      options.diagnosticMetrics.newEmbeddingCount += denseChunkBatch.length;
-      if (options.diagnosticsClock && embeddingStartedAtMilliseconds !== undefined) {
+    }
+    const embeddingStartedAtMilliseconds = options.diagnosticsClock?.monotonicMilliseconds();
+    let vectors: number[][];
+    try {
+      vectors =
+        denseChunkBatch.length === 0
+          ? []
+          : await options.embeddingProvider.embedDocuments(
+              denseChunkBatch.map((chunk) => chunk.content),
+              options.signal,
+            );
+    } finally {
+      if (
+        options.diagnosticMetrics &&
+        options.diagnosticsClock &&
+        embeddingStartedAtMilliseconds !== undefined
+      ) {
         options.diagnosticMetrics.embeddingServerRequestMilliseconds += Math.max(
           options.diagnosticsClock.monotonicMilliseconds() - embeddingStartedAtMilliseconds,
           0,
         );
       }
+    }
+    if (vectors.length !== denseChunkBatch.length) {
+      throw new Error(
+        `Recall document embedding response count mismatch: expected ${denseChunkBatch.length}, received ${vectors.length}`,
+      );
+    }
+    if (options.diagnosticMetrics) {
+      options.diagnosticMetrics.newEmbeddingCount += denseChunkBatch.length;
     }
     let denseChunkIndex = 0;
     const indexedChunks: IndexedSessionConversationChunk[] = chunkBatch.map((chunk) => {

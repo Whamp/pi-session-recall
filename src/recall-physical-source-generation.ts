@@ -347,6 +347,22 @@ export async function materializeRecallPhysicalSourceGeneration(
   const logicalSessionProjections: MaterializedRecallPhysicalSourceGeneration['logicalSessionProjections'] =
     [];
   const logicalSessionOccurrenceIds: string[] = [];
+  const projectAttributionBySessionOrigin = new Map<
+    string,
+    Promise<ResolvedProjectIdentity | null>
+  >();
+  function resolveSessionProjectAttribution(
+    sessionOrigin: string,
+  ): Promise<ResolvedProjectIdentity | null> {
+    const existing = projectAttributionBySessionOrigin.get(sessionOrigin);
+    if (existing !== undefined) {
+      return existing;
+    }
+    const resolution = dependencies.resolveProjectIdentity(sessionOrigin);
+    projectAttributionBySessionOrigin.set(sessionOrigin, resolution);
+    return resolution;
+  }
+
   const occurrenceIdByLogicalChunkId = new Map<string, string>();
   const occurrenceIdsByLogicalEntryId = new Map<string, string[]>();
   for (const chunk of imported.chunks) {
@@ -388,7 +404,7 @@ export async function materializeRecallPhysicalSourceGeneration(
       logicalSession.sourceLineStart,
     );
     logicalSessionOccurrenceIds.push(logicalSessionOccurrenceId);
-    const projectAttribution = await dependencies.resolveProjectIdentity(
+    const projectAttribution = await resolveSessionProjectAttribution(
       logicalProjection.headerDescriptor.cwd,
     );
     const childIdsByEntryId = new Map<string, string[]>();
@@ -531,7 +547,7 @@ export async function materializeRecallPhysicalSourceGeneration(
         `Recall physical source generation occurrence missing for ${physicalSessionPath}:${chunk.id}`,
       );
     }
-    const projectAttribution = await dependencies.resolveProjectIdentity(chunk.cwd);
+    const projectAttribution = await resolveSessionProjectAttribution(chunk.cwd);
     const childEntryIds = logicalSession.entryIds.filter((entryId, index) => {
       void entryId;
       return logicalSession.parentEntryIds[index] === chunk.entryId.value;

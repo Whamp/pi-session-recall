@@ -1,0 +1,119 @@
+{
+  "version": 1,
+  "candidateCommit": "0b4461ad76a561342adcce7eec438f3af29ee3af",
+  "completedAt": "2026-07-30T10:56:37.523Z",
+  "environment": {
+    "nodeVersion": "v24.16.0",
+    "platform": "linux",
+    "architecture": "x64",
+    "cpuModel": "AMD Ryzen 7 8845HS w/ Radeon 780M Graphics",
+    "zvecVersion": "0.6.0"
+  },
+  "disposableSourceSnapshot": {
+    "kind": "repository-fixtures-and-generated-test-sources",
+    "sha256": "293d59eaf07fd9185ef648ba8cf48421ebe294d7b7ef8c1de387fda27e85be1a",
+    "inputPaths": [
+      "src/recall-generation-mutation-ownership.test.ts",
+      "src/transfer-incremental-recall-work-plan.test.ts",
+      "src/recall-background-index-conversation-service.test.ts",
+      "src/pi-session-recall-cli.test.ts",
+      "src/activate-validated-recall-generation.test.ts",
+      "src/rollback-recall-generation.test.ts",
+      "src/run-recall-incremental-worker.test.ts",
+      "src/reconcile-confirmed-session-deletion.test.ts",
+      "src/coordinate-recall-marker-replay.test.ts",
+      "src/scan-recall-session-metadata.test.ts",
+      "src/recall-session-projection.test.ts",
+      "src/coordinate-recall-write-window.test.ts",
+      "src/commit-incremental-recall-transfer.test.ts",
+      "src/createRecallBackgroundIndexWorkerFixtureService.ts",
+      "src/pi-session-recall-cli.test-utils.ts",
+      "src/fixtures/session-import/canonical-unicode-separators.jsonl",
+      "src/fixtures/session-import/pi-session-reuse-history.jsonl",
+      "src/fixtures/session-import/pi-v1-canonical-equivalent.jsonl",
+      "src/fixtures/session-import/pi-v1-linear.jsonl"
+    ]
+  },
+  "commands": [
+    {
+      "name": "write, recovery, lifecycle, and bounded-policy matrix",
+      "command": "/home/will/.local/share/mise/installs/node/24.16.0/bin/node --import tsx --test src/recall-generation-mutation-ownership.test.ts src/transfer-incremental-recall-work-plan.test.ts src/recall-background-index-conversation-service.test.ts src/pi-session-recall-cli.test.ts src/activate-validated-recall-generation.test.ts src/rollback-recall-generation.test.ts src/run-recall-incremental-worker.test.ts src/reconcile-confirmed-session-deletion.test.ts src/coordinate-recall-marker-replay.test.ts src/scan-recall-session-metadata.test.ts src/recall-session-projection.test.ts src/coordinate-recall-write-window.test.ts src/commit-incremental-recall-transfer.test.ts",
+      "durationMilliseconds": 15610.265415,
+      "passed": true
+    },
+    {
+      "name": "marker publication and detached spawn diagnostic",
+      "command": "/home/will/.local/share/mise/installs/node/24.16.0/bin/node --import tsx --test src/publish-recall-work-marker.diagnostic.test.ts",
+      "durationMilliseconds": 350.33791500000007,
+      "passed": true
+    },
+    {
+      "name": "metadata sweep diagnostic",
+      "command": "/home/will/.local/share/mise/installs/node/24.16.0/bin/node --import tsx --test src/scan-recall-session-metadata.diagnostic.test.ts",
+      "durationMilliseconds": 946.7044710000009,
+      "passed": true
+    },
+    {
+      "name": "close/reopen write-window diagnostic",
+      "command": "/home/will/.local/share/mise/installs/node/24.16.0/bin/node --import tsx --test src/commit-incremental-recall-transfer.diagnostic.test.ts",
+      "durationMilliseconds": 1432.3371540000007,
+      "passed": true
+    }
+  ],
+  "faultMatrix": {
+    "incrementalStages": [
+      "before-recovery-record",
+      "after-recovery-record",
+      "after-lexical-source-write",
+      "after-dense-write",
+      "after-logical-projection-write",
+      "after-physical-projection-write",
+      "after-store-close",
+      "after-reopened-verification",
+      "after-recovery-clear",
+      "after-marker-acknowledgement"
+    ],
+    "deletionStages": [
+      "before-recovery-record",
+      "after-recovery-record",
+      "after-dense-delete",
+      "after-lexical-source-delete",
+      "after-projection-delete",
+      "after-store-close",
+      "after-reopened-verification",
+      "after-recovery-clear"
+    ],
+    "detachedSigkillResume": true,
+    "activationFixedReplay": true,
+    "rollbackFixedReplayAndSwitchBack": true
+  },
+  "foregroundBounds": {
+    "markerPublicationAndDetachedSpawn": {
+      "combinedP95Milliseconds": 3.125698,
+      "acceptanceBoundMilliseconds": 25,
+      "accepted": true
+    },
+    "metadataSweep": {
+      "fileCount": 10000,
+      "p95Milliseconds": 33.71330499999999,
+      "acceptanceBoundMilliseconds": 500,
+      "accepted": true
+    },
+    "projectionPayloadMaximumBytes": 8388608,
+    "evidenceBatchMaximumDocuments": 32,
+    "writeWindow": {
+      "sampleCount": 20,
+      "p95": {
+        "writeWindowMilliseconds": 65.09482400000002
+      },
+      "targetWriteWindowMilliseconds": 300
+    },
+    "searchWriteWindowWaitMaximumMilliseconds": 500
+  },
+  "passed": true,
+  "safety": {
+    "productionRecallDatabaseAccessed": false,
+    "originalPiSessionFilesAccessed": false,
+    "storage": "disposable temporary roots with real zvec stores"
+  }
+}

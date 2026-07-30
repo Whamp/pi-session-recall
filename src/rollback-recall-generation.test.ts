@@ -431,6 +431,37 @@ void test('configured service refuses rollback when the bounded target health ch
       },
     },
     {
+      name: 'dense vector checksum mismatch',
+      expectedError: /rollback health dense-evidence canary mismatch/u,
+      async damage({ config, firstGenerationId }) {
+        const storePath = createRecallGenerationComponentPaths(
+          join(config.generationRootDirectory, firstGenerationId),
+        ).denseStorePath;
+        const dense = ZVecOpen(storePath);
+        try {
+          const records = dense.querySync({
+            topk: dense.stats.docCount,
+            outputFields: dense.schema.fields().map(({ name }) => name),
+            includeVector: true,
+          });
+          for (const record of records) {
+            assert.equal(
+              dense.upsertSync([
+                {
+                  id: record.id,
+                  fields: record.fields,
+                  vectors: { embedding: [0, 1] },
+                },
+              ])[0]?.ok,
+              true,
+            );
+          }
+        } finally {
+          dense.closeSync();
+        }
+      },
+    },
+    {
       name: 'deterministic projection canary mismatch',
       expectedError: /rollback health session-projection canary mismatch/u,
       async damage({ config, firstGenerationId }) {

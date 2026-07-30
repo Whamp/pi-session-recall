@@ -7,6 +7,7 @@ import type {
 } from '@earendil-works/pi-coding-agent';
 
 import { RecallWorkMarkerTrigger } from './enums.js';
+import { resolveRecallPhysicalSourceIdentity } from './recall-source-identity.js';
 import {
   createRecallWorkMarkerId,
   RECALL_WORK_MARKER_VERSION,
@@ -79,6 +80,7 @@ export function registerRecallLifecycleMarkers(
   pi: RecallLifecycleRegistrationApi,
   publisher: RecallLifecycleMarkerPublisher,
   runtimeFactory: RecallLifecycleRuntimeFactory,
+  sessionsDirectory: string,
 ): void {
   const runtimeInstanceId = runtimeFactory.createRuntimeInstanceId();
   let runtimeSequence = 0;
@@ -91,10 +93,14 @@ export function registerRecallLifecycleMarkers(
     if (physicalSessionPath === undefined) {
       return;
     }
+    const physicalSourceIdentity = resolveRecallPhysicalSourceIdentity(
+      sessionsDirectory,
+      physicalSessionPath,
+    ).physicalSourceIdentity;
     runtimeSequence += 1;
     const identity: RecallWorkMarkerIdentity = {
       version: RECALL_WORK_MARKER_VERSION,
-      physicalSessionId: context.sessionManager.getSessionId(),
+      physicalSessionId: physicalSourceIdentity,
       physicalSessionPath,
       runtimeInstanceId,
       runtimeSequence,

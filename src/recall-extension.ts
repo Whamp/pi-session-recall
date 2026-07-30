@@ -496,6 +496,7 @@ export default async function recallExtension(
       createRuntimeInstanceId: randomUUID,
       nowEpochMilliseconds: Date.now,
     },
+    config.sessionsDirectory,
   );
   if (startupOptions.registerServiceRuntimeShutdown !== undefined) {
     startupOptions.registerServiceRuntimeShutdown(disposeCachedServiceRuntime);

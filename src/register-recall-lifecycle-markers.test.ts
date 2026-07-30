@@ -17,6 +17,7 @@ import {
   type RecallLifecycleMarkerContext,
   type RecallLifecycleRegistrationApi,
 } from './register-recall-lifecycle-markers.js';
+import { resolveRecallPhysicalSourceIdentity } from './recall-source-identity.js';
 import type { RecallWorkMarker } from './recall-work-marker.js';
 
 interface RecallLifecycleTestEvents {
@@ -114,9 +115,15 @@ function createScalarOnlyContext(
   return { sessionManager };
 }
 
-void test('recall lifecycle markers map every documented Pi trigger with one runtime sequence', async () => {
+void test('recall lifecycle markers map every documented Pi trigger with one physical source identity', async () => {
   const harness = createLifecycleTestHarness();
   const markers: RecallWorkMarker[] = [];
+  const sessionsDirectory = '/trusted/sessions';
+  const physicalSessionPath = `${sessionsDirectory}/session-1.jsonl`;
+  const physicalSourceIdentity = resolveRecallPhysicalSourceIdentity(
+    sessionsDirectory,
+    physicalSessionPath,
+  ).physicalSourceIdentity;
   let clock = 1_753_315_200_000;
   registerRecallLifecycleMarkers(
     harness.pi,
@@ -133,10 +140,9 @@ void test('recall lifecycle markers map every documented Pi trigger with one run
         return clock++;
       },
     },
+    sessionsDirectory,
   );
-  const context = createScalarOnlyContext({
-    physicalSessionPath: '/trusted/sessions/session-1.jsonl',
-  });
+  const context = createScalarOnlyContext({ physicalSessionPath });
 
   await harness.emit.sessionStart({ type: 'session_start', reason: 'startup' }, context);
   await harness.emit.agentSettled({ type: 'agent_settled' }, context);
@@ -195,24 +201,24 @@ void test('recall lifecycle markers map every documented Pi trigger with one run
     })),
     [
       {
-        physicalSessionId: 'physical-session-1',
-        physicalSessionPath: '/trusted/sessions/session-1.jsonl',
+        physicalSessionId: physicalSourceIdentity,
+        physicalSessionPath,
         runtimeInstanceId: 'runtime-instance-1',
         runtimeSequence: 1,
         createdAtEpochMilliseconds: 1_753_315_200_000,
         trigger: { kind: RecallWorkMarkerTrigger.ARRIVAL },
       },
       {
-        physicalSessionId: 'physical-session-1',
-        physicalSessionPath: '/trusted/sessions/session-1.jsonl',
+        physicalSessionId: physicalSourceIdentity,
+        physicalSessionPath,
         runtimeInstanceId: 'runtime-instance-1',
         runtimeSequence: 2,
         createdAtEpochMilliseconds: 1_753_315_200_001,
         trigger: { kind: RecallWorkMarkerTrigger.ACTIVITY },
       },
       {
-        physicalSessionId: 'physical-session-1',
-        physicalSessionPath: '/trusted/sessions/session-1.jsonl',
+        physicalSessionId: physicalSourceIdentity,
+        physicalSessionPath,
         runtimeInstanceId: 'runtime-instance-1',
         runtimeSequence: 3,
         createdAtEpochMilliseconds: 1_753_315_200_002,
@@ -223,8 +229,8 @@ void test('recall lifecycle markers map every documented Pi trigger with one run
         },
       },
       {
-        physicalSessionId: 'physical-session-1',
-        physicalSessionPath: '/trusted/sessions/session-1.jsonl',
+        physicalSessionId: physicalSourceIdentity,
+        physicalSessionPath,
         runtimeInstanceId: 'runtime-instance-1',
         runtimeSequence: 4,
         createdAtEpochMilliseconds: 1_753_315_200_003,
@@ -237,8 +243,8 @@ void test('recall lifecycle markers map every documented Pi trigger with one run
         },
       },
       {
-        physicalSessionId: 'physical-session-1',
-        physicalSessionPath: '/trusted/sessions/session-1.jsonl',
+        physicalSessionId: physicalSourceIdentity,
+        physicalSessionPath,
         runtimeInstanceId: 'runtime-instance-1',
         runtimeSequence: 5,
         createdAtEpochMilliseconds: 1_753_315_200_004,
@@ -250,8 +256,8 @@ void test('recall lifecycle markers map every documented Pi trigger with one run
         },
       },
       {
-        physicalSessionId: 'physical-session-1',
-        physicalSessionPath: '/trusted/sessions/session-1.jsonl',
+        physicalSessionId: physicalSourceIdentity,
+        physicalSessionPath,
         runtimeInstanceId: 'runtime-instance-1',
         runtimeSequence: 6,
         createdAtEpochMilliseconds: 1_753_315_200_005,
@@ -274,14 +280,33 @@ void test('reload emits only arrival while replacement and quit reasons preserve
       markers.push(marker);
     },
   };
-  registerRecallLifecycleMarkers(oldHarness.pi, publisher, {
-    createRuntimeInstanceId: () => 'runtime-old',
-    nowEpochMilliseconds: () => 10,
-  });
-  registerRecallLifecycleMarkers(newHarness.pi, publisher, {
-    createRuntimeInstanceId: () => 'runtime-new',
-    nowEpochMilliseconds: () => 20,
-  });
+  const sessionsDirectory = '/trusted/sessions';
+  const oldPhysicalSourceIdentity = resolveRecallPhysicalSourceIdentity(
+    sessionsDirectory,
+    `${sessionsDirectory}/old.jsonl`,
+  ).physicalSourceIdentity;
+  const newPhysicalSourceIdentity = resolveRecallPhysicalSourceIdentity(
+    sessionsDirectory,
+    `${sessionsDirectory}/new.jsonl`,
+  ).physicalSourceIdentity;
+  registerRecallLifecycleMarkers(
+    oldHarness.pi,
+    publisher,
+    {
+      createRuntimeInstanceId: () => 'runtime-old',
+      nowEpochMilliseconds: () => 10,
+    },
+    sessionsDirectory,
+  );
+  registerRecallLifecycleMarkers(
+    newHarness.pi,
+    publisher,
+    {
+      createRuntimeInstanceId: () => 'runtime-new',
+      nowEpochMilliseconds: () => 20,
+    },
+    sessionsDirectory,
+  );
   const oldContext = createScalarOnlyContext({
     physicalSessionPath: '/trusted/sessions/old.jsonl',
     physicalSessionId: 'old-session',
@@ -316,13 +341,13 @@ void test('reload emits only arrival while replacement and quit reasons preserve
       marker.trigger.kind,
     ]),
     [
-      ['runtime-new', 'old-session', 1, RecallWorkMarkerTrigger.ARRIVAL],
-      ['runtime-old', 'old-session', 1, RecallWorkMarkerTrigger.DEPARTURE],
-      ['runtime-new', 'new-session', 2, RecallWorkMarkerTrigger.ARRIVAL],
-      ['runtime-old', 'old-session', 2, RecallWorkMarkerTrigger.DEPARTURE],
-      ['runtime-new', 'new-session', 3, RecallWorkMarkerTrigger.ARRIVAL],
-      ['runtime-old', 'old-session', 3, RecallWorkMarkerTrigger.DEPARTURE],
-      ['runtime-new', 'new-session', 4, RecallWorkMarkerTrigger.ARRIVAL],
+      ['runtime-new', oldPhysicalSourceIdentity, 1, RecallWorkMarkerTrigger.ARRIVAL],
+      ['runtime-old', oldPhysicalSourceIdentity, 1, RecallWorkMarkerTrigger.DEPARTURE],
+      ['runtime-new', newPhysicalSourceIdentity, 2, RecallWorkMarkerTrigger.ARRIVAL],
+      ['runtime-old', oldPhysicalSourceIdentity, 2, RecallWorkMarkerTrigger.DEPARTURE],
+      ['runtime-new', newPhysicalSourceIdentity, 3, RecallWorkMarkerTrigger.ARRIVAL],
+      ['runtime-old', oldPhysicalSourceIdentity, 3, RecallWorkMarkerTrigger.DEPARTURE],
+      ['runtime-new', newPhysicalSourceIdentity, 4, RecallWorkMarkerTrigger.ARRIVAL],
     ],
   );
 });
@@ -354,6 +379,7 @@ void test('ephemeral sessions emit no marker and request no session body or heav
       createRuntimeInstanceId: () => 'ephemeral-runtime',
       nowEpochMilliseconds: () => 30,
     },
+    '/trusted/sessions',
   );
   const context = createScalarOnlyContext();
 

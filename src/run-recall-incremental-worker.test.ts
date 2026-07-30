@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import test from 'node:test';
 
 import { resolveRecallFlockExecutable } from './resolve-recall-flock-executable.js';
+import { resolveRecallPhysicalSourceIdentity } from './recall-source-identity.js';
 
 import {
   RecallBacklogFailureCategory,
@@ -1095,10 +1096,14 @@ void test('kernel flock admits one worker, rejects losers promptly, and releases
   assert.equal((await readFile(probePath, 'utf8')).trim().split('\n').length, 3);
 });
 
-void test('metadata sweep publishes arrival for a session header larger than one read buffer', async (t) => {
+void test('metadata sweep publishes a path-identified arrival without reading a large session header', async (t) => {
   const fixture = await createWorkerFixture(t, { kind: RecallWorkMarkerTrigger.ARRIVAL });
   await fixture.publishMarker();
   const unknownSessionPath = join(fixture.sessionsDirectory, 'long-header-session.jsonl');
+  const physicalSourceIdentity = resolveRecallPhysicalSourceIdentity(
+    fixture.sessionsDirectory,
+    unknownSessionPath,
+  ).physicalSourceIdentity;
   await writeFile(
     unknownSessionPath,
     `${JSON.stringify({
@@ -1152,7 +1157,9 @@ void test('metadata sweep publishes arrival for a session header larger than one
     spoolFiles.map((name) => readFile(join(fixture.markerSpoolDirectory, name), 'utf8')),
   );
   assert.equal(
-    markerSources.some((source) => source.includes('long-header-physical-session')),
+    markerSources.some((source) =>
+      source.includes(`"physicalSessionId":"${physicalSourceIdentity}"`),
+    ),
     true,
   );
 });
@@ -1163,6 +1170,10 @@ void test('metadata sweep of unknown jsonl publishes arrival marker and schedule
   await fixture.publishMarker();
   // Arrange: a second session file that has NO marker in the spool (crash-missed arrival).
   const unknownSessionPath = join(fixture.sessionsDirectory, 'unknown-session.jsonl');
+  const physicalSourceIdentity = resolveRecallPhysicalSourceIdentity(
+    fixture.sessionsDirectory,
+    unknownSessionPath,
+  ).physicalSourceIdentity;
   const sessionHeaderRecord = {
     type: 'session',
     version: 3,
@@ -1224,8 +1235,9 @@ void test('metadata sweep of unknown jsonl publishes arrival marker and schedule
     arrivalFiles.map(async (f) => readFile(join(spoolDirectory, f), 'utf8')),
   );
   const arrivalMarkers = arrivalMarkerContent.filter((content) =>
-    content.includes('"unknown-physical-session"'),
+    content.includes(`"physicalSessionId":"${physicalSourceIdentity}"`),
   );
   assert.equal(arrivalMarkers.length, 1);
   assert.match(arrivalMarkers[0] ?? '', /"kind":"arrival"/u);
+  assert.doesNotMatch(arrivalMarkers[0] ?? '', /unknown-physical-session/u);
 });

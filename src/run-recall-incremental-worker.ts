@@ -1,4 +1,4 @@
-import { access, open, readFile, stat } from 'node:fs/promises';
+import { access, readFile, stat } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -252,58 +252,6 @@ function workPlanRequestsRecallMetadataSweep(workPlan: RecallMarkerReplayWorkPla
 }
 
 /**
- * Reads the first line of a physical session JSONL file and extracts the logical session ID
- * from the session header record. Returns null if the header cannot be read or is not a valid
- * session header.
- */
-async function readPhysicalSessionIdFromJsonlHeader(filePath: string): Promise<string | null> {
-  const maximumHeaderBytes = 1024 * 1024;
-  const handle = await open(filePath, 'r');
-  try {
-    const chunks: Buffer[] = [];
-    let totalBytes = 0;
-    while (totalBytes < maximumHeaderBytes) {
-      const buffer = Buffer.allocUnsafe(Math.min(4096, maximumHeaderBytes - totalBytes));
-      const { bytesRead } = await handle.read(buffer, 0, buffer.length, totalBytes);
-      if (bytesRead === 0) {
-        return null;
-      }
-      const chunk = buffer.subarray(0, bytesRead);
-      const newlineIndex = chunk.indexOf(0x0a);
-      if (newlineIndex === -1) {
-        chunks.push(chunk);
-        totalBytes += bytesRead;
-        continue;
-      }
-      chunks.push(chunk.subarray(0, newlineIndex));
-      const firstLine = Buffer.concat(chunks).toString('utf8');
-      const trimmed = firstLine.endsWith('\r') ? firstLine.slice(0, -1) : firstLine;
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(trimmed);
-      } catch (error) {
-        if (error instanceof SyntaxError) {
-          return null;
-        }
-        throw error;
-      }
-      if (
-        isUnknownRecord(parsed) &&
-        (parsed.type === 'session' || parsed.type === 'v1_session') &&
-        typeof parsed.id === 'string' &&
-        parsed.id.length > 0
-      ) {
-        return parsed.id;
-      }
-      return null;
-    }
-    return null;
-  } finally {
-    await handle.close();
-  }
-}
-
-/**
  * Publishes durable ARRIVAL markers for session files observed by a metadata sweep that are not
  * yet represented in the marker spool or the known-source inventory. Returns the count of markers
  * published.
@@ -328,18 +276,10 @@ async function publishMetadataSweepArrivalMarkers(
   const sweepRuntimeInstanceId = `metadata-sweep:${metadataSweep.sweepId}`;
   for (const [index, entry] of unknownObservedFiles.entries()) {
     const absolutePath = join(sessionRootDirectory, entry.relativePath);
-    let physicalSessionId: string | null;
-    try {
-      physicalSessionId = await readPhysicalSessionIdFromJsonlHeader(absolutePath);
-    } catch (error) {
-      if (readNodeErrorCode(error) === 'ENOENT') {
-        continue;
-      }
-      throw error;
-    }
-    if (physicalSessionId === null) {
-      continue;
-    }
+    const physicalSessionId = resolveRecallPhysicalSourceIdentity(
+      sessionRootDirectory,
+      absolutePath,
+    ).physicalSourceIdentity;
     if (existingPhysicalSessionIds.has(physicalSessionId)) {
       continue;
     }

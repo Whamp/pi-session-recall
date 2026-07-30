@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 
 import type { ZVecCollection } from '@zvec/zvec';
@@ -11,6 +12,7 @@ import {
 import {
   createRecallGenerationComponentPaths,
   openRecallGenerationStoreForBoundedCheck,
+  readRecallGenerationVectorValues,
 } from './recall-generation-stores.js';
 import { readRecallGenerationManifest } from './recall-generation-manifest.js';
 import { resolveRecallGenerationDirectory } from './recall-generation-state.js';
@@ -71,6 +73,7 @@ function assertStoreCount(
 function assertFetchedCanary(
   responsibility: 'lexical-source' | 'dense-evidence' | 'session-projection',
   collection: ZVecCollection,
+  lexicalSourceCollection: ZVecCollection,
   canary: ProjectionSelectedCanary | null,
   generationId: string,
   embeddingProfileId: string,
@@ -103,7 +106,7 @@ function assertFetchedCanary(
   const record = collection.fetchSync({
     ids: [canary.recordId],
     outputFields,
-    includeVector: false,
+    includeVector: responsibility === 'dense-evidence',
   })[canary.recordId];
   if (
     record === undefined ||
@@ -113,16 +116,42 @@ function assertFetchedCanary(
   ) {
     throw new Error(`Recall rollback health ${responsibility} canary mismatch: ${canary.recordId}`);
   }
-  if (
-    responsibility === 'dense-evidence' &&
-    (record.fields.evidenceOccurrenceId !== canary.recordId ||
+  if (responsibility === 'dense-evidence') {
+    const lexicalRecord = lexicalSourceCollection.fetchSync({
+      ids: [canary.recordId],
+      outputFields: [
+        'generationId',
+        'physicalSourceIdentity',
+        'recordKind',
+        'isDenseSearchable',
+        'evidenceOccurrenceId',
+        'evidenceChecksum',
+      ],
+      includeVector: false,
+    })[canary.recordId];
+    const vector = readRecallGenerationVectorValues(record.vectors.embedding);
+    const vectorChecksum = createHash('sha256')
+      .update(Buffer.from(new Float32Array(vector).buffer))
+      .digest('hex');
+    if (
+      record.fields.evidenceOccurrenceId !== canary.recordId ||
       record.fields.embeddingProfileId !== embeddingProfileId ||
       record.fields.storedDimensions !== storedDimensions ||
       !/^[a-f0-9]{64}$/u.test(String(record.fields.evidenceChecksum)) ||
       !/^[a-f0-9]{64}$/u.test(String(record.fields.embeddingInputChecksum)) ||
-      !/^[a-f0-9]{64}$/u.test(String(record.fields.vectorChecksum)))
-  ) {
-    throw new Error(`Recall rollback health dense-evidence canary mismatch: ${canary.recordId}`);
+      record.fields.vectorChecksum !== vectorChecksum ||
+      vector.length !== storedDimensions ||
+      vector.some((value) => !Number.isFinite(value)) ||
+      lexicalRecord === undefined ||
+      lexicalRecord.fields.generationId !== generationId ||
+      lexicalRecord.fields.physicalSourceIdentity !== canary.physicalSourceIdentity ||
+      lexicalRecord.fields.recordKind !== 'evidence' ||
+      lexicalRecord.fields.isDenseSearchable !== true ||
+      lexicalRecord.fields.evidenceOccurrenceId !== canary.recordId ||
+      lexicalRecord.fields.evidenceChecksum !== record.fields.evidenceChecksum
+    ) {
+      throw new Error(`Recall rollback health dense-evidence canary mismatch: ${canary.recordId}`);
+    }
   }
   if (
     responsibility === 'lexical-source' &&
@@ -266,6 +295,7 @@ export async function checkRecallGenerationRollbackHealth(
     assertFetchedCanary(
       'lexical-source',
       lexicalSource,
+      lexicalSource,
       selectProjectionCanary(physicalArtifacts, 'lexicalSource'),
       options.generationId,
       manifestResult.manifest.embeddingProfile.profileId,
@@ -274,6 +304,7 @@ export async function checkRecallGenerationRollbackHealth(
     assertFetchedCanary(
       'dense-evidence',
       dense,
+      lexicalSource,
       selectProjectionCanary(physicalArtifacts, 'dense'),
       options.generationId,
       manifestResult.manifest.embeddingProfile.profileId,
@@ -282,6 +313,7 @@ export async function checkRecallGenerationRollbackHealth(
     assertFetchedCanary(
       'session-projection',
       sessionProjection,
+      lexicalSource,
       selectProjectionCanary(physicalArtifacts, 'sessionProjection'),
       options.generationId,
       manifestResult.manifest.embeddingProfile.profileId,

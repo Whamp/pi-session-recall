@@ -24,7 +24,7 @@ import {
 
 const RECALL_QUALITY_HELP = `Usage: npm run evaluate:recall
 
-Builds one temporary index over the checksum-fixed evaluation corpus and never scans the production session corpus.
+Builds and activates one disposable target generation over a copied checksum-fixed evaluation corpus and never scans the production session corpus.
 
 Outputs:
   docs/evaluation/recall-quality-report.md
@@ -50,7 +50,7 @@ function createReportEnvironment(
   config: RecallConversationConfig,
 ): RecallQualityReportEnvironment {
   return {
-    command: 'npm run evaluate:recall',
+    command: process.env.PI_RECALL_QUALITY_EVIDENCE_COMMAND ?? 'npm run evaluate:recall',
     gitCommit: execFileSync('git', ['rev-parse', 'HEAD'], {
       cwd: projectDirectory,
       encoding: 'utf8',

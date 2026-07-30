@@ -7,6 +7,7 @@ import test from 'node:test';
 
 import type { RecallConversationConfig } from './recall-conversation-config.js';
 import { createRecallConversationService } from './recall-conversation-service.js';
+import { createPiRecallToolResponse, executePiRecallRequest } from './recall-extension.js';
 import {
   RecallBacklogFailureCategory,
   RecallDiagnosticsMode,
@@ -289,6 +290,42 @@ void test('configured service serves every existing search mode from the active 
   assert.equal(hybrid.searchPolicy.scope, RecallSearchScope.PROJECT);
   assert.deepEqual(hybrid.searchPolicy.candidateLimits, { dense: 1, lexical: 1, identifier: 1 });
 
+  const modelSearch = await executePiRecallRequest(
+    service,
+    { query: 'TargetModeNeedle', limit: 5 },
+    { cwd: selectedProjectDirectory },
+    5,
+  );
+  assert.equal(modelSearch.operation, 'search');
+  if (modelSearch.operation !== 'search') {
+    throw new Error('Target generation model-facing search returned the wrong operation');
+  }
+  assert.ok(modelSearch.search.results.every(({ id }) => id.startsWith('occurrence_')));
+  const modelSearchResponse = createPiRecallToolResponse(modelSearch);
+  assert.match(modelSearchResponse.text, /Evidence occurrence ID: occurrence_/u);
+  assert.ok('sources' in modelSearchResponse.details);
+  assert.ok(
+    'sources' in modelSearchResponse.details && modelSearchResponse.details.sources.length > 0,
+  );
+
+  const anchorOccurrenceId = modelSearch.search.results[0]?.id;
+  assert.ok(anchorOccurrenceId);
+  const modelExpansion = await executePiRecallRequest(
+    service,
+    {
+      expandSourceNeighborhood: {
+        evidenceOccurrenceId: anchorOccurrenceId,
+        previousEntryCount: 0,
+        nextEntryCount: 0,
+      },
+    },
+    { cwd: selectedProjectDirectory },
+    5,
+  );
+  assert.equal(modelExpansion.operation, 'expansion');
+  const modelExpansionResponse = createPiRecallToolResponse(modelExpansion);
+  assert.match(modelExpansionResponse.text, /TargetModeNeedle/u);
+
   const deepRerank = await service.search('retained decision', 5, {
     scope: RecallSearchScope.GLOBAL,
     mode: 'deep-rerank',
@@ -320,7 +357,7 @@ void test('configured service serves every existing search mode from the active 
     ],
   );
   assert.ok(queryInputs.includes('retained architecture choice'));
-  assert.equal(warnings.length, 3);
+  assert.equal(warnings.length, 4);
   assert.ok(warnings.every((warning) => warning.includes('pendingEligibleSessionCount=3')));
   assert.equal(existsSync(config.markerSpoolDirectory), false);
 

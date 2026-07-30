@@ -229,7 +229,7 @@ export function formatRecallQualityReport(
     '',
     '## Evaluation identity',
     '',
-    `- Storage: conversation schema v${result.storageIdentity.conversationSchemaVersion}, zvec schema v${result.storageIdentity.zvecSchemaVersion}, manifest v${result.storageIdentity.indexManifestVersion}, incremental eligibility policy v${result.storageIdentity.incrementalEligibilityPolicyVersion}`,
+    `- Storage: coherent generation v${result.storageIdentity.generationFormatVersion}, store format v${result.storageIdentity.generationStoreFormatVersion}, validation receipt v${result.storageIdentity.validationReceiptVersion}, incremental eligibility policy v${result.storageIdentity.incrementalEligibilityPolicyVersion}`,
     `- Default scope: \`${result.evaluationIdentity.defaultScope}\` (policy v${result.evaluationIdentity.projectScopePolicyVersion})`,
     `- Project identity policy: v${result.evaluationIdentity.projectIdentityPolicyVersion}; metadata schema v${result.evaluationIdentity.projectIdentityMetadataSchemaVersion}`,
     `- Project lineage policy: v${result.evaluationIdentity.lineagePolicyVersion}; digest \`${result.evaluationIdentity.lineageDigest}\``,
@@ -248,7 +248,7 @@ export function formatRecallQualityReport(
     '| --- | ---: | ---: |',
     `| Session files/index | ${result.boundedWork.sessionFiles} | ${specification.bounds.maximumSessionFiles} |`,
     `| Evaluation cases | ${result.boundedWork.evaluationCases} | ${specification.bounds.maximumEvaluationCases} |`,
-    `| Temporary index runs | ${result.boundedWork.indexRuns} | ${specification.bounds.maximumChunkPolicies} |`,
+    `| Activated disposable generation runs | ${result.boundedWork.indexRuns} | ${specification.bounds.maximumChunkPolicies} |`,
     `| Search requests, including warmups | ${result.boundedWork.executedSearchRequests} | ${specification.bounds.maximumSearchRequests} |`,
     `| Reranker requests | ${result.boundedWork.rerankerRequests} | 0 |`,
     `| Chunk-embedding HTTP batches | ${result.boundedWork.chunkEmbeddingRequests} | ${specification.bounds.maximumChunkEmbeddingRequests} |`,
@@ -271,14 +271,14 @@ export function formatRecallQualityReport(
     '- **Source-occurrence preservation:** fraction of cases retaining the required count of distinct declared source locations, including suppressed duplicate occurrences.',
     `- **Query latency:** wall time for the full read-only hybrid service search, measured and gated independently for project and global scope. Tables report nearest-rank p95 across ${specification.cases.length} fixed cases after ${specification.warmupQueriesPerCombination} warmup request per represented scope and configuration.`,
     '',
-    '## Chunk-policy index comparison',
+    '## Chunk-policy generation comparison',
     '',
-    '| Chunk | Stored documents | Scanned/indexed sessions | New embedded documents | Embedding batches | Index time |',
-    '| ---: | ---: | ---: | ---: | ---: | ---: |',
+    '| Chunk | Evidence occurrences | Lexical/source rows | Dense rows | Projection rows | Source snapshot | Generation time |',
+    '| ---: | ---: | ---: | ---: | ---: | --- | ---: |',
   );
   for (const indexRun of result.indexRuns) {
     lines.push(
-      `| ${formatChunkPolicy(indexRun.chunkPolicy)} | ${indexRun.totalChunks} | ${indexRun.indexSummary.scannedSessions}/${indexRun.indexSummary.indexedSessions} | ${indexRun.indexSummary.newlyEmbeddedChunks} | ${indexRun.indexSummary.embeddingRequestCount} | ${formatMilliseconds(indexRun.indexLatencyMilliseconds)} |`,
+      `| ${formatChunkPolicy(indexRun.chunkPolicy)} | ${indexRun.totalChunks} | ${indexRun.storeCounts.lexicalSource} | ${indexRun.storeCounts.dense} | ${indexRun.storeCounts.sessionProjection} | \`${indexRun.startingSnapshotFingerprint}\` | ${formatMilliseconds(indexRun.indexLatencyMilliseconds)} |`,
     );
   }
   lines.push(

@@ -10,7 +10,9 @@ import {
   RECALL_RRF_RANK_CONSTANT,
 } from './fuse-recall-ranked-lists.js';
 import { RECALL_ACTIVE_BRANCH_PRIOR } from './rank-recall-search-results.js';
-import { RECALL_INDEX_MANIFEST_VERSION } from './recall-index-manifest.js';
+import { RECALL_GENERATION_FORMAT_VERSION } from './recall-generation-manifest.js';
+import { RECALL_GENERATION_STORE_FORMAT_VERSION } from './recall-generation-stores.js';
+import { RECALL_GENERATION_VALIDATION_RECEIPT_VERSION } from './recall-generation-validation-receipt.js';
 import { parseQualityCaseId } from './recall-quality-corpus.js';
 import { INCREMENTAL_RECALL_ELIGIBILITY_POLICY_VERSION } from './reduce-recall-eligibility.js';
 import {
@@ -22,8 +24,6 @@ import {
   PROJECT_SCOPE_POLICY_VERSION,
 } from './resolve-project-identity.js';
 import { selectRecallQualityPolicy } from './select-recall-quality-policy.js';
-import { SESSION_CONVERSATION_SCHEMA_VERSION } from './session-conversation-index.js';
-import { ZVEC_CONVERSATION_SCHEMA_VERSION } from './zvec-conversation-store.js';
 
 /** Highest final-result count accepted from evidence and exposed by the recall tool. */
 export const MAX_RECALL_FINAL_RESULT_COUNT = 10;
@@ -248,10 +248,13 @@ const RECALL_QUALITY_GATE_EVIDENCE_SCHEMA = Type.Object({
     version: POSITIVE_INTEGER_SCHEMA,
     storageIdentity: Type.Optional(
       Type.Object({
-        conversationSchemaVersion: POSITIVE_INTEGER_SCHEMA,
-        zvecSchemaVersion: POSITIVE_INTEGER_SCHEMA,
-        indexManifestVersion: POSITIVE_INTEGER_SCHEMA,
+        generationFormatVersion: Type.Optional(POSITIVE_INTEGER_SCHEMA),
+        generationStoreFormatVersion: Type.Optional(POSITIVE_INTEGER_SCHEMA),
+        validationReceiptVersion: Type.Optional(POSITIVE_INTEGER_SCHEMA),
         incrementalEligibilityPolicyVersion: NONNEGATIVE_INTEGER_SCHEMA,
+        conversationSchemaVersion: Type.Optional(POSITIVE_INTEGER_SCHEMA),
+        zvecSchemaVersion: Type.Optional(POSITIVE_INTEGER_SCHEMA),
+        indexManifestVersion: Type.Optional(POSITIVE_INTEGER_SCHEMA),
       }),
     ),
     evaluationIdentity: Type.Optional(EVALUATION_IDENTITY_SCHEMA),
@@ -259,6 +262,16 @@ const RECALL_QUALITY_GATE_EVIDENCE_SCHEMA = Type.Object({
       Type.Array(
         Type.Object({
           chunkPolicy: CHUNK_POLICY_SCHEMA,
+          generationId: Type.Optional(Type.String({ pattern: '^[A-Za-z0-9_-]+$' })),
+          manifestFingerprint: Type.Optional(Type.String({ pattern: '^[a-f0-9]{64}$' })),
+          startingSnapshotFingerprint: Type.Optional(Type.String({ pattern: '^[a-f0-9]{64}$' })),
+          storeCounts: Type.Optional(
+            Type.Object({
+              lexicalSource: POSITIVE_INTEGER_SCHEMA,
+              dense: NONNEGATIVE_INTEGER_SCHEMA,
+              sessionProjection: POSITIVE_INTEGER_SCHEMA,
+            }),
+          ),
           totalChunks: POSITIVE_INTEGER_SCHEMA,
           indexLatencyMilliseconds: NONNEGATIVE_NUMBER_SCHEMA,
           indexSummary: INDEX_SUMMARY_SCHEMA,
@@ -308,13 +321,17 @@ export async function readRecallQualityGateDecision(
       `Recall quality gate evidence inconsistent at ${resultsPath}: pass and selected-policy decisions disagree`,
     );
   }
-  if (evidence.version !== 2 || evidence.result.version !== 5) {
+  if (evidence.version !== 2 || evidence.result.version !== 6) {
+    const staleReason =
+      evidence.result.version < 5
+        ? 'predates project-scoped measurement'
+        : 'predates target-generation certification';
     return {
       automatedGatePassed: false,
       selectedPolicy: null,
       blockers: [
         ...selection.blockers,
-        `Recall quality evidence version ${evidence.result.version} predates project-scoped measurement; rerun npm run evaluate:recall`,
+        `Recall quality evidence version ${evidence.result.version} ${staleReason}; rerun npm run evaluate:recall`,
       ],
     };
   }
@@ -337,9 +354,9 @@ export async function readRecallQualityGateDecision(
     );
   }
   if (
-    storageIdentity.conversationSchemaVersion !== SESSION_CONVERSATION_SCHEMA_VERSION ||
-    storageIdentity.zvecSchemaVersion !== ZVEC_CONVERSATION_SCHEMA_VERSION ||
-    storageIdentity.indexManifestVersion !== RECALL_INDEX_MANIFEST_VERSION ||
+    storageIdentity.generationFormatVersion !== RECALL_GENERATION_FORMAT_VERSION ||
+    storageIdentity.generationStoreFormatVersion !== RECALL_GENERATION_STORE_FORMAT_VERSION ||
+    storageIdentity.validationReceiptVersion !== RECALL_GENERATION_VALIDATION_RECEIPT_VERSION ||
     storageIdentity.incrementalEligibilityPolicyVersion !==
       INCREMENTAL_RECALL_ELIGIBILITY_POLICY_VERSION
   ) {
@@ -348,7 +365,7 @@ export async function readRecallQualityGateDecision(
       selectedPolicy: null,
       blockers: [
         ...selection.blockers,
-        'Recall quality incremental storage identity does not match current eligibility, evidence, zvec, or manifest schemas; rerun npm run evaluate:recall',
+        'Recall quality target generation storage identity does not match current generation, store, validation receipt, or eligibility contracts; rerun npm run evaluate:recall',
       ],
     };
   }
@@ -402,8 +419,24 @@ export async function readRecallQualityGateDecision(
     boundedWork.maximumCandidatesPerSearch === expectedMaximumCandidates &&
     boundedWork.repositoryIdentityResolutions === repositoryFixtureCount &&
     indexRuns.every(
-      ({ indexSummary }) =>
+      ({
+        generationId,
+        manifestFingerprint,
+        startingSnapshotFingerprint,
+        storeCounts,
+        totalChunks,
+        indexSummary,
+      }) =>
+        generationId !== undefined &&
+        manifestFingerprint !== undefined &&
+        startingSnapshotFingerprint !== undefined &&
+        storeCounts !== undefined &&
+        storeCounts.lexicalSource >= totalChunks &&
+        storeCounts.dense === indexSummary.newlyEmbeddedChunks &&
+        storeCounts.sessionProjection >= boundedWork.sessionFiles &&
         indexSummary.scannedSessions === boundedWork.sessionFiles &&
+        indexSummary.indexedSessions === boundedWork.sessionFiles &&
+        indexSummary.cacheHits === 0 &&
         indexSummary.failedSessions.length === 0,
     ) &&
     actualConfigurationKeys.size === expectedConfigurationKeys.size &&

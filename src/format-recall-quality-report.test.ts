@@ -108,11 +108,11 @@ void test('recall quality report records verdict, measured counts, sources, and 
     },
   };
   const result: RecallQualityEvaluationResult = {
-    version: 5,
+    version: 6,
     storageIdentity: {
-      conversationSchemaVersion: 9,
-      zvecSchemaVersion: 8,
-      indexManifestVersion: 6,
+      generationFormatVersion: 1,
+      generationStoreFormatVersion: 1,
+      validationReceiptVersion: 1,
       incrementalEligibilityPolicyVersion: 1,
     },
     evaluationIdentity: {
@@ -140,6 +140,10 @@ void test('recall quality report records verdict, measured counts, sources, and 
     indexRuns: [
       {
         chunkPolicy: { ...combination.chunkPolicy },
+        generationId: 'generation_quality_active',
+        manifestFingerprint: 'b'.repeat(64),
+        startingSnapshotFingerprint: 'c'.repeat(64),
+        storeCounts: { lexicalSource: 80, dense: 72, sessionProjection: 2 },
         totalChunks: 72,
         indexLatencyMilliseconds: 1_200,
         indexSummary: {

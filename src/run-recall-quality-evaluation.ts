@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdir, rm } from 'node:fs/promises';
+import { copyFile, mkdir, rm } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { promisify } from 'node:util';
@@ -46,7 +46,15 @@ import type {
   RecallQueryPlanningModelProfile,
   RecallRerankingModelProfile,
 } from './recall-model-profiles.js';
-import { RECALL_INDEX_MANIFEST_VERSION } from './recall-index-manifest.js';
+import { RECALL_EMBEDDING_CANARY_TEXT } from './recall-index-manifest.js';
+import { RECALL_GENERATION_FORMAT_VERSION } from './recall-generation-manifest.js';
+import {
+  createRecallGenerationComponentPaths,
+  readRecallGenerationStoreRecordMembership,
+  RECALL_GENERATION_STORE_FORMAT_VERSION,
+  type RecallGenerationStoreCounts,
+} from './recall-generation-stores.js';
+import { RECALL_GENERATION_VALIDATION_RECEIPT_VERSION } from './recall-generation-validation-receipt.js';
 import { INCREMENTAL_RECALL_ELIGIBILITY_POLICY_VERSION } from './reduce-recall-eligibility.js';
 import {
   createLineageDigest,
@@ -58,8 +66,6 @@ import {
   resolveProjectIdentity,
   type ResolvedProjectIdentity,
 } from './resolve-project-identity.js';
-import { SESSION_CONVERSATION_SCHEMA_VERSION } from './session-conversation-index.js';
-import { ZVEC_CONVERSATION_SCHEMA_VERSION } from './zvec-conversation-store.js';
 
 const EXEC_FILE_ASYNC = promisify(execFile);
 const RECALL_QUALITY_FULL_POOL_LIMIT = 200;
@@ -92,9 +98,13 @@ export interface RunRecallQualityEvaluationOptions {
   queryPlannedDependencies?: RecallQualityQueryPlannedDependencies;
 }
 
-/** Index work performed once for one required chunk policy. */
+/** Validated target generation built once for one required chunk policy. */
 export interface RecallQualityIndexRun {
   chunkPolicy: RecallQualityChunkPolicy;
+  generationId: string;
+  manifestFingerprint: string;
+  startingSnapshotFingerprint: string;
+  storeCounts: RecallGenerationStoreCounts;
   totalChunks: number;
   indexLatencyMilliseconds: number;
   indexSummary: ConversationIndexSummary;
@@ -130,11 +140,11 @@ export interface RecallQualityEvaluationIdentity {
   finalResultCount: 5;
 }
 
-/** Incremental eligibility and persisted storage schemas measured by quality evidence. */
+/** Coherent generation and incremental eligibility contracts measured by quality evidence. */
 export interface RecallQualityStorageIdentity {
-  conversationSchemaVersion: number;
-  zvecSchemaVersion: number;
-  indexManifestVersion: number;
+  generationFormatVersion: number;
+  generationStoreFormatVersion: number;
+  validationReceiptVersion: number;
   incrementalEligibilityPolicyVersion: number;
 }
 
@@ -155,7 +165,7 @@ export interface RecallQualityQueryPlannedResult {
 
 /** Raw measured configurations, gate selection, and bounded-work evidence from one run. */
 export interface RecallQualityEvaluationResult {
-  version: 5;
+  version: 6;
   storageIdentity: RecallQualityStorageIdentity;
   evaluationIdentity: RecallQualityEvaluationIdentity;
   startedAt: string;
@@ -240,6 +250,7 @@ function createEvaluationEmbeddingClient(
 function createChunkPolicyConfig(
   baseConfig: RecallConversationConfig,
   corpus: LoadedRecallQualityCorpus,
+  sessionsDirectory: string,
   workDirectory: string,
   chunkPolicy: RecallQualityChunkPolicy,
   candidateCount: number,
@@ -249,7 +260,7 @@ function createChunkPolicyConfig(
   const generationDirectory = join(generationRootDirectory, RECALL_QUALITY_GENERATION_ID);
   return {
     ...baseConfig,
-    sessionsDirectory: corpus.sessionDirectory,
+    sessionsDirectory,
     databasePath: join(generationDirectory, 'zvec'),
     projectionDatabasePath: join(generationDirectory, 'session-projections'),
     statePath: join(generationDirectory, 'index-state.json'),
@@ -276,6 +287,66 @@ function createChunkPolicyConfig(
     },
     fusedPoolLimit: candidateCount * 3,
     rerankPoolLimit: candidateCount * 3,
+  };
+}
+
+async function createDisposableRecallQualitySourceSnapshot(
+  corpus: LoadedRecallQualityCorpus,
+  workDirectory: string,
+): Promise<string> {
+  const snapshotDirectory = join(workDirectory, 'source-snapshot');
+  await mkdir(snapshotDirectory, { recursive: true });
+  await Promise.all(
+    corpus.sessionFiles.map(({ path }) => copyFile(path, join(snapshotDirectory, basename(path)))),
+  );
+  return snapshotDirectory;
+}
+
+interface MeasuredRecallQualityDependencies {
+  dependencies?: RecallQualityEvaluationDependencies;
+  readDocumentEmbeddingRequestCount(): number;
+}
+
+function createMeasuredRecallQualityDependencies(
+  dependencies?: RecallQualityEvaluationDependencies,
+): MeasuredRecallQualityDependencies {
+  let documentEmbeddingRequestCount = 0;
+  if (dependencies?.embeddingProvider) {
+    const embeddingProvider = dependencies.embeddingProvider;
+    return {
+      dependencies: {
+        ...dependencies,
+        embeddingProvider: {
+          embedQuery: (query, signal) => embeddingProvider.embedQuery(query, signal),
+          async embedDocuments(documents, signal) {
+            documentEmbeddingRequestCount += 1;
+            return embeddingProvider.embedDocuments(documents, signal);
+          },
+        },
+      },
+      readDocumentEmbeddingRequestCount: () => documentEmbeddingRequestCount,
+    };
+  }
+  if (dependencies?.embeddings) {
+    const embeddings = dependencies.embeddings;
+    return {
+      dependencies: {
+        ...dependencies,
+        embeddings: {
+          async embedTexts(texts, signal) {
+            if (texts.some((text) => text !== RECALL_EMBEDDING_CANARY_TEXT)) {
+              documentEmbeddingRequestCount += 1;
+            }
+            return embeddings.embedTexts(texts, signal);
+          },
+        },
+      },
+      readDocumentEmbeddingRequestCount: () => documentEmbeddingRequestCount,
+    };
+  }
+  return {
+    ...(dependencies ? { dependencies } : {}),
+    readDocumentEmbeddingRequestCount: () => documentEmbeddingRequestCount,
   };
 }
 
@@ -442,6 +513,10 @@ export async function runRecallQualityEvaluation(
   }
   await rm(workDirectory, { recursive: true, force: true });
   await mkdir(workDirectory, { recursive: true });
+  const sourceSnapshotDirectory = await createDisposableRecallQualitySourceSnapshot(
+    options.corpus,
+    workDirectory,
+  );
 
   const embeddings = options.dependencies?.embeddingProvider
     ? undefined
@@ -495,48 +570,64 @@ export async function runRecallQualityEvaluation(
     const indexConfig = createChunkPolicyConfig(
       options.baseConfig,
       options.corpus,
+      sourceSnapshotDirectory,
       workDirectory,
       chunkPolicy,
       firstCandidateCount,
     );
+    const measuredDependencies = createMeasuredRecallQualityDependencies(options.dependencies);
     const indexService = createRecallConversationService(
       indexConfig,
       createServiceDependencies(
         null,
         projectResolver.resolveProjectIdentity,
-        options.dependencies,
-        embeddings,
+        measuredDependencies.dependencies,
+        measuredDependencies.dependencies?.embeddings ?? embeddings,
       ),
     );
+    const physicalSessionPaths = options.corpus.sessionFiles.map(({ fileName }) =>
+      join(sourceSnapshotDirectory, fileName),
+    );
     const indexStarted = performance.now();
-    const indexed = await indexService.index({
-      rebuild: true,
-      optimize: true,
+    const opened = await indexService.createRecallGenerationFromPhysicalSources({
       generationId: RECALL_QUALITY_GENERATION_ID,
+      physicalSessionPaths,
     });
+    await indexService.activateValidatedRecallGeneration(RECALL_QUALITY_GENERATION_ID);
     const indexLatencyMilliseconds = performance.now() - indexStarted;
-    if (indexed.indexSummary.failedSessions.length > 0) {
-      const failures = indexed.indexSummary.failedSessions
-        .map(({ sessionPath, error }) => `${sessionPath}: ${error}`)
-        .join('; ');
-      throw new Error(`Recall quality bounded index failed: ${failures}`);
-    }
-    if (indexed.indexSummary.scannedSessions !== options.corpus.sessionFiles.length) {
-      throw new Error(
-        `Recall quality bounded index scan mismatch: expected ${options.corpus.sessionFiles.length}, scanned ${indexed.indexSummary.scannedSessions}`,
-      );
-    }
+    const recordMembership = await readRecallGenerationStoreRecordMembership(
+      createRecallGenerationComponentPaths(opened.generationDirectory),
+    );
+    const totalChunks = recordMembership.lexicalSource.filter((recordId) =>
+      recordId.startsWith('occurrence_'),
+    ).length;
+    const indexSummary: ConversationIndexSummary = {
+      scannedSessions: physicalSessionPaths.length,
+      indexedSessions: physicalSessionPaths.length,
+      removedSessions: 0,
+      cacheHits: 0,
+      newlyEmbeddedChunks: opened.storeCounts.dense,
+      embeddingRequestCount: measuredDependencies.readDocumentEmbeddingRequestCount(),
+      deletedChunks: 0,
+      failedSessions: [],
+    };
     indexRuns.push({
       chunkPolicy: { ...chunkPolicy },
-      totalChunks: indexed.totalChunks,
+      generationId: opened.generationId,
+      manifestFingerprint: opened.manifestFingerprint,
+      startingSnapshotFingerprint: opened.startingSnapshotFingerprint,
+      storeCounts: opened.storeCounts,
+      totalChunks,
       indexLatencyMilliseconds,
-      indexSummary: indexed.indexSummary,
+      indexSummary,
     });
+    await rm(sourceSnapshotDirectory, { recursive: true, force: true });
 
     for (const candidateCount of specification.candidateCounts) {
       const searchConfig = createChunkPolicyConfig(
         options.baseConfig,
         options.corpus,
+        sourceSnapshotDirectory,
         workDirectory,
         chunkPolicy,
         candidateCount,
@@ -607,7 +698,7 @@ export async function runRecallQualityEvaluation(
       configurations.push({
         chunkPolicy: { ...chunkPolicy },
         candidateCount,
-        totalChunks: indexed.totalChunks,
+        totalChunks,
         indexLatencyMilliseconds,
         measurement: measureRecallQuality(observations, specification.finalCounts),
       });
@@ -647,7 +738,7 @@ export async function runRecallQualityEvaluation(
         queryPlannedConfigurations.push({
           chunkPolicy: { ...chunkPolicy },
           candidateCount,
-          totalChunks: indexed.totalChunks,
+          totalChunks,
           indexLatencyMilliseconds,
           measurement: measureRecallQuality(queryPlannedObservations, specification.finalCounts),
         });
@@ -683,11 +774,11 @@ export async function runRecallQualityEvaluation(
   }
   const completedAt = new Date();
   return {
-    version: 5,
+    version: 6,
     storageIdentity: {
-      conversationSchemaVersion: SESSION_CONVERSATION_SCHEMA_VERSION,
-      zvecSchemaVersion: ZVEC_CONVERSATION_SCHEMA_VERSION,
-      indexManifestVersion: RECALL_INDEX_MANIFEST_VERSION,
+      generationFormatVersion: RECALL_GENERATION_FORMAT_VERSION,
+      generationStoreFormatVersion: RECALL_GENERATION_STORE_FORMAT_VERSION,
+      validationReceiptVersion: RECALL_GENERATION_VALIDATION_RECEIPT_VERSION,
       incrementalEligibilityPolicyVersion: INCREMENTAL_RECALL_ELIGIBILITY_POLICY_VERSION,
     },
     evaluationIdentity: {

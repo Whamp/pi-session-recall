@@ -27,10 +27,10 @@ import {
   type RecallConversationConfig,
 } from './recall-conversation-service.js';
 import {
-  readRecallIndexManifest,
   RECALL_EMBEDDING_CANARY_TEXT,
   type RecallTokenizerManifestIdentity,
 } from './recall-index-manifest.js';
+import { readRecallGenerationManifest } from './recall-generation-manifest.js';
 import {
   createRecommendedQmdQueryPlanningModelProfile,
   createRecommendedQwenRerankingModelProfile,
@@ -110,9 +110,9 @@ void test('committed recall quality corpus remains indexable through the public 
 
 void test('query-planned quality uses hybrid retrieval for the pre-rerank scope control', async (t) => {
   const projectDirectory = dirname(dirname(fileURLToPath(import.meta.url)));
-  const directory = await mkdtemp(
-    join(projectDirectory, 'evaluation', '.recall-data', 'query-planned-scope-control-'),
-  );
+  const evaluationDataDirectory = join(projectDirectory, 'evaluation', '.recall-data');
+  await mkdir(evaluationDataDirectory, { recursive: true });
+  const directory = await mkdtemp(join(evaluationDataDirectory, 'query-planned-scope-control-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const corpus = await loadRecallQualityCorpus(
     join(projectDirectory, 'evaluation', 'recall-quality-cases.json'),
@@ -369,11 +369,11 @@ void test('recall quality runner indexes and searches only the bounded declared 
     },
   });
 
-  assert.equal(result.version, 5);
+  assert.equal(result.version, 6);
   assert.deepEqual(result.storageIdentity, {
-    conversationSchemaVersion: 9,
-    zvecSchemaVersion: 8,
-    indexManifestVersion: 6,
+    generationFormatVersion: 1,
+    generationStoreFormatVersion: 1,
+    validationReceiptVersion: 1,
     incrementalEligibilityPolicyVersion: 1,
   });
   assert.equal(result.boundedWork.indexRuns, 1);
@@ -398,6 +398,14 @@ void test('recall quality runner indexes and searches only the bounded declared 
   });
   assert.equal(result.indexRuns.length, 1);
   assert.ok(result.indexRuns.every(({ indexSummary }) => indexSummary.scannedSessions === 1));
+  assert.equal(result.indexRuns[0]?.generationId, 'generation_quality_active');
+  assert.match(result.indexRuns[0]?.manifestFingerprint ?? '', /^[a-f0-9]{64}$/u);
+  assert.match(result.indexRuns[0]?.startingSnapshotFingerprint ?? '', /^[a-f0-9]{64}$/u);
+  assert.deepEqual(result.indexRuns[0]?.storeCounts, {
+    lexicalSource: 2,
+    dense: 1,
+    sessionProjection: 2,
+  });
   assert.equal(result.configurations.length, 1);
   assert.equal(result.selection.passed, true);
   assert.equal(result.selection.selected?.candidateCount, 8);
@@ -484,7 +492,7 @@ void test('recall quality runner indexes and searches only the bounded declared 
       },
     },
   });
-  const profileManifest = await readRecallIndexManifest(
+  const profileManifest = await readRecallGenerationManifest(
     join(
       profileWorkDirectory,
       '512-64',
@@ -494,9 +502,13 @@ void test('recall quality runner indexes and searches only the bounded declared 
     ),
   );
   assert.equal(profileResult.selection.passed, true);
-  assert.equal(profileManifest?.embedding.requestModel, 'bounded-profile');
-  assert.equal(profileManifest?.embedding.dimensions, 3);
-  assert.deepEqual(profileManifest?.tokenizer, tokenizerIdentity);
+  assert.equal(
+    profileManifest.manifest.embeddingProfile.modelIdentity.requestModel,
+    'bounded-profile',
+  );
+  assert.equal(profileManifest.manifest.embeddingProfile.storedDimensions, 3);
+  assert.equal(profileManifest.manifest.stores.lexicalSource.vectorFields.length, 0);
+  assert.equal(profileManifest.manifest.stores.dense.vectorFields[0]?.dimensions, 3);
 
   await assert.rejects(
     () =>

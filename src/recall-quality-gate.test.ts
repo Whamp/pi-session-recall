@@ -43,15 +43,65 @@ async function createPassingQualityEvidence(
   if (!isUnknownRecord(boundedWork)) {
     throw new Error('Recall quality gate test fixture invalid: expected bounded work');
   }
+  const indexRuns = Reflect.get(result, 'indexRuns');
+  if (!Array.isArray(indexRuns)) {
+    throw new Error('Recall quality gate test fixture invalid: expected index runs');
+  }
   Reflect.set(specification, 'projectLineages', {});
   Reflect.set(specification, 'projectIdentityFixtures', []);
+  Reflect.set(result, 'version', 6);
+  Reflect.set(result, 'storageIdentity', {
+    generationFormatVersion: 1,
+    generationStoreFormatVersion: 1,
+    validationReceiptVersion: 1,
+    incrementalEligibilityPolicyVersion: 1,
+  });
   Reflect.set(result, 'evaluationIdentity', evaluationIdentity);
+  for (const indexRun of indexRuns) {
+    if (!isUnknownRecord(indexRun)) {
+      throw new Error('Recall quality gate test fixture invalid: expected index run object');
+    }
+    const indexSummary = Reflect.get(indexRun, 'indexSummary');
+    const totalChunks = Reflect.get(indexRun, 'totalChunks');
+    if (!isUnknownRecord(indexSummary) || typeof totalChunks !== 'number') {
+      throw new Error('Recall quality gate test fixture invalid: expected index run counts');
+    }
+    const newlyEmbeddedChunks = Reflect.get(indexSummary, 'newlyEmbeddedChunks');
+    if (typeof newlyEmbeddedChunks !== 'number') {
+      throw new Error('Recall quality gate test fixture invalid: expected dense count');
+    }
+    Reflect.set(indexSummary, 'cacheHits', 0);
+    Reflect.set(indexRun, 'generationId', 'generation_quality_active');
+    Reflect.set(indexRun, 'manifestFingerprint', 'a'.repeat(64));
+    Reflect.set(indexRun, 'startingSnapshotFingerprint', 'b'.repeat(64));
+    Reflect.set(indexRun, 'storeCounts', {
+      lexicalSource: totalChunks + 100,
+      dense: newlyEmbeddedChunks,
+      sessionProjection: 30,
+    });
+  }
   Reflect.set(boundedWork, 'repositoryIdentityResolutions', 0);
   return evidence;
 }
 
-void test('committed project-scoped quality evidence approves its measured policy', async () => {
+void test('committed legacy-storage quality evidence approves no target policy', async () => {
   const decision = await readRecallQualityGateDecision(RECALL_QUALITY_RESULTS_PATH);
+
+  assert.equal(decision.automatedGatePassed, false);
+  assert.equal(decision.selectedPolicy, null);
+  assert.match(decision.blockers.join('; '), /evidence version 5.*rerun/i);
+});
+
+void test('clean target-generation quality evidence approves its measured policy', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-quality-target-gate-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const resultsPath = join(directory, 'results.json');
+  await writeFile(
+    resultsPath,
+    JSON.stringify(await createPassingQualityEvidence(CURRENT_EVALUATION_IDENTITY)),
+  );
+
+  const decision = await readRecallQualityGateDecision(resultsPath);
 
   assert.equal(decision.automatedGatePassed, true);
   assert.deepEqual(decision.selectedPolicy, {
@@ -66,7 +116,7 @@ void test('quality evidence without measurements or bounded work cannot approve 
   const directory = await mkdtemp(join(tmpdir(), 'recall-quality-truncated-gate-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const resultsPath = join(directory, 'results.json');
-  const evidence: unknown = JSON.parse(await readFile(RECALL_QUALITY_RESULTS_PATH, 'utf8'));
+  const evidence = await createPassingQualityEvidence(CURRENT_EVALUATION_IDENTITY);
   if (!isUnknownRecord(evidence)) {
     throw new Error('Recall quality gate test fixture invalid: expected evidence object');
   }
@@ -255,7 +305,7 @@ void test('quality evidence rejects a stale incremental storage identity', async
   const decision = await readRecallQualityGateDecision(resultsPath);
 
   assert.equal(decision.automatedGatePassed, false);
-  assert.match(decision.blockers.join('; '), /incremental storage identity does not match/i);
+  assert.match(decision.blockers.join('; '), /target generation storage identity does not match/i);
 });
 
 void test('quality evidence rejects a stale rank-fusion identity', async (t) => {

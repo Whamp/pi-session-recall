@@ -77,7 +77,7 @@ interface RecallFixedSnapshotDescriptor {
   sources: RecallFixedSnapshotSourceDescriptor[];
 }
 
-interface RecallExpectedPhysicalSourceArtifact extends MaterializedRecallPhysicalSourceGeneration {
+interface RecallMaterializedExpectedPhysicalSourceArtifact extends MaterializedRecallPhysicalSourceGeneration {
   version: 1;
   generationId: string;
   physicalSourceIdentity: string;
@@ -85,6 +85,21 @@ interface RecallExpectedPhysicalSourceArtifact extends MaterializedRecallPhysica
   sourceByteSize: number;
   sourceChecksum: string;
 }
+
+interface RecallSkippedExpectedPhysicalSourceArtifact {
+  version: 1;
+  generationId: string;
+  physicalSourceIdentity: string;
+  sessionsRootRelativePath: string;
+  sourceByteSize: number;
+  sourceChecksum: string;
+  skipReason: 'invalid-session-source';
+  skipMessage: string;
+}
+
+type RecallExpectedPhysicalSourceArtifact =
+  | RecallMaterializedExpectedPhysicalSourceArtifact
+  | RecallSkippedExpectedPhysicalSourceArtifact;
 
 const checksumSchema = Type.String({ pattern: '^[a-f0-9]{64}$' });
 const scalarRowSchema = Type.Object(
@@ -122,7 +137,7 @@ const fixedSnapshotDescriptorSchema = Type.Object(
   },
   { additionalProperties: false },
 );
-const expectedPhysicalSourceArtifactSchema = Type.Object(
+const materializedExpectedPhysicalSourceArtifactSchema = Type.Object(
   {
     version: Type.Literal(FIXED_SNAPSHOT_BUILD_VERSION),
     generationId: Type.String({ pattern: '^[A-Za-z0-9_-]+$' }),
@@ -142,6 +157,46 @@ const expectedPhysicalSourceArtifactSchema = Type.Object(
   },
   { additionalProperties: false },
 );
+const skippedExpectedPhysicalSourceArtifactSchema = Type.Object(
+  {
+    version: Type.Literal(FIXED_SNAPSHOT_BUILD_VERSION),
+    generationId: Type.String({ pattern: '^[A-Za-z0-9_-]+$' }),
+    physicalSourceIdentity: Type.String({ minLength: 1 }),
+    sessionsRootRelativePath: Type.String({ minLength: 1 }),
+    sourceByteSize: Type.Integer({ minimum: 0 }),
+    sourceChecksum: checksumSchema,
+    skipReason: Type.Literal('invalid-session-source'),
+    skipMessage: Type.String({ minLength: 1 }),
+  },
+  { additionalProperties: false },
+);
+const expectedPhysicalSourceArtifactSchema = Type.Union([
+  materializedExpectedPhysicalSourceArtifactSchema,
+  skippedExpectedPhysicalSourceArtifactSchema,
+]);
+
+const INVALID_RECALL_SESSION_SOURCE_ERROR_PREFIXES = [
+  'Recall session JSON invalid at ',
+  'Recall session graph invalid at ',
+  'Recall session import unsupported or ambiguous at ',
+  'Recall v1 session invalid at ',
+  'Recall rebuild source contains no logical session: ',
+  'Recall rebuild source projection requires reconciliation: ',
+  'Recall rebuild source projection failed: ',
+] as const;
+
+function isInvalidRecallSessionSourceError(error: unknown): error is Error {
+  return (
+    error instanceof Error &&
+    INVALID_RECALL_SESSION_SOURCE_ERROR_PREFIXES.some((prefix) => error.message.startsWith(prefix))
+  );
+}
+
+function isSkippedExpectedPhysicalSourceArtifact(
+  artifact: Readonly<RecallExpectedPhysicalSourceArtifact>,
+): artifact is RecallSkippedExpectedPhysicalSourceArtifact {
+  return 'skipReason' in artifact;
+}
 
 function calculateSha256(value: string | Uint8Array): string {
   return createHash('sha256').update(value).digest('hex');
@@ -411,22 +466,39 @@ async function materializeExpectedPhysicalSource(
       `Recall fixed snapshot generation captured source mismatch for ${source.physicalSourceIdentity}`,
     );
   }
-  const materialized = await materializeRecallPhysicalSourceGeneration(
-    config,
-    generationId,
-    physicalSessionPath,
-    dependencies,
-    snapshotPath,
-  );
-  const artifact = Value.Parse(expectedPhysicalSourceArtifactSchema, {
-    version: FIXED_SNAPSHOT_BUILD_VERSION,
-    generationId,
-    physicalSourceIdentity: source.physicalSourceIdentity,
-    sessionsRootRelativePath: source.sessionsRootRelativePath,
-    sourceByteSize: source.sourceByteSize,
-    sourceChecksum: source.sourceChecksum,
-    ...materialized,
-  });
+  let artifact: RecallExpectedPhysicalSourceArtifact;
+  try {
+    const materialized = await materializeRecallPhysicalSourceGeneration(
+      config,
+      generationId,
+      physicalSessionPath,
+      dependencies,
+      snapshotPath,
+    );
+    artifact = Value.Parse(expectedPhysicalSourceArtifactSchema, {
+      version: FIXED_SNAPSHOT_BUILD_VERSION,
+      generationId,
+      physicalSourceIdentity: source.physicalSourceIdentity,
+      sessionsRootRelativePath: source.sessionsRootRelativePath,
+      sourceByteSize: source.sourceByteSize,
+      sourceChecksum: source.sourceChecksum,
+      ...materialized,
+    });
+  } catch (error) {
+    if (!isInvalidRecallSessionSourceError(error)) {
+      throw error;
+    }
+    artifact = Value.Parse(expectedPhysicalSourceArtifactSchema, {
+      version: FIXED_SNAPSHOT_BUILD_VERSION,
+      generationId,
+      physicalSourceIdentity: source.physicalSourceIdentity,
+      sessionsRootRelativePath: source.sessionsRootRelativePath,
+      sourceByteSize: source.sourceByteSize,
+      sourceChecksum: source.sourceChecksum,
+      skipReason: 'invalid-session-source',
+      skipMessage: error.message,
+    });
+  }
   const content = encodeStrictJson(artifact);
   await writeFile(artifactPath, content, { encoding: 'utf8', flag: 'wx' });
   return { artifact, fingerprint: calculateSha256(content) };
@@ -645,7 +717,7 @@ async function resolveDenseRows(
 async function writeExpectedPhysicalSource(
   config: Readonly<RecallCoherentGenerationConfig>,
   generationDirectory: string,
-  artifact: Readonly<RecallExpectedPhysicalSourceArtifact>,
+  artifact: Readonly<RecallMaterializedExpectedPhysicalSourceArtifact>,
   expectedArtifactFingerprint: string,
   buildVectorsByReuseKey: Map<string, number[]>,
   dependencies: Readonly<RecallPhysicalSourceGenerationDependencies>,
@@ -812,6 +884,9 @@ async function validateExpectedFixedSnapshotArtifacts(
   const sessionProjection = ZVecOpen(paths.sessionProjectionStorePath, { readOnly: true });
   try {
     for (const { artifact } of artifacts) {
+      if (isSkippedExpectedPhysicalSourceArtifact(artifact)) {
+        continue;
+      }
       verifyExpectedScalarRows(lexicalSource, 'lexical/source validation', artifact.lexicalSource);
       verifyExpectedScalarRows(
         sessionProjection,
@@ -1024,16 +1099,18 @@ export async function buildRecallFixedSnapshotGeneration(
         buildDependencies,
       );
       artifacts.push(expected);
-      await writeExpectedPhysicalSource(
-        config,
-        generationDirectory,
-        expected.artifact,
-        expected.fingerprint,
-        buildVectorsByReuseKey,
-        buildDependencies,
-        validatedVectorSource,
-        options.signal,
-      );
+      if (!isSkippedExpectedPhysicalSourceArtifact(expected.artifact)) {
+        await writeExpectedPhysicalSource(
+          config,
+          generationDirectory,
+          expected.artifact,
+          expected.fingerprint,
+          buildVectorsByReuseKey,
+          buildDependencies,
+          validatedVectorSource,
+          options.signal,
+        );
+      }
       options.onPhysicalSourceCheckpoint?.({
         physicalSourceIdentity: source.physicalSourceIdentity,
         sessionsRootRelativePath: source.sessionsRootRelativePath,
@@ -1055,14 +1132,26 @@ export async function buildRecallFixedSnapshotGeneration(
 
   const expectedRecordIds = {
     lexicalSource: artifacts
-      .flatMap(({ artifact }) => artifact.lexicalSource.map(({ id }) => id))
+      .flatMap(({ artifact }) =>
+        isSkippedExpectedPhysicalSourceArtifact(artifact)
+          ? []
+          : artifact.lexicalSource.map(({ id }) => id),
+      )
       .toSorted(),
-    dense: artifacts.flatMap(({ artifact }) => artifact.dense.map(({ id }) => id)).toSorted(),
+    dense: artifacts
+      .flatMap(({ artifact }) =>
+        isSkippedExpectedPhysicalSourceArtifact(artifact) ? [] : artifact.dense.map(({ id }) => id),
+      )
+      .toSorted(),
     sessionProjection: artifacts
-      .flatMap(({ artifact }) => [
-        ...artifact.logicalSessionProjections.map(({ id }) => id),
-        artifact.physicalSessionProjection.id,
-      ])
+      .flatMap(({ artifact }) =>
+        isSkippedExpectedPhysicalSourceArtifact(artifact)
+          ? []
+          : [
+              ...artifact.logicalSessionProjections.map(({ id }) => id),
+              artifact.physicalSessionProjection.id,
+            ],
+      )
       .toSorted(),
   };
   if (
@@ -1106,7 +1195,11 @@ export async function buildRecallFixedSnapshotGeneration(
       startingSnapshotFingerprint,
       physicalSourceCount: snapshot.sources.length,
       logicalSessionOccurrenceCount: artifacts.reduce(
-        (count, { artifact }) => count + artifact.logicalSessionOccurrenceIds.length,
+        (count, { artifact }) =>
+          count +
+          (isSkippedExpectedPhysicalSourceArtifact(artifact)
+            ? 0
+            : artifact.logicalSessionOccurrenceIds.length),
         0,
       ),
       lexicalSourceRecordIds: expectedRecordIds.lexicalSource,

@@ -590,6 +590,133 @@ void test('configured fixed-snapshot build waits for a transient checkpoint stor
   assert.deepEqual(await service.openValidatedRecallGeneration(generationId), created);
 });
 
+void test('configured fixed-snapshot build records and skips one invalid legacy source', async (t) => {
+  const disposableRoot = await mkdtemp(join(tmpdir(), 'recall-fixed-snapshot-invalid-source-'));
+  t.after(() => rm(disposableRoot, { recursive: true, force: true }));
+  const sessionsDirectory = join(disposableRoot, 'sessions');
+  const dataDirectory = join(disposableRoot, 'recall');
+  const projectDirectory = join(disposableRoot, 'project');
+  const invalidSourcePath = join(sessionsDirectory, 'legacy-invalid.jsonl');
+  const healthySourcePath = join(sessionsDirectory, 'healthy.jsonl');
+  await Promise.all([mkdir(sessionsDirectory), mkdir(dataDirectory), mkdir(projectDirectory)]);
+  await writeJsonl(invalidSourcePath, [
+    {
+      type: 'session',
+      version: 3,
+      id: 'legacy-invalid-session',
+      timestamp: '2026-08-04T00:00:00.000Z',
+      cwd: projectDirectory,
+    },
+    {
+      type: 'message',
+      id: 'legacy-orphan-message',
+      parentId: 'legacy-missing-parent',
+      timestamp: '2026-08-04T00:00:01.000Z',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'BROKEN_LEGACY_SOURCE must not block the rebuild.' }],
+      },
+    },
+  ]);
+  await writeJsonl(healthySourcePath, [
+    {
+      type: 'session',
+      version: 3,
+      id: 'healthy-session',
+      timestamp: '2026-08-05T00:00:00.000Z',
+      cwd: projectDirectory,
+    },
+    {
+      type: 'message',
+      id: 'healthy-message',
+      parentId: null,
+      timestamp: '2026-08-05T00:00:01.000Z',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'HEALTHY_SOURCE_AFTER_INVALID remains searchable.' }],
+      },
+    },
+  ]);
+
+  const profile = createOctenEmbeddingModelProfile(
+    {
+      requestModel: 'fixture-native-model',
+      servedModelId: 'fixture/native-model',
+      artifact: 'fixture-native-model.fp32',
+      artifactSha256: '1'.repeat(64),
+      dimensions: 3,
+      quantization: 'fp32',
+      pooling: 'last',
+      normalization: 'l2',
+    },
+    2,
+  );
+  const config = createPhysicalSourceGenerationTestConfig(dataDirectory, sessionsDirectory);
+  const checkpoints: string[] = [];
+  const service = createRecallConversationService(config, {
+    embeddingProfile: profile,
+    embeddingProvider: {
+      async embedDocuments(documents) {
+        return documents.map(() => [3, 4, 100]);
+      },
+      async embedQuery() {
+        return [3, 4, 100];
+      },
+    },
+    tokenizerIdentity: {
+      model: 'fixture-tokenizer',
+      revision: 'fixture-revision',
+      library: { name: 'fixture-tokenizer', version: '1' },
+      encodeOptions: { addSpecialTokens: false, returnTokenTypeIds: false },
+      assets: [{ fileName: 'fixture-tokenizer.json', sha256: '2'.repeat(64) }],
+    },
+    loadTokenizer: async () => tokenizer,
+    workerSignal: { signalDetachedWorker() {} },
+  });
+
+  const generationId = 'generation_skips_invalid_legacy_source';
+  const created = await service.createRecallGenerationFromPhysicalSources({
+    generationId,
+    physicalSessionPaths: [invalidSourcePath, healthySourcePath],
+    onPhysicalSourceCheckpoint(checkpoint) {
+      checkpoints.push(checkpoint.sessionsRootRelativePath);
+    },
+  });
+  assert.deepEqual(checkpoints, ['legacy-invalid.jsonl', 'healthy.jsonl']);
+  assert.ok(created.storeCounts.lexicalSource > 0);
+  assert.ok(
+    (await service.searchRecallGenerationLexical(generationId, 'HEALTHY_SOURCE_AFTER_INVALID', 10))
+      .length > 0,
+  );
+  assert.deepEqual(
+    await service.searchRecallGenerationLexical(generationId, 'BROKEN_LEGACY_SOURCE', 10),
+    [],
+  );
+
+  const invalidPhysicalSource = resolveRecallPhysicalSourceIdentity(
+    sessionsDirectory,
+    invalidSourcePath,
+  );
+  const skippedArtifact: unknown = JSON.parse(
+    await readFile(
+      join(
+        config.generationRootDirectory,
+        generationId,
+        'expected-sources',
+        `${invalidPhysicalSource.physicalSourceIdentity}.json`,
+      ),
+      'utf8',
+    ),
+  );
+  assert.ok(isUnknownRecord(skippedArtifact));
+  assert.equal(skippedArtifact.skipReason, 'invalid-session-source');
+  assert.match(
+    String(skippedArtifact.skipMessage),
+    /entry legacy-orphan-message has missing parent/u,
+  );
+  assert.deepEqual(await service.openValidatedRecallGeneration(generationId), created);
+});
+
 void test('configured service resolves current-build duplicates before copying a validated compatible generation', async (t) => {
   const disposableRoot = await mkdtemp(join(tmpdir(), 'recall-fixed-snapshot-vector-lanes-'));
   t.after(() => rm(disposableRoot, { recursive: true, force: true }));

@@ -38,12 +38,7 @@ import type { ConversationTextTokenizer } from './session-conversation-index.js'
 const tokenizer: ConversationTextTokenizer = {
   encodeConversationText(text) {
     return {
-      ids: text.trim()
-        ? text
-            .trim()
-            .split(/\s+/u)
-            .map((_, index) => index + 1)
-        : [],
+      ids: text.trim() ? Array.from(text.trim().split(/\s+/u).keys(), (index) => index + 1) : [],
     };
   },
 };
@@ -305,7 +300,8 @@ void test('configured service serves every existing search mode from the active 
       scoreRange: { minimum: 0, maximum: 1 },
     },
     reranker: {
-      async rerankDocuments(_query, documents) {
+      async rerankDocuments(query, documents) {
+        void query;
         return documents.map((document) => (document.includes('retained decision') ? 0.9 : 0.1));
       },
     },

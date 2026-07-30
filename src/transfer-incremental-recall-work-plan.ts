@@ -23,14 +23,18 @@ import type { RecallChunkPolicy } from './recall-chunk-policy.js';
 import type { RecallCoherentGenerationConfig } from './recall-coherent-generation.js';
 import {
   assertRecallGenerationManifestCompatible,
+  createRecallGenerationManifest,
   readRecallGenerationManifest,
 } from './recall-generation-manifest.js';
 import { createRecallPhysicalSourceStoreMembership } from './recall-generation-physical-projection.js';
 import {
   createRecallGenerationComponentPaths,
-  createRecallGenerationStoreContracts,
   readRecallGenerationVectorValues,
 } from './recall-generation-stores.js';
+import {
+  readRecallActiveGenerationPointer,
+  readRecallGenerationRegistry,
+} from './recall-generation-state.js';
 import { readRecallGenerationValidationReceipt } from './recall-generation-validation-receipt.js';
 import type { RecallEmbeddingProvider } from './recall-inference-capabilities.js';
 import { acknowledgeCoveredRecallMarkers } from './recall-marker-spool.js';
@@ -208,6 +212,52 @@ function createDeferredTransfer(
     threshold,
     readyAtEpochMilliseconds,
   };
+}
+
+function targetGenerationIdForIncrementalTransfer(
+  options: TransferIncrementalRecallWorkPlanOptions,
+): string {
+  if (options.confirmedPhysicalSourceDeletion !== undefined) {
+    return options.confirmedPhysicalSourceDeletion.targetGenerationId;
+  }
+  if (options.physicalSessionProjectionUpdate !== undefined) {
+    return options.physicalSessionProjectionUpdate.workPlan.targetGenerationId;
+  }
+  return options.workPlan.targetGenerationId;
+}
+
+async function assertConfiguredIncrementalTransferManifest(
+  options: TransferIncrementalRecallWorkPlanOptions,
+  generationId: string,
+): Promise<void> {
+  const generationDirectory = join(options.generation.generationRootDirectory, generationId);
+  const manifestPath = createRecallGenerationComponentPaths(generationDirectory).manifestPath;
+  const actualManifest = await readRecallGenerationManifest(manifestPath);
+  const expectedManifest = createRecallGenerationManifest({
+    generationId,
+    embeddingProfileId: options.generation.embeddingProfileId,
+    embeddingProfile: options.generation.embeddingProfile,
+    projectLineages: options.generation.projectLineages,
+    chunkPolicy: options.chunkPolicy,
+  });
+  assertRecallGenerationManifestCompatible(actualManifest.manifest, expectedManifest, manifestPath);
+}
+
+async function assertIncrementalTransferTargetRemainsActive(
+  options: IncrementalRecallTransferServices,
+  generationId: string,
+): Promise<void> {
+  const [pointer, registry] = await Promise.all([
+    readRecallActiveGenerationPointer(options.generation.activeGenerationPointerPath),
+    readRecallGenerationRegistry(options.generation.generationRegistryPath),
+  ]);
+  if (
+    pointer?.activeGenerationId !== generationId ||
+    registry?.activeGenerationId !== generationId ||
+    registry.activePointerChecksum !== pointer.checksum
+  ) {
+    throw new Error('Recall target incremental transfer generation is no longer active');
+  }
 }
 
 function fieldsMatch(
@@ -1025,6 +1075,7 @@ async function recoverPendingIncrementalTransfer(
       ...(options.signal ? { signal: options.signal } : {}),
     },
     async (writeWindow) => {
+      await assertIncrementalTransferTargetRemainsActive(options, generationId);
       const lexicalSource = ZVecOpen(paths.lexicalSourceStorePath);
       const dense = ZVecOpen(paths.denseStorePath);
       const sessionProjection = ZVecOpen(paths.sessionProjectionStorePath);
@@ -1141,6 +1192,7 @@ async function commitPreparedTargetTransfer(
         ...(options.signal ? { signal: options.signal } : {}),
       },
       async (writeWindow) => {
+        await assertIncrementalTransferTargetRemainsActive(options, generationId);
         await invokeIncrementalTransferFault(
           options,
           'before-recovery-record',
@@ -1351,6 +1403,7 @@ async function transferConfirmedPhysicalSourceDeletion(
       ...(options.signal ? { signal: options.signal } : {}),
     },
     async (writeWindow) => {
+      await assertIncrementalTransferTargetRemainsActive(options, request.targetGenerationId);
       let denseIds: string[];
       let lexicalSourceIds: string[];
       let projectionIds: string[];
@@ -1645,6 +1698,8 @@ async function transferPhysicalSessionProjectionUpdate(
 export async function transferIncrementalRecallWorkPlan(
   options: TransferIncrementalRecallWorkPlanOptions,
 ): Promise<IncrementalRecallWorkPlanTransferOutcome> {
+  const generationId = targetGenerationIdForIncrementalTransfer(options);
+  await assertConfiguredIncrementalTransferManifest(options, generationId);
   if (options.confirmedPhysicalSourceDeletion !== undefined) {
     return transferConfirmedPhysicalSourceDeletion(options);
   }
@@ -1656,24 +1711,8 @@ export async function transferIncrementalRecallWorkPlan(
   if (firstMarker === undefined) {
     throw new Error('Recall target incremental transfer requires at least one marker work item');
   }
-  const generationId = options.workPlan.targetGenerationId;
   const generationDirectory = join(options.generation.generationRootDirectory, generationId);
   const paths = createRecallGenerationComponentPaths(generationDirectory);
-  const expectedManifest = await readRecallGenerationManifest(paths.manifestPath);
-  const contracts = createRecallGenerationStoreContracts(
-    generationId,
-    options.generation.embeddingProfile.storedDimensions ??
-      options.generation.embeddingProfile.identity.dimensions,
-  );
-  assertRecallGenerationManifestCompatible(
-    expectedManifest.manifest,
-    {
-      ...expectedManifest.manifest,
-      generationId,
-      stores: contracts,
-    },
-    paths.manifestPath,
-  );
   await readRecallGenerationValidationReceipt(paths.validationReceiptPath);
   const physicalSource = resolveRecallPhysicalSourceIdentity(
     options.generation.sessionsDirectory,

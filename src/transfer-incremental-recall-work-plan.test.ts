@@ -18,6 +18,7 @@ import { ZVecOpen } from '@zvec/zvec';
 
 import type { RecallConversationConfig } from './recall-conversation-config.js';
 import { createRecallConversationService } from './recall-conversation-service.js';
+import { createInitialRecallPhysicalProjection } from './create-recall-session-projection-baseline.js';
 import {
   RecallDiagnosticsMode,
   RecallGenerationCutoverState,
@@ -108,11 +109,15 @@ void test('configured transfer appends target evidence before acknowledging its 
   const transferWindowDocumentCounts: number[] = [];
   let rejectedTransferStage: string | null = null;
   let rejectedTransferBatchIndex: number | null = null;
+  let changeActiveGenerationDuringEmbedding: (() => Promise<void>) | undefined;
   const service = createRecallConversationService(config, {
     embeddingProfile: profile,
     embeddingProvider: {
       async embedDocuments(documents) {
         embeddedDocuments.push([...documents]);
+        const changeActiveGeneration = changeActiveGenerationDuringEmbedding;
+        changeActiveGenerationDuringEmbedding = undefined;
+        await changeActiveGeneration?.();
         return documents.map(() => [3, 0, 4]);
       },
       async embedQuery() {
@@ -167,6 +172,10 @@ void test('configured transfer appends target evidence before acknowledging its 
   });
   const generationId = 'generation_incremental_target';
   const opened = await service.createEmptyRecallGeneration({ generationId });
+  const alternateGenerationId = 'generation_incremental_alternate';
+  const alternateOpened = await service.createEmptyRecallGeneration({
+    generationId: alternateGenerationId,
+  });
   const pointer = createRecallActiveGenerationPointer(generationId);
   await writeRecallGenerationRegistry(config.generationRegistryPath, {
     version: RECALL_GENERATION_REGISTRY_VERSION,
@@ -273,6 +282,60 @@ void test('configured transfer appends target evidence before acknowledging its 
   });
   assert.deepEqual(embeddedDocuments, [['incremental target seam evidence'], []]);
 
+  const configuredProjection = await createInitialRecallPhysicalProjection({
+    physicalSessionId,
+    physicalSessionPath,
+    generationId,
+  });
+  config.chunkPolicy = { maxTokens: 48, overlapTokens: 8 };
+  await writeFile(markerPath, '{}\n');
+  const incompatibleManifestPattern = /Recall coherent generation manifest incompatible/u;
+  await assert.rejects(
+    () =>
+      service.transferIncrementalRecallWorkPlan({
+        targetGenerationId: generationId,
+        markerSpoolDirectory: config.markerSpoolDirectory,
+        discoveredMarkerCount: 1,
+        sourceMarkerIds: [marker.markerId],
+        workItems: [{ marker, coveredMarkerIds: [marker.markerId] }],
+        quarantineDiagnostics: [],
+      }),
+    incompatibleManifestPattern,
+  );
+  await assert.rejects(
+    () =>
+      service.transferIncrementalRecallWorkPlan({
+        physicalSessionProjectionUpdate: {
+          workPlan: {
+            targetGenerationId: generationId,
+            markerSpoolDirectory: config.markerSpoolDirectory,
+            discoveredMarkerCount: 1,
+            sourceMarkerIds: [marker.markerId],
+            workItems: [{ marker, coveredMarkerIds: [marker.markerId] }],
+            quarantineDiagnostics: [],
+          },
+          projection: configuredProjection,
+        },
+      }),
+    incompatibleManifestPattern,
+  );
+  await assert.rejects(
+    () =>
+      service.transferIncrementalRecallWorkPlan({
+        confirmedPhysicalSourceDeletion: {
+          targetGenerationId: generationId,
+          physicalSourceIdentity: resolveRecallPhysicalSourceIdentity(
+            config.sessionsDirectory,
+            physicalSessionPath,
+          ).physicalSourceIdentity,
+        },
+      }),
+    incompatibleManifestPattern,
+  );
+  await access(markerPath);
+  config.chunkPolicy = { maxTokens: 64, overlapTokens: 8 };
+  await rm(markerPath);
+
   await appendFile(
     physicalSessionPath,
     `${JSON.stringify({
@@ -299,6 +362,110 @@ void test('configured transfer appends target evidence before acknowledging its 
     markerId: createRecallWorkMarkerId(secondMarkerIdentity),
   };
   await writeFile(join(config.markerSpoolDirectory, `${secondMarker.markerId}.json`), '{}\n');
+  const alternatePointer = createRecallActiveGenerationPointer(alternateGenerationId);
+  changeActiveGenerationDuringEmbedding = async () => {
+    await writeRecallGenerationRegistry(config.generationRegistryPath, {
+      version: RECALL_GENERATION_REGISTRY_VERSION,
+      activeGenerationId: alternateGenerationId,
+      buildingGenerationId: null,
+      rollbackGenerationId: generationId,
+      activePointerChecksum: alternatePointer.checksum,
+      generations: [
+        {
+          generationId: alternateGenerationId,
+          state: RecallGenerationCutoverState.ACTIVE,
+          embeddingProfileId: createRecallEmbeddingProfileIdentity(profile),
+          indexManifestVersion: 6,
+          markerSchemaVersion: 1,
+          sessionProjectionSchemaVersion: 3,
+          indexManifestFingerprint: alternateOpened.manifestFingerprint,
+          rebuildStartedAtEpochMilliseconds: 3,
+          stateChangedAtEpochMilliseconds: 4,
+          rebuildStartMarkerId: null,
+          validatedAtEpochMilliseconds: 4,
+        },
+        {
+          generationId,
+          state: RecallGenerationCutoverState.ROLLBACK,
+          embeddingProfileId: createRecallEmbeddingProfileIdentity(profile),
+          indexManifestVersion: 6,
+          markerSchemaVersion: 1,
+          sessionProjectionSchemaVersion: 3,
+          indexManifestFingerprint: opened.manifestFingerprint,
+          rebuildStartedAtEpochMilliseconds: 1,
+          stateChangedAtEpochMilliseconds: 4,
+          rebuildStartMarkerId: null,
+          validatedAtEpochMilliseconds: 2,
+        },
+      ],
+    });
+    await writeRecallActiveGenerationPointer(config.activeGenerationPointerPath, alternatePointer);
+  };
+  await assert.rejects(
+    () =>
+      service.transferIncrementalRecallWorkPlan({
+        targetGenerationId: generationId,
+        markerSpoolDirectory: config.markerSpoolDirectory,
+        discoveredMarkerCount: 1,
+        sourceMarkerIds: [secondMarker.markerId],
+        workItems: [{ marker: secondMarker, coveredMarkerIds: [secondMarker.markerId] }],
+        quarantineDiagnostics: [],
+      }),
+    /Recall target incremental transfer generation is no longer active/u,
+  );
+  await access(join(config.markerSpoolDirectory, `${secondMarker.markerId}.json`));
+  assert.equal(
+    (
+      await service.searchRecallGenerationLexical(generationId, 'bounded append replay evidence', 5)
+    ).some(({ content }) => content === 'bounded append replay evidence'),
+    false,
+  );
+  assert.equal(
+    (
+      await service.searchRecallGenerationLexical(
+        alternateGenerationId,
+        'bounded append replay evidence',
+        5,
+      )
+    ).some(({ content }) => content === 'bounded append replay evidence'),
+    false,
+  );
+  await writeRecallGenerationRegistry(config.generationRegistryPath, {
+    version: RECALL_GENERATION_REGISTRY_VERSION,
+    activeGenerationId: generationId,
+    buildingGenerationId: null,
+    rollbackGenerationId: alternateGenerationId,
+    activePointerChecksum: pointer.checksum,
+    generations: [
+      {
+        generationId,
+        state: RecallGenerationCutoverState.ACTIVE,
+        embeddingProfileId: createRecallEmbeddingProfileIdentity(profile),
+        indexManifestVersion: 6,
+        markerSchemaVersion: 1,
+        sessionProjectionSchemaVersion: 3,
+        indexManifestFingerprint: opened.manifestFingerprint,
+        rebuildStartedAtEpochMilliseconds: 1,
+        stateChangedAtEpochMilliseconds: 5,
+        rebuildStartMarkerId: null,
+        validatedAtEpochMilliseconds: 2,
+      },
+      {
+        generationId: alternateGenerationId,
+        state: RecallGenerationCutoverState.ROLLBACK,
+        embeddingProfileId: createRecallEmbeddingProfileIdentity(profile),
+        indexManifestVersion: 6,
+        markerSchemaVersion: 1,
+        sessionProjectionSchemaVersion: 3,
+        indexManifestFingerprint: alternateOpened.manifestFingerprint,
+        rebuildStartedAtEpochMilliseconds: 3,
+        stateChangedAtEpochMilliseconds: 5,
+        rebuildStartMarkerId: null,
+        validatedAtEpochMilliseconds: 4,
+      },
+    ],
+  });
+  await writeRecallActiveGenerationPointer(config.activeGenerationPointerPath, pointer);
   const appendedOutcome = await service.transferIncrementalRecallWorkPlan({
     targetGenerationId: generationId,
     markerSpoolDirectory: config.markerSpoolDirectory,

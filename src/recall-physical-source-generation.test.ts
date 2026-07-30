@@ -8,9 +8,15 @@ import test from 'node:test';
 import { ZVecOpen } from '@zvec/zvec';
 
 import type { RecallConversationConfig } from './recall-conversation-config.js';
-import { RecallDiagnosticsMode } from './enums.js';
+import { RecallDiagnosticsMode, RecallGenerationCutoverState } from './enums.js';
 import { isUnknownRecord } from './is-unknown-record.js';
 import { createRecallConversationService } from './recall-conversation-service.js';
+import {
+  createRecallActiveGenerationPointer,
+  RECALL_GENERATION_REGISTRY_VERSION,
+  writeRecallActiveGenerationPointer,
+  writeRecallGenerationRegistry,
+} from './recall-generation-state.js';
 import {
   createOctenEmbeddingModelProfile,
   type RecallEmbeddingModelProfile,
@@ -22,10 +28,7 @@ import type { ConversationTextTokenizer } from './session-conversation-index.js'
 const tokenizer: ConversationTextTokenizer = {
   encodeConversationText(text) {
     return {
-      ids: text
-        .split(/\s+/u)
-        .filter(Boolean)
-        .map((_, index) => index),
+      ids: Array.from(text.split(/\s+/u).filter(Boolean).keys()),
     };
   },
 };
@@ -746,6 +749,29 @@ void test('configured service keys lexical evidence, anchors, and projections by
     generationId,
     physicalSessionPaths: [firstSourcePath, reusedSourcePath],
   });
+  const pointer = createRecallActiveGenerationPointer(generationId);
+  await writeRecallGenerationRegistry(config.generationRegistryPath, {
+    version: RECALL_GENERATION_REGISTRY_VERSION,
+    activeGenerationId: generationId,
+    buildingGenerationId: null,
+    rollbackGenerationId: null,
+    activePointerChecksum: pointer.checksum,
+    generations: [
+      {
+        generationId,
+        state: RecallGenerationCutoverState.ACTIVE,
+        indexManifestVersion: 6,
+        markerSchemaVersion: 1,
+        sessionProjectionSchemaVersion: 3,
+        indexManifestFingerprint: created.manifestFingerprint,
+        rebuildStartedAtEpochMilliseconds: 1,
+        stateChangedAtEpochMilliseconds: 2,
+        rebuildStartMarkerId: null,
+        validatedAtEpochMilliseconds: 2,
+      },
+    ],
+  });
+  await writeRecallActiveGenerationPointer(config.activeGenerationPointerPath, pointer);
 
   assert.deepEqual(created.storeCounts, {
     lexicalSource: 15,

@@ -730,7 +730,7 @@ void test('incremental worker retains a prepared transfer deferred to five minut
   await access(join(fixture.markerSpoolDirectory, `${fixture.marker.markerId}.json`));
 });
 
-void test('building generation freezes incremental commits while retaining published markers', async (t) => {
+void test('building a replacement generation does not freeze active incremental commits', async (t) => {
   const fixture = await createWorkerFixture(t);
   await fixture.publishMarker();
   const generationRegistryPath = join(fixture.controlDirectory, 'generation-registry.json');
@@ -767,6 +767,7 @@ void test('building generation freezes incremental commits while retaining publi
     ],
   });
   let heavyImportCount = 0;
+  let transferCount = 0;
 
   const result = await runRecallIncrementalWorker({
     markerSpoolDirectory: fixture.markerSpoolDirectory,
@@ -778,12 +779,20 @@ void test('building generation freezes incremental commits while retaining publi
     async loadHeavyDependencies() {
       heavyImportCount += 1;
     },
+    async transferWorkPlan() {
+      transferCount += 1;
+      return {
+        kind: RecallIncrementalTransferOutcomeKind.COMMITTED,
+        committedDocumentCount: 1,
+      };
+    },
   });
 
-  assert.equal(result.commitsFrozen, true);
-  assert.equal(result.heavyDependenciesLoaded, false);
+  assert.equal(result.commitsFrozen, false);
+  assert.equal(result.heavyDependenciesLoaded, true);
   assert.equal(result.workPlan.workItems.length, 1);
-  assert.equal(heavyImportCount, 0);
+  assert.equal(heavyImportCount, 1);
+  assert.equal(transferCount, 1);
   assert.equal(
     await readFile(
       join(fixture.markerSpoolDirectory, `${fixture.marker.markerId}.json`),

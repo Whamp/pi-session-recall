@@ -144,7 +144,7 @@ export function createQwenHttpRerankingProvider(
         }
         scoresByIndex.set(result.index, score);
       }
-      return documents.map((_, index) => {
+      return Array.from(documents.keys(), (index) => {
         const score = scoresByIndex.get(index);
         if (score === undefined) {
           throw new Error(`Recall Qwen HTTP reranking response missing candidate index ${index}`);

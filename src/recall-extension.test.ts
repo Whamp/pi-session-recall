@@ -481,7 +481,8 @@ void test('Pi recall waits for an active operation before shutdown disposal', as
       return {
         service: {
           ...service,
-          async search(_query, limit, options) {
+          async search(query, limit, options) {
+            void query;
             operationStarted.resolve();
             await releaseOperation.promise;
             return {

@@ -26,10 +26,7 @@ import type { ConversationTextTokenizer } from './session-conversation-index.js'
 const tokenizer: ConversationTextTokenizer = {
   encodeConversationText(text) {
     return {
-      ids: text
-        .split(/\s+/u)
-        .filter(Boolean)
-        .map((_, index) => index + 1),
+      ids: Array.from(text.split(/\s+/u).filter(Boolean).keys(), (index) => index + 1),
     };
   },
 };

@@ -447,11 +447,9 @@ export async function runRecallIncrementalWorker(
   ) {
     throw new Error('Recall incremental worker target does not match the generation registry');
   }
-  const buildingInProgress = registry?.buildingGenerationId != null;
   const activeGenerationEntry = registry?.generations.find(
     ({ generationId }) => generationId === registry.activeGenerationId,
   );
-  const commitsFrozen = buildingInProgress;
   let metadataSweepFollowUpRequired = options.metadataSweepRequested ?? false;
   let fixedReplayMarkerIds: readonly string[] | undefined;
   if (
@@ -551,17 +549,6 @@ export async function runRecallIncrementalWorker(
           ? null
           : RecallBacklogFailureCategory.MARKER_DECODE_FAILED,
     };
-  }
-  if (commitsFrozen) {
-    return finishWorkerResult({
-      workPlan,
-      metadataSweep: null,
-      heavyDependenciesLoaded: false,
-      commitsFrozen: true,
-      generationReplayCompleted: null,
-      transferOutcomes: [],
-      largeTransferDeferrals: [],
-    });
   }
   const physicalSourceStates = await Promise.all(
     splitRecallWorkPlanByPhysicalSession(workPlan).map(async (physicalWorkPlan) => ({

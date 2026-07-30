@@ -532,9 +532,10 @@ export async function materializeRecallPhysicalSourceGeneration(
       );
     }
     const projectAttribution = await dependencies.resolveProjectIdentity(chunk.cwd);
-    const childEntryIds = logicalSession.entryIds.filter(
-      (_, index) => logicalSession.parentEntryIds[index] === chunk.entryId.value,
-    );
+    const childEntryIds = logicalSession.entryIds.filter((entryId, index) => {
+      void entryId;
+      return logicalSession.parentEntryIds[index] === chunk.entryId.value;
+    });
     const branchPathLeafIds = createBranchLeafIdsByEntryId(logicalSession).get(chunk.entryId.value);
     const commonFields = createCommonLexicalFields({
       generationId,

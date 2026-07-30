@@ -87,14 +87,38 @@ const LEXICAL_SOURCE_SCALAR_FIELDS = Object.freeze([
   { name: 'generationId', type: 'string' },
   { name: 'recordKind', type: 'string' },
   { name: 'physicalSourceIdentity', type: 'string' },
+  { name: 'sessionsRootRelativePath', type: 'string' },
   { name: 'logicalSessionOccurrenceId', type: 'string' },
+  { name: 'rawSessionId', type: 'string' },
+  { name: 'headerSourceLine', type: 'int32' },
+  { name: 'entryAnchorId', type: 'string' },
   { name: 'entryId', type: 'string' },
   { name: 'parentEntryId', type: 'string' },
+  { name: 'childEntryIds', type: 'array-string' },
+  { name: 'branchPathLeafIds', type: 'array-string' },
   { name: 'sourceOrder', type: 'int64' },
+  { name: 'entryType', type: 'string' },
+  { name: 'timestamp', type: 'string' },
+  { name: 'entryStartByte', type: 'int64' },
+  { name: 'entryEndByte', type: 'int64' },
   { name: 'evidenceOccurrenceId', type: 'string' },
+  { name: 'documentKind', type: 'string' },
   { name: 'evidenceKind', type: 'string' },
   { name: 'evidencePart', type: 'string' },
+  { name: 'isDenseSearchable', type: 'boolean' },
+  { name: 'evidenceChecksum', type: 'string' },
   { name: 'projectIdentity', type: 'string' },
+  { name: 'sourceLineStart', type: 'int32' },
+  { name: 'sourceLineEnd', type: 'int32' },
+  { name: 'sourceBlockStart', type: 'int32' },
+  { name: 'sourceBlockEnd', type: 'int32' },
+  { name: 'characterStart', type: 'int32' },
+  { name: 'characterEnd', type: 'int32' },
+  { name: 'tokenStart', type: 'int32' },
+  { name: 'tokenEnd', type: 'int32' },
+  { name: 'textRunIndex', type: 'int32' },
+  { name: 'chunkIndex', type: 'int32' },
+  { name: 'recordJson', type: 'string' },
   {
     name: 'content',
     type: 'string',
@@ -111,6 +135,8 @@ const DENSE_SCALAR_FIELDS = Object.freeze([
   { name: 'schemaVersion', type: 'int32' },
   { name: 'generationId', type: 'string' },
   { name: 'evidenceOccurrenceId', type: 'string' },
+  { name: 'physicalSourceIdentity', type: 'string' },
+  { name: 'logicalSessionOccurrenceId', type: 'string' },
   { name: 'embeddingProfileId', type: 'string' },
   { name: 'storedDimensions', type: 'int32' },
   { name: 'evidenceChecksum', type: 'string' },
@@ -342,9 +368,11 @@ function assertRecallGenerationVectorSchema(
   }
 }
 
-function openAndValidateEmptyRecallGenerationStore(
+function openAndValidateRecallGenerationStore(
   storePath: string,
   contract: Readonly<RecallGenerationStoreContract>,
+  expectedGenerationId: string,
+  expectedRecordIds: readonly string[],
 ): ZVecCollection {
   if (!existsSync(storePath)) {
     throw new Error(
@@ -369,10 +397,30 @@ function openAndValidateEmptyRecallGenerationStore(
     }
     assertRecallGenerationScalarSchema(collection, contract);
     assertRecallGenerationVectorSchema(collection, contract);
-    if (collection.stats.docCount !== 0) {
+    if (collection.stats.docCount !== expectedRecordIds.length) {
       throw new Error(
-        `Recall coherent generation ${contract.responsibility} membership mismatch: expected 0 rows, received ${collection.stats.docCount}`,
+        `Recall coherent generation ${contract.responsibility} membership mismatch: expected ${expectedRecordIds.length} rows, received ${collection.stats.docCount}`,
       );
+    }
+    if (expectedRecordIds.length > 0) {
+      const fetched = collection.fetchSync({
+        ids: [...expectedRecordIds],
+        outputFields: ['generationId'],
+        includeVector: false,
+      });
+      if (Object.keys(fetched).length !== expectedRecordIds.length) {
+        throw new Error(
+          `Recall coherent generation ${contract.responsibility} exact membership mismatch`,
+        );
+      }
+      for (const recordId of expectedRecordIds) {
+        const generationId: unknown = fetched[recordId]?.fields.generationId;
+        if (generationId !== expectedGenerationId) {
+          throw new Error(
+            `Recall coherent generation ${contract.responsibility} row generation identity mismatch: ${recordId}`,
+          );
+        }
+      }
     }
     return collection;
   } catch (error) {
@@ -391,28 +439,110 @@ export function createEmptyRecallGenerationStores(
   createEmptyRecallGenerationStore(paths.sessionProjectionStorePath, contracts.sessionProjection);
 }
 
-/** Reopens every store read-only and validates exact empty membership and generation identity. */
-export function validateEmptyRecallGenerationStores(
+async function readRecallGenerationStoreRecordIds(
+  storePath: string,
+  responsibility: RecallGenerationStoreContract['responsibility'],
+): Promise<string[]> {
+  if (!existsSync(storePath)) {
+    throw new Error(`Recall coherent generation ${responsibility} store missing at ${storePath}`);
+  }
+  let collection: ZVecCollection;
+  try {
+    collection = ZVecOpen(storePath, { readOnly: true });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `Recall coherent generation ${responsibility} store open failed at ${storePath}: ${message}`,
+      { cause: error },
+    );
+  }
+  try {
+    if (collection.stats.docCount === 0) {
+      return [];
+    }
+    const records = await collection.query({
+      topk: collection.stats.docCount,
+      outputFields: [],
+      includeVector: false,
+    });
+    return records.map(({ id }) => id).toSorted();
+  } finally {
+    collection.closeSync();
+  }
+}
+
+/** Enumerates exact closed-store membership for source-free validation receipt checks. */
+export async function readRecallGenerationStoreRecordMembership(
+  paths: Readonly<RecallGenerationComponentPaths>,
+): Promise<
+  Readonly<{
+    lexicalSource: string[];
+    dense: string[];
+    sessionProjection: string[];
+  }>
+> {
+  const [lexicalSource, dense, sessionProjection] = await Promise.all([
+    readRecallGenerationStoreRecordIds(paths.lexicalSourceStorePath, 'lexical-source'),
+    readRecallGenerationStoreRecordIds(paths.denseStorePath, 'dense-evidence'),
+    readRecallGenerationStoreRecordIds(paths.sessionProjectionStorePath, 'session-projection'),
+  ]);
+  return { lexicalSource, dense, sessionProjection };
+}
+
+/** Reopens every store read-only and validates schemas, identities, and exact expected membership. */
+export function validateRecallGenerationStores(
   paths: Readonly<RecallGenerationComponentPaths>,
   contracts: ReturnType<typeof createRecallGenerationStoreContracts>,
+  expectedGenerationId: string,
+  expectedRecordIds: Readonly<{
+    lexicalSource: readonly string[];
+    dense: readonly string[];
+    sessionProjection: readonly string[];
+  }>,
 ): RecallGenerationStoreCounts {
   const collections: ZVecCollection[] = [];
   try {
     collections.push(
-      openAndValidateEmptyRecallGenerationStore(
+      openAndValidateRecallGenerationStore(
         paths.lexicalSourceStorePath,
         contracts.lexicalSource,
+        expectedGenerationId,
+        expectedRecordIds.lexicalSource,
       ),
-      openAndValidateEmptyRecallGenerationStore(paths.denseStorePath, contracts.dense),
-      openAndValidateEmptyRecallGenerationStore(
+      openAndValidateRecallGenerationStore(
+        paths.denseStorePath,
+        contracts.dense,
+        expectedGenerationId,
+        expectedRecordIds.dense,
+      ),
+      openAndValidateRecallGenerationStore(
         paths.sessionProjectionStorePath,
         contracts.sessionProjection,
+        expectedGenerationId,
+        expectedRecordIds.sessionProjection,
       ),
     );
-    return { lexicalSource: 0, dense: 0, sessionProjection: 0 };
+    return {
+      lexicalSource: expectedRecordIds.lexicalSource.length,
+      dense: expectedRecordIds.dense.length,
+      sessionProjection: expectedRecordIds.sessionProjection.length,
+    };
   } finally {
     for (const collection of collections) {
       collection.closeSync();
     }
   }
+}
+
+/** Reopens every store read-only and validates exact empty membership and generation identity. */
+export function validateEmptyRecallGenerationStores(
+  paths: Readonly<RecallGenerationComponentPaths>,
+  contracts: ReturnType<typeof createRecallGenerationStoreContracts>,
+  expectedGenerationId: string,
+): RecallGenerationStoreCounts {
+  return validateRecallGenerationStores(paths, contracts, expectedGenerationId, {
+    lexicalSource: [],
+    dense: [],
+    sessionProjection: [],
+  });
 }

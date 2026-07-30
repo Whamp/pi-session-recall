@@ -33,6 +33,13 @@ import {
   type RecallCoherentGenerationConfig,
 } from './recall-coherent-generation.js';
 import {
+  createRecallGenerationFromPhysicalSources,
+  deleteRecallGenerationPhysicalSource,
+  searchRecallGenerationLexical,
+  type CreateRecallGenerationFromPhysicalSourcesOptions,
+  type RecallGenerationLexicalEvidence,
+} from './recall-physical-source-generation.js';
+import {
   RecallBackgroundIndexProcessState,
   RecallDiagnosticErrorCategory,
   RecallDiagnosticStatus,
@@ -479,6 +486,21 @@ export interface RecallConversationService {
   createEmptyRecallGeneration(
     options: CreateEmptyRecallGenerationOptions,
   ): Promise<OpenedValidatedRecallGeneration>;
+  /** Creates one validated inactive generation from lexical-only physical sources. */
+  createRecallGenerationFromPhysicalSources(
+    options: CreateRecallGenerationFromPhysicalSourcesOptions,
+  ): Promise<OpenedValidatedRecallGeneration>;
+  /** Searches lexical evidence in one explicitly named inactive target generation. */
+  searchRecallGenerationLexical(
+    generationId: string,
+    query: string,
+    limit: number,
+  ): Promise<RecallGenerationLexicalEvidence[]>;
+  /** Deletes evidence, anchors, and projections joined to exactly one physical source. */
+  deleteRecallGenerationPhysicalSource(
+    generationId: string,
+    physicalSourceIdentity: string,
+  ): Promise<void>;
   /** Opens one validated target-format generation without selecting it for search. */
   openValidatedRecallGeneration(generationId: string): Promise<OpenedValidatedRecallGeneration>;
   /** Deletes one disposable target-format generation only when no role protects it. */
@@ -1279,6 +1301,7 @@ export function createRecallConversationService(
     },
   };
   const coherentGenerationConfig: RecallCoherentGenerationConfig = {
+    sessionsDirectory: config.sessionsDirectory,
     generationRootDirectory: config.generationRootDirectory,
     activeGenerationPointerPath: config.activeGenerationPointerPath,
     generationRegistryPath: config.generationRegistryPath,
@@ -2735,6 +2758,30 @@ export function createRecallConversationService(
     createEmptyRecallGeneration(options) {
       return runSerialized(() =>
         createEmptyCoherentRecallGeneration(coherentGenerationConfig, options),
+      );
+    },
+    createRecallGenerationFromPhysicalSources(options) {
+      return runSerialized(async () =>
+        createRecallGenerationFromPhysicalSources(coherentGenerationConfig, options, {
+          tokenizer: await getConversationTokenizer(),
+          resolveProjectIdentity: resolveSearchProjectIdentity,
+        }),
+      );
+    },
+    searchRecallGenerationLexical(generationId, query, limit) {
+      return runSerialized(() =>
+        searchRecallGenerationLexical(coherentGenerationConfig, generationId, query, limit),
+      );
+    },
+    deleteRecallGenerationPhysicalSource(generationId, physicalSourceIdentity) {
+      return runSerialized(() =>
+        coordinateRecallWriteWindow({ lockPath: config.lockPath, allowRecovery: false }, () =>
+          deleteRecallGenerationPhysicalSource(
+            coherentGenerationConfig,
+            generationId,
+            physicalSourceIdentity,
+          ),
+        ),
       );
     },
     openValidatedRecallGeneration(generationId) {

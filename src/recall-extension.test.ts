@@ -781,6 +781,15 @@ void test('Pi recall tool adapter propagates trusted cwd with project default an
     async createEmptyRecallGeneration() {
       throw new Error('Pi recall adapter test does not create generations');
     },
+    async createRecallGenerationFromPhysicalSources() {
+      throw new Error('Pi recall adapter test does not create source generations');
+    },
+    async searchRecallGenerationLexical() {
+      throw new Error('Pi recall adapter test does not search source generations');
+    },
+    async deleteRecallGenerationPhysicalSource() {
+      throw new Error('Pi recall adapter test does not delete physical sources');
+    },
     async openValidatedRecallGeneration() {
       throw new Error('Pi recall adapter test does not open generations');
     },

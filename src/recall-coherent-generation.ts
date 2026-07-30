@@ -14,13 +14,16 @@ import {
   createEmptyRecallGenerationStores,
   createRecallGenerationComponentPaths,
   createRecallGenerationStoreContracts,
+  readRecallGenerationStoreRecordMembership,
   validateEmptyRecallGenerationStores,
+  validateRecallGenerationStores,
   type RecallGenerationComponentPaths,
   type RecallGenerationStoreCounts,
 } from './recall-generation-stores.js';
 import {
-  assertEmptyRecallGenerationValidationReceipt,
+  assertRecallGenerationValidationReceipt,
   createEmptyRecallGenerationValidationReceipt,
+  createRecallGenerationValidationReceipt,
   readRecallGenerationValidationReceipt,
   writeRecallGenerationValidationReceipt,
 } from './recall-generation-validation-receipt.js';
@@ -51,6 +54,7 @@ export interface OpenedValidatedRecallGeneration {
 
 /** Configured semantic and coordination inputs for inactive coherent generation operations. */
 export interface RecallCoherentGenerationConfig {
+  sessionsDirectory: string;
   generationRootDirectory: string;
   activeGenerationPointerPath: string;
   generationRegistryPath: string;
@@ -116,18 +120,38 @@ export async function openValidatedRecallGeneration(
     generationId,
     expectedManifest.embeddingProfile.storedDimensions,
   );
-  const storeCounts = validateEmptyRecallGenerationStores(paths, contracts);
-  const expectedReceipt = createEmptyRecallGenerationValidationReceipt({
+  const recordIds = await readRecallGenerationStoreRecordMembership(paths);
+  const receiptCounts = receipt.exactMembership;
+  for (const [responsibility, expectedCount, actualCount] of [
+    ['lexical-source', receiptCounts.lexicalSource.count, recordIds.lexicalSource.length],
+    ['dense-evidence', receiptCounts.dense.count, recordIds.dense.length],
+    [
+      'session-projection',
+      receiptCounts.sessionProjection.count,
+      recordIds.sessionProjection.length,
+    ],
+  ] as const) {
+    if (actualCount !== expectedCount) {
+      throw new Error(
+        `Recall coherent generation ${responsibility} membership mismatch: expected ${expectedCount} rows, received ${actualCount}`,
+      );
+    }
+  }
+  const storeCounts = validateRecallGenerationStores(paths, contracts, generationId, recordIds);
+  const expectedReceipt = createRecallGenerationValidationReceipt({
     generationId,
     manifestFingerprint: fingerprint,
-    storeCounts,
+    membership: {
+      startingSnapshotFingerprint: receipt.startingSnapshot.fingerprint,
+      physicalSourceCount: receipt.startingSnapshot.physicalSourceCount,
+      logicalSessionOccurrenceCount: receipt.startingSnapshot.logicalSessionOccurrenceCount,
+      lexicalSourceRecordIds: recordIds.lexicalSource,
+      denseRecordIds: recordIds.dense,
+      sessionProjectionRecordIds: recordIds.sessionProjection,
+    },
     validatedAtEpochMilliseconds: receipt.validatedAtEpochMilliseconds,
   });
-  assertEmptyRecallGenerationValidationReceipt(
-    receipt,
-    expectedReceipt,
-    paths.validationReceiptPath,
-  );
+  assertRecallGenerationValidationReceipt(receipt, expectedReceipt, paths.validationReceiptPath);
   return {
     generationId,
     generationDirectory: paths.generationDirectory,
@@ -167,7 +191,7 @@ export async function createEmptyRecallGeneration(
     manifest.embeddingProfile.storedDimensions,
   );
   createEmptyRecallGenerationStores(paths, contracts);
-  const storeCounts = validateEmptyRecallGenerationStores(paths, contracts);
+  const storeCounts = validateEmptyRecallGenerationStores(paths, contracts, options.generationId);
   const receipt = createEmptyRecallGenerationValidationReceipt({
     generationId: options.generationId,
     manifestFingerprint,

@@ -18,10 +18,9 @@ export enum EmbeddedInferenceDevicePolicy {
   VULKAN = 'vulkan',
 }
 
-/** Whether recall uses verified configured inference, proven legacy Octen, or no inference. */
+/** Whether target-generation recall has a verified configured embedding capability. */
 export enum RecallInstallationMode {
   CONFIGURED = 'configured',
-  LEGACY_OCTEN = 'legacy-octen',
   UNCONFIGURED = 'unconfigured',
 }
 
@@ -247,7 +246,6 @@ export enum RecallGenerationCutoverState {
   READY = 'ready',
   ACTIVE = 'active',
   REPLAY_PENDING = 'replay_pending',
-  LEGACY_READ_ONLY = 'legacy_read_only',
   ROLLBACK = 'rollback',
   RETIRED = 'retired',
   FAILED = 'failed',

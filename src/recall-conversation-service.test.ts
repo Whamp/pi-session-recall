@@ -2698,7 +2698,7 @@ void test('lineage metadata rebuild rejects stale policy and reuses cached vecto
   const first = await firstService.index();
   await assert.rejects(
     () => changedService.index(),
-    /projectIdentity\.lineageDigest.*\/pi-session-recall-index --rebuild/s,
+    /projectIdentity\.lineageDigest.*pi-session-recall rebuild/s,
   );
   const rebuilt = await changedService.index({ rebuild: true });
   const search = await changedService.search('Lineage metadata', 1, {
@@ -4281,7 +4281,7 @@ void test('recall search refuses a missing manifest before opening or mutating i
 
   await assert.rejects(
     () => service.search('must remain read only', 1, { scope: RecallSearchScope.GLOBAL }),
-    /Recall index manifest missing.*\/pi-session-recall-index --rebuild/,
+    /Recall index manifest missing.*pi-session-recall rebuild/,
   );
   assert.equal(embeddingRequests, 2);
   assert.equal(tokenizerLoads, 0);
@@ -4319,7 +4319,7 @@ void test('recall search detects an embedding model swap in the same service pro
 
   await assert.rejects(
     () => service.search('after model swap', 1, { scope: RecallSearchScope.GLOBAL }),
-    /embedding\.canaryCosineSimilarity.*\/pi-session-recall-index --rebuild/s,
+    /embedding\.canaryCosineSimilarity.*pi-session-recall rebuild/s,
   );
 
   await service.index({ rebuild: true });
@@ -4382,7 +4382,7 @@ void test('ordinary indexing detects a model swap before embedding new session c
 
   await assert.rejects(
     () => service.index(),
-    /embedding\.canaryCosineSimilarity.*\/pi-session-recall-index --rebuild/s,
+    /embedding\.canaryCosineSimilarity.*pi-session-recall rebuild/s,
   );
   assert.equal(contentEmbeddingRequests, 0);
 });
@@ -4426,7 +4426,7 @@ void test('recall search reports an incompatible manifest before opening zvec', 
 
   await assert.rejects(
     () => service.search('incompatible', 1, { scope: RecallSearchScope.GLOBAL }),
-    /embedding\.pooling.*expected "last", received "mean".*\/pi-session-recall-index --rebuild/s,
+    /embedding\.pooling.*expected "last", received "mean".*pi-session-recall rebuild/s,
   );
   assert.equal(storeOpens, 0);
   assert.equal(tokenizerLoads, 0);
@@ -4580,7 +4580,7 @@ void test('explicit indexing refuses unmanifested legacy state before tokenizer 
 
   await assert.rejects(
     () => service.index(),
-    /manifest missing.*existing index data.*\/pi-session-recall-index --rebuild/,
+    /manifest missing.*existing index data.*pi-session-recall rebuild/,
   );
   assert.equal(await readFile(config.statePath, 'utf8'), legacyState);
   assert.equal(embeddingRequests, 0);

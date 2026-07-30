@@ -29,7 +29,6 @@
     "model:embeddinggemma": "node --import tsx src/runRecallEmbeddingGemmaModelCommand.ts",
     "model:qwen-reranker": "node --import tsx src/runRecallQwenRerankerModelCommand.ts",
     "model:qmd-query-planner": "node --import tsx src/runRecallQmdQueryPlannerModelCommand.ts",
-    "setup:recall": "node --import tsx src/runRecallFirstIndexSetupCli.ts",
     "typecheck": "tsc --noEmit",
     "lint": "oxlint --type-aware src",
     "format:check": "oxfmt --check ."

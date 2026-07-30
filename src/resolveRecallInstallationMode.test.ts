@@ -9,26 +9,20 @@ import { loadRecallConversationConfig } from './recall-conversation-config.js';
 import {
   assertRecallInstallationConfigured,
   resolveRecallInstallationMode,
-  resolveRecallLegacyOctenMarkerPath,
 } from './resolveRecallInstallationMode.js';
 
-void test('fresh installations stay unconfigured while proven legacy Octen installations retain compatibility', async (t) => {
+void test('old storage never configures a fresh target-generation installation', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'recall-installation-mode-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const config = await loadRecallConversationConfig({ homeDirectory: root, environment: {} });
-  const markerPath = resolveRecallLegacyOctenMarkerPath(config);
-
   assert.equal(await resolveRecallInstallationMode(config), RecallInstallationMode.UNCONFIGURED);
   assert.throws(
     () => assertRecallInstallationConfigured(RecallInstallationMode.UNCONFIGURED),
-    /Recall inference is unconfigured.*setup:recall/u,
+    /Recall inference is unconfigured.*pi-session-recall setup/u,
   );
 
   await mkdir(dirname(config.manifestPath), { recursive: true });
-  await writeFile(config.manifestPath, '{}\n', 'utf8');
+  await writeFile(config.manifestPath, '{"manifestVersion":5}\n', 'utf8');
 
-  assert.equal(await resolveRecallInstallationMode(config), RecallInstallationMode.LEGACY_OCTEN);
-  await rm(config.manifestPath);
-  assert.equal(await resolveRecallInstallationMode(config), RecallInstallationMode.LEGACY_OCTEN);
-  assert.equal(markerPath, join(dirname(config.manifestPath), 'legacy-octen-installation.json'));
+  assert.equal(await resolveRecallInstallationMode(config), RecallInstallationMode.UNCONFIGURED);
 });

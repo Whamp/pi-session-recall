@@ -2,15 +2,15 @@
 
 Conversation Recall persists independently verified embedding, reranking, and query-planning selections in `~/.pi/agent/recall/inference-configuration.json`. Embeddings are required. Reranking and query planning remain `null` until explicitly selected and can be removed without affecting the embedding generation.
 
-The earlier `first-index-setup.json` remains the estimate/build workflow state. A successful `select-embeddinggemma --approve-download` also writes the authoritative embedded embedding selection to `inference-configuration.json`. Guided measurement and build use any verified embedding selection, including HTTP. On upgrade, an existing legacy index manifest creates `legacy-octen-installation.json`; only that durable marker preserves implicit Octen behavior. A fresh installation without inference state, setup state, or a legacy manifest refuses search and indexing until setup verifies an embedding.
+`inference-configuration.json` is the authoritative capability selection. A fresh installation without a verified embedding selection refuses search and rebuild. Existing storage bytes never select a provider or preserve implicit inference behavior; configure the capability explicitly, then build a fresh target generation.
 
 ## Operator status and doctor
 
 The setup CLI exposes read-only mixed-configuration inspection:
 
 ```bash
-npm run --silent setup:recall -- inference status
-npm run --silent setup:recall -- inference doctor
+pi-session-recall setup
+pi-session-recall status
 ```
 
 `status` does not load inference. It reports, for every capability:

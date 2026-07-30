@@ -59,9 +59,9 @@ export interface RecallGenerationRegistryEntry {
   state: RecallGenerationCutoverState;
   /** Configured embedding semantics used to build this generation, when known. */
   embeddingProfileId?: string;
-  indexManifestVersion: 5 | 6;
-  markerSchemaVersion: 1 | null;
-  sessionProjectionSchemaVersion: 3 | null;
+  indexManifestVersion: 6;
+  markerSchemaVersion: 1;
+  sessionProjectionSchemaVersion: 3;
   indexManifestFingerprint: string;
   rebuildStartedAtEpochMilliseconds: number;
   stateChangedAtEpochMilliseconds: number;
@@ -152,15 +152,9 @@ const recallGenerationRegistryEntrySchema = Type.Object(
     generationId: generationIdentifierSchema,
     state: Type.Enum(RecallGenerationCutoverState),
     embeddingProfileId: Type.Optional(nonemptyStringSchema),
-    indexManifestVersion: Type.Union([
-      Type.Literal(5),
-      Type.Literal(RECALL_INDEX_MANIFEST_VERSION),
-    ]),
-    markerSchemaVersion: Type.Union([Type.Literal(RECALL_WORK_MARKER_VERSION), Type.Null()]),
-    sessionProjectionSchemaVersion: Type.Union([
-      Type.Literal(RECALL_SESSION_PROJECTION_SCHEMA_VERSION),
-      Type.Null(),
-    ]),
+    indexManifestVersion: Type.Literal(RECALL_INDEX_MANIFEST_VERSION),
+    markerSchemaVersion: Type.Literal(RECALL_WORK_MARKER_VERSION),
+    sessionProjectionSchemaVersion: Type.Literal(RECALL_SESSION_PROJECTION_SCHEMA_VERSION),
     indexManifestFingerprint: Type.String({ pattern: '^[a-f0-9]{64}$' }),
     rebuildStartedAtEpochMilliseconds: Type.Integer({ minimum: 0 }),
     stateChangedAtEpochMilliseconds: Type.Integer({ minimum: 0 }),
@@ -302,20 +296,6 @@ function assertRecallGenerationRegistryInvariants(registry: RecallGenerationRegi
       entry.rebuildMarkerWatermark ?? [],
       'rebuild marker watermark IDs',
     );
-    if (entry.indexManifestVersion === 5) {
-      if (entry.markerSchemaVersion !== null || entry.sessionProjectionSchemaVersion !== null) {
-        throw new Error(
-          'Recall legacy generation registry entry must not synthesize incremental schemas',
-        );
-      }
-      if (
-        entry.state !== RecallGenerationCutoverState.LEGACY_READ_ONLY &&
-        entry.state !== RecallGenerationCutoverState.ROLLBACK &&
-        entry.state !== RecallGenerationCutoverState.RETIRED
-      ) {
-        throw new Error('Recall version-5 generation registry entry must remain read-only');
-      }
-    }
   }
   if (registry.activeGenerationId === null) {
     if (registry.activePointerChecksum !== null || registry.rollbackGenerationId !== null) {
@@ -333,8 +313,7 @@ function assertRecallGenerationRegistryInvariants(registry: RecallGenerationRegi
     const active = findRegistryGeneration(registry, registry.activeGenerationId, 'active');
     if (
       active.state !== RecallGenerationCutoverState.ACTIVE &&
-      active.state !== RecallGenerationCutoverState.REPLAY_PENDING &&
-      active.state !== RecallGenerationCutoverState.LEGACY_READ_ONLY
+      active.state !== RecallGenerationCutoverState.REPLAY_PENDING
     ) {
       throw new Error(
         `Recall generation registry active generation has invalid state: ${active.state}`,
@@ -618,15 +597,8 @@ export async function readRecallMaterialBacklogWarning(
     summary.buildingGenerationId !== null &&
     (summary.generationState === RecallGenerationCutoverState.BUILDING ||
       summary.generationState === RecallGenerationCutoverState.READY);
-  const legacyReadOnly = summary.generationState === RecallGenerationCutoverState.LEGACY_READ_ONLY;
   const replayPending = summary.generationState === RecallGenerationCutoverState.REPLAY_PENDING;
-  if (
-    !materiallyStale &&
-    !failed &&
-    !rebuildingOnOlderGeneration &&
-    !legacyReadOnly &&
-    !replayPending
-  ) {
+  if (!materiallyStale && !failed && !rebuildingOnOlderGeneration && !replayPending) {
     return null;
   }
   const scalarFields = [
@@ -635,7 +607,7 @@ export async function readRecallMaterialBacklogWarning(
     `activeGenerationAgeMilliseconds=${summary.activeGenerationAgeMilliseconds}`,
     `generationState=${summary.generationState}`,
   ];
-  if (rebuildingOnOlderGeneration || legacyReadOnly) {
+  if (rebuildingOnOlderGeneration) {
     scalarFields.push(`rebuildAgeMilliseconds=${summary.rebuildAgeMilliseconds ?? 'none'}`);
   }
   if (summary.lastFailureCategory !== null) {

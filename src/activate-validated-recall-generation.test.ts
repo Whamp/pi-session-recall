@@ -15,12 +15,8 @@ import {
   RecallWorkMarkerTrigger,
 } from './enums.js';
 import {
-  createRecallActiveGenerationPointer,
   readRecallActiveGenerationPointer,
   readRecallGenerationRegistry,
-  writeRecallActiveGenerationPointer,
-  writeRecallGenerationRegistry,
-  RECALL_GENERATION_REGISTRY_VERSION,
 } from './recall-generation-state.js';
 import { isUnknownRecord } from './is-unknown-record.js';
 import { createOctenEmbeddingModelProfile } from './recall-model-profiles.js';
@@ -478,56 +474,6 @@ void test('configured service rejects a target whose validation receipt no longe
     () =>
       access(join(config.generationRootDirectory, generationId, 'generation-replay-snapshot.json')),
     { code: 'ENOENT' },
-  );
-});
-
-void test('first legacy-to-target cutover does not retain legacy rollback material', async (t) => {
-  const root = await mkdtemp(join(tmpdir(), 'recall-first-target-cutover-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
-  const config = createActivationTestConfig(root);
-  await Promise.all([
-    mkdir(config.sessionsDirectory, { recursive: true }),
-    mkdir(config.dataDirectory, { recursive: true }),
-  ]);
-  const service = createActivationTestService(config);
-  const generationId = 'generation_first_target';
-  await service.createEmptyRecallGeneration({ generationId });
-  const legacyGenerationId = 'generation_legacy';
-  const legacyPointer = createRecallActiveGenerationPointer(legacyGenerationId);
-  await writeRecallActiveGenerationPointer(config.activeGenerationPointerPath, legacyPointer);
-  await writeRecallGenerationRegistry(config.generationRegistryPath, {
-    version: RECALL_GENERATION_REGISTRY_VERSION,
-    activeGenerationId: legacyGenerationId,
-    buildingGenerationId: null,
-    rollbackGenerationId: null,
-    activePointerChecksum: legacyPointer.checksum,
-    generations: [
-      {
-        generationId: legacyGenerationId,
-        state: RecallGenerationCutoverState.LEGACY_READ_ONLY,
-        indexManifestVersion: 5,
-        markerSchemaVersion: null,
-        sessionProjectionSchemaVersion: null,
-        indexManifestFingerprint: 'e'.repeat(64),
-        rebuildStartedAtEpochMilliseconds: 1,
-        stateChangedAtEpochMilliseconds: 1,
-        rebuildStartMarkerId: null,
-        rebuildMarkerWatermark: [],
-        validatedAtEpochMilliseconds: 1,
-        retireAfterEpochMilliseconds: null,
-      },
-    ],
-  });
-
-  await service.activateValidatedRecallGeneration(generationId);
-
-  const registry = await readRecallGenerationRegistry(config.generationRegistryPath);
-  assert.equal(registry?.rollbackGenerationId, null);
-  assert.equal(
-    registry?.generations.some(
-      ({ generationId: candidateId }) => candidateId === legacyGenerationId,
-    ),
-    false,
   );
 });
 

@@ -1,83 +1,66 @@
-# Guided setup for the first index
+# First target-generation setup
 
-A fresh guided setup starts unconfigured. `status` recommends the pinned embedded EmbeddingGemma profile but does not select it, download it, load inference, parse sessions, or create an index.
+A fresh installation starts without an active recall generation. Setup selects and verifies inference capabilities; rebuild creates a new target generation from immutable Pi session sources. No command adopts, migrates, or opens an older storage layout.
 
-Run each setup step explicitly:
+## Inspect stored-width choices
 
-```bash
-npm run --silent setup:recall -- status
-npm run --silent setup:recall -- select-embeddinggemma --approve-download
-npm run --silent setup:recall -- estimate
-npm run --silent setup:recall -- estimate --measure --sample-sessions 3
-npm run --silent setup:recall -- start --approve-build
-```
-
-Every successful command writes one JSON value to stdout. An agent-led setup skill can inspect that value, present it to the operator, and invoke the next command without parsing terminal prose.
-
-## Consent boundaries
-
-`status` reports:
-
-- model purpose;
-- immutable repository revision and artifact name;
-- Gemma license name, URL, and distribution-review state;
-- exact download size;
-- target cache path;
-- automatic device policy; and
-- whether setup selected the profile.
-
-`select-embeddinggemma` requires `--approve-download`. It verifies artifact size, SHA-256, and GGUF structure, then loads the configured provider canary and tokenizer. Setup writes the selected embedding configuration only after those checks succeed.
-
-`estimate` reads file metadata only. It reports the number of physical session files and their total bytes without loading a tokenizer, model, zvec, or session contents.
-
-`estimate --measure` is optional. It requires a verified embedding selection. The setup CLI applies the selected chunk and candidate policy used by the Pi extension, so the measured profile and cache identity remain compatible with the full build. The sample accepts one through ten physical session files and spans the corpus file-size distribution. It reports:
-
-- model and tokenizer cold-start milliseconds;
-- sampled sessions, source bytes, and dense documents;
-- measured sample milliseconds;
-- source-byte and dense-document throughput;
-- embedding-cache hits, new embeddings, and embedding request count; and
-- an estimated full-build duration range.
-
-The estimate scales measured sample time by the ratio of total corpus bytes to sampled bytes, adds cold start, and reports 80% through 125% of that projection. This range is planning evidence, not a completion deadline.
-
-The measured sample verifies the selected profile, creates its canonical manifest identity in memory, and warms the profile-bound embedding cache without creating generation state. The full build creates a replacement generation with the same profile identity and reuses those vectors. Unchanged sampled documents therefore become cache hits.
-
-`start` requires a stored estimate and the separate `--approve-build` flag. It launches a detached worker and returns its status immediately. The worker creates a registry-owned replacement generation, validates and optimizes it, and activates it atomically. If the worker stops or crashes, `resume` reopens the same generation ID and durable index checkpoint.
-
-Use `defer` to stop after configuration or estimation:
+Run the standalone operator CLI:
 
 ```bash
-npm run --silent setup:recall -- defer
+pi-session-recall setup
 ```
 
-Deferral preserves the selected embedding configuration, estimate, and cached vectors. Recall remains unavailable until the first generation activates.
+The JSON result reports each profile's native dimensions, default stored dimensions, allowed widths, evidence status, and evidence sources.
 
-Estimate/build state lives at `~/.pi/agent/recall/first-index-setup.json`. Successful embedding selection also writes the authoritative capability record to `~/.pi/agent/recall/inference-configuration.json`; later [mixed inference setup](mixed-inference-configuration.md) may retain the profile while changing its backend or add and repair optional capabilities. Measured estimates, readiness checks, and first-generation launch reconstruct that authoritative selection. A verified HTTP embedding can complete the first-index flow without an embedded-only setup-state record, so changing EmbeddingGemma from embedded to HTTP cannot silently route inference back through the embedded provider. A pre-#43 first-index state without an inference-configuration record retains its documented embedded compatibility fallback. Existing background controls remain available through `/pi-session-recall-index --status`, `--stop`, `--resume`, and `--discard`.
+Current defaults:
 
-## Deterministic verification
+- EmbeddingGemma: 768 stored dimensions; 512, 256, and 128 are verified reductions.
+- Octen 4B: 1,024 stored dimensions; any positive width through 2,560 is mechanically supported by vendor-documented prefix truncation.
 
-The committed tests use temporary session corpora, deterministic embedding providers, real temporary zvec stores, and the public `RecallConversationService` operations. They prove:
+A reduced vector keeps the first N native components and then L2-normalizes that prefix. Stored width changes semantic profile and generation identity. Backend URL, device, and adapter location do not change vector compatibility when capability semantics remain unchanged.
 
-- metadata inspection performs no model, tokenizer, parsing, or store work;
-- selection verification exercises the profile canary and tokenizer without indexing documents;
-- sampling stays within its requested bound;
-- sample vectors are reused by the full rebuild without creating generation state;
-- configuration is absent before explicit selection and retained after deferral;
-- build approval is separate from download approval and estimation;
-- quality-evaluation state does not block measurement or an explicitly approved build;
-- a stopped or crashed replacement resumes through the background service boundary; and
-- post-selection measurement and build control use the authoritative mixed inference runtime rather than the initial embedded selection.
+## Configure inference
 
-Run them with:
+Embedding is required. Reranking and query planning are optional. Verify the selected capability providers before launching a build. See:
+
+- [Mixed inference configuration](mixed-inference-configuration.md)
+- [Provider conformance](provider-conformance.md)
+- [Embedded EmbeddingGemma](embedded-embeddinggemma.md)
+
+A detached worker must be able to reconstruct the same configured provider and profile identity. Target builds and incremental transfer call `embedDocuments`; search calls `embedQuery`; reranking calls `rerankDocuments`.
+
+## Build the first generation
+
+Inspect status, then launch the detached build:
 
 ```bash
-node --import tsx --test \
-  src/recall-first-index-setup.test.ts \
-  src/recall-first-index-setup-command.test.ts \
-  src/recall-background-index-conversation-service.test.ts
+pi-session-recall status
+pi-session-recall rebuild
+pi-session-recall status
 ```
 
-## External evidence still pending
+The build:
 
-This implementation did not download or execute the 333,590,944-byte model. Gemma distribution and notice review remains pending, so the profile is not release-approved. A release also still needs real CPU and accelerated measurements for model cold start, warm inference, first-index throughput, duration-estimate accuracy, selected device identity, index size, and embedding-cache size. Run those checks against the pinned artifact and unchanged acceptance criteria; do not replace them with deterministic fixture results.
+1. captures one fixed source snapshot;
+2. creates independent lexical/source, dense, and session-projection stores;
+3. writes evidence in bounded windows;
+4. closes and reopens every store;
+5. validates exact membership, identities, projections, profile, and canaries;
+6. writes an immutable validation receipt; and
+7. activates through registry-first pointer publication with a fixed replay snapshot.
+
+If the worker stops or crashes, resume the same generation:
+
+```bash
+pi-session-recall resume
+```
+
+Use `pi-session-recall stop` for cooperative termination and `pi-session-recall discard` only for abandoned non-active work. Use `pi-session-recall recover` when status reports an interrupted write or cutover.
+
+The first target activation has no rollback generation. Target-to-target rollback becomes available after a later validated replacement activates.
+
+## Consent and safety
+
+Model download and production rebuild require separate approval. Implementation tests use deterministic providers, copied session fixtures, real disposable zvec stores, and disposable generation roots. They never open production recall data or original Pi session files.
+
+A release still needs owner-approved environment evidence for model download, device selection, full rebuild duration, and final generation size. Those values are reported, not used as pass thresholds.

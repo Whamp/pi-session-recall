@@ -43,19 +43,6 @@ export interface RecoverRecallGenerationCutoverOptions {
   embeddingDimensions: number;
   rollbackRetentionMilliseconds?: number;
   nowEpochMilliseconds?: () => number;
-  openWriteEvidenceStore?: (
-    databasePath: string,
-    embeddingDimensions: number,
-  ) => RecallGenerationRecoveryStore;
-  openWriteProjectionStore?: (
-    databasePath: string,
-    generationId: string,
-  ) => RecallGenerationRecoveryStore;
-}
-
-/** Minimal close evidence required from a write-capable recovery store open. */
-export interface RecallGenerationRecoveryStore {
-  close(): void;
 }
 
 function normalizeRecoveryStoreError(error: unknown, message: string): Error {
@@ -71,106 +58,44 @@ async function recoverActiveRecallGenerationStores(
     generationId,
   );
   const targetPaths = createRecallGenerationComponentPaths(generationDirectory);
-  if (existsSync(targetPaths.lexicalSourceStorePath)) {
-    const openedTargetStores: ZVecCollection[] = [];
-    let openError: Error | null = null;
-    try {
-      openedTargetStores.push(ZVecOpen(targetPaths.lexicalSourceStorePath));
-      openedTargetStores.push(ZVecOpen(targetPaths.denseStorePath));
-      openedTargetStores.push(ZVecOpen(targetPaths.sessionProjectionStorePath));
-    } catch (error) {
-      openError = normalizeRecoveryStoreError(
-        error,
-        'Recall target generation recovery store open failed',
-      );
-    }
-    const closeErrors: Error[] = [];
-    for (const store of openedTargetStores.reverse()) {
-      try {
-        store.closeSync();
-      } catch (error) {
-        closeErrors.push(
-          normalizeRecoveryStoreError(error, 'Recall target generation recovery close failed'),
-        );
-      }
-    }
-    if (openError !== null && closeErrors.length > 0) {
-      throw new AggregateError(
-        [openError, ...closeErrors],
-        'Recall target generation recovery open and close failed',
-      );
-    }
-    if (openError !== null) {
-      throw openError;
-    }
-    if (closeErrors.length > 0) {
-      throw new AggregateError(closeErrors, 'Recall target generation recovery close failed');
-    }
-    return;
+  if (!existsSync(targetPaths.lexicalSourceStorePath)) {
+    throw new Error(
+      `Recall target generation recovery lexical/source store missing: ${targetPaths.lexicalSourceStorePath}`,
+    );
   }
-  let openWriteEvidenceStore = options.openWriteEvidenceStore;
-  if (openWriteEvidenceStore === undefined) {
-    const { openZvecConversationStore } = await import('./zvec-conversation-store.js');
-    openWriteEvidenceStore = (databasePath: string, embeddingDimensions: number) =>
-      openZvecConversationStore({
-        databasePath,
-        dimensions: embeddingDimensions,
-        createIfMissing: false,
-        readOnly: false,
-      });
-  }
-  let openWriteProjectionStore = options.openWriteProjectionStore;
-  if (openWriteProjectionStore === undefined) {
-    const { openZvecSessionProjectionStore } = await import('./zvec-session-projection-store.js');
-    openWriteProjectionStore = (databasePath: string, targetGenerationId: string) =>
-      openZvecSessionProjectionStore({
-        databasePath,
-        generationId: targetGenerationId,
-        createIfMissing: false,
-        readOnly: false,
-      });
-  }
-  let evidenceStore: RecallGenerationRecoveryStore | undefined;
-  let projectionStore: RecallGenerationRecoveryStore | undefined;
+  const openedTargetStores: ZVecCollection[] = [];
   let openError: Error | null = null;
   try {
-    evidenceStore = openWriteEvidenceStore(
-      join(generationDirectory, 'zvec'),
-      options.embeddingDimensions,
-    );
-    projectionStore = openWriteProjectionStore(
-      join(generationDirectory, 'session-projections'),
-      generationId,
-    );
+    openedTargetStores.push(ZVecOpen(targetPaths.lexicalSourceStorePath));
+    openedTargetStores.push(ZVecOpen(targetPaths.denseStorePath));
+    openedTargetStores.push(ZVecOpen(targetPaths.sessionProjectionStorePath));
   } catch (error) {
-    openError = normalizeRecoveryStoreError(error, 'Recall generation recovery store open failed');
+    openError = normalizeRecoveryStoreError(
+      error,
+      'Recall target generation recovery store open failed',
+    );
   }
   const closeErrors: Error[] = [];
-  try {
-    projectionStore?.close();
-  } catch (error) {
-    closeErrors.push(
-      normalizeRecoveryStoreError(error, 'Recall generation recovery projection close failed'),
-    );
-  }
-  try {
-    evidenceStore?.close();
-  } catch (error) {
-    closeErrors.push(
-      normalizeRecoveryStoreError(error, 'Recall generation recovery evidence close failed'),
-    );
+  for (const store of openedTargetStores.reverse()) {
+    try {
+      store.closeSync();
+    } catch (error) {
+      closeErrors.push(
+        normalizeRecoveryStoreError(error, 'Recall target generation recovery close failed'),
+      );
+    }
   }
   if (openError !== null && closeErrors.length > 0) {
     throw new AggregateError(
       [openError, ...closeErrors],
-      'Recall generation recovery open and close failed',
+      'Recall target generation recovery open and close failed',
     );
   }
   if (openError !== null) {
     throw openError;
   }
   if (closeErrors.length > 0) {
-    throw new AggregateError(closeErrors, 'Recall generation recovery close failed');
+    throw new AggregateError(closeErrors, 'Recall target generation recovery close failed');
   }
 }
 
@@ -237,7 +162,7 @@ async function readRecallRecoveryBacklogSummary(
   }
 }
 
-/** Recovers validated rebuild, rollback, or legacy cutover ordering and preserves unknown states. */
+/** Recovers validated target rebuild or rollback cutover ordering and preserves unknown states. */
 export async function recoverRecallGenerationCutover(
   options: RecoverRecallGenerationCutoverOptions,
 ): Promise<boolean> {

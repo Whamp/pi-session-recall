@@ -50,44 +50,35 @@ function activateRecallReplacementInRegistry(
   const previousGeneration = registry.generations.find(
     ({ generationId }) => generationId === previousGenerationId,
   );
-  const rollbackGenerationId =
-    previousGeneration?.indexManifestVersion === RECALL_INDEX_MANIFEST_VERSION
-      ? previousGeneration.generationId
-      : null;
+  const rollbackGenerationId = previousGeneration?.generationId ?? null;
   return {
     ...registry,
     activeGenerationId: replacement.generationId,
     buildingGenerationId: null,
     rollbackGenerationId,
     activePointerChecksum: pointerChecksum,
-    generations: registry.generations
-      .filter(
-        (entry) =>
-          entry.generationId !== previousGenerationId ||
-          entry.indexManifestVersion === RECALL_INDEX_MANIFEST_VERSION,
-      )
-      .map((entry): RecallGenerationRegistryEntry => {
-        if (entry.generationId === replacement.generationId) {
-          return {
-            ...replacement,
-            state: RecallGenerationCutoverState.REPLAY_PENDING,
-            stateChangedAtEpochMilliseconds: activatedAtEpochMilliseconds,
-          };
-        }
-        if (entry.generationId === rollbackGenerationId) {
-          return {
-            ...entry,
-            state: RecallGenerationCutoverState.ROLLBACK,
-            stateChangedAtEpochMilliseconds: activatedAtEpochMilliseconds,
-            retireAfterEpochMilliseconds:
-              activatedAtEpochMilliseconds + rollbackRetentionMilliseconds,
-          };
-        }
-        if (entry.state === RecallGenerationCutoverState.ROLLBACK) {
-          return { ...entry, state: RecallGenerationCutoverState.RETIRED };
-        }
-        return entry;
-      }),
+    generations: registry.generations.map((entry): RecallGenerationRegistryEntry => {
+      if (entry.generationId === replacement.generationId) {
+        return {
+          ...replacement,
+          state: RecallGenerationCutoverState.REPLAY_PENDING,
+          stateChangedAtEpochMilliseconds: activatedAtEpochMilliseconds,
+        };
+      }
+      if (entry.generationId === rollbackGenerationId) {
+        return {
+          ...entry,
+          state: RecallGenerationCutoverState.ROLLBACK,
+          stateChangedAtEpochMilliseconds: activatedAtEpochMilliseconds,
+          retireAfterEpochMilliseconds:
+            activatedAtEpochMilliseconds + rollbackRetentionMilliseconds,
+        };
+      }
+      if (entry.state === RecallGenerationCutoverState.ROLLBACK) {
+        return { ...entry, state: RecallGenerationCutoverState.RETIRED };
+      }
+      return entry;
+    }),
   };
 }
 
@@ -148,19 +139,9 @@ export interface RecoverRecallGenerationCutoverTransitionResult {
   activeGenerationId: string;
 }
 
-/** Exact version-5 identity permitted for explicit read-only legacy adoption. */
-export interface AdoptLegacyRecallGenerationTransitionOptions {
-  activeGenerationPointerPath: string;
-  generationRegistryPath: string;
-  backlogSummaryPath: string;
-  generationId: string;
-  indexManifestFingerprint: string;
-  adoptedAtEpochMilliseconds: number;
-}
-
-/** Filesystem-inspected manifest identity for an active generation predating its registry. */
+/** Filesystem-inspected target manifest identity for an active generation predating its registry. */
 export interface RecallGenerationBuildStartActiveGeneration {
-  indexManifestVersion: 5 | 6;
+  indexManifestVersion: 6;
   indexManifestFingerprint: string;
 }
 
@@ -626,34 +607,18 @@ export async function recoverRecallGenerationCutoverTransition(
   const registryFirstCutover =
     registry !== null &&
     registrySelectedEntry !== undefined &&
-    ((pointer === null &&
-      registrySelectedEntry.state === RecallGenerationCutoverState.LEGACY_READ_ONLY) ||
-      (pointer !== null &&
-        registry.rollbackGenerationId === pointer.activeGenerationId &&
-        (registrySelectedEntry.state === RecallGenerationCutoverState.REPLAY_PENDING ||
-          registrySelectedEntry.state === RecallGenerationCutoverState.LEGACY_READ_ONLY)));
+    pointer !== null &&
+    registry.rollbackGenerationId === pointer.activeGenerationId &&
+    registrySelectedEntry.state === RecallGenerationCutoverState.REPLAY_PENDING;
   if (registryFirstCutover) {
     const targetPointer = createRecallActiveGenerationPointer(registrySelectedEntry.generationId);
     await writeRecallActiveGenerationPointer(options.activeGenerationPointerPath, targetPointer);
     await writeRecallBacklogSummary(
       options.backlogSummaryPath,
-      registrySelectedEntry.state === RecallGenerationCutoverState.REPLAY_PENDING
-        ? createReplayPendingActivationBacklogSummary(
-            registrySelectedEntry,
-            options.recoveredAtEpochMilliseconds,
-          )
-        : {
-            version: RECALL_BACKLOG_SUMMARY_VERSION,
-            pendingEligibleSessionCount: 0,
-            oldestEligibleMarkerAgeMilliseconds: null,
-            activeGenerationId: registrySelectedEntry.generationId,
-            buildingGenerationId: null,
-            generationState: registrySelectedEntry.state,
-            activeGenerationAgeMilliseconds: 0,
-            rebuildAgeMilliseconds: null,
-            lastFailureCategory: null,
-            observedAtEpochMilliseconds: options.recoveredAtEpochMilliseconds,
-          },
+      createReplayPendingActivationBacklogSummary(
+        registrySelectedEntry,
+        options.recoveredAtEpochMilliseconds,
+      ),
     );
     return { stateChanged: true, activeGenerationId: registrySelectedEntry.generationId };
   }
@@ -688,67 +653,6 @@ export async function recoverRecallGenerationCutoverTransition(
   return { stateChanged: true, activeGenerationId: replacement.generationId };
 }
 
-/** Publishes exact legacy adoption registry, pointer, then read-only backlog state. */
-export async function adoptLegacyRecallGenerationTransition(
-  options: AdoptLegacyRecallGenerationTransitionOptions,
-): Promise<void> {
-  const pointer = createRecallActiveGenerationPointer(options.generationId);
-  const [existingPointer, existingRegistry] = await Promise.all([
-    readRecallActiveGenerationPointer(options.activeGenerationPointerPath),
-    readRecallGenerationRegistry(options.generationRegistryPath),
-  ]);
-  if (existingPointer !== null && existingPointer.checksum !== pointer.checksum) {
-    throw new Error('Recall legacy adoption journal conflicts with the active pointer');
-  }
-  if (
-    existingRegistry !== null &&
-    (existingRegistry.activeGenerationId !== options.generationId ||
-      existingRegistry.activePointerChecksum !== pointer.checksum)
-  ) {
-    throw new Error('Recall legacy adoption journal conflicts with the generation registry');
-  }
-  if (existingRegistry === null) {
-    await writeRecallGenerationRegistry(options.generationRegistryPath, {
-      version: RECALL_GENERATION_REGISTRY_VERSION,
-      activeGenerationId: options.generationId,
-      buildingGenerationId: null,
-      rollbackGenerationId: null,
-      activePointerChecksum: pointer.checksum,
-      generations: [
-        {
-          generationId: options.generationId,
-          state: RecallGenerationCutoverState.LEGACY_READ_ONLY,
-          indexManifestVersion: 5,
-          markerSchemaVersion: null,
-          sessionProjectionSchemaVersion: null,
-          indexManifestFingerprint: options.indexManifestFingerprint,
-          rebuildStartedAtEpochMilliseconds: options.adoptedAtEpochMilliseconds,
-          stateChangedAtEpochMilliseconds: options.adoptedAtEpochMilliseconds,
-          rebuildStartMarkerId: null,
-          rebuildMarkerWatermark: [],
-          validatedAtEpochMilliseconds: options.adoptedAtEpochMilliseconds,
-          retireAfterEpochMilliseconds: null,
-        },
-      ],
-    });
-  }
-  if (existingPointer === null) {
-    await writeRecallActiveGenerationPointer(options.activeGenerationPointerPath, pointer);
-  }
-  await writeRecallBacklogSummary(options.backlogSummaryPath, {
-    version: RECALL_BACKLOG_SUMMARY_VERSION,
-    pendingEligibleSessionCount: 0,
-    oldestEligibleMarkerAgeMilliseconds: null,
-    activeGenerationId: options.generationId,
-    buildingGenerationId: null,
-    generationState: RecallGenerationCutoverState.LEGACY_READ_ONLY,
-    activeGenerationAgeMilliseconds: 0,
-    rebuildAgeMilliseconds: 0,
-    lastFailureCategory: null,
-    observedAtEpochMilliseconds: options.adoptedAtEpochMilliseconds,
-  });
-}
-
 function createInitialRecallGenerationRegistry(
   options: PrepareRecallGenerationBuildStartTransitionOptions,
 ): RecallGenerationRegistry {
@@ -768,7 +672,6 @@ function createInitialRecallGenerationRegistry(
   if (options.activeGeneration === undefined) {
     throw new Error('Recall generation bootstrap requires active manifest identity');
   }
-  const legacy = options.activeGeneration.indexManifestVersion === 5;
   return {
     version: RECALL_GENERATION_REGISTRY_VERSION,
     activeGenerationId: options.activePointer.activeGenerationId,
@@ -778,12 +681,10 @@ function createInitialRecallGenerationRegistry(
     generations: [
       {
         generationId: options.activePointer.activeGenerationId,
-        state: legacy
-          ? RecallGenerationCutoverState.LEGACY_READ_ONLY
-          : RecallGenerationCutoverState.ACTIVE,
+        state: RecallGenerationCutoverState.ACTIVE,
         indexManifestVersion: options.activeGeneration.indexManifestVersion,
-        markerSchemaVersion: legacy ? null : RECALL_WORK_MARKER_VERSION,
-        sessionProjectionSchemaVersion: legacy ? null : RECALL_SESSION_PROJECTION_SCHEMA_VERSION,
+        markerSchemaVersion: RECALL_WORK_MARKER_VERSION,
+        sessionProjectionSchemaVersion: RECALL_SESSION_PROJECTION_SCHEMA_VERSION,
         indexManifestFingerprint: options.activeGeneration.indexManifestFingerprint,
         rebuildStartedAtEpochMilliseconds: options.inspectedAtEpochMilliseconds,
         stateChangedAtEpochMilliseconds: options.inspectedAtEpochMilliseconds,
@@ -1321,10 +1222,7 @@ export async function rollbackRecallGenerationTransition(
   ) {
     throw new Error('Recall generation rollback unavailable: retention period expired');
   }
-  const targetState =
-    rollbackEntry.indexManifestVersion === 5
-      ? RecallGenerationCutoverState.LEGACY_READ_ONLY
-      : RecallGenerationCutoverState.REPLAY_PENDING;
+  const targetState = RecallGenerationCutoverState.REPLAY_PENDING;
   const replay = await options.prepareRollbackReplay(rollbackEntry.generationId);
   const activeReplacement: RecallGenerationRegistryEntry = {
     ...rollbackEntry,

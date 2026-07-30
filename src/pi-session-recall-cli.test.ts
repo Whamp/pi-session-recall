@@ -44,6 +44,7 @@ async function runRecallOperatorCommand(
   argumentsList: readonly string[],
   dataDirectory: string,
   sessionsDirectory: string,
+  environmentOverrides: Readonly<Record<string, string>> = {},
 ): Promise<{ stdout: string; stderr: string }> {
   return EXEC_FILE_ASYNC(process.execPath, ['--import', 'tsx', executablePath, ...argumentsList], {
     env: {
@@ -51,6 +52,7 @@ async function runRecallOperatorCommand(
       PI_RECALL_DATA_DIRECTORY: dataDirectory,
       PI_RECALL_SESSIONS_DIRECTORY: sessionsDirectory,
       PI_RECALL_EMBEDDING_DIMENSIONS: '3',
+      ...environmentOverrides,
     },
   });
 }
@@ -718,6 +720,44 @@ void test('standalone catch-up drains one marker through the configured target w
     5,
   );
   assert.equal(recoveredLexical[0]?.content, 'recovered target evidence');
+
+  const deletionMarkerIdentity = {
+    ...markerIdentity,
+    runtimeSequence: 3,
+    createdAtEpochMilliseconds: Date.now() - 120_000,
+  } as const;
+  const deletionMarker: RecallWorkMarker = {
+    ...deletionMarkerIdentity,
+    markerId: createRecallWorkMarkerId(deletionMarkerIdentity),
+  };
+  await publishRecallWorkMarker(deletionMarker, {
+    markerSpoolDirectory: config.markerSpoolDirectory,
+    trustedSessionRoots: [sessionsDirectory],
+    workerSignal: { signalDetachedWorker() {} },
+  });
+  await rm(sessionPath);
+  const deletionEnvironment = {
+    PI_RECALL_CONFIRMED_DELETION_MAX_MISSING_SOURCE_RATIO: '1',
+  };
+  await runRecallOperatorCommand(
+    CLI_TEST_PATH,
+    ['catch-up'],
+    dataDirectory,
+    sessionsDirectory,
+    deletionEnvironment,
+  );
+  await sleep(100);
+  await runRecallOperatorCommand(
+    CLI_TEST_PATH,
+    ['catch-up'],
+    dataDirectory,
+    sessionsDirectory,
+    deletionEnvironment,
+  );
+  assert.deepEqual(
+    await service.searchRecallGenerationLexical(generationId, 'recovered target evidence', 5),
+    [],
+  );
 });
 
 void test('standalone rollback recovers interruption and cleanup deletes only collectible generations', async (t) => {

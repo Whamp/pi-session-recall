@@ -7,7 +7,6 @@ import {
   activateValidatedRecallGeneration,
   type ActivatedValidatedRecallGeneration,
 } from './activate-validated-recall-generation.js';
-import { adoptLegacyRecallGeneration } from './adopt-legacy-recall-generation.js';
 import { buildRecallFixedSnapshotGeneration } from './build-recall-fixed-snapshot-generation.js';
 import { checkRecallGenerationRollbackHealth } from './check-recall-generation-rollback-health.js';
 import {
@@ -115,7 +114,6 @@ import {
   calculateRecallEmbeddingCanaryCosineSimilarity,
   createRecallIndexManifest,
   readRecallIndexManifest,
-  readRecallSearchManifest,
   recoverRecallEmbeddingCanaryFromManifest,
   DEFAULT_RECALL_CHUNK_POLICY,
   RECALL_EMBEDDING_CANARY_TEXT,
@@ -490,7 +488,7 @@ export interface RecallQueryPlanningCapabilityVerification {
 /** Public projection of #59's active and building generation registry states. */
 export interface RecallIndexGenerationStatus {
   active: {
-    kind?: 'legacy' | 'managed';
+    kind?: 'managed';
     generationId: string;
     embeddingProfileId: string;
     status?: 'active';
@@ -629,8 +627,6 @@ export interface RecallConversationService {
   discardStagingIndexGeneration(): Promise<boolean>;
   /** Restores the bounded target rollback generation with one fixed marker replay snapshot. */
   rollback(): Promise<RollbackRecallGenerationResult>;
-  /** Explicitly adopts the exact pre-generation version-5 layout as read-only. */
-  adoptLegacy(): Promise<void>;
   /** Collects only generations prepared as collectible by named transition policy. */
   collectRetired(): Promise<CollectRetiredRecallGenerationsResult>;
 }
@@ -1536,10 +1532,7 @@ export function createRecallConversationService(
     return {
       active: pointer
         ? {
-            kind:
-              activeEntry?.state === RecallGenerationCutoverState.LEGACY_READ_ONLY
-                ? 'legacy'
-                : 'managed',
+            kind: 'managed',
             generationId: pointer.activeGenerationId,
             embeddingProfileId: activeEntry?.embeddingProfileId ?? embeddingProfileId,
             status: 'active',
@@ -1636,7 +1629,7 @@ export function createRecallConversationService(
       | undefined;
     if (activeManifestPath !== null) {
       try {
-        const actualManifest = await readRecallSearchManifest(activeManifestPath);
+        const actualManifest = await readRecallIndexManifest(activeManifestPath);
         previousCanary = actualManifest?.embedding;
       } catch (error) {
         if (
@@ -1665,24 +1658,6 @@ export function createRecallConversationService(
       : currentCanary;
   }
 
-  async function readRequiredManifest(manifestPath: string): Promise<RecallIndexManifest> {
-    const actual = await readRecallSearchManifest(manifestPath);
-    if (!actual) {
-      throw new Error(
-        `Recall index manifest missing at ${manifestPath}; reindex with /pi-session-recall-index --rebuild`,
-      );
-    }
-    return actual;
-  }
-
-  async function manifestDeclaresTargetRecallGeneration(manifestPath: string): Promise<boolean> {
-    if (!existsSync(manifestPath)) {
-      return false;
-    }
-    const manifestSource = await readFile(manifestPath, 'utf8');
-    return /"generationFormatVersion"\s*:/u.test(manifestSource);
-  }
-
   async function prepareIndexForWrite(
     targetPaths: RecallIndexTargetPaths,
     signal?: AbortSignal,
@@ -1697,12 +1672,12 @@ export function createRecallConversationService(
     const actual = await readRecallIndexManifest(targetPaths.manifestPath);
     if (!actual && requireExistingGeneration) {
       throw new Error(
-        `Recall automatic session ingestion requires an existing index generation at ${targetPaths.manifestPath}; initialize it with /pi-session-recall-index --rebuild`,
+        `Recall automatic session ingestion requires an existing index generation at ${targetPaths.manifestPath}; initialize it with pi-session-recall rebuild`,
       );
     }
     if (!actual && (existsSync(targetPaths.databasePath) || existsSync(targetPaths.statePath))) {
       throw new Error(
-        `Recall index manifest missing at ${targetPaths.manifestPath} for existing index data; reindex with /pi-session-recall-index --rebuild`,
+        `Recall index manifest missing at ${targetPaths.manifestPath} for existing index data; create a fresh generation with pi-session-recall rebuild`,
       );
     }
     const tokenizer = await getConversationTokenizer();
@@ -1830,12 +1805,19 @@ export function createRecallConversationService(
       ...(incrementalTransferReadRange ? { readRange: incrementalTransferReadRange } : {}),
       ...(incrementalTransferFault ? { incrementalTransferFault } : {}),
     };
-    return 'confirmedPhysicalSourceDeletion' in request
-      ? transferIncrementalRecallWorkPlan({
-          ...services,
-          confirmedPhysicalSourceDeletion: request.confirmedPhysicalSourceDeletion,
-        })
-      : transferIncrementalRecallWorkPlan({ ...services, workPlan: request });
+    if ('confirmedPhysicalSourceDeletion' in request) {
+      return transferIncrementalRecallWorkPlan({
+        ...services,
+        confirmedPhysicalSourceDeletion: request.confirmedPhysicalSourceDeletion,
+      });
+    }
+    if ('physicalSessionProjectionUpdate' in request) {
+      return transferIncrementalRecallWorkPlan({
+        ...services,
+        physicalSessionProjectionUpdate: request.physicalSessionProjectionUpdate,
+      });
+    }
+    return transferIncrementalRecallWorkPlan({ ...services, workPlan: request });
   }
 
   return {
@@ -2119,17 +2101,6 @@ export function createRecallConversationService(
             const projectIdentityPredicate =
               scope === RecallSearchScope.PROJECT ? invocationProject?.projectIdentity : undefined;
 
-            const canaryVerificationStartedAtMilliseconds =
-              diagnosticsClock.monotonicMilliseconds();
-            let expectedManifest: RecallIndexManifest;
-            try {
-              expectedManifest = createExpectedManifest(await readCurrentEmbeddingCanary(signal));
-            } finally {
-              diagnosticMetrics.embeddingModelVerificationMilliseconds += Math.max(
-                diagnosticsClock.monotonicMilliseconds() - canaryVerificationStartedAtMilliseconds,
-                0,
-              );
-            }
             const plannedQueries = queryPlanning.plannedQueries ?? [];
             const semanticQueryTexts = [
               searchQuery,
@@ -2172,32 +2143,10 @@ export function createRecallConversationService(
                 ...(signal ? { signal } : {}),
               },
               async () => {
-                const manifestReadStartedAtMilliseconds = diagnosticsClock.monotonicMilliseconds();
                 const activeGeneration = await readRecallActiveGenerationSelection(
                   config.activeGenerationPointerPath,
                   config.generationRootDirectory,
                 );
-                let useTargetGeneration = false;
-                try {
-                  useTargetGeneration = await manifestDeclaresTargetRecallGeneration(
-                    activeGeneration.manifestPath,
-                  );
-                  if (!useTargetGeneration) {
-                    const actualManifest = await readRequiredManifest(
-                      activeGeneration.manifestPath,
-                    );
-                    assertRecallIndexManifestCompatible(
-                      actualManifest,
-                      expectedManifest,
-                      activeGeneration.manifestPath,
-                    );
-                  }
-                } finally {
-                  diagnosticMetrics.embeddingModelVerificationMilliseconds += Math.max(
-                    diagnosticsClock.monotonicMilliseconds() - manifestReadStartedAtMilliseconds,
-                    0,
-                  );
-                }
                 try {
                   const warning = await readRecallMaterialBacklogWarning(
                     config.backlogSummaryPath,
@@ -2214,12 +2163,11 @@ export function createRecallConversationService(
                   void backlogError;
                 }
 
-                const store: RecallConversationSearchStore = useTargetGeneration
-                  ? await openActiveRecallGenerationSearchStore(
-                      coherentGenerationConfig,
-                      activeGeneration.activeGenerationId,
-                    )
-                  : openStore('read', activeGeneration.databasePath);
+                const store: RecallConversationSearchStore =
+                  await openActiveRecallGenerationSearchStore(
+                    coherentGenerationConfig,
+                    activeGeneration.activeGenerationId,
+                  );
                 try {
                   const retrievalStartedAtMilliseconds = diagnosticsClock.monotonicMilliseconds();
                   const deepRerankStartedWithMilliseconds =
@@ -2889,17 +2837,9 @@ export function createRecallConversationService(
                 config.generationRootDirectory,
               );
               const registry = await readRecallGenerationRegistry(config.generationRegistryPath);
-              const activeRegistryEntry = registry?.generations.find(
-                ({ generationId }) => generationId === activeGeneration.activeGenerationId,
-              );
               if (registry?.buildingGenerationId != null) {
                 throw new Error(
                   'Recall incremental commits are frozen while a replacement generation builds',
-                );
-              }
-              if (activeRegistryEntry?.state === RecallGenerationCutoverState.LEGACY_READ_ONLY) {
-                throw new Error(
-                  'Recall adopted legacy generation is read-only; run an explicit rebuild',
                 );
               }
               const targetPaths: RecallIndexTargetPaths = activeGeneration;
@@ -3110,12 +3050,7 @@ export function createRecallConversationService(
     buildReplacementRecallGeneration(options) {
       return runSerialized(async () => {
         const generationStatus = await readCanonicalIndexGenerationStatus();
-        const activeVectorSourceGenerationId =
-          generationStatus.active?.kind === 'managed' &&
-          generationStatus.active.manifestPath !== undefined &&
-          (await manifestDeclaresTargetRecallGeneration(generationStatus.active.manifestPath))
-            ? generationStatus.active.generationId
-            : undefined;
+        const activeVectorSourceGenerationId = generationStatus.active?.generationId;
         const onPhysicalSourceCheckpoint = options.onPhysicalSourceCheckpoint;
         return runRecallReplacementGenerationBuild({
           config: backgroundIndexCoordinatorConfig,
@@ -3358,28 +3293,6 @@ export function createRecallConversationService(
         lockPath: config.lockPath,
         workerSignal,
         ...(rollbackFault ? { rollbackFault } : {}),
-      });
-    },
-    async adoptLegacy() {
-      await adoptLegacyRecallGeneration({
-        dataDirectory: config.dataDirectory,
-        legacyDatabasePath: config.databasePath,
-        legacyStatePath: config.statePath,
-        legacyManifestPath: config.manifestPath,
-        generationRootDirectory: config.generationRootDirectory,
-        activeGenerationPointerPath: config.activeGenerationPointerPath,
-        generationRegistryPath: config.generationRegistryPath,
-        backlogSummaryPath: config.backlogSummaryPath,
-        backupEvidencePath: join(config.dataDirectory, 'legacy-adoption-backup.json'),
-        lockPath: config.lockPath,
-        async validateLegacyDatabase(databasePath) {
-          const legacyStore = openStore('read', databasePath);
-          try {
-            legacyStore.count();
-          } finally {
-            legacyStore.close();
-          }
-        },
       });
     },
     async collectRetired() {

@@ -115,7 +115,7 @@ async function readVerifiedCachedTokenizerAsset(
   const actualChecksum = hashTokenizerAsset(content);
   if (actualChecksum !== asset.sha256) {
     throw new Error(
-      `Recall tokenizer cache corrupt at ${path}: expected SHA-256 ${asset.sha256}, actual ${actualChecksum}; remove the corrupt asset and rerun /pi-session-recall-index`,
+      `Recall tokenizer cache corrupt at ${path}: expected SHA-256 ${asset.sha256}, actual ${actualChecksum}; remove the corrupt asset and rerun pi-session-recall rebuild`,
     );
   }
   return content;
@@ -138,7 +138,7 @@ async function cacheVerifiedTokenizerAsset(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(
-      `Recall tokenizer cache miss at ${cachePath}; download ${asset.url} failed: ${message}; pre-populate the cache or reconnect and rerun /pi-session-recall-index`,
+      `Recall tokenizer cache miss at ${cachePath}; download ${asset.url} failed: ${message}; pre-populate the cache or reconnect and rerun pi-session-recall rebuild`,
       { cause: error },
     );
   }

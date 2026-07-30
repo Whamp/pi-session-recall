@@ -169,7 +169,7 @@ void test('index manifest canonically digests project lineage and rejects change
   assert.notEqual(changed.projectIdentity.lineageDigest, actual.projectIdentity.lineageDigest);
   assert.throws(
     () => assertRecallIndexManifestCompatible(actual, changed, '/data/index-manifest.json'),
-    /projectIdentity\.lineageDigest.*\/pi-session-recall-index --rebuild/s,
+    /projectIdentity\.lineageDigest.*pi-session-recall rebuild/s,
   );
 });
 
@@ -215,7 +215,7 @@ void test('index manifest tolerates same-model canary jitter and rejects materia
   );
   assert.throws(
     () => assertRecallIndexManifestCompatible(actual, materialDrift, '/data/index-manifest.json'),
-    /embedding\.canaryCosineSimilarity.*\/pi-session-recall-index --rebuild/s,
+    /embedding\.canaryCosineSimilarity.*pi-session-recall rebuild/s,
   );
 });
 
@@ -254,13 +254,13 @@ void test('index manifest incompatibility reports every mismatch with the rebuil
       assert.match(error.message, /projectIdentity\.lineagePolicyVersion/);
       assert.match(error.message, /projectIdentity\.lineageDigest/);
       assert.match(error.message, /zvec\.ftsConfigurationVersion/);
-      assert.match(error.message, /\/pi-session-recall-index --rebuild/);
+      assert.match(error.message, /pi-session-recall rebuild/);
       return true;
     },
   );
   assert.throws(
     () => assertRecallIndexManifestCompatible(null, expected, '/data/index-manifest.json'),
-    /Recall index manifest missing.*\/pi-session-recall-index --rebuild/,
+    /Recall index manifest missing.*pi-session-recall rebuild/,
   );
 });
 
@@ -331,7 +331,7 @@ void test('index manifest reader tells an older extension to reload instead of r
       assert.match(error.message, /Reload Pi to load the installed extension/);
       assert.match(error.message, /update pi-session-recall and reload Pi again/i);
       assert.match(error.message, /do not rebuild/i);
-      assert.doesNotMatch(error.message, /pi-session-recall-index --rebuild/);
+      assert.doesNotMatch(error.message, /pi-session-recall rebuild/);
       return true;
     },
   );

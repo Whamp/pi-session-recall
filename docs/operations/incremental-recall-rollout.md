@@ -1,64 +1,58 @@
-# Incremental recall rollout checklist
+# Target recall generation rollout checklist
 
-Production cutover requires human approval. Tests and scratch evaluations do not grant permission to open, copy, lock, rename, or mutate production recall or session paths.
+Production operations require human approval. Tests and evaluations do not grant permission to open, copy, lock, rename, delete, or mutate production recall data or original Pi session files.
 
-Record the operator, host, date, command output, backup location, active generation ID, and rollback generation ID for every completed stage.
+Record the operator, host, date, installed commit, command output, active generation ID, and rollback generation ID for every completed stage.
 
 ## 1. Preflight
 
-- [ ] Confirm the installed extension commit and Node, zvec, manifest, evidence, projection, marker, and eligibility-policy versions.
+- [ ] Review the target read and write acceptance evidence for the installed commit.
+- [ ] Confirm Node, zvec, target manifest, store schema, marker, projection, and eligibility-policy versions.
 - [ ] Confirm `flock` works on the recall filesystem.
-- [ ] Confirm the active-generation pointer and generation root share one filesystem.
-- [ ] Confirm free space can hold the active generation, replacement generation, rollback generation, marker spool, and temporary build overhead.
-- [ ] Confirm no rebuild, adoption, rollback, or collection operation is already running.
-- [ ] Review `docs/evaluation/recall-quality-report.md`, the focused diagnostics, dependency audit, structural checks, and slop scan.
-- [ ] Stop if hook p95 exceeds 25 ms, a 10,000-file sweep exceeds 500 ms, a batch exceeds 32 documents, write-window p95 exceeds 300 ms, search waits longer than 500 ms, or a projection payload exceeds 8 MiB. Return to design review with the raw scalar records.
+- [ ] Confirm the active pointer and generation root share one filesystem.
+- [ ] Confirm free space can hold the active, replacement, and retained rollback target generations plus temporary build overhead.
+- [ ] Run `pi-session-recall status` and stop if another build, recovery, rollback, or cleanup owns the operation.
+- [ ] Stop if marker publication p95 exceeds 25 ms, a 10,000-file metadata sweep exceeds 500 ms, a batch exceeds 32 documents, write-window p95 exceeds 300 ms, search waits longer than 500 ms, or a projection payload exceeds 8 MiB.
 
-## 2. Backup and rollback proof
+## 2. Fresh target build
 
-- [ ] Stop automatic worker launches for the maintenance window without deleting pending markers.
-- [ ] Back up the active pointer, generation registry, backlog summary, marker control state, marker spool, and complete active generation.
-- [ ] Verify checksums on the backup.
-- [ ] Write down the rollback command: `/pi-session-recall-index --rollback`.
-- [ ] Prove the backup can be read from a separate location. Do not test restoration over the active production directory.
+- [ ] Confirm the configured embedding profile and stored dimensions.
+- [ ] Announce the expected stale-but-available search behavior.
+- [ ] Run `pi-session-recall rebuild` after explicit approval.
+- [ ] Use `pi-session-recall status` to record generation identity, process state, durable checkpoint, progress, and actionable errors.
+- [ ] Confirm markers continue accumulating outside generations while replacement commits are frozen.
+- [ ] If the worker stops, use `pi-session-recall resume` for the same generation and snapshot. Do not create a migration or adoption path.
+- [ ] Stop before activation if complete reopened-store validation or the immutable validation receipt fails.
 
-## 3. Explicit legacy adoption, if required
+## 3. Activation and replay verification
 
-- [ ] Run `/pi-session-recall-index --adopt-legacy` only when the current exact version-5 layout has been identified.
-- [ ] Verify adoption leaves the legacy generation read-only and preserves search.
-- [ ] Verify the relocation journal completed or can resume after interruption.
-- [ ] Stop if any source, manifest, or projection identity differs from the exact adoption contract.
+- [ ] Verify the active pointer names the validated target generation and the registry checksum agrees.
+- [ ] Verify search and exact source expansion remain available during fixed replay.
+- [ ] Verify replay covers only marker IDs captured at activation; newer markers remain ordinary backlog.
+- [ ] Run `pi-session-recall catch-up` as needed until the fixed replay completes.
+- [ ] If recovery is required, run `pi-session-recall recover` and verify the generation reopens before search resumes.
+- [ ] For the first target activation, verify no legacy generation appears as rollback material.
+- [ ] After later target-to-target activation, verify exactly one validated former target generation has the rollback role.
 
-## 4. Replacement build
+## 4. Smoke checks
 
-- [ ] Announce the rebuild and expected stale-but-available search behavior.
-- [ ] Run `/pi-session-recall-index --rebuild` after explicit human approval.
-- [ ] Confirm markers continue accumulating outside generations while commits are frozen.
-- [ ] Confirm searches continue opening the old active generation during build and optimization.
-- [ ] Record progress, batch sizes, cache hits and misses, embedding requests, write-window timings, and failures.
-- [ ] Stop before cutover if replacement validation fails.
-
-## 5. Pointer and worker verification
-
-- [ ] Verify the replacement evidence and projection stores, index manifest, and checksums before pointer replacement.
-- [ ] Verify the atomic pointer names the validated replacement and the registry checksum agrees.
-- [ ] Verify the former active generation is the bounded rollback generation.
-- [ ] Restart worker launches.
-- [ ] If recovery state exists, verify a write-capable reopen clears it before read-only search resumes.
-- [ ] Verify retained markers replay against the active generation and are acknowledged only after projection checkpoint coverage.
-- [ ] Verify the marker watermark drains or leaves a scalar, explained backlog.
-
-## 6. Smoke search and rollback proof
-
-- [ ] Run project-scoped dense, lexical, and identifier smoke searches.
-- [ ] Verify top-five fusion, branch labels, duplicate occurrences, summaries, tool evidence, turn context, and source provenance.
+- [ ] Run project-scoped dense, lexical, and identifier searches.
+- [ ] Run one explicit global search.
+- [ ] Verify top-five fusion, branch labels, duplicate occurrences, summaries, lexical-only tool evidence, neighbor context, and exact source provenance.
+- [ ] Expand one returned Evidence occurrence ID without reading session JSONL.
 - [ ] Verify default hybrid search makes no reranker request.
-- [ ] Verify search remains available during one bounded write window and never starts ingestion.
-- [ ] Exercise `/pi-session-recall-index --rollback` only if the approved maintenance plan includes a real rollback drill. Otherwise verify the retained generation and rollback pointer material without changing production.
+- [ ] Verify search never starts ingestion or waits for marker backlog.
 
-## 7. Bounded cleanup
+## 5. Target rollback
 
-- [ ] Keep the rollback generation through the approved retention period.
-- [ ] Run `/pi-session-recall-index --collect-retired` only after smoke searches, marker drain, and rollback evidence pass.
+- [ ] Run `pi-session-recall rollback` only when the approved plan includes a rollback drill or an actual target-generation fault requires it.
+- [ ] Confirm the bounded health check opens all three target stores and verifies declared fingerprints, projection-derived counts, and canaries.
+- [ ] Confirm rollback captures its own fixed replay snapshot and does not read session files or recertify all rows.
+- [ ] Confirm a second rollback can switch back to the replaced validated target generation when policy retains it.
+
+## 6. Cleanup
+
+- [ ] Keep rollback material through the approved retention period.
+- [ ] Run `pi-session-recall cleanup` only after smoke searches and replay evidence pass.
 - [ ] Verify cleanup refuses active, building, replay-pending, and retained rollback generations.
-- [ ] Record the final pointer, registry, backlog, marker counts, generation directories, and free space.
+- [ ] Record final pointer, registry, backlog, marker counts, generation directories, and free space.

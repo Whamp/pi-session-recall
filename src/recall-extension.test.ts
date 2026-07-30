@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { setTimeout as sleep } from 'node:timers/promises';
 
-import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
+import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 
 import {
   RecallInferenceBackend,
@@ -19,6 +19,7 @@ import recallExtension, {
   createPiRecallToolResponse,
   executePiRecallRequest,
   searchPiRecall,
+  type PiRecallParameters,
 } from './recall-extension.js';
 import {
   createRecallConversationService,
@@ -125,28 +126,50 @@ async function writeRecommendedFirstIndexSetup(
   );
 }
 
-function captureIndexCommand() {
-  let command: Parameters<ExtensionAPI['registerCommand']>[1] | undefined;
-  const registrar: Pick<ExtensionAPI, 'on' | 'registerTool' | 'registerCommand'> = {
+interface CapturedRecallTool {
+  execute(
+    toolCallId: string,
+    parameters: PiRecallParameters,
+    signal: AbortSignal,
+    onUpdate: () => void,
+    context: ExtensionContext,
+  ): Promise<unknown>;
+}
+
+function captureRecallTool() {
+  let tool: CapturedRecallTool | undefined;
+  const registrar: Pick<ExtensionAPI, 'on' | 'registerTool'> = {
     on() {},
-    registerTool() {},
-    registerCommand(_name, definition) {
-      command = definition;
+    registerTool(definition) {
+      // oxlint-disable-next-line typescript/consistent-type-assertions -- test captures only the known recall execute shape from Pi's generic registrar
+      tool = definition as unknown as CapturedRecallTool;
     },
   };
-  async function invokeIndexCommand(argumentsText = 'invalid'): Promise<void> {
-    assert.ok(command);
-    // oxlint-disable-next-line typescript/consistent-type-assertions -- invalid arguments fail before the command reads any other context fields
+  async function invokeRecallTool(
+    parameters: PiRecallParameters = {
+      query: 'invalid mixed request',
+      expandSourceNeighborhood: { evidenceOccurrenceId: 'invalid-mixed-occurrence' },
+    },
+  ): Promise<void> {
+    assert.ok(tool);
+    // oxlint-disable-next-line typescript/consistent-type-assertions -- mixed parameters fail before the tool reads unrelated context fields
     const context = {
+      cwd: '/fixture/project',
       ui: { setStatus() {}, notify() {} },
-    } as unknown as Parameters<typeof command.handler>[1];
-    await command.handler(argumentsText, context);
+    } as unknown as ExtensionContext;
+    await tool.execute(
+      'fixture-tool-call',
+      parameters,
+      new AbortController().signal,
+      () => {},
+      context,
+    );
   }
   return {
     registrar,
-    invokeIndexCommand,
+    invokeRecallTool,
     async resolveService() {
-      await assert.rejects(invokeIndexCommand(), /Recall index command arguments invalid/);
+      await assert.rejects(invokeRecallTool(), /exactly one request form/);
     },
   };
 }
@@ -164,9 +187,9 @@ void test('Pi recall invalidates its runtime cache for every effective inference
   };
   await writeRecallInferenceConfiguration(inferenceConfigurationPath, inferenceConfiguration);
   const createdConfigurations: RecallInferenceConfiguration[] = [];
-  const command = captureIndexCommand();
+  const recallTool = captureRecallTool();
 
-  await recallExtension(command.registrar, {
+  await recallExtension(recallTool.registrar, {
     config,
     createServiceRuntime(configuration) {
       createdConfigurations.push(configuration);
@@ -177,8 +200,8 @@ void test('Pi recall invalidates its runtime cache for every effective inference
     },
   });
 
-  await command.resolveService();
-  await command.resolveService();
+  await recallTool.resolveService();
+  await recallTool.resolveService();
   assert.equal(createdConfigurations.length, 1);
   await writeFile(
     inferenceConfigurationPath,
@@ -190,7 +213,7 @@ void test('Pi recall invalidates its runtime cache for every effective inference
       version: 2,
     })}\n`,
   );
-  await command.resolveService();
+  await recallTool.resolveService();
   assert.equal(createdConfigurations.length, 1);
 
   inferenceConfiguration = {
@@ -198,14 +221,14 @@ void test('Pi recall invalidates its runtime cache for every effective inference
     reranking: createConfiguredInferenceSelection(RecallInferenceCapability.RERANKING),
   };
   await writeRecallInferenceConfiguration(inferenceConfigurationPath, inferenceConfiguration);
-  await command.resolveService();
+  await recallTool.resolveService();
 
   inferenceConfiguration = {
     ...inferenceConfiguration,
     queryPlanning: createConfiguredInferenceSelection(RecallInferenceCapability.QUERY_PLANNING),
   };
   await writeRecallInferenceConfiguration(inferenceConfigurationPath, inferenceConfiguration);
-  await command.resolveService();
+  await recallTool.resolveService();
 
   const queryPlanning = inferenceConfiguration.queryPlanning;
   assert.ok(queryPlanning);
@@ -214,14 +237,14 @@ void test('Pi recall invalidates its runtime cache for every effective inference
     queryPlanning: { ...queryPlanning, endpoint: 'http://127.0.0.1:9082' },
   };
   await writeRecallInferenceConfiguration(inferenceConfigurationPath, inferenceConfiguration);
-  await command.resolveService();
+  await recallTool.resolveService();
 
   inferenceConfiguration = {
     ...inferenceConfiguration,
     queryPlanning: { ...queryPlanning, adapterId: 'custom-query-planning-v2' },
   };
   await writeRecallInferenceConfiguration(inferenceConfigurationPath, inferenceConfiguration);
-  await command.resolveService();
+  await recallTool.resolveService();
 
   inferenceConfiguration = {
     ...inferenceConfiguration,
@@ -231,14 +254,14 @@ void test('Pi recall invalidates its runtime cache for every effective inference
     },
   };
   await writeRecallInferenceConfiguration(inferenceConfigurationPath, inferenceConfiguration);
-  await command.resolveService();
+  await recallTool.resolveService();
 
   inferenceConfiguration = {
     ...inferenceConfiguration,
     embedding: { ...embedding, endpoint: 'http://127.0.0.1:9080' },
   };
   await writeRecallInferenceConfiguration(inferenceConfigurationPath, inferenceConfiguration);
-  await command.resolveService();
+  await recallTool.resolveService();
 
   assert.equal(createdConfigurations.length, 7);
 });
@@ -248,9 +271,9 @@ void test('Pi recall disposes the recommended runtime when configured inference 
   await writeRecommendedFirstIndexSetup(config);
   const disposedRuntimeKinds: string[] = [];
   const createdRuntimeKinds: string[] = [];
-  const command = captureIndexCommand();
+  const recallTool = captureRecallTool();
 
-  await recallExtension(command.registrar, {
+  await recallExtension(recallTool.registrar, {
     config,
     createServiceRuntime(inferenceConfiguration: RecallInferenceConfiguration) {
       const runtimeKind = inferenceConfiguration.embedding ? 'configured' : 'recommended';
@@ -264,7 +287,7 @@ void test('Pi recall disposes the recommended runtime when configured inference 
     },
   });
 
-  await command.resolveService();
+  await recallTool.resolveService();
   await writeRecallInferenceConfiguration(resolveRecallInferenceConfigurationPath(config), {
     version: 2,
     embedding: createConfiguredInferenceSelection(RecallInferenceCapability.EMBEDDING),
@@ -272,7 +295,7 @@ void test('Pi recall disposes the recommended runtime when configured inference 
     queryPlanning: null,
     pendingEmbeddingReplacement: null,
   });
-  await command.resolveService();
+  await recallTool.resolveService();
 
   assert.deepEqual(createdRuntimeKinds, ['recommended', 'configured']);
   assert.deepEqual(disposedRuntimeKinds, ['recommended']);
@@ -291,8 +314,8 @@ void test('Pi recall creates one runtime for concurrent cache misses', async (t)
   const creationStarted = createDeferred();
   const releaseCreation = createDeferred();
   let creationCount = 0;
-  const command = captureIndexCommand();
-  await recallExtension(command.registrar, {
+  const recallTool = captureRecallTool();
+  await recallExtension(recallTool.registrar, {
     config,
     async createServiceRuntime() {
       creationCount += 1;
@@ -305,8 +328,8 @@ void test('Pi recall creates one runtime for concurrent cache misses', async (t)
     },
   });
 
-  const firstResolution = command.resolveService();
-  const secondResolution = command.resolveService();
+  const firstResolution = recallTool.resolveService();
+  const secondResolution = recallTool.resolveService();
   await creationStarted.promise;
   await sleep(20);
   assert.equal(creationCount, 1);
@@ -328,8 +351,8 @@ void test('Pi recall retains runtime ownership when replacement disposal fails',
   });
   let creationCount = 0;
   let firstRuntimeDisposalAttemptCount = 0;
-  const command = captureIndexCommand();
-  await recallExtension(command.registrar, {
+  const recallTool = captureRecallTool();
+  await recallExtension(recallTool.registrar, {
     config,
     createServiceRuntime() {
       creationCount += 1;
@@ -348,7 +371,7 @@ void test('Pi recall retains runtime ownership when replacement disposal fails',
     },
   });
 
-  await command.resolveService();
+  await recallTool.resolveService();
   await writeRecallInferenceConfiguration(inferenceConfigurationPath, {
     version: 2,
     embedding,
@@ -356,8 +379,8 @@ void test('Pi recall retains runtime ownership when replacement disposal fails',
     queryPlanning: null,
     pendingEmbeddingReplacement: null,
   });
-  await assert.rejects(command.invokeIndexCommand(), /intentional runtime disposal failure/u);
-  await command.resolveService();
+  await assert.rejects(recallTool.invokeRecallTool(), /intentional runtime disposal failure/u);
+  await recallTool.resolveService();
 
   assert.equal(firstRuntimeDisposalAttemptCount, 2);
   assert.equal(creationCount, 2);
@@ -376,8 +399,8 @@ void test('Pi recall retries cleanly after replacement runtime creation fails', 
   });
   let creationAttemptCount = 0;
   let firstRuntimeDisposalCount = 0;
-  const command = captureIndexCommand();
-  await recallExtension(command.registrar, {
+  const recallTool = captureRecallTool();
+  await recallExtension(recallTool.registrar, {
     config,
     createServiceRuntime() {
       creationAttemptCount += 1;
@@ -396,7 +419,7 @@ void test('Pi recall retries cleanly after replacement runtime creation fails', 
     },
   });
 
-  await command.resolveService();
+  await recallTool.resolveService();
   await writeRecallInferenceConfiguration(inferenceConfigurationPath, {
     version: 2,
     embedding,
@@ -404,8 +427,8 @@ void test('Pi recall retries cleanly after replacement runtime creation fails', 
     queryPlanning: null,
     pendingEmbeddingReplacement: null,
   });
-  await assert.rejects(command.invokeIndexCommand(), /intentional runtime creation failure/u);
-  await command.resolveService();
+  await assert.rejects(recallTool.invokeRecallTool(), /intentional runtime creation failure/u);
+  await recallTool.resolveService();
 
   assert.equal(creationAttemptCount, 3);
   assert.equal(firstRuntimeDisposalCount, 1);
@@ -416,8 +439,8 @@ void test('Pi recall disposes its current runtime exactly once on shutdown', asy
   await writeRecommendedFirstIndexSetup(config);
   let shutdownRuntime: (() => Promise<void>) | undefined;
   let disposalCount = 0;
-  const command = captureIndexCommand();
-  await recallExtension(command.registrar, {
+  const recallTool = captureRecallTool();
+  await recallExtension(recallTool.registrar, {
     config,
     registerServiceRuntimeShutdown(disposeRuntime) {
       shutdownRuntime = disposeRuntime;
@@ -432,7 +455,7 @@ void test('Pi recall disposes its current runtime exactly once on shutdown', asy
     },
   });
 
-  await command.resolveService();
+  await recallTool.resolveService();
   assert.ok(shutdownRuntime);
   await shutdownRuntime();
   await shutdownRuntime();
@@ -447,8 +470,8 @@ void test('Pi recall waits for an active operation before shutdown disposal', as
   const releaseOperation = createDeferred();
   let shutdownRuntime: (() => Promise<void>) | undefined;
   let disposalCount = 0;
-  const command = captureIndexCommand();
-  await recallExtension(command.registrar, {
+  const recallTool = captureRecallTool();
+  await recallExtension(recallTool.registrar, {
     config,
     registerServiceRuntimeShutdown(disposeRuntime) {
       shutdownRuntime = disposeRuntime;
@@ -458,10 +481,29 @@ void test('Pi recall waits for an active operation before shutdown disposal', as
       return {
         service: {
           ...service,
-          async readBackgroundIndexGenerationStatus() {
+          async search(_query, limit, options) {
             operationStarted.resolve();
             await releaseOperation.promise;
-            return service.readBackgroundIndexGenerationStatus();
+            return {
+              results: [],
+              candidateAdmission: [],
+              totalChunks: 0,
+              searchPolicy: {
+                scope: options?.scope ?? RecallSearchScope.PROJECT,
+                invocationProjectIdentity: null,
+                rankingMode: options?.mode ?? 'hybrid',
+                rankFusionVersion: 2,
+                reciprocalRankConstant: 60,
+                rerankPolicyVersion: null,
+                rerankerModel: null,
+                rerankerIdentity: null,
+                activeBranchPrior: 0.01,
+                candidateLimits: { dense: 8, lexical: 8, identifier: 8 },
+                fusedPoolLimit: 24,
+                rerankPoolLimit: 24,
+                finalResultLimit: limit,
+              },
+            };
           },
         },
         async dispose() {
@@ -471,7 +513,7 @@ void test('Pi recall waits for an active operation before shutdown disposal', as
     },
   });
 
-  const activeOperation = command.invokeIndexCommand('--status');
+  const activeOperation = recallTool.invokeRecallTool({ query: 'active operation' });
   await operationStarted.promise;
   assert.ok(shutdownRuntime);
   const shutdown = shutdownRuntime();
@@ -484,12 +526,11 @@ void test('Pi recall waits for an active operation before shutdown disposal', as
   assert.equal(disposalCount, 1);
 });
 
-void test('Pi session recall registers collision-free tool guidance and index command', async (t) => {
+void test('Pi session recall registers only the model-facing tool and standalone CLI guidance', async (t) => {
   const toolNames: string[] = [];
   const toolDescriptions: string[] = [];
   const toolGuidelines: string[] = [];
   const commandNames: string[] = [];
-  const commandDescriptions: string[] = [];
   const toolParameterSchemas: string[] = [];
   const registrar: Pick<ExtensionAPI, 'on' | 'registerTool' | 'registerCommand'> = {
     on() {},
@@ -499,20 +540,16 @@ void test('Pi session recall registers collision-free tool guidance and index co
       toolGuidelines.push(...(definition.promptGuidelines ?? []));
       toolParameterSchemas.push(JSON.stringify(definition.parameters));
     },
-    registerCommand(name, definition) {
+    registerCommand(name) {
       commandNames.push(name);
-      commandDescriptions.push(definition.description ?? '');
     },
   };
 
   await recallExtension(registrar, { config: await createExtensionTestConfig(t) });
 
   assert.deepEqual(toolNames, ['pi-session-recall']);
-  assert.deepEqual(commandNames, ['pi-session-recall-index']);
+  assert.deepEqual(commandNames, []);
   assert.ok(!toolNames.includes('recall'));
-  assert.ok(!commandNames.includes('recall-index'));
-  assert.match(commandDescriptions[0] ?? '', /quality gate/);
-  assert.match(commandDescriptions[0] ?? '', /--rebuild/);
   assert.match(
     toolDescriptions[0] ?? '',
     /dense, lexical, and case-preserving identifier retrieval/,
@@ -525,6 +562,9 @@ void test('Pi session recall registers collision-free tool guidance and index co
   assert.match(toolDescriptions[0] ?? '', /valid same-run atomic neighbors/);
   assert.match(toolDescriptions[0] ?? '', /expand one exact evidence occurrence/);
   assert.match(toolDescriptions[0] ?? '', /exactly one form/);
+  assert.match(toolDescriptions[0] ?? '', /pi-session-recall catch-up/);
+  assert.match(toolDescriptions[0] ?? '', /pi-session-recall recover/);
+  assert.ok(!(toolDescriptions[0] ?? '').includes('/pi-session-recall-index'));
   assert.match(toolParameterSchemas[0] ?? '', /project/);
   assert.match(toolParameterSchemas[0] ?? '', /global/);
   assert.match(toolParameterSchemas[0] ?? '', /query-planned/);
@@ -946,7 +986,6 @@ void test('Pi recall tool adapter XOR-validates search and exact expansion reque
         restoredMarkerCount: 0,
       };
     },
-    async adoptLegacy() {},
     async collectRetired() {
       return { deletedGenerationIds: [] };
     },

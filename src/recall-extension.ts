@@ -44,7 +44,6 @@ import {
   registerRecallLifecycleMarkers,
   type RecallLifecycleRuntimeFactory,
 } from './register-recall-lifecycle-markers.js';
-import { runRecallIndexCommand } from './recall-index-command.js';
 import {
   readRecallInferenceConfiguration,
   type RecallInferenceConfiguration,
@@ -302,7 +301,7 @@ export function createPiRecallToolResponse(operation: PiRecallOperation) {
 
 /** Registers hybrid recall of past Pi conversations. Pi requires extension factories to be default exports. */
 export default async function recallExtension(
-  pi: Pick<ExtensionAPI, 'on' | 'registerTool' | 'registerCommand'>,
+  pi: Pick<ExtensionAPI, 'on' | 'registerTool'>,
   startupOptions: RecallExtensionStartupOptions = {},
 ): Promise<void> {
   const qualityGateDecision = await readRecallQualityGateDecision(RECALL_QUALITY_RESULTS_PATH);
@@ -509,7 +508,7 @@ export default async function recallExtension(
     name: 'pi-session-recall',
     label: 'Pi Session Recall',
     description:
-      'Search past Pi conversations with dense, lexical, and case-preserving identifier retrieval, or expand one exact evidence occurrence into its indexed source neighborhood without searching or reading session files. Supply exactly one form: query or expandSourceNeighborhood. Search defaults to project scope; it defaults to deterministic hybrid ranking. Choose global explicitly for cross-project evidence, deep-rerank only when ambiguous evidence warrants slower local Qwen scoring, or query-planned to route an agent-supplied plan or invoke the configured query planner before bounded QMD fusion and reranking. Excludes hidden reasoning and derived recall output, keeps other raw tool evidence lexical-only, labels active and abandoned branches, and expands only valid same-run atomic neighbors with exact provenance. Use /pi-session-recall-index for explicit catch-up or repair; interactive Pi lifecycle and search operations never perform whole-session maintenance. Output is truncated to 2000 lines or 50KB.',
+      'Search past Pi conversations with dense, lexical, and case-preserving identifier retrieval, or expand one exact evidence occurrence into its indexed source neighborhood without searching or reading session files. Supply exactly one form: query or expandSourceNeighborhood. Search defaults to project scope; it defaults to deterministic hybrid ranking. Choose global explicitly for cross-project evidence, deep-rerank only when ambiguous evidence warrants slower local Qwen scoring, or query-planned to route an agent-supplied plan or invoke the configured query planner before bounded QMD fusion and reranking. Excludes hidden reasoning and derived recall output, keeps other raw tool evidence lexical-only, labels active and abandoned branches, and expands only valid same-run atomic neighbors with exact provenance. Use pi-session-recall catch-up for explicit incremental maintenance or pi-session-recall recover after interrupted writes; interactive Pi lifecycle and search operations never perform whole-session maintenance. Output is truncated to 2000 lines or 50KB.',
     promptSnippet: 'Search past Pi conversations or expand one exact indexed source occurrence',
     promptGuidelines: [
       'Use pi-session-recall when a task depends on a conversation or detail from a past session and the current context does not contain reliable source evidence.',
@@ -627,30 +626,6 @@ export default async function recallExtension(
         content: [{ type: 'text', text: response.text }],
         details: response.details,
       };
-    },
-  });
-
-  pi.registerCommand('pi-session-recall-index', {
-    description:
-      'Index production sessions after the quality gate; use --rebuild for detached replacement work and --status, --stop, --resume, or --discard to control it',
-    async handler(argumentsText, context) {
-      recallWarningHandler = (message) => context.ui.notify(message, 'warning');
-      assertRecallInstallationConfigured(await resolveInstallationMode());
-      await useServiceRuntime((service) =>
-        runRecallIndexCommand({
-          argumentsText,
-          qualityGateDecision,
-          service,
-          ui: {
-            setStatus(status) {
-              context.ui.setStatus('pi-session-recall', status);
-            },
-            notify(message, level) {
-              context.ui.notify(message, level);
-            },
-          },
-        }),
-      );
     },
   });
 }

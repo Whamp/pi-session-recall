@@ -32,7 +32,7 @@ export interface RecallGenerationReplayCompletionPaths {
   backlogSummaryPath: string;
   markerQuarantineDirectory: string;
   /** Target generation root used to prove fixed replay from physical projections. */
-  generationRootDirectory?: string;
+  generationRootDirectory: string;
   lockPath: string;
 }
 

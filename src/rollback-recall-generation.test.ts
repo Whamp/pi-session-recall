@@ -310,36 +310,6 @@ void test('configured service rolls back between two target generations and can 
   );
 });
 
-void test('configured service never treats legacy storage as rollback material', async (t) => {
-  const pair = await createActivatedRollbackPair('legacy_refusal');
-  t.after(() => rm(pair.root, { recursive: true, force: true }));
-  const registry = await readRecallGenerationRegistry(pair.config.generationRegistryPath);
-  assert.ok(registry);
-  await writeRecallGenerationRegistry(pair.config.generationRegistryPath, {
-    ...registry,
-    generations: registry.generations.map((entry) =>
-      entry.generationId === pair.firstGenerationId
-        ? {
-            ...entry,
-            indexManifestVersion: 5,
-            markerSchemaVersion: null,
-            sessionProjectionSchemaVersion: null,
-          }
-        : entry,
-    ),
-  });
-
-  await assert.rejects(
-    () => pair.service.rollback(),
-    /rollback unavailable: no retained target generation/u,
-  );
-  assert.equal(
-    (await readRecallActiveGenerationPointer(pair.config.activeGenerationPointerPath))
-      ?.activeGenerationId,
-    pair.secondGenerationId,
-  );
-});
-
 void test('configured service refuses rollback when the bounded target health check fails', async (t) => {
   const cases: ReadonlyArray<{
     name: string;

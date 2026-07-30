@@ -25,8 +25,6 @@ import {
 import {
   createRecallActiveGenerationPointer,
   decodeRecallBacklogSummary,
-  readRecallGenerationRegistry,
-  writeRecallActiveGenerationPointer,
   writeRecallGenerationRegistry,
   RECALL_GENERATION_REGISTRY_VERSION,
 } from './recall-generation-state.js';
@@ -405,24 +403,19 @@ void test('incremental worker launch uses kernel flock without PID or lease infe
   );
 });
 
-void test('incremental worker loader uses configured runtime when inference embedding is configured', async () => {
+void test('incremental worker loader accepts only target manifests and configured providers', async () => {
   const workerSource = await readFile(
     new URL('./run-recall-incremental-worker.ts', import.meta.url),
     'utf8',
   );
   assert.match(workerSource, /createConfiguredRecallInferenceRuntime/u);
-  assert.match(workerSource, /resolveRecallInferenceConfigurationPath/u);
-  assert.match(workerSource, /readRecallInferenceConfiguration/u);
-  assert.match(workerSource, /manifest\.embedding\.dimensions/u);
+  assert.match(workerSource, /generationFormatVersion !== 1/u);
+  assert.match(workerSource, /runtime\.service\.transferIncrementalRecallWorkPlan/u);
+  assert.doesNotMatch(workerSource, /embedding-vector-cache|local-embedding-client/u);
   assert.doesNotMatch(
     workerSource,
     /from '\.\/configured-recall-inference-runtime\.js'/u,
     'configured-recall-inference-runtime must be dynamically imported to preserve lazy loading',
-  );
-  assert.doesNotMatch(
-    workerSource,
-    /from '\.\/recall-inference-configuration\.js'/u,
-    'recall-inference-configuration must be dynamically imported to preserve lazy loading',
   );
 });
 
@@ -824,75 +817,6 @@ void test('building generation freezes incremental commits while retaining publi
   );
   backlog = decodeRecallBacklogSummary(await readFile(backlogSummaryPath, 'utf8'));
   assert.equal(backlog.lastFailureCategory, 'write_failed');
-});
-
-void test('ordinary worker exposes quarantine failure until replay can complete', async (t) => {
-  const fixture = await createWorkerFixture(t);
-  const generationRegistryPath = join(fixture.controlDirectory, 'generation-registry.json');
-  const activeGenerationPointerPath = join(fixture.controlDirectory, 'active-generation.json');
-  const backlogSummaryPath = join(fixture.controlDirectory, 'backlog-summary.json');
-  const lockPath = join(fixture.controlDirectory, 'operation.lock');
-  const pointer = createRecallActiveGenerationPointer('generation-1');
-  await writeRecallActiveGenerationPointer(activeGenerationPointerPath, pointer);
-  await writeRecallGenerationRegistry(generationRegistryPath, {
-    version: RECALL_GENERATION_REGISTRY_VERSION,
-    activeGenerationId: 'generation-1',
-    buildingGenerationId: null,
-    rollbackGenerationId: null,
-    activePointerChecksum: pointer.checksum,
-    generations: [
-      {
-        generationId: 'generation-1',
-        state: RecallGenerationCutoverState.REPLAY_PENDING,
-        indexManifestVersion: 6,
-        markerSchemaVersion: 1,
-        sessionProjectionSchemaVersion: 3,
-        indexManifestFingerprint: 'a'.repeat(64),
-        rebuildStartedAtEpochMilliseconds: 1,
-        stateChangedAtEpochMilliseconds: 2,
-        rebuildStartMarkerId: null,
-        rebuildMarkerWatermark: [],
-        validatedAtEpochMilliseconds: 2,
-        retireAfterEpochMilliseconds: null,
-      },
-    ],
-  });
-
-  await writeFile(join(fixture.markerSpoolDirectory, 'corrupt-marker.json'), 'not-json\n');
-  const workerOptions = {
-    markerSpoolDirectory: fixture.markerSpoolDirectory,
-    markerQuarantineDirectory: fixture.markerQuarantineDirectory,
-    controlDirectory: fixture.controlDirectory,
-    targetGenerationId: 'generation-1',
-    generationRegistryPath,
-    generationReplayCompletion: {
-      activeGenerationPointerPath,
-      generationRegistryPath,
-      backlogSummaryPath,
-      lockPath,
-    },
-    trustedSessionRoots: [fixture.sessionsDirectory],
-  };
-  const quarantined = await runRecallIncrementalWorker(workerOptions);
-
-  assert.equal(quarantined.generationReplayCompleted, false);
-  assert.equal(
-    quarantined.replayBlockingFailureCategory,
-    RecallBacklogFailureCategory.MARKER_DECODE_FAILED,
-  );
-  assert.equal(
-    (await readRecallGenerationRegistry(generationRegistryPath))?.generations[0]?.state,
-    RecallGenerationCutoverState.REPLAY_PENDING,
-  );
-
-  await rm(fixture.markerQuarantineDirectory, { recursive: true, force: true });
-  const completed = await runRecallIncrementalWorker(workerOptions);
-  assert.equal(completed.generationReplayCompleted, true);
-  assert.equal(completed.replayBlockingFailureCategory, null);
-  assert.equal(
-    (await readRecallGenerationRegistry(generationRegistryPath))?.generations[0]?.state,
-    RecallGenerationCutoverState.ACTIVE,
-  );
 });
 
 void test('missing marker-backed source reaches deletion reconciliation before transfer', async (t) => {

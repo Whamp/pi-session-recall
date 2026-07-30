@@ -24,6 +24,10 @@ import {
   writeRecallGenerationRegistry,
 } from './recall-generation-state.js';
 import {
+  createRecallIndexManifest,
+  type RecallTokenizerManifestIdentity,
+} from './recall-index-manifest.js';
+import {
   createOctenEmbeddingModelProfile,
   createRecallEmbeddingProfileIdentity,
   type RecallEmbeddingModelProfile,
@@ -145,6 +149,97 @@ async function writeSession(
       .join('\n')}\n`,
   );
 }
+
+void test('configured service refuses legacy active storage without opening it', async (t) => {
+  const disposableRoot = await mkdtemp(join(tmpdir(), 'recall-target-only-search-'));
+  t.after(() => rm(disposableRoot, { recursive: true, force: true }));
+  const sessionsDirectory = join(disposableRoot, 'sessions');
+  const dataDirectory = join(disposableRoot, 'recall');
+  await Promise.all([mkdir(sessionsDirectory), mkdir(dataDirectory)]);
+
+  const config = createTargetSearchTestConfig(dataDirectory, sessionsDirectory);
+  const profile = createTargetSearchEmbeddingProfile();
+  const generationId = 'generation_legacy_storage_refused';
+  const generationDirectory = join(config.generationRootDirectory, generationId);
+  await mkdir(generationDirectory, { recursive: true });
+  const tokenizerIdentity: RecallTokenizerManifestIdentity = {
+    model: 'fixture-tokenizer',
+    revision: 'fixture-revision',
+    library: { name: 'fixture-tokenizer', version: '1' },
+    encodeOptions: { addSpecialTokens: false, returnTokenTypeIds: false },
+    assets: [{ fileName: 'fixture-tokenizer.json', sha256: 'b'.repeat(64) }],
+  };
+  const currentManifest = createRecallIndexManifest({
+    embeddingIdentity: profile.identity,
+    ...(profile.canary ? { embeddingCanary: profile.canary } : {}),
+    canaryEmbedding: [1, 0, 0],
+    tokenizerIdentity,
+    ...(config.chunkPolicy ? { chunkPolicy: config.chunkPolicy } : {}),
+    projectLineages: config.projectLineages,
+  });
+  const legacyManifest = Object.fromEntries(
+    Object.entries(currentManifest).filter(
+      ([key]) => key !== 'markerSchemaVersion' && key !== 'sessionProjectionSchemaVersion',
+    ),
+  );
+  await writeFile(
+    join(generationDirectory, 'index-manifest.json'),
+    `${JSON.stringify({ ...legacyManifest, manifestVersion: 5 })}\n`,
+  );
+  const pointer = createRecallActiveGenerationPointer(generationId);
+  await writeFile(
+    config.generationRegistryPath,
+    `${JSON.stringify({
+      version: RECALL_GENERATION_REGISTRY_VERSION,
+      activeGenerationId: generationId,
+      buildingGenerationId: null,
+      rollbackGenerationId: null,
+      activePointerChecksum: pointer.checksum,
+      generations: [
+        {
+          generationId,
+          state: 'legacy_read_only',
+          indexManifestVersion: 5,
+          markerSchemaVersion: null,
+          sessionProjectionSchemaVersion: null,
+          indexManifestFingerprint: 'a'.repeat(64),
+          rebuildStartedAtEpochMilliseconds: 1,
+          stateChangedAtEpochMilliseconds: 1,
+          rebuildStartMarkerId: null,
+          validatedAtEpochMilliseconds: 1,
+        },
+      ],
+    })}\n`,
+  );
+  await writeRecallActiveGenerationPointer(config.activeGenerationPointerPath, pointer);
+
+  let legacyStoreOpenCount = 0;
+  const service = createRecallConversationService(config, {
+    embeddingProfile: profile,
+    embeddingProvider: {
+      async embedDocuments(documents) {
+        return documents.map(() => [1, 0, 0]);
+      },
+      async embedQuery() {
+        return [1, 0, 0];
+      },
+    },
+    tokenizerIdentity,
+    loadTokenizer: async () => tokenizer,
+    openStore() {
+      legacyStoreOpenCount += 1;
+      throw new Error('Legacy recall store opener invoked');
+    },
+    workerSignal: { signalDetachedWorker() {} },
+  });
+
+  await assert.rejects(service.readOperatorStatus(), /Recall generation registry invalid/u);
+  await assert.rejects(
+    service.search('target only', 1, { scope: RecallSearchScope.GLOBAL }),
+    /Recall generation registry invalid/u,
+  );
+  assert.equal(legacyStoreOpenCount, 0);
+});
 
 void test('configured service serves every existing search mode from the active validated target generation', async (t) => {
   const disposableRoot = await mkdtemp(join(tmpdir(), 'recall-active-target-search-'));

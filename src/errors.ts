@@ -9,9 +9,7 @@ export class RecallSearchBusyError extends Error {
 /** Reports that an interrupted writer requires the external recovery worker. */
 export class RecallRecoveryRequiredError extends Error {
   constructor() {
-    super(
-      'Recall write recovery required; run the external write-capable worker or /pi-session-recall-index --rebuild before searching again',
-    );
+    super('Recall write recovery required; run pi-session-recall recover before searching again');
     this.name = 'RecallRecoveryRequiredError';
   }
 }
@@ -20,7 +18,7 @@ export class RecallRecoveryRequiredError extends Error {
 export class RecallGenerationPointerError extends Error {
   constructor(message: string, options?: ErrorOptions) {
     super(
-      `Recall active generation pointer unavailable: ${message}; repair with /pi-session-recall-index --rebuild`,
+      `Recall active generation pointer unavailable: ${message}; repair with pi-session-recall recover or create a fresh generation with pi-session-recall rebuild`,
       options,
     );
     this.name = 'RecallGenerationPointerError';

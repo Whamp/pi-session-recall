@@ -124,6 +124,7 @@ interface IncrementalRecallTransferServices {
 interface MarkerIncrementalRecallWorkPlanOptions extends IncrementalRecallTransferServices {
   workPlan: RecallMarkerReplayWorkPlan;
   confirmedPhysicalSourceDeletion?: never;
+  physicalSessionProjectionUpdate?: never;
 }
 
 /** One policy-confirmed source removal routed through the sole incremental transfer seam. */
@@ -135,17 +136,34 @@ export interface ConfirmedPhysicalSourceDeletionRequest {
 interface ConfirmedDeletionIncrementalRecallWorkPlanOptions extends IncrementalRecallTransferServices {
   workPlan?: never;
   confirmedPhysicalSourceDeletion: ConfirmedPhysicalSourceDeletionRequest;
+  physicalSessionProjectionUpdate?: never;
 }
 
-/** Public service request selecting marker transfer or one policy-confirmed source deletion. */
+/** One policy update to the target generation's sole mutable physical-source account. */
+export interface PhysicalSessionProjectionUpdateRequest {
+  workPlan: RecallMarkerReplayWorkPlan;
+  projection: PhysicalSessionProjection;
+  /** False keeps deletion markers pending until confirmed store removal verifies. */
+  acknowledgeMarkers?: boolean;
+}
+
+interface PhysicalSessionProjectionUpdateOptions extends IncrementalRecallTransferServices {
+  workPlan?: never;
+  confirmedPhysicalSourceDeletion?: never;
+  physicalSessionProjectionUpdate: PhysicalSessionProjectionUpdateRequest;
+}
+
+/** Public service request selecting marker transfer, projection update, or confirmed deletion. */
 export type IncrementalRecallWorkPlanRequest =
   | RecallMarkerReplayWorkPlan
-  | Readonly<{ confirmedPhysicalSourceDeletion: ConfirmedPhysicalSourceDeletionRequest }>;
+  | Readonly<{ confirmedPhysicalSourceDeletion: ConfirmedPhysicalSourceDeletionRequest }>
+  | Readonly<{ physicalSessionProjectionUpdate: PhysicalSessionProjectionUpdateRequest }>;
 
-/** Target generation services plus exactly one marker-plan or confirmed-deletion request. */
+/** Target generation services plus exactly one supported physical-source transfer request. */
 export type TransferIncrementalRecallWorkPlanOptions =
   | MarkerIncrementalRecallWorkPlanOptions
-  | ConfirmedDeletionIncrementalRecallWorkPlanOptions;
+  | ConfirmedDeletionIncrementalRecallWorkPlanOptions
+  | PhysicalSessionProjectionUpdateOptions;
 
 /** Successful incremental transfer with the exact number of immutable documents committed. */
 export interface CommittedIncrementalRecallWorkPlan {
@@ -1517,8 +1535,111 @@ async function transferConfirmedPhysicalSourceDeletion(
   };
 }
 
+async function transferPhysicalSessionProjectionUpdate(
+  options: PhysicalSessionProjectionUpdateOptions,
+): Promise<IncrementalRecallWorkPlanTransferOutcome> {
+  const { projection, workPlan } = options.physicalSessionProjectionUpdate;
+  if (projection.generationId !== workPlan.targetGenerationId) {
+    throw new Error('Recall target physical projection update generation mismatch');
+  }
+  const physicalSource = resolveRecallPhysicalSourceIdentity(
+    options.generation.sessionsDirectory,
+    projection.sourcePath,
+  );
+  const generationDirectory = join(
+    options.generation.generationRootDirectory,
+    workPlan.targetGenerationId,
+  );
+  const paths = createRecallGenerationComponentPaths(generationDirectory);
+  await readRecallGenerationValidationReceipt(paths.validationReceiptPath);
+  const projectionRowId = `projection_${physicalSource.physicalSourceIdentity}`;
+  const collection = ZVecOpen(paths.sessionProjectionStorePath, { readOnly: true });
+  let currentFields: Record<string, unknown>;
+  try {
+    const current = collection.fetchSync({
+      ids: [projectionRowId],
+      outputFields: [
+        'schemaVersion',
+        'generationId',
+        'projectionKind',
+        'physicalSourceIdentity',
+        'logicalSessionOccurrenceId',
+        'projectionJson',
+      ],
+      includeVector: false,
+    })[projectionRowId];
+    if (current === undefined || typeof current.fields.projectionJson !== 'string') {
+      throw new Error(
+        `Recall target physical projection update row missing for ${physicalSource.physicalSourceIdentity}`,
+      );
+    }
+    let artifact: unknown;
+    try {
+      artifact = JSON.parse(current.fields.projectionJson);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `Recall target physical projection update artifact invalid for ${physicalSource.physicalSourceIdentity}: ${message}`,
+        { cause: error },
+      );
+    }
+    if (!isUnknownRecord(artifact)) {
+      throw new Error(
+        `Recall target physical projection update artifact invalid for ${physicalSource.physicalSourceIdentity}`,
+      );
+    }
+    const encoded = encodeRecallSessionProjection(projection);
+    if (encoded.status !== RecallProjectionEncodingStatus.ENCODED) {
+      throw new Error('Recall target incremental physical projection exceeds the bounded payload');
+    }
+    currentFields = {
+      ...current.fields,
+      projectionJson: JSON.stringify({
+        ...artifact,
+        ingestionProjectionPayload: encoded.payload,
+      }),
+    };
+  } finally {
+    collection.closeSync();
+  }
+  const commitWorkPlan =
+    options.physicalSessionProjectionUpdate.acknowledgeMarkers === false
+      ? { ...workPlan, sourceMarkerIds: [], workItems: [] }
+      : workPlan;
+  const markerOptions: MarkerIncrementalRecallWorkPlanOptions = {
+    generation: options.generation,
+    chunkPolicy: options.chunkPolicy,
+    loadTokenizer: () => options.loadTokenizer(),
+    embeddingProvider: {
+      embedDocuments: (documents, signal) =>
+        options.embeddingProvider.embedDocuments(documents, signal),
+    },
+    resolveProjectIdentity: (sessionOrigin) => options.resolveProjectIdentity(sessionOrigin),
+    workPlan: commitWorkPlan,
+    ...(options.readRange ? { readRange: options.readRange } : {}),
+    ...(options.incrementalTransferFault
+      ? { incrementalTransferFault: options.incrementalTransferFault }
+      : {}),
+    ...(options.signal ? { signal: options.signal } : {}),
+    ...(options.nowEpochMilliseconds ? { nowEpochMilliseconds: options.nowEpochMilliseconds } : {}),
+  };
+  await commitPreparedTargetTransfer(markerOptions, {
+    physicalSource,
+    physicalProjection: projection,
+    logicalProjections: [],
+    lexicalRows: [],
+    denseRows: [],
+    logicalProjectionRows: [],
+    physicalProjectionRow: { id: projectionRowId, fields: currentFields },
+  });
+  return {
+    kind: RecallIncrementalTransferOutcomeKind.COMMITTED,
+    committedDocumentCount: 0,
+  };
+}
+
 /**
- * Transfers one physical-source work plan into target lexical/source, dense, and projection stores.
+ * Transfers one physical-source request into target lexical/source, dense, and projection stores.
  * Tokenization and document embeddings finish before any exclusive write window begins.
  */
 export async function transferIncrementalRecallWorkPlan(
@@ -1526,6 +1647,9 @@ export async function transferIncrementalRecallWorkPlan(
 ): Promise<IncrementalRecallWorkPlanTransferOutcome> {
   if (options.confirmedPhysicalSourceDeletion !== undefined) {
     return transferConfirmedPhysicalSourceDeletion(options);
+  }
+  if (options.physicalSessionProjectionUpdate !== undefined) {
+    return transferPhysicalSessionProjectionUpdate(options);
   }
   assertSinglePhysicalSourceWorkPlan(options.workPlan);
   const firstMarker = options.workPlan.workItems[0]?.marker;

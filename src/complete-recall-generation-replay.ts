@@ -1,4 +1,3 @@
-import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { ZVecOpen } from '@zvec/zvec';
@@ -17,7 +16,6 @@ import {
 } from './recall-generation-replay-snapshot.js';
 import { createRecallGenerationComponentPaths } from './recall-generation-stores.js';
 import { completeRecallGenerationReplayTransition } from './recall-generation-transitions.js';
-import { readNodeErrorCode } from './read-node-error-code.js';
 import { decodeRecallSessionProjection } from './recall-session-projection.js';
 
 /** Registry, spool, and fixed-snapshot inputs for proving replacement replay complete. */
@@ -28,26 +26,9 @@ export interface CompleteRecallGenerationReplayOptions {
   markerSpoolDirectory: string;
   markerQuarantineDirectory: string;
   lockPath: string;
-  /** Target generation root; omission retains the transitional legacy empty-spool proof. */
-  generationRootDirectory?: string;
+  /** Target generation root containing the immutable fixed replay snapshot. */
+  generationRootDirectory: string;
   nowEpochMilliseconds?: () => number;
-}
-
-async function hasPendingRecallMarkers(markerSpoolDirectory: string): Promise<boolean> {
-  try {
-    return (await readdir(markerSpoolDirectory, { withFileTypes: true })).some(
-      (entry) => entry.isFile() && !entry.name.startsWith('.') && entry.name.endsWith('.json'),
-    );
-  } catch (error) {
-    if (readNodeErrorCode(error) === 'ENOENT') {
-      return false;
-    }
-    throw error;
-  }
-}
-
-async function hasQuarantinedRecallMarkers(markerQuarantineDirectory: string): Promise<boolean> {
-  return (await listQuarantinedRecallMarkerIds(markerQuarantineDirectory)).length > 0;
 }
 
 function readTargetPhysicalProjectionCoveredMarkerIds(
@@ -109,7 +90,7 @@ function readTargetPhysicalProjectionCoveredMarkerIds(
 }
 
 async function proveFixedRecallGenerationReplayComplete(
-  options: CompleteRecallGenerationReplayOptions & { generationRootDirectory: string },
+  options: CompleteRecallGenerationReplayOptions,
 ): Promise<boolean> {
   const [pointer, registry] = await Promise.all([
     readRecallActiveGenerationPointer(options.activeGenerationPointerPath),
@@ -149,16 +130,6 @@ async function proveFixedRecallGenerationReplayComplete(
   );
 }
 
-async function proveLegacyRecallGenerationReplayComplete(
-  options: CompleteRecallGenerationReplayOptions,
-): Promise<boolean> {
-  const [hasPending, hasQuarantined] = await Promise.all([
-    hasPendingRecallMarkers(options.markerSpoolDirectory),
-    hasQuarantinedRecallMarkers(options.markerQuarantineDirectory),
-  ]);
-  return !hasPending && !hasQuarantined;
-}
-
 /** Clears replay state only after the lock-held caller proves the selected replay contract. */
 export async function completeRecallGenerationReplayWithinWriteWindow(
   options: CompleteRecallGenerationReplayOptions,
@@ -168,13 +139,7 @@ export async function completeRecallGenerationReplayWithinWriteWindow(
     generationRegistryPath: options.generationRegistryPath,
     backlogSummaryPath: options.backlogSummaryPath,
     ...(options.nowEpochMilliseconds ? { nowEpochMilliseconds: options.nowEpochMilliseconds } : {}),
-    proveReplayWorkComplete: () =>
-      options.generationRootDirectory === undefined
-        ? proveLegacyRecallGenerationReplayComplete(options)
-        : proveFixedRecallGenerationReplayComplete({
-            ...options,
-            generationRootDirectory: options.generationRootDirectory,
-          }),
+    proveReplayWorkComplete: () => proveFixedRecallGenerationReplayComplete(options),
   });
 }
 

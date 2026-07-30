@@ -203,7 +203,7 @@ function assertConversationCollectionScalarSchema(collection: ZVecCollection): v
     RECALL_FIELD_SCHEMAS.some(({ name, dataType }) => storedFields.get(name) !== dataType)
   ) {
     throw new Error(
-      `Recall zvec scalar schema mismatch: expected schema version ${ZVEC_CONVERSATION_SCHEMA_VERSION}; reindex with /pi-session-recall-index --rebuild`,
+      `Recall zvec scalar schema mismatch: expected schema version ${ZVEC_CONVERSATION_SCHEMA_VERSION}; create a fresh generation with pi-session-recall rebuild`,
     );
   }
 }
@@ -593,7 +593,7 @@ export function openZvecConversationStore(config: {
   const databaseExists = existsSync(config.databasePath);
   if (!databaseExists && config.createIfMissing === false) {
     throw new Error(
-      `Recall zvec collection missing at ${config.databasePath}; reindex with /pi-session-recall-index --rebuild`,
+      `Recall zvec collection missing at ${config.databasePath}; create a fresh generation with pi-session-recall rebuild`,
     );
   }
   if (!databaseExists) {
@@ -625,7 +625,7 @@ export function openZvecConversationStore(config: {
   if (storedDimensions !== config.dimensions) {
     collection.closeSync();
     throw new Error(
-      `Recall zvec dimension mismatch: collection uses ${storedDimensions}, configured model uses ${config.dimensions}; reindex with /pi-session-recall-index --rebuild`,
+      `Recall zvec dimension mismatch: collection uses ${storedDimensions}, configured model uses ${config.dimensions}; create a fresh generation with pi-session-recall rebuild`,
     );
   }
   try {

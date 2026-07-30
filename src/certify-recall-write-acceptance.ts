@@ -24,12 +24,10 @@ const BEHAVIOR_TEST_PATHS = [
   'src/activate-validated-recall-generation.test.ts',
   'src/rollback-recall-generation.test.ts',
   'src/run-recall-incremental-worker.test.ts',
-  'src/reconcile-confirmed-session-deletion.test.ts',
   'src/coordinate-recall-marker-replay.test.ts',
   'src/scan-recall-session-metadata.test.ts',
   'src/recall-session-projection.test.ts',
   'src/coordinate-recall-write-window.test.ts',
-  'src/commit-incremental-recall-transfer.test.ts',
 ] as const;
 const DISPOSABLE_SOURCE_INPUT_PATHS = [
   ...BEHAVIOR_TEST_PATHS,

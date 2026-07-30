@@ -10,6 +10,8 @@ import {
 } from './coordinate-recall-marker-replay.js';
 import {
   RecallBacklogFailureCategory,
+  RecallConfirmedDeletionDecisionKind,
+  RecallConfirmedDeletionHaltCategory,
   RecallDiagnosticErrorCategory,
   RecallDiagnosticOperationKind,
   RecallDiagnosticStatus,
@@ -17,6 +19,7 @@ import {
   RecallGenerationCutoverState,
   RecallIncrementalTransferOutcomeKind,
   RecallMetadataSweepStatus,
+  RecallSessionProjectionKind,
   RecallWorkMarkerTrigger,
 } from './enums.js';
 import { loadRecallConversationConfig } from './recall-conversation-config.js';
@@ -39,18 +42,26 @@ import {
   RECALL_INCREMENTAL_WORKER_SCHEDULE_VERSION,
   type RecallLargeTransferDeferral,
 } from './recall-incremental-worker-schedule.js';
-import type { ConfirmedSessionDeletionReconciliationResult } from './reconcile-confirmed-session-deletion.js';
-import type { PhysicalSessionProjection } from './recall-session-projection.js';
+import {
+  decideConfirmedSessionDeletion,
+  type ConfirmedSessionDeletionReconciliationResult,
+} from './confirmed-session-deletion-policy.js';
+import {
+  decodeRecallSessionProjection,
+  mergeRecallMarkerCheckpoint,
+  type PhysicalSessionProjection,
+} from './recall-session-projection.js';
 import {
   createRecallWorkMarkerId,
   RECALL_WORK_MARKER_VERSION,
   type RecallWorkMarkerCodecOptions,
   type RecallWorkMarkerIdentity,
 } from './recall-work-marker.js';
+import { acknowledgeCoveredRecallMarkers } from './recall-marker-spool.js';
 import { publishRecallWorkMarker } from './publish-recall-work-marker.js';
 import { isUnknownRecord } from './is-unknown-record.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
-import { createLineageResolver, resolveProjectIdentity } from './resolve-project-identity.js';
+import { resolveRecallPhysicalSourceIdentity } from './recall-source-identity.js';
 import {
   createRecallIncrementalDiagnosticMetrics,
   createRecallOperationDiagnostics,
@@ -64,8 +75,10 @@ import {
   type RecallSessionMetadataSweepResult,
 } from './scan-recall-session-metadata.js';
 import { scheduleRecallWorkPlanEligibility } from './schedule-recall-work-plan-eligibility.js';
-import type { IncrementalRecallWorkPlanTransferOutcome } from './transfer-incremental-recall-work-plan.js';
-import type { ConversationTextTokenizer } from './session-conversation-index.js';
+import type {
+  IncrementalRecallWorkPlanRequest,
+  IncrementalRecallWorkPlanTransferOutcome,
+} from './transfer-incremental-recall-work-plan.js';
 
 /** Existing scalar sinks and executable callback protected by the detached-worker failure boundary. */
 export interface RunRecallIncrementalWorkerDiagnosticBoundaryOptions {
@@ -438,14 +451,12 @@ export async function runRecallIncrementalWorker(
   const activeGenerationEntry = registry?.generations.find(
     ({ generationId }) => generationId === registry.activeGenerationId,
   );
-  const activeGenerationIsLegacy =
-    activeGenerationEntry?.state === RecallGenerationCutoverState.LEGACY_READ_ONLY;
-  const commitsFrozen = buildingInProgress || activeGenerationIsLegacy;
+  const commitsFrozen = buildingInProgress;
   let metadataSweepFollowUpRequired = options.metadataSweepRequested ?? false;
   let fixedReplayMarkerIds: readonly string[] | undefined;
   if (
     activeGenerationEntry?.state === RecallGenerationCutoverState.REPLAY_PENDING &&
-    options.generationReplayCompletion?.generationRootDirectory !== undefined
+    options.generationReplayCompletion !== undefined
   ) {
     const generationDirectory = await resolveRecallGenerationDirectory(
       options.generationReplayCompletion.generationRootDirectory,
@@ -772,31 +783,204 @@ export async function runRecallIncrementalWorker(
   });
 }
 
-async function loadRecallKnownSourceInventory(
+async function loadTargetRecallKnownSourceInventory(
   projectionDatabasePath: string,
   generationId: string,
   sessionsDirectory: string,
 ): Promise<RecallKnownSourceInventory> {
-  const { openZvecSessionProjectionStore } = await import('./zvec-session-projection-store.js');
-  const store = openZvecSessionProjectionStore({
-    databasePath: projectionDatabasePath,
-    generationId,
-    createIfMissing: false,
-    readOnly: true,
-  });
+  const { ZVecOpen } = await import('@zvec/zvec');
+  const store = ZVecOpen(projectionDatabasePath, { readOnly: true });
   try {
-    const physicalProjections = store.listPhysicalProjections();
-    const knownSources = physicalProjections.map((projection) => {
-      const relativePath = relative(sessionsDirectory, projection.sourcePath);
-      if (relativePath.startsWith('..') || isAbsolute(relativePath)) {
-        throw new Error('Recall active projection source is outside the configured session root');
+    const records =
+      store.stats.docCount === 0
+        ? []
+        : store.querySync({
+            filter: `projectionKind = '${RecallSessionProjectionKind.PHYSICAL_SESSION}'`,
+            topk: store.stats.docCount,
+            outputFields: ['projectionJson'],
+            includeVector: false,
+          });
+    const physicalProjections = records.map(({ id, fields }) => {
+      if (typeof fields.projectionJson !== 'string') {
+        throw new Error(`Recall target physical projection JSON missing for ${id}`);
       }
-      return { physicalSessionId: projection.physicalSessionId, relativePath };
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(fields.projectionJson);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`Recall target physical projection JSON invalid for ${id}: ${message}`, {
+          cause: error,
+        });
+      }
+      if (
+        typeof parsed !== 'object' ||
+        parsed === null ||
+        !('ingestionProjectionPayload' in parsed)
+      ) {
+        throw new Error(`Recall target physical ingestion projection missing for ${id}`);
+      }
+      const projection = decodeRecallSessionProjection(parsed.ingestionProjectionPayload, {
+        expectedGenerationId: generationId,
+      });
+      if (projection.projectionKind !== RecallSessionProjectionKind.PHYSICAL_SESSION) {
+        throw new Error(`Recall target physical projection kind mismatch for ${id}`);
+      }
+      return projection;
+    });
+    const knownSources = physicalProjections.map((projection) => {
+      const sourceRelativePath = relative(sessionsDirectory, projection.sourcePath);
+      if (sourceRelativePath.startsWith('..') || isAbsolute(sourceRelativePath)) {
+        throw new Error('Recall target physical projection is outside the configured session root');
+      }
+      return { physicalSessionId: projection.physicalSessionId, relativePath: sourceRelativePath };
     });
     return { knownSources, physicalProjections };
   } finally {
-    store.close();
+    store.closeSync();
   }
+}
+
+function createTargetDeletionResult(): ConfirmedSessionDeletionReconciliationResult {
+  return {
+    halted: false,
+    consideredPhysicalSessionCount: 0,
+    sourceMissingRecordedCount: 0,
+    sourceMissingClearedCount: 0,
+    confirmedSourceDeletionCount: 0,
+    removedEvidenceOccurrenceCount: 0,
+    removedLogicalProjectionCount: 0,
+    removedPhysicalProjectionCount: 0,
+    acknowledgedCheckpointCount: 0,
+    haltCategoryCounts: {},
+  };
+}
+
+function haltTargetDeletionReconciliation(
+  result: ConfirmedSessionDeletionReconciliationResult,
+  haltCategory: RecallConfirmedDeletionHaltCategory,
+): ConfirmedSessionDeletionReconciliationResult {
+  return {
+    ...result,
+    halted: true,
+    haltCategoryCounts: { [haltCategory]: 1 },
+  };
+}
+
+async function reconcileTargetConfirmedSessionDeletion(options: {
+  metadataSweep: RecallSessionMetadataSweepResult;
+  physicalProjections: readonly PhysicalSessionProjection[];
+  missingSourceWorkPlans: readonly RecallMarkerReplayWorkPlan[];
+  workPlan: RecallMarkerReplayWorkPlan;
+  sessionsDirectory: string;
+  transferRequest(
+    request: IncrementalRecallWorkPlanRequest,
+  ): Promise<IncrementalRecallWorkPlanTransferOutcome>;
+}): Promise<ConfirmedSessionDeletionReconciliationResult> {
+  const result = createTargetDeletionResult();
+  if (options.metadataSweep.status !== RecallMetadataSweepStatus.COMPLETE) {
+    const haltCategory =
+      options.metadataSweep.status === RecallMetadataSweepStatus.ROOT_UNAVAILABLE
+        ? RecallConfirmedDeletionHaltCategory.ROOT_UNAVAILABLE
+        : options.metadataSweep.status === RecallMetadataSweepStatus.PERMISSION_DENIED
+          ? RecallConfirmedDeletionHaltCategory.PERMISSION_DENIED
+          : options.metadataSweep.status === RecallMetadataSweepStatus.SUSPICIOUS_MASS_LOSS
+            ? RecallConfirmedDeletionHaltCategory.SUSPICIOUS_MASS_LOSS
+            : RecallConfirmedDeletionHaltCategory.INCOMPLETE_SWEEP;
+    return haltTargetDeletionReconciliation(result, haltCategory);
+  }
+  for (const projection of options.physicalProjections) {
+    const observedIdentity = options.metadataSweep.observedKnownSourceIdentities.find(
+      ({ physicalSessionId }) => physicalSessionId === projection.physicalSessionId,
+    );
+    const sourceWorkPlan = options.missingSourceWorkPlans.find(
+      (candidate) =>
+        candidate.workItems[0]?.marker.physicalSessionId === projection.physicalSessionId,
+    );
+    const matchingWorkItems = options.workPlan.workItems.filter(
+      ({ marker }) => marker.physicalSessionId === projection.physicalSessionId,
+    );
+    const physicalWorkPlan: RecallMarkerReplayWorkPlan = sourceWorkPlan ?? {
+      ...options.workPlan,
+      sourceMarkerIds: matchingWorkItems.flatMap(({ coveredMarkerIds }) => coveredMarkerIds),
+      workItems: matchingWorkItems,
+    };
+    const coveredProjection =
+      physicalWorkPlan.workItems.length === 0
+        ? projection
+        : {
+            ...projection,
+            markerCheckpoint: mergeRecallMarkerCheckpoint({
+              generationId: projection.generationId,
+              current: projection.markerCheckpoint,
+              coveredMarkerIds: physicalWorkPlan.workItems.flatMap(
+                ({ coveredMarkerIds }) => coveredMarkerIds,
+              ),
+              runtimeSequences: physicalWorkPlan.workItems.map(({ marker }) => ({
+                runtimeInstanceId: marker.runtimeInstanceId,
+                sequence: marker.runtimeSequence,
+              })),
+            }),
+          };
+    const decision = decideConfirmedSessionDeletion({
+      projection: coveredProjection,
+      sweepId: options.metadataSweep.sweepId,
+      sweepStatus: options.metadataSweep.status,
+      observedAtEpochMilliseconds: Date.now(),
+      sourceObservation:
+        observedIdentity === undefined
+          ? null
+          : {
+              sourceDevice: observedIdentity.sourceDevice,
+              sourceInode: observedIdentity.sourceInode,
+            },
+    });
+    if (decision.kind === RecallConfirmedDeletionDecisionKind.HALT) {
+      return haltTargetDeletionReconciliation(result, decision.haltCategory);
+    }
+    if (decision.kind === RecallConfirmedDeletionDecisionKind.NO_CHANGE) {
+      continue;
+    }
+    if ('nextProjection' in decision) {
+      await options.transferRequest({
+        physicalSessionProjectionUpdate: {
+          workPlan: physicalWorkPlan,
+          projection: decision.nextProjection,
+          ...(decision.kind === RecallConfirmedDeletionDecisionKind.CONFIRM_SOURCE_DELETION
+            ? { acknowledgeMarkers: false }
+            : {}),
+        },
+      });
+      if (decision.kind === RecallConfirmedDeletionDecisionKind.RECORD_SOURCE_MISSING) {
+        result.sourceMissingRecordedCount += 1;
+        result.consideredPhysicalSessionCount += 1;
+        continue;
+      }
+      if (decision.kind === RecallConfirmedDeletionDecisionKind.CLEAR_SOURCE_MISSING) {
+        result.sourceMissingClearedCount += 1;
+        result.consideredPhysicalSessionCount += 1;
+        continue;
+      }
+      result.confirmedSourceDeletionCount += 1;
+    }
+    const physicalSource = resolveRecallPhysicalSourceIdentity(
+      options.sessionsDirectory,
+      projection.sourcePath,
+    );
+    await options.transferRequest({
+      confirmedPhysicalSourceDeletion: {
+        targetGenerationId: projection.generationId,
+        physicalSourceIdentity: physicalSource.physicalSourceIdentity,
+      },
+    });
+    if (physicalWorkPlan.workItems.length > 0) {
+      await acknowledgeCoveredRecallMarkers(physicalWorkPlan, coveredProjection.markerCheckpoint);
+      result.acknowledgedCheckpointCount += 1;
+    }
+    result.consideredPhysicalSessionCount += 1;
+    result.removedPhysicalProjectionCount += 1;
+  }
+  return result;
 }
 
 /** Scalar generation-state paths and clock used by one worker backlog refresh. */
@@ -997,7 +1181,7 @@ export async function writeRecallIncrementalWorkerFailureBacklog(
 export interface RunConfiguredRecallIncrementalWorkerOptions {
   transferWorkPlan?(
     this: void,
-    workPlan: RecallMarkerReplayWorkPlan,
+    request: IncrementalRecallWorkPlanRequest,
   ): Promise<IncrementalRecallWorkPlanTransferOutcome>;
 }
 
@@ -1036,22 +1220,18 @@ export async function runConfiguredRecallIncrementalWorker(
   const registry = await readRecallGenerationRegistry(config.generationRegistryPath);
   const schedulePath = resolve(config.markerControlDirectory, 'incremental-worker-schedule.json');
   const persistedSchedule = await readRecallIncrementalWorkerSchedule(schedulePath);
-  const resolveWorkerProjectIdentity = createLineageResolver(
-    config.projectLineages,
-    resolveProjectIdentity,
-  );
   let configuredRuntime: { dispose(): Promise<void> } | undefined;
   let productionTransferDependencies:
     | Promise<{
-        transferWorkPlan(
-          workPlan: RecallMarkerReplayWorkPlan,
+        transferRequest(
+          request: IncrementalRecallWorkPlanRequest,
         ): Promise<IncrementalRecallWorkPlanTransferOutcome>;
       }>
     | undefined;
   const loadProductionTransferDependencies = () => {
     productionTransferDependencies ??= (async () => {
       if (options.transferWorkPlan !== undefined) {
-        return { transferWorkPlan: options.transferWorkPlan };
+        return { transferRequest: options.transferWorkPlan };
       }
       let rawManifest: unknown;
       try {
@@ -1063,89 +1243,17 @@ export async function runConfiguredRecallIncrementalWorker(
           { cause: error },
         );
       }
-      if (isUnknownRecord(rawManifest) && rawManifest.generationFormatVersion === 1) {
-        const inferenceRuntimeModule = await import('./configured-recall-inference-runtime.js');
-        const runtime = await inferenceRuntimeModule.createConfiguredRecallInferenceRuntime(config);
-        configuredRuntime = runtime;
-        return {
-          transferWorkPlan: (workPlan: RecallMarkerReplayWorkPlan) =>
-            runtime.service.transferIncrementalRecallWorkPlan(workPlan),
-        };
-      }
-      const [
-        embeddingCacheModule,
-        inferenceRuntimeModule,
-        inferenceConfigModule,
-        manifestModule,
-        transferModule,
-      ] = await Promise.all([
-        import('./embedding-vector-cache.js'),
-        import('./configured-recall-inference-runtime.js'),
-        import('./recall-inference-configuration.js'),
-        import('./recall-index-manifest.js'),
-        import('./transfer-legacy-incremental-recall-work-plan.js'),
-      ]);
-      const manifest = await manifestModule.readRecallIndexManifest(activeSelection.manifestPath);
-      if (manifest === null) {
-        throw new Error('Recall incremental worker active generation manifest missing');
-      }
-      const inferenceConfigPath =
-        inferenceRuntimeModule.resolveRecallInferenceConfigurationPath(config);
-      const inferenceConfig = await inferenceConfigModule.readRecallInferenceConfiguration(
-        inferenceConfigPath,
-        { generationRegistryPath: config.generationRegistryPath },
-      );
-      let loadTokenizer: () => Promise<ConversationTextTokenizer>;
-      let embeddings: { embedTexts(texts: string[], signal?: AbortSignal): Promise<number[][]> };
-      if (inferenceConfig.embedding !== null) {
-        const runtime = await inferenceRuntimeModule.createConfiguredRecallInferenceRuntime(
-          config,
-          {
-            inferenceConfigurationPath: inferenceConfigPath,
-          },
+      if (!isUnknownRecord(rawManifest) || rawManifest.generationFormatVersion !== 1) {
+        throw new Error(
+          'Recall incremental worker active generation is not target format version 1',
         );
-        configuredRuntime = runtime;
-        loadTokenizer = () => runtime.loadTokenizer();
-        embeddings = {
-          embedTexts: (texts, signal) => runtime.embeddingProvider.embedDocuments(texts, signal),
-        };
-      } else {
-        const [embeddingClientModule, tokenizerModule] = await Promise.all([
-          import('./local-embedding-client.js'),
-          import('./octen-conversation-tokenizer.js'),
-        ]);
-        embeddings = embeddingClientModule.createLocalEmbeddingClient({
-          baseUrl: config.embeddingBaseUrl,
-          model: config.embeddingModel,
-          dimensions: config.embeddingDimensions,
-          batchSize: config.embeddingBatchSize,
-        });
-        loadTokenizer = () =>
-          tokenizerModule.loadOctenConversationTokenizer({
-            cacheDirectory: config.tokenizerCacheDirectory,
-          });
       }
-      const embeddingCache = embeddingCacheModule.createEmbeddingVectorCache({
-        cacheDirectory: config.embeddingCacheDirectory,
-        identity: embeddingCacheModule.createEmbeddingVectorCacheIdentity(manifest),
-        embeddingRequestBatchSize: config.embeddingBatchSize,
-        embeddings,
-      });
+      const inferenceRuntimeModule = await import('./configured-recall-inference-runtime.js');
+      const runtime = await inferenceRuntimeModule.createConfiguredRecallInferenceRuntime(config);
+      configuredRuntime = runtime;
       return {
-        transferWorkPlan: (workPlan: RecallMarkerReplayWorkPlan) =>
-          transferModule.transferLegacyIncrementalRecallWorkPlan({
-            workPlan,
-            lockPath: config.lockPath,
-            evidenceDatabasePath: activeSelection.databasePath,
-            projectionDatabasePath: activeSelection.projectionDatabasePath,
-            embeddingDimensions: manifest.embedding.dimensions,
-            chunkPolicy: manifest.chunkPolicy,
-            loadTokenizer,
-            resolveProjectIdentity: resolveWorkerProjectIdentity,
-            embeddingCache,
-            operationDiagnostics,
-            nowEpochMilliseconds: Date.now,
-          }),
+        transferRequest: (request: IncrementalRecallWorkPlanRequest) =>
+          runtime.service.transferIncrementalRecallWorkPlan(request),
       };
     })();
     return productionTransferDependencies;
@@ -1177,10 +1285,10 @@ export async function runConfiguredRecallIncrementalWorker(
       metadataSweepRequested: persistedSchedule?.metadataSweepRequested ?? false,
       async transferWorkPlan(workPlan) {
         const dependencies = await loadProductionTransferDependencies();
-        return dependencies.transferWorkPlan(workPlan);
+        return dependencies.transferRequest(workPlan);
       },
       loadKnownSourceInventory: () =>
-        loadRecallKnownSourceInventory(
+        loadTargetRecallKnownSourceInventory(
           activeSelection.projectionDatabasePath,
           activeSelection.activeGenerationId,
           config.sessionsDirectory,
@@ -1191,17 +1299,14 @@ export async function runConfiguredRecallIncrementalWorker(
         missingSourceWorkPlans,
         workPlan,
       ) {
-        const { reconcileConfirmedSessionDeletion } =
-          await import('./reconcile-confirmed-session-deletion.js');
-        const deletionResult = await reconcileConfirmedSessionDeletion({
+        const dependencies = await loadProductionTransferDependencies();
+        const deletionResult = await reconcileTargetConfirmedSessionDeletion({
           metadataSweep,
           physicalProjections,
-          activeGenerationPointerPath: config.activeGenerationPointerPath,
-          generationRegistryPath: config.generationRegistryPath,
-          generationRootDirectory: config.generationRootDirectory,
-          lockPath: config.lockPath,
-          embeddingDimensions: config.embeddingDimensions,
-          markerWorkPlans: missingSourceWorkPlans,
+          missingSourceWorkPlans,
+          workPlan,
+          sessionsDirectory: config.sessionsDirectory,
+          transferRequest: (request) => dependencies.transferRequest(request),
         });
         if (deletionResult.halted) {
           deletionReconciliationHalted = true;

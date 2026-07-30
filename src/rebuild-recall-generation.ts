@@ -139,12 +139,12 @@ async function calculateFileSha256(path: string): Promise<string> {
     .digest('hex');
 }
 
-async function detectManifestVersion(manifestPath: string): Promise<5 | 6> {
+async function detectManifestVersion(manifestPath: string): Promise<6> {
   const value: unknown = JSON.parse(await readFile(manifestPath, 'utf8'));
   if (typeof value !== 'object' || value === null || !('manifestVersion' in value)) {
     throw new Error('Recall active generation manifest version missing');
   }
-  if (value.manifestVersion !== 5 && value.manifestVersion !== RECALL_INDEX_MANIFEST_VERSION) {
+  if (value.manifestVersion !== RECALL_INDEX_MANIFEST_VERSION) {
     throw new Error(
       `Recall active generation manifest version unsupported: ${String(value.manifestVersion)}`,
     );

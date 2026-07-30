@@ -136,14 +136,6 @@ export interface RecallIndexManifest {
   };
 }
 
-/** Exact read-only manifest contract accepted only for explicit version-5 layout adoption. */
-export interface LegacyRecallIndexManifestV5 extends Omit<
-  RecallIndexManifest,
-  'manifestVersion' | 'markerSchemaVersion' | 'sessionProjectionSchemaVersion'
-> {
-  manifestVersion: 5;
-}
-
 interface RecoveredRecallEmbeddingCanary {
   dimensions: number;
   canaryVector: number[];
@@ -266,16 +258,6 @@ const recallIndexManifestSchema = Type.Object(
   },
   { additionalProperties: false },
 );
-const legacyRecallIndexManifestV5Fields = Type.Omit(recallIndexManifestSchema, [
-  'manifestVersion',
-  'markerSchemaVersion',
-  'sessionProjectionSchemaVersion',
-]);
-const legacyRecallIndexManifestV5Schema = Type.Object(
-  { ...legacyRecallIndexManifestV5Fields.properties, manifestVersion: Type.Literal(5) },
-  { additionalProperties: false },
-);
-
 function createTokenizerManifestIdentity(
   identity: ConversationTokenizerAssetIdentity,
 ): RecallTokenizerManifestIdentity {
@@ -528,7 +510,7 @@ export function assertRecallIndexManifestCompatible(
 ): asserts actual is RecallIndexManifest {
   if (!actual) {
     throw new Error(
-      `Recall index manifest missing at ${manifestPath}; reindex with /pi-session-recall-index --rebuild`,
+      `Recall index manifest missing at ${manifestPath}; create a fresh generation with pi-session-recall rebuild`,
     );
   }
   const mismatches: string[] = [];
@@ -550,7 +532,7 @@ export function assertRecallIndexManifestCompatible(
   }
   if (mismatches.length > 0) {
     throw new Error(
-      `Recall index manifest incompatible at ${manifestPath}:\n- ${mismatches.join('\n- ')}\nReindex with /pi-session-recall-index --rebuild.`,
+      `Recall index manifest incompatible at ${manifestPath}:\n- ${mismatches.join('\n- ')}\nCreate a fresh generation with pi-session-recall rebuild.`,
     );
   }
 }
@@ -564,69 +546,6 @@ function readRecallIndexManifestVersion(value: unknown): number | undefined {
     return undefined;
   }
   return value.manifestVersion;
-}
-
-/** Reads and strictly validates the exact version-5 manifest used by explicit legacy adoption. */
-export async function readLegacyRecallIndexManifestV5(
-  manifestPath: string,
-): Promise<LegacyRecallIndexManifestV5> {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(await readFile(manifestPath, 'utf8'));
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`Recall legacy index manifest unreadable at ${manifestPath}: ${message}`, {
-      cause: error,
-    });
-  }
-  try {
-    const manifest = Value.Parse(legacyRecallIndexManifestV5Schema, parsed);
-    assertRecallIndexManifestCanaryIntegrity({
-      ...manifest,
-      manifestVersion: RECALL_INDEX_MANIFEST_VERSION,
-      markerSchemaVersion: RECALL_WORK_MARKER_VERSION,
-      sessionProjectionSchemaVersion: RECALL_SESSION_PROJECTION_SCHEMA_VERSION,
-    });
-    return manifest;
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`Recall legacy index manifest invalid at ${manifestPath}: ${message}`, {
-      cause: error,
-    });
-  }
-}
-
-/** Reads current or adopted version-5 manifest identity without mutating the selected generation. */
-export async function readRecallSearchManifest(
-  manifestPath: string,
-): Promise<RecallIndexManifest | null> {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(await readFile(manifestPath, 'utf8'));
-  } catch (error) {
-    if (readNodeErrorCode(error) === 'ENOENT') {
-      return null;
-    }
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`Recall index manifest unreadable at ${manifestPath}: ${message}`, {
-      cause: error,
-    });
-  }
-  if (
-    typeof parsed === 'object' &&
-    parsed !== null &&
-    'manifestVersion' in parsed &&
-    parsed.manifestVersion === 5
-  ) {
-    const legacy = await readLegacyRecallIndexManifestV5(manifestPath);
-    return {
-      ...legacy,
-      manifestVersion: RECALL_INDEX_MANIFEST_VERSION,
-      markerSchemaVersion: RECALL_WORK_MARKER_VERSION,
-      sessionProjectionSchemaVersion: RECALL_SESSION_PROJECTION_SCHEMA_VERSION,
-    };
-  }
-  return readRecallIndexManifest(manifestPath);
 }
 
 /** Reads and validates an index manifest, returning null only when the file is absent. */

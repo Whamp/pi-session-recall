@@ -1,6 +1,6 @@
 # Project-scoped recall quality evaluation before backfill
 
-Generated 2026-07-28T07:56:42.853Z from corpus `recall-quality-project-scoped-bounded-v3`.
+Generated 2026-07-30T10:45:52.626Z from corpus `recall-quality-project-scoped-bounded-v3`.
 
 ## Decision
 
@@ -12,7 +12,7 @@ Selected **512/64 tokens/overlap**, **8 candidates/channel**, and **5 final resu
 
 ## Evaluation identity
 
-- Storage: conversation schema v9, zvec schema v8, manifest v6, incremental eligibility policy v1
+- Storage: coherent generation v1, store format v1, validation receipt v1, incremental eligibility policy v1
 - Default scope: `project` (policy v1)
 - Project identity policy: v4; metadata schema v3
 - Project lineage policy: v1; digest `02023e9934990f61a81488144cb1b27d9002e0af750c38a1b83adc1de367bc4b`
@@ -38,14 +38,14 @@ The gate and count grid live in `evaluation/recall-quality-cases.json`; the run 
 | ------------------------------------------ | -------: | -----------: |
 | Session files/index                        |       15 |           15 |
 | Evaluation cases                           |       17 |           17 |
-| Temporary index runs                       |        1 |            1 |
+| Activated disposable generation runs       |        1 |            1 |
 | Search requests, including warmups         |       20 |           20 |
 | Reranker requests                          |        0 |            0 |
-| Chunk-embedding HTTP batches               |       16 |           20 |
+| Chunk-embedding HTTP batches               |       15 |           20 |
 | Maximum fused candidates/search            |       24 |          200 |
 | Production repository identity resolutions |        5 |            5 |
 
-Run duration: 2940.3 ms. Work data stayed under `evaluation/.recall-data/recall-quality-evaluation/` and used only 15 checksum-fixed JSONL files.
+Run duration: 6041.7 ms. Work data stayed under `evaluation/.recall-data/recall-quality-evaluation/` and used only 15 checksum-fixed JSONL files.
 
 ## Metric definitions
 
@@ -56,17 +56,17 @@ Run duration: 2940.3 ms. Work data stayed under `evaluation/.recall-data/recall-
 - **Source-occurrence preservation:** fraction of cases retaining the required count of distinct declared source locations, including suppressed duplicate occurrences.
 - **Query latency:** wall time for the full read-only hybrid service search, measured and gated independently for project and global scope. Tables report nearest-rank p95 across 17 fixed cases after 1 warmup request per represented scope and configuration.
 
-## Chunk-policy index comparison
+## Chunk-policy generation comparison
 
-|  Chunk | Stored documents | Scanned/indexed sessions | New embedded documents | Embedding batches | Index time |
-| -----: | ---------------: | -----------------------: | ---------------------: | ----------------: | ---------: |
-| 512/64 |              116 |                    15/15 |                    112 |                16 |  1534.2 ms |
+|  Chunk | Evidence occurrences | Lexical/source rows | Dense rows | Projection rows | Source snapshot                                                    | Generation time |
+| -----: | -------------------: | ------------------: | ---------: | --------------: | ------------------------------------------------------------------ | --------------: |
+| 512/64 |                  116 |                 208 |        113 |              30 | `e443b328da0a24e1cf114f2fa635240670eb624e9fbe2994952409f368c5d2af` |       3472.6 ms |
 
 ## Quality and latency matrix
 
 |  Chunk | Candidates/channel | Final | Pool recall | Final recall | Pool duplicates | Final duplicates | Context | Sources | Provenance | Project p95 | Global p95 | Gate |
 | -----: | -----------------: | ----: | ----------: | -----------: | --------------: | ---------------: | ------: | ------: | ---------: | ----------: | ---------: | ---- |
-| 512/64 |                  8 |     5 |      100.0% |       100.0% |            0.8% |             0.0% |  100.0% |  100.0% |     100.0% |     66.2 ms |    68.6 ms | PASS |
+| 512/64 |                  8 |     5 |      100.0% |       100.0% |            0.8% |             0.0% |  100.0% |  100.0% |     100.0% |    125.9 ms |   126.8 ms | PASS |
 
 ## Pre-limit channel proof
 
@@ -102,32 +102,32 @@ Run duration: 2940.3 ms. Work data stayed under `evaluation/.recall-data/recall-
 
 Shown for 512/64, 8 candidates/channel, and 5 final results.
 
-| Case                                          | Scope   | Boundary | Pool | Final | Context | Sources | Origin | Relation | Contributors | Branch | Raw/grouped |   Query |
-| --------------------------------------------- | ------- | -------- | ---- | ----- | ------- | ------- | ------ | -------- | ------------ | ------ | ----------: | ------: |
-| semantic-crash-safe-outbox                    | global  | pass     | hit  | hit   | useful  | 1 kept  | pass   | pass     | pass         | pass   |         8/8 | 67.5 ms |
-| semantic-image-retry-budget                   | global  | pass     | hit  | hit   | useful  | 1 kept  | pass   | pass     | pass         | pass   |       10/10 | 67.5 ms |
-| exact-read-node-error-code                    | global  | pass     | hit  | hit   | useful  | 1 kept  | pass   | pass     | pass         | pass   |         3/3 | 65.7 ms |
-| tool-evidence-lease-token                     | global  | pass     | hit  | hit   | useful  | 1 kept  | pass   | pass     | pass         | pass   |         8/8 | 66.7 ms |
-| context-europe-rollout-conditions             | global  | pass     | hit  | hit   | useful  | 1 kept  | pass   | pass     | pass         | pass   |         9/9 | 67.4 ms |
-| branch-abandoned-redis-group                  | global  | pass     | hit  | hit   | useful  | 1 kept  | pass   | pass     | pass         | pass   |         8/8 | 68.2 ms |
-| branch-active-offline-queue                   | global  | pass     | hit  | hit   | useful  | 1 kept  | pass   | pass     | pass         | pass   |         9/9 | 67.0 ms |
-| branch-summary-hosted-services                | global  | pass     | hit  | hit   | useful  | 1 kept  | pass   | pass     | pass         | pass   |         8/8 | 67.5 ms |
-| compaction-copper-finch                       | global  | pass     | hit  | hit   | useful  | 1 kept  | pass   | pass     | pass         | pass   |         8/8 | 68.6 ms |
-| duplicate-meridian-release                    | global  | pass     | hit  | hit   | useful  | 2 kept  | pass   | pass     | pass         | pass   |         8/7 | 64.8 ms |
-| project-main-retrieves-worktree-before-limits | project | pass     | hit  | hit   | useful  | 1 kept  | pass   | pass     | pass         | pass   |         3/3 | 63.4 ms |
-| project-worktree-retrieves-main               | project | pass     | hit  | hit   | useful  | 1 kept  | pass   | pass     | pass         | pass   |         9/9 | 65.0 ms |
-| project-equivalent-clone-origin               | project | pass     | hit  | hit   | useful  | 1 kept  | pass   | pass     | pass         | pass   |         9/9 | 64.4 ms |
-| project-configured-lineage                    | project | pass     | hit  | hit   | useful  | 1 kept  | pass   | pass     | pass         | pass   |         8/8 | 61.7 ms |
-| project-similar-name-remains-unrelated        | project | pass     | hit  | hit   | useful  | 1 kept  | pass   | pass     | pass         | pass   |         7/7 | 66.2 ms |
-| project-exact-non-git-origin                  | project | pass     | hit  | hit   | useful  | 1 kept  | pass   | pass     | pass         | pass   |         3/3 | 65.3 ms |
-| global-explicit-cross-project                 | global  | pass     | hit  | hit   | useful  | 1 kept  | pass   | pass     | pass         | pass   |         8/8 | 63.9 ms |
+| Case                                          | Scope   | Boundary | Pool | Final | Context | Sources | Origin | Relation | Contributors | Branch | Raw/grouped |    Query |
+| --------------------------------------------- | ------- | -------- | ---- | ----- | ------- | ------- | ------ | -------- | ------------ | ------ | ----------: | -------: |
+| semantic-crash-safe-outbox                    | global  | pass     | hit  | hit   | useful  | 1 kept  | pass   | pass     | pass         | pass   |         8/8 | 124.8 ms |
+| semantic-image-retry-budget                   | global  | pass     | hit  | hit   | useful  | 1 kept  | pass   | pass     | pass         | pass   |       10/10 | 122.1 ms |
+| exact-read-node-error-code                    | global  | pass     | hit  | hit   | useful  | 1 kept  | pass   | pass     | pass         | pass   |         3/3 | 121.3 ms |
+| tool-evidence-lease-token                     | global  | pass     | hit  | hit   | useful  | 1 kept  | pass   | pass     | pass         | pass   |         8/8 | 121.3 ms |
+| context-europe-rollout-conditions             | global  | pass     | hit  | hit   | useful  | 1 kept  | pass   | pass     | pass         | pass   |         9/9 | 126.8 ms |
+| branch-abandoned-redis-group                  | global  | pass     | hit  | hit   | useful  | 1 kept  | pass   | pass     | pass         | pass   |         8/8 | 123.5 ms |
+| branch-active-offline-queue                   | global  | pass     | hit  | hit   | useful  | 1 kept  | pass   | pass     | pass         | pass   |         9/9 | 122.2 ms |
+| branch-summary-hosted-services                | global  | pass     | hit  | hit   | useful  | 1 kept  | pass   | pass     | pass         | pass   |         8/8 | 122.6 ms |
+| compaction-copper-finch                       | global  | pass     | hit  | hit   | useful  | 1 kept  | pass   | pass     | pass         | pass   |         8/8 | 121.9 ms |
+| duplicate-meridian-release                    | global  | pass     | hit  | hit   | useful  | 2 kept  | pass   | pass     | pass         | pass   |         8/7 | 123.6 ms |
+| project-main-retrieves-worktree-before-limits | project | pass     | hit  | hit   | useful  | 1 kept  | pass   | pass     | pass         | pass   |         3/3 | 125.9 ms |
+| project-worktree-retrieves-main               | project | pass     | hit  | hit   | useful  | 1 kept  | pass   | pass     | pass         | pass   |         9/9 | 122.9 ms |
+| project-equivalent-clone-origin               | project | pass     | hit  | hit   | useful  | 1 kept  | pass   | pass     | pass         | pass   |         9/9 | 121.3 ms |
+| project-configured-lineage                    | project | pass     | hit  | hit   | useful  | 1 kept  | pass   | pass     | pass         | pass   |         8/8 | 121.0 ms |
+| project-similar-name-remains-unrelated        | project | pass     | hit  | hit   | useful  | 1 kept  | pass   | pass     | pass         | pass   |         7/7 | 120.7 ms |
+| project-exact-non-git-origin                  | project | pass     | hit  | hit   | useful  | 1 kept  | pass   | pass     | pass         | pass   |         3/3 | 122.1 ms |
+| global-explicit-cross-project                 | global  | pass     | hit  | hit   | useful  | 1 kept  | pass   | pass     | pass         | pass   |         8/8 | 120.4 ms |
 
 ## Reproduce
 
-Prerequisites: the pinned Octen tokenizer assets and configured local embedding endpoint must be available. The optional reranker is not called. The command deletes and recreates only the dedicated ignored evaluation work directory.
+Prerequisites: install the repository dependencies. The harness uses deterministic in-process embeddings and a synchronous fixture tokenizer; it makes no model endpoint request. The command deletes and recreates only the dedicated ignored evaluation work directory.
 
 ```bash
-npm run evaluate:recall
+npm run evidence:target-reads
 ```
 
 The command rewrites:
@@ -137,14 +137,14 @@ The command rewrites:
 
 Environment:
 
-- Git commit: `bc2767e9724c55332867716864549c00af3f3a63`
+- Git commit: `5397984ebc49e8568e62200b5740a70758f94307`
 - Node: `v24.16.0`
 - Platform: `linux/x64`
 - CPU: AMD Ryzen 7 8845HS w/ Radeon 780M Graphics
 - Embedding: `deterministic-fixture-v1` → `deterministic-fixture-v1`, `committed-corpus-concept-hash-fp32`, 64 dimensions at `in-process://deterministic-fixture-v1`
 - Hybrid ranking identity: fusion v2, RRF k=60, active prior +0.0100
 - Optional deep reranker, not used by this evaluation: `rejecting-fake` at `disabled://unexpected-request-fails`
-- Specification: `/home/will/projects/pi-session-recall/.worktrees/incremental-recall-ingestion/evaluation/recall-quality-cases.json`
+- Specification: `/home/will/projects/pi-session-recall/.worktrees/issue-122-coherent-generations/evaluation/recall-quality-cases.json`
 - Specification SHA-256: `6208cfc632c8ff53815567dd5385297bb6cc513f62e3d50a5bfa8ae687c34439`
 
 Corpus file checksums:
@@ -169,5 +169,6 @@ Corpus file checksums:
 
 - The corpus is a committed synthetic-but-session-shaped fixture, not a sample of private production logs. It covers the required retrieval and project-identity classes but cannot estimate all real-corpus failure modes.
 - Deterministic fixture embeddings prove retrieval plumbing, channel fusion, evidence shaping, and scope policy. They do not measure production embedding-model semantics.
+- The harness copies committed fixtures into a disposable sessions root, removes that copy before target reads, and never opens the production recall generation or original Pi session files.
 - Latency uses one measured request per case after one warmup, so it compares configurations on this host rather than establishing a capacity benchmark.
 - A passing automated gate supports a candidate policy; it does not authorize the full corpus backfill. Human review of this report remains the approval boundary.

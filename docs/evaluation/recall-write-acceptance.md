@@ -2,9 +2,9 @@
 
 **Result:** PASS
 
-- Candidate commit: `9db5c434e4d7ae576ce93446db644ddcd38dfeff`
-- Completed: 2026-07-30T13:47:54.488Z
-- Source snapshot: `77c9e6ec9415ad0c8aa3d01c31c5c867e0374b5702dc0af8015165aaee683332`
+- Candidate commit: `67abdc772a19be01620c3cb7951561e546385947`
+- Completed: 2026-07-30T14:15:59.960Z
+- Source snapshot: `25863553fddd9c86f11935cf80a1a48d31eafadb22d9ee2235674134ad7e1c64`
 - Runtime: v24.16.0 on linux/x64
 - CPU: AMD Ryzen 7 8845HS w/ Radeon 780M Graphics
 - zvec: 0.6.0
@@ -19,11 +19,11 @@ A real detached child received SIGKILL and resumed the same generation identity 
 
 | Bound                                      | Measured or enforced |           Limit | Result |
 | ------------------------------------------ | -------------------: | --------------: | ------ |
-| Marker publication plus detached spawn p95 |             3.191 ms |           25 ms | PASS   |
-| Metadata sweep p95 at 10,000 files         |            39.305 ms |          500 ms | PASS   |
+| Marker publication plus detached spawn p95 |             3.316 ms |           25 ms | PASS   |
+| Metadata sweep p95 at 10,000 files         |            40.005 ms |          500 ms | PASS   |
 | Projection payload                         |             enforced | 8,388,608 bytes | PASS   |
 | Evidence batch                             |             enforced |    32 documents | PASS   |
-| Close/reopen write-window p95 (20 samples) |            64.329 ms |          300 ms | PASS   |
+| Close/reopen write-window p95 (20 samples) |            63.358 ms |          300 ms | PASS   |
 | Search wait for current write window       |             enforced |          500 ms | PASS   |
 
 ## Reproduction

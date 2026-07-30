@@ -10,6 +10,7 @@ import {
   utimes,
   writeFile,
 } from 'node:fs/promises';
+import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -121,6 +122,106 @@ void test('standalone setup presents stored-width defaults and evidence status',
       evidenceSources: ['https://huggingface.co/google/embeddinggemma-300m'],
     },
   ]);
+});
+
+void test('standalone setup selects and reconstructs Octen at the requested stored width', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-operator-octen-setup-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const requests: Array<{ model: string; input: string[] }> = [];
+  const nativeVector = Array<number>(2_560).fill(0);
+  nativeVector[0] = 1;
+  const server = createServer((request, response) => {
+    let body = '';
+    request.setEncoding('utf8');
+    request.on('data', (chunk) => {
+      body += chunk;
+    });
+    request.on('end', () => {
+      const parsed: unknown = JSON.parse(body);
+      if (
+        !isUnknownRecord(parsed) ||
+        typeof parsed.model !== 'string' ||
+        !Array.isArray(parsed.input) ||
+        !parsed.input.every((value): value is string => typeof value === 'string')
+      ) {
+        throw new Error('Octen setup test received an invalid embedding request');
+      }
+      const payload = { model: parsed.model, input: parsed.input };
+      requests.push(payload);
+      response.setHeader('content-type', 'application/json');
+      response.end(
+        JSON.stringify({
+          object: 'list',
+          model: 'octen-embed',
+          data: payload.input.map((_, index) => ({
+            object: 'embedding',
+            index,
+            embedding: nativeVector,
+          })),
+          usage: { prompt_tokens: payload.input.length, total_tokens: payload.input.length },
+        }),
+      );
+    });
+  });
+  await new Promise<void>((resolve) => {
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  t.after(
+    () =>
+      new Promise<void>((resolve, reject) => {
+        server.close((error) => {
+          if (error) {
+            reject(error);
+          } else {
+            resolve();
+          }
+        });
+      }),
+  );
+  const address = server.address();
+  assert.ok(address && typeof address === 'object');
+  const dataDirectory = join(root, 'data');
+  const sessionsDirectory = join(root, 'sessions');
+  const environment = {
+    ...process.env,
+    PI_RECALL_DATA_DIRECTORY: dataDirectory,
+    PI_RECALL_SESSIONS_DIRECTORY: sessionsDirectory,
+    PI_RECALL_EMBEDDING_BASE_URL: `http://127.0.0.1:${address.port}/v1`,
+    PI_RECALL_EMBEDDING_DIMENSIONS: '2560',
+  };
+
+  const selected = await EXEC_FILE_ASYNC(
+    process.execPath,
+    ['--import', 'tsx', CLI_PATH, 'setup', 'select-octen', '--stored-dimensions', '1024'],
+    { env: environment },
+  );
+  const selectedOutput: unknown = JSON.parse(selected.stdout);
+  assert.ok(isUnknownRecord(selectedOutput));
+  assert.equal(selectedOutput.action, 'configure');
+  assert.equal(selectedOutput.capability, 'embedding');
+  assert.ok(isUnknownRecord(selectedOutput.selection));
+  assert.equal(selectedOutput.selection.candidateId, 'recommended-octen-http-1024');
+  assert.equal(selectedOutput.selection.profileId, 'octen-embedding-4b');
+  assert.equal(selectedOutput.selection.endpoint, `http://127.0.0.1:${address.port}/v1`);
+  assert.match(
+    String(
+      isUnknownRecord(selectedOutput.selection.conformance)
+        ? selectedOutput.selection.conformance.embeddingProfileId
+        : '',
+    ),
+    /^embedding-profile-/u,
+  );
+
+  const doctor = await EXEC_FILE_ASYNC(
+    process.execPath,
+    ['--import', 'tsx', CLI_PATH, 'setup', 'inference', 'doctor'],
+    { env: environment },
+  );
+  const doctorOutput: unknown = JSON.parse(doctor.stdout);
+  assert.ok(isUnknownRecord(doctorOutput));
+  assert.equal(doctorOutput.ready, true);
+  assert.ok(requests.length >= 2);
+  assert.ok(requests.every(({ model }) => model === 'octen-embed'));
 });
 
 void test('standalone setup routes guided status and stored-width selection arguments', async (t) => {

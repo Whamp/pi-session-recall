@@ -32,18 +32,35 @@ export async function runRecallFirstIndexSetupCli(
   const configured = await loadRecallConversationConfig();
   const config = applyRecallQualityPolicyToConversationConfig(configured, qualityGateDecision);
   if (argumentsList[0] === 'inference') {
-    const optionalConformance = await readRecommendedOptionalInferenceConformance(
-      join(dirname(config.manifestPath), 'inference-conformance.json'),
-    );
+    const inferenceConfigurationPath = resolveRecallInferenceConfigurationPath(config);
+    const [optionalConformance, inferenceConfiguration] = await Promise.all([
+      readRecommendedOptionalInferenceConformance(
+        join(dirname(config.manifestPath), 'inference-conformance.json'),
+      ),
+      readRecallInferenceConfiguration(inferenceConfigurationPath, {
+        ...(config.generationRegistryPath
+          ? { generationRegistryPath: config.generationRegistryPath }
+          : {}),
+      }),
+    ]);
+    const requestedEmbeddingCandidateId =
+      argumentsList[1] === 'configure' && argumentsList[2] === 'embedding'
+        ? argumentsList[3]
+        : (inferenceConfiguration.pendingEmbeddingReplacement?.selection.candidateId ??
+          inferenceConfiguration.embedding?.candidateId);
     await runRecallInferenceSetupCommand(argumentsList.slice(1), {
-      statePath: resolveRecallInferenceConfigurationPath(config),
+      statePath: inferenceConfigurationPath,
       ...(config.generationRegistryPath
         ? { generationRegistryPath: config.generationRegistryPath }
         : {}),
       candidates:
         inferenceCandidates ??
         [
-          createRecommendedRecallInferenceAdapterRegistry(config, optionalConformance),
+          createRecommendedRecallInferenceAdapterRegistry(
+            config,
+            optionalConformance,
+            requestedEmbeddingCandidateId,
+          ),
           ...adapterRegistries,
         ].flatMap((registry) => registry.registrations.map(({ candidate }) => candidate)),
     });

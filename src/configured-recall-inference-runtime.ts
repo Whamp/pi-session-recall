@@ -18,6 +18,11 @@ import {
   createRecommendedEmbeddingGemmaInferenceCandidate,
 } from './recommended-embeddinggemma-inference-candidate.js';
 import {
+  createRecommendedOctenHttpEmbeddingRuntime,
+  createRecommendedOctenHttpInferenceCandidate,
+  readRecommendedOctenHttpStoredDimensions,
+} from './recommended-octen-inference-candidate.js';
+import {
   EmbeddedInferenceDevicePolicy,
   RecallInferenceBackend,
   RecallInferenceCapability,
@@ -238,16 +243,47 @@ function findBuiltInInferenceCandidate(
   return candidate;
 }
 
-/** Creates the six built-in setup candidates and their exact capability runtime factories. */
+/** Creates the built-in setup candidates and exact factories needed by one persisted selection. */
 export function createRecommendedRecallInferenceAdapterRegistry(
   config: RecallConversationConfig,
   options: RecommendedOptionalInferenceCandidateOptions = {},
+  embeddingCandidateId?: string,
 ): RecallInferenceAdapterRegistry {
   const candidates = createRecommendedOptionalInferenceCandidates(config, options);
   const rerankingProfile = createRecommendedQwenRerankingModelProfile();
   const queryPlanningProfile = createRecommendedQmdQueryPlanningModelProfile();
   const modelCacheDirectory = join(dirname(config.manifestPath), 'models');
   const storedDimensionChoices = [768, 512, 256, 128] as const;
+  const octenStoredDimensions = readRecommendedOctenHttpStoredDimensions(
+    embeddingCandidateId,
+    config.embeddingDimensions,
+  );
+  const octenRegistrations: RecallInferenceAdapterRegistration[] =
+    octenStoredDimensions === null
+      ? []
+      : [
+          {
+            candidate: createRecommendedOctenHttpInferenceCandidate(config, octenStoredDimensions),
+            createConfiguredCapability({ selection }) {
+              const runtime = createRecommendedOctenHttpEmbeddingRuntime(
+                {
+                  ...config,
+                  embeddingBaseUrl: readRequiredHttpEndpoint('embedding', selection.endpoint),
+                },
+                octenStoredDimensions,
+              );
+              return {
+                capability: RecallInferenceCapability.EMBEDDING,
+                profile: runtime.profile,
+                provider: runtime.provider,
+                tokenizerIdentity: runtime.tokenizerIdentity,
+                loadTokenizer: () => runtime.loadTokenizer(),
+                embeddingDimensions: runtime.embeddingDimensions,
+                dispose: () => runtime.dispose(),
+              };
+            },
+          },
+        ];
   const embeddingRegistrations: RecallInferenceAdapterRegistration[] =
     storedDimensionChoices.flatMap((storedDimensions) => {
       const embeddingProfile = createRecommendedEmbeddingGemmaModelProfile(storedDimensions);
@@ -300,6 +336,7 @@ export function createRecommendedRecallInferenceAdapterRegistry(
     });
   return {
     registrations: [
+      ...octenRegistrations,
       ...embeddingRegistrations,
       {
         candidate: findBuiltInInferenceCandidate(
@@ -526,7 +563,10 @@ export async function createConfiguredRecallInferenceRuntime(
   return createRegisteredRecallInferenceRuntime(
     config,
     configuration,
-    [createRecommendedRecallInferenceAdapterRegistry(config), ...(options.adapterRegistries ?? [])],
+    [
+      createRecommendedRecallInferenceAdapterRegistry(config, {}, embeddingSelection.candidateId),
+      ...(options.adapterRegistries ?? []),
+    ],
     options.onWarning ? { onWarning: options.onWarning } : {},
   );
 }

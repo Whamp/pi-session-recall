@@ -15,10 +15,13 @@ import {
   createOctenEmbeddingModelProfile,
   createRecommendedEmbeddingGemmaModelProfile,
 } from './recall-model-profiles.js';
+import { createRecommendedOctenHttpCandidateId } from './recommended-octen-inference-candidate.js';
 import { runRecallFirstIndexSetupCli } from './runRecallFirstIndexSetupCli.js';
 
 const PI_SESSION_RECALL_USAGE =
   'usage: pi-session-recall <setup|status|catch-up|rebuild|stop|resume|discard|recover|rollback|cleanup>';
+const PI_SESSION_RECALL_OCTEN_SETUP_USAGE =
+  'usage: pi-session-recall setup select-octen [--stored-dimensions 1..2560] [--approve-replacement]';
 
 interface RecallSetupProfilePresentation {
   profile: string;
@@ -93,6 +96,36 @@ function createRecallSetupProfilePresentations(): RecallSetupProfilePresentation
   ];
 }
 
+function createOctenSetupInferenceArguments(argumentsList: readonly string[]): string[] {
+  let storedDimensions = 1_024;
+  let storedDimensionsSelected = false;
+  let approvedReplacement = false;
+  for (let index = 1; index < argumentsList.length; index += 1) {
+    const argument = argumentsList[index];
+    if (argument === '--stored-dimensions' && !storedDimensionsSelected) {
+      storedDimensions = Number(argumentsList[index + 1]);
+      storedDimensionsSelected = true;
+      index += 1;
+      continue;
+    }
+    if (argument === '--approve-replacement' && !approvedReplacement) {
+      approvedReplacement = true;
+      continue;
+    }
+    throw new Error(
+      `Pi session recall Octen setup arguments invalid: ${argumentsList.join(' ')}; ${PI_SESSION_RECALL_OCTEN_SETUP_USAGE}`,
+    );
+  }
+  const candidateId = createRecommendedOctenHttpCandidateId(storedDimensions);
+  return [
+    'inference',
+    'configure',
+    'embedding',
+    candidateId,
+    ...(approvedReplacement ? ['--approve-replacement'] : []),
+  ];
+}
+
 async function createDefaultRecallOperatorRuntime(
   config: RecallConversationConfig,
   requiresInference: boolean,
@@ -125,7 +158,11 @@ export async function runPiSessionRecallCli(
       );
       return;
     }
-    await runRecallFirstIndexSetupCli(commandArguments);
+    await runRecallFirstIndexSetupCli(
+      commandArguments[0] === 'select-octen'
+        ? createOctenSetupInferenceArguments(commandArguments)
+        : commandArguments,
+    );
     return;
   }
   const knownCommand =

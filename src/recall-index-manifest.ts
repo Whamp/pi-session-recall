@@ -254,7 +254,8 @@ const recallIndexManifestSchema = Type.Object(
   },
   { additionalProperties: false },
 );
-function createTokenizerManifestIdentity(
+/** Projects one exact tokenizer asset identity into the recall manifest contract. */
+export function createRecallTokenizerManifestIdentity(
   identity: ConversationTokenizerAssetIdentity,
 ): RecallTokenizerManifestIdentity {
   return {
@@ -386,7 +387,7 @@ export function createRecallIndexManifest(options: {
         RECALL_EMBEDDING_CANARY_MINIMUM_COSINE_SIMILARITY,
     },
     tokenizer: structuredClone(
-      options.tokenizerIdentity ?? createTokenizerManifestIdentity(OCTEN_TOKENIZER_IDENTITY),
+      options.tokenizerIdentity ?? createRecallTokenizerManifestIdentity(OCTEN_TOKENIZER_IDENTITY),
     ),
     chunkPolicy: {
       version: 2,

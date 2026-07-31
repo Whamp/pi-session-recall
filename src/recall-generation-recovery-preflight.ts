@@ -9,7 +9,7 @@ import {
   loadRecallConversationConfig,
   type RecallConversationConfig,
 } from './recall-conversation-config.js';
-import { RecallBackgroundIndexProcessState } from './enums.js';
+import { RecallBackgroundIndexProcessState, RecallFixedSnapshotBuildFaultStage } from './enums.js';
 import {
   createRecallConversationService,
   type RecallConversationDependencies,
@@ -541,7 +541,10 @@ export async function runRecallGenerationRecoveryPreflight(
     interruptedConfig,
     createDeterministicRecallDependencies({
       fixedSnapshotBuildFault(stage) {
-        if (stage === 'after-snapshot-capture' && interruptSnapshotCapture) {
+        if (
+          stage === RecallFixedSnapshotBuildFaultStage.AFTER_SNAPSHOT_CAPTURE &&
+          interruptSnapshotCapture
+        ) {
           interruptSnapshotCapture = false;
           throw new Error('fixture bootstrap snapshot capture interruption');
         }

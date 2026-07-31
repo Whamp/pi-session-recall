@@ -10,7 +10,11 @@ import { ZVecOpen } from '@zvec/zvec';
 import fc from 'fast-check';
 
 import type { RecallConversationConfig } from './recall-conversation-config.js';
-import { RecallDiagnosticsMode, RecallGenerationCutoverState } from './enums.js';
+import {
+  RecallDiagnosticsMode,
+  RecallFixedSnapshotBuildFaultStage,
+  RecallGenerationCutoverState,
+} from './enums.js';
 import { isUnknownRecord } from './is-unknown-record.js';
 import { createRecallConversationService } from './recall-conversation-service.js';
 import {
@@ -376,7 +380,10 @@ void test('configured service materializes removed sources from captured bytes a
     reranker: null,
     workerSignal: { signalDetachedWorker() {} },
     async fixedSnapshotBuildFault(stage) {
-      if (stage === 'after-snapshot-capture' && interruptAfterCapture) {
+      if (
+        stage === RecallFixedSnapshotBuildFaultStage.AFTER_SNAPSHOT_CAPTURE &&
+        interruptAfterCapture
+      ) {
         interruptAfterCapture = false;
         await rm(sourcePath);
         throw new Error('fixture removed source after snapshot capture');
@@ -507,7 +514,7 @@ void test('configured service resumes one fixed source snapshot after an interru
     reranker: null,
     workerSignal: { signalDetachedWorker() {} },
     async fixedSnapshotBuildFault(stage) {
-      if (stage === 'after-dense-write' && interruptDenseWrite) {
+      if (stage === RecallFixedSnapshotBuildFaultStage.AFTER_DENSE_WRITE && interruptDenseWrite) {
         interruptDenseWrite = false;
         throw new Error('fixture interrupted dense write');
       }
@@ -664,7 +671,7 @@ void test('configured fixed-snapshot build waits for a transient checkpoint stor
     loadTokenizer: async () => tokenizer,
     workerSignal: { signalDetachedWorker() {} },
     fixedSnapshotBuildFault(stage, context) {
-      if (stage !== 'after-store-close') {
+      if (stage !== RecallFixedSnapshotBuildFaultStage.AFTER_STORE_CLOSE) {
         return;
       }
       checkpointLockCount += 1;
@@ -905,7 +912,7 @@ void test('configured fixed-snapshot build resumes checksum-bound malformed-sour
     reranker: null,
     workerSignal: { signalDetachedWorker() {} },
     fixedSnapshotBuildFault(stage) {
-      if (stage === 'after-dense-write' && interruptDenseWrite) {
+      if (stage === RecallFixedSnapshotBuildFaultStage.AFTER_DENSE_WRITE && interruptDenseWrite) {
         interruptDenseWrite = false;
         throw new Error('fixture interrupted after malformed-source artifacts were recorded');
       }
@@ -1152,7 +1159,10 @@ void test('configured fixed-snapshot build keeps every non-source failure catego
         reranker: null,
         workerSignal: { signalDetachedWorker() {} },
         fixedSnapshotBuildFault(stage) {
-          if (failureCategory === 'storage' && stage === 'after-dense-write') {
+          if (
+            failureCategory === 'storage' &&
+            stage === RecallFixedSnapshotBuildFaultStage.AFTER_DENSE_WRITE
+          ) {
             throw new Error(parserLookingFailure);
           }
         },
@@ -1313,7 +1323,7 @@ void test('configured service withholds validation receipt after a reopened path
     reranker: null,
     workerSignal: { signalDetachedWorker() {} },
     async fixedSnapshotBuildFault(stage, context) {
-      if (stage !== 'before-validation-receipt') {
+      if (stage !== RecallFixedSnapshotBuildFaultStage.BEFORE_VALIDATION_RECEIPT) {
         return;
       }
       const lexicalSource = ZVecOpen(join(context.generationDirectory, 'lexical-source'));
@@ -1378,7 +1388,7 @@ void test('configured service never receipts a build cancelled at validation', a
     reranker: null,
     workerSignal: { signalDetachedWorker() {} },
     fixedSnapshotBuildFault(stage) {
-      if (stage === 'before-validation-receipt') {
+      if (stage === RecallFixedSnapshotBuildFaultStage.BEFORE_VALIDATION_RECEIPT) {
         controller.abort();
       }
     },

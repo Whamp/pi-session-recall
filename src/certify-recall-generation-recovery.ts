@@ -77,14 +77,14 @@ export async function runRecoveryCertificationCommand(options: {
   argumentsList: readonly string[];
   projectDirectory: string;
   displayCommand?: string;
-  expectedTestNamePattern?: RegExp;
+  expectedPassingTestNamePatterns?: readonly RegExp[];
 }): Promise<RecoveryCertificationCommandResult> {
   const startedAt = performance.now();
   let capturedOutput = '';
   await new Promise<void>((resolvePromise, rejectPromise) => {
     const childEnvironment = { ...process.env };
     delete childEnvironment.NODE_TEST_CONTEXT;
-    const captureTestOutput = options.expectedTestNamePattern !== undefined;
+    const captureTestOutput = options.expectedPassingTestNamePatterns !== undefined;
     const child = spawn(options.executable, options.argumentsList, {
       cwd: options.projectDirectory,
       env: childEnvironment,
@@ -112,20 +112,28 @@ export async function runRecoveryCertificationCommand(options: {
     });
     child.once('exit', (code, signal) => {
       if (code === 0) {
-        const expectedTestNamePattern = options.expectedTestNamePattern;
-        const matchingNamedTestRan =
-          expectedTestNamePattern === undefined ||
-          capturedOutput.split(/\r?\n/u).some((line) => {
-            const testName = line.match(/^# Subtest: (.+)$/u)?.[1];
-            return testName !== undefined && expectedTestNamePattern.test(testName);
-          });
-        if (matchingNamedTestRan) {
+        const expectedPatterns = options.expectedPassingTestNamePatterns;
+        const passingTestNames = capturedOutput.split(/\r?\n/u).flatMap((line) => {
+          const testResult = line.match(/^\s*ok \d+ - (.+)$/u)?.[1];
+          return testResult === undefined || / # (?:SKIP|TODO)\b/u.test(testResult)
+            ? []
+            : [testResult];
+        });
+        const allExpectedNamedTestsPassed =
+          expectedPatterns === undefined ||
+          expectedPatterns.every((pattern) =>
+            passingTestNames.some((testName) => {
+              pattern.lastIndex = 0;
+              return pattern.test(testName);
+            }),
+          );
+        if (allExpectedNamedTestsPassed) {
           resolvePromise();
           return;
         }
         rejectPromise(
           new Error(
-            `Recall generation recovery certification command did not run an expected named test: ${options.name}`,
+            `Recall generation recovery certification command did not pass an expected named test: ${options.name}`,
           ),
         );
         return;
@@ -145,6 +153,20 @@ export async function runRecoveryCertificationCommand(options: {
   };
 }
 
+/** Checks committed whitespace across the exact review-base-to-candidate range. */
+export async function runRecoveryCertificationGitWhitespaceCheck(options: {
+  projectDirectory: string;
+  baseCommit: string;
+  candidateCommit: string;
+}): Promise<RecoveryCertificationCommandResult> {
+  return runRecoveryCertificationCommand({
+    name: 'Git whitespace check',
+    executable: 'git',
+    argumentsList: ['diff', '--check', `${options.baseCommit}...${options.candidateCommit}`],
+    projectDirectory: options.projectDirectory,
+  });
+}
+
 async function fingerprintCertificationInputs(projectDirectory: string): Promise<string> {
   const fingerprint = createHash('sha256');
   for (const relativePath of CERTIFICATION_INPUT_PATHS) {
@@ -156,7 +178,7 @@ async function fingerprintCertificationInputs(projectDirectory: string): Promise
   return fingerprint.digest('hex');
 }
 
-function readRequiredSlopScanBaseDirectory(): string {
+function readRequiredSlopScanBase(): { directory: string; commit: string } {
   const configuredPath = process.env.PI_RECALL_SLOP_BASE_DIRECTORY;
   if (configuredPath === undefined || configuredPath.trim() === '') {
     throw new Error(
@@ -182,7 +204,7 @@ function readRequiredSlopScanBaseDirectory(): string {
       `Recall generation recovery certification slop base must be clean: ${baseDirectory}`,
     );
   }
-  return baseDirectory;
+  return { directory: baseDirectory, commit: revision };
 }
 
 function assertProductionCardinality(preflight: RecallGenerationRecoveryPreflightResult): void {
@@ -293,7 +315,7 @@ export async function certifyRecallGenerationRecovery(
 ): Promise<RecallGenerationRecoveryCertificationEvidence> {
   const resolvedProjectDirectory = resolve(projectDirectory);
   const candidateCommit = readCleanRecallEvaluationGitRevision(resolvedProjectDirectory);
-  const slopScanBaseDirectory = readRequiredSlopScanBaseDirectory();
+  const slopScanBase = readRequiredSlopScanBase();
   const disposableRoot = await mkdtemp(join(tmpdir(), 'recall-generation-recovery-evidence-'));
   const commands: RecoveryCertificationCommandResult[] = [];
   try {
@@ -301,28 +323,45 @@ export async function certifyRecallGenerationRecovery(
       {
         name: 'bootstrap interruption model',
         pattern: 'replacement generation bootstrap interruption model',
+        expectedPassingTestNamePatterns: [
+          /^replacement generation bootstrap interruption model resumes compatible states or discards safely$/u,
+        ],
         path: 'src/build-recall-fixed-snapshot-generation.test.ts',
       },
       {
         name: 'malformed versus operational classification',
         pattern:
           'malformed-source skips once|parser-looking operational failures fatal|non-source failure category fatal',
+        expectedPassingTestNamePatterns: [
+          /^configured fixed-snapshot build resumes checksum-bound malformed-source skips once$/u,
+          /^configured fixed-snapshot build keeps generated parser-looking operational failures fatal$/u,
+          /^configured fixed-snapshot build keeps every non-source failure category fatal$/u,
+        ],
         path: 'src/recall-physical-source-generation.test.ts',
       },
       {
         name: 'incremental versus rebuild membership equivalence',
         pattern:
           'generated incremental append, replay, branch, and deletion schedules match fresh rebuild membership',
+        expectedPassingTestNamePatterns: [
+          /^generated incremental append, replay, branch, and deletion schedules match fresh rebuild membership$/u,
+        ],
         path: 'src/transfer-incremental-recall-work-plan.test.ts',
       },
       {
         name: 'detached worker interruption and terminal resume',
         pattern: 'crashed workers at every staging phase remain resumable and idempotent',
+        expectedPassingTestNamePatterns: [
+          /^crashed workers at every staging phase remain resumable and idempotent$/u,
+        ],
         path: 'src/recall-background-index-conversation-service.test.ts',
       },
       {
         name: 'operator CLI stop and terminal resume',
         pattern: 'standalone rebuild stops, resumes the same snapshot, and discards inactive work',
+        expectedPassingTestNamePatterns: [
+          /^standalone rebuild stops, resumes the same snapshot, and discards inactive work$/u,
+        ],
         path: 'src/pi-session-recall-cli.test.ts',
       },
     ] as const;
@@ -340,7 +379,7 @@ export async function certifyRecallGenerationRecovery(
             focusedTest.path,
           ],
           projectDirectory: resolvedProjectDirectory,
-          expectedTestNamePattern: new RegExp(focusedTest.pattern, 'u'),
+          expectedPassingTestNamePatterns: focusedTest.expectedPassingTestNamePatterns,
         }),
       );
     }
@@ -350,7 +389,6 @@ export async function certifyRecallGenerationRecovery(
       { name: 'typecheck', executable: 'npm', argumentsList: ['run', 'typecheck'] },
       { name: 'type-aware lint', executable: 'npm', argumentsList: ['run', 'lint'] },
       { name: 'format check', executable: 'npm', argumentsList: ['run', 'format:check'] },
-      { name: 'Git whitespace check', executable: 'git', argumentsList: ['diff', '--check'] },
     ] as const) {
       commands.push(
         await runRecoveryCertificationCommand({
@@ -360,13 +398,20 @@ export async function certifyRecallGenerationRecovery(
       );
     }
     commands.push(
+      await runRecoveryCertificationGitWhitespaceCheck({
+        projectDirectory: resolvedProjectDirectory,
+        baseCommit: slopScanBase.commit,
+        candidateCommit,
+      }),
+    );
+    commands.push(
       await runRecoveryCertificationCommand({
         name: 'repository-required slop scan',
         executable: 'slop-scan',
         argumentsList: [
           'delta',
           '--base',
-          slopScanBaseDirectory,
+          slopScanBase.directory,
           '--head',
           resolvedProjectDirectory,
           '--fail-on',

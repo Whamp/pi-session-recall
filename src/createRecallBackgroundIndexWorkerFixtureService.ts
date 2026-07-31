@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 import type { RecallConversationConfig } from './recall-conversation-config.js';
+import { RecallFixedSnapshotBuildFaultStage } from './enums.js';
 import {
   createRecallConversationService,
   type RecallConversationService,
@@ -83,10 +84,10 @@ export function createRecallBackgroundIndexWorkerFixtureService(
       return null;
     },
     fixedSnapshotBuildFault(stage) {
-      if (stage === 'after-dense-write') {
+      if (stage === RecallFixedSnapshotBuildFaultStage.AFTER_DENSE_WRITE) {
         interruptAtFixturePhase('store-write');
       }
-      if (stage === 'before-validation-receipt') {
+      if (stage === RecallFixedSnapshotBuildFaultStage.BEFORE_VALIDATION_RECEIPT) {
         interruptAtFixturePhase('optimization');
         interruptAtFixturePhase('pre-activation');
       }

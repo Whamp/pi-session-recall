@@ -6,7 +6,11 @@ import { ZVecIndexType, ZVecOpen } from '@zvec/zvec';
 import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 
-import { RecallProjectionEncodingStatus, RecallSessionProjectionKind } from './enums.js';
+import {
+  type RecallFixedSnapshotBuildFaultStage,
+  RecallProjectionEncodingStatus,
+  RecallSessionProjectionKind,
+} from './enums.js';
 import { createRecallSessionProjectionBaselineFromImport } from './create-recall-session-projection-baseline.js';
 import type { RecallCoherentGenerationConfig } from './recall-coherent-generation.js';
 import {
@@ -123,23 +127,6 @@ const recallGenerationEvidenceRecordSchema = Type.Object(
   },
   { additionalProperties: false },
 );
-
-/** Durable fixed-snapshot transitions available to process-death acceptance tests. */
-export type RecallFixedSnapshotBuildFaultStage =
-  | 'after-generation-directory-creation'
-  | 'after-bootstrap-state-write'
-  | 'after-manifest-write'
-  | 'after-lexical-source-store-creation'
-  | 'after-dense-store-creation'
-  | 'after-session-projection-store-creation'
-  | 'after-snapshot-source-directory-creation'
-  | 'after-expected-source-directory-creation'
-  | 'after-snapshot-source-open'
-  | 'after-snapshot-source-write'
-  | 'after-snapshot-capture'
-  | 'after-dense-write'
-  | 'after-store-close'
-  | 'before-validation-receipt';
 
 /** Runtime dependencies needed to materialize and fault-probe a fixed source snapshot. */
 export interface RecallPhysicalSourceGenerationDependencies {

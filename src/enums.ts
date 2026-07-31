@@ -240,6 +240,24 @@ export enum RecallProjectionEncodingStatus {
   REQUIRES_RECONCILIATION = 'requires_reconciliation',
 }
 
+/** Durable fixed-snapshot transitions available to process-death acceptance tests. */
+export enum RecallFixedSnapshotBuildFaultStage {
+  AFTER_GENERATION_DIRECTORY_CREATION = 'after-generation-directory-creation',
+  AFTER_BOOTSTRAP_STATE_WRITE = 'after-bootstrap-state-write',
+  AFTER_MANIFEST_WRITE = 'after-manifest-write',
+  AFTER_LEXICAL_SOURCE_STORE_CREATION = 'after-lexical-source-store-creation',
+  AFTER_DENSE_STORE_CREATION = 'after-dense-store-creation',
+  AFTER_SESSION_PROJECTION_STORE_CREATION = 'after-session-projection-store-creation',
+  AFTER_SNAPSHOT_SOURCE_DIRECTORY_CREATION = 'after-snapshot-source-directory-creation',
+  AFTER_EXPECTED_SOURCE_DIRECTORY_CREATION = 'after-expected-source-directory-creation',
+  AFTER_SNAPSHOT_SOURCE_OPEN = 'after-snapshot-source-open',
+  AFTER_SNAPSHOT_SOURCE_WRITE = 'after-snapshot-source-write',
+  AFTER_SNAPSHOT_CAPTURE = 'after-snapshot-capture',
+  AFTER_DENSE_WRITE = 'after-dense-write',
+  AFTER_STORE_CLOSE = 'after-store-close',
+  BEFORE_VALIDATION_RECEIPT = 'before-validation-receipt',
+}
+
 /** Durable generation registry state used by explicit side-by-side cutover. */
 export enum RecallGenerationCutoverState {
   BUILDING = 'building',

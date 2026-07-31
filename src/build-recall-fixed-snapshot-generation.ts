@@ -7,6 +7,7 @@ import { ZVecOpen, type ZVecCollection, type ZVecStatus } from '@zvec/zvec';
 import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 
+import { RecallFixedSnapshotBuildFaultStage } from './enums.js';
 import { InvalidRecallSessionSourceError } from './errors.js';
 import { isUnknownRecord } from './is-unknown-record.js';
 import { openRecallZvecValidationStore } from './open-recall-zvec-validation-store.js';
@@ -40,7 +41,6 @@ import {
   type CapturedRecallPhysicalSource,
   type CreateRecallGenerationFromPhysicalSourcesOptions,
   type MaterializedRecallPhysicalSourceGeneration,
-  type RecallFixedSnapshotBuildFaultStage,
   type RecallGenerationDenseExpectation,
   type RecallPhysicalSourceGenerationDependencies,
 } from './recall-physical-source-generation.js';
@@ -411,11 +411,11 @@ function fixedSnapshotBootstrapFaultStageForStore(
 ): RecallFixedSnapshotBuildFaultStage {
   switch (responsibility) {
     case 'lexical-source':
-      return 'after-lexical-source-store-creation';
+      return RecallFixedSnapshotBuildFaultStage.AFTER_LEXICAL_SOURCE_STORE_CREATION;
     case 'dense-evidence':
-      return 'after-dense-store-creation';
+      return RecallFixedSnapshotBuildFaultStage.AFTER_DENSE_STORE_CREATION;
     case 'session-projection':
-      return 'after-session-projection-store-creation';
+      return RecallFixedSnapshotBuildFaultStage.AFTER_SESSION_PROJECTION_STORE_CREATION;
     default:
       throw new Error('Recall fixed snapshot generation bootstrap store unsupported');
   }
@@ -432,7 +432,7 @@ async function readStableFixedSnapshotSource(
     const metadataBeforeRead = await sourceHandle.stat({ bigint: true });
     await invokeFixedSnapshotBuildFault(
       dependencies,
-      'after-snapshot-source-open',
+      RecallFixedSnapshotBuildFaultStage.AFTER_SNAPSHOT_SOURCE_OPEN,
       generationDirectory,
       physicalSourceIdentity,
     );
@@ -491,13 +491,13 @@ async function captureFixedSourceSnapshot(
   await mkdir(snapshotSourceDirectory);
   await invokeFixedSnapshotBuildFault(
     dependencies,
-    'after-snapshot-source-directory-creation',
+    RecallFixedSnapshotBuildFaultStage.AFTER_SNAPSHOT_SOURCE_DIRECTORY_CREATION,
     generationDirectory,
   );
   await mkdir(join(generationDirectory, EXPECTED_SOURCE_DIRECTORY));
   await invokeFixedSnapshotBuildFault(
     dependencies,
-    'after-expected-source-directory-creation',
+    RecallFixedSnapshotBuildFaultStage.AFTER_EXPECTED_SOURCE_DIRECTORY_CREATION,
     generationDirectory,
   );
   const sources: RecallFixedSnapshotSourceDescriptor[] = [];
@@ -518,7 +518,7 @@ async function captureFixedSourceSnapshot(
     await writeFile(join(snapshotSourceDirectory, snapshotFileName), sourceBytes, { flag: 'wx' });
     await invokeFixedSnapshotBuildFault(
       dependencies,
-      'after-snapshot-source-write',
+      RecallFixedSnapshotBuildFaultStage.AFTER_SNAPSHOT_SOURCE_WRITE,
       generationDirectory,
       identity.physicalSourceIdentity,
     );
@@ -973,7 +973,7 @@ async function writeExpectedPhysicalSource(
     upsertRowsInBoundedBatches(dense, 'dense write', denseRows);
     await invokeFixedSnapshotBuildFault(
       dependencies,
-      'after-dense-write',
+      RecallFixedSnapshotBuildFaultStage.AFTER_DENSE_WRITE,
       generationDirectory,
       artifact.physicalSourceIdentity,
     );
@@ -992,7 +992,7 @@ async function writeExpectedPhysicalSource(
   }
   await invokeFixedSnapshotBuildFault(
     dependencies,
-    'after-store-close',
+    RecallFixedSnapshotBuildFaultStage.AFTER_STORE_CLOSE,
     generationDirectory,
     artifact.physicalSourceIdentity,
   );
@@ -1192,7 +1192,7 @@ export async function buildRecallFixedSnapshotGeneration(
     await mkdir(generationDirectory);
     await invokeFixedSnapshotBuildFault(
       dependencies,
-      'after-generation-directory-creation',
+      RecallFixedSnapshotBuildFaultStage.AFTER_GENERATION_DIRECTORY_CREATION,
       generationDirectory,
     );
     bootstrapState = await writeFixedSnapshotBootstrapState(
@@ -1203,7 +1203,7 @@ export async function buildRecallFixedSnapshotGeneration(
     );
     await invokeFixedSnapshotBuildFault(
       dependencies,
-      'after-bootstrap-state-write',
+      RecallFixedSnapshotBuildFaultStage.AFTER_BOOTSTRAP_STATE_WRITE,
       generationDirectory,
     );
   } else {
@@ -1249,7 +1249,11 @@ export async function buildRecallFixedSnapshotGeneration(
       );
     }
     manifestFingerprint = await writeRecallGenerationManifest(paths.manifestPath, expectedManifest);
-    await invokeFixedSnapshotBuildFault(dependencies, 'after-manifest-write', generationDirectory);
+    await invokeFixedSnapshotBuildFault(
+      dependencies,
+      RecallFixedSnapshotBuildFaultStage.AFTER_MANIFEST_WRITE,
+      generationDirectory,
+    );
   }
 
   let snapshot: RecallFixedSnapshotDescriptor;
@@ -1272,7 +1276,7 @@ export async function buildRecallFixedSnapshotGeneration(
     );
     await invokeFixedSnapshotBuildFault(
       dependencies,
-      'after-snapshot-capture',
+      RecallFixedSnapshotBuildFaultStage.AFTER_SNAPSHOT_CAPTURE,
       generationDirectory,
     );
   }
@@ -1451,7 +1455,7 @@ export async function buildRecallFixedSnapshotGeneration(
   }
   await invokeFixedSnapshotBuildFault(
     dependencies,
-    'before-validation-receipt',
+    RecallFixedSnapshotBuildFaultStage.BEFORE_VALIDATION_RECEIPT,
     generationDirectory,
   );
   throwIfFixedSnapshotBuildCancelled(options.signal);

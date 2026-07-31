@@ -6,20 +6,36 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import { createRecallBackgroundIndexWorkerFixtureService } from './createRecallBackgroundIndexWorkerFixtureService.js';
+import { RecallFixedSnapshotBuildFaultStage } from './enums.js';
 import { loadRecallConversationConfig } from './recall-conversation-config.js';
 import { createRecallConversationService } from './recall-conversation-service.js';
 
 const BOOTSTRAP_INTERRUPTION_MODEL = [
-  { stage: 'after-generation-directory-creation', resumable: false },
-  { stage: 'after-bootstrap-state-write', resumable: false },
-  { stage: 'after-manifest-write', resumable: false },
-  { stage: 'after-snapshot-source-directory-creation', resumable: false },
-  { stage: 'after-expected-source-directory-creation', resumable: false },
-  { stage: 'after-snapshot-source-write', resumable: false },
-  { stage: 'after-snapshot-capture', resumable: true },
-  { stage: 'after-lexical-source-store-creation', resumable: true },
-  { stage: 'after-dense-store-creation', resumable: true },
-  { stage: 'after-session-projection-store-creation', resumable: true },
+  {
+    stage: RecallFixedSnapshotBuildFaultStage.AFTER_GENERATION_DIRECTORY_CREATION,
+    resumable: false,
+  },
+  { stage: RecallFixedSnapshotBuildFaultStage.AFTER_BOOTSTRAP_STATE_WRITE, resumable: false },
+  { stage: RecallFixedSnapshotBuildFaultStage.AFTER_MANIFEST_WRITE, resumable: false },
+  {
+    stage: RecallFixedSnapshotBuildFaultStage.AFTER_SNAPSHOT_SOURCE_DIRECTORY_CREATION,
+    resumable: false,
+  },
+  {
+    stage: RecallFixedSnapshotBuildFaultStage.AFTER_EXPECTED_SOURCE_DIRECTORY_CREATION,
+    resumable: false,
+  },
+  { stage: RecallFixedSnapshotBuildFaultStage.AFTER_SNAPSHOT_SOURCE_WRITE, resumable: false },
+  { stage: RecallFixedSnapshotBuildFaultStage.AFTER_SNAPSHOT_CAPTURE, resumable: true },
+  {
+    stage: RecallFixedSnapshotBuildFaultStage.AFTER_LEXICAL_SOURCE_STORE_CREATION,
+    resumable: true,
+  },
+  { stage: RecallFixedSnapshotBuildFaultStage.AFTER_DENSE_STORE_CREATION, resumable: true },
+  {
+    stage: RecallFixedSnapshotBuildFaultStage.AFTER_SESSION_PROJECTION_STORE_CREATION,
+    resumable: true,
+  },
 ] as const;
 
 void test('configured service builds one fixed snapshot into complete disposable generation stores', async (t) => {
@@ -99,7 +115,7 @@ void test('configured service captures source bytes and identity through one ope
       };
     },
     async fixedSnapshotBuildFault(stage) {
-      if (stage === 'after-snapshot-source-open') {
+      if (stage === RecallFixedSnapshotBuildFaultStage.AFTER_SNAPSHOT_SOURCE_OPEN) {
         await rename(replacementPath, sessionPath);
         sourcePathReplaced = true;
       }
@@ -188,7 +204,7 @@ void test('replacement generation bootstrap interruption model resumes compatibl
       assert.equal(existsSync(config.activeGenerationPointerPath), false);
       assert.equal(
         existsSync(join(generationDirectory, 'build-bootstrap.json')),
-        transition.stage !== 'after-generation-directory-creation',
+        transition.stage !== RecallFixedSnapshotBuildFaultStage.AFTER_GENERATION_DIRECTORY_CREATION,
       );
       const snapshotDescriptorPath = join(generationDirectory, 'build-snapshot.json');
       const snapshotBeforeResume = existsSync(snapshotDescriptorPath)

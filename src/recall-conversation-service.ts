@@ -42,7 +42,6 @@ import {
 import {
   searchRecallGenerationLexical,
   type CreateRecallGenerationFromPhysicalSourcesOptions,
-  type RecallFixedSnapshotBuildFaultStage,
   type RecallFixedSnapshotPhysicalSourceCheckpoint,
   type RecallGenerationLexicalEvidence,
 } from './recall-physical-source-generation.js';
@@ -56,6 +55,7 @@ import {
   RecallDiagnosticErrorCategory,
   RecallDiagnosticStatus,
   RecallEvidenceRelation,
+  type RecallFixedSnapshotBuildFaultStage,
   RecallGenerationCutoverState,
   RecallInferenceBackend,
   RecallIncrementalTransferOutcomeKind,

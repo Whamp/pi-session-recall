@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
+import fc from 'fast-check';
+
 import { SessionImportFormat } from './enums.js';
 import { createPhysicalSessionProjectionId } from './recall-session-projection.js';
 import {
@@ -22,6 +24,123 @@ function createWhitespaceConversationTokenizer(): ConversationTextTokenizer {
       };
     },
   };
+}
+
+interface GeneratedAsymmetricTurn {
+  readonly userTokenCount: number;
+  readonly assistantTokenCount: number;
+}
+
+interface GeneratedAsymmetricSessionGraph {
+  readonly maxTokens: number;
+  readonly overlapTokens: number;
+  readonly turns: readonly GeneratedAsymmetricTurn[];
+}
+
+interface GeneratedConversationSource {
+  readonly role: 'user' | 'assistant';
+  readonly content: string;
+  readonly sourceLine: number;
+  readonly tokenCount: number;
+}
+
+const ASYMMETRIC_SESSION_GRAPH_ARBITRARY: fc.Arbitrary<GeneratedAsymmetricSessionGraph> = fc
+  .integer({ min: 12, max: 64 })
+  .chain((maxTokens) => {
+    const availableTextTokens = maxTokens - 2;
+    return fc
+      .record({
+        overlapTokens: fc.integer({ min: 0, max: Math.floor(maxTokens / 4) }),
+        turns: fc.array(
+          fc.record({
+            longRole: fc.constantFrom<'user' | 'assistant'>('user', 'assistant'),
+            longTokenCount: fc.integer({ min: maxTokens * 3, max: maxTokens * 12 }),
+            shortTokenCount: fc.integer({
+              min: Math.max(1, availableTextTokens - 4),
+              max: availableTextTokens - 1,
+            }),
+          }),
+          { minLength: 1, maxLength: 3 },
+        ),
+      })
+      .map(({ overlapTokens, turns }) => ({
+        maxTokens,
+        overlapTokens,
+        turns: turns.map(({ longRole, longTokenCount, shortTokenCount }) => ({
+          userTokenCount: longRole === 'user' ? longTokenCount : shortTokenCount,
+          assistantTokenCount: longRole === 'assistant' ? longTokenCount : shortTokenCount,
+        })),
+      }));
+  });
+
+function createGeneratedConversationText(
+  role: 'user' | 'assistant',
+  turnIndex: number,
+  tokenCount: number,
+): string {
+  return Array.from(
+    { length: tokenCount },
+    (_, tokenIndex) => `${role}-${turnIndex}-${tokenIndex}`,
+  ).join(' ');
+}
+
+async function writeGeneratedAsymmetricSessionGraph(
+  sessionPath: string,
+  turns: readonly GeneratedAsymmetricTurn[],
+): Promise<ReadonlyMap<string, GeneratedConversationSource>> {
+  const records: Array<Record<string, unknown>> = [
+    {
+      type: 'session',
+      version: 3,
+      id: 'generated-asymmetric-session',
+      timestamp: '2026-07-24T10:00:00Z',
+      cwd: '/generated-project',
+    },
+  ];
+  const sources = new Map<string, GeneratedConversationSource>();
+  let parentId: string | null = null;
+  for (const [turnIndex, turn] of turns.entries()) {
+    const userEntryId = `generated-user-${turnIndex}`;
+    const userContent = createGeneratedConversationText('user', turnIndex, turn.userTokenCount);
+    const userSourceLine = records.length + 1;
+    records.push({
+      type: 'message',
+      id: userEntryId,
+      parentId,
+      timestamp: new Date(Date.UTC(2026, 6, 24, 10, turnIndex * 2 + 1)).toISOString(),
+      message: { role: 'user', content: userContent },
+    });
+    sources.set(userEntryId, {
+      role: 'user',
+      content: userContent,
+      sourceLine: userSourceLine,
+      tokenCount: turn.userTokenCount,
+    });
+
+    const assistantEntryId = `generated-assistant-${turnIndex}`;
+    const assistantContent = createGeneratedConversationText(
+      'assistant',
+      turnIndex,
+      turn.assistantTokenCount,
+    );
+    const assistantSourceLine = records.length + 1;
+    records.push({
+      type: 'message',
+      id: assistantEntryId,
+      parentId: userEntryId,
+      timestamp: new Date(Date.UTC(2026, 6, 24, 10, turnIndex * 2 + 2)).toISOString(),
+      message: { role: 'assistant', content: assistantContent },
+    });
+    sources.set(assistantEntryId, {
+      role: 'assistant',
+      content: assistantContent,
+      sourceLine: assistantSourceLine,
+      tokenCount: turn.assistantTokenCount,
+    });
+    parentId = assistantEntryId;
+  }
+  await writeFile(sessionPath, `${records.map((record) => JSON.stringify(record)).join('\n')}\n`);
+  return sources;
 }
 
 function summarizeSessionChunkParity(chunks: readonly SessionConversationChunk[]) {
@@ -489,6 +608,159 @@ void test('turn-context documents balance long roles instead of emitting one-tok
   assert.ok(turnContexts.every((chunk) => chunk.tokenCount <= 16));
   assert.ok(turnContexts.every((chunk) => chunk.content.includes('User:')));
   assert.ok(turnContexts.every((chunk) => chunk.content.includes('Assistant:')));
+});
+
+void test('generated asymmetric turns preserve source evidence within proportional row growth', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-turn-context-property-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionPath = join(directory, 'generated-session.jsonl');
+  const tokenizer = createWhitespaceConversationTokenizer();
+
+  await fc.assert(
+    fc.asyncProperty(ASYMMETRIC_SESSION_GRAPH_ARBITRARY, async (generatedGraph) => {
+      const sources = await writeGeneratedAsymmetricSessionGraph(sessionPath, generatedGraph.turns);
+      const chunks = await readSessionConversationChunks(sessionPath, {
+        tokenizer,
+        maxTokens: generatedGraph.maxTokens,
+        overlapTokens: generatedGraph.overlapTokens,
+      });
+      const conversationChunks = chunks.filter((chunk) => chunk.documentKind === 'conversation');
+      const turnContextChunks = chunks.filter((chunk) => chunk.documentKind === 'turn_context');
+
+      assert.equal(conversationChunks.length + turnContextChunks.length, chunks.length);
+      assert.ok(conversationChunks.length > sources.size);
+      assert.ok(turnContextChunks.length > generatedGraph.turns.length);
+      assert.ok(chunks.some((chunk) => chunk.tokenCount === generatedGraph.maxTokens));
+      assert.ok(
+        chunks.every(
+          (chunk) => chunk.tokenCount > 0 && chunk.tokenCount <= generatedGraph.maxTokens,
+        ),
+      );
+      assert.ok(
+        chunks.every(
+          (chunk) =>
+            chunk.overlapTokenCount <= generatedGraph.overlapTokens &&
+            chunk.tokenCount > chunk.overlapTokenCount,
+        ),
+      );
+      assert.deepEqual(
+        new Set(conversationChunks.map((chunk) => chunk.role)),
+        new Set(['user', 'assistant']),
+      );
+      assert.ok(turnContextChunks.every((chunk) => chunk.role === 'turn'));
+      assert.ok(
+        turnContextChunks.every(
+          (chunk) =>
+            chunk.content.startsWith('User:\n') && chunk.content.includes('\n\nAssistant:\n'),
+        ),
+      );
+
+      for (const [entryId, source] of sources) {
+        const entryChunks = conversationChunks
+          .filter((chunk) => chunk.entryId.value === entryId)
+          .toSorted((left, right) => left.characterStart - right.characterStart);
+        assert.ok(entryChunks.length > 0);
+        assert.equal(entryChunks[0]?.characterStart, 0);
+        assert.equal(entryChunks.at(-1)?.characterEnd, source.content.length);
+        for (const [chunkIndex, chunk] of entryChunks.entries()) {
+          assert.equal(chunk.role, source.role);
+          assert.equal(chunk.sourceLineStart, source.sourceLine);
+          assert.equal(chunk.sourceLineEnd, source.sourceLine);
+          assert.deepEqual(
+            chunk.contributingEntryIds.map(({ value }) => value),
+            [entryId],
+          );
+          assert.equal(
+            chunk.content,
+            source.content.slice(chunk.characterStart, chunk.characterEnd),
+          );
+          const previousChunk = entryChunks[chunkIndex - 1];
+          if (previousChunk) {
+            assert.equal(
+              source.content.slice(previousChunk.characterEnd, chunk.characterStart).trim(),
+              '',
+            );
+            assert.ok(chunk.characterEnd > previousChunk.characterEnd);
+          }
+        }
+      }
+
+      for (const turnContext of turnContextChunks) {
+        const contributingSources = turnContext.contributingEntryIds.map(({ value }) => {
+          const source = sources.get(value);
+          assert.ok(source);
+          return source;
+        });
+        assert.deepEqual(
+          contributingSources.map(({ role }) => role),
+          ['user', 'assistant'],
+        );
+        assert.equal(
+          turnContext.sourceLineStart,
+          Math.min(...contributingSources.map(({ sourceLine }) => sourceLine)),
+        );
+        assert.equal(
+          turnContext.sourceLineEnd,
+          Math.max(...contributingSources.map(({ sourceLine }) => sourceLine)),
+        );
+      }
+
+      const rawConversationRowBound = Array.from(sources.values()).reduce(
+        (total, source) =>
+          total +
+          Math.ceil(source.tokenCount / (generatedGraph.maxTokens - generatedGraph.overlapTokens)),
+        0,
+      );
+      const balancedRoleCapacity = Math.floor((generatedGraph.maxTokens - 2) / 2);
+      const turnContextRowBound = generatedGraph.turns.reduce(
+        (total, turn) =>
+          total +
+          Math.ceil((turn.userTokenCount + turn.assistantTokenCount) / balancedRoleCapacity),
+        0,
+      );
+      assert.ok(chunks.length <= rawConversationRowBound + turnContextRowBound);
+    }),
+    { numRuns: 50 },
+  );
+});
+
+void test('3,872-token asymmetric turn remains bounded while preserving both roles', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-turn-context-3872-regression-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionPath = join(directory, 'session.jsonl');
+  const tokenizer = createWhitespaceConversationTokenizer();
+  const sources = await writeGeneratedAsymmetricSessionGraph(sessionPath, [
+    { userTokenCount: 3_872, assistantTokenCount: 1_021 },
+  ]);
+
+  const chunks = await readSessionConversationChunks(sessionPath, {
+    tokenizer,
+    maxTokens: 1_024,
+    overlapTokens: 128,
+  });
+  const conversationChunks = chunks.filter((chunk) => chunk.documentKind === 'conversation');
+  const turnContextChunks = chunks.filter((chunk) => chunk.documentKind === 'turn_context');
+
+  assert.ok(turnContextChunks.length > 1);
+  assert.ok(turnContextChunks.length <= 10);
+  assert.ok(turnContextChunks.every((chunk) => chunk.tokenCount <= 1_024));
+  assert.ok(turnContextChunks.every((chunk) => chunk.role === 'turn'));
+  assert.ok(
+    turnContextChunks.every(
+      (chunk) => chunk.content.startsWith('User:\n') && chunk.content.includes('\n\nAssistant:\n'),
+    ),
+  );
+  assert.deepEqual(
+    new Set(conversationChunks.map((chunk) => chunk.role)),
+    new Set(['user', 'assistant']),
+  );
+  for (const chunk of conversationChunks) {
+    const source = sources.get(chunk.entryId.value);
+    assert.ok(source);
+    assert.equal(chunk.sourceLineStart, source.sourceLine);
+    assert.equal(chunk.sourceLineEnd, source.sourceLine);
+    assert.equal(chunk.content, source.content.slice(chunk.characterStart, chunk.characterEnd));
+  }
 });
 
 void test('turn-context documents reject a token budget that cannot contain both roles', async () => {

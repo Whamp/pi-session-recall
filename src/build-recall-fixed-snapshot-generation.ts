@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { ZVecOpen, type ZVecCollection, type ZVecStatus } from '@zvec/zvec';
@@ -36,6 +36,7 @@ import { createRecallActiveGenerationPointer } from './recall-generation-state.j
 import {
   createExpectedRecallPhysicalSourceManifest,
   materializeRecallPhysicalSourceGeneration,
+  type CapturedRecallPhysicalSource,
   type CreateRecallGenerationFromPhysicalSourcesOptions,
   type MaterializedRecallPhysicalSourceGeneration,
   type RecallGenerationDenseExpectation,
@@ -67,6 +68,8 @@ interface RecallFixedSnapshotSourceDescriptor {
   sessionsRootRelativePath: string;
   sourceByteSize: number;
   sourceChecksum: string;
+  sourceDevice: string;
+  sourceInode: string;
   snapshotFileName: string;
 }
 
@@ -129,6 +132,8 @@ const fixedSnapshotDescriptorSchema = Type.Object(
           sessionsRootRelativePath: Type.String({ minLength: 1 }),
           sourceByteSize: Type.Integer({ minimum: 0 }),
           sourceChecksum: checksumSchema,
+          sourceDevice: Type.String({ minLength: 1 }),
+          sourceInode: Type.String({ minLength: 1 }),
           snapshotFileName: Type.String({ pattern: '^[0-9]+-[a-f0-9]{64}\\.jsonl$' }),
         },
         { additionalProperties: false },
@@ -319,7 +324,10 @@ async function captureFixedSourceSnapshot(
       config.sessionsDirectory,
       physicalSessionPath,
     );
-    const sourceBytes = await readFile(physicalSessionPath);
+    const [sourceBytes, sourceMetadata] = await Promise.all([
+      readFile(physicalSessionPath),
+      stat(physicalSessionPath, { bigint: true }),
+    ]);
     const sourceChecksum = calculateSha256(sourceBytes);
     const snapshotFileName = `${index}-${sourceChecksum}.jsonl`;
     await writeFile(join(snapshotSourceDirectory, snapshotFileName), sourceBytes, { flag: 'wx' });
@@ -328,6 +336,8 @@ async function captureFixedSourceSnapshot(
       sessionsRootRelativePath: identity.sessionsRootRelativePath,
       sourceByteSize: sourceBytes.length,
       sourceChecksum,
+      sourceDevice: sourceMetadata.dev.toString(),
+      sourceInode: sourceMetadata.ino.toString(),
       snapshotFileName,
     });
   }
@@ -468,12 +478,18 @@ async function materializeExpectedPhysicalSource(
   }
   let artifact: RecallExpectedPhysicalSourceArtifact;
   try {
+    const capturedSource: CapturedRecallPhysicalSource = {
+      sourceReadPath: snapshotPath,
+      sourceByteSize: source.sourceByteSize,
+      sourceDevice: source.sourceDevice,
+      sourceInode: source.sourceInode,
+    };
     const materialized = await materializeRecallPhysicalSourceGeneration(
       config,
       generationId,
       physicalSessionPath,
+      capturedSource,
       dependencies,
-      snapshotPath,
     );
     artifact = Value.Parse(expectedPhysicalSourceArtifactSchema, {
       version: FIXED_SNAPSHOT_BUILD_VERSION,

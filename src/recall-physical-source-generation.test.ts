@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -341,6 +341,101 @@ void test('configured service builds and searches a stored-width dense subset be
     service.openValidatedRecallGeneration(generationId),
     /Recall coherent generation dense evidence checksum mismatch/u,
   );
+});
+
+void test('configured service materializes removed sources from captured bytes and metadata', async (t) => {
+  const disposableRoot = await mkdtemp(join(tmpdir(), 'recall-fixed-snapshot-removed-source-'));
+  t.after(() => rm(disposableRoot, { recursive: true, force: true }));
+  const sessionsDirectory = join(disposableRoot, 'sessions');
+  const dataDirectory = join(disposableRoot, 'recall');
+  const projectDirectory = join(disposableRoot, 'project');
+  const sourcePath = join(sessionsDirectory, 'archive', 'captured.jsonl');
+  await Promise.all([
+    mkdir(join(sessionsDirectory, 'archive'), { recursive: true }),
+    mkdir(dataDirectory),
+    mkdir(projectDirectory),
+  ]);
+  await writeJsonl(
+    sourcePath,
+    createToolOnlyLogicalSession(
+      'captured-session',
+      'captured',
+      projectDirectory,
+      'CAPTURED_SOURCE_NEEDLE',
+    ),
+  );
+  const capturedMetadata = await stat(sourcePath, { bigint: true });
+
+  let interruptAfterCapture = true;
+  const config = createPhysicalSourceGenerationTestConfig(dataDirectory, sessionsDirectory);
+  const service = createRecallConversationService(config, {
+    loadTokenizer: async () => tokenizer,
+    rerankingProfile: null,
+    reranker: null,
+    workerSignal: { signalDetachedWorker() {} },
+    async fixedSnapshotBuildFault(stage) {
+      if (stage === 'after-snapshot-capture' && interruptAfterCapture) {
+        interruptAfterCapture = false;
+        await rm(sourcePath);
+        throw new Error('fixture removed source after snapshot capture');
+      }
+    },
+  });
+
+  const generationId = 'generation_removed_after_snapshot_capture';
+  await assert.rejects(
+    service.createRecallGenerationFromPhysicalSources({
+      generationId,
+      physicalSessionPaths: [sourcePath],
+    }),
+    /fixture removed source after snapshot capture/u,
+  );
+
+  const resumed = await service.createRecallGenerationFromPhysicalSources({
+    generationId,
+    physicalSessionPaths: [sourcePath],
+    resumeExistingGeneration: true,
+  });
+  assert.deepEqual(await service.openValidatedRecallGeneration(generationId), resumed);
+  assert.ok(
+    (await service.searchRecallGenerationLexical(generationId, 'CAPTURED_SOURCE_NEEDLE', 10))
+      .length > 0,
+  );
+
+  const expectedSource = resolveRecallPhysicalSourceIdentity(sessionsDirectory, sourcePath);
+  const projectionStore = ZVecOpen(
+    join(config.generationRootDirectory, generationId, 'session-projections'),
+    { readOnly: true },
+  );
+  try {
+    const projectionRows = await projectionStore.query({
+      filter: "projectionKind = 'physical_session'",
+      topk: 1,
+      outputFields: ['physicalSourceIdentity', 'projectionJson'],
+      includeVector: false,
+    });
+    const projectionRow = projectionRows[0];
+    assert.ok(projectionRow);
+    assert.equal(
+      projectionRow.fields.physicalSourceIdentity,
+      expectedSource.physicalSourceIdentity,
+    );
+    const projection: unknown = JSON.parse(String(projectionRow.fields.projectionJson));
+    assert.ok(isUnknownRecord(projection));
+    const physicalSource: unknown = projection.physicalSource;
+    assert.deepEqual(physicalSource, expectedSource);
+    const ingestionProjectionPayload: unknown = projection.ingestionProjectionPayload;
+    assert.ok(isUnknownRecord(ingestionProjectionPayload));
+    const ingestionProjection: unknown = JSON.parse(
+      String(ingestionProjectionPayload.projectionJson),
+    );
+    assert.ok(isUnknownRecord(ingestionProjection));
+    assert.equal(ingestionProjection.sourcePath, sourcePath);
+    assert.equal(ingestionProjection.sourceDevice, capturedMetadata.dev.toString());
+    assert.equal(ingestionProjection.sourceInode, capturedMetadata.ino.toString());
+  } finally {
+    projectionStore.closeSync();
+  }
 });
 
 void test('configured service resumes one fixed source snapshot after an interrupted dense write', async (t) => {

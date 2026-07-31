@@ -1,6 +1,5 @@
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { stat } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { ZVecIndexType, ZVecOpen } from '@zvec/zvec';
@@ -145,6 +144,14 @@ export interface RecallGenerationDenseExpectation {
   id: string;
   fields: Record<string, unknown>;
   embeddingInput: string;
+}
+
+/** Captured source bytes and metadata that remain authoritative after snapshot capture. */
+export interface CapturedRecallPhysicalSource {
+  sourceReadPath: string;
+  sourceByteSize: number;
+  sourceDevice: string;
+  sourceInode: string;
 }
 
 /** Exact target rows captured from one canonical physical-source import. */
@@ -298,27 +305,23 @@ export async function materializeRecallPhysicalSourceGeneration(
   config: Readonly<RecallCoherentGenerationConfig>,
   generationId: string,
   physicalSessionPath: string,
+  capturedSource: Readonly<CapturedRecallPhysicalSource>,
   dependencies: Readonly<RecallPhysicalSourceGenerationDependencies>,
-  sourceReadPath = physicalSessionPath,
 ): Promise<MaterializedRecallPhysicalSourceGeneration> {
   const physicalSource = resolveRecallPhysicalSourceIdentity(
     config.sessionsDirectory,
     physicalSessionPath,
   );
-  const [sourceByteSize, physicalSourceMetadata] = await Promise.all([
-    stat(sourceReadPath).then(({ size }) => size),
-    stat(physicalSessionPath, { bigint: true }),
-  ]);
-  const imported = await readSessionConversationImport(sourceReadPath, {
+  const imported = await readSessionConversationImport(capturedSource.sourceReadPath, {
     tokenizer: dependencies.tokenizer,
     ...(config.chunkPolicy ?? {}),
   });
   const sourceProjections = await createRecallSessionProjectionBaselineFromImport({
-    physicalSessionPath: sourceReadPath,
+    physicalSessionPath: capturedSource.sourceReadPath,
     generationId,
     tokenizer: dependencies.tokenizer,
     ...(config.chunkPolicy ? { chunkPolicy: config.chunkPolicy } : {}),
-    expectedSourceByteSize: sourceByteSize,
+    expectedSourceByteSize: capturedSource.sourceByteSize,
     imported,
   });
   const logicalProjections = sourceProjections.filter(
@@ -337,8 +340,8 @@ export async function materializeRecallPhysicalSourceGeneration(
   const targetPhysicalProjection: PhysicalSessionProjection = {
     ...physicalProjection,
     sourcePath: physicalSessionPath,
-    sourceDevice: physicalSourceMetadata.dev.toString(),
-    sourceInode: physicalSourceMetadata.ino.toString(),
+    sourceDevice: capturedSource.sourceDevice,
+    sourceInode: capturedSource.sourceInode,
   };
   const lexicalSource: MaterializedRecallPhysicalSourceGeneration['lexicalSource'] = [];
   const denseInputs: Array<{
@@ -696,7 +699,7 @@ export async function materializeRecallPhysicalSourceGeneration(
         generationId,
         projectionKind: RecallSessionProjectionKind.PHYSICAL_SESSION,
         physicalSource,
-        sourceByteSize,
+        sourceByteSize: capturedSource.sourceByteSize,
         logicalSessionOccurrenceIds,
         expectedMembership: {
           lexicalSource: createRecallPhysicalSourceStoreMembership(

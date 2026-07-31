@@ -1,0 +1,233 @@
+{
+  "version": 1,
+  "candidateCommit": "2552424196434a368e62448c78be7b8d69ff5aa9",
+  "completedAt": "2026-07-31T02:49:42.361Z",
+  "environment": {
+    "nodeVersion": "v24.16.0",
+    "platform": "linux",
+    "architecture": "x64",
+    "cpuModel": "AMD Ryzen 7 8845HS w/ Radeon 780M Graphics",
+    "zvecVersion": "0.6.0"
+  },
+  "certificationInputChecksum": "901d181bab9011cf21fd0bccb878de3275db15bd01f933daab80d0ee80359deb",
+  "commands": [
+    {
+      "name": "bootstrap interruption model",
+      "command": "/home/will/.local/share/mise/installs/node/24.16.0/bin/node --import tsx --test --test-name-pattern=replacement generation bootstrap interruption model src/build-recall-fixed-snapshot-generation.test.ts",
+      "durationMilliseconds": 1819.3024140000002,
+      "passed": true
+    },
+    {
+      "name": "malformed versus operational classification",
+      "command": "/home/will/.local/share/mise/installs/node/24.16.0/bin/node --import tsx --test --test-name-pattern=malformed-source skips once|parser-looking operational failures fatal|non-source failure category fatal src/recall-physical-source-generation.test.ts",
+      "durationMilliseconds": 1153.3714220000002,
+      "passed": true
+    },
+    {
+      "name": "incremental versus rebuild membership equivalence",
+      "command": "/home/will/.local/share/mise/installs/node/24.16.0/bin/node --import tsx --test --test-name-pattern=generated incremental append, replay, branch, and deletion schedules match fresh rebuild membership src/transfer-incremental-recall-work-plan.test.ts",
+      "durationMilliseconds": 5407.263454000001,
+      "passed": true
+    },
+    {
+      "name": "detached worker interruption and terminal resume",
+      "command": "/home/will/.local/share/mise/installs/node/24.16.0/bin/node --import tsx --test --test-name-pattern=crashed workers at every staging phase remain resumable and idempotent src/recall-background-index-conversation-service.test.ts",
+      "durationMilliseconds": 4278.086307,
+      "passed": true
+    },
+    {
+      "name": "operator CLI stop and terminal resume",
+      "command": "/home/will/.local/share/mise/installs/node/24.16.0/bin/node --import tsx --test --test-name-pattern=standalone rebuild stops, resumes the same snapshot, and discards inactive work src/pi-session-recall-cli.test.ts",
+      "durationMilliseconds": 3603.968044000001,
+      "passed": true
+    },
+    {
+      "name": "full test suite",
+      "command": "npm test",
+      "durationMilliseconds": 32528.672312999995,
+      "passed": true
+    },
+    {
+      "name": "typecheck",
+      "command": "npm run typecheck",
+      "durationMilliseconds": 4903.388232000005,
+      "passed": true
+    },
+    {
+      "name": "type-aware lint",
+      "command": "npm run lint",
+      "durationMilliseconds": 1456.3230449999974,
+      "passed": true
+    },
+    {
+      "name": "format check",
+      "command": "npm run format:check",
+      "durationMilliseconds": 607.5547440000009,
+      "passed": true
+    },
+    {
+      "name": "Git whitespace check",
+      "command": "git diff --check",
+      "durationMilliseconds": 3.347829999998794,
+      "passed": true
+    },
+    {
+      "name": "repository-required slop scan",
+      "command": "slop-scan delta --base <exact-base-worktree> --head \"$PWD\" --fail-on added,worsened",
+      "durationMilliseconds": 1971.5431289999979,
+      "passed": true
+    },
+    {
+      "name": "public service and real-zvec production-cardinality recovery preflight",
+      "command": "npm run evidence:generation-recovery",
+      "durationMilliseconds": 325735.774293,
+      "passed": true
+    }
+  ],
+  "preflightDurationMilliseconds": 325735.774293,
+  "productionFailureBoundary": 119662,
+  "preflight": {
+    "logicalSessionCount": 119663,
+    "sourceSnapshotChecksum": "7de03f3ead3522a622d9f24bd6843ebcebfa871f30797432e0243678b04cc5e2",
+    "uninterrupted": {
+      "manifestFingerprint": "56c0013a66586febb119dc1870015e1e406605ab2b1ff53187a540b421a53017",
+      "embeddingProfileId": "embedding-profile-b792b064200a2f84447527b7ecc8b076866e170003ae72c79c642b04608f068e",
+      "startingSnapshotFingerprint": "06eadab30ccbf4d51bc97a029874b298bb08eed3e76b633c68baf4d75d58295a",
+      "storeCounts": {
+        "lexicalSource": 239328,
+        "dense": 119664,
+        "sessionProjection": 119785
+      },
+      "exactMembership": {
+        "lexicalSource": {
+          "count": 239328,
+          "digest": "36e0f2283963ae65bb23cdebd6ecea79ef9c7889dc7e4cd87726608ca4ee9e23"
+        },
+        "dense": {
+          "count": 119664,
+          "digest": "2bdff5f46d8a1d7271f17df1a4817bd6fa0c9263463246f1d3a60b5de88c9e64"
+        },
+        "sessionProjection": {
+          "count": 119785,
+          "digest": "409d4f9ce3fac2622ead51e14bb48959840a852475d425b1dec6e9df58050e27"
+        }
+      },
+      "receipt": {
+        "manifestFingerprint": "56c0013a66586febb119dc1870015e1e406605ab2b1ff53187a540b421a53017",
+        "startingSnapshot": {
+          "version": 1,
+          "fingerprint": "06eadab30ccbf4d51bc97a029874b298bb08eed3e76b633c68baf4d75d58295a",
+          "physicalSourceCount": 121,
+          "logicalSessionOccurrenceCount": 119664
+        },
+        "exactMembership": {
+          "lexicalSource": {
+            "count": 239328,
+            "digest": "36e0f2283963ae65bb23cdebd6ecea79ef9c7889dc7e4cd87726608ca4ee9e23"
+          },
+          "dense": {
+            "count": 119664,
+            "digest": "2bdff5f46d8a1d7271f17df1a4817bd6fa0c9263463246f1d3a60b5de88c9e64"
+          },
+          "sessionProjection": {
+            "count": 119785,
+            "digest": "409d4f9ce3fac2622ead51e14bb48959840a852475d425b1dec6e9df58050e27"
+          }
+        },
+        "validationPolicyVersion": 1,
+        "canaryResults": {
+          "storeSchemas": "passed",
+          "storeIdentities": "passed",
+          "exactMembership": "passed"
+        }
+      },
+      "onDiskBytes": 3137622909
+    },
+    "interrupted": {
+      "manifestFingerprint": "56c0013a66586febb119dc1870015e1e406605ab2b1ff53187a540b421a53017",
+      "embeddingProfileId": "embedding-profile-b792b064200a2f84447527b7ecc8b076866e170003ae72c79c642b04608f068e",
+      "startingSnapshotFingerprint": "06eadab30ccbf4d51bc97a029874b298bb08eed3e76b633c68baf4d75d58295a",
+      "storeCounts": {
+        "lexicalSource": 239328,
+        "dense": 119664,
+        "sessionProjection": 119785
+      },
+      "exactMembership": {
+        "lexicalSource": {
+          "count": 239328,
+          "digest": "36e0f2283963ae65bb23cdebd6ecea79ef9c7889dc7e4cd87726608ca4ee9e23"
+        },
+        "dense": {
+          "count": 119664,
+          "digest": "2bdff5f46d8a1d7271f17df1a4817bd6fa0c9263463246f1d3a60b5de88c9e64"
+        },
+        "sessionProjection": {
+          "count": 119785,
+          "digest": "409d4f9ce3fac2622ead51e14bb48959840a852475d425b1dec6e9df58050e27"
+        }
+      },
+      "receipt": {
+        "manifestFingerprint": "56c0013a66586febb119dc1870015e1e406605ab2b1ff53187a540b421a53017",
+        "startingSnapshot": {
+          "version": 1,
+          "fingerprint": "06eadab30ccbf4d51bc97a029874b298bb08eed3e76b633c68baf4d75d58295a",
+          "physicalSourceCount": 121,
+          "logicalSessionOccurrenceCount": 119664
+        },
+        "exactMembership": {
+          "lexicalSource": {
+            "count": 239328,
+            "digest": "36e0f2283963ae65bb23cdebd6ecea79ef9c7889dc7e4cd87726608ca4ee9e23"
+          },
+          "dense": {
+            "count": 119664,
+            "digest": "2bdff5f46d8a1d7271f17df1a4817bd6fa0c9263463246f1d3a60b5de88c9e64"
+          },
+          "sessionProjection": {
+            "count": 119785,
+            "digest": "409d4f9ce3fac2622ead51e14bb48959840a852475d425b1dec6e9df58050e27"
+          }
+        },
+        "validationPolicyVersion": 1,
+        "canaryResults": {
+          "storeSchemas": "passed",
+          "storeIdentities": "passed",
+          "exactMembership": "passed"
+        }
+      },
+      "onDiskBytes": 3137637866
+    },
+    "fixedSnapshot": {
+      "originalCardinalitySourceRemoved": true,
+      "originalRetainedSourceChanged": true,
+      "retainedOriginalEvidenceFound": true,
+      "changedReplacementEvidenceFound": false
+    },
+    "interruptions": {
+      "bootstrapSnapshotCapture": "resumed",
+      "physicalSourceCheckpoint": "resumed"
+    },
+    "failureClassification": {
+      "malformedSourceSkipped": true,
+      "operationalFailureFatal": true,
+      "implementationFailureFatal": true
+    },
+    "sourceSafety": {
+      "originalPiSessionFilesAccessed": false,
+      "liveRecallGenerationAccessed": false,
+      "productionActivationPerformed": false,
+      "octenEndpointAccessed": false
+    }
+  },
+  "incrementalVsRebuildMembershipEquivalent": true,
+  "detachedWorkerReachedTerminalValidation": true,
+  "operatorCliStopResumeReachedReady": true,
+  "passed": true,
+  "safety": {
+    "originalPiSessionFilesAccessed": false,
+    "liveRecallGenerationAccessed": false,
+    "productionActivationPerformed": false,
+    "octenEndpointAccessed": false,
+    "disposableStorageOnly": true
+  }
+}

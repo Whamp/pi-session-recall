@@ -14,7 +14,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { ZVecOpen } from '@zvec/zvec';
+import { ZVecOpen, type ZVecCollection } from '@zvec/zvec';
+import fc from 'fast-check';
 
 import type { RecallConversationConfig } from './recall-conversation-config.js';
 import { createRecallConversationService } from './recall-conversation-service.js';
@@ -24,8 +25,15 @@ import {
   RecallGenerationCutoverState,
   RecallIncrementalTransferOutcomeKind,
   RecallSearchScope,
+  RecallSessionProjectionKind,
   RecallWorkMarkerTrigger,
 } from './enums.js';
+import { isUnknownRecord } from './is-unknown-record.js';
+import {
+  createRecallPhysicalSourceStoreMembership,
+  parseRecallGenerationPhysicalProjectionArtifact,
+  type RecallPhysicalSourceExpectedMembership,
+} from './recall-generation-physical-projection.js';
 import {
   createRecallActiveGenerationPointer,
   RECALL_GENERATION_REGISTRY_VERSION,
@@ -36,9 +44,17 @@ import {
   createOctenEmbeddingModelProfile,
   createRecallEmbeddingProfileIdentity,
 } from './recall-model-profiles.js';
+import {
+  decodeRecallSessionProjection,
+  type RecallMarkerCheckpoint,
+} from './recall-session-projection.js';
 import { createRecallWorkMarkerId, type RecallWorkMarker } from './recall-work-marker.js';
 import { resolveRecallPhysicalSourceIdentity } from './recall-source-identity.js';
 import { normalizeRecallProjectLineages } from './resolve-project-identity.js';
+import {
+  type ExactZvecDocumentEnumeration,
+  visitExactZvecDocuments,
+} from './visit-exact-zvec-documents.js';
 
 function createTransferTestConfig(root: string): RecallConversationConfig {
   const dataDirectory = join(root, 'recall');
@@ -491,6 +507,62 @@ void test('configured transfer appends target evidence before acknowledging its 
     5,
   );
   assert.equal(appendedLexical[0]?.content, 'bounded append replay evidence');
+  const generationDirectoryAfterAppend = join(config.generationRootDirectory, generationId);
+  const lexicalSourceAfterAppend = ZVecOpen(
+    join(generationDirectoryAfterAppend, 'lexical-source'),
+    { readOnly: true },
+  );
+  const denseAfterAppend = ZVecOpen(join(generationDirectoryAfterAppend, 'dense'), {
+    readOnly: true,
+  });
+  const projectionsAfterAppend = ZVecOpen(
+    join(generationDirectoryAfterAppend, 'session-projections'),
+    { readOnly: true },
+  );
+  try {
+    const physicalProjectionRow = projectionsAfterAppend.fetchSync({
+      ids: [
+        `projection_${
+          resolveRecallPhysicalSourceIdentity(config.sessionsDirectory, physicalSessionPath)
+            .physicalSourceIdentity
+        }`,
+      ],
+      outputFields: ['projectionJson'],
+      includeVector: false,
+    });
+    const [projection] = Object.values(physicalProjectionRow);
+    assert.ok(projection);
+    const artifact = parseRecallGenerationPhysicalProjectionArtifact(
+      projection.fields.projectionJson,
+      generationId,
+    );
+    const lexicalRows = await lexicalSourceAfterAppend.query({
+      topk: lexicalSourceAfterAppend.stats.docCount,
+      outputFields: [],
+      includeVector: false,
+    });
+    const denseRows = await denseAfterAppend.query({
+      topk: denseAfterAppend.stats.docCount,
+      outputFields: [],
+      includeVector: false,
+    });
+    const projectionRows = await projectionsAfterAppend.query({
+      topk: projectionsAfterAppend.stats.docCount,
+      outputFields: [],
+      includeVector: false,
+    });
+    assert.deepEqual(artifact.expectedMembership, {
+      lexicalSource: createRecallPhysicalSourceStoreMembership(lexicalRows.map(({ id }) => id)),
+      dense: createRecallPhysicalSourceStoreMembership(denseRows.map(({ id }) => id)),
+      sessionProjection: createRecallPhysicalSourceStoreMembership(
+        projectionRows.map(({ id }) => id),
+      ),
+    });
+  } finally {
+    projectionsAfterAppend.closeSync();
+    denseAfterAppend.closeSync();
+    lexicalSourceAfterAppend.closeSync();
+  }
 
   await appendFile(
     physicalSessionPath,
@@ -923,4 +995,388 @@ void test('configured transfer appends target evidence before acknowledging its 
       collection.closeSync();
     }
   }
+});
+
+interface ExactPhysicalSourceState {
+  recordIds: {
+    lexicalSource: string[];
+    dense: string[];
+    sessionProjection: string[];
+  };
+  expectedMembership: RecallPhysicalSourceExpectedMembership | null;
+  markerCheckpoint: RecallMarkerCheckpoint | null;
+}
+
+function listExactFixtureRecordIds(
+  collection: ZVecCollection,
+  enumerations: readonly ExactZvecDocumentEnumeration[],
+): string[] {
+  const recordIds: string[] = [];
+  for (const enumeration of enumerations) {
+    visitExactZvecDocuments(collection, enumeration, ({ id }) => recordIds.push(id));
+  }
+  return recordIds.toSorted((left, right) => left.localeCompare(right));
+}
+
+function readExactPhysicalSourceState(
+  generationDirectory: string,
+  generationId: string,
+  physicalSourceIdentity: string,
+): ExactPhysicalSourceState {
+  const sourceFilter = `physicalSourceIdentity = '${physicalSourceIdentity}'`;
+  const lexicalSource = ZVecOpen(join(generationDirectory, 'lexical-source'), {
+    readOnly: true,
+  });
+  const dense = ZVecOpen(join(generationDirectory, 'dense'), { readOnly: true });
+  const sessionProjection = ZVecOpen(join(generationDirectory, 'session-projections'), {
+    readOnly: true,
+  });
+  try {
+    const recordIds = {
+      lexicalSource: listExactFixtureRecordIds(lexicalSource, [
+        {
+          filter: `(${sourceFilter}) AND (recordKind = 'entry-anchor')`,
+          uniquePartitionField: 'entryAnchorId',
+          outputFields: [],
+        },
+        {
+          filter: `(${sourceFilter}) AND (recordKind = 'evidence')`,
+          uniquePartitionField: 'evidenceOccurrenceId',
+          outputFields: [],
+        },
+      ]),
+      dense: listExactFixtureRecordIds(dense, [
+        {
+          filter: sourceFilter,
+          uniquePartitionField: 'evidenceOccurrenceId',
+          outputFields: [],
+        },
+      ]),
+      sessionProjection: listExactFixtureRecordIds(sessionProjection, [
+        {
+          filter: `(${sourceFilter}) AND (projectionKind = '${RecallSessionProjectionKind.PHYSICAL_SESSION}')`,
+          uniquePartitionField: 'physicalSourceIdentity',
+          outputFields: [],
+        },
+        {
+          filter: `(${sourceFilter}) AND (projectionKind = '${RecallSessionProjectionKind.LOGICAL_SESSION}')`,
+          uniquePartitionField: 'logicalSessionOccurrenceId',
+          outputFields: [],
+        },
+      ]),
+    };
+    const physicalProjectionRowId = `projection_${physicalSourceIdentity}`;
+    const physicalProjectionRow = sessionProjection.fetchSync({
+      ids: [physicalProjectionRowId],
+      outputFields: ['projectionJson'],
+      includeVector: false,
+    })[physicalProjectionRowId];
+    if (physicalProjectionRow === undefined) {
+      return { recordIds, expectedMembership: null, markerCheckpoint: null };
+    }
+    const artifact = parseRecallGenerationPhysicalProjectionArtifact(
+      physicalProjectionRow.fields.projectionJson,
+      generationId,
+    );
+    const projectionArtifact: unknown = JSON.parse(
+      String(physicalProjectionRow.fields.projectionJson),
+    );
+    assert.ok(isUnknownRecord(projectionArtifact));
+    const projection = decodeRecallSessionProjection(
+      projectionArtifact.ingestionProjectionPayload,
+      { expectedGenerationId: generationId },
+    );
+    assert.equal(projection.projectionKind, RecallSessionProjectionKind.PHYSICAL_SESSION);
+    return {
+      recordIds,
+      expectedMembership: artifact.expectedMembership,
+      markerCheckpoint: projection.markerCheckpoint,
+    };
+  } finally {
+    sessionProjection.closeSync();
+    dense.closeSync();
+    lexicalSource.closeSync();
+  }
+}
+
+function expectedMembershipForExactState(
+  state: ExactPhysicalSourceState,
+): RecallPhysicalSourceExpectedMembership {
+  return {
+    lexicalSource: createRecallPhysicalSourceStoreMembership(state.recordIds.lexicalSource),
+    dense: createRecallPhysicalSourceStoreMembership(state.recordIds.dense),
+    sessionProjection: createRecallPhysicalSourceStoreMembership(state.recordIds.sessionProjection),
+  };
+}
+
+void test('generated incremental append, replay, branch, and deletion schedules match fresh rebuild membership', async () => {
+  const scheduleArbitrary = fc.array(
+    fc.record({
+      parentOffset: fc.nat({ max: 8 }),
+      replay: fc.boolean(),
+      wordCount: fc.integer({ min: 1, max: 4 }),
+    }),
+    { minLength: 3, maxLength: 5 },
+  );
+
+  await fc.assert(
+    fc.asyncProperty(scheduleArbitrary, async (schedule) => {
+      const root = await mkdtemp(join(tmpdir(), 'recall-cumulative-membership-model-'));
+      try {
+        const config = createTransferTestConfig(root);
+        await Promise.all([
+          mkdir(config.sessionsDirectory, { recursive: true }),
+          mkdir(config.markerSpoolDirectory, { recursive: true }),
+        ]);
+        const profile = createOctenEmbeddingModelProfile(
+          {
+            requestModel: 'fixture-model',
+            servedModelId: 'fixture/model',
+            artifact: 'fixture-model.fp32',
+            artifactSha256: 'a'.repeat(64),
+            dimensions: 3,
+            quantization: 'fp32',
+            pooling: 'last',
+            normalization: 'l2',
+          },
+          2,
+        );
+        const service = createRecallConversationService(config, {
+          embeddingProfile: profile,
+          embeddingProvider: {
+            async embedDocuments(documents) {
+              return documents.map(() => [3, 0, 4]);
+            },
+            async embedQuery() {
+              return [3, 0, 4];
+            },
+          },
+          tokenizerIdentity: {
+            model: 'fixture-tokenizer',
+            revision: 'fixture-revision',
+            library: { name: 'fixture-tokenizer', version: '1' },
+            encodeOptions: { addSpecialTokens: false, returnTokenTypeIds: false },
+            assets: [{ fileName: 'tokenizer.json', sha256: 'b'.repeat(64) }],
+          },
+          async loadTokenizer() {
+            return {
+              encodeConversationText(text: string) {
+                return {
+                  ids: text
+                    .split(/\s+/u)
+                    .filter(Boolean)
+                    .map((word) => word.length),
+                };
+              },
+            };
+          },
+          rerankingProfile: null,
+          reranker: null,
+          workerSignal: { signalDetachedWorker() {} },
+        });
+        const incrementalGenerationId = 'generation_incremental_model';
+        const incrementalGeneration = await service.createEmptyRecallGeneration({
+          generationId: incrementalGenerationId,
+        });
+        const pointer = createRecallActiveGenerationPointer(incrementalGenerationId);
+        await writeRecallGenerationRegistry(config.generationRegistryPath, {
+          version: RECALL_GENERATION_REGISTRY_VERSION,
+          activeGenerationId: incrementalGenerationId,
+          buildingGenerationId: null,
+          rollbackGenerationId: null,
+          activePointerChecksum: pointer.checksum,
+          generations: [
+            {
+              generationId: incrementalGenerationId,
+              state: RecallGenerationCutoverState.ACTIVE,
+              embeddingProfileId: createRecallEmbeddingProfileIdentity(profile),
+              indexManifestVersion: 6,
+              markerSchemaVersion: 1,
+              sessionProjectionSchemaVersion: 3,
+              indexManifestFingerprint: incrementalGeneration.manifestFingerprint,
+              rebuildStartedAtEpochMilliseconds: 1,
+              stateChangedAtEpochMilliseconds: 2,
+              rebuildStartMarkerId: null,
+              validatedAtEpochMilliseconds: 2,
+            },
+          ],
+        });
+        await writeRecallActiveGenerationPointer(config.activeGenerationPointerPath, pointer);
+
+        const physicalSessionId = 'model-session';
+        const physicalSessionPath = join(config.sessionsDirectory, 'model.jsonl');
+        await writeFile(
+          physicalSessionPath,
+          `${JSON.stringify({
+            type: 'session',
+            version: 3,
+            id: physicalSessionId,
+            timestamp: '2026-08-10T00:00:00.000Z',
+            cwd: '/fixture/project',
+          })}\n`,
+        );
+        const entryIds: string[] = [];
+        const markerIds: string[] = [];
+        const markerPaths: string[] = [];
+        for (const [index, operation] of schedule.entries()) {
+          const entryId = `model-entry-${index}`;
+          const parentId =
+            index === 0
+              ? null
+              : index === schedule.length - 1
+                ? entryIds[0]
+                : entryIds[operation.parentOffset % entryIds.length];
+          await appendFile(
+            physicalSessionPath,
+            `${JSON.stringify({
+              type: 'message',
+              id: entryId,
+              parentId,
+              timestamp: `2026-08-10T00:00:${String(index + 1).padStart(2, '0')}.000Z`,
+              message: {
+                role: 'assistant',
+                content: `model evidence ${index} ${'token '.repeat(operation.wordCount)}`,
+              },
+            })}\n`,
+          );
+          entryIds.push(entryId);
+          await utimes(physicalSessionPath, index + 1, index + 1);
+          const markerIdentity = {
+            version: 1,
+            physicalSessionId,
+            physicalSessionPath,
+            runtimeInstanceId: 'runtime-model',
+            runtimeSequence: index + 1,
+            createdAtEpochMilliseconds: (index + 1) * 1_000,
+            trigger: {
+              kind: RecallWorkMarkerTrigger.DEPARTURE,
+              logicalSessionId: physicalSessionId,
+              leafEntryId: entryId,
+            },
+          } as const;
+          const marker: RecallWorkMarker = {
+            ...markerIdentity,
+            markerId: createRecallWorkMarkerId(markerIdentity),
+          };
+          markerIds.push(marker.markerId);
+          const markerPath = join(config.markerSpoolDirectory, `${marker.markerId}.json`);
+          markerPaths.push(markerPath);
+          const workPlan = {
+            targetGenerationId: incrementalGenerationId,
+            markerSpoolDirectory: config.markerSpoolDirectory,
+            discoveredMarkerCount: 1,
+            sourceMarkerIds: [marker.markerId],
+            workItems: [{ marker, coveredMarkerIds: [marker.markerId] }],
+            quarantineDiagnostics: [],
+          };
+          await writeFile(markerPath, '{}\n');
+          const outcome = await service.transferIncrementalRecallWorkPlan(workPlan);
+          assert.equal(outcome.kind, RecallIncrementalTransferOutcomeKind.COMMITTED);
+          await assert.rejects(() => access(markerPath), { code: 'ENOENT' });
+          if (operation.replay) {
+            await writeFile(markerPath, '{}\n');
+            assert.deepEqual(await service.transferIncrementalRecallWorkPlan(workPlan), {
+              kind: RecallIncrementalTransferOutcomeKind.COMMITTED,
+              committedDocumentCount: 0,
+            });
+            await assert.rejects(() => access(markerPath), { code: 'ENOENT' });
+          }
+        }
+
+        const rebuiltGenerationId = 'generation_rebuilt_model';
+        await service.createRecallGenerationFromPhysicalSources({
+          generationId: rebuiltGenerationId,
+          physicalSessionPaths: [physicalSessionPath],
+        });
+        const physicalSourceIdentity = resolveRecallPhysicalSourceIdentity(
+          config.sessionsDirectory,
+          physicalSessionPath,
+        ).physicalSourceIdentity;
+        const incrementalState = readExactPhysicalSourceState(
+          join(config.generationRootDirectory, incrementalGenerationId),
+          incrementalGenerationId,
+          physicalSourceIdentity,
+        );
+        const rebuiltState = readExactPhysicalSourceState(
+          join(config.generationRootDirectory, rebuiltGenerationId),
+          rebuiltGenerationId,
+          physicalSourceIdentity,
+        );
+        assert.deepEqual(incrementalState.recordIds, rebuiltState.recordIds);
+        assert.deepEqual(
+          incrementalState.expectedMembership,
+          expectedMembershipForExactState(incrementalState),
+        );
+        assert.deepEqual(
+          rebuiltState.expectedMembership,
+          expectedMembershipForExactState(rebuiltState),
+        );
+        assert.deepEqual(incrementalState.markerCheckpoint, {
+          generationId: incrementalGenerationId,
+          coveredMarkerIds: markerIds.toSorted(),
+          runtimeSequences: [{ runtimeInstanceId: 'runtime-model', sequence: schedule.length }],
+        });
+        for (const markerPath of markerPaths) {
+          await assert.rejects(() => access(markerPath), { code: 'ENOENT' });
+        }
+
+        await service.transferIncrementalRecallWorkPlan({
+          confirmedPhysicalSourceDeletion: {
+            targetGenerationId: incrementalGenerationId,
+            physicalSourceIdentity,
+          },
+        });
+        await rm(physicalSessionPath);
+        const controlPhysicalSessionPath = join(config.sessionsDirectory, 'control.jsonl');
+        await writeFile(
+          controlPhysicalSessionPath,
+          `${[
+            {
+              type: 'session',
+              version: 3,
+              id: 'control-session',
+              timestamp: '2026-08-10T01:00:00.000Z',
+              cwd: '/fixture/project',
+            },
+            {
+              type: 'message',
+              id: 'control-entry',
+              parentId: null,
+              timestamp: '2026-08-10T01:00:01.000Z',
+              message: { role: 'assistant', content: 'surviving control evidence' },
+            },
+          ]
+            .map((record) => JSON.stringify(record))
+            .join('\n')}\n`,
+        );
+        const rebuiltAfterDeletionGenerationId = 'generation_rebuilt_after_deletion_model';
+        await service.createRecallGenerationFromPhysicalSources({
+          generationId: rebuiltAfterDeletionGenerationId,
+          physicalSessionPaths: [controlPhysicalSessionPath],
+        });
+        const incrementalAfterDeletion = readExactPhysicalSourceState(
+          join(config.generationRootDirectory, incrementalGenerationId),
+          incrementalGenerationId,
+          physicalSourceIdentity,
+        );
+        const rebuiltAfterDeletion = readExactPhysicalSourceState(
+          join(config.generationRootDirectory, rebuiltAfterDeletionGenerationId),
+          rebuiltAfterDeletionGenerationId,
+          physicalSourceIdentity,
+        );
+        assert.deepEqual(incrementalAfterDeletion, rebuiltAfterDeletion);
+        assert.deepEqual(incrementalAfterDeletion, {
+          recordIds: { lexicalSource: [], dense: [], sessionProjection: [] },
+          expectedMembership: null,
+          markerCheckpoint: null,
+        });
+        for (const markerPath of markerPaths) {
+          await assert.rejects(() => access(markerPath), { code: 'ENOENT' });
+        }
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    }),
+    { numRuns: 5 },
+  );
 });

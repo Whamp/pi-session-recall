@@ -26,7 +26,11 @@ import {
   createRecallGenerationManifest,
   readRecallGenerationManifest,
 } from './recall-generation-manifest.js';
-import { createRecallPhysicalSourceStoreMembership } from './recall-generation-physical-projection.js';
+import {
+  createRecallPhysicalSourceStoreMembership,
+  parseRecallGenerationPhysicalProjectionArtifact,
+  type RecallPhysicalSourceExpectedMembership,
+} from './recall-generation-physical-projection.js';
 import {
   createRecallGenerationComponentPaths,
   readRecallGenerationVectorValues,
@@ -95,6 +99,12 @@ interface PreparedTargetRecallTransfer {
   denseRows: RecallGenerationDenseRow[];
   logicalProjectionRows: RecallGenerationScalarRow[];
   physicalProjectionRow: RecallGenerationScalarRow;
+}
+
+interface PhysicalSourceRecordIds {
+  lexicalSource: string[];
+  dense: string[];
+  sessionProjection: string[];
 }
 
 interface IncrementalRecallTransferServices {
@@ -605,6 +615,7 @@ async function materializePreparedTargetTransfer(
   physicalSource: RecallPhysicalSourceIdentity,
   physicalProjection: PhysicalSessionProjection,
   logicalProjections: LogicalSessionProjection[],
+  currentRecordIds: PhysicalSourceRecordIds,
   eligibleSessions: readonly Readonly<{
     graphView: Awaited<ReturnType<typeof materializeIncrementalRecallEligibleGraphView>>;
     logicalProjection: LogicalSessionProjection;
@@ -934,14 +945,19 @@ async function materializePreparedTargetTransfer(
             projection.headerDescriptor.sourceLine,
           ),
         ),
-        expectedMembership: {
-          lexicalSource: createRecallPhysicalSourceStoreMembership(lexicalRows.map(({ id }) => id)),
-          dense: createRecallPhysicalSourceStoreMembership(denseRows.map(({ id }) => id)),
-          sessionProjection: createRecallPhysicalSourceStoreMembership([
-            ...logicalProjectionRows.map(({ id }) => id),
-            `projection_${physicalSource.physicalSourceIdentity}`,
-          ]),
-        },
+        expectedMembership: createPhysicalSourceExpectedMembership({
+          lexicalSource: [
+            ...new Set([...currentRecordIds.lexicalSource, ...lexicalRows.map(({ id }) => id)]),
+          ],
+          dense: [...new Set([...currentRecordIds.dense, ...denseRows.map(({ id }) => id)])],
+          sessionProjection: [
+            ...new Set([
+              ...currentRecordIds.sessionProjection,
+              ...logicalProjectionRows.map(({ id }) => id),
+              `projection_${physicalSource.physicalSourceIdentity}`,
+            ]),
+          ],
+        }),
         ingestionProjectionPayload: encodedPhysical.payload,
       }),
     },
@@ -1114,6 +1130,19 @@ async function recoverPendingIncrementalTransfer(
         verifyRows(reopenedLexical, 'recovery lexical/source checkpoint', lexicalRows);
         verifyRows(reopenedDense, 'recovery dense checkpoint', denseRows);
         verifyRows(reopenedProjection, 'recovery projection checkpoint', projectionRows);
+        if (
+          projectionRows.some(
+            ({ fields }) => fields.projectionKind === RecallSessionProjectionKind.PHYSICAL_SESSION,
+          )
+        ) {
+          verifyPhysicalSourceExpectedMembership(
+            reopenedLexical,
+            reopenedDense,
+            reopenedProjection,
+            generationId,
+            physicalSourceIdentity,
+          );
+        }
       } finally {
         reopenedProjection.closeSync();
         reopenedDense.closeSync();
@@ -1299,6 +1328,15 @@ async function commitPreparedTargetTransfer(
           verifyRows(reopenedLexical, 'lexical/source checkpoint', lexicalBatch);
           verifyRows(reopenedDense, 'dense checkpoint', denseBatch);
           verifyRows(reopenedProjection, 'projection checkpoint', projectionRows);
+          if (finalWindow) {
+            verifyPhysicalSourceExpectedMembership(
+              reopenedLexical,
+              reopenedDense,
+              reopenedProjection,
+              generationId,
+              prepared.physicalSource.physicalSourceIdentity,
+            );
+          }
           await invokeIncrementalTransferFault(
             options,
             'after-reopened-verification',
@@ -1409,6 +1447,109 @@ function listPhysicalSourceRecordIds(
     visitExactZvecDocuments(collection, enumeration, ({ id }) => recordIds.push(id));
   }
   return recordIds.toSorted((left, right) => left.localeCompare(right));
+}
+
+function createPhysicalSourceExpectedMembership(
+  recordIds: PhysicalSourceRecordIds,
+): RecallPhysicalSourceExpectedMembership {
+  return {
+    lexicalSource: createRecallPhysicalSourceStoreMembership(recordIds.lexicalSource),
+    dense: createRecallPhysicalSourceStoreMembership(recordIds.dense),
+    sessionProjection: createRecallPhysicalSourceStoreMembership(recordIds.sessionProjection),
+  };
+}
+
+function assertPhysicalSourceMembershipMatches(
+  actualRecordIds: PhysicalSourceRecordIds,
+  expectedMembership: RecallPhysicalSourceExpectedMembership,
+  responsibility: string,
+): void {
+  const actualMembership = createPhysicalSourceExpectedMembership(actualRecordIds);
+  for (const store of ['lexicalSource', 'dense', 'sessionProjection'] as const) {
+    const actual = actualMembership[store];
+    const expected = expectedMembership[store];
+    if (
+      actual.count !== expected.count ||
+      actual.digest !== expected.digest ||
+      actual.canaryRecordId !== expected.canaryRecordId
+    ) {
+      throw new Error(`Recall target incremental ${responsibility} ${store} membership mismatch`);
+    }
+  }
+}
+
+function readPhysicalSourceRecordIds(
+  paths: ReturnType<typeof createRecallGenerationComponentPaths>,
+  physicalSourceIdentity: string,
+): PhysicalSourceRecordIds {
+  const lexicalSource = ZVecOpen(paths.lexicalSourceStorePath, { readOnly: true });
+  const dense = ZVecOpen(paths.denseStorePath, { readOnly: true });
+  const sessionProjection = ZVecOpen(paths.sessionProjectionStorePath, { readOnly: true });
+  try {
+    return {
+      lexicalSource: listPhysicalSourceRecordIds(
+        lexicalSource,
+        physicalSourceIdentity,
+        'lexical-source',
+      ),
+      dense: listPhysicalSourceRecordIds(dense, physicalSourceIdentity, 'dense-evidence'),
+      sessionProjection: listPhysicalSourceRecordIds(
+        sessionProjection,
+        physicalSourceIdentity,
+        'session-projection',
+      ),
+    };
+  } finally {
+    sessionProjection.closeSync();
+    dense.closeSync();
+    lexicalSource.closeSync();
+  }
+}
+
+function verifyPhysicalSourceExpectedMembership(
+  lexicalSource: ZVecCollection,
+  dense: ZVecCollection,
+  sessionProjection: ZVecCollection,
+  generationId: string,
+  physicalSourceIdentity: string,
+): void {
+  const physicalProjectionRowId = `projection_${physicalSourceIdentity}`;
+  const physicalProjectionRow = sessionProjection.fetchSync({
+    ids: [physicalProjectionRowId],
+    outputFields: ['projectionJson'],
+    includeVector: false,
+  })[physicalProjectionRowId];
+  if (physicalProjectionRow === undefined) {
+    throw new Error(
+      'Recall target incremental physical projection missing during membership verification',
+    );
+  }
+  const artifact = parseRecallGenerationPhysicalProjectionArtifact(
+    physicalProjectionRow.fields.projectionJson,
+    generationId,
+  );
+  if (artifact.physicalSourceIdentity !== physicalSourceIdentity) {
+    throw new Error(
+      'Recall target incremental physical projection identity mismatch during membership verification',
+    );
+  }
+  assertPhysicalSourceMembershipMatches(
+    {
+      lexicalSource: listPhysicalSourceRecordIds(
+        lexicalSource,
+        physicalSourceIdentity,
+        'lexical-source',
+      ),
+      dense: listPhysicalSourceRecordIds(dense, physicalSourceIdentity, 'dense-evidence'),
+      sessionProjection: listPhysicalSourceRecordIds(
+        sessionProjection,
+        physicalSourceIdentity,
+        'session-projection',
+      ),
+    },
+    artifact.expectedMembership,
+    'reopened projection',
+  );
 }
 
 function parseRecoveryRecordIds(value: unknown, fieldName: string): string[] {
@@ -1788,6 +1929,10 @@ export async function transferIncrementalRecallWorkPlan(
     return recovered;
   }
   const current = readCurrentTargetProjections(options, physicalSource.physicalSourceIdentity);
+  const currentRecordIds = readPhysicalSourceRecordIds(
+    paths,
+    physicalSource.physicalSourceIdentity,
+  );
   const physicalProjection =
     current.physicalProjection ??
     (await createInitialRecallPhysicalProjection({
@@ -1875,6 +2020,7 @@ export async function transferIncrementalRecallWorkPlan(
     physicalSource,
     projectedPhysical,
     projectedLogical,
+    currentRecordIds,
     eligibleSessions,
     tokenizer,
   );

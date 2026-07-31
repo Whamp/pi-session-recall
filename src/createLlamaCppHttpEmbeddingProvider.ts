@@ -1,3 +1,5 @@
+import { setTimeout as wait } from 'node:timers/promises';
+
 import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 
@@ -5,6 +7,7 @@ import type { RecallEmbeddingProvider } from './recall-inference-capabilities.js
 import type { RecallEmbeddingModelProfile } from './recall-model-profiles.js';
 
 const DEFAULT_LLAMA_CPP_HTTP_EMBEDDING_REQUEST_TIMEOUT_MILLISECONDS = 60_000;
+const LLAMA_CPP_HTTP_EMBEDDING_TRANSPORT_RETRY_DELAYS_MILLISECONDS = [100, 500] as const;
 
 const llamaCppHttpEmbeddingResponseSchema = Type.Object({
   data: Type.Array(
@@ -60,30 +63,54 @@ export function createLlamaCppHttpEmbeddingProvider(
     const vectors: number[][] = [];
     for (let start = 0; start < texts.length; start += batchSize) {
       const input = texts.slice(start, start + batchSize);
-      const timeoutSignal = AbortSignal.timeout(requestTimeoutMilliseconds);
-      const requestSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
-      let response: Response;
-      try {
-        response = await fetch(endpoint, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ model: profile.identity.requestModel, input }),
-          signal: requestSignal,
-        });
-      } catch (error) {
-        if (timeoutSignal.aborted && !signal?.aborted) {
-          throw new Error(
-            `Recall llama.cpp HTTP embedding request timed out after ${requestTimeoutMilliseconds} ms at ${endpoint}`,
-            { cause: error },
-          );
+      let response: Response | undefined;
+      for (
+        let attempt = 0;
+        attempt <= LLAMA_CPP_HTTP_EMBEDDING_TRANSPORT_RETRY_DELAYS_MILLISECONDS.length;
+        attempt += 1
+      ) {
+        const timeoutSignal = AbortSignal.timeout(requestTimeoutMilliseconds);
+        const requestSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+        try {
+          response = await fetch(endpoint, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ model: profile.identity.requestModel, input }),
+            signal: requestSignal,
+          });
+          break;
+        } catch (error) {
+          if (timeoutSignal.aborted && !signal?.aborted) {
+            throw new Error(
+              `Recall llama.cpp HTTP embedding request timed out after ${requestTimeoutMilliseconds} ms at ${endpoint}`,
+              { cause: error },
+            );
+          }
+          const retryDelayMilliseconds =
+            LLAMA_CPP_HTTP_EMBEDDING_TRANSPORT_RETRY_DELAYS_MILLISECONDS[attempt];
+          if (signal?.aborted || retryDelayMilliseconds === undefined) {
+            const message = error instanceof Error ? error.message : String(error);
+            throw new Error(
+              `Recall llama.cpp HTTP embedding request failed at ${endpoint}: ${message}`,
+              {
+                cause: error,
+              },
+            );
+          }
+          try {
+            await wait(retryDelayMilliseconds, undefined, { signal });
+          } catch (retryWaitError) {
+            const message =
+              retryWaitError instanceof Error ? retryWaitError.message : String(retryWaitError);
+            throw new Error(
+              `Recall llama.cpp HTTP embedding request failed at ${endpoint}: ${message}`,
+              { cause: retryWaitError },
+            );
+          }
         }
-        const message = error instanceof Error ? error.message : String(error);
-        throw new Error(
-          `Recall llama.cpp HTTP embedding request failed at ${endpoint}: ${message}`,
-          {
-            cause: error,
-          },
-        );
+      }
+      if (response === undefined) {
+        throw new Error(`Recall llama.cpp HTTP embedding request failed at ${endpoint}`);
       }
       if (!response.ok) {
         const body = await response.text();

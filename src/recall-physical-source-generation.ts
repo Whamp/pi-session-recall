@@ -124,17 +124,29 @@ const recallGenerationEvidenceRecordSchema = Type.Object(
   { additionalProperties: false },
 );
 
+/** Durable fixed-snapshot transitions available to process-death acceptance tests. */
+export type RecallFixedSnapshotBuildFaultStage =
+  | 'after-generation-directory-creation'
+  | 'after-bootstrap-state-write'
+  | 'after-manifest-write'
+  | 'after-lexical-source-store-creation'
+  | 'after-dense-store-creation'
+  | 'after-session-projection-store-creation'
+  | 'after-snapshot-source-directory-creation'
+  | 'after-expected-source-directory-creation'
+  | 'after-snapshot-source-write'
+  | 'after-snapshot-capture'
+  | 'after-dense-write'
+  | 'after-store-close'
+  | 'before-validation-receipt';
+
 /** Runtime dependencies needed to materialize and fault-probe a fixed source snapshot. */
 export interface RecallPhysicalSourceGenerationDependencies {
   tokenizer: ConversationTextTokenizer;
   embeddingProvider: RecallEmbeddingProvider;
   resolveProjectIdentity(workingDirectory: string): Promise<ResolvedProjectIdentity | null>;
   fixedSnapshotBuildFault?: (
-    stage:
-      | 'after-snapshot-capture'
-      | 'after-dense-write'
-      | 'after-store-close'
-      | 'before-validation-receipt',
+    stage: RecallFixedSnapshotBuildFaultStage,
     context: Readonly<{ generationDirectory: string; physicalSourceIdentity?: string }>,
   ) => void | Promise<void>;
 }

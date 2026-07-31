@@ -20,10 +20,10 @@ import {
   writeRecallGenerationManifest,
 } from './recall-generation-manifest.js';
 import {
-  createEmptyRecallGenerationStores,
   createRecallGenerationComponentPaths,
   createRecallGenerationStoreContracts,
   readRecallGenerationStoreRecordMembership,
+  resumeEmptyRecallGenerationStores,
   readRecallGenerationVectorValues,
   validateRecallGenerationDenseSubset,
   validateRecallGenerationStores,
@@ -39,6 +39,7 @@ import {
   type CapturedRecallPhysicalSource,
   type CreateRecallGenerationFromPhysicalSourcesOptions,
   type MaterializedRecallPhysicalSourceGeneration,
+  type RecallFixedSnapshotBuildFaultStage,
   type RecallGenerationDenseExpectation,
   type RecallPhysicalSourceGenerationDependencies,
 } from './recall-physical-source-generation.js';
@@ -50,6 +51,7 @@ import {
 
 const FIXED_SNAPSHOT_BUILD_VERSION = 1;
 const MAXIMUM_BUILD_WRITE_RECORDS = 32;
+const BOOTSTRAP_STATE_FILE = 'build-bootstrap.json';
 const SNAPSHOT_DESCRIPTOR_FILE = 'build-snapshot.json';
 const SNAPSHOT_SOURCE_DIRECTORY = 'build-sources';
 const EXPECTED_SOURCE_DIRECTORY = 'expected-sources';
@@ -61,6 +63,17 @@ interface RecallGenerationScalarRow {
 
 interface RecallGenerationDenseRow extends RecallGenerationScalarRow {
   vectors: { embedding: number[] };
+}
+
+interface RecallFixedSnapshotBootstrapSource {
+  physicalSourceIdentity: string;
+  sessionsRootRelativePath: string;
+}
+
+interface RecallFixedSnapshotBootstrapState {
+  version: 1;
+  generationId: string;
+  sources: RecallFixedSnapshotBootstrapSource[];
 }
 
 interface RecallFixedSnapshotSourceDescriptor {
@@ -117,6 +130,23 @@ const denseExpectationSchema = Type.Object(
     id: Type.String({ minLength: 1 }),
     fields: Type.Record(Type.String(), Type.Unknown()),
     embeddingInput: Type.String(),
+  },
+  { additionalProperties: false },
+);
+const fixedSnapshotBootstrapStateSchema = Type.Object(
+  {
+    version: Type.Literal(FIXED_SNAPSHOT_BUILD_VERSION),
+    generationId: Type.String({ pattern: '^[A-Za-z0-9_-]+$' }),
+    sources: Type.Array(
+      Type.Object(
+        {
+          physicalSourceIdentity: Type.String({ minLength: 1 }),
+          sessionsRootRelativePath: Type.String({ minLength: 1 }),
+        },
+        { additionalProperties: false },
+      ),
+      { minItems: 1 },
+    ),
   },
   { additionalProperties: false },
 );
@@ -219,11 +249,7 @@ function throwIfFixedSnapshotBuildCancelled(signal?: AbortSignal): void {
 
 async function invokeFixedSnapshotBuildFault(
   dependencies: Readonly<RecallPhysicalSourceGenerationDependencies>,
-  stage:
-    | 'after-snapshot-capture'
-    | 'after-dense-write'
-    | 'after-store-close'
-    | 'before-validation-receipt',
+  stage: RecallFixedSnapshotBuildFaultStage,
   generationDirectory: string,
   physicalSourceIdentity?: string,
 ): Promise<void> {
@@ -306,20 +332,136 @@ function verifyDenseCandidate(
   };
 }
 
+async function writeFixedSnapshotBootstrapState(
+  config: Readonly<RecallCoherentGenerationConfig>,
+  generationId: string,
+  physicalSessionPaths: readonly string[],
+  bootstrapStatePath: string,
+): Promise<RecallFixedSnapshotBootstrapState> {
+  const sources = physicalSessionPaths.map((physicalSessionPath) => {
+    const identity = resolveRecallPhysicalSourceIdentity(
+      config.sessionsDirectory,
+      physicalSessionPath,
+    );
+    return {
+      physicalSourceIdentity: identity.physicalSourceIdentity,
+      sessionsRootRelativePath: identity.sessionsRootRelativePath,
+    };
+  });
+  if (
+    new Set(sources.map(({ physicalSourceIdentity }) => physicalSourceIdentity)).size !==
+    sources.length
+  ) {
+    throw new Error(
+      'Recall fixed snapshot generation bootstrap contains duplicate physical sources',
+    );
+  }
+  const bootstrapState = Value.Parse(fixedSnapshotBootstrapStateSchema, {
+    version: FIXED_SNAPSHOT_BUILD_VERSION,
+    generationId,
+    sources,
+  });
+  await writeFile(bootstrapStatePath, encodeStrictJson(bootstrapState), {
+    encoding: 'utf8',
+    flag: 'wx',
+  });
+  return bootstrapState;
+}
+
+async function readFixedSnapshotBootstrapState(
+  bootstrapStatePath: string,
+  generationId: string,
+): Promise<RecallFixedSnapshotBootstrapState> {
+  try {
+    const parsed: unknown = JSON.parse(await readFile(bootstrapStatePath, 'utf8'));
+    const bootstrapState = Value.Parse(fixedSnapshotBootstrapStateSchema, parsed);
+    if (bootstrapState.generationId !== generationId) {
+      throw new Error(`generation identity mismatch: ${bootstrapState.generationId}`);
+    }
+    if (
+      new Set(bootstrapState.sources.map(({ physicalSourceIdentity }) => physicalSourceIdentity))
+        .size !== bootstrapState.sources.length
+    ) {
+      throw new Error('duplicate physical sources');
+    }
+    return bootstrapState;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `Recall fixed snapshot generation bootstrap state invalid for ${generationId}; discard this staging generation: ${message}`,
+      { cause: error },
+    );
+  }
+}
+
+function resolveBootstrapPhysicalSessionPaths(
+  config: Readonly<RecallCoherentGenerationConfig>,
+  bootstrapState: Readonly<RecallFixedSnapshotBootstrapState>,
+): string[] {
+  try {
+    return bootstrapState.sources.map((source) => {
+      const physicalSessionPath = join(config.sessionsDirectory, source.sessionsRootRelativePath);
+      const resolved = resolveRecallPhysicalSourceIdentity(
+        config.sessionsDirectory,
+        physicalSessionPath,
+      );
+      if (
+        resolved.physicalSourceIdentity !== source.physicalSourceIdentity ||
+        resolved.sessionsRootRelativePath !== source.sessionsRootRelativePath
+      ) {
+        throw new Error(`physical source identity mismatch: ${source.physicalSourceIdentity}`);
+      }
+      return physicalSessionPath;
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `Recall fixed snapshot generation bootstrap sources invalid for ${bootstrapState.generationId}; discard this staging generation: ${message}`,
+      { cause: error },
+    );
+  }
+}
+
+function fixedSnapshotBootstrapFaultStageForStore(
+  responsibility: 'lexical-source' | 'dense-evidence' | 'session-projection',
+): RecallFixedSnapshotBuildFaultStage {
+  switch (responsibility) {
+    case 'lexical-source':
+      return 'after-lexical-source-store-creation';
+    case 'dense-evidence':
+      return 'after-dense-store-creation';
+    case 'session-projection':
+      return 'after-session-projection-store-creation';
+    default:
+      throw new Error('Recall fixed snapshot generation bootstrap store unsupported');
+  }
+}
+
 async function captureFixedSourceSnapshot(
   config: Readonly<RecallCoherentGenerationConfig>,
-  options: Readonly<CreateRecallGenerationFromPhysicalSourcesOptions>,
+  generationId: string,
+  physicalSessionPaths: readonly string[],
+  signal: AbortSignal | undefined,
   generationDirectory: string,
   manifestFingerprint: string,
+  dependencies: Readonly<RecallPhysicalSourceGenerationDependencies>,
 ): Promise<RecallFixedSnapshotDescriptor> {
   const snapshotSourceDirectory = join(generationDirectory, SNAPSHOT_SOURCE_DIRECTORY);
-  await Promise.all([
-    mkdir(snapshotSourceDirectory),
-    mkdir(join(generationDirectory, EXPECTED_SOURCE_DIRECTORY)),
-  ]);
+  await mkdir(snapshotSourceDirectory);
+  await invokeFixedSnapshotBuildFault(
+    dependencies,
+    'after-snapshot-source-directory-creation',
+    generationDirectory,
+  );
+  await mkdir(join(generationDirectory, EXPECTED_SOURCE_DIRECTORY));
+  await invokeFixedSnapshotBuildFault(
+    dependencies,
+    'after-expected-source-directory-creation',
+    generationDirectory,
+  );
   const sources: RecallFixedSnapshotSourceDescriptor[] = [];
-  for (const [index, physicalSessionPath] of options.physicalSessionPaths.entries()) {
-    throwIfFixedSnapshotBuildCancelled(options.signal);
+  for (const [index, physicalSessionPath] of physicalSessionPaths.entries()) {
+    throwIfFixedSnapshotBuildCancelled(signal);
     const identity = resolveRecallPhysicalSourceIdentity(
       config.sessionsDirectory,
       physicalSessionPath,
@@ -331,6 +473,12 @@ async function captureFixedSourceSnapshot(
     const sourceChecksum = calculateSha256(sourceBytes);
     const snapshotFileName = `${index}-${sourceChecksum}.jsonl`;
     await writeFile(join(snapshotSourceDirectory, snapshotFileName), sourceBytes, { flag: 'wx' });
+    await invokeFixedSnapshotBuildFault(
+      dependencies,
+      'after-snapshot-source-write',
+      generationDirectory,
+      identity.physicalSourceIdentity,
+    );
     sources.push({
       physicalSourceIdentity: identity.physicalSourceIdentity,
       sessionsRootRelativePath: identity.sessionsRootRelativePath,
@@ -349,7 +497,7 @@ async function captureFixedSourceSnapshot(
   }
   const descriptor = Value.Parse(fixedSnapshotDescriptorSchema, {
     version: FIXED_SNAPSHOT_BUILD_VERSION,
-    generationId: options.generationId,
+    generationId,
     manifestFingerprint,
     sources,
   });
@@ -373,7 +521,7 @@ async function readFixedSnapshotDescriptor(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(
-      `Recall fixed snapshot generation descriptor invalid at ${descriptorPath}: ${message}`,
+      `Recall fixed snapshot generation descriptor invalid at ${descriptorPath}; discard this staging generation: ${message}`,
       {
         cause: error,
       },
@@ -403,7 +551,10 @@ async function readFixedSnapshotRecoveryPhysicalSourceIdentity(
 function assertRequestedSourcesMatchSnapshot(
   config: Readonly<RecallCoherentGenerationConfig>,
   physicalSessionPaths: readonly string[],
-  snapshot: Readonly<RecallFixedSnapshotDescriptor>,
+  snapshot: Readonly<{
+    generationId: string;
+    sources: readonly RecallFixedSnapshotBootstrapSource[];
+  }>,
 ): void {
   const requested = physicalSessionPaths.map((physicalSessionPath) =>
     resolveRecallPhysicalSourceIdentity(config.sessionsDirectory, physicalSessionPath),
@@ -422,7 +573,7 @@ function assertRequestedSourcesMatchSnapshot(
   );
   if (JSON.stringify(requestedIdentity) !== JSON.stringify(snapshotIdentity)) {
     throw new Error(
-      `Recall fixed snapshot generation resume source snapshot mismatch for ${snapshot.generationId}`,
+      `Recall fixed snapshot generation resume source snapshot mismatch for ${snapshot.generationId}; discard this staging generation`,
     );
   }
 }
@@ -473,7 +624,7 @@ async function materializeExpectedPhysicalSource(
     calculateSha256(snapshotBytes) !== source.sourceChecksum
   ) {
     throw new Error(
-      `Recall fixed snapshot generation captured source mismatch for ${source.physicalSourceIdentity}`,
+      `Recall fixed snapshot generation captured source mismatch for ${source.physicalSourceIdentity}; discard this staging generation`,
     );
   }
   let artifact: RecallExpectedPhysicalSourceArtifact;
@@ -990,58 +1141,136 @@ export async function buildRecallFixedSnapshotGeneration(
   const generationDirectory = join(config.generationRootDirectory, options.generationId);
   const paths = createRecallGenerationComponentPaths(generationDirectory);
   const expectedManifest = createExpectedRecallPhysicalSourceManifest(config, options.generationId);
-  let snapshot: RecallFixedSnapshotDescriptor;
-  let manifestFingerprint: string;
-  if (!existsSync(generationDirectory)) {
+  const bootstrapStatePath = join(generationDirectory, BOOTSTRAP_STATE_FILE);
+  const snapshotDescriptorPath = join(generationDirectory, SNAPSHOT_DESCRIPTOR_FILE);
+  let bootstrapState: RecallFixedSnapshotBootstrapState;
+  const isNewGeneration = !existsSync(generationDirectory);
+  if (isNewGeneration) {
     await mkdir(generationDirectory);
-    manifestFingerprint = await writeRecallGenerationManifest(paths.manifestPath, expectedManifest);
-    const contracts = createRecallGenerationStoreContracts(
-      options.generationId,
-      expectedManifest.embeddingProfile.storedDimensions,
-    );
-    createEmptyRecallGenerationStores(paths, contracts);
-    snapshot = await captureFixedSourceSnapshot(
-      config,
-      options,
+    await invokeFixedSnapshotBuildFault(
+      dependencies,
+      'after-generation-directory-creation',
       generationDirectory,
-      manifestFingerprint,
+    );
+    bootstrapState = await writeFixedSnapshotBootstrapState(
+      config,
+      options.generationId,
+      options.physicalSessionPaths,
+      bootstrapStatePath,
     );
     await invokeFixedSnapshotBuildFault(
       dependencies,
-      'after-snapshot-capture',
+      'after-bootstrap-state-write',
       generationDirectory,
     );
   } else {
     if (existsSync(paths.validationReceiptPath)) {
       return openValidatedRecallGeneration(config, options.generationId);
     }
-    const actualManifest = await readRecallGenerationManifest(paths.manifestPath);
-    assertRecallGenerationManifestCompatible(
-      actualManifest.manifest,
-      expectedManifest,
-      paths.manifestPath,
-    );
-    manifestFingerprint = actualManifest.fingerprint;
-    snapshot = await readFixedSnapshotDescriptor(
-      join(generationDirectory, SNAPSHOT_DESCRIPTOR_FILE),
-    );
-    if (
-      snapshot.generationId !== options.generationId ||
-      snapshot.manifestFingerprint !== manifestFingerprint
-    ) {
+    if (!existsSync(bootstrapStatePath)) {
       throw new Error(
-        `Recall fixed snapshot generation resume identity mismatch for ${options.generationId}`,
+        `Recall fixed snapshot generation bootstrap state missing for ${options.generationId}; discard this staging generation`,
       );
     }
-    if (!options.resumeExistingGeneration) {
-      assertRequestedSourcesMatchSnapshot(config, options.physicalSessionPaths, snapshot);
-    }
-    const contracts = createRecallGenerationStoreContracts(
+    bootstrapState = await readFixedSnapshotBootstrapState(
+      bootstrapStatePath,
       options.generationId,
-      expectedManifest.embeddingProfile.storedDimensions,
     );
-    const existingMembership = await readRecallGenerationStoreRecordMembership(paths);
-    validateRecallGenerationStores(paths, contracts, options.generationId, existingMembership);
+    if (options.physicalSessionPaths.length > 0) {
+      assertRequestedSourcesMatchSnapshot(config, options.physicalSessionPaths, bootstrapState);
+    }
+  }
+
+  const physicalSessionPaths = resolveBootstrapPhysicalSessionPaths(config, bootstrapState);
+  let manifestFingerprint: string;
+  if (existsSync(paths.manifestPath)) {
+    try {
+      const actualManifest = await readRecallGenerationManifest(paths.manifestPath);
+      assertRecallGenerationManifestCompatible(
+        actualManifest.manifest,
+        expectedManifest,
+        paths.manifestPath,
+      );
+      manifestFingerprint = actualManifest.fingerprint;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `Recall fixed snapshot generation bootstrap manifest incompatible for ${options.generationId}; discard this staging generation: ${message}`,
+        { cause: error },
+      );
+    }
+  } else {
+    if (!isNewGeneration) {
+      throw new Error(
+        `Recall fixed snapshot generation bootstrap manifest missing for ${options.generationId}; discard this staging generation`,
+      );
+    }
+    manifestFingerprint = await writeRecallGenerationManifest(paths.manifestPath, expectedManifest);
+    await invokeFixedSnapshotBuildFault(dependencies, 'after-manifest-write', generationDirectory);
+  }
+
+  let snapshot: RecallFixedSnapshotDescriptor;
+  if (existsSync(snapshotDescriptorPath)) {
+    snapshot = await readFixedSnapshotDescriptor(snapshotDescriptorPath);
+  } else {
+    if (!isNewGeneration) {
+      throw new Error(
+        `Recall fixed snapshot generation snapshot capture incomplete for ${options.generationId}; discard this staging generation`,
+      );
+    }
+    snapshot = await captureFixedSourceSnapshot(
+      config,
+      options.generationId,
+      physicalSessionPaths,
+      options.signal,
+      generationDirectory,
+      manifestFingerprint,
+      dependencies,
+    );
+    await invokeFixedSnapshotBuildFault(
+      dependencies,
+      'after-snapshot-capture',
+      generationDirectory,
+    );
+  }
+  if (
+    snapshot.generationId !== options.generationId ||
+    snapshot.manifestFingerprint !== manifestFingerprint
+  ) {
+    throw new Error(
+      `Recall fixed snapshot generation resume identity mismatch for ${options.generationId}; discard this staging generation`,
+    );
+  }
+  assertRequestedSourcesMatchSnapshot(config, physicalSessionPaths, snapshot);
+
+  const contracts = createRecallGenerationStoreContracts(
+    options.generationId,
+    expectedManifest.embeddingProfile.storedDimensions,
+  );
+  const allBootstrapStoresExist = [
+    paths.lexicalSourceStorePath,
+    paths.denseStorePath,
+    paths.sessionProjectionStorePath,
+  ].every((storePath) => existsSync(storePath));
+  if (allBootstrapStoresExist) {
+    try {
+      const existingMembership = await readRecallGenerationStoreRecordMembership(paths);
+      validateRecallGenerationStores(paths, contracts, options.generationId, existingMembership);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `Recall fixed snapshot generation stores incompatible for ${options.generationId}; discard this staging generation: ${message}`,
+        { cause: error },
+      );
+    }
+  } else {
+    await resumeEmptyRecallGenerationStores(paths, contracts, async (responsibility) => {
+      await invokeFixedSnapshotBuildFault(
+        dependencies,
+        fixedSnapshotBootstrapFaultStageForStore(responsibility),
+        generationDirectory,
+      );
+    });
   }
 
   await verifyFixedSnapshotCanary(config, dependencies, options.generationId);
@@ -1184,10 +1413,6 @@ export async function buildRecallFixedSnapshotGeneration(
   );
   throwIfFixedSnapshotBuildCancelled(options.signal);
   await validateExpectedFixedSnapshotArtifacts(generationDirectory, artifacts);
-  const contracts = createRecallGenerationStoreContracts(
-    options.generationId,
-    expectedManifest.embeddingProfile.storedDimensions,
-  );
   validateRecallGenerationStores(paths, contracts, options.generationId, expectedRecordIds);
   validateRecallGenerationDenseSubset(
     paths,

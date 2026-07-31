@@ -463,6 +463,51 @@ export function createEmptyRecallGenerationStores(
   createEmptyRecallGenerationStore(paths.sessionProjectionStorePath, contracts.sessionProjection);
 }
 
+/** Creates missing bootstrap stores and accepts only compatible empty stores already created. */
+export async function resumeEmptyRecallGenerationStores(
+  paths: Readonly<RecallGenerationComponentPaths>,
+  contracts: ReturnType<typeof createRecallGenerationStoreContracts>,
+  onStoreCreated?: (
+    responsibility: RecallGenerationStoreContract['responsibility'],
+  ) => void | Promise<void>,
+): Promise<void> {
+  const stores = [
+    [paths.lexicalSourceStorePath, contracts.lexicalSource],
+    [paths.denseStorePath, contracts.dense],
+    [paths.sessionProjectionStorePath, contracts.sessionProjection],
+  ] as const;
+  for (const [storePath, contract] of stores) {
+    if (existsSync(storePath)) {
+      let collection: ZVecCollection | undefined;
+      try {
+        collection = openRecallGenerationStoreForBoundedCheck(storePath, contract);
+        if (collection.stats.docCount !== 0) {
+          throw new Error('store is not empty');
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(
+          `Recall fixed snapshot generation bootstrap ${contract.responsibility} store incompatible; discard this staging generation: ${message}`,
+          { cause: error },
+        );
+      } finally {
+        collection?.closeSync();
+      }
+      continue;
+    }
+    try {
+      createEmptyRecallGenerationStore(storePath, contract);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `Recall fixed snapshot generation bootstrap ${contract.responsibility} store creation incomplete; discard this staging generation: ${message}`,
+        { cause: error },
+      );
+    }
+    await onStoreCreated?.(contract.responsibility);
+  }
+}
+
 function createRecallGenerationStoreEnumerations(
   responsibility: RecallGenerationStoreContract['responsibility'],
 ): readonly ExactZvecDocumentEnumeration[] {

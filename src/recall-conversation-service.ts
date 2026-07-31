@@ -42,6 +42,7 @@ import {
 import {
   searchRecallGenerationLexical,
   type CreateRecallGenerationFromPhysicalSourcesOptions,
+  type RecallFixedSnapshotBuildFaultStage,
   type RecallFixedSnapshotPhysicalSourceCheckpoint,
   type RecallGenerationLexicalEvidence,
 } from './recall-physical-source-generation.js';
@@ -645,11 +646,7 @@ export interface RecallConversationDependencies {
   workerSignal?: RecallDetachedWorkerSignal;
   /** Deterministic storage fault probe for disposable fixed-snapshot build tests. */
   fixedSnapshotBuildFault?: (
-    stage:
-      | 'after-snapshot-capture'
-      | 'after-dense-write'
-      | 'after-store-close'
-      | 'before-validation-receipt',
+    stage: RecallFixedSnapshotBuildFaultStage,
     context: Readonly<{ generationDirectory: string; physicalSourceIdentity?: string }>,
   ) => void | Promise<void>;
   /** Deterministic publication fault boundary for validated target activation tests. */

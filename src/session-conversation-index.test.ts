@@ -143,6 +143,44 @@ async function writeGeneratedAsymmetricSessionGraph(
   return sources;
 }
 
+function readGeneratedTurnContextRoleSegments(content: string): {
+  userSegment: string;
+  assistantSegment: string;
+} {
+  const userPrefix = 'User:\n';
+  const assistantSeparator = '\n\nAssistant:\n';
+  assert.ok(content.startsWith(userPrefix));
+  const assistantSeparatorIndex = content.indexOf(assistantSeparator);
+  assert.ok(assistantSeparatorIndex >= userPrefix.length);
+  return {
+    userSegment: content.slice(userPrefix.length, assistantSeparatorIndex),
+    assistantSegment: content.slice(assistantSeparatorIndex + assistantSeparator.length),
+  };
+}
+
+function estimateNearNonadvancingTurnContextRows(
+  turn: GeneratedAsymmetricTurn,
+  maxTokens: number,
+): number {
+  const availableTextTokens = maxTokens - 2;
+  let userMaxTokens: number;
+  let assistantMaxTokens: number;
+  if (turn.userTokenCount <= availableTextTokens - 1) {
+    userMaxTokens = turn.userTokenCount;
+    assistantMaxTokens = availableTextTokens - userMaxTokens;
+  } else if (turn.assistantTokenCount <= availableTextTokens - 1) {
+    assistantMaxTokens = turn.assistantTokenCount;
+    userMaxTokens = availableTextTokens - assistantMaxTokens;
+  } else {
+    userMaxTokens = Math.floor(availableTextTokens / 2);
+    assistantMaxTokens = availableTextTokens - userMaxTokens;
+  }
+  return Math.max(
+    Math.ceil(turn.userTokenCount / userMaxTokens),
+    Math.ceil(turn.assistantTokenCount / assistantMaxTokens),
+  );
+}
+
 function summarizeSessionChunkParity(chunks: readonly SessionConversationChunk[]) {
   return chunks.map((chunk) => ({
     id: chunk.id,
@@ -695,6 +733,16 @@ void test('generated asymmetric turns preserve source evidence within proportion
           contributingSources.map(({ role }) => role),
           ['user', 'assistant'],
         );
+        const [userSource, assistantSource] = contributingSources;
+        assert.ok(userSource);
+        assert.ok(assistantSource);
+        const { userSegment, assistantSegment } = readGeneratedTurnContextRoleSegments(
+          turnContext.content,
+        );
+        assert.ok(userSegment.length > 0);
+        assert.ok(assistantSegment.length > 0);
+        assert.ok(userSource.content.includes(userSegment));
+        assert.ok(assistantSource.content.includes(assistantSegment));
         assert.equal(
           turnContext.sourceLineStart,
           Math.min(...contributingSources.map(({ sourceLine }) => sourceLine)),
@@ -722,6 +770,30 @@ void test('generated asymmetric turns preserve source evidence within proportion
     }),
     { numRuns: 50 },
   );
+});
+
+void test('generated row-growth property rejects the restored near-nonadvancing allocation', () => {
+  const mutationResult = fc.check(
+    fc.property(ASYMMETRIC_SESSION_GRAPH_ARBITRARY, (generatedGraph) => {
+      const nearNonadvancingRows = generatedGraph.turns.reduce(
+        (total, turn) =>
+          total + estimateNearNonadvancingTurnContextRows(turn, generatedGraph.maxTokens),
+        0,
+      );
+      const balancedRoleCapacity = Math.floor((generatedGraph.maxTokens - 2) / 2);
+      const proportionalRowBound = generatedGraph.turns.reduce(
+        (total, turn) =>
+          total +
+          Math.ceil((turn.userTokenCount + turn.assistantTokenCount) / balancedRoleCapacity),
+        0,
+      );
+      return nearNonadvancingRows <= proportionalRowBound;
+    }),
+    { numRuns: 50, seed: 122_140 },
+  );
+
+  assert.equal(mutationResult.failed, true);
+  assert.notEqual(mutationResult.counterexample, null);
 });
 
 void test('3,872-token asymmetric turn remains bounded while preserving both roles', async (t) => {
@@ -754,6 +826,21 @@ void test('3,872-token asymmetric turn remains bounded while preserving both rol
     new Set(conversationChunks.map((chunk) => chunk.role)),
     new Set(['user', 'assistant']),
   );
+  for (const turnContext of turnContextChunks) {
+    const contributingSources = turnContext.contributingEntryIds.map(({ value }) => {
+      const source = sources.get(value);
+      assert.ok(source);
+      return source;
+    });
+    const [userSource, assistantSource] = contributingSources;
+    assert.ok(userSource);
+    assert.ok(assistantSource);
+    const { userSegment, assistantSegment } = readGeneratedTurnContextRoleSegments(
+      turnContext.content,
+    );
+    assert.ok(userSource.content.includes(userSegment));
+    assert.ok(assistantSource.content.includes(assistantSegment));
+  }
   for (const chunk of conversationChunks) {
     const source = sources.get(chunk.entryId.value);
     assert.ok(source);

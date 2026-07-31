@@ -18,6 +18,49 @@ const uniqueMembershipKeys = fc.uniqueArray(fc.stringMatching(/^[a-f0-9]{1,16}$/
   maxLength: 200,
 });
 
+void test('exact zvec enumeration escapes quoted partition pivots beyond the query limit', () => {
+  const root = mkdtempSync(join(tmpdir(), 'recall-exact-zvec-quoted-pivot-'));
+  let collection: ZVecCollection | undefined;
+  try {
+    const openedCollection = ZVecCreateAndOpen(
+      join(root, 'collection'),
+      new ZVecCollectionSchema({
+        name: 'exact_membership_quoted_pivot',
+        fields: [{ name: 'membershipKey', dataType: ZVecDataType.STRING }],
+      }),
+    );
+    collection = openedCollection;
+    const expectedIds = Array.from({ length: 100_001 }, (_, index) => `record_${index}`);
+    for (let start = 0; start < expectedIds.length; start += 1_000) {
+      const statuses = openedCollection.insertSync(
+        expectedIds.slice(start, start + 1_000).map((id, offset) => ({
+          id,
+          fields: {
+            membershipKey: `quoted'\\key-${String(start + offset).padStart(6, '0')}`,
+          },
+        })),
+      );
+      assert.equal(
+        statuses.every(({ ok }) => ok),
+        true,
+      );
+    }
+
+    const visitedIds: string[] = [];
+    const visitedCount = visitExactZvecDocuments(
+      openedCollection,
+      { uniquePartitionField: 'membershipKey', outputFields: [] },
+      ({ id }) => visitedIds.push(id),
+    );
+
+    assert.equal(visitedCount, expectedIds.length);
+    assert.deepEqual(visitedIds.toSorted(), expectedIds.toSorted());
+  } finally {
+    collection?.closeSync();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 void test('exact zvec enumeration preserves generated membership and scalar filters', () => {
   fc.assert(
     fc.property(uniqueMembershipKeys, (membershipKeys) => {

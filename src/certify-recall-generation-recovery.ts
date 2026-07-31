@@ -5,6 +5,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { performance } from 'node:perf_hooks';
+import { fileURLToPath } from 'node:url';
 
 import { createRecallDiagnosticHostIdentity } from './create-recall-diagnostic-host-identity.js';
 import { writeAtomicRecallEvaluationFile } from './recall-evaluation-file-system.js';
@@ -37,7 +38,8 @@ const CERTIFICATION_INPUT_PATHS = [
   'src/pi-session-recall-cli.test.ts',
 ] as const;
 
-interface RecoveryCertificationCommandResult {
+/** One successful command recorded by generation recovery certification. */
+export interface RecoveryCertificationCommandResult {
   name: string;
   command: string;
   durationMilliseconds: number;
@@ -56,6 +58,7 @@ interface RecallGenerationRecoveryCertificationEvidence {
   preflight: RecallGenerationRecoveryPreflightResult;
   incrementalVsRebuildMembershipEquivalent: true;
   detachedWorkerReachedTerminalValidation: true;
+  detachedValidationReceiptsEquivalent: true;
   operatorCliStopResumeReachedReady: true;
   passed: true;
   safety: RecallGenerationRecoveryPreflightResult['sourceSafety'] & {
@@ -67,20 +70,36 @@ function formatCommand(executable: string, argumentsList: readonly string[]): st
   return [executable, ...argumentsList].join(' ');
 }
 
-async function runCertificationCommand(options: {
+/** Runs one command required by generation recovery certification. */
+export async function runRecoveryCertificationCommand(options: {
   name: string;
   executable: string;
   argumentsList: readonly string[];
   projectDirectory: string;
   displayCommand?: string;
+  expectedTestNamePattern?: RegExp;
 }): Promise<RecoveryCertificationCommandResult> {
   const startedAt = performance.now();
+  let capturedOutput = '';
   await new Promise<void>((resolvePromise, rejectPromise) => {
+    const childEnvironment = { ...process.env };
+    delete childEnvironment.NODE_TEST_CONTEXT;
+    const captureTestOutput = options.expectedTestNamePattern !== undefined;
     const child = spawn(options.executable, options.argumentsList, {
       cwd: options.projectDirectory,
-      env: process.env,
-      stdio: 'inherit',
+      env: childEnvironment,
+      stdio: captureTestOutput ? ['ignore', 'pipe', 'pipe'] : 'inherit',
     });
+    if (captureTestOutput) {
+      child.stdout?.on('data', (chunk: Buffer) => {
+        capturedOutput += chunk.toString('utf8');
+        process.stdout.write(chunk);
+      });
+      child.stderr?.on('data', (chunk: Buffer) => {
+        capturedOutput += chunk.toString('utf8');
+        process.stderr.write(chunk);
+      });
+    }
     child.once('error', (error) => {
       rejectPromise(
         new Error(
@@ -93,7 +112,22 @@ async function runCertificationCommand(options: {
     });
     child.once('exit', (code, signal) => {
       if (code === 0) {
-        resolvePromise();
+        const expectedTestNamePattern = options.expectedTestNamePattern;
+        const matchingNamedTestRan =
+          expectedTestNamePattern === undefined ||
+          capturedOutput.split(/\r?\n/u).some((line) => {
+            const testName = line.match(/^# Subtest: (.+)$/u)?.[1];
+            return testName !== undefined && expectedTestNamePattern.test(testName);
+          });
+        if (matchingNamedTestRan) {
+          resolvePromise();
+          return;
+        }
+        rejectPromise(
+          new Error(
+            `Recall generation recovery certification command did not run an expected named test: ${options.name}`,
+          ),
+        );
         return;
       }
       rejectPromise(
@@ -202,7 +236,17 @@ Complete reopened validation crossed the observed ${evidence.productionFailureBo
 | Dense | ${measured.storeCounts.dense.toLocaleString('en-US')} | \`${measured.exactMembership.dense.digest}\` |
 | Session projection | ${measured.storeCounts.sessionProjection.toLocaleString('en-US')} | \`${measured.exactMembership.sessionProjection.digest}\` |
 
-The uninterrupted and twice-resumed builds used the same candidate commit, generated source snapshot, generation ID, manifest, profile, and source snapshot fingerprint. Their immutable comparable validation receipts and all membership digests agree.
+The uninterrupted and twice-resumed in-process builds used the same candidate commit, generated source snapshot, generation ID, manifest, profile, and source snapshot fingerprint. Their immutable comparable validation receipts and all membership digests agree.
+
+## Detached terminal equivalence
+
+Matched uninterrupted and SIGKILL/resumed detached workers used generated source snapshot \`${evidence.preflight.detached.sourceSnapshotChecksum}\`. Both reached terminal succeeded/ready validation. Their compatible embedding profiles, snapshot cardinalities, validation policy, canary results, store counts, and all membership digests agree.
+
+| Store | Uninterrupted digest | SIGKILL/resumed digest |
+| --- | --- | --- |
+| Lexical/source | \`${evidence.preflight.detached.uninterrupted.exactMembership.lexicalSource.digest}\` | \`${evidence.preflight.detached.interrupted.exactMembership.lexicalSource.digest}\` |
+| Dense | \`${evidence.preflight.detached.uninterrupted.exactMembership.dense.digest}\` | \`${evidence.preflight.detached.interrupted.exactMembership.dense.digest}\` |
+| Session projection | \`${evidence.preflight.detached.uninterrupted.exactMembership.sessionProjection.digest}\` | \`${evidence.preflight.detached.interrupted.exactMembership.sessionProjection.digest}\` |
 
 ## Recovery matrix
 
@@ -229,10 +273,10 @@ These values are reported without release thresholds.
 
 ## Reproduction
 
-Create a clean worktree at \`${SLOP_SCAN_BASE_COMMIT}\`, then run:
+Create one clean worktree at candidate commit \`${evidence.candidateCommit}\`. Create a separate clean worktree at \`${SLOP_SCAN_BASE_COMMIT}\` for the slop-scan base, then run from the candidate worktree:
 
 \`\`\`bash
-PI_RECALL_SLOP_BASE_DIRECTORY=/path/to/clean/base-worktree ${RECOVERY_CERTIFICATION_COMMAND}
+PI_RECALL_SLOP_BASE_DIRECTORY=/path/to/clean/${SLOP_SCAN_BASE_COMMIT} ${RECOVERY_CERTIFICATION_COMMAND}
 \`\`\`
 
 The certifier ran:
@@ -284,17 +328,19 @@ export async function certifyRecallGenerationRecovery(
     ] as const;
     for (const focusedTest of focusedTests) {
       commands.push(
-        await runCertificationCommand({
+        await runRecoveryCertificationCommand({
           name: focusedTest.name,
           executable: process.execPath,
           argumentsList: [
             '--import',
             'tsx',
             '--test',
+            '--test-reporter=tap',
             `--test-name-pattern=${focusedTest.pattern}`,
             focusedTest.path,
           ],
           projectDirectory: resolvedProjectDirectory,
+          expectedTestNamePattern: new RegExp(focusedTest.pattern, 'u'),
         }),
       );
     }
@@ -307,14 +353,14 @@ export async function certifyRecallGenerationRecovery(
       { name: 'Git whitespace check', executable: 'git', argumentsList: ['diff', '--check'] },
     ] as const) {
       commands.push(
-        await runCertificationCommand({
+        await runRecoveryCertificationCommand({
           ...gate,
           projectDirectory: resolvedProjectDirectory,
         }),
       );
     }
     commands.push(
-      await runCertificationCommand({
+      await runRecoveryCertificationCommand({
         name: 'repository-required slop scan',
         executable: 'slop-scan',
         argumentsList: [
@@ -357,7 +403,10 @@ export async function certifyRecallGenerationRecovery(
       productionFailureBoundary: PRODUCTION_FAILURE_BOUNDARY,
       preflight,
       incrementalVsRebuildMembershipEquivalent: true,
-      detachedWorkerReachedTerminalValidation: true,
+      detachedWorkerReachedTerminalValidation:
+        preflight.detached.uninterruptedWorkerReachedTerminalValidation &&
+        preflight.detached.resumedWorkerReachedTerminalValidation,
+      detachedValidationReceiptsEquivalent: preflight.detached.validationReceiptsEquivalent,
       operatorCliStopResumeReachedReady: true,
       passed: true,
       safety: { ...preflight.sourceSafety, disposableStorageOnly: true },
@@ -381,4 +430,9 @@ export async function certifyRecallGenerationRecovery(
   }
 }
 
-await certifyRecallGenerationRecovery();
+if (
+  process.argv[1] !== undefined &&
+  resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))
+) {
+  await certifyRecallGenerationRecovery();
+}

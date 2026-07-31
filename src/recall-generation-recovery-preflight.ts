@@ -3,17 +3,20 @@ import { open } from 'node:fs/promises';
 import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, relative, resolve } from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 
 import {
   loadRecallConversationConfig,
   type RecallConversationConfig,
 } from './recall-conversation-config.js';
+import { RecallBackgroundIndexProcessState } from './enums.js';
 import {
   createRecallConversationService,
   type RecallConversationDependencies,
 } from './recall-conversation-service.js';
 import type { OpenedValidatedRecallGeneration } from './recall-coherent-generation.js';
 import { readRecallGenerationManifest } from './recall-generation-manifest.js';
+import { readNodeErrorCode } from './read-node-error-code.js';
 import {
   readRecallGenerationValidationReceipt,
   type RecallGenerationValidationReceipt,
@@ -55,6 +58,15 @@ export interface RecallGenerationRecoveryPreflightResult {
   sourceSnapshotChecksum: string;
   uninterrupted: MeasuredRecallGeneration;
   interrupted: MeasuredRecallGeneration;
+  detached: {
+    uninterrupted: MeasuredRecallGeneration;
+    interrupted: MeasuredRecallGeneration;
+    sourceSnapshotChecksum: string;
+    interruptionSignal: 'SIGKILL';
+    uninterruptedWorkerReachedTerminalValidation: true;
+    resumedWorkerReachedTerminalValidation: true;
+    validationReceiptsEquivalent: true;
+  };
   fixedSnapshot: {
     originalCardinalitySourceRemoved: true;
     originalRetainedSourceChanged: true;
@@ -293,6 +305,164 @@ function assertEquivalentValidatedGenerations(
   }
 }
 
+async function waitForDetachedRecoveryPreflightState(
+  service: ReturnType<typeof createRecallConversationService>,
+  expectedState: RecallBackgroundIndexProcessState,
+): Promise<string> {
+  let latestState: RecallBackgroundIndexProcessState | null = null;
+  for (let attempt = 0; attempt < 1_000; attempt += 1) {
+    try {
+      const status = await service.readBackgroundIndexGenerationStatus();
+      latestState = status?.processState ?? null;
+      if (status?.processState === expectedState && status.generationId !== null) {
+        return status.generationId;
+      }
+    } catch (error) {
+      if (readNodeErrorCode(error) !== 'ENOENT') {
+        throw error;
+      }
+    }
+    await sleep(20);
+  }
+  throw new Error(
+    `Recall generation recovery preflight detached worker did not reach ${expectedState}; latest=${String(latestState)}`,
+  );
+}
+
+function assertEquivalentDetachedValidatedGenerations(
+  uninterrupted: MeasuredRecallGeneration,
+  interrupted: MeasuredRecallGeneration,
+): void {
+  const comparableUninterruptedReceipt = {
+    startingSnapshot: {
+      physicalSourceCount: uninterrupted.receipt.startingSnapshot.physicalSourceCount,
+      logicalSessionOccurrenceCount:
+        uninterrupted.receipt.startingSnapshot.logicalSessionOccurrenceCount,
+    },
+    exactMembership: uninterrupted.receipt.exactMembership,
+    validationPolicyVersion: uninterrupted.receipt.validationPolicyVersion,
+    canaryResults: uninterrupted.receipt.canaryResults,
+  };
+  const comparableInterruptedReceipt = {
+    startingSnapshot: {
+      physicalSourceCount: interrupted.receipt.startingSnapshot.physicalSourceCount,
+      logicalSessionOccurrenceCount:
+        interrupted.receipt.startingSnapshot.logicalSessionOccurrenceCount,
+    },
+    exactMembership: interrupted.receipt.exactMembership,
+    validationPolicyVersion: interrupted.receipt.validationPolicyVersion,
+    canaryResults: interrupted.receipt.canaryResults,
+  };
+  if (
+    uninterrupted.embeddingProfileId !== interrupted.embeddingProfileId ||
+    JSON.stringify(uninterrupted.storeCounts) !== JSON.stringify(interrupted.storeCounts) ||
+    JSON.stringify(comparableUninterruptedReceipt) !== JSON.stringify(comparableInterruptedReceipt)
+  ) {
+    throw new Error(
+      `Recall generation recovery preflight detached interrupted and uninterrupted validation disagree: ${JSON.stringify(
+        {
+          uninterrupted: {
+            embeddingProfileId: uninterrupted.embeddingProfileId,
+            startingSnapshotFingerprint: uninterrupted.startingSnapshotFingerprint,
+            storeCounts: uninterrupted.storeCounts,
+            receipt: comparableUninterruptedReceipt,
+          },
+          interrupted: {
+            embeddingProfileId: interrupted.embeddingProfileId,
+            startingSnapshotFingerprint: interrupted.startingSnapshotFingerprint,
+            storeCounts: interrupted.storeCounts,
+            receipt: comparableInterruptedReceipt,
+          },
+        },
+      )}`,
+    );
+  }
+}
+
+async function runDetachedRecoveryEquivalence(
+  disposableRoot: string,
+): Promise<RecallGenerationRecoveryPreflightResult['detached']> {
+  const sessionsDirectory = join(disposableRoot, 'detached-sessions');
+  await mkdir(sessionsDirectory);
+  const detachedSourcePath = join(sessionsDirectory, RETAINED_SOURCE_FILE_NAME);
+  await writeRetainedSource(detachedSourcePath, 'detached terminal validation equivalence');
+  const sourceSnapshotChecksum = await calculateGeneratedSourceSnapshotChecksum(
+    sessionsDirectory,
+    [],
+  );
+  const backgroundIndexServiceFactory = {
+    moduleUrl: new URL('./createRecallBackgroundIndexWorkerFixtureService.ts', import.meta.url)
+      .href,
+    exportName: 'createRecallBackgroundIndexWorkerFixtureService',
+  };
+
+  const uninterruptedConfig = await createPreflightConfig(
+    disposableRoot,
+    'detached-uninterrupted-data',
+    sessionsDirectory,
+  );
+  const uninterruptedService = createRecallConversationService(
+    uninterruptedConfig,
+    createDeterministicRecallDependencies({ backgroundIndexServiceFactory }),
+  );
+  await uninterruptedService.startBackgroundIndexGeneration();
+  const uninterruptedGenerationId = await waitForDetachedRecoveryPreflightState(
+    uninterruptedService,
+    RecallBackgroundIndexProcessState.SUCCEEDED,
+  );
+  const uninterrupted = await measureValidatedGeneration(
+    uninterruptedService,
+    await uninterruptedService.openValidatedRecallGeneration(uninterruptedGenerationId),
+  );
+
+  const interruptedConfig = await createPreflightConfig(
+    disposableRoot,
+    'detached-interrupted-data',
+    sessionsDirectory,
+  );
+  await mkdir(interruptedConfig.dataDirectory, { recursive: true });
+  const interruptionTriggerPath = join(
+    interruptedConfig.dataDirectory,
+    'fixture-interrupt-store-write',
+  );
+  await writeFile(interruptionTriggerPath, 'SIGKILL\n', 'utf8');
+  const interruptedService = createRecallConversationService(
+    interruptedConfig,
+    createDeterministicRecallDependencies({ backgroundIndexServiceFactory }),
+  );
+  await interruptedService.startBackgroundIndexGeneration();
+  const interruptedGenerationId = await waitForDetachedRecoveryPreflightState(
+    interruptedService,
+    RecallBackgroundIndexProcessState.CRASHED,
+  );
+  await rm(interruptionTriggerPath);
+  const resumed = await interruptedService.resumeBackgroundIndexGeneration();
+  if (resumed.generationId !== interruptedGenerationId) {
+    throw new Error(
+      'Recall generation recovery preflight detached resume changed the interrupted generation',
+    );
+  }
+  const resumedGenerationId = await waitForDetachedRecoveryPreflightState(
+    interruptedService,
+    RecallBackgroundIndexProcessState.SUCCEEDED,
+  );
+  const interrupted = await measureValidatedGeneration(
+    interruptedService,
+    await interruptedService.openValidatedRecallGeneration(resumedGenerationId),
+  );
+  assertEquivalentDetachedValidatedGenerations(uninterrupted, interrupted);
+
+  return {
+    uninterrupted,
+    interrupted,
+    sourceSnapshotChecksum,
+    interruptionSignal: 'SIGKILL',
+    uninterruptedWorkerReachedTerminalValidation: true,
+    resumedWorkerReachedTerminalValidation: true,
+    validationReceiptsEquivalent: true,
+  };
+}
+
 async function assertFatalNonSourceFailure(options: {
   disposableRoot: string;
   sessionsDirectory: string;
@@ -516,12 +686,14 @@ export async function runRecallGenerationRecoveryPreflight(
     }),
     expectedMessage: /generated implementation source classification failure/u,
   });
+  const detached = await runDetachedRecoveryEquivalence(disposableRoot);
 
   return {
     logicalSessionCount: options.logicalSessionCount,
     sourceSnapshotChecksum,
     uninterrupted,
     interrupted,
+    detached,
     fixedSnapshot: {
       originalCardinalitySourceRemoved: true,
       originalRetainedSourceChanged: true,

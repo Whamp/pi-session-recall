@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, open, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { ZVecOpen, type ZVecCollection, type ZVecStatus } from '@zvec/zvec';
@@ -421,6 +421,63 @@ function fixedSnapshotBootstrapFaultStageForStore(
   }
 }
 
+async function readStableFixedSnapshotSource(
+  physicalSessionPath: string,
+  generationDirectory: string,
+  physicalSourceIdentity: string,
+  dependencies: Readonly<RecallPhysicalSourceGenerationDependencies>,
+): Promise<{ sourceBytes: Buffer; sourceDevice: string; sourceInode: string }> {
+  const sourceHandle = await open(physicalSessionPath, 'r');
+  try {
+    const metadataBeforeRead = await sourceHandle.stat({ bigint: true });
+    await invokeFixedSnapshotBuildFault(
+      dependencies,
+      'after-snapshot-source-open',
+      generationDirectory,
+      physicalSourceIdentity,
+    );
+    if (metadataBeforeRead.size > BigInt(Number.MAX_SAFE_INTEGER)) {
+      throw new Error(
+        `Recall fixed snapshot source exceeds the safe bounded-read size: ${physicalSessionPath}`,
+      );
+    }
+    const sourceBytes = Buffer.alloc(Number(metadataBeforeRead.size));
+    let readOffset = 0;
+    while (readOffset < sourceBytes.length) {
+      const { bytesRead } = await sourceHandle.read(
+        sourceBytes,
+        readOffset,
+        sourceBytes.length - readOffset,
+        readOffset,
+      );
+      if (bytesRead === 0) {
+        throw new Error(
+          `Recall fixed snapshot source ended during bounded descriptor read: ${physicalSessionPath}`,
+        );
+      }
+      readOffset += bytesRead;
+    }
+    const metadataAfterRead = await sourceHandle.stat({ bigint: true });
+    if (
+      metadataBeforeRead.dev !== metadataAfterRead.dev ||
+      metadataBeforeRead.ino !== metadataAfterRead.ino ||
+      metadataBeforeRead.size !== metadataAfterRead.size ||
+      metadataBeforeRead.mtimeNs !== metadataAfterRead.mtimeNs
+    ) {
+      throw new Error(
+        `Recall fixed snapshot source changed during bounded descriptor read: ${physicalSessionPath}`,
+      );
+    }
+    return {
+      sourceBytes,
+      sourceDevice: metadataAfterRead.dev.toString(),
+      sourceInode: metadataAfterRead.ino.toString(),
+    };
+  } finally {
+    await sourceHandle.close();
+  }
+}
+
 async function captureFixedSourceSnapshot(
   config: Readonly<RecallCoherentGenerationConfig>,
   generationId: string,
@@ -450,10 +507,12 @@ async function captureFixedSourceSnapshot(
       config.sessionsDirectory,
       physicalSessionPath,
     );
-    const [sourceBytes, sourceMetadata] = await Promise.all([
-      readFile(physicalSessionPath),
-      stat(physicalSessionPath, { bigint: true }),
-    ]);
+    const { sourceBytes, sourceDevice, sourceInode } = await readStableFixedSnapshotSource(
+      physicalSessionPath,
+      generationDirectory,
+      identity.physicalSourceIdentity,
+      dependencies,
+    );
     const sourceChecksum = calculateSha256(sourceBytes);
     const snapshotFileName = `${index}-${sourceChecksum}.jsonl`;
     await writeFile(join(snapshotSourceDirectory, snapshotFileName), sourceBytes, { flag: 'wx' });
@@ -468,8 +527,8 @@ async function captureFixedSourceSnapshot(
       sessionsRootRelativePath: identity.sessionsRootRelativePath,
       sourceByteSize: sourceBytes.length,
       sourceChecksum,
-      sourceDevice: sourceMetadata.dev.toString(),
-      sourceInode: sourceMetadata.ino.toString(),
+      sourceDevice,
+      sourceInode,
       snapshotFileName,
     });
   }

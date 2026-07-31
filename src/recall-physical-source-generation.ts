@@ -134,6 +134,7 @@ export type RecallFixedSnapshotBuildFaultStage =
   | 'after-session-projection-store-creation'
   | 'after-snapshot-source-directory-creation'
   | 'after-expected-source-directory-creation'
+  | 'after-snapshot-source-open'
   | 'after-snapshot-source-write'
   | 'after-snapshot-capture'
   | 'after-dense-write'

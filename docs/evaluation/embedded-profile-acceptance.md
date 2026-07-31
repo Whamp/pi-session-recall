@@ -2,6 +2,8 @@
 
 Recorded 2026-07-27 for issue #44.
 
+> **Historical pre-target evidence.** Persistent embedding-cache references below describe the superseded legacy storage implementation. Target recall generations are self-contained and have no persistent embedding cache. Do not use this report as current storage or operator guidance.
+
 ## Decision
 
 **Release acceptance is blocked.** The deterministic adapter, conversation-service, quality-runner, and background-worker path passes. No pinned model artifact is installed, no real model or device measurement ran, and no maintainer approved distribution terms or notices. The evidence does not relabel fixture results as live model results.
@@ -33,11 +35,11 @@ The 2026-07-27 run passed 48 of 48 tests in 8,268.6 ms. It exercised:
 - Qwen ordered scores, finite probability domain, double-sigmoid rejection, embedded/HTTP adapter and cache identities, and public `deep-rerank` behavior;
 - QMD planner grammar, typed bounds, protected terms, intent, timeout, embedded/HTTP adapter and cache identities, and public capability verification;
 - the frozen corpus loader and profile-aware bounded quality runner; and
-- detached build survival, progress, active-generation search, stop/resume, cache reuse, and resumable failures during parsing, embedding, store write, optimization, and pre-activation.
+- detached build survival, progress, active-generation search, stop/resume, then-current legacy cache reuse, and resumable failures during parsing, embedding, store write, optimization, and pre-activation.
 
 The embedded runtime tests use injected native boundaries. Their CPU and accelerator labels describe fixtures, not hardware measurements.
 
-## Recorded identities
+## Historically recorded identities
 
 | Capability | Profile                              | Backend / adapter                                            | Cache identity                                                                                                   |
 | ---------- | ------------------------------------ | ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------- |
@@ -64,9 +66,9 @@ The command:
 - never downloads a model or reads production sessions;
 - writes `docs/evaluation/embeddinggemma-quality-<device>.json` and leaves Octen files untouched;
 - verifies EmbeddingGemma through `RecallConversationService` before indexing;
-- records profile, backend, adapter, requested and selected device, dimensions, prompts, tokenizer, canary, candidate policy, and manifest-derived embedding-cache identity;
+- historically recorded profile, backend, adapter, requested and selected device, dimensions, prompts, tokenizer, canary, candidate policy, and the then-current legacy embedding-cache identity;
 - runs the committed scope, provenance, identifier, tool-evidence, duplicate, branch, and source-preservation corpus; and
-- measures cold start, warm query latency, warm document-batch latency, indexing throughput, index size, and embedding-cache size.
+- historically measured cold start, warm query latency, warm document-batch latency, indexing throughput, index size, and legacy embedding-cache size. Target-generation acceptance does not use or measure a persistent embedding cache.
 
 The attempted CPU run failed before model load with:
 

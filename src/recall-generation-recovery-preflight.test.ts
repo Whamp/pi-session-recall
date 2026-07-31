@@ -38,4 +38,12 @@ void test('disposable recovery preflight matches interrupted and uninterrupted g
     true,
   );
   assert.equal(result.interrupted.storeCounts.sessionProjection > result.logicalSessionCount, true);
+  assert.equal(result.detached.interruptionSignal, 'SIGKILL');
+  assert.equal(result.detached.resumedWorkerReachedTerminalValidation, true);
+  assert.equal(result.detached.uninterruptedWorkerReachedTerminalValidation, true);
+  assert.equal(result.detached.validationReceiptsEquivalent, true);
+  assert.deepEqual(
+    result.detached.interrupted.exactMembership,
+    result.detached.uninterrupted.exactMembership,
+  );
 });

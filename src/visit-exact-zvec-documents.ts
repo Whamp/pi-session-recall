@@ -11,7 +11,7 @@ export interface ExactZvecDocumentEnumeration {
 }
 
 function escapeZvecStringLiteral(value: string): string {
-  return value.replaceAll("'", "''");
+  return value.replaceAll("'", "\\'");
 }
 
 function combineZvecFilters(baseFilter: string | undefined, partitionFilter: string): string {

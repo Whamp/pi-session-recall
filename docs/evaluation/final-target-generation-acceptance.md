@@ -2,11 +2,11 @@
 
 ## Decision
 
-**Safe reproducible evidence: PASS. Release evidence: PENDING FULL-CORPUS MEASUREMENT.**
+**Historical safe reproducible evidence: PASS. Release evidence: PENDING CLEAN-CANDIDATE RECERTIFICATION, LEGACY CUTOVER, AND FULL-CORPUS MEASUREMENT.**
 
-The complete #132 read matrix passed against final reviewed runtime candidate `cc991d144953791b8cd798fb84b207bcd34624b7`. The #133 write, recovery, lifecycle, and foreground-bound matrix passed against `67abdc772a19be01620c3cb7951561e546385947`, whose only change from the runtime candidate was regenerated read-evidence documentation. The full suite and every executable static or behavioral gate now pass. Both evidence commands used copied repository fixtures, generated test sources, disposable temporary roots, and real zvec stores.
+The complete #132 read matrix passed against historical runtime candidate `cc991d144953791b8cd798fb84b207bcd34624b7`. The #133 write, recovery, lifecycle, and foreground-bound matrix passed against `67abdc772a19be01620c3cb7951561e546385947`, whose only change from the runtime candidate was regenerated read-evidence documentation. Later repair candidate `2552424196434a368e62448c78be7b8d69ff5aa9` passed focused recovery certification, the full suite, and static gates, but the complete read and write evidence matrices were not rerun against that revision. Review repairs after that candidate also require a fresh clean-candidate run. Existing results are historical evidence, not release certification for the repaired HEAD.
 
-Release evidence remains incomplete because no immutable full-corpus snapshot of the existing Pi session JSONL source corpus has been identified for the disposable build. The committed 15-file quality corpus is approved only as a bounded retrieval evaluation, so full-corpus generation size and rebuild duration remain unmeasured. The required snapshot is source input: it is not the legacy recall database or a new synthetic corpus. The build output will be a new target-format generation in disposable storage. Production rebuild and activation remain separate human-approved operations.
+Release evidence also remains incomplete because no immutable full-corpus snapshot of the existing Pi session JSONL source corpus has been identified for the disposable build. The committed 15-file quality corpus is approved only as a bounded retrieval evaluation, so full-corpus generation size and rebuild duration remain unmeasured. The required snapshot is source input: it is not the legacy recall database or a new synthetic corpus. The build output will be a new target-format generation in disposable storage. Production rebuild and activation remain separate human-approved operations.
 
 ## Candidate and environment
 
@@ -107,7 +107,7 @@ Paired Sol and GLM reviewers independently checked Standards and Spec, followed 
 
 Both fixes were developed red-green. Their affected configured-service, lifecycle, worker, transfer, rollback, tool, and target-generation surface passed 74/74 tests before the final full suite.
 
-## Final gates
+## Historical gates
 
 - Target read matrix: 89/89 PASS.
 - Target write matrix: 103/103 PASS; all three foreground diagnostics PASS.
@@ -118,14 +118,15 @@ Both fixes were developed red-green. Their affected configured-service, lifecycl
 - Slop-scan delta from an exact detached base worktree: 0 added, 0 worsened.
 - Full `npm test`: PASS — 601 passed, 0 failed, 4 expected skips out of 605 tests.
 
-All executable behavioral and static gates pass. #135 remains incomplete only because final target-generation size and full rebuild duration have not been measured against a fixed snapshot of the existing Pi session source corpus.
+These gates passed on the historical candidates named above. They do not certify one current repaired revision across the complete read, write, recovery, quality, and foreground-limit matrices.
 
 ## Safety declaration
 
 No production recall generation was opened or mutated. No original Pi session file was opened or mutated. The harness copied committed fixtures into disposable roots, removed the copied source before target reads where required, and deleted generated stores after each run.
 
-## Remaining evidence input
+## Remaining release gates
 
-Identify a checksum-bound snapshot of the existing Pi session JSONL source corpus. Do not use the legacy recall database or a new synthetic corpus. Use an existing immutable copy, or explicitly authorize a one-time read-only copy into a disposable sessions root. The replacement build must read only that disposable snapshot and must not open production recall storage or mutate original Pi session files.
-
-Then run the full replacement build against the snapshot and record its total duration and final generation size. Review that evidence before any production rebuild or activation.
+1. On one clean repaired candidate, rerun `npm run evidence:target-reads`, `npm run evidence:target-writes`, recovery certification, the full suite, typecheck, type-aware lint, formatting, diff checks, and repository-required slop scan. Regenerate this report so every result identifies that candidate.
+2. Identify a checksum-bound snapshot of the existing Pi session JSONL source corpus. Do not use the legacy recall database or a new synthetic corpus. Use an existing immutable copy, or explicitly authorize a one-time read-only copy into a disposable sessions root. The replacement build must read only that disposable snapshot and must not open production recall storage or mutate original Pi session files.
+3. Run the full replacement build against the approved snapshot and record its total duration and final generation size.
+4. After all clean-candidate and full-corpus evidence passes together, remove the obsolete public `index()` writer, legacy rebuild and single-store contracts, persistent embedding-cache runtime/configuration, legacy adoption paths, and stale current-looking guidance. This cutover must not add a migration or compatibility wrapper. Review all evidence and the cutover before any production rebuild or activation.

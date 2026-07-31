@@ -1,6 +1,8 @@
 # Repaired generation recovery preflight
 
-**Result:** PASS
+> Historical evidence for candidate `2552424196434a368e62448c78be7b8d69ff5aa9`. Review repairs after this run supersede its certifier and detached-equivalence claims; regenerate this report from a clean repaired candidate before release acceptance.
+
+**Historical result:** PASS for the recorded candidate; **current certification:** PENDING RERUN
 
 - Candidate commit: `2552424196434a368e62448c78be7b8d69ff5aa9`
 - Completed: 2026-07-31T02:49:42.361Z
@@ -50,10 +52,10 @@ These values are reported without release thresholds.
 
 ## Reproduction
 
-Create a clean worktree at `b04b350939de11ae56b67f8d1e8cce9ab0b12ec8`, then run:
+Create one clean worktree at candidate `2552424196434a368e62448c78be7b8d69ff5aa9`. Create a separate clean worktree at `b04b350939de11ae56b67f8d1e8cce9ab0b12ec8` for the slop-scan base, then run from the candidate worktree:
 
 ```bash
-PI_RECALL_SLOP_BASE_DIRECTORY=/path/to/clean/base-worktree npm run evidence:generation-recovery
+PI_RECALL_SLOP_BASE_DIRECTORY=/path/to/clean/b04b350939de11ae56b67f8d1e8cce9ab0b12ec8 npm run evidence:generation-recovery
 ```
 
 The certifier ran:

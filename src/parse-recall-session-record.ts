@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 
 import { SessionImportFormat } from './enums.js';
+import { InvalidRecallSessionSourceError } from './errors.js';
 import { isUnknownRecord } from './is-unknown-record.js';
 import type { RecallProjectedEntryDescriptor } from './recall-session-projection.js';
 
@@ -42,12 +43,15 @@ export function parseRecallSessionRecord(
     parsed = JSON.parse(text);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`Recall session JSON invalid at ${sourcePath}:${sourceLine}: ${message}`, {
-      cause: error,
-    });
+    throw new InvalidRecallSessionSourceError(
+      `Recall session JSON invalid at ${sourcePath}:${sourceLine}: ${message}`,
+      {
+        cause: error,
+      },
+    );
   }
   if (!isUnknownRecord(parsed) || typeof parsed.type !== 'string') {
-    throw new Error(
+    throw new InvalidRecallSessionSourceError(
       `Recall session graph invalid at ${sourcePath}:${sourceLine}: each record must be an object with a type`,
     );
   }
@@ -142,7 +146,7 @@ function parseRequiredString(
   lineIndex: number,
 ): string {
   if (typeof value !== 'string' || value.length === 0) {
-    throw new Error(
+    throw new InvalidRecallSessionSourceError(
       `Recall session graph invalid at ${sessionPath}:${lineIndex}: ${fieldName} must be a nonempty string`,
     );
   }
@@ -263,7 +267,7 @@ function parseSessionFileRecord(
   lineIndex: number,
 ): ParsedSessionFileRecord {
   if (!isUnknownRecord(parsed) || typeof parsed.type !== 'string') {
-    throw new Error(
+    throw new InvalidRecallSessionSourceError(
       `Recall session graph invalid at ${sessionPath}:${lineIndex}: each line must be an object with a type`,
     );
   }
@@ -280,7 +284,7 @@ function parseSessionFileRecord(
   }
   if (parsed.type === 'leaf') {
     if (parsed.targetId !== null && typeof parsed.targetId !== 'string') {
-      throw new Error(
+      throw new InvalidRecallSessionSourceError(
         `Recall session graph invalid at ${sessionPath}:${lineIndex}: leaf.targetId must be a string or null`,
       );
     }
@@ -288,7 +292,7 @@ function parseSessionFileRecord(
   }
   const id = parseRequiredString(parsed.id, 'entry.id', sessionPath, lineIndex);
   if (parsed.parentId !== null && typeof parsed.parentId !== 'string') {
-    throw new Error(
+    throw new InvalidRecallSessionSourceError(
       `Recall session graph invalid at ${sessionPath}:${lineIndex}: parentId must be a string or null`,
     );
   }
@@ -328,7 +332,7 @@ function parseCanonicalSessionRecords(
       records.harnessLeafTarget = record.targetId;
     } else {
       if (records.entriesById.has(record.entry.id)) {
-        throw new Error(
+        throw new InvalidRecallSessionSourceError(
           `Recall session graph invalid at ${graphSource}:${physicalRecord.sourceLine}: duplicate entry id ${record.entry.id}`,
         );
       }
@@ -345,16 +349,20 @@ function validateCanonicalSessionHeader(
   sessionPath: string,
 ): ParsedRecallSessionHeader {
   if (headers.length !== 1) {
-    throw new Error(
+    throw new InvalidRecallSessionSourceError(
       `Recall session graph invalid at ${sessionPath}: expected exactly one session header, found ${headers.length}`,
     );
   }
   const header = headers[0];
   if (!header) {
-    throw new Error(`Recall session graph invalid at ${sessionPath}: session header missing`);
+    throw new InvalidRecallSessionSourceError(
+      `Recall session graph invalid at ${sessionPath}: session header missing`,
+    );
   }
   if (header.lineIndex !== firstRecordLine) {
-    throw new Error(`Recall session graph invalid at ${sessionPath}: session header must be first`);
+    throw new InvalidRecallSessionSourceError(
+      `Recall session graph invalid at ${sessionPath}: session header must be first`,
+    );
   }
   return header;
 }
@@ -370,7 +378,7 @@ function buildSessionChildEntryIds(
       continue;
     }
     if (!entriesById.has(entry.parentId)) {
-      throw new Error(
+      throw new InvalidRecallSessionSourceError(
         `Recall session graph invalid at ${sessionPath}:${entry.lineIndex}: entry ${entry.id} has missing parent ${entry.parentId}`,
       );
     }
@@ -391,7 +399,7 @@ function assertSessionParentPathsAcyclic(
     let current: ParsedRecallSessionEntry | undefined = entry;
     while (current) {
       if (visited.has(current.id)) {
-        throw new Error(
+        throw new InvalidRecallSessionSourceError(
           `Recall session graph invalid at ${sessionPath}:${entry.lineIndex}: parent cycle includes ${current.id}`,
         );
       }
@@ -409,7 +417,7 @@ function resolveCurrentSessionLeafId(
   const currentLeafId =
     records.harnessLeafTarget === undefined ? legacyLeafId : records.harnessLeafTarget;
   if (currentLeafId && !records.entriesById.has(currentLeafId)) {
-    throw new Error(
+    throw new InvalidRecallSessionSourceError(
       `Recall session graph invalid at ${sessionPath}: leaf target ${currentLeafId} does not exist`,
     );
   }
@@ -440,7 +448,7 @@ function assertSessionCompactionAndBranchLinks(
           : [],
       );
       if (typeof firstKeptEntryId !== 'string' || !ancestorIds.has(firstKeptEntryId)) {
-        throw new Error(
+        throw new InvalidRecallSessionSourceError(
           `Recall session graph invalid at ${sessionPath}:${entry.lineIndex}: compaction ${entry.id} firstKeptEntryId ${String(firstKeptEntryId)} is not an ancestor`,
         );
       }
@@ -448,7 +456,7 @@ function assertSessionCompactionAndBranchLinks(
     if (entry.type === 'branch_summary') {
       const fromId = entry.record.fromId;
       if (fromId !== 'root' && (typeof fromId !== 'string' || !entriesById.has(fromId))) {
-        throw new Error(
+        throw new InvalidRecallSessionSourceError(
           `Recall session graph invalid at ${sessionPath}:${entry.lineIndex}: branch summary ${entry.id} fromId ${String(fromId)} does not name an entry or root`,
         );
       }
@@ -497,7 +505,7 @@ function findSessionToolEntryLinks(
           entry.lineIndex,
         );
         if (toolCallEntryIdsByCallId.has(toolCallId)) {
-          throw new Error(
+          throw new InvalidRecallSessionSourceError(
             `Recall session graph invalid at ${sessionPath}:${entry.lineIndex}: duplicate tool call id ${toolCallId}`,
           );
         }
@@ -522,7 +530,7 @@ function findSessionToolEntryLinks(
         entry.lineIndex,
       );
       if (toolResultEntryIdsByCallId.has(toolCallId)) {
-        throw new Error(
+        throw new InvalidRecallSessionSourceError(
           `Recall session graph invalid at ${sessionPath}:${entry.lineIndex}: duplicate tool result id ${toolCallId}`,
         );
       }
@@ -533,14 +541,14 @@ function findSessionToolEntryLinks(
   for (const [toolCallId, resultEntryId] of toolResultEntryIdsByCallId) {
     const callEntryId = toolCallEntryIdsByCallId.get(toolCallId);
     if (!callEntryId) {
-      throw new Error(
+      throw new InvalidRecallSessionSourceError(
         `Recall session graph invalid at ${sessionPath}: tool result ${toolCallId} has no matching tool call`,
       );
     }
     const callToolName = toolCallNamesByCallId.get(toolCallId);
     const resultToolName = toolResultNamesByCallId.get(toolCallId);
     if (callToolName !== resultToolName) {
-      throw new Error(
+      throw new InvalidRecallSessionSourceError(
         `Recall session graph invalid at ${sessionPath}: tool result ${toolCallId} names ${String(resultToolName)}, but call names ${String(callToolName)} (entries ${callEntryId} and ${resultEntryId})`,
       );
     }

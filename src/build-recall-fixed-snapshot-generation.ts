@@ -7,6 +7,7 @@ import { ZVecOpen, type ZVecCollection, type ZVecStatus } from '@zvec/zvec';
 import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 
+import { InvalidRecallSessionSourceError } from './errors.js';
 import { isUnknownRecord } from './is-unknown-record.js';
 import { openRecallZvecValidationStore } from './open-recall-zvec-validation-store.js';
 import {
@@ -209,23 +210,6 @@ const expectedPhysicalSourceArtifactSchema = Type.Union([
   materializedExpectedPhysicalSourceArtifactSchema,
   skippedExpectedPhysicalSourceArtifactSchema,
 ]);
-
-const INVALID_RECALL_SESSION_SOURCE_ERROR_PREFIXES = [
-  'Recall session JSON invalid at ',
-  'Recall session graph invalid at ',
-  'Recall session import unsupported or ambiguous at ',
-  'Recall v1 session invalid at ',
-  'Recall rebuild source contains no logical session: ',
-  'Recall rebuild source projection requires reconciliation: ',
-  'Recall rebuild source projection failed: ',
-] as const;
-
-function isInvalidRecallSessionSourceError(error: unknown): error is Error {
-  return (
-    error instanceof Error &&
-    INVALID_RECALL_SESSION_SOURCE_ERROR_PREFIXES.some((prefix) => error.message.startsWith(prefix))
-  );
-}
 
 function isSkippedExpectedPhysicalSourceArtifact(
   artifact: Readonly<RecallExpectedPhysicalSourceArtifact>,
@@ -652,7 +636,7 @@ async function materializeExpectedPhysicalSource(
       ...materialized,
     });
   } catch (error) {
-    if (!isInvalidRecallSessionSourceError(error)) {
+    if (!(error instanceof InvalidRecallSessionSourceError)) {
       throw error;
     }
     artifact = Value.Parse(expectedPhysicalSourceArtifactSchema, {

@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
 import { ZVecOpen } from '@zvec/zvec';
+import fc from 'fast-check';
 
 import type { RecallConversationConfig } from './recall-conversation-config.js';
 import { RecallDiagnosticsMode, RecallGenerationCutoverState } from './enums.js';
@@ -810,6 +812,385 @@ void test('configured fixed-snapshot build records and skips one invalid legacy 
     /entry legacy-orphan-message has missing parent/u,
   );
   assert.deepEqual(await service.openValidatedRecallGeneration(generationId), created);
+});
+
+void test('configured fixed-snapshot build resumes checksum-bound malformed-source skips once', async (t) => {
+  const disposableRoot = await mkdtemp(join(tmpdir(), 'recall-fixed-snapshot-malformed-resume-'));
+  t.after(() => rm(disposableRoot, { recursive: true, force: true }));
+  const sessionsDirectory = join(disposableRoot, 'sessions');
+  const dataDirectory = join(disposableRoot, 'recall');
+  const projectDirectory = join(disposableRoot, 'project');
+  const malformedSourcePath = join(sessionsDirectory, 'malformed-json.jsonl');
+  const unsupportedSourcePath = join(sessionsDirectory, 'unsupported-version.jsonl');
+  const healthySourcePath = join(sessionsDirectory, 'healthy-after-malformed.jsonl');
+  await Promise.all([mkdir(sessionsDirectory), mkdir(dataDirectory), mkdir(projectDirectory)]);
+  const malformedSourceBytes = Buffer.from(
+    `${JSON.stringify({
+      type: 'session',
+      version: 3,
+      id: 'malformed-json-session',
+      timestamp: '2026-08-05T00:00:00.000Z',
+      cwd: projectDirectory,
+    })}\n{"type":"message","id":"truncated`,
+  );
+  await writeFile(malformedSourcePath, malformedSourceBytes);
+  await writeJsonl(unsupportedSourcePath, [
+    {
+      type: 'session',
+      version: 4,
+      id: 'unsupported-version-session',
+      timestamp: '2026-08-05T00:00:00.000Z',
+      cwd: projectDirectory,
+    },
+    {
+      type: 'message',
+      id: 'unsupported-version-message',
+      parentId: null,
+      timestamp: '2026-08-05T00:00:01.000Z',
+      message: { role: 'assistant', content: 'UNSUPPORTED_SOURCE_MUST_NOT_INDEX' },
+    },
+  ]);
+  await writeJsonl(healthySourcePath, [
+    {
+      type: 'session',
+      version: 3,
+      id: 'healthy-after-malformed-session',
+      timestamp: '2026-08-05T00:00:00.000Z',
+      cwd: projectDirectory,
+    },
+    {
+      type: 'message',
+      id: 'healthy-after-malformed-message',
+      parentId: null,
+      timestamp: '2026-08-05T00:00:01.000Z',
+      message: { role: 'assistant', content: 'HEALTHY_AFTER_MALFORMED remains searchable.' },
+    },
+  ]);
+  const unsupportedSourceBytes = await readFile(unsupportedSourcePath);
+
+  const profile = createOctenEmbeddingModelProfile(
+    {
+      requestModel: 'fixture-native-model',
+      servedModelId: 'fixture/native-model',
+      artifact: 'fixture-native-model.fp32',
+      artifactSha256: '3'.repeat(64),
+      dimensions: 3,
+      quantization: 'fp32',
+      pooling: 'last',
+      normalization: 'l2',
+    },
+    2,
+  );
+  const config = createPhysicalSourceGenerationTestConfig(dataDirectory, sessionsDirectory);
+  let interruptDenseWrite = true;
+  const service = createRecallConversationService(config, {
+    embeddingProfile: profile,
+    embeddingProvider: {
+      async embedDocuments(documents) {
+        return documents.map(() => [3, 4, 100]);
+      },
+      async embedQuery() {
+        return [3, 4, 100];
+      },
+    },
+    tokenizerIdentity: {
+      model: 'fixture-tokenizer',
+      revision: 'fixture-revision',
+      library: { name: 'fixture-tokenizer', version: '1' },
+      encodeOptions: { addSpecialTokens: false, returnTokenTypeIds: false },
+      assets: [{ fileName: 'fixture-tokenizer.json', sha256: '4'.repeat(64) }],
+    },
+    loadTokenizer: async () => tokenizer,
+    rerankingProfile: null,
+    reranker: null,
+    workerSignal: { signalDetachedWorker() {} },
+    fixedSnapshotBuildFault(stage) {
+      if (stage === 'after-dense-write' && interruptDenseWrite) {
+        interruptDenseWrite = false;
+        throw new Error('fixture interrupted after malformed-source artifacts were recorded');
+      }
+    },
+  });
+
+  const generationId = 'generation_resumes_malformed_source_skips';
+  const physicalSessionPaths = [malformedSourcePath, unsupportedSourcePath, healthySourcePath];
+  const initialCheckpoints: string[] = [];
+  await assert.rejects(
+    service.createRecallGenerationFromPhysicalSources({
+      generationId,
+      physicalSessionPaths,
+      onPhysicalSourceCheckpoint(checkpoint) {
+        initialCheckpoints.push(checkpoint.sessionsRootRelativePath);
+      },
+    }),
+    /fixture interrupted after malformed-source artifacts were recorded/u,
+  );
+  assert.deepEqual(initialCheckpoints, ['malformed-json.jsonl', 'unsupported-version.jsonl']);
+
+  const generationDirectory = join(config.generationRootDirectory, generationId);
+  const expectedSourceDirectory = join(generationDirectory, 'expected-sources');
+  const skippedSourceExpectations = [
+    { path: malformedSourcePath, bytes: malformedSourceBytes },
+    { path: unsupportedSourcePath, bytes: unsupportedSourceBytes },
+  ];
+  const skippedArtifactContents = new Map<string, string>();
+  for (const expectation of skippedSourceExpectations) {
+    const sourceIdentity = resolveRecallPhysicalSourceIdentity(sessionsDirectory, expectation.path);
+    const artifactPath = join(
+      expectedSourceDirectory,
+      `${sourceIdentity.physicalSourceIdentity}.json`,
+    );
+    const artifactContent = await readFile(artifactPath, 'utf8');
+    const artifact: unknown = JSON.parse(artifactContent);
+    assert.ok(isUnknownRecord(artifact));
+    assert.equal(artifact.skipReason, 'invalid-session-source');
+    assert.equal(
+      artifact.sourceChecksum,
+      createHash('sha256').update(expectation.bytes).digest('hex'),
+    );
+    skippedArtifactContents.set(artifactPath, artifactContent);
+  }
+  assert.equal((await readdir(expectedSourceDirectory)).length, physicalSessionPaths.length);
+
+  await rm(join(generationDirectory, 'build-sources'), { recursive: true });
+  const resumedCheckpoints: string[] = [];
+  const resumed = await service.createRecallGenerationFromPhysicalSources({
+    generationId,
+    physicalSessionPaths,
+    resumeExistingGeneration: true,
+    onPhysicalSourceCheckpoint(checkpoint) {
+      resumedCheckpoints.push(checkpoint.sessionsRootRelativePath);
+    },
+  });
+  assert.deepEqual(resumedCheckpoints, [
+    'healthy-after-malformed.jsonl',
+    'malformed-json.jsonl',
+    'unsupported-version.jsonl',
+  ]);
+  assert.equal((await readdir(expectedSourceDirectory)).length, physicalSessionPaths.length);
+  for (const [artifactPath, originalContent] of skippedArtifactContents) {
+    assert.equal(await readFile(artifactPath, 'utf8'), originalContent);
+  }
+  assert.ok(
+    (await service.searchRecallGenerationLexical(generationId, 'HEALTHY_AFTER_MALFORMED', 10))
+      .length > 0,
+  );
+  assert.deepEqual(await service.openValidatedRecallGeneration(generationId), resumed);
+});
+
+void test('configured fixed-snapshot build keeps generated parser-looking operational failures fatal', async () => {
+  const parserMessagePrefix = fc.constantFrom(
+    'Recall session JSON invalid at ',
+    'Recall session graph invalid at ',
+    'Recall session import unsupported or ambiguous at ',
+    'Recall v1 session invalid at ',
+    'Recall rebuild source contains no logical session: ',
+    'Recall rebuild source projection requires reconciliation: ',
+    'Recall rebuild source projection failed: ',
+  );
+  const parserLookingMessage = fc
+    .tuple(parserMessagePrefix, fc.string({ minLength: 1, maxLength: 40 }))
+    .map(([prefix, detail]) => `${prefix}${detail}`);
+
+  await fc.assert(
+    fc.asyncProperty(parserLookingMessage, async (failureMessage) => {
+      const disposableRoot = await mkdtemp(
+        join(tmpdir(), 'recall-fixed-snapshot-operational-failure-'),
+      );
+      try {
+        const sessionsDirectory = join(disposableRoot, 'sessions');
+        const dataDirectory = join(disposableRoot, 'recall');
+        const projectDirectory = join(disposableRoot, 'project');
+        const sourcePath = join(sessionsDirectory, 'healthy.jsonl');
+        await Promise.all([
+          mkdir(sessionsDirectory),
+          mkdir(dataDirectory),
+          mkdir(projectDirectory),
+        ]);
+        await writeJsonl(
+          sourcePath,
+          createToolOnlyLogicalSession(
+            'operational-failure-session',
+            'operational-failure',
+            projectDirectory,
+            'OPERATIONAL_FAILURE_SOURCE',
+          ),
+        );
+
+        const config = createPhysicalSourceGenerationTestConfig(dataDirectory, sessionsDirectory);
+        const service = createRecallConversationService(config, {
+          loadTokenizer: async () => tokenizer,
+          resolveProjectIdentity: async () => {
+            throw new Error(failureMessage);
+          },
+          rerankingProfile: null,
+          reranker: null,
+          workerSignal: { signalDetachedWorker() {} },
+        });
+        const generationId = 'generation_parser_looking_operational_failure';
+        await assert.rejects(
+          service.createRecallGenerationFromPhysicalSources({
+            generationId,
+            physicalSessionPaths: [sourcePath],
+          }),
+          (error: unknown) => error instanceof Error && error.message === failureMessage,
+        );
+        const sourceIdentity = resolveRecallPhysicalSourceIdentity(sessionsDirectory, sourcePath);
+        assert.equal(
+          existsSync(
+            join(
+              config.generationRootDirectory,
+              generationId,
+              'expected-sources',
+              `${sourceIdentity.physicalSourceIdentity}.json`,
+            ),
+          ),
+          false,
+        );
+      } finally {
+        await rm(disposableRoot, { recursive: true, force: true });
+      }
+    }),
+    { numRuns: 10 },
+  );
+});
+
+void test('configured fixed-snapshot build keeps every non-source failure category fatal', async (t) => {
+  const failureCategories = [
+    'projection',
+    'inference',
+    'cancellation',
+    'storage',
+    'internal',
+  ] as const;
+
+  for (const failureCategory of failureCategories) {
+    await t.test(failureCategory, async (t) => {
+      const disposableRoot = await mkdtemp(
+        join(tmpdir(), `recall-fixed-snapshot-${failureCategory}-failure-`),
+      );
+      t.after(() => rm(disposableRoot, { recursive: true, force: true }));
+      const sessionsDirectory = join(disposableRoot, 'sessions');
+      const dataDirectory = join(disposableRoot, 'recall');
+      const projectDirectory = join(disposableRoot, 'project');
+      const sourcePath = join(sessionsDirectory, 'healthy-source.jsonl');
+      await Promise.all([mkdir(sessionsDirectory), mkdir(dataDirectory), mkdir(projectDirectory)]);
+      const records = [
+        {
+          type: 'session',
+          version: 3,
+          id: `${failureCategory}-failure-session`,
+          timestamp: '2026-08-05T00:00:00.000Z',
+          cwd: projectDirectory,
+        },
+        {
+          type: 'message',
+          id: `${failureCategory}-failure-message`,
+          parentId: null,
+          timestamp: '2026-08-05T00:00:01.000Z',
+          message: {
+            role: 'assistant',
+            content: `${failureCategory.toUpperCase()}_FAILURE_SOURCE`,
+          },
+        },
+      ];
+      if (failureCategory === 'projection') {
+        await writeFile(sourcePath, records.map((record) => JSON.stringify(record)).join('\n'));
+      } else {
+        await writeJsonl(sourcePath, records);
+      }
+
+      const parserLookingFailure = `Recall session graph invalid at fixture: ${failureCategory} failure`;
+      const controller = new AbortController();
+      if (failureCategory === 'cancellation') {
+        controller.abort(new Error(parserLookingFailure));
+      }
+      const profile = createOctenEmbeddingModelProfile(
+        {
+          requestModel: 'fixture-native-model',
+          servedModelId: 'fixture/native-model',
+          artifact: 'fixture-native-model.fp32',
+          artifactSha256: '5'.repeat(64),
+          dimensions: 3,
+          quantization: 'fp32',
+          pooling: 'last',
+          normalization: 'l2',
+        },
+        2,
+      );
+      const failingTokenizer: ConversationTextTokenizer = {
+        encodeConversationText(text) {
+          if (failureCategory === 'internal') {
+            throw new Error(parserLookingFailure);
+          }
+          return tokenizer.encodeConversationText(text);
+        },
+      };
+      const config = createPhysicalSourceGenerationTestConfig(dataDirectory, sessionsDirectory);
+      const service = createRecallConversationService(config, {
+        embeddingProfile: profile,
+        embeddingProvider: {
+          async embedDocuments(documents) {
+            if (failureCategory === 'inference') {
+              throw new Error(parserLookingFailure);
+            }
+            return documents.map(() => [3, 4, 100]);
+          },
+          async embedQuery() {
+            return [3, 4, 100];
+          },
+        },
+        tokenizerIdentity: {
+          model: 'fixture-tokenizer',
+          revision: 'fixture-revision',
+          library: { name: 'fixture-tokenizer', version: '1' },
+          encodeOptions: { addSpecialTokens: false, returnTokenTypeIds: false },
+          assets: [{ fileName: 'fixture-tokenizer.json', sha256: '6'.repeat(64) }],
+        },
+        loadTokenizer: async () => failingTokenizer,
+        rerankingProfile: null,
+        reranker: null,
+        workerSignal: { signalDetachedWorker() {} },
+        fixedSnapshotBuildFault(stage) {
+          if (failureCategory === 'storage' && stage === 'after-dense-write') {
+            throw new Error(parserLookingFailure);
+          }
+        },
+      });
+      const generationId = `generation_fatal_${failureCategory}_failure`;
+      const build = service.createRecallGenerationFromPhysicalSources({
+        generationId,
+        physicalSessionPaths: [sourcePath],
+        signal: controller.signal,
+      });
+      if (failureCategory === 'projection') {
+        await assert.rejects(
+          build,
+          /Recall rebuild source changed while projections were created/u,
+        );
+      } else if (failureCategory === 'cancellation') {
+        await assert.rejects(build, /Recall fixed snapshot generation build cancelled/u);
+      } else {
+        await assert.rejects(
+          build,
+          (error: unknown) => error instanceof Error && error.message === parserLookingFailure,
+        );
+      }
+
+      const sourceIdentity = resolveRecallPhysicalSourceIdentity(sessionsDirectory, sourcePath);
+      const artifactPath = join(
+        config.generationRootDirectory,
+        generationId,
+        'expected-sources',
+        `${sourceIdentity.physicalSourceIdentity}.json`,
+      );
+      if (existsSync(artifactPath)) {
+        const artifact: unknown = JSON.parse(await readFile(artifactPath, 'utf8'));
+        assert.ok(isUnknownRecord(artifact));
+        assert.equal(Object.hasOwn(artifact, 'skipReason'), false);
+      }
+    });
+  }
 });
 
 void test('configured service resolves current-build duplicates before copying a validated compatible generation', async (t) => {

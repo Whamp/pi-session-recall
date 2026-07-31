@@ -1,3 +1,11 @@
+/** Identifies a physical session source rejected by JSON, format, or graph validation. */
+export class InvalidRecallSessionSourceError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'InvalidRecallSessionSourceError';
+  }
+}
+
 /** Reports that recall search could not enter the current bounded write window wait. */
 export class RecallSearchBusyError extends Error {
   constructor() {

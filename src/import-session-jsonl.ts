@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 
 import { SessionImportFormat } from './enums.js';
+import { InvalidRecallSessionSourceError } from './errors.js';
 import { isUnknownRecord } from './is-unknown-record.js';
 import {
   parseRecallSessionRecord,
@@ -75,18 +76,7 @@ async function readPhysicalSessionJsonlRecords(
     if (!framed.text.trim()) {
       continue;
     }
-    let value: Record<string, unknown>;
-    try {
-      value = parseRecallSessionRecord(framed.text, sessionPath, framed.sourceLine, 0, 0).value;
-    } catch (error) {
-      if (error instanceof Error && error.message.startsWith('Recall session graph invalid')) {
-        throw new Error(
-          `Recall session import unsupported or ambiguous at ${sessionPath}:${framed.sourceLine}: each record must be an object with a type`,
-          { cause: error },
-        );
-      }
-      throw error;
-    }
+    const { value } = parseRecallSessionRecord(framed.text, sessionPath, framed.sourceLine, 0, 0);
     records.push({ sourceLine: framed.sourceLine, value });
   }
   return records;
@@ -230,7 +220,7 @@ function convertPiV1LinearSession(
           ? entryIds[firstKeptEntryIndex - 1]
           : undefined;
       if (!firstKeptEntryId) {
-        throw new Error(
+        throw new InvalidRecallSessionSourceError(
           `Recall v1 session invalid at ${sessionPath}:${record.sourceLine}: compaction firstKeptEntryIndex does not name an entry`,
         );
       }
@@ -293,7 +283,7 @@ function splitPiSessionReuseHistory(
       return Boolean(header && isCanonicalReuseHeader(header.value));
     })
   ) {
-    throw new Error(
+    throw new InvalidRecallSessionSourceError(
       `Recall session import unsupported or ambiguous at ${sessionPath}: reuse history requires complete versioned headers and no pre-header records`,
     );
   }
@@ -303,7 +293,7 @@ function splitPiSessionReuseHistory(
     const header = segment[0];
     const lastRecord = segment.at(-1);
     if (!header || !lastRecord || segment.length < 2 || !isNonemptyString(header.value.id)) {
-      throw new Error(
+      throw new InvalidRecallSessionSourceError(
         `Recall session import unsupported or ambiguous at ${sessionPath}: every reuse-history header must begin a nonempty logical session`,
       );
     }
@@ -325,12 +315,12 @@ function createCanonicalSingleSession(
   const header = records[0];
   const lastRecord = records.at(-1);
   if (!header || !lastRecord || !isCompleteSessionHeader(header.value)) {
-    throw new Error(
+    throw new InvalidRecallSessionSourceError(
       `Recall session import unsupported or ambiguous at ${sessionPath}: expected one complete leading session header`,
     );
   }
   if (!isSupportedCanonicalSessionVersion(header.value.version)) {
-    throw new Error(
+    throw new InvalidRecallSessionSourceError(
       `Recall session import unsupported or ambiguous at ${sessionPath}:${header.sourceLine}: canonical session version must be 2 or 3`,
     );
   }
@@ -348,7 +338,9 @@ function createCanonicalSingleSession(
 export async function importSessionJsonl(sessionPath: string): Promise<SessionJsonlImport> {
   const records = await readPhysicalSessionJsonlRecords(sessionPath);
   if (records.length === 0) {
-    throw new Error(`Recall session import unsupported or ambiguous at ${sessionPath}: no records`);
+    throw new InvalidRecallSessionSourceError(
+      `Recall session import unsupported or ambiguous at ${sessionPath}: no records`,
+    );
   }
   const reuseSessions = splitPiSessionReuseHistory(sessionPath, records);
   if (reuseSessions) {

@@ -326,6 +326,7 @@ export async function materializeRecallPhysicalSourceGeneration(
   );
   const imported = await readSessionConversationImport(capturedSource.sourceReadPath, {
     tokenizer: dependencies.tokenizer,
+    physicalSessionPath,
     ...(config.chunkPolicy ?? {}),
   });
   const sourceProjections = await createRecallSessionProjectionBaselineFromImport({

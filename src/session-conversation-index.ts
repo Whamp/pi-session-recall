@@ -44,6 +44,8 @@ export interface SessionConversationChunkOptions {
   tokenizer: ConversationTextTokenizer;
   maxTokens?: number;
   overlapTokens?: number;
+  /** Canonical physical session path when bytes are read from a captured snapshot copy. */
+  physicalSessionPath?: string;
   /** Optional rebuild boundary containing approved contributors per logical session. */
   eligibleContributorEntryIdsByLogicalSessionId?: ReadonlyMap<string, ReadonlySet<string>>;
 }
@@ -1412,6 +1414,7 @@ export async function readSessionConversationImport(
 ): Promise<SessionConversationImport> {
   const maxTokens = options.maxTokens ?? 1_024;
   const overlapTokens = options.overlapTokens ?? 128;
+  const physicalSessionPath = options.physicalSessionPath ?? sessionPath;
   assertRecallChunkPolicy({ maxTokens, overlapTokens });
 
   const imported = await importSessionJsonl(sessionPath);
@@ -1455,7 +1458,7 @@ export async function readSessionConversationImport(
       remainingApprovedContributorIdsByLogicalSessionId.delete(approvedLogicalSessionIdentity);
     }
     const sessionChunks = buildSessionConversationDocuments(graph, approvedContributorEntryIds, {
-      sessionPath,
+      sessionPath: physicalSessionPath,
       logicalSessionIdentity,
       physicalSessionProjectionId,
       tokenizer: options.tokenizer,

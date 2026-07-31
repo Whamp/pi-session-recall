@@ -17,6 +17,7 @@ import {
 import { createRecallGenerationComponentPaths } from './recall-generation-stores.js';
 import { completeRecallGenerationReplayTransition } from './recall-generation-transitions.js';
 import { decodeRecallSessionProjection } from './recall-session-projection.js';
+import { visitExactZvecDocuments } from './visit-exact-zvec-documents.js';
 
 /** Registry, spool, and fixed-snapshot inputs for proving replacement replay complete. */
 export interface CompleteRecallGenerationReplayOptions {
@@ -41,48 +42,50 @@ function readTargetPhysicalProjectionCoveredMarkerIds(
     if (collection.stats.docCount === 0) {
       return new Set();
     }
-    const records = collection.querySync({
-      topk: collection.stats.docCount,
-      outputFields: ['projectionKind', 'projectionJson'],
-      includeVector: false,
-    });
     const coveredMarkerIds = new Set<string>();
-    for (const record of records) {
-      if (
-        record.fields.projectionKind !== RecallSessionProjectionKind.PHYSICAL_SESSION ||
-        typeof record.fields.projectionJson !== 'string'
-      ) {
-        continue;
-      }
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(record.fields.projectionJson);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        throw new Error(
-          `Recall generation replay physical projection JSON invalid for ${record.id}: ${message}`,
-          { cause: error },
-        );
-      }
-      if (
-        typeof parsed !== 'object' ||
-        parsed === null ||
-        !('ingestionProjectionPayload' in parsed)
-      ) {
-        throw new Error(`Recall generation replay ingestion projection missing for ${record.id}`);
-      }
-      const projection = decodeRecallSessionProjection(parsed.ingestionProjectionPayload, {
-        expectedGenerationId: generationId,
-      });
-      if (projection.projectionKind !== RecallSessionProjectionKind.PHYSICAL_SESSION) {
-        throw new Error(
-          `Recall generation replay physical projection kind mismatch for ${record.id}`,
-        );
-      }
-      for (const markerId of projection.markerCheckpoint.coveredMarkerIds) {
-        coveredMarkerIds.add(markerId);
-      }
-    }
+    visitExactZvecDocuments(
+      collection,
+      {
+        filter: `projectionKind = '${RecallSessionProjectionKind.PHYSICAL_SESSION}'`,
+        uniquePartitionField: 'physicalSourceIdentity',
+        outputFields: ['projectionKind', 'projectionJson'],
+      },
+      (record) => {
+        if (typeof record.fields.projectionJson !== 'string') {
+          throw new Error(
+            `Recall generation replay physical projection JSON missing for ${record.id}`,
+          );
+        }
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(record.fields.projectionJson);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          throw new Error(
+            `Recall generation replay physical projection JSON invalid for ${record.id}: ${message}`,
+            { cause: error },
+          );
+        }
+        if (
+          typeof parsed !== 'object' ||
+          parsed === null ||
+          !('ingestionProjectionPayload' in parsed)
+        ) {
+          throw new Error(`Recall generation replay ingestion projection missing for ${record.id}`);
+        }
+        const projection = decodeRecallSessionProjection(parsed.ingestionProjectionPayload, {
+          expectedGenerationId: generationId,
+        });
+        if (projection.projectionKind !== RecallSessionProjectionKind.PHYSICAL_SESSION) {
+          throw new Error(
+            `Recall generation replay physical projection kind mismatch for ${record.id}`,
+          );
+        }
+        for (const markerId of projection.markerCheckpoint.coveredMarkerIds) {
+          coveredMarkerIds.add(markerId);
+        }
+      },
+    );
     return coveredMarkerIds;
   } finally {
     collection.closeSync();

@@ -8,7 +8,11 @@ import test from 'node:test';
 import { ZVecOpen } from '@zvec/zvec';
 
 import type { RecallConversationConfig } from './recall-conversation-config.js';
-import { RecallDiagnosticsMode, RecallGenerationCutoverState } from './enums.js';
+import {
+  RecallDiagnosticsMode,
+  RecallGenerationCutoverState,
+  RecallSessionProjectionKind,
+} from './enums.js';
 import { isUnknownRecord } from './is-unknown-record.js';
 import { createRecallConversationService } from './recall-conversation-service.js';
 import {
@@ -233,7 +237,7 @@ void test('validated generation open and deletion fail closed for every incohere
         fields: {
           schemaVersion: 1,
           generationId: unexpectedProjection.generationId,
-          projectionKind: 'physical-session',
+          projectionKind: RecallSessionProjectionKind.PHYSICAL_SESSION,
           physicalSourceIdentity: 'unexpected-source',
           logicalSessionOccurrenceId: '',
           projectionJson: '{}',

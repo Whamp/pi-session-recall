@@ -30,6 +30,7 @@ import { createRecallPhysicalSourceStoreMembership } from './recall-generation-p
 import {
   createRecallGenerationComponentPaths,
   readRecallGenerationVectorValues,
+  type RecallGenerationStoreContract,
 } from './recall-generation-stores.js';
 import {
   readRecallActiveGenerationPointer,
@@ -68,6 +69,10 @@ import {
   type SessionConversationChunk,
 } from './session-conversation-index.js';
 import { syncRecallDirectory } from './sync-recall-directory.js';
+import {
+  type ExactZvecDocumentEnumeration,
+  visitExactZvecDocuments,
+} from './visit-exact-zvec-documents.js';
 import { serializeStoredConversationChunk } from './zvec-conversation-store.js';
 
 /** Maximum evidence occurrences mutated in one target-generation write window. */
@@ -1343,20 +1348,67 @@ async function commitPreparedTargetTransfer(
   }
 }
 
-async function listPhysicalSourceRecordIds(
+function createPhysicalSourceRecordEnumerations(
+  physicalSourceIdentity: string,
+  responsibility: RecallGenerationStoreContract['responsibility'],
+): readonly ExactZvecDocumentEnumeration[] {
+  const sourceFilter = `physicalSourceIdentity = '${physicalSourceIdentity}'`;
+  switch (responsibility) {
+    case 'lexical-source':
+      return [
+        {
+          filter: `(${sourceFilter}) AND (recordKind = 'entry-anchor')`,
+          uniquePartitionField: 'entryAnchorId',
+          outputFields: [],
+        },
+        {
+          filter: `(${sourceFilter}) AND (recordKind = 'evidence')`,
+          uniquePartitionField: 'evidenceOccurrenceId',
+          outputFields: [],
+        },
+      ];
+    case 'dense-evidence':
+      return [
+        {
+          filter: sourceFilter,
+          uniquePartitionField: 'evidenceOccurrenceId',
+          outputFields: [],
+        },
+      ];
+    case 'session-projection':
+      return [
+        {
+          filter: `(${sourceFilter}) AND (projectionKind = '${RecallSessionProjectionKind.PHYSICAL_SESSION}')`,
+          uniquePartitionField: 'physicalSourceIdentity',
+          outputFields: [],
+        },
+        {
+          filter: `(${sourceFilter}) AND (projectionKind = '${RecallSessionProjectionKind.LOGICAL_SESSION}')`,
+          uniquePartitionField: 'logicalSessionOccurrenceId',
+          outputFields: [],
+        },
+      ];
+    default:
+      throw new Error('Recall target physical source store responsibility unsupported');
+  }
+}
+
+function listPhysicalSourceRecordIds(
   collection: ZVecCollection,
   physicalSourceIdentity: string,
-): Promise<string[]> {
+  responsibility: RecallGenerationStoreContract['responsibility'],
+): string[] {
   if (collection.stats.docCount === 0) {
     return [];
   }
-  const records = await collection.query({
-    filter: `physicalSourceIdentity = '${physicalSourceIdentity}'`,
-    topk: collection.stats.docCount,
-    outputFields: [],
-    includeVector: false,
-  });
-  return records.map(({ id }) => id).toSorted((left, right) => left.localeCompare(right));
+  const recordIds: string[] = [];
+  for (const enumeration of createPhysicalSourceRecordEnumerations(
+    physicalSourceIdentity,
+    responsibility,
+  )) {
+    visitExactZvecDocuments(collection, enumeration, ({ id }) => recordIds.push(id));
+  }
+  return recordIds.toSorted((left, right) => left.localeCompare(right));
 }
 
 function parseRecoveryRecordIds(value: unknown, fieldName: string): string[] {
@@ -1457,11 +1509,21 @@ async function transferConfirmedPhysicalSourceDeletion(
         const dense = ZVecOpen(paths.denseStorePath, { readOnly: true });
         const sessionProjection = ZVecOpen(paths.sessionProjectionStorePath, { readOnly: true });
         try {
-          [denseIds, lexicalSourceIds, projectionIds] = await Promise.all([
-            listPhysicalSourceRecordIds(dense, request.physicalSourceIdentity),
-            listPhysicalSourceRecordIds(lexicalSource, request.physicalSourceIdentity),
-            listPhysicalSourceRecordIds(sessionProjection, request.physicalSourceIdentity),
-          ]);
+          denseIds = listPhysicalSourceRecordIds(
+            dense,
+            request.physicalSourceIdentity,
+            'dense-evidence',
+          );
+          lexicalSourceIds = listPhysicalSourceRecordIds(
+            lexicalSource,
+            request.physicalSourceIdentity,
+            'lexical-source',
+          );
+          projectionIds = listPhysicalSourceRecordIds(
+            sessionProjection,
+            request.physicalSourceIdentity,
+            'session-projection',
+          );
         } finally {
           sessionProjection.closeSync();
           dense.closeSync();

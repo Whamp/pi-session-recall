@@ -39,6 +39,7 @@ import {
 } from './recall-generation-state.js';
 import type { RecallEmbeddingModelProfile } from './recall-model-profiles.js';
 import { decodeRecallSessionProjection } from './recall-session-projection.js';
+import { visitExactZvecDocuments } from './visit-exact-zvec-documents.js';
 import type { RecallProjectLineages } from './resolve-project-identity.js';
 
 /** Explicit identifier for creating one inactive empty coherent recall generation. */
@@ -113,34 +114,38 @@ function hasMarkerCoveredIncrementalProjection(
     if (collection.stats.docCount === 0) {
       return false;
     }
-    const records = collection.querySync({
-      topk: collection.stats.docCount,
-      outputFields: ['projectionKind', 'projectionJson'],
-      includeVector: false,
-    });
-    return records.some(({ fields }) => {
-      if (
-        fields.projectionKind !== RecallSessionProjectionKind.PHYSICAL_SESSION ||
-        typeof fields.projectionJson !== 'string'
-      ) {
-        return false;
-      }
-      const parsed: unknown = JSON.parse(fields.projectionJson);
-      if (
-        typeof parsed !== 'object' ||
-        parsed === null ||
-        !('ingestionProjectionPayload' in parsed)
-      ) {
-        return false;
-      }
-      const projection = decodeRecallSessionProjection(parsed.ingestionProjectionPayload, {
-        expectedGenerationId: generationId,
-      });
-      return (
-        projection.projectionKind === RecallSessionProjectionKind.PHYSICAL_SESSION &&
-        projection.markerCheckpoint.coveredMarkerIds.length > 0
-      );
-    });
+    let hasCoveredMarker = false;
+    visitExactZvecDocuments(
+      collection,
+      {
+        filter: `projectionKind = '${RecallSessionProjectionKind.PHYSICAL_SESSION}'`,
+        uniquePartitionField: 'physicalSourceIdentity',
+        outputFields: ['projectionKind', 'projectionJson'],
+      },
+      ({ fields }) => {
+        if (typeof fields.projectionJson !== 'string') {
+          return;
+        }
+        const parsed: unknown = JSON.parse(fields.projectionJson);
+        if (
+          typeof parsed !== 'object' ||
+          parsed === null ||
+          !('ingestionProjectionPayload' in parsed)
+        ) {
+          return;
+        }
+        const projection = decodeRecallSessionProjection(parsed.ingestionProjectionPayload, {
+          expectedGenerationId: generationId,
+        });
+        if (
+          projection.projectionKind === RecallSessionProjectionKind.PHYSICAL_SESSION &&
+          projection.markerCheckpoint.coveredMarkerIds.length > 0
+        ) {
+          hasCoveredMarker = true;
+        }
+      },
+    );
+    return hasCoveredMarker;
   } finally {
     collection.closeSync();
   }

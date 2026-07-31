@@ -19,6 +19,7 @@ import {
   type PhysicalSessionProjection,
   type RecallSessionProjection,
 } from './recall-session-projection.js';
+import { visitExactZvecDocuments } from './visit-exact-zvec-documents.js';
 
 /** Version of the scalar-only physical/logical projection collection schema. */
 export const ZVEC_SESSION_PROJECTION_SCHEMA_VERSION = 1;
@@ -241,19 +242,25 @@ export function openZvecSessionProjectionStore(config: {
       if (collection.stats.docCount === 0) {
         return [];
       }
-      return collection
-        .querySync({
+      const physicalProjections: PhysicalSessionProjection[] = [];
+      visitExactZvecDocuments(
+        collection,
+        {
           filter: `projectionKind = '${RecallSessionProjectionKind.PHYSICAL_SESSION}'`,
-          topk: collection.stats.docCount,
+          uniquePartitionField: 'physicalSessionProjectionId',
           outputFields: PROJECTION_OUTPUT_FIELDS,
-          includeVector: false,
-        })
-        .map((doc) => deserializeSessionProjection(doc, config.generationId))
-        .filter(
-          (projection): projection is PhysicalSessionProjection =>
-            projection.projectionKind === RecallSessionProjectionKind.PHYSICAL_SESSION,
-        )
-        .toSorted((left, right) => left.projectionId.localeCompare(right.projectionId));
+        },
+        (document) => {
+          const projection = deserializeSessionProjection(document, config.generationId);
+          if (projection.projectionKind !== RecallSessionProjectionKind.PHYSICAL_SESSION) {
+            throw new Error(`Recall projection zvec physical kind mismatch: ${document.id}`);
+          }
+          physicalProjections.push(projection);
+        },
+      );
+      return physicalProjections.toSorted((left, right) =>
+        left.projectionId.localeCompare(right.projectionId),
+      );
     },
     close() {
       collection.closeSync();

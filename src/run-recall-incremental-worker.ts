@@ -61,6 +61,7 @@ import { acknowledgeCoveredRecallMarkers } from './recall-marker-spool.js';
 import { publishRecallWorkMarker } from './publish-recall-work-marker.js';
 import { isUnknownRecord } from './is-unknown-record.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
+import { visitExactZvecDocuments } from './visit-exact-zvec-documents.js';
 import { resolveRecallPhysicalSourceIdentity } from './recall-source-identity.js';
 import {
   createRecallIncrementalDiagnosticMetrics,
@@ -718,43 +719,43 @@ async function loadTargetRecallKnownSourceInventory(
   const { ZVecOpen } = await import('@zvec/zvec');
   const store = ZVecOpen(projectionDatabasePath, { readOnly: true });
   try {
-    const records =
-      store.stats.docCount === 0
-        ? []
-        : store.querySync({
-            filter: `projectionKind = '${RecallSessionProjectionKind.PHYSICAL_SESSION}'`,
-            topk: store.stats.docCount,
-            outputFields: ['projectionJson'],
-            includeVector: false,
+    const physicalProjections: PhysicalSessionProjection[] = [];
+    visitExactZvecDocuments(
+      store,
+      {
+        filter: `projectionKind = '${RecallSessionProjectionKind.PHYSICAL_SESSION}'`,
+        uniquePartitionField: 'physicalSourceIdentity',
+        outputFields: ['projectionJson'],
+      },
+      ({ id, fields }) => {
+        if (typeof fields.projectionJson !== 'string') {
+          throw new Error(`Recall target physical projection JSON missing for ${id}`);
+        }
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(fields.projectionJson);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          throw new Error(`Recall target physical projection JSON invalid for ${id}: ${message}`, {
+            cause: error,
           });
-    const physicalProjections = records.map(({ id, fields }) => {
-      if (typeof fields.projectionJson !== 'string') {
-        throw new Error(`Recall target physical projection JSON missing for ${id}`);
-      }
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(fields.projectionJson);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        throw new Error(`Recall target physical projection JSON invalid for ${id}: ${message}`, {
-          cause: error,
+        }
+        if (
+          typeof parsed !== 'object' ||
+          parsed === null ||
+          !('ingestionProjectionPayload' in parsed)
+        ) {
+          throw new Error(`Recall target physical ingestion projection missing for ${id}`);
+        }
+        const projection = decodeRecallSessionProjection(parsed.ingestionProjectionPayload, {
+          expectedGenerationId: generationId,
         });
-      }
-      if (
-        typeof parsed !== 'object' ||
-        parsed === null ||
-        !('ingestionProjectionPayload' in parsed)
-      ) {
-        throw new Error(`Recall target physical ingestion projection missing for ${id}`);
-      }
-      const projection = decodeRecallSessionProjection(parsed.ingestionProjectionPayload, {
-        expectedGenerationId: generationId,
-      });
-      if (projection.projectionKind !== RecallSessionProjectionKind.PHYSICAL_SESSION) {
-        throw new Error(`Recall target physical projection kind mismatch for ${id}`);
-      }
-      return projection;
-    });
+        if (projection.projectionKind !== RecallSessionProjectionKind.PHYSICAL_SESSION) {
+          throw new Error(`Recall target physical projection kind mismatch for ${id}`);
+        }
+        physicalProjections.push(projection);
+      },
+    );
     const knownSources = physicalProjections.map((projection) => {
       const sourceRelativePath = relative(sessionsDirectory, projection.sourcePath);
       if (sourceRelativePath.startsWith('..') || isAbsolute(sourceRelativePath)) {

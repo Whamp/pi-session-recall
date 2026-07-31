@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { ZVecOpen, type ZVecCollection } from '@zvec/zvec';
+import { ZVecOpen, type ZVecCollection, type ZVecDoc } from '@zvec/zvec';
 
 import type { RecallCoherentGenerationConfig } from './recall-coherent-generation.js';
 import {
@@ -18,6 +18,7 @@ import {
 } from './recall-physical-source-generation.js';
 import { readActiveTargetRecallManifestFingerprint } from './read-active-target-recall-generation.js';
 import type { SessionConversationChunk } from './session-conversation-index.js';
+import { visitExactZvecDocuments } from './visit-exact-zvec-documents.js';
 
 /** Exact occurrence and bounded entry counts for one active source neighborhood. */
 export interface ExpandRecallSourceNeighborhoodOptions {
@@ -264,21 +265,37 @@ function readExactEvidenceOccurrence(
   };
 }
 
-async function readLogicalSessionRecords(
+function readLogicalSessionRecords(
   collection: ZVecCollection,
   logicalSessionOccurrenceId: string,
-): Promise<
-  Readonly<{
-    anchorsByEntryId: Map<string, IndexedEntryAnchor>;
-    evidenceByOccurrenceId: Map<string, SessionConversationChunk>;
-  }>
-> {
-  const documents = await collection.query({
-    filter: `logicalSessionOccurrenceId = '${logicalSessionOccurrenceId}'`,
-    topk: collection.stats.docCount,
-    outputFields: [...LEXICAL_SOURCE_EXPANSION_FIELDS],
-    includeVector: false,
-  });
+): Readonly<{
+  anchorsByEntryId: Map<string, IndexedEntryAnchor>;
+  evidenceByOccurrenceId: Map<string, SessionConversationChunk>;
+}> {
+  const documents: ZVecDoc[] = [];
+  const logicalSessionFilter = `logicalSessionOccurrenceId = '${logicalSessionOccurrenceId}'`;
+  visitExactZvecDocuments(
+    collection,
+    {
+      filter: `(${logicalSessionFilter}) AND (recordKind = 'entry-anchor')`,
+      uniquePartitionField: 'entryAnchorId',
+      outputFields: LEXICAL_SOURCE_EXPANSION_FIELDS,
+    },
+    (document) => {
+      documents.push(document);
+    },
+  );
+  visitExactZvecDocuments(
+    collection,
+    {
+      filter: `(${logicalSessionFilter}) AND (recordKind = 'evidence')`,
+      uniquePartitionField: 'evidenceOccurrenceId',
+      outputFields: LEXICAL_SOURCE_EXPANSION_FIELDS,
+    },
+    (document) => {
+      documents.push(document);
+    },
+  );
   const anchorsByEntryId = new Map<string, IndexedEntryAnchor>();
   const evidenceByOccurrenceId = new Map<string, SessionConversationChunk>();
   for (const document of documents) {
@@ -553,7 +570,7 @@ export async function expandRecallSourceNeighborhood(
       anchorOccurrence.fields,
       'logicalSessionOccurrenceId',
     );
-    const { anchorsByEntryId, evidenceByOccurrenceId } = await readLogicalSessionRecords(
+    const { anchorsByEntryId, evidenceByOccurrenceId } = readLogicalSessionRecords(
       opened.collection,
       logicalSessionOccurrenceId,
     );

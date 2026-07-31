@@ -15,6 +15,12 @@ import {
   type ZVecVectorSchema,
 } from '@zvec/zvec';
 
+import { RecallSessionProjectionKind } from './enums.js';
+import {
+  type ExactZvecDocumentEnumeration,
+  visitExactZvecDocuments,
+} from './visit-exact-zvec-documents.js';
+
 /** Current schema version shared by the three target recall generation stores. */
 export const RECALL_GENERATION_STORE_FORMAT_VERSION = 1;
 
@@ -457,6 +463,43 @@ export function createEmptyRecallGenerationStores(
   createEmptyRecallGenerationStore(paths.sessionProjectionStorePath, contracts.sessionProjection);
 }
 
+function createRecallGenerationStoreEnumerations(
+  responsibility: RecallGenerationStoreContract['responsibility'],
+): readonly ExactZvecDocumentEnumeration[] {
+  switch (responsibility) {
+    case 'lexical-source':
+      return [
+        {
+          filter: "recordKind = 'entry-anchor'",
+          uniquePartitionField: 'entryAnchorId',
+          outputFields: [],
+        },
+        {
+          filter: "recordKind = 'evidence'",
+          uniquePartitionField: 'evidenceOccurrenceId',
+          outputFields: [],
+        },
+      ];
+    case 'dense-evidence':
+      return [{ uniquePartitionField: 'evidenceOccurrenceId', outputFields: [] }];
+    case 'session-projection':
+      return [
+        {
+          filter: `projectionKind = '${RecallSessionProjectionKind.PHYSICAL_SESSION}'`,
+          uniquePartitionField: 'physicalSourceIdentity',
+          outputFields: [],
+        },
+        {
+          filter: `projectionKind = '${RecallSessionProjectionKind.LOGICAL_SESSION}'`,
+          uniquePartitionField: 'logicalSessionOccurrenceId',
+          outputFields: [],
+        },
+      ];
+    default:
+      throw new Error('Recall coherent generation store responsibility unsupported');
+  }
+}
+
 async function readRecallGenerationStoreRecordIds(
   storePath: string,
   responsibility: RecallGenerationStoreContract['responsibility'],
@@ -478,12 +521,16 @@ async function readRecallGenerationStoreRecordIds(
     if (collection.stats.docCount === 0) {
       return [];
     }
-    const records = await collection.query({
-      topk: collection.stats.docCount,
-      outputFields: [],
-      includeVector: false,
-    });
-    return records.map(({ id }) => id).toSorted();
+    const recordIds: string[] = [];
+    for (const enumeration of createRecallGenerationStoreEnumerations(responsibility)) {
+      visitExactZvecDocuments(collection, enumeration, ({ id }) => recordIds.push(id));
+    }
+    if (recordIds.length !== collection.stats.docCount) {
+      throw new Error(
+        `Recall coherent generation ${responsibility} exact membership classification mismatch: expected ${collection.stats.docCount} rows, received ${recordIds.length}`,
+      );
+    }
+    return recordIds.toSorted();
   } finally {
     collection.closeSync();
   }

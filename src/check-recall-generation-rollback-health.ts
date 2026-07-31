@@ -17,6 +17,7 @@ import {
 import { readRecallGenerationManifest } from './recall-generation-manifest.js';
 import { resolveRecallGenerationDirectory } from './recall-generation-state.js';
 import { readRecallGenerationValidationReceipt } from './recall-generation-validation-receipt.js';
+import { visitExactZvecDocuments } from './visit-exact-zvec-documents.js';
 
 /** Artifact and registry identity required for one bounded rollback health check. */
 export interface CheckRecallGenerationRollbackHealthOptions {
@@ -257,25 +258,26 @@ export async function checkRecallGenerationRollbackHealth(
       throw wrapRollbackHealthError('session-projection store', error);
     }
 
-    const projectionRows =
-      sessionProjection.stats.docCount === 0
-        ? []
-        : sessionProjection.querySync({
-            topk: sessionProjection.stats.docCount,
-            filter: `projectionKind = '${RecallSessionProjectionKind.PHYSICAL_SESSION}'`,
-            outputFields: ['projectionJson'],
-            includeVector: false,
-          });
-    const physicalArtifacts = projectionRows
-      .map(({ fields }) =>
-        parseRecallGenerationPhysicalProjectionArtifact(
-          fields.projectionJson,
-          options.generationId,
-        ),
-      )
-      .toSorted((left, right) =>
-        left.physicalSourceIdentity.localeCompare(right.physicalSourceIdentity),
-      );
+    const physicalArtifacts: RecallGenerationPhysicalProjectionArtifact[] = [];
+    visitExactZvecDocuments(
+      sessionProjection,
+      {
+        filter: `projectionKind = '${RecallSessionProjectionKind.PHYSICAL_SESSION}'`,
+        uniquePartitionField: 'physicalSourceIdentity',
+        outputFields: ['projectionJson'],
+      },
+      ({ fields }) => {
+        physicalArtifacts.push(
+          parseRecallGenerationPhysicalProjectionArtifact(
+            fields.projectionJson,
+            options.generationId,
+          ),
+        );
+      },
+    );
+    physicalArtifacts.sort((left, right) =>
+      left.physicalSourceIdentity.localeCompare(right.physicalSourceIdentity),
+    );
     const expectedLexicalSourceCount = sumExpectedMembershipCounts(
       physicalArtifacts,
       'lexicalSource',

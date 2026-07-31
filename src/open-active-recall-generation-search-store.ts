@@ -10,6 +10,7 @@ import { readActiveTargetRecallManifestFingerprint } from './read-active-target-
 import { parseRecallGenerationSearchDocument } from './recall-physical-source-generation.js';
 import type { ProjectIdentity } from './resolve-project-identity.js';
 import { createStoredRecallEmbedding } from './recall-stored-embedding.js';
+import { visitExactZvecDocuments } from './visit-exact-zvec-documents.js';
 import type { SessionConversationChunk } from './session-conversation-index.js';
 import {
   createRecallZvecFullTextQuery,
@@ -122,19 +123,19 @@ export async function openActiveRecallGenerationSearchStore(
     lexicalSource.closeSync();
     throw error;
   }
-  let evidenceCount: number;
+  let evidenceCount = 0;
   try {
-    evidenceCount =
-      lexicalSource.stats.docCount === 0
-        ? 0
-        : (
-            await lexicalSource.query({
-              filter: "recordKind = 'evidence'",
-              topk: lexicalSource.stats.docCount,
-              outputFields: [],
-              includeVector: false,
-            })
-          ).length;
+    visitExactZvecDocuments(
+      lexicalSource,
+      {
+        filter: "recordKind = 'evidence'",
+        uniquePartitionField: 'evidenceOccurrenceId',
+        outputFields: [],
+      },
+      () => {
+        evidenceCount += 1;
+      },
+    );
   } catch (error) {
     lexicalSource.closeSync();
     dense.closeSync();

@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "candidateCommit": "67abdc772a19be01620c3cb7951561e546385947",
-  "completedAt": "2026-07-30T14:15:59.960Z",
+  "candidateCommit": "ebb23ee986dc8c7674b58b6ebc8b5756a0645469",
+  "completedAt": "2026-07-31T04:08:14.492Z",
   "environment": {
     "nodeVersion": "v24.16.0",
     "platform": "linux",
@@ -11,7 +11,7 @@
   },
   "disposableSourceSnapshot": {
     "kind": "repository-fixtures-and-generated-test-sources",
-    "sha256": "25863553fddd9c86f11935cf80a1a48d31eafadb22d9ee2235674134ad7e1c64",
+    "sha256": "b38c54dbab48fe3570027f6eba53b9cd56ed1f5c2466bf1a20191f7a5515329b",
     "inputPaths": [
       "src/recall-generation-mutation-ownership.test.ts",
       "src/transfer-incremental-recall-work-plan.test.ts",
@@ -36,25 +36,25 @@
     {
       "name": "write, recovery, lifecycle, and bounded-policy matrix",
       "command": "/home/will/.local/share/mise/installs/node/24.16.0/bin/node --import tsx --test src/recall-generation-mutation-ownership.test.ts src/transfer-incremental-recall-work-plan.test.ts src/recall-background-index-conversation-service.test.ts src/pi-session-recall-cli.test.ts src/activate-validated-recall-generation.test.ts src/rollback-recall-generation.test.ts src/run-recall-incremental-worker.test.ts src/coordinate-recall-marker-replay.test.ts src/scan-recall-session-metadata.test.ts src/recall-session-projection.test.ts src/coordinate-recall-write-window.test.ts",
-      "durationMilliseconds": 18069.945142,
+      "durationMilliseconds": 20496.635158999998,
       "passed": true
     },
     {
       "name": "marker publication and detached spawn diagnostic",
       "command": "/home/will/.local/share/mise/installs/node/24.16.0/bin/node --import tsx --test src/publish-recall-work-marker.diagnostic.test.ts",
-      "durationMilliseconds": 375.8754020000015,
+      "durationMilliseconds": 410.6900449999994,
       "passed": true
     },
     {
       "name": "metadata sweep diagnostic",
       "command": "/home/will/.local/share/mise/installs/node/24.16.0/bin/node --import tsx --test src/scan-recall-session-metadata.diagnostic.test.ts",
-      "durationMilliseconds": 1068.6021870000004,
+      "durationMilliseconds": 1250.3314360000004,
       "passed": true
     },
     {
       "name": "close/reopen write-window diagnostic",
       "command": "/home/will/.local/share/mise/installs/node/24.16.0/bin/node --import tsx --test src/commit-incremental-recall-transfer.diagnostic.test.ts",
-      "durationMilliseconds": 1549.4893429999975,
+      "durationMilliseconds": 1627.0394190000006,
       "passed": true
     }
   ],
@@ -87,13 +87,13 @@
   },
   "foregroundBounds": {
     "markerPublicationAndDetachedSpawn": {
-      "combinedP95Milliseconds": 3.3157229999999913,
+      "combinedP95Milliseconds": 3.444006999999999,
       "acceptanceBoundMilliseconds": 25,
       "accepted": true
     },
     "metadataSweep": {
       "fileCount": 10000,
-      "p95Milliseconds": 40.00463399999998,
+      "p95Milliseconds": 48.86223600000005,
       "acceptanceBoundMilliseconds": 500,
       "accepted": true
     },
@@ -102,7 +102,7 @@
     "writeWindow": {
       "sampleCount": 20,
       "p95": {
-        "writeWindowMilliseconds": 63.35849100000007
+        "writeWindowMilliseconds": 71.06762400000002
       },
       "targetWriteWindowMilliseconds": 300
     },

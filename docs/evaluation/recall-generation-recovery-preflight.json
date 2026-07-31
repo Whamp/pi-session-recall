@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "candidateCommit": "2552424196434a368e62448c78be7b8d69ff5aa9",
-  "completedAt": "2026-07-31T02:49:42.361Z",
+  "candidateCommit": "ebb23ee986dc8c7674b58b6ebc8b5756a0645469",
+  "completedAt": "2026-07-31T04:15:09.718Z",
   "environment": {
     "nodeVersion": "v24.16.0",
     "platform": "linux",
@@ -9,82 +9,82 @@
     "cpuModel": "AMD Ryzen 7 8845HS w/ Radeon 780M Graphics",
     "zvecVersion": "0.6.0"
   },
-  "certificationInputChecksum": "901d181bab9011cf21fd0bccb878de3275db15bd01f933daab80d0ee80359deb",
+  "certificationInputChecksum": "5043053294a5def63f91ffae457c5ea7f16ac5dbc68b6d701379ff3dcf978752",
   "commands": [
     {
       "name": "bootstrap interruption model",
-      "command": "/home/will/.local/share/mise/installs/node/24.16.0/bin/node --import tsx --test --test-name-pattern=replacement generation bootstrap interruption model src/build-recall-fixed-snapshot-generation.test.ts",
-      "durationMilliseconds": 1819.3024140000002,
+      "command": "/home/will/.local/share/mise/installs/node/24.16.0/bin/node --import tsx --test --test-reporter=tap --test-name-pattern=replacement generation bootstrap interruption model src/build-recall-fixed-snapshot-generation.test.ts",
+      "durationMilliseconds": 1881.8003169999997,
       "passed": true
     },
     {
       "name": "malformed versus operational classification",
-      "command": "/home/will/.local/share/mise/installs/node/24.16.0/bin/node --import tsx --test --test-name-pattern=malformed-source skips once|parser-looking operational failures fatal|non-source failure category fatal src/recall-physical-source-generation.test.ts",
-      "durationMilliseconds": 1153.3714220000002,
+      "command": "/home/will/.local/share/mise/installs/node/24.16.0/bin/node --import tsx --test --test-reporter=tap --test-name-pattern=malformed-source skips once|parser-looking operational failures fatal|non-source failure category fatal src/recall-physical-source-generation.test.ts",
+      "durationMilliseconds": 1163.31378,
       "passed": true
     },
     {
       "name": "incremental versus rebuild membership equivalence",
-      "command": "/home/will/.local/share/mise/installs/node/24.16.0/bin/node --import tsx --test --test-name-pattern=generated incremental append, replay, branch, and deletion schedules match fresh rebuild membership src/transfer-incremental-recall-work-plan.test.ts",
-      "durationMilliseconds": 5407.263454000001,
+      "command": "/home/will/.local/share/mise/installs/node/24.16.0/bin/node --import tsx --test --test-reporter=tap --test-name-pattern=generated incremental append, replay, branch, and deletion schedules match fresh rebuild membership src/transfer-incremental-recall-work-plan.test.ts",
+      "durationMilliseconds": 5954.067298000001,
       "passed": true
     },
     {
       "name": "detached worker interruption and terminal resume",
-      "command": "/home/will/.local/share/mise/installs/node/24.16.0/bin/node --import tsx --test --test-name-pattern=crashed workers at every staging phase remain resumable and idempotent src/recall-background-index-conversation-service.test.ts",
-      "durationMilliseconds": 4278.086307,
+      "command": "/home/will/.local/share/mise/installs/node/24.16.0/bin/node --import tsx --test --test-reporter=tap --test-name-pattern=crashed workers at every staging phase remain resumable and idempotent src/recall-background-index-conversation-service.test.ts",
+      "durationMilliseconds": 4538.550572,
       "passed": true
     },
     {
       "name": "operator CLI stop and terminal resume",
-      "command": "/home/will/.local/share/mise/installs/node/24.16.0/bin/node --import tsx --test --test-name-pattern=standalone rebuild stops, resumes the same snapshot, and discards inactive work src/pi-session-recall-cli.test.ts",
-      "durationMilliseconds": 3603.968044000001,
+      "command": "/home/will/.local/share/mise/installs/node/24.16.0/bin/node --import tsx --test --test-reporter=tap --test-name-pattern=standalone rebuild stops, resumes the same snapshot, and discards inactive work src/pi-session-recall-cli.test.ts",
+      "durationMilliseconds": 3813.8578319999997,
       "passed": true
     },
     {
       "name": "full test suite",
       "command": "npm test",
-      "durationMilliseconds": 32528.672312999995,
+      "durationMilliseconds": 38500.455293,
       "passed": true
     },
     {
       "name": "typecheck",
       "command": "npm run typecheck",
-      "durationMilliseconds": 4903.388232000005,
+      "durationMilliseconds": 5195.616019999994,
       "passed": true
     },
     {
       "name": "type-aware lint",
       "command": "npm run lint",
-      "durationMilliseconds": 1456.3230449999974,
+      "durationMilliseconds": 1226.4661010000054,
       "passed": true
     },
     {
       "name": "format check",
       "command": "npm run format:check",
-      "durationMilliseconds": 607.5547440000009,
+      "durationMilliseconds": 656.576605000002,
       "passed": true
     },
     {
       "name": "Git whitespace check",
       "command": "git diff --check",
-      "durationMilliseconds": 3.347829999998794,
+      "durationMilliseconds": 4.232210000001942,
       "passed": true
     },
     {
       "name": "repository-required slop scan",
       "command": "slop-scan delta --base <exact-base-worktree> --head \"$PWD\" --fail-on added,worsened",
-      "durationMilliseconds": 1971.5431289999979,
+      "durationMilliseconds": 2140.802269,
       "passed": true
     },
     {
       "name": "public service and real-zvec production-cardinality recovery preflight",
       "command": "npm run evidence:generation-recovery",
-      "durationMilliseconds": 325735.774293,
+      "durationMilliseconds": 328342.63848799997,
       "passed": true
     }
   ],
-  "preflightDurationMilliseconds": 325735.774293,
+  "preflightDurationMilliseconds": 328342.63848799997,
   "productionFailureBoundary": 119662,
   "preflight": {
     "logicalSessionCount": 119663,
@@ -92,7 +92,7 @@
     "uninterrupted": {
       "manifestFingerprint": "56c0013a66586febb119dc1870015e1e406605ab2b1ff53187a540b421a53017",
       "embeddingProfileId": "embedding-profile-b792b064200a2f84447527b7ecc8b076866e170003ae72c79c642b04608f068e",
-      "startingSnapshotFingerprint": "06eadab30ccbf4d51bc97a029874b298bb08eed3e76b633c68baf4d75d58295a",
+      "startingSnapshotFingerprint": "28d736a230251a0d90e3553a0e5d66da89a1f7d3981d4673a8ba2c1fd6c5cd5a",
       "storeCounts": {
         "lexicalSource": 239328,
         "dense": 119664,
@@ -116,61 +116,7 @@
         "manifestFingerprint": "56c0013a66586febb119dc1870015e1e406605ab2b1ff53187a540b421a53017",
         "startingSnapshot": {
           "version": 1,
-          "fingerprint": "06eadab30ccbf4d51bc97a029874b298bb08eed3e76b633c68baf4d75d58295a",
-          "physicalSourceCount": 121,
-          "logicalSessionOccurrenceCount": 119664
-        },
-        "exactMembership": {
-          "lexicalSource": {
-            "count": 239328,
-            "digest": "36e0f2283963ae65bb23cdebd6ecea79ef9c7889dc7e4cd87726608ca4ee9e23"
-          },
-          "dense": {
-            "count": 119664,
-            "digest": "2bdff5f46d8a1d7271f17df1a4817bd6fa0c9263463246f1d3a60b5de88c9e64"
-          },
-          "sessionProjection": {
-            "count": 119785,
-            "digest": "409d4f9ce3fac2622ead51e14bb48959840a852475d425b1dec6e9df58050e27"
-          }
-        },
-        "validationPolicyVersion": 1,
-        "canaryResults": {
-          "storeSchemas": "passed",
-          "storeIdentities": "passed",
-          "exactMembership": "passed"
-        }
-      },
-      "onDiskBytes": 3137622909
-    },
-    "interrupted": {
-      "manifestFingerprint": "56c0013a66586febb119dc1870015e1e406605ab2b1ff53187a540b421a53017",
-      "embeddingProfileId": "embedding-profile-b792b064200a2f84447527b7ecc8b076866e170003ae72c79c642b04608f068e",
-      "startingSnapshotFingerprint": "06eadab30ccbf4d51bc97a029874b298bb08eed3e76b633c68baf4d75d58295a",
-      "storeCounts": {
-        "lexicalSource": 239328,
-        "dense": 119664,
-        "sessionProjection": 119785
-      },
-      "exactMembership": {
-        "lexicalSource": {
-          "count": 239328,
-          "digest": "36e0f2283963ae65bb23cdebd6ecea79ef9c7889dc7e4cd87726608ca4ee9e23"
-        },
-        "dense": {
-          "count": 119664,
-          "digest": "2bdff5f46d8a1d7271f17df1a4817bd6fa0c9263463246f1d3a60b5de88c9e64"
-        },
-        "sessionProjection": {
-          "count": 119785,
-          "digest": "409d4f9ce3fac2622ead51e14bb48959840a852475d425b1dec6e9df58050e27"
-        }
-      },
-      "receipt": {
-        "manifestFingerprint": "56c0013a66586febb119dc1870015e1e406605ab2b1ff53187a540b421a53017",
-        "startingSnapshot": {
-          "version": 1,
-          "fingerprint": "06eadab30ccbf4d51bc97a029874b298bb08eed3e76b633c68baf4d75d58295a",
+          "fingerprint": "28d736a230251a0d90e3553a0e5d66da89a1f7d3981d4673a8ba2c1fd6c5cd5a",
           "physicalSourceCount": 121,
           "logicalSessionOccurrenceCount": 119664
         },
@@ -197,6 +143,175 @@
       },
       "onDiskBytes": 3137637866
     },
+    "interrupted": {
+      "manifestFingerprint": "56c0013a66586febb119dc1870015e1e406605ab2b1ff53187a540b421a53017",
+      "embeddingProfileId": "embedding-profile-b792b064200a2f84447527b7ecc8b076866e170003ae72c79c642b04608f068e",
+      "startingSnapshotFingerprint": "28d736a230251a0d90e3553a0e5d66da89a1f7d3981d4673a8ba2c1fd6c5cd5a",
+      "storeCounts": {
+        "lexicalSource": 239328,
+        "dense": 119664,
+        "sessionProjection": 119785
+      },
+      "exactMembership": {
+        "lexicalSource": {
+          "count": 239328,
+          "digest": "36e0f2283963ae65bb23cdebd6ecea79ef9c7889dc7e4cd87726608ca4ee9e23"
+        },
+        "dense": {
+          "count": 119664,
+          "digest": "2bdff5f46d8a1d7271f17df1a4817bd6fa0c9263463246f1d3a60b5de88c9e64"
+        },
+        "sessionProjection": {
+          "count": 119785,
+          "digest": "409d4f9ce3fac2622ead51e14bb48959840a852475d425b1dec6e9df58050e27"
+        }
+      },
+      "receipt": {
+        "manifestFingerprint": "56c0013a66586febb119dc1870015e1e406605ab2b1ff53187a540b421a53017",
+        "startingSnapshot": {
+          "version": 1,
+          "fingerprint": "28d736a230251a0d90e3553a0e5d66da89a1f7d3981d4673a8ba2c1fd6c5cd5a",
+          "physicalSourceCount": 121,
+          "logicalSessionOccurrenceCount": 119664
+        },
+        "exactMembership": {
+          "lexicalSource": {
+            "count": 239328,
+            "digest": "36e0f2283963ae65bb23cdebd6ecea79ef9c7889dc7e4cd87726608ca4ee9e23"
+          },
+          "dense": {
+            "count": 119664,
+            "digest": "2bdff5f46d8a1d7271f17df1a4817bd6fa0c9263463246f1d3a60b5de88c9e64"
+          },
+          "sessionProjection": {
+            "count": 119785,
+            "digest": "409d4f9ce3fac2622ead51e14bb48959840a852475d425b1dec6e9df58050e27"
+          }
+        },
+        "validationPolicyVersion": 1,
+        "canaryResults": {
+          "storeSchemas": "passed",
+          "storeIdentities": "passed",
+          "exactMembership": "passed"
+        }
+      },
+      "onDiskBytes": 3137626594
+    },
+    "detached": {
+      "uninterrupted": {
+        "manifestFingerprint": "e86dd7361a932200606355b54f376cd8a8f16b19f1bae26398eb6af78ec53425",
+        "embeddingProfileId": "embedding-profile-b792b064200a2f84447527b7ecc8b076866e170003ae72c79c642b04608f068e",
+        "startingSnapshotFingerprint": "00a797eba0bb89fbbc77a85a80899b53273c91d7e9f5c6e8a4f16ed89f880571",
+        "storeCounts": {
+          "lexicalSource": 2,
+          "dense": 1,
+          "sessionProjection": 2
+        },
+        "exactMembership": {
+          "lexicalSource": {
+            "count": 2,
+            "digest": "32364d50a34eb7237bb57225b5593117f51543e90f118fa372c9309596112826"
+          },
+          "dense": {
+            "count": 1,
+            "digest": "d64277f348367626358bba4741af51650d1882822810781fca99fdf22aac10fc"
+          },
+          "sessionProjection": {
+            "count": 2,
+            "digest": "d0786a9fa1ca7d359c5c55558b1629800daa2218fe914ab3594ba1f2c108163b"
+          }
+        },
+        "receipt": {
+          "manifestFingerprint": "e86dd7361a932200606355b54f376cd8a8f16b19f1bae26398eb6af78ec53425",
+          "startingSnapshot": {
+            "version": 1,
+            "fingerprint": "00a797eba0bb89fbbc77a85a80899b53273c91d7e9f5c6e8a4f16ed89f880571",
+            "physicalSourceCount": 1,
+            "logicalSessionOccurrenceCount": 1
+          },
+          "exactMembership": {
+            "lexicalSource": {
+              "count": 2,
+              "digest": "32364d50a34eb7237bb57225b5593117f51543e90f118fa372c9309596112826"
+            },
+            "dense": {
+              "count": 1,
+              "digest": "d64277f348367626358bba4741af51650d1882822810781fca99fdf22aac10fc"
+            },
+            "sessionProjection": {
+              "count": 2,
+              "digest": "d0786a9fa1ca7d359c5c55558b1629800daa2218fe914ab3594ba1f2c108163b"
+            }
+          },
+          "validationPolicyVersion": 1,
+          "canaryResults": {
+            "storeSchemas": "passed",
+            "storeIdentities": "passed",
+            "exactMembership": "passed"
+          }
+        },
+        "onDiskBytes": 5500567
+      },
+      "interrupted": {
+        "manifestFingerprint": "d53ffd4954bdae546270727d3e9b086ac8f6da235f2683c274e2e2b311efeabd",
+        "embeddingProfileId": "embedding-profile-b792b064200a2f84447527b7ecc8b076866e170003ae72c79c642b04608f068e",
+        "startingSnapshotFingerprint": "d7671058c0027830f9e2f6bb123ff2c57d5ac57161540f32355ea8cf2c6b687f",
+        "storeCounts": {
+          "lexicalSource": 2,
+          "dense": 1,
+          "sessionProjection": 2
+        },
+        "exactMembership": {
+          "lexicalSource": {
+            "count": 2,
+            "digest": "32364d50a34eb7237bb57225b5593117f51543e90f118fa372c9309596112826"
+          },
+          "dense": {
+            "count": 1,
+            "digest": "d64277f348367626358bba4741af51650d1882822810781fca99fdf22aac10fc"
+          },
+          "sessionProjection": {
+            "count": 2,
+            "digest": "d0786a9fa1ca7d359c5c55558b1629800daa2218fe914ab3594ba1f2c108163b"
+          }
+        },
+        "receipt": {
+          "manifestFingerprint": "d53ffd4954bdae546270727d3e9b086ac8f6da235f2683c274e2e2b311efeabd",
+          "startingSnapshot": {
+            "version": 1,
+            "fingerprint": "d7671058c0027830f9e2f6bb123ff2c57d5ac57161540f32355ea8cf2c6b687f",
+            "physicalSourceCount": 1,
+            "logicalSessionOccurrenceCount": 1
+          },
+          "exactMembership": {
+            "lexicalSource": {
+              "count": 2,
+              "digest": "32364d50a34eb7237bb57225b5593117f51543e90f118fa372c9309596112826"
+            },
+            "dense": {
+              "count": 1,
+              "digest": "d64277f348367626358bba4741af51650d1882822810781fca99fdf22aac10fc"
+            },
+            "sessionProjection": {
+              "count": 2,
+              "digest": "d0786a9fa1ca7d359c5c55558b1629800daa2218fe914ab3594ba1f2c108163b"
+            }
+          },
+          "validationPolicyVersion": 1,
+          "canaryResults": {
+            "storeSchemas": "passed",
+            "storeIdentities": "passed",
+            "exactMembership": "passed"
+          }
+        },
+        "onDiskBytes": 5500575
+      },
+      "sourceSnapshotChecksum": "2d25bcd5b88f32967d8e3dc753faa839692f85ec5a00830b6a1342db09f5f4c8",
+      "interruptionSignal": "SIGKILL",
+      "uninterruptedWorkerReachedTerminalValidation": true,
+      "resumedWorkerReachedTerminalValidation": true,
+      "validationReceiptsEquivalent": true
+    },
     "fixedSnapshot": {
       "originalCardinalitySourceRemoved": true,
       "originalRetainedSourceChanged": true,
@@ -221,6 +336,7 @@
   },
   "incrementalVsRebuildMembershipEquivalent": true,
   "detachedWorkerReachedTerminalValidation": true,
+  "detachedValidationReceiptsEquivalent": true,
   "operatorCliStopResumeReachedReady": true,
   "passed": true,
   "safety": {

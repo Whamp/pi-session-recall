@@ -4,7 +4,6 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:pat
 import { performance } from 'node:perf_hooks';
 import { promisify } from 'node:util';
 
-import { assertRecallTestDataRoot } from './assert-recall-test-data-root.js';
 import {
   PROJECT_SCOPE_POLICY_VERSION,
   RecallProjectIdentitySource,
@@ -13,9 +12,10 @@ import {
 import {
   RECALL_RANK_FUSION_VERSION,
   RECALL_RRF_RANK_CONSTANT,
-} from './fuse-recall-ranked-lists.js';
+} from './fuse-recall-search-candidates.js';
 import type { ConversationIndexSummary } from './incremental-session-indexer.js';
 import { createLocalEmbeddingClient, type LocalEmbeddingClient } from './local-embedding-client.js';
+import type { LocalRerankerClient } from './local-reranker-client.js';
 import {
   measureRecallQuality,
   type RecallQualitySearchObservation,
@@ -30,24 +30,12 @@ import {
   type RecallConversationDependencies,
   type RecallConversationSearchOptions,
 } from './recall-conversation-service.js';
-import type {
-  RecallIdentifiedQueryPlanningProvider,
-  RecallIdentifiedRerankingProvider,
-  RecallQueryPlanningExecutionIdentity,
-  RecallRerankingExecutionIdentity,
-} from './recall-inference-capabilities.js';
 import {
   selectRecallQualityPolicy,
   type RecallQualityConfigurationMeasurement,
   type RecallQualityPolicySelection,
 } from './select-recall-quality-policy.js';
 import { RECALL_ACTIVE_BRANCH_PRIOR } from './rank-recall-search-results.js';
-import type {
-  RecallQueryPlanningModelProfile,
-  RecallRerankingModelProfile,
-} from './recall-model-profiles.js';
-import { RECALL_INDEX_MANIFEST_VERSION } from './recall-index-manifest.js';
-import { INCREMENTAL_RECALL_ELIGIBILITY_POLICY_VERSION } from './reduce-recall-eligibility.js';
 import {
   createLineageDigest,
   normalizeRecallProjectLineages,
@@ -58,29 +46,16 @@ import {
   resolveProjectIdentity,
   type ResolvedProjectIdentity,
 } from './resolve-project-identity.js';
-import { SESSION_CONVERSATION_SCHEMA_VERSION } from './session-conversation-index.js';
-import { ZVEC_CONVERSATION_SCHEMA_VERSION } from './zvec-conversation-store.js';
+import type { ConversationTextTokenizer } from './session-conversation-index.js';
 
 const EXEC_FILE_ASYNC = promisify(execFile);
 const RECALL_QUALITY_FULL_POOL_LIMIT = 200;
 const RECALL_QUALITY_WORK_DIRECTORY_NAME = 'recall-quality-evaluation';
-const RECALL_QUALITY_GENERATION_ID = 'generation_quality_active';
 
-/** Profile-aware inference and tokenizer boundaries for bounded quality evaluation. */
-export interface RecallQualityEvaluationDependencies extends Pick<
-  RecallConversationDependencies,
-  'embeddingProfile' | 'embeddingProvider' | 'tokenizerIdentity' | 'loadTokenizer'
-> {
-  /** @deprecated Use embeddingProvider for profile-aware query and document semantics. */
+/** Local model and tokenizer boundaries that make the bounded runner integration-testable. */
+export interface RecallQualityEvaluationDependencies {
   embeddings?: LocalEmbeddingClient;
-}
-
-/** Live planner and reranker boundaries for an optional committed-corpus query-planned lane. */
-export interface RecallQualityQueryPlannedDependencies {
-  queryPlanningProfile: RecallQueryPlanningModelProfile;
-  queryPlanner: RecallIdentifiedQueryPlanningProvider;
-  rerankingProfile: RecallRerankingModelProfile;
-  reranker: RecallIdentifiedRerankingProvider;
+  loadTokenizer?: () => Promise<ConversationTextTokenizer>;
 }
 
 /** Inputs for one bounded evaluation run over a checksum-fixed corpus. */
@@ -89,7 +64,6 @@ export interface RunRecallQualityEvaluationOptions {
   baseConfig: RecallConversationConfig;
   workDirectory: string;
   dependencies?: RecallQualityEvaluationDependencies;
-  queryPlannedDependencies?: RecallQualityQueryPlannedDependencies;
 }
 
 /** Index work performed once for one required chunk policy. */
@@ -125,38 +99,12 @@ export interface RecallQualityEvaluationIdentity {
   reciprocalRankConstant: number;
   activeBranchPrior: number;
   candidateLimits: { dense: 8; lexical: 8; identifier: 8 };
-  fusedPoolLimit: 24;
-  rerankPoolLimit: 24;
   finalResultCount: 5;
-}
-
-/** Incremental eligibility and persisted storage schemas measured by quality evidence. */
-export interface RecallQualityStorageIdentity {
-  conversationSchemaVersion: number;
-  zvecSchemaVersion: number;
-  indexManifestVersion: number;
-  incrementalEligibilityPolicyVersion: number;
-}
-
-/** Live query-planned quality measured independently over the committed corpus. */
-export interface RecallQualityQueryPlannedResult {
-  executionIdentity: {
-    queryPlanning: Readonly<RecallQueryPlanningExecutionIdentity>;
-    reranking: Readonly<RecallRerankingExecutionIdentity>;
-  };
-  configurations: RecallQualityConfigurationMeasurement[];
-  selection: RecallQualityPolicySelection;
-  boundedWork: {
-    executedSearchRequests: number;
-    plannerRequests: number;
-    rerankerRequests: number;
-  };
 }
 
 /** Raw measured configurations, gate selection, and bounded-work evidence from one run. */
 export interface RecallQualityEvaluationResult {
-  version: 5;
-  storageIdentity: RecallQualityStorageIdentity;
+  version: 4;
   evaluationIdentity: RecallQualityEvaluationIdentity;
   startedAt: string;
   completedAt: string;
@@ -168,7 +116,6 @@ export interface RecallQualityEvaluationResult {
   configurations: RecallQualityConfigurationMeasurement[];
   selection: RecallQualityPolicySelection;
   boundedWork: RecallQualityExecutedWork;
-  queryPlanned?: RecallQualityQueryPlannedResult;
 }
 
 function isPathInside(parentPath: string, childPath: string): boolean {
@@ -176,11 +123,11 @@ function isPathInside(parentPath: string, childPath: string): boolean {
   return pathFromParent === '' || (!pathFromParent.startsWith('..') && !isAbsolute(pathFromParent));
 }
 
-async function assertSafeRecallQualityPaths(
+function assertSafeRecallQualityPaths(
   workDirectory: string,
   corpus: LoadedRecallQualityCorpus,
   baseConfig: RecallConversationConfig,
-): Promise<string> {
+): string {
   const resolvedWorkDirectory = resolve(workDirectory);
   if (basename(resolvedWorkDirectory) !== RECALL_QUALITY_WORK_DIRECTORY_NAME) {
     throw new Error(
@@ -193,33 +140,26 @@ async function assertSafeRecallQualityPaths(
       `Recall quality work directory must stay inside evaluation data area: ${resolvedWorkDirectory} is outside ${evaluationDirectory}`,
     );
   }
-  return assertRecallTestDataRoot({
-    testDataRoot: resolvedWorkDirectory,
-    repositoryRoot: dirname(evaluationDirectory),
-    configuredProtectedPaths: [
-      corpus.sessionDirectory,
-      baseConfig.sessionsDirectory,
-      baseConfig.dataDirectory,
-      baseConfig.databasePath,
-      baseConfig.projectionDatabasePath,
-      baseConfig.statePath,
-      baseConfig.manifestPath,
-      baseConfig.tokenizerCacheDirectory,
-      baseConfig.embeddingCacheDirectory,
-      baseConfig.lockPath,
-      baseConfig.diagnosticLogPath,
-      baseConfig.retainedDiagnosticLogPath,
-      baseConfig.markerSpoolDirectory,
-      baseConfig.markerQuarantineDirectory,
-      baseConfig.markerControlDirectory,
-      baseConfig.workerOwnershipLockPath,
-      baseConfig.generationRootDirectory,
-      baseConfig.activeGenerationPointerPath,
-      baseConfig.generationRegistryPath,
-      baseConfig.backlogSummaryPath,
-      baseConfig.incrementalDiagnosticLogPath,
-    ],
-  });
+  const protectedPaths = [
+    corpus.sessionDirectory,
+    baseConfig.sessionsDirectory,
+    baseConfig.databasePath,
+    baseConfig.statePath,
+    baseConfig.manifestPath,
+    baseConfig.embeddingCacheDirectory,
+    baseConfig.lockPath,
+  ].map((path) => resolve(path));
+  for (const protectedPath of protectedPaths) {
+    if (
+      isPathInside(resolvedWorkDirectory, protectedPath) ||
+      isPathInside(protectedPath, resolvedWorkDirectory)
+    ) {
+      throw new Error(
+        `Recall quality work directory overlaps protected path: ${resolvedWorkDirectory} and ${protectedPath}`,
+      );
+    }
+  }
+  return resolvedWorkDirectory;
 }
 
 function createEvaluationEmbeddingClient(
@@ -245,25 +185,14 @@ function createChunkPolicyConfig(
   candidateCount: number,
 ): RecallConversationConfig {
   const policyDirectory = join(workDirectory, chunkPolicy.id);
-  const generationRootDirectory = join(policyDirectory, 'generations');
-  const generationDirectory = join(generationRootDirectory, RECALL_QUALITY_GENERATION_ID);
   return {
     ...baseConfig,
     sessionsDirectory: corpus.sessionDirectory,
-    databasePath: join(generationDirectory, 'zvec'),
-    projectionDatabasePath: join(generationDirectory, 'session-projections'),
-    statePath: join(generationDirectory, 'index-state.json'),
-    manifestPath: join(generationDirectory, 'index-manifest.json'),
+    databasePath: join(policyDirectory, 'zvec'),
+    statePath: join(policyDirectory, 'index-state.json'),
+    manifestPath: join(policyDirectory, 'index-manifest.json'),
     embeddingCacheDirectory: join(policyDirectory, 'embedding-cache'),
     lockPath: join(policyDirectory, 'operation.lock'),
-    generationRootDirectory,
-    activeGenerationPointerPath: join(policyDirectory, 'active-generation.json'),
-    generationRegistryPath: join(policyDirectory, 'generation-registry.json'),
-    backlogSummaryPath: join(policyDirectory, 'backlog-summary.json'),
-    markerSpoolDirectory: join(policyDirectory, 'markers', 'pending'),
-    markerQuarantineDirectory: join(policyDirectory, 'markers', 'quarantine'),
-    markerControlDirectory: join(policyDirectory, 'markers', 'control'),
-    workerOwnershipLockPath: join(policyDirectory, 'incremental-worker.lock'),
     projectLineages: normalizeRecallProjectLineages(corpus.specification.projectLineages),
     chunkPolicy: {
       maxTokens: chunkPolicy.maxTokens,
@@ -274,8 +203,6 @@ function createChunkPolicyConfig(
       lexical: candidateCount,
       identifier: candidateCount,
     },
-    fusedPoolLimit: candidateCount * 3,
-    rerankPoolLimit: candidateCount * 3,
   };
 }
 
@@ -361,58 +288,28 @@ async function createEvaluationProjectResolver(
 }
 
 function createServiceDependencies(
-  reranker: RecallConversationDependencies['reranker'],
+  embeddings: LocalEmbeddingClient,
+  reranker: LocalRerankerClient,
   resolveProjectIdentity: (workingDirectory: string) => Promise<ResolvedProjectIdentity | null>,
-  evaluationDependencies?: RecallQualityEvaluationDependencies,
-  embeddings?: LocalEmbeddingClient,
-  queryPlannedDependencies?: RecallQualityQueryPlannedDependencies,
+  loadTokenizer?: () => Promise<ConversationTextTokenizer>,
 ): RecallConversationDependencies {
   return {
-    ...(evaluationDependencies?.embeddingProfile
-      ? { embeddingProfile: evaluationDependencies.embeddingProfile }
-      : {}),
-    ...(evaluationDependencies?.embeddingProvider
-      ? { embeddingProvider: evaluationDependencies.embeddingProvider }
-      : {}),
-    ...(evaluationDependencies?.tokenizerIdentity
-      ? { tokenizerIdentity: evaluationDependencies.tokenizerIdentity }
-      : {}),
-    ...(embeddings ? { embeddings } : {}),
-    rerankingProfile: queryPlannedDependencies?.rerankingProfile ?? null,
-    reranker: reranker ?? null,
-    rerankerExecutionIdentity: queryPlannedDependencies?.reranker.executionIdentity ?? null,
-    ...(queryPlannedDependencies
-      ? {
-          queryPlanningProfile: queryPlannedDependencies.queryPlanningProfile,
-          queryPlanner: queryPlannedDependencies.queryPlanner,
-        }
-      : {}),
+    embeddings,
+    reranker,
     resolveProjectIdentity,
-    ...(evaluationDependencies?.loadTokenizer
-      ? { loadTokenizer: evaluationDependencies.loadTokenizer }
-      : {}),
+    ...(loadTokenizer ? { loadTokenizer } : {}),
   };
 }
 
 function createEvaluationSearchOptions(
   evaluationCase: LoadedRecallQualityCorpus['specification']['cases'][number],
-  mode: 'hybrid' | 'query-planned' = 'hybrid',
 ): RecallConversationSearchOptions {
   return {
-    mode,
+    mode: 'hybrid',
     scope: evaluationCase.scope,
     ...(evaluationCase.invocationDirectory
       ? { invocationDirectory: evaluationCase.invocationDirectory }
       : {}),
-  };
-}
-
-function createHybridPreLimitControlSearchOptions(
-  evaluationCase: LoadedRecallQualityCorpus['specification']['cases'][number],
-): RecallConversationSearchOptions {
-  return {
-    ...createEvaluationSearchOptions(evaluationCase),
-    scope: RecallSearchScope.GLOBAL,
   };
 }
 
@@ -431,7 +328,7 @@ export async function runRecallQualityEvaluation(
 ): Promise<RecallQualityEvaluationResult> {
   const startedAt = new Date();
   const started = performance.now();
-  const workDirectory = await assertSafeRecallQualityPaths(
+  const workDirectory = assertSafeRecallQualityPaths(
     options.workDirectory,
     options.corpus,
     options.baseConfig,
@@ -443,49 +340,21 @@ export async function runRecallQualityEvaluation(
   await rm(workDirectory, { recursive: true, force: true });
   await mkdir(workDirectory, { recursive: true });
 
-  const embeddings = options.dependencies?.embeddingProvider
-    ? undefined
-    : createEvaluationEmbeddingClient(options.baseConfig, options.dependencies?.embeddings);
+  const embeddings = createEvaluationEmbeddingClient(
+    options.baseConfig,
+    options.dependencies?.embeddings,
+  );
   const projectResolver = await createEvaluationProjectResolver(options.corpus, workDirectory);
   const indexRuns: RecallQualityIndexRun[] = [];
   const configurations: RecallQualityConfigurationMeasurement[] = [];
-  const queryPlannedConfigurations: RecallQualityConfigurationMeasurement[] = [];
   let executedSearchRequests = 0;
-  let queryPlannedExecutedSearchRequests = 0;
-  let queryPlannedPlannerRequests = 0;
-  let queryPlannedRerankerRequests = 0;
-  const configuredQueryPlannedDependencies = options.queryPlannedDependencies;
-  const measuredQueryPlannedDependencies: RecallQualityQueryPlannedDependencies | undefined =
-    configuredQueryPlannedDependencies
-      ? {
-          ...configuredQueryPlannedDependencies,
-          queryPlanner: {
-            get executionIdentity() {
-              return configuredQueryPlannedDependencies.queryPlanner.executionIdentity;
-            },
-            async planRecallQuery(request, signal) {
-              queryPlannedPlannerRequests += 1;
-              return configuredQueryPlannedDependencies.queryPlanner.planRecallQuery(
-                request,
-                signal,
-              );
-            },
-          },
-          reranker: {
-            get executionIdentity() {
-              return configuredQueryPlannedDependencies.reranker.executionIdentity;
-            },
-            async rerankDocuments(query, documents, signal) {
-              queryPlannedRerankerRequests += 1;
-              return configuredQueryPlannedDependencies.reranker.rerankDocuments(
-                query,
-                documents,
-                signal,
-              );
-            },
-          },
-        }
-      : undefined;
+  let rerankerRequests = 0;
+  const rejectingReranker: LocalRerankerClient = {
+    async rerankDocuments() {
+      rerankerRequests += 1;
+      throw new Error('Recall quality evaluation attempted an unexpected reranker request');
+    },
+  };
 
   for (const chunkPolicy of specification.chunkPolicies) {
     const firstCandidateCount = specification.candidateCounts[0];
@@ -502,18 +371,14 @@ export async function runRecallQualityEvaluation(
     const indexService = createRecallConversationService(
       indexConfig,
       createServiceDependencies(
-        null,
-        projectResolver.resolveProjectIdentity,
-        options.dependencies,
         embeddings,
+        rejectingReranker,
+        projectResolver.resolveProjectIdentity,
+        options.dependencies?.loadTokenizer,
       ),
     );
     const indexStarted = performance.now();
-    const indexed = await indexService.index({
-      rebuild: true,
-      optimize: true,
-      generationId: RECALL_QUALITY_GENERATION_ID,
-    });
+    const indexed = await indexService.index({ optimize: true });
     const indexLatencyMilliseconds = performance.now() - indexStarted;
     if (indexed.indexSummary.failedSessions.length > 0) {
       const failures = indexed.indexSummary.failedSessions
@@ -544,11 +409,10 @@ export async function runRecallQualityEvaluation(
       const searchService = createRecallConversationService(
         searchConfig,
         createServiceDependencies(
-          measuredQueryPlannedDependencies?.reranker ?? null,
-          projectResolver.resolveProjectIdentity,
-          options.dependencies,
           embeddings,
-          measuredQueryPlannedDependencies,
+          rejectingReranker,
+          projectResolver.resolveProjectIdentity,
+          options.dependencies?.loadTokenizer,
         ),
       );
       const warmupCases = specification.cases.filter(
@@ -588,7 +452,13 @@ export async function runRecallQualityEvaluation(
           const globalControl = await searchService.search(
             evaluationCase.query,
             RECALL_QUALITY_FULL_POOL_LIMIT,
-            createHybridPreLimitControlSearchOptions(evaluationCase),
+            {
+              mode: 'hybrid',
+              scope: RecallSearchScope.GLOBAL,
+              ...(evaluationCase.invocationDirectory
+                ? { invocationDirectory: evaluationCase.invocationDirectory }
+                : {}),
+            },
           );
           globalControlResults = globalControl.results;
           executedSearchRequests += 1;
@@ -611,61 +481,13 @@ export async function runRecallQualityEvaluation(
         indexLatencyMilliseconds,
         measurement: measureRecallQuality(observations, specification.finalCounts),
       });
-
-      if (measuredQueryPlannedDependencies) {
-        const queryPlannedObservations: RecallQualitySearchObservation[] = [];
-        for (const evaluationCase of specification.cases) {
-          const queryStarted = performance.now();
-          const search = await searchService.search(
-            evaluationCase.query,
-            RECALL_QUALITY_FULL_POOL_LIMIT,
-            createEvaluationSearchOptions(evaluationCase, 'query-planned'),
-          );
-          const queryLatencyMilliseconds = performance.now() - queryStarted;
-          queryPlannedExecutedSearchRequests += 1;
-          let globalControlResults;
-          if (evaluationCase.preLimitChannelProof) {
-            const globalControl = await searchService.search(
-              evaluationCase.query,
-              RECALL_QUALITY_FULL_POOL_LIMIT,
-              createHybridPreLimitControlSearchOptions(evaluationCase),
-            );
-            globalControlResults = globalControl.results;
-            queryPlannedExecutedSearchRequests += 1;
-          }
-          queryPlannedObservations.push({
-            evaluationCase,
-            results: search.results,
-            searchPolicy: {
-              scope: search.searchPolicy.scope,
-              invocationProjectIdentity: search.searchPolicy.invocationProjectIdentity,
-            },
-            ...(globalControlResults ? { globalControlResults } : {}),
-            queryLatencyMilliseconds,
-          });
-        }
-        queryPlannedConfigurations.push({
-          chunkPolicy: { ...chunkPolicy },
-          candidateCount,
-          totalChunks: indexed.totalChunks,
-          indexLatencyMilliseconds,
-          measurement: measureRecallQuality(queryPlannedObservations, specification.finalCounts),
-        });
-      }
     }
   }
 
-  if (options.queryPlannedDependencies) {
-    if (queryPlannedPlannerRequests < 1 || queryPlannedRerankerRequests < 1) {
-      throw new Error(
-        'Recall quality query-planned coverage failed: live planner and reranker must both execute',
-      );
-    }
-    if (queryPlannedExecutedSearchRequests > specification.bounds.maximumSearchRequests) {
-      throw new Error(
-        `Recall quality query-planned search bound exceeded after run: executed ${queryPlannedExecutedSearchRequests}, maximum ${specification.bounds.maximumSearchRequests}`,
-      );
-    }
+  if (rerankerRequests !== 0) {
+    throw new Error(
+      `Recall quality reranker request bound exceeded: executed ${rerankerRequests}, maximum 0`,
+    );
   }
   if (executedSearchRequests > specification.bounds.maximumSearchRequests) {
     throw new Error(
@@ -683,13 +505,7 @@ export async function runRecallQualityEvaluation(
   }
   const completedAt = new Date();
   return {
-    version: 5,
-    storageIdentity: {
-      conversationSchemaVersion: SESSION_CONVERSATION_SCHEMA_VERSION,
-      zvecSchemaVersion: ZVEC_CONVERSATION_SCHEMA_VERSION,
-      indexManifestVersion: RECALL_INDEX_MANIFEST_VERSION,
-      incrementalEligibilityPolicyVersion: INCREMENTAL_RECALL_ELIGIBILITY_POLICY_VERSION,
-    },
+    version: 4,
     evaluationIdentity: {
       defaultScope: RecallSearchScope.PROJECT,
       projectScopePolicyVersion: PROJECT_SCOPE_POLICY_VERSION,
@@ -704,8 +520,6 @@ export async function runRecallQualityEvaluation(
       reciprocalRankConstant: RECALL_RRF_RANK_CONSTANT,
       activeBranchPrior: RECALL_ACTIVE_BRANCH_PRIOR,
       candidateLimits: { dense: 8, lexical: 8, identifier: 8 },
-      fusedPoolLimit: 24,
-      rerankPoolLimit: 24,
       finalResultCount: 5,
     },
     startedAt: startedAt.toISOString(),
@@ -722,30 +536,10 @@ export async function runRecallQualityEvaluation(
       evaluationCases: specification.cases.length,
       indexRuns: indexRuns.length,
       executedSearchRequests,
-      rerankerRequests: 0,
+      rerankerRequests,
       chunkEmbeddingRequests,
       maximumCandidatesPerSearch: Math.max(...specification.candidateCounts) * 3,
       repositoryIdentityResolutions: projectResolver.repositoryIdentityResolutions,
     },
-    ...(options.queryPlannedDependencies
-      ? {
-          queryPlanned: {
-            executionIdentity: {
-              queryPlanning: options.queryPlannedDependencies.queryPlanner.executionIdentity,
-              reranking: options.queryPlannedDependencies.reranker.executionIdentity,
-            },
-            configurations: queryPlannedConfigurations,
-            selection: selectRecallQualityPolicy(
-              queryPlannedConfigurations,
-              specification.qualityGate,
-            ),
-            boundedWork: {
-              executedSearchRequests: queryPlannedExecutedSearchRequests,
-              plannerRequests: queryPlannedPlannerRequests,
-              rerankerRequests: queryPlannedRerankerRequests,
-            },
-          },
-        }
-      : {}),
   };
 }

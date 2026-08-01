@@ -18,4 +18,4 @@ Pi's historical `/new` bug reused the active physical file. Upstream commit [`23
 
 Detection never falls back to a converter because canonical graph parsing failed. Unsupported, ambiguous, malformed, truncated, cyclic, duplicate-ID, invalid-leaf, and missing-parent streams fail without documents. A changed physical file that becomes invalid also loses its previously indexed documents.
 
-The fixed index manifest records the import-policy version, and physical session projections record the same policy for incremental compatibility. Older generations require an explicit replacement build. Import metadata does not enter embedding-input identity, so a replacement may transfer vectors whose profile and exact input checksums still match; no persistent embedding cache is required.
+The index manifest records the import-policy version. Incremental state records the same policy under state schema version 2. Older generations and state files require an explicit rebuild. Import metadata does not enter embedding-cache identity, so unchanged searchable text can reuse cached vectors.

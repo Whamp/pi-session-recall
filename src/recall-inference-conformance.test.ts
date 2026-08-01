@@ -2,12 +2,9 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import test from 'node:test';
 
-import { RecallInferenceBackend } from './enums.js';
-
 import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 
-import { createRecallRerankingExecutionIdentity } from './recall-inference-capabilities.js';
 import {
   measureRecallEmbeddingProviderConformance,
   measureRecallRerankingProviderConformance,
@@ -17,16 +14,16 @@ import {
   createQwenRerankingModelProfile,
   createRecommendedEmbeddingGemmaModelProfile,
 } from './recall-model-profiles.js';
-import { createLlamaCppHttpEmbeddingProvider } from './createLlamaCppHttpEmbeddingProvider.js';
-import { createLlamaCppHttpEmbeddingProvider as createOctenHttpEmbeddingProvider } from './createLlamaCppHttpEmbeddingProvider.js';
-import { createQwenHttpRerankingProvider } from './createQwenHttpRerankingProvider.js';
+import { createLlamaCppHttpEmbeddingProvider } from './llama-cpp-http-embedding-provider.js';
+import { createOctenHttpEmbeddingProvider } from './octen-http-embedding-provider.js';
+import { createQwenHttpRerankingProvider } from './qwen-http-reranking-provider.js';
 
-const EMBEDDING_REQUEST_SCHEMA = Type.Object({
+const embeddingRequestSchema = Type.Object({
   input: Type.Array(Type.String()),
   model: Type.String(),
 });
 
-const RERANKING_REQUEST_SCHEMA = Type.Object({
+const rerankingRequestSchema = Type.Object({
   model: Type.String(),
   query: Type.String(),
   documents: Type.Array(Type.String()),
@@ -34,7 +31,7 @@ const RERANKING_REQUEST_SCHEMA = Type.Object({
 });
 
 void test('Octen HTTP embedding provider passes shared query and document conformance', async (t) => {
-  const requests: Array<ReturnType<typeof Value.Parse<typeof EMBEDDING_REQUEST_SCHEMA>>> = [];
+  const requests: Array<ReturnType<typeof Value.Parse<typeof embeddingRequestSchema>>> = [];
   const vectorsByInput = new Map<string, number[]>([
     ['Where is source provenance handled?', [1, 0, 0]],
     ['Source provenance is retained.', [0, 1, 0]],
@@ -47,7 +44,7 @@ void test('Octen HTTP embedding provider passes shared query and document confor
       body += chunk;
     });
     request.on('end', () => {
-      const payload = Value.Parse(EMBEDDING_REQUEST_SCHEMA, JSON.parse(body));
+      const payload = Value.Parse(embeddingRequestSchema, JSON.parse(body));
       requests.push(payload);
       response.setHeader('content-type', 'application/json');
       response.end(
@@ -116,7 +113,7 @@ void test('Octen HTTP embedding provider passes shared query and document confor
 });
 
 void test('llama.cpp HTTP embedding provider preserves EmbeddingGemma asymmetric semantics', async (t) => {
-  const requests: Array<ReturnType<typeof Value.Parse<typeof EMBEDDING_REQUEST_SCHEMA>>> = [];
+  const requests: Array<ReturnType<typeof Value.Parse<typeof embeddingRequestSchema>>> = [];
   const profile = createRecommendedEmbeddingGemmaModelProfile();
   const queryVector = [1, ...Array<number>(767).fill(0)];
   const firstDocumentVector = [0, 1, ...Array<number>(766).fill(0)];
@@ -133,7 +130,7 @@ void test('llama.cpp HTTP embedding provider preserves EmbeddingGemma asymmetric
       body += chunk;
     });
     request.on('end', () => {
-      const payload = Value.Parse(EMBEDDING_REQUEST_SCHEMA, JSON.parse(body));
+      const payload = Value.Parse(embeddingRequestSchema, JSON.parse(body));
       requests.push(payload);
       response.setHeader('content-type', 'application/json');
       response.end(
@@ -182,7 +179,7 @@ void test('llama.cpp HTTP embedding provider preserves EmbeddingGemma asymmetric
 });
 
 void test('Qwen HTTP reranking provider passes shared ordered-score conformance', async (t) => {
-  const requests: Array<ReturnType<typeof Value.Parse<typeof RERANKING_REQUEST_SCHEMA>>> = [];
+  const requests: Array<ReturnType<typeof Value.Parse<typeof rerankingRequestSchema>>> = [];
   const server = createServer((request, response) => {
     let body = '';
     request.setEncoding('utf8');
@@ -190,7 +187,7 @@ void test('Qwen HTTP reranking provider passes shared ordered-score conformance'
       body += chunk;
     });
     request.on('end', () => {
-      requests.push(Value.Parse(RERANKING_REQUEST_SCHEMA, JSON.parse(body)));
+      requests.push(Value.Parse(rerankingRequestSchema, JSON.parse(body)));
       response.setHeader('content-type', 'application/json');
       response.end(
         JSON.stringify({
@@ -217,18 +214,12 @@ void test('Qwen HTTP reranking provider passes shared ordered-score conformance'
   });
   const clockValues = [0, 13];
 
-  assert.equal(provider.executionIdentity.adapterId, 'llama-cpp-http-reranking-v1');
-  assert.equal(provider.executionIdentity.adapterVersion, '1');
-  assert.equal(provider.executionIdentity.backend, 'llama-cpp-http');
-  assert.equal(provider.executionIdentity.modelProfileId, 'qwen-reranking:qwen3-rerank');
-  assert.match(
-    provider.executionIdentity.adapterConfigurationIdentity,
-    /^llama-cpp-http-reranking-config-v1:[a-f0-9]{64}$/u,
-  );
-  assert.match(
-    provider.executionIdentity.cacheIdentity,
-    /^recall-reranking-execution-v1:[a-f0-9]{64}$/u,
-  );
+  assert.deepEqual(provider.executionIdentity, {
+    adapterId: 'llama-cpp-http-reranking-v1',
+    backend: 'llama-cpp-http',
+    cacheIdentity: 'qwen-reranking:qwen3-rerank:llama-cpp-http-reranking-v1',
+    modelProfileId: 'qwen-reranking:qwen3-rerank',
+  });
   const measurement = await measureRecallRerankingProviderConformance({
     provider,
     profile,
@@ -406,13 +397,12 @@ void test('reranking conformance rejects a non-finite relevance score', async ()
       measureRecallRerankingProviderConformance({
         profile,
         provider: {
-          executionIdentity: createRecallRerankingExecutionIdentity(
-            profile,
-            'fixture-reranking-v1',
-            'fixture-reranking-config-v1',
-            RecallInferenceBackend.CUSTOM,
-            1_000,
-          ),
+          executionIdentity: {
+            adapterId: 'fixture-reranking-v1',
+            backend: 'custom',
+            cacheIdentity: `${profile.profileId}:fixture-reranking-v1`,
+            modelProfileId: profile.profileId,
+          },
           async rerankDocuments() {
             return [Number.NaN];
           },
@@ -435,13 +425,12 @@ void test('reranking conformance rejects double-sigmoid fixture scores', async (
       measureRecallRerankingProviderConformance({
         profile,
         provider: {
-          executionIdentity: createRecallRerankingExecutionIdentity(
-            profile,
-            'known-double-sigmoid-v1',
-            'known-double-sigmoid-config-v1',
-            RecallInferenceBackend.CUSTOM,
-            1_000,
-          ),
+          executionIdentity: {
+            adapterId: 'known-double-sigmoid-v1',
+            backend: 'custom',
+            cacheIdentity: `${profile.profileId}:known-double-sigmoid-v1`,
+            modelProfileId: profile.profileId,
+          },
           async rerankDocuments() {
             return doubleSigmoidScores;
           },
@@ -463,13 +452,12 @@ void test('reranking conformance rejects scores outside the profile range', asyn
       measureRecallRerankingProviderConformance({
         profile,
         provider: {
-          executionIdentity: createRecallRerankingExecutionIdentity(
-            profile,
-            'fixture-reranking-v1',
-            'fixture-reranking-config-v1',
-            RecallInferenceBackend.CUSTOM,
-            1_000,
-          ),
+          executionIdentity: {
+            adapterId: 'fixture-reranking-v1',
+            backend: 'custom',
+            cacheIdentity: `${profile.profileId}:fixture-reranking-v1`,
+            modelProfileId: profile.profileId,
+          },
           async rerankDocuments() {
             return [1.01];
           },

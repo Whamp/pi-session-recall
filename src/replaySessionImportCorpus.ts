@@ -1,9 +1,8 @@
 import { createHash } from 'node:crypto';
 import { lstat, readFile, readdir, realpath, stat } from 'node:fs/promises';
-import { join, relative, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { assertRecallTestDataRoot } from './assert-recall-test-data-root.js';
 import { SessionImportFormat, SessionImportReplayOutcome } from './enums.js';
 import { loadRecallConversationConfig } from './recall-conversation-config.js';
 import {
@@ -109,31 +108,23 @@ function assertReplaySourcesUnchanged(
   }
 }
 
+function overlapsPath(left: string, right: string): boolean {
+  const leftToRight = relative(left, right);
+  const rightToLeft = relative(right, left);
+  const contains = (value: string): boolean =>
+    value === '' || (!value.startsWith('..') && !isAbsolute(value));
+  return contains(leftToRight) || contains(rightToLeft);
+}
+
 async function resolveReplayCorpusRoot(corpusRoot: string): Promise<string> {
-  const absoluteRoot = resolve(corpusRoot);
-  const explicitConfig = process.env.PI_RECALL_CONFIG
-    ? await loadRecallConversationConfig({
-        configPath: process.env.PI_RECALL_CONFIG,
-        environment: process.env,
-      })
-    : null;
-  await assertRecallTestDataRoot({
-    testDataRoot: absoluteRoot,
-    repositoryRoot: fileURLToPath(new URL('../', import.meta.url)),
-    configuredProtectedPaths:
-      explicitConfig === null
-        ? []
-        : [
-            explicitConfig.sessionsDirectory,
-            explicitConfig.dataDirectory,
-            explicitConfig.lockPath,
-            explicitConfig.embeddingCacheDirectory,
-            explicitConfig.markerSpoolDirectory,
-            explicitConfig.markerQuarantineDirectory,
-            explicitConfig.markerControlDirectory,
-          ],
-  });
-  const resolvedRoot = await realpath(absoluteRoot);
+  const resolvedRoot = await realpath(resolve(corpusRoot));
+  const recallConfig = await loadRecallConversationConfig();
+  const productionRecallDirectory = resolve(dirname(recallConfig.databasePath));
+  if (overlapsPath(resolvedRoot, productionRecallDirectory)) {
+    throw new Error(
+      `Recall session import replay refuses the production recall index directory: ${resolvedRoot}`,
+    );
+  }
   const rootStats = await stat(resolvedRoot);
   if (!rootStats.isDirectory()) {
     throw new Error(`Recall session import replay corpus root is not a directory: ${resolvedRoot}`);
@@ -158,29 +149,14 @@ function createImportDigest(
             `Recall session import replay chunk path does not identify its physical session file: ${chunk.sessionPath}`,
           );
         }
-        const relativeSessionPath = relative(corpusRoot, chunk.sessionPath);
         return {
-          replayDocumentId: sha256(
-            JSON.stringify({
-              schemaVersion: chunk.schemaVersion,
-              relativeSessionPath,
-              logicalSessionId: chunk.sessionId.value,
-              entryId: chunk.entryId.value,
-              evidenceKind: chunk.evidenceKind,
-              evidencePart: chunk.evidencePart,
-              checksum: chunk.checksum,
-              sourceLineStart: chunk.sourceLineStart,
-              sourceLineEnd: chunk.sourceLineEnd,
-              characterStart: chunk.characterStart,
-              characterEnd: chunk.characterEnd,
-            }),
-          ),
+          id: chunk.id,
           checksum: chunk.checksum,
           sessionId: chunk.sessionId.value,
           entryId: chunk.entryId.value,
           parentEntryId: chunk.parentEntryId?.value ?? null,
           contributingEntryIds: chunk.contributingEntryIds.map((entryId) => entryId.value),
-          sessionPath: relativeSessionPath,
+          sessionPath: relative(corpusRoot, chunk.sessionPath),
           sourceLineStart: chunk.sourceLineStart,
           sourceLineEnd: chunk.sourceLineEnd,
         };

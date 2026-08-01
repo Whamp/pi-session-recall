@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { appendFile, mkdir, open, readFile, rename, rm, stat } from 'node:fs/promises';
+import { appendFile, mkdir, rename, rm, stat } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
 import {
@@ -7,18 +7,17 @@ import {
   RecallDiagnosticOperationKind,
   RecallDiagnosticStatus,
   RecallDiagnosticsMode,
+  type RecallLifecycleTrigger,
   RecallManualMaintenanceTrigger,
   type RecallSearchScope,
 } from './enums.js';
-import { isUnknownRecord } from './is-unknown-record.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
-import { syncRecallDirectory } from './sync-recall-directory.js';
 
-const RECALL_DIAGNOSTIC_RECORD_VERSION = 3;
+const RECALL_DIAGNOSTIC_RECORD_VERSION = 2;
 const DEFAULT_MAXIMUM_DIAGNOSTIC_LOG_BYTES = 10 * 1_024 * 1_024;
 const PROCESS_RECALL_DIAGNOSTIC_PERSISTENCE_STATE = {
   disabled: false,
-  persistenceFailureHandled: false,
+  warningEmitted: false,
 };
 const SLOW_RECALL_DIAGNOSTIC_THRESHOLD_MILLISECONDS = 1_000;
 const MAX_RECORDED_SESSION_PATH_CHARACTERS = 4_096;
@@ -88,54 +87,11 @@ export interface RecallIndexDiagnosticCompletion {
   errorCategory?: RecallDiagnosticErrorCategory;
 }
 
-/** Privacy-safe scalar costs and state for incremental worker, generation, and safeguard work. */
-export interface RecallIncrementalDiagnosticMetrics {
-  elapsedMilliseconds: number;
-  markerAgeMilliseconds: number | null;
-  metadataSweepScannedFileCount: number;
-  metadataSweepObservedSessionCount: number;
-  metadataSweepElapsedMilliseconds: number;
-  appendedByteCount: number;
-  parsedEntryCount: number;
-  eligibleDocumentCount: number;
-  tokenizerMilliseconds: number;
-  embeddingCacheHitCount: number;
-  embeddingCacheMissCount: number;
-  embeddingRequestCount: number;
-  lockWaitMilliseconds: number;
-  evidenceOpenMilliseconds: number;
-  evidenceWriteMilliseconds: number;
-  projectionOpenMilliseconds: number;
-  projectionCommitMilliseconds: number;
-  closeMilliseconds: number;
-  checkpointObservationMilliseconds: number;
-  markerAcknowledgementMilliseconds: number;
-  generationId: string | null;
-  generationState: string | null;
-  recoveryCategory: string | null;
-  deletionSafeguardCategory: string | null;
-  backlogPendingEligibleSessionCount: number;
-  backlogOldestEligibleMarkerAgeMilliseconds: number | null;
-  backlogFailureCategory: string | null;
-}
-
-/** One completed incremental diagnostic operation written without conversation text or source paths. */
-export interface RecallIncrementalDiagnosticCompletion {
-  operationKind:
-    | RecallDiagnosticOperationKind.INCREMENTAL_WORKER
-    | RecallDiagnosticOperationKind.WRITE_WINDOW
-    | RecallDiagnosticOperationKind.GENERATION_CUTOVER
-    | RecallDiagnosticOperationKind.RECOVERY
-    | RecallDiagnosticOperationKind.DELETION_RECONCILIATION
-    | RecallDiagnosticOperationKind.BACKLOG;
-  status: RecallDiagnosticStatus;
-  metrics: RecallIncrementalDiagnosticMetrics;
-  errorCategory?: RecallDiagnosticErrorCategory;
-}
-
 /** Exclusive phase totals and bounded state for one public recall search. */
 export interface RecallSearchDiagnosticMetrics {
+  freshnessBarrierRan: boolean;
   embeddingModelVerificationMilliseconds: number;
+  activeSessionFreshnessMilliseconds: number;
   queryEmbeddingMilliseconds: number;
   retrievalRankingMilliseconds: number;
   deepRerankMilliseconds: number;
@@ -168,10 +124,11 @@ export interface RecallOperationDiagnosticRecord {
   operationId: RecallDiagnosticOperationId;
   parentOperationId: RecallDiagnosticOperationId | null;
   operationKind: RecallDiagnosticOperationKind;
+  lifecycleTrigger: RecallLifecycleTrigger | null;
   manualMaintenanceTrigger: RecallManualMaintenanceTrigger | null;
   processId: number;
   sessionPath: string | null;
-  searchMode: 'hybrid' | 'deep-rerank' | 'query-planned' | null;
+  searchMode: 'hybrid' | 'deep-rerank' | null;
   recallScope: RecallSearchScope | null;
   status: RecallDiagnosticStatus;
   errorCategory: RecallDiagnosticErrorCategory | null;
@@ -191,9 +148,11 @@ export interface RecallOperationDiagnosticRecord {
   optimizationRan: boolean | null;
   optimizationMilliseconds: number | null;
   embeddingModelVerificationMilliseconds: number | null;
+  activeSessionFreshnessMilliseconds: number | null;
   queryEmbeddingMilliseconds: number | null;
   retrievalRankingMilliseconds: number | null;
   deepRerankMilliseconds: number | null;
+  freshnessBarrierRan: boolean | null;
   unattributedMilliseconds: number | null;
   scannedSessionCount: number | null;
   indexedSessionCount: number | null;
@@ -205,31 +164,11 @@ export interface RecallOperationDiagnosticRecord {
   cacheHitCount: number | null;
   newEmbeddingCount: number | null;
   embeddingRequestCount: number | null;
-  markerAgeMilliseconds: number | null;
-  lockWaitMilliseconds: number | null;
-  metadataSweepScannedFileCount: number | null;
-  metadataSweepObservedSessionCount: number | null;
-  metadataSweepElapsedMilliseconds: number | null;
-  appendedByteCount: number | null;
-  parsedEntryCount: number | null;
-  eligibleDocumentCount: number | null;
-  tokenizerMilliseconds: number | null;
-  embeddingCacheHitCount: number | null;
-  embeddingCacheMissCount: number | null;
-  evidenceOpenMilliseconds: number | null;
-  evidenceWriteMilliseconds: number | null;
-  projectionOpenMilliseconds: number | null;
-  projectionCommitMilliseconds: number | null;
-  closeMilliseconds: number | null;
-  checkpointObservationMilliseconds: number | null;
-  markerAcknowledgementMilliseconds: number | null;
-  generationId: string | null;
-  generationState: string | null;
-  recoveryCategory: string | null;
-  deletionSafeguardCategory: string | null;
-  backlogPendingEligibleSessionCount: number | null;
-  backlogOldestEligibleMarkerAgeMilliseconds: number | null;
-  backlogFailureCategory: string | null;
+}
+
+/** Handle that completes one already-started live session diagnostic without awaiting persistence. */
+export interface RecallLiveSessionDiagnosticOperation {
+  complete(completion: RecallIndexDiagnosticCompletion): void;
 }
 
 /** Handle that completes one already-started search diagnostic without awaiting persistence. */
@@ -254,46 +193,18 @@ export interface RecallManualIndexDiagnostic {
 
 /** Non-critical recall diagnostic recorder with an explicit test-only drain boundary. */
 export interface RecallOperationDiagnostics {
+  startLiveSessionReconciliation(input: {
+    lifecycleTrigger: RecallLifecycleTrigger;
+    sessionPath: string;
+  }): RecallLiveSessionDiagnosticOperation;
   startRecallSearch(input: {
-    searchMode: 'hybrid' | 'deep-rerank' | 'query-planned';
+    searchMode: 'hybrid' | 'deep-rerank';
     recallScope: RecallSearchScope;
   }): RecallSearchDiagnosticOperation;
   startManualIndexMaintenance(input: {
     manualMaintenanceTrigger: RecallManualMaintenanceTrigger;
   }): RecallManualIndexDiagnostic;
-  recordIncrementalOperation(completion: RecallIncrementalDiagnosticCompletion): void;
-  recordDurableIncrementalFailure(completion: RecallIncrementalDiagnosticCompletion): void;
   flush(): Promise<void>;
-}
-
-/** Append-only file handle used to make mandatory diagnostic failures durable. */
-export interface RecallOperationDiagnosticFile {
-  appendFile(content: string): Promise<void>;
-  sync(): Promise<void>;
-  close(): Promise<void>;
-}
-
-/** Result of opening a diagnostic log for append, including whether the directory entry is new. */
-export interface OpenRecallOperationDiagnosticFile {
-  file: RecallOperationDiagnosticFile;
-  created: boolean;
-}
-
-/** Filesystem boundary for bounded diagnostic rotation, durability, and fault injection. */
-export interface RecallOperationDiagnosticsFilesystem {
-  createDirectory(path: string): Promise<void>;
-  getFileSize(path: string): Promise<number>;
-  removeFile(path: string): Promise<void>;
-  renameFile(sourcePath: string, destinationPath: string): Promise<void>;
-  appendFile(path: string, content: string): Promise<void>;
-  openAppendFile(path: string): Promise<OpenRecallOperationDiagnosticFile>;
-  syncDirectory(path: string): Promise<void>;
-}
-
-/** Process-level diagnostic failure state, replaceable only to isolate fault-injection tests. */
-export interface RecallDiagnosticPersistenceState {
-  disabled: boolean;
-  persistenceFailureHandled: boolean;
 }
 
 /** Configuration for bounded local recall diagnostic persistence. */
@@ -303,38 +214,8 @@ export interface RecallOperationDiagnosticsOptions {
   retainedLogPath: string;
   clock?: RecallDiagnosticsClock;
   notifyWarning: (message: string) => void;
-  onPersistenceFailure?: () => Promise<void>;
   maximumLogBytes?: number;
-  filesystem?: RecallOperationDiagnosticsFilesystem;
-  persistenceState?: RecallDiagnosticPersistenceState;
 }
-
-const NODE_RECALL_OPERATION_DIAGNOSTICS_FILESYSTEM: RecallOperationDiagnosticsFilesystem = {
-  async createDirectory(path) {
-    await mkdir(path, { recursive: true });
-  },
-  async getFileSize(path) {
-    return (await stat(path)).size;
-  },
-  async removeFile(path) {
-    await rm(path, { force: true });
-  },
-  renameFile: rename,
-  async appendFile(path, content) {
-    await appendFile(path, content, 'utf8');
-  },
-  async openAppendFile(path) {
-    try {
-      return { file: await open(path, 'ax', 0o600), created: true };
-    } catch (error) {
-      if (readNodeErrorCode(error) !== 'EEXIST') {
-        throw error;
-      }
-      return { file: await open(path, 'a', 0o600), created: false };
-    }
-  },
-  syncDirectory: syncRecallDirectory,
-};
 
 const SYSTEM_RECALL_DIAGNOSTICS_CLOCK: RecallDiagnosticsClock = {
   monotonicMilliseconds: () => performance.now(),
@@ -368,43 +249,12 @@ export function accumulateRecallIndexMetrics(
   aggregateMetrics.deletedDocumentCount += physicalSessionMetrics.deletedDocumentCount;
 }
 
-/** Creates zeroed scalar measurements for one incremental recall diagnostic operation. */
-export function createRecallIncrementalDiagnosticMetrics(): RecallIncrementalDiagnosticMetrics {
-  return {
-    elapsedMilliseconds: 0,
-    markerAgeMilliseconds: null,
-    metadataSweepScannedFileCount: 0,
-    metadataSweepObservedSessionCount: 0,
-    metadataSweepElapsedMilliseconds: 0,
-    appendedByteCount: 0,
-    parsedEntryCount: 0,
-    eligibleDocumentCount: 0,
-    tokenizerMilliseconds: 0,
-    embeddingCacheHitCount: 0,
-    embeddingCacheMissCount: 0,
-    embeddingRequestCount: 0,
-    lockWaitMilliseconds: 0,
-    evidenceOpenMilliseconds: 0,
-    evidenceWriteMilliseconds: 0,
-    projectionOpenMilliseconds: 0,
-    projectionCommitMilliseconds: 0,
-    closeMilliseconds: 0,
-    checkpointObservationMilliseconds: 0,
-    markerAcknowledgementMilliseconds: 0,
-    generationId: null,
-    generationState: null,
-    recoveryCategory: null,
-    deletionSafeguardCategory: null,
-    backlogPendingEligibleSessionCount: 0,
-    backlogOldestEligibleMarkerAgeMilliseconds: null,
-    backlogFailureCategory: null,
-  };
-}
-
 /** Creates zeroed search measurements whose phase totals remain non-overlapping. */
 export function createRecallSearchDiagnosticMetrics(): RecallSearchDiagnosticMetrics {
   return {
+    freshnessBarrierRan: false,
     embeddingModelVerificationMilliseconds: 0,
+    activeSessionFreshnessMilliseconds: 0,
     queryEmbeddingMilliseconds: 0,
     retrievalRankingMilliseconds: 0,
     deepRerankMilliseconds: 0,
@@ -445,9 +295,10 @@ function createRecallDiagnosticStartRecord(input: {
   operationId: RecallDiagnosticOperationId;
   parentOperationId: RecallDiagnosticOperationId | null;
   operationKind: RecallDiagnosticOperationKind;
+  lifecycleTrigger: RecallLifecycleTrigger | null;
   manualMaintenanceTrigger: RecallManualMaintenanceTrigger | null;
   sessionPath: string | null;
-  searchMode: 'hybrid' | 'deep-rerank' | 'query-planned' | null;
+  searchMode: 'hybrid' | 'deep-rerank' | null;
   recallScope: RecallSearchScope | null;
 }): RecallOperationDiagnosticRecord {
   return {
@@ -456,6 +307,7 @@ function createRecallDiagnosticStartRecord(input: {
     operationId: input.operationId,
     parentOperationId: input.parentOperationId,
     operationKind: input.operationKind,
+    lifecycleTrigger: input.lifecycleTrigger,
     manualMaintenanceTrigger: input.manualMaintenanceTrigger,
     processId: process.pid,
     sessionPath: input.sessionPath?.slice(0, MAX_RECORDED_SESSION_PATH_CHARACTERS) ?? null,
@@ -479,9 +331,11 @@ function createRecallDiagnosticStartRecord(input: {
     optimizationRan: null,
     optimizationMilliseconds: null,
     embeddingModelVerificationMilliseconds: null,
+    activeSessionFreshnessMilliseconds: null,
     queryEmbeddingMilliseconds: null,
     retrievalRankingMilliseconds: null,
     deepRerankMilliseconds: null,
+    freshnessBarrierRan: null,
     unattributedMilliseconds: null,
     scannedSessionCount: null,
     indexedSessionCount: null,
@@ -493,31 +347,6 @@ function createRecallDiagnosticStartRecord(input: {
     cacheHitCount: null,
     newEmbeddingCount: null,
     embeddingRequestCount: null,
-    markerAgeMilliseconds: null,
-    lockWaitMilliseconds: null,
-    metadataSweepScannedFileCount: null,
-    metadataSweepObservedSessionCount: null,
-    metadataSweepElapsedMilliseconds: null,
-    appendedByteCount: null,
-    parsedEntryCount: null,
-    eligibleDocumentCount: null,
-    tokenizerMilliseconds: null,
-    embeddingCacheHitCount: null,
-    embeddingCacheMissCount: null,
-    evidenceOpenMilliseconds: null,
-    evidenceWriteMilliseconds: null,
-    projectionOpenMilliseconds: null,
-    projectionCommitMilliseconds: null,
-    closeMilliseconds: null,
-    checkpointObservationMilliseconds: null,
-    markerAcknowledgementMilliseconds: null,
-    generationId: null,
-    generationState: null,
-    recoveryCategory: null,
-    deletionSafeguardCategory: null,
-    backlogPendingEligibleSessionCount: null,
-    backlogOldestEligibleMarkerAgeMilliseconds: null,
-    backlogFailureCategory: null,
   };
 }
 
@@ -597,6 +426,7 @@ function createRecallPhysicalSessionCompletionRecord(input: {
       operationId: createRecallDiagnosticOperationId(),
       parentOperationId: input.parentStartRecord.operationId,
       operationKind: RecallDiagnosticOperationKind.PHYSICAL_SESSION_CHECK,
+      lifecycleTrigger: null,
       manualMaintenanceTrigger: input.parentStartRecord.manualMaintenanceTrigger,
       sessionPath: input.completion.sessionPath,
       searchMode: null,
@@ -663,6 +493,7 @@ function createRecallSearchDiagnosticCompletionRecord(input: {
   const metrics = input.completion.metrics;
   const attributedMilliseconds =
     metrics.embeddingModelVerificationMilliseconds +
+    metrics.activeSessionFreshnessMilliseconds +
     metrics.queryEmbeddingMilliseconds +
     metrics.retrievalRankingMilliseconds +
     metrics.deepRerankMilliseconds;
@@ -673,91 +504,14 @@ function createRecallSearchDiagnosticCompletionRecord(input: {
     errorCategory: input.completion.errorCategory ?? null,
     elapsedMilliseconds,
     embeddingModelVerificationMilliseconds: metrics.embeddingModelVerificationMilliseconds,
+    activeSessionFreshnessMilliseconds: metrics.activeSessionFreshnessMilliseconds,
     queryEmbeddingMilliseconds: metrics.queryEmbeddingMilliseconds,
     retrievalRankingMilliseconds: metrics.retrievalRankingMilliseconds,
     deepRerankMilliseconds: metrics.deepRerankMilliseconds,
+    freshnessBarrierRan: metrics.freshnessBarrierRan,
     unattributedMilliseconds: Math.max(elapsedMilliseconds - attributedMilliseconds, 0),
     totalDocumentCount: input.completion.totalDocumentCount,
   };
-}
-
-function createRecallIncrementalDiagnosticRecord(input: {
-  clock: RecallDiagnosticsClock;
-  completion: RecallIncrementalDiagnosticCompletion;
-}): RecallOperationDiagnosticRecord {
-  const metrics = input.completion.metrics;
-  const attributedMilliseconds =
-    metrics.metadataSweepElapsedMilliseconds +
-    metrics.tokenizerMilliseconds +
-    metrics.lockWaitMilliseconds +
-    metrics.evidenceOpenMilliseconds +
-    metrics.evidenceWriteMilliseconds +
-    metrics.projectionOpenMilliseconds +
-    metrics.projectionCommitMilliseconds +
-    metrics.closeMilliseconds +
-    metrics.checkpointObservationMilliseconds +
-    metrics.markerAcknowledgementMilliseconds;
-  return {
-    ...createRecallDiagnosticStartRecord({
-      clock: input.clock,
-      operationId: createRecallDiagnosticOperationId(),
-      parentOperationId: null,
-      operationKind: input.completion.operationKind,
-      manualMaintenanceTrigger: null,
-      sessionPath: null,
-      searchMode: null,
-      recallScope: null,
-    }),
-    status: input.completion.status,
-    errorCategory: input.completion.errorCategory ?? null,
-    elapsedMilliseconds: metrics.elapsedMilliseconds,
-    unattributedMilliseconds: Math.max(metrics.elapsedMilliseconds - attributedMilliseconds, 0),
-    markerAgeMilliseconds: metrics.markerAgeMilliseconds,
-    metadataSweepScannedFileCount: metrics.metadataSweepScannedFileCount,
-    metadataSweepObservedSessionCount: metrics.metadataSweepObservedSessionCount,
-    metadataSweepElapsedMilliseconds: metrics.metadataSweepElapsedMilliseconds,
-    appendedByteCount: metrics.appendedByteCount,
-    parsedEntryCount: metrics.parsedEntryCount,
-    eligibleDocumentCount: metrics.eligibleDocumentCount,
-    tokenizerMilliseconds: metrics.tokenizerMilliseconds,
-    embeddingCacheHitCount: metrics.embeddingCacheHitCount,
-    embeddingCacheMissCount: metrics.embeddingCacheMissCount,
-    embeddingRequestCount: metrics.embeddingRequestCount,
-    lockWaitMilliseconds: metrics.lockWaitMilliseconds,
-    writerLockWaitMilliseconds: metrics.lockWaitMilliseconds,
-    evidenceOpenMilliseconds: metrics.evidenceOpenMilliseconds,
-    evidenceWriteMilliseconds: metrics.evidenceWriteMilliseconds,
-    projectionOpenMilliseconds: metrics.projectionOpenMilliseconds,
-    projectionCommitMilliseconds: metrics.projectionCommitMilliseconds,
-    closeMilliseconds: metrics.closeMilliseconds,
-    checkpointObservationMilliseconds: metrics.checkpointObservationMilliseconds,
-    markerAcknowledgementMilliseconds: metrics.markerAcknowledgementMilliseconds,
-    generationId: metrics.generationId,
-    generationState: metrics.generationState,
-    recoveryCategory: metrics.recoveryCategory,
-    deletionSafeguardCategory: metrics.deletionSafeguardCategory,
-    backlogPendingEligibleSessionCount: metrics.backlogPendingEligibleSessionCount,
-    backlogOldestEligibleMarkerAgeMilliseconds: metrics.backlogOldestEligibleMarkerAgeMilliseconds,
-    backlogFailureCategory: metrics.backlogFailureCategory,
-  };
-}
-
-/** Reads append-only version-2 and version-3 diagnostic JSONL for local analysis. */
-export async function readRecallOperationDiagnosticRecords(
-  path: string,
-): Promise<Array<Record<string, unknown>>> {
-  const records: Array<Record<string, unknown>> = [];
-  for (const [lineIndex, line] of (await readFile(path, 'utf8')).split('\n').entries()) {
-    if (line.trim().length === 0) {
-      continue;
-    }
-    const value: unknown = JSON.parse(line);
-    if (!isUnknownRecord(value) || (value.version !== 2 && value.version !== 3)) {
-      throw new Error(`Recall diagnostic JSONL line ${lineIndex + 1} has unsupported version`);
-    }
-    records.push(value);
-  }
-  return records;
 }
 
 /** Creates asynchronous local JSONL diagnostics that never propagate persistence failures. */
@@ -766,80 +520,48 @@ export function createRecallOperationDiagnostics(
 ): RecallOperationDiagnostics {
   const clock = options.clock ?? SYSTEM_RECALL_DIAGNOSTICS_CLOCK;
   const maximumLogBytes = options.maximumLogBytes ?? DEFAULT_MAXIMUM_DIAGNOSTIC_LOG_BYTES;
-  const filesystem = options.filesystem ?? NODE_RECALL_OPERATION_DIAGNOSTICS_FILESYSTEM;
-  const persistenceState = options.persistenceState ?? PROCESS_RECALL_DIAGNOSTIC_PERSISTENCE_STATE;
   let pendingWrite = Promise.resolve();
 
-  async function rotateDiagnosticLogIfNeeded(recordByteLength: number): Promise<boolean> {
+  async function rotateDiagnosticLogIfNeeded(recordByteLength: number): Promise<void> {
     let activeLogBytes: number;
     try {
-      activeLogBytes = await filesystem.getFileSize(options.activeLogPath);
+      activeLogBytes = (await stat(options.activeLogPath)).size;
     } catch (error) {
       if (readNodeErrorCode(error) === 'ENOENT') {
-        return false;
+        return;
       }
       throw error;
     }
     if (activeLogBytes === 0 || activeLogBytes + recordByteLength <= maximumLogBytes) {
-      return false;
+      return;
     }
-    await filesystem.removeFile(options.retainedLogPath);
-    await filesystem.renameFile(options.activeLogPath, options.retainedLogPath);
-    return true;
-  }
-
-  async function appendDurableDiagnosticRecord(
-    line: string,
-    directoryEntryChanged: boolean,
-  ): Promise<void> {
-    const openedFile = await filesystem.openAppendFile(options.activeLogPath);
-    try {
-      await openedFile.file.appendFile(line);
-      await openedFile.file.sync();
-    } finally {
-      await openedFile.file.close();
-    }
-    if (directoryEntryChanged || openedFile.created) {
-      await filesystem.syncDirectory(dirname(options.activeLogPath));
-    }
+    await rm(options.retainedLogPath, { force: true });
+    await rename(options.activeLogPath, options.retainedLogPath);
   }
 
   async function appendDiagnosticRecordAfter(
     previousWrite: Promise<void>,
     record: RecallOperationDiagnosticRecord,
-    persistenceRequired: boolean,
   ): Promise<void> {
     await previousWrite;
-    if (persistenceState.disabled) {
+    if (PROCESS_RECALL_DIAGNOSTIC_PERSISTENCE_STATE.disabled) {
       return;
     }
     try {
       const line = `${JSON.stringify(record)}\n`;
-      await filesystem.createDirectory(dirname(options.activeLogPath));
-      const directoryEntryChanged = await rotateDiagnosticLogIfNeeded(Buffer.byteLength(line));
-      if (persistenceRequired) {
-        await appendDurableDiagnosticRecord(line, directoryEntryChanged);
-      } else {
-        await filesystem.appendFile(options.activeLogPath, line);
-      }
+      await mkdir(dirname(options.activeLogPath), { recursive: true });
+      await rotateDiagnosticLogIfNeeded(Buffer.byteLength(line));
+      await appendFile(options.activeLogPath, line, 'utf8');
     } catch {
-      persistenceState.disabled = true;
-      if (!persistenceState.persistenceFailureHandled) {
-        persistenceState.persistenceFailureHandled = true;
-        try {
-          await options.onPersistenceFailure?.();
-          if (options.onPersistenceFailure !== undefined) {
-            return;
-          }
-        } catch (persistenceFailure) {
-          void persistenceFailure;
-        }
+      PROCESS_RECALL_DIAGNOSTIC_PERSISTENCE_STATE.disabled = true;
+      if (!PROCESS_RECALL_DIAGNOSTIC_PERSISTENCE_STATE.warningEmitted) {
+        PROCESS_RECALL_DIAGNOSTIC_PERSISTENCE_STATE.warningEmitted = true;
         try {
           options.notifyWarning(
-            'Recall diagnostics disabled after local log and fallback persistence failed.',
+            'Recall diagnostics disabled after local log persistence failed; recall behavior is unchanged.',
           );
         } catch (warningError) {
-          // Warning delivery is the last fallback and must not recurse into durable reporting.
+          // Warning delivery is non-critical for the same reason diagnostic persistence is.
           void warningError;
         }
       }
@@ -874,20 +596,49 @@ export function createRecallOperationDiagnostics(
     );
   }
 
-  function queueDiagnosticRecord(
-    record: RecallOperationDiagnosticRecord,
-    persistenceRequired = false,
-  ): void {
+  function queueDiagnosticRecord(record: RecallOperationDiagnosticRecord): void {
     if (
-      (!persistenceRequired && !shouldPersistDiagnosticRecord(record)) ||
+      !shouldPersistDiagnosticRecord(record) ||
       PROCESS_RECALL_DIAGNOSTIC_PERSISTENCE_STATE.disabled
     ) {
       return;
     }
-    pendingWrite = appendDiagnosticRecordAfter(pendingWrite, record, persistenceRequired);
+    pendingWrite = appendDiagnosticRecordAfter(pendingWrite, record);
   }
 
   return {
+    startLiveSessionReconciliation(input) {
+      const startedAtMilliseconds = clock.monotonicMilliseconds();
+      const startRecord = createRecallDiagnosticStartRecord({
+        clock,
+        operationId: createRecallDiagnosticOperationId(),
+        parentOperationId: null,
+        operationKind: RecallDiagnosticOperationKind.LIVE_SESSION_RECONCILIATION,
+        lifecycleTrigger: input.lifecycleTrigger,
+        manualMaintenanceTrigger: null,
+        sessionPath: input.sessionPath,
+        searchMode: null,
+        recallScope: null,
+      });
+      queueDiagnosticRecord(startRecord);
+      let completed = false;
+      return {
+        complete(completion) {
+          if (completed) {
+            return;
+          }
+          completed = true;
+          queueDiagnosticRecord(
+            createRecallDiagnosticCompletionRecord({
+              startRecord,
+              startedAtMilliseconds,
+              clock,
+              completion,
+            }),
+          );
+        },
+      };
+    },
     startRecallSearch(input) {
       const startedAtMilliseconds = clock.monotonicMilliseconds();
       const startRecord = createRecallDiagnosticStartRecord({
@@ -895,6 +646,7 @@ export function createRecallOperationDiagnostics(
         operationId: createRecallDiagnosticOperationId(),
         parentOperationId: null,
         operationKind: RecallDiagnosticOperationKind.SEARCH,
+        lifecycleTrigger: null,
         manualMaintenanceTrigger: null,
         sessionPath: null,
         searchMode: input.searchMode,
@@ -930,6 +682,7 @@ export function createRecallOperationDiagnostics(
         operationId: createRecallDiagnosticOperationId(),
         parentOperationId: null,
         operationKind,
+        lifecycleTrigger: null,
         manualMaintenanceTrigger: input.manualMaintenanceTrigger,
         sessionPath: null,
         searchMode: null,
@@ -954,6 +707,7 @@ export function createRecallOperationDiagnostics(
             operationId: createRecallDiagnosticOperationId(),
             parentOperationId: startRecord.operationId,
             operationKind: RecallDiagnosticOperationKind.OPTIMIZATION,
+            lifecycleTrigger: null,
             manualMaintenanceTrigger: startRecord.manualMaintenanceTrigger,
             sessionPath: null,
             searchMode: null,
@@ -994,12 +748,6 @@ export function createRecallOperationDiagnostics(
           );
         },
       };
-    },
-    recordIncrementalOperation(completion) {
-      queueDiagnosticRecord(createRecallIncrementalDiagnosticRecord({ clock, completion }));
-    },
-    recordDurableIncrementalFailure(completion) {
-      queueDiagnosticRecord(createRecallIncrementalDiagnosticRecord({ clock, completion }), true);
     },
     async flush() {
       await pendingWrite;

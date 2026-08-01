@@ -5,14 +5,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { EmbeddedInferenceDevicePolicy } from './enums.js';
-
 import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 
 import { createEmbeddedQwenRerankingProvider } from './embedded-qwen-reranking-provider.js';
 import { RecallDiagnosticsMode, RecallSearchScope } from './enums.js';
-import { createQwenHttpRerankingProvider } from './createQwenHttpRerankingProvider.js';
+import { createQwenHttpRerankingProvider } from './qwen-http-reranking-provider.js';
 import { createRecallConversationService } from './recall-conversation-service.js';
 import { RECALL_EMBEDDING_CANARY_TEXT } from './recall-index-manifest.js';
 import {
@@ -22,12 +20,12 @@ import {
 import { normalizeRecallProjectLineages } from './resolve-project-identity.js';
 import type { ConversationTextTokenizer } from './session-conversation-index.js';
 
-const QWEN_SERVICE_RERANKING_REQUEST_SCHEMA = Type.Object({
+const qwenServiceRerankingRequestSchema = Type.Object({
   query: Type.String(),
   documents: Type.Array(Type.String()),
 });
 
-const TOKENIZER: ConversationTextTokenizer = {
+const tokenizer: ConversationTextTokenizer = {
   encodeConversationText(text) {
     return { ids: Array.from(text.split(/\s+/u).filter(Boolean).keys()) };
   },
@@ -36,18 +34,7 @@ const TOKENIZER: ConversationTextTokenizer = {
 function createQwenServiceTestConfig(directory: string, sessionsDirectory: string) {
   return {
     sessionsDirectory,
-    dataDirectory: directory,
     databasePath: join(directory, 'zvec'),
-    projectionDatabasePath: join(directory, 'session-projections'),
-    markerSpoolDirectory: join(directory, 'markers', 'pending'),
-    markerQuarantineDirectory: join(directory, 'markers', 'quarantine'),
-    markerControlDirectory: join(directory, 'markers', 'control'),
-    workerOwnershipLockPath: join(directory, 'incremental-worker.lock'),
-    generationRootDirectory: join(directory, 'generations'),
-    activeGenerationPointerPath: join(directory, 'active-generation.json'),
-    generationRegistryPath: join(directory, 'generation-registry.json'),
-    backlogSummaryPath: join(directory, 'backlog-summary.json'),
-    incrementalDiagnosticLogPath: join(directory, 'incremental-diagnostics.jsonl'),
     statePath: join(directory, 'index-state.json'),
     manifestPath: join(directory, 'index-manifest.json'),
     tokenizerCacheDirectory: join(directory, 'tokenizers'),
@@ -66,9 +53,6 @@ function createQwenServiceTestConfig(directory: string, sessionsDirectory: strin
     embeddingBatchSize: 8,
     rerankerBaseUrl: 'http://unused-reranker.test/v1',
     rerankerModel: 'unused-reranker',
-    searchWriteWindowWaitMilliseconds: 500,
-    confirmedDeletionMaxMissingSourceCount: 1,
-    confirmedDeletionMaxMissingSourceRatio: 0.1,
     projectLineages: normalizeRecallProjectLineages({}),
     searchCandidateLimits: { dense: 2, lexical: 2, identifier: 2 },
   };
@@ -138,7 +122,7 @@ void test('deep-rerank works end to end with built-in HTTP and embedded Qwen ada
     });
     request.on('end', () => {
       const rawPayload: unknown = JSON.parse(body);
-      const payload = Value.Parse(QWEN_SERVICE_RERANKING_REQUEST_SCHEMA, rawPayload);
+      const payload = Value.Parse(qwenServiceRerankingRequestSchema, rawPayload);
       httpRequests.push(payload);
       response.setHeader('content-type', 'application/json');
       response.end(
@@ -167,22 +151,9 @@ void test('deep-rerank works end to end with built-in HTTP and embedded Qwen ada
     embeddingProvider,
     rerankingProfile: profile,
     reranker: httpProvider,
-    loadTokenizer: async () => TOKENIZER,
+    loadTokenizer: async () => tokenizer,
   });
-  const httpVerification = await httpService.verifyRerankingCapability({
-    query: 'recommended evidence',
-    documents: [fusionFavorite, rerankerFavorite],
-    expectedScores: [0.1, 0.9],
-  });
-  await httpService.index({ rebuild: true });
-
-  assert.equal(httpVerification.profileId, profile.profileId);
-  assert.deepEqual(httpVerification.executionIdentity, httpProvider.executionIdentity);
-  assert.deepEqual(httpVerification.measurement, {
-    queryCount: 1,
-    documentCount: 2,
-    rerankingMilliseconds: httpVerification.measurement.rerankingMilliseconds,
-  });
+  await httpService.index();
 
   const httpSearch = await httpService.search('fusion favorite', 1, {
     mode: 'deep-rerank',
@@ -191,16 +162,16 @@ void test('deep-rerank works end to end with built-in HTTP and embedded Qwen ada
 
   assert.equal(httpSearch.results[0]?.entryId.value, 'reranker-favorite');
   assert.equal(httpSearch.results[0]?.rerankerScore, 0.9);
-  assert.equal(httpRequests.length, 2);
+  assert.equal(httpRequests.length, 1);
   assert.deepEqual(httpSearch.searchPolicy.rerankerIdentity, {
     profileId: profile.profileId,
     adapterId: 'llama-cpp-http-reranking-v1',
-    cacheIdentity: httpProvider.executionIdentity.cacheIdentity,
+    cacheIdentity: `${profile.profileId}:llama-cpp-http-reranking-v1`,
   });
 
   const embeddedProvider = createEmbeddedQwenRerankingProvider(profile, {
     modelCacheDirectory: '/models',
-    device: EmbeddedInferenceDevicePolicy.CPU,
+    device: 'cpu',
     async verifyModelArtifact() {
       return '/models/qwen-reranker.gguf';
     },
@@ -215,8 +186,7 @@ void test('deep-rerank works end to end with built-in HTTP and embedded Qwen ada
               return {
                 async createRankingContext() {
                   return {
-                    async rankAll(query, documents) {
-                      void query;
+                    async rankAll(_query, documents) {
                       return documents.map((document) =>
                         applyKnownNodeLlamaCppExtraSigmoid(
                           document === rerankerFavorite ? 0.9 : 0.1,
@@ -240,7 +210,7 @@ void test('deep-rerank works end to end with built-in HTTP and embedded Qwen ada
     embeddingProvider,
     rerankingProfile: profile,
     reranker: embeddedProvider,
-    loadTokenizer: async () => TOKENIZER,
+    loadTokenizer: async () => tokenizer,
   });
 
   const embeddedSearch = await embeddedService.search('fusion favorite', 1, {
@@ -253,7 +223,7 @@ void test('deep-rerank works end to end with built-in HTTP and embedded Qwen ada
   assert.deepEqual(embeddedSearch.searchPolicy.rerankerIdentity, {
     profileId: profile.profileId,
     adapterId: 'node-llama-cpp-qwen-reranking-logit-recovery-v1',
-    cacheIdentity: embeddedProvider.executionIdentity.cacheIdentity,
+    cacheIdentity: `${profile.profileId}:node-llama-cpp-qwen-reranking-logit-recovery-v1`,
   });
 
   const replacementProfile = createQwenRerankingModelProfile('replacement-qwen-reranker');
@@ -264,7 +234,7 @@ void test('deep-rerank works end to end with built-in HTTP and embedded Qwen ada
     embeddingProvider,
     rerankingProfile: replacementProfile,
     reranker: replacementHttpProvider,
-    loadTokenizer: async () => TOKENIZER,
+    loadTokenizer: async () => tokenizer,
   });
   const replacementSearch = await replacementService.search('fusion favorite', 1, {
     mode: 'deep-rerank',
@@ -276,36 +246,6 @@ void test('deep-rerank works end to end with built-in HTTP and embedded Qwen ada
   assert.deepEqual(replacementSearch.searchPolicy.rerankerIdentity, {
     profileId: 'qwen-reranking:replacement-qwen-reranker',
     adapterId: 'llama-cpp-http-reranking-v1',
-    cacheIdentity: replacementHttpProvider.executionIdentity.cacheIdentity,
+    cacheIdentity: 'qwen-reranking:replacement-qwen-reranker:llama-cpp-http-reranking-v1',
   });
-
-  const embeddingOnlyService = createRecallConversationService(config, {
-    embeddingProvider,
-    rerankingProfile: null,
-    reranker: null,
-    loadTokenizer: async () => TOKENIZER,
-  });
-  const embeddingOnlySearch = await embeddingOnlyService.search('fusion favorite', 1, {
-    mode: 'hybrid',
-    scope: RecallSearchScope.GLOBAL,
-  });
-
-  assert.equal(embeddingOnlySearch.results[0]?.entryId.value, 'fusion-favorite');
-  assert.throws(
-    () =>
-      embeddingOnlyService.search('fusion favorite', 1, {
-        mode: 'deep-rerank',
-        scope: RecallSearchScope.GLOBAL,
-      }),
-    /Recall reranking is not configured/u,
-  );
-  assert.throws(
-    () =>
-      embeddingOnlyService.search('fusion favorite', 1, {
-        mode: 'query-planned',
-        scope: RecallSearchScope.GLOBAL,
-        plan: [{ type: 'vec', query: 'reranker favorite' }],
-      }),
-    /Recall reranking is not configured.*before query-planned search/u,
-  );
 });

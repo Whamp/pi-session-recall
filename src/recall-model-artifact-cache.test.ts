@@ -11,40 +11,8 @@ import {
 import {
   createRecallModelArtifactFixtureGguf as createFixtureGguf,
   createRecallModelArtifactFixtureProfile as createFixtureProfile,
-} from './recall-model-artifact.test-utils.js';
+} from './recall-model-artifact-test-fixture.js';
 import { createRecommendedEmbeddingGemmaModelProfile } from './recall-model-profiles.js';
-
-void test('model artifact cache rejects profile path traversal before filesystem access', () => {
-  const fixtureArtifact = createFixtureGguf();
-  const profile = createFixtureProfile(fixtureArtifact);
-  const traversalCases = [
-    { profileId: '../victim' },
-    { profileId: '..\\victim' },
-    { revision: '..' },
-    { artifact: 'nested/model.gguf' },
-    { artifact: '.' },
-    { artifact: '/tmp/model.gguf' },
-  ];
-
-  for (const traversalCase of traversalCases) {
-    assert.throws(
-      () =>
-        createRecallModelArtifactCache({
-          cacheDirectory: '/cache',
-          profile: {
-            ...profile,
-            profileId: traversalCase.profileId ?? profile.profileId,
-            source: {
-              ...profile.source,
-              revision: traversalCase.revision ?? profile.source.revision,
-              artifact: traversalCase.artifact ?? profile.source.artifact,
-            },
-          },
-        }),
-      /Recall model artifact cache path segment invalid/u,
-    );
-  }
-});
 
 void test('model artifact cache reports missing and refuses download without explicit approval', async (t) => {
   const cacheDirectory = await mkdtemp(join(tmpdir(), 'recall-model-cache-'));
@@ -199,8 +167,7 @@ void test('download rejects checksum mismatch and checksum-valid non-GGUF bytes'
         cacheDirectory: join(root, invalidCase.name),
         profile: invalidCase.profile,
         transport: {
-          async downloadArtifact(sourceUrl, destinationPath) {
-            void sourceUrl;
+          async downloadArtifact(_sourceUrl, destinationPath) {
             await writeFile(destinationPath, invalidCase.artifact);
           },
         },
@@ -225,8 +192,7 @@ void test('rejected model download remains partial and never becomes available',
     cacheDirectory: join(root, 'cache'),
     profile: createFixtureProfile(fixtureArtifact),
     transport: {
-      async downloadArtifact(sourceUrl, destinationPath) {
-        void sourceUrl;
+      async downloadArtifact(_sourceUrl, destinationPath) {
         await writeFile(destinationPath, Buffer.from('GGUF-corrupt-download'));
       },
     },

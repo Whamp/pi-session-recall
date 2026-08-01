@@ -32,7 +32,7 @@ The service runs the profile canary twice through the query operation. The vecto
 
 ## Service wiring
 
-The [guided first-index setup](first-index-guided-setup.md) selects embedded execution through the public service dependencies below. Later mixed-capability setup remains separate:
+The guided configuration flow tracked by #28 is not implemented yet. Current callers select embedded execution through the public service dependencies:
 
 ```typescript
 import {
@@ -131,15 +131,6 @@ The tests use an injected node-llama-cpp boundary, a temporary HTTP server, and 
 - EmbeddingGemma-to-Octen incompatibility.
 
 These are deterministic adapter and service measurements. They do not stand in for real-model or real-device acceptance.
-
-After distribution approval and an explicit pinned-artifact download, run the unchanged quality corpus separately for CPU and one supported accelerator:
-
-```bash
-npm run evaluate:embeddinggemma -- --device cpu
-npm run evaluate:embeddinggemma -- --device cuda # or metal/vulkan
-```
-
-The command never downloads a model, never reads production sessions, and never rewrites the Octen report. It records the complete model, prompt, tokenizer, canary, backend, adapter, selected device, candidate-policy, cache, quality, timing, throughput, and storage evidence in `docs/evaluation/embeddinggemma-quality-<device>.json`. See the [embedded profile acceptance ledger](../evaluation/embedded-profile-acceptance.md).
 
 ## External evidence still pending
 

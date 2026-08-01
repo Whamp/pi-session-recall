@@ -229,12 +229,11 @@ export function formatRecallQualityReport(
     '',
     '## Evaluation identity',
     '',
-    `- Storage: conversation schema v${result.storageIdentity.conversationSchemaVersion}, zvec schema v${result.storageIdentity.zvecSchemaVersion}, manifest v${result.storageIdentity.indexManifestVersion}, incremental eligibility policy v${result.storageIdentity.incrementalEligibilityPolicyVersion}`,
     `- Default scope: \`${result.evaluationIdentity.defaultScope}\` (policy v${result.evaluationIdentity.projectScopePolicyVersion})`,
     `- Project identity policy: v${result.evaluationIdentity.projectIdentityPolicyVersion}; metadata schema v${result.evaluationIdentity.projectIdentityMetadataSchemaVersion}`,
     `- Project lineage policy: v${result.evaluationIdentity.lineagePolicyVersion}; digest \`${result.evaluationIdentity.lineageDigest}\``,
     `- Hybrid ranking: fusion v${result.evaluationIdentity.rankFusionVersion}, RRF k=${result.evaluationIdentity.reciprocalRankConstant}, active prior +${result.evaluationIdentity.activeBranchPrior.toFixed(4)}`,
-    `- Ranked-list limits: dense ${result.evaluationIdentity.candidateLimits.dense}, lexical ${result.evaluationIdentity.candidateLimits.lexical}, identifier ${result.evaluationIdentity.candidateLimits.identifier}; fused pool ${result.evaluationIdentity.fusedPoolLimit}; rerank pool ${result.evaluationIdentity.rerankPoolLimit}; final results ${result.evaluationIdentity.finalResultCount}`,
+    `- Candidate limits: dense ${result.evaluationIdentity.candidateLimits.dense}, lexical ${result.evaluationIdentity.candidateLimits.lexical}, identifier ${result.evaluationIdentity.candidateLimits.identifier}; final results ${result.evaluationIdentity.finalResultCount}`,
     '',
     '## Frozen quality gate',
     '',
@@ -343,7 +342,6 @@ export function formatRecallQualityReport(
     '## Limits of this evidence',
     '',
     '- The corpus is a committed synthetic-but-session-shaped fixture, not a sample of private production logs. It covers the required retrieval and project-identity classes but cannot estimate all real-corpus failure modes.',
-    '- Deterministic fixture embeddings prove retrieval plumbing, channel fusion, evidence shaping, and scope policy. They do not measure production embedding-model semantics.',
     ...(hasNoDiscriminatingRecallQualityVariance(result.selection.combinations)
       ? [
           '- The measured grid has no discriminating quality variance across gated recall, context, source-preservation, and visible-duplicate metrics; it can identify the smallest passing candidate pool but cannot rank quality among passing pools.',

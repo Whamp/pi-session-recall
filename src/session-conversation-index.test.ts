@@ -1,15 +1,13 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
 import { SessionImportFormat } from './enums.js';
-import { createPhysicalSessionProjectionId } from './recall-session-projection.js';
 import {
   readSessionConversationChunks,
   readSessionConversationImport,
-  SESSION_CONVERSATION_SCHEMA_VERSION,
   type ConversationTextTokenizer,
   type SessionConversationChunk,
 } from './session-conversation-index.js';
@@ -40,76 +38,6 @@ function summarizeSessionChunkParity(chunks: readonly SessionConversationChunk[]
     sourceLineEnd: chunk.sourceLineEnd,
   }));
 }
-
-void test('rebuild import emits only documents whose contributors are already eligible', async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), 'recall-rebuild-eligibility-'));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const sessionPath = join(directory, 'session.jsonl');
-  await writeFile(
-    sessionPath,
-    [
-      {
-        type: 'session',
-        version: 3,
-        id: 'session-approved',
-        timestamp: '2026-07-24T10:00:00Z',
-        cwd: '/project',
-      },
-      {
-        type: 'message',
-        id: 'eligible-entry',
-        parentId: null,
-        timestamp: '2026-07-24T10:01:00Z',
-        message: { role: 'user', content: 'approved historical evidence' },
-      },
-      {
-        type: 'message',
-        id: 'active-tail-entry',
-        parentId: 'eligible-entry',
-        timestamp: '2026-07-24T10:02:00Z',
-        message: { role: 'assistant', content: 'unapproved active tail' },
-      },
-    ]
-      .map((entry) => JSON.stringify(entry))
-      .join('\n') + '\n',
-  );
-
-  const imported = await readSessionConversationImport(sessionPath, {
-    tokenizer: createWhitespaceConversationTokenizer(),
-    eligibleContributorEntryIdsByLogicalSessionId: new Map([
-      ['session-approved', new Set(['eligible-entry'])],
-    ]),
-  });
-
-  assert.equal(
-    imported.chunks.some(({ content }) => content.includes('approved historical')),
-    true,
-  );
-  assert.equal(
-    imported.chunks.some(({ content }) => content.includes('unapproved active')),
-    false,
-  );
-  await assert.rejects(
-    () =>
-      readSessionConversationImport(sessionPath, {
-        tokenizer: createWhitespaceConversationTokenizer(),
-        eligibleContributorEntryIdsByLogicalSessionId: new Map([
-          ['session-approved', new Set(['deleted-approved-entry'])],
-        ]),
-      }),
-    /Recall rebuild approved contributor missing.*deleted-approved-entry/u,
-  );
-  await assert.rejects(
-    () =>
-      readSessionConversationImport(sessionPath, {
-        tokenizer: createWhitespaceConversationTokenizer(),
-        eligibleContributorEntryIdsByLogicalSessionId: new Map([
-          ['deleted-logical-session', new Set(['eligible-entry'])],
-        ]),
-      }),
-    /Recall rebuild approved logical session missing.*deleted-logical-session/u,
-  );
-});
 
 void test('session JSONL becomes searchable conversation chunks with provenance', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'recall-session-'));
@@ -191,10 +119,6 @@ void test('session JSONL becomes searchable conversation chunks with provenance'
   });
 
   assert.equal(chunks[0]?.sessionId.value, 'session-1');
-  assert.equal(
-    chunks[0]?.physicalSessionProjectionId,
-    createPhysicalSessionProjectionId('session-1'),
-  );
   assert.equal(chunks[0]?.cwd, '/project');
   assert.equal(chunks[0]?.sessionName, 'Migration planning');
   assert.equal(chunks[0]?.currentLeafId?.value, 'name-1');
@@ -817,9 +741,7 @@ void test('session chunks expose branch, summary, sibling, and source geometry p
       },
     ],
   );
-  assert.ok(
-    activeRuns.every((chunk) => chunk.schemaVersion === SESSION_CONVERSATION_SCHEMA_VERSION),
-  );
+  assert.ok(activeRuns.every((chunk) => chunk.schemaVersion === 8));
   assert.ok(activeRuns.every((chunk) => chunk.contributingEntryIds[0]?.value === 'active'));
   assert.ok(activeRuns.every((chunk) => chunk.textRunId.length === 40));
   assert.ok(activeRuns.every((chunk) => chunk.chunkCount === 1));
@@ -1172,15 +1094,9 @@ void test('unversioned Pi v1 sessions convert deterministically through the stri
     '6d35bf551059e2664b2bbefc7b43d63d006b6158',
   );
   assert.deepEqual(repeated, imported);
-  const importedParity = summarizeSessionChunkParity(imported.chunks);
-  const canonicalParity = summarizeSessionChunkParity(canonicalEquivalent.chunks);
   assert.deepEqual(
-    importedParity.map((chunk) => ({ ...chunk, id: 'physical-occurrence' })),
-    canonicalParity.map((chunk) => ({ ...chunk, id: 'physical-occurrence' })),
-  );
-  assert.notDeepEqual(
-    importedParity.map(({ id }) => id),
-    canonicalParity.map(({ id }) => id),
+    summarizeSessionChunkParity(imported.chunks),
+    summarizeSessionChunkParity(canonicalEquivalent.chunks),
   );
   assert.deepEqual(await readFile(sessionPath), bytesBefore);
   const metadataAfter = await stat(sessionPath);

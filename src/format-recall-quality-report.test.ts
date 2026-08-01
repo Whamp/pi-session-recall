@@ -108,13 +108,7 @@ void test('recall quality report records verdict, measured counts, sources, and 
     },
   };
   const result: RecallQualityEvaluationResult = {
-    version: 5,
-    storageIdentity: {
-      conversationSchemaVersion: 9,
-      zvecSchemaVersion: 8,
-      indexManifestVersion: 6,
-      incrementalEligibilityPolicyVersion: 1,
-    },
+    version: 4,
     evaluationIdentity: {
       defaultScope: RecallSearchScope.PROJECT,
       projectScopePolicyVersion: 1,
@@ -127,8 +121,6 @@ void test('recall quality report records verdict, measured counts, sources, and 
       reciprocalRankConstant: 60,
       activeBranchPrior: 0.01,
       candidateLimits: { dense: 8, lexical: 8, identifier: 8 },
-      fusedPoolLimit: 24,
-      rerankPoolLimit: 24,
       finalResultCount: 5,
     },
     startedAt: '2026-07-25T12:00:00.000Z',
@@ -235,10 +227,6 @@ void test('recall quality report records verdict, measured counts, sources, and 
   assert.match(report, /Automated gate: PASS/);
   assert.match(report, /512\/64/);
   assert.match(report, /8 candidates\/channel/);
-  assert.match(
-    report,
-    /Ranked-list limits: dense 8, lexical 8, identifier 8; fused pool 24; rerank pool 24; final results 5/,
-  );
   assert.match(report, /semantic-context\.jsonl#queue-answer/);
   assert.match(report, /npm run evaluate:recall/);
   assert.match(report, /Full corpus backfill remains blocked pending human approval\./);

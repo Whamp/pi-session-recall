@@ -1,26 +1,12 @@
-import { createCanonicalIdentity } from './create-canonical-identity.js';
-import {
-  acquireEmbeddedLlamaRuntimeForBackend,
-  initializeEmbeddedProviderResources,
-  resolveEmbeddedModelGpuLayers,
-  type NodeLlamaCppGpuBackend,
-} from './acquireSharedEmbeddedLlamaRuntime.js';
-import {
-  createEmbeddedProviderResourceLifecycle,
-  disposeEmbeddedProviderResourceLayers,
-} from './embedded-provider-resource-lifecycle.js';
 import {
   EMBEDDED_INFERENCE_MAX_PARALLELISM,
   EMBEDDED_NODE_LLAMA_CPP_VERSION,
+  type EmbeddedInferenceComputeBackend,
+  type EmbeddedInferenceDevicePolicy,
+  type NodeLlamaCppGpuBackend,
 } from './embedded-embeddinggemma-provider.js';
 import {
-  EmbeddedInferenceDevicePolicy,
-  RecallInferenceBackend,
-  type EmbeddedInferenceComputeBackend,
-} from './enums.js';
-import {
   createRecallRerankingExecutionIdentity,
-  resolveRecallPhysicalDeviceIdentity,
   type RecallIdentifiedRerankingProvider,
   type RecallRerankingExecutionIdentity,
 } from './recall-inference-capabilities.js';
@@ -31,7 +17,6 @@ import type { RecommendedQwenRerankingModelProfile } from './recall-model-profil
 export const QWEN_RERANKER_MAX_GPU_LAYERS = 40;
 
 const NODE_LLAMA_CPP_RERANKING_ADAPTER_ID = 'node-llama-cpp-qwen-reranking-logit-recovery-v1';
-const NODE_LLAMA_CPP_RERANKING_ADAPTER_VERSION = '1';
 const NODE_LLAMA_CPP_EXTRA_SIGMOID_MINIMUM = 0.5;
 const NODE_LLAMA_CPP_EXTRA_SIGMOID_MAXIMUM = 1 / (1 + Math.exp(-1));
 
@@ -63,7 +48,6 @@ interface QwenLlamaRuntime {
 /** Minimal dynamically loaded node-llama-cpp surface required by embedded Qwen reranking. */
 export interface QwenRerankingNodeLlamaCppModule {
   version: string;
-  runtimePoolIdentity?: object;
   LlamaLogLevel: { error: unknown };
   getLlamaGpuTypes?(include: 'supported'): Promise<readonly NodeLlamaCppGpuBackend[]>;
   getLlama(options: Record<string, unknown>): Promise<QwenLlamaRuntime>;
@@ -86,39 +70,24 @@ export interface EmbeddedQwenRerankingProviderOptions {
 /** Search and cache evidence for one selected embedded Qwen reranking adapter. */
 export interface EmbeddedQwenRerankingExecutionIdentity extends RecallRerankingExecutionIdentity {
   adapterId: typeof NODE_LLAMA_CPP_RERANKING_ADAPTER_ID;
-  backend: RecallInferenceBackend.EMBEDDED;
+  backend: 'embedded';
   computeBackend: EmbeddedInferenceComputeBackend | 'pending';
   deviceNames: readonly string[];
   devicePolicy: EmbeddedInferenceDevicePolicy;
-  fallbackFromComputeBackend:
-    | EmbeddedInferenceComputeBackend.METAL
-    | EmbeddedInferenceComputeBackend.CUDA
-    | EmbeddedInferenceComputeBackend.VULKAN
-    | null;
-  contextSize: number;
-  threads: number | null;
+  fallbackFromComputeBackend: Exclude<EmbeddedInferenceComputeBackend, 'cpu'> | null;
   nodeLlamaCppVersion: typeof EMBEDDED_NODE_LLAMA_CPP_VERSION;
   parallelism: number;
-  idleTimeoutMilliseconds: number;
-  physicalDeviceIdentity: readonly string[];
-  probedComputeBackends: readonly (
-    | EmbeddedInferenceComputeBackend.METAL
-    | EmbeddedInferenceComputeBackend.CUDA
-    | EmbeddedInferenceComputeBackend.VULKAN
-  )[];
+  probedComputeBackends: readonly Exclude<EmbeddedInferenceComputeBackend, 'cpu'>[];
 }
 
 /** Embedded reranking provider with corrected llama.cpp scores and explicit native disposal. */
 export interface EmbeddedQwenRerankingProvider extends RecallIdentifiedRerankingProvider {
   readonly executionIdentity: Readonly<EmbeddedQwenRerankingExecutionIdentity>;
-  /** Loads native resources far enough to bind resolved compute and physical device identity. */
-  resolveExecutionIdentity(): Promise<Readonly<EmbeddedQwenRerankingExecutionIdentity>>;
   dispose(): Promise<void>;
 }
 
 interface LoadedQwenRerankingResources {
   runtime: QwenLlamaRuntime;
-  releaseRuntime(): Promise<void>;
   model: QwenLlamaModel;
   contexts: readonly QwenLlamaRankingContext[];
   contextOperations: Promise<void>[];
@@ -130,7 +99,6 @@ async function loadInstalledNodeLlamaCpp(): Promise<QwenRerankingNodeLlamaCppMod
     const loaded = await import('node-llama-cpp');
     return {
       version: EMBEDDED_NODE_LLAMA_CPP_VERSION,
-      runtimePoolIdentity: loaded,
       LlamaLogLevel: loaded.LlamaLogLevel,
       getLlamaGpuTypes: loaded.getLlamaGpuTypes,
       getLlama: loaded.getLlama,
@@ -142,18 +110,6 @@ async function loadInstalledNodeLlamaCpp(): Promise<QwenRerankingNodeLlamaCppMod
       { cause: error },
     );
   }
-}
-
-function isQwenLlamaRuntime(value: unknown): value is QwenLlamaRuntime {
-  if (typeof value !== 'object' || value === null) {
-    return false;
-  }
-  const gpu: unknown = Reflect.get(value, 'gpu');
-  return (
-    (gpu === false || gpu === 'metal' || gpu === 'cuda' || gpu === 'vulkan') &&
-    typeof Reflect.get(value, 'loadModel') === 'function' &&
-    typeof Reflect.get(value, 'dispose') === 'function'
-  );
 }
 
 function readQwenRerankingErrorMessage(error: unknown): string {
@@ -269,7 +225,7 @@ export function createEmbeddedQwenRerankingProvider(
       `Recall embedded Qwen reranker idle timeout invalid: expected a nonnegative integer in milliseconds, received ${idleTimeoutMilliseconds}`,
     );
   }
-  const devicePolicy = options.device ?? EmbeddedInferenceDevicePolicy.AUTO;
+  const devicePolicy = options.device ?? 'auto';
   const verifyModelArtifact =
     options.verifyModelArtifact ??
     (async () => {
@@ -288,83 +244,76 @@ export function createEmbeddedQwenRerankingProvider(
   const writeWarning =
     options.onWarning ?? ((warning: string) => process.stderr.write(`${warning}\n`));
 
-  function createBaseExecutionIdentity(
-    computeBackend: EmbeddedInferenceComputeBackend | 'pending',
-    fallbackFromComputeBackend:
-      | EmbeddedInferenceComputeBackend.METAL
-      | EmbeddedInferenceComputeBackend.CUDA
-      | EmbeddedInferenceComputeBackend.VULKAN
-      | null,
-    physicalDeviceIdentity: readonly string[],
-  ): Readonly<RecallRerankingExecutionIdentity> {
-    return createRecallRerankingExecutionIdentity(
-      profile,
-      NODE_LLAMA_CPP_RERANKING_ADAPTER_ID,
-      createCanonicalIdentity('node-llama-cpp-qwen-reranking-config-v1', {
-        computeBackend,
-        contextSize,
-        devicePolicy,
-        fallbackFromComputeBackend,
-        idleTimeoutMilliseconds,
-        nodeLlamaCppVersion: EMBEDDED_NODE_LLAMA_CPP_VERSION,
-        parallelism,
-        physicalDeviceIdentity,
-        requestTimeoutMilliseconds,
-        threads: options.threads ?? null,
-      }),
-      RecallInferenceBackend.EMBEDDED,
-      requestTimeoutMilliseconds,
-      NODE_LLAMA_CPP_RERANKING_ADAPTER_VERSION,
-    );
-  }
+  let resources: LoadedQwenRerankingResources | undefined;
+  let resourcesLoadPromise: Promise<LoadedQwenRerankingResources> | undefined;
+  let resourcesDisposalPromise: Promise<void> | undefined;
+  let idleDisposalTimer: ReturnType<typeof setTimeout> | undefined;
+  let activeOperationCount = 0;
+  let disposed = false;
+  let cpuFallbackWarningEmitted = false;
+  const baseExecutionIdentity = createRecallRerankingExecutionIdentity(
+    profile.profileId,
+    NODE_LLAMA_CPP_RERANKING_ADAPTER_ID,
+    'embedded',
+  );
   let executionIdentity: Readonly<EmbeddedQwenRerankingExecutionIdentity> = Object.freeze({
-    ...createBaseExecutionIdentity('pending', null, []),
+    ...baseExecutionIdentity,
     adapterId: NODE_LLAMA_CPP_RERANKING_ADAPTER_ID,
-    backend: RecallInferenceBackend.EMBEDDED,
+    backend: 'embedded',
     computeBackend: 'pending',
     deviceNames: [],
     devicePolicy,
     fallbackFromComputeBackend: null,
-    contextSize,
-    threads: options.threads ?? null,
     nodeLlamaCppVersion: EMBEDDED_NODE_LLAMA_CPP_VERSION,
     parallelism,
-    idleTimeoutMilliseconds,
-    physicalDeviceIdentity: [],
     probedComputeBackends: [],
   });
-
-  async function disposeQwenRerankingResourceLayers(options: {
-    contextOperations: readonly Promise<void>[];
-    contexts: readonly QwenLlamaRankingContext[];
-    model: QwenLlamaModel | undefined;
-    releaseRuntime: (() => Promise<void>) | undefined;
-  }): Promise<void> {
-    await disposeEmbeddedProviderResourceLayers({
-      failureMessage: 'Recall embedded Qwen reranking resource disposal failed',
-      layers: [
-        options.contextOperations.map((operation) => async () => {
-          await operation;
-        }),
-        options.contexts.map((context) => () => context.dispose()),
-        [
-          async () => {
-            await options.model?.dispose();
-          },
-        ],
-        [
-          async () => {
-            await options.releaseRuntime?.();
-          },
-        ],
-      ],
-    });
-  }
 
   async function disposeQwenRerankingResources(
     loaded: LoadedQwenRerankingResources,
   ): Promise<void> {
-    await disposeQwenRerankingResourceLayers(loaded);
+    await Promise.all(loaded.contextOperations);
+    for (const context of loaded.contexts) {
+      await context.dispose();
+    }
+    await loaded.model.dispose();
+    await loaded.runtime.dispose();
+  }
+
+  function clearQwenRerankingIdleDisposal(): void {
+    if (idleDisposalTimer) {
+      clearTimeout(idleDisposalTimer);
+      idleDisposalTimer = undefined;
+    }
+  }
+
+  function scheduleQwenRerankingIdleDisposal(loaded: LoadedQwenRerankingResources): void {
+    if (disposed || idleTimeoutMilliseconds === 0 || activeOperationCount !== 0) {
+      return;
+    }
+    clearQwenRerankingIdleDisposal();
+    idleDisposalTimer = setTimeout(() => {
+      idleDisposalTimer = undefined;
+      if (disposed || activeOperationCount !== 0 || resources !== loaded) {
+        return;
+      }
+      resources = undefined;
+      resourcesLoadPromise = undefined;
+      const disposal = disposeQwenRerankingResources(loaded);
+      resourcesDisposalPromise = disposal;
+      void disposal
+        .catch((error: unknown) => {
+          writeWarning(
+            `Recall embedded Qwen reranker idle disposal failed: ${readQwenRerankingErrorMessage(error)}`,
+          );
+        })
+        .finally(() => {
+          if (resourcesDisposalPromise === disposal) {
+            resourcesDisposalPromise = undefined;
+          }
+        });
+    }, idleTimeoutMilliseconds);
+    idleDisposalTimer.unref();
   }
 
   async function loadQwenRerankingResourcesForBackend(
@@ -372,25 +321,36 @@ export function createEmbeddedQwenRerankingProvider(
     modelPath: string,
     computeBackend: EmbeddedInferenceComputeBackend,
   ): Promise<LoadedQwenRerankingResources> {
-    let releaseRuntime: (() => Promise<void>) | undefined;
+    let runtime: QwenLlamaRuntime | undefined;
     let model: QwenLlamaModel | undefined;
     const contexts: QwenLlamaRankingContext[] = [];
-    const initializeResources = async (): Promise<LoadedQwenRerankingResources> => {
-      const acquired = await acquireEmbeddedLlamaRuntimeForBackend({
-        capabilityLabel: 'Qwen reranker',
-        computeBackend,
-        nodeLlamaCpp,
-        isRuntime: (value): value is QwenLlamaRuntime => isQwenLlamaRuntime(value),
+    try {
+      const requestedGpu = computeBackend === 'cpu' ? false : computeBackend;
+      runtime = await nodeLlamaCpp.getLlama({
+        build: 'never',
+        debug: false,
+        gpu: requestedGpu,
+        logger(_level: unknown, message: string) {
+          process.stderr.write(`[Recall native inference] ${message.replace(/\n+$/u, '')}\n`);
+        },
+        logLevel: nodeLlamaCpp.LlamaLogLevel.error,
+        progressLogs: false,
+        skipDownload: true,
       });
-      const { runtime } = acquired;
-      releaseRuntime = () => acquired.releaseRuntime();
+      if (runtime.gpu !== requestedGpu) {
+        throw new Error(
+          `Recall embedded Qwen reranker compute backend mismatch: requested ${computeBackend}, received ${runtime.gpu === false ? 'cpu' : runtime.gpu}`,
+        );
+      }
       model = await runtime.loadModel({
         modelPath,
-        gpuLayers: resolveEmbeddedModelGpuLayers({
-          computeBackend,
-          maxGpuLayers: QWEN_RERANKER_MAX_GPU_LAYERS,
-          fitContext: { contextSize, embeddingContext: true },
-        }),
+        gpuLayers:
+          computeBackend === 'cpu'
+            ? 0
+            : {
+                fitContext: { contextSize, embeddingContext: true },
+                max: QWEN_RERANKER_MAX_GPU_LAYERS,
+              },
       });
       for (let index = 0; index < parallelism; index += 1) {
         contexts.push(
@@ -402,86 +362,94 @@ export function createEmbeddedQwenRerankingProvider(
       }
       return {
         runtime,
-        releaseRuntime,
         model,
         contexts,
         contextOperations: contexts.map(() => Promise.resolve()),
         nextContextIndex: 0,
       };
-    };
-    return initializeResources().then(
-      (loaded) => loaded,
-      async (error: unknown) => {
-        const [disposalResult] = await Promise.allSettled([
-          disposeQwenRerankingResourceLayers({
-            contextOperations: [],
-            contexts,
-            model,
-            releaseRuntime,
-          }),
-        ]);
-        if (disposalResult?.status === 'rejected') {
-          throw new AggregateError(
-            [error, disposalResult.reason],
-            'Recall embedded Qwen reranking initialization cleanup failed',
-          );
-        }
-        throw error;
-      },
-    );
+    } catch (error) {
+      for (const context of contexts) {
+        await context.dispose();
+      }
+      await model?.dispose();
+      await runtime?.dispose();
+      throw error;
+    }
   }
 
-  const resourceLifecycle = createEmbeddedProviderResourceLifecycle<LoadedQwenRerankingResources>({
-    disposedErrorMessage: 'Recall embedded Qwen reranking provider disposed',
-    idleTimeoutMilliseconds,
-    async loadResources(fallbackWarningAlreadyEmitted) {
-      const initialized = await initializeEmbeddedProviderResources({
-        capabilityLabel: 'Qwen reranker',
-        devicePolicy,
-        expectedNodeLlamaCppVersion: EMBEDDED_NODE_LLAMA_CPP_VERSION,
-        fallbackWarningAlreadyEmitted,
-        verifyModelArtifact,
-        loadNodeLlamaCpp,
-        initializeForBackend: loadQwenRerankingResourcesForBackend,
-        disposeResources: disposeQwenRerankingResources,
-        writeFallbackWarning: (fallbackFromComputeBackend, error) => {
+  async function loadQwenRerankingResources(): Promise<LoadedQwenRerankingResources> {
+    clearQwenRerankingIdleDisposal();
+    if (disposed) {
+      throw new Error('Recall embedded Qwen reranking provider disposed');
+    }
+    await resourcesDisposalPromise;
+    if (resources) {
+      return resources;
+    }
+    resourcesLoadPromise ??= (async () => {
+      const modelPath = await verifyModelArtifact();
+      const nodeLlamaCpp = await loadNodeLlamaCpp();
+      if (nodeLlamaCpp.version !== EMBEDDED_NODE_LLAMA_CPP_VERSION) {
+        throw new Error(
+          `Recall embedded Qwen reranker runtime version mismatch: expected ${EMBEDDED_NODE_LLAMA_CPP_VERSION}, received ${nodeLlamaCpp.version}`,
+        );
+      }
+      const probedComputeBackends =
+        devicePolicy === 'auto' && nodeLlamaCpp.getLlamaGpuTypes
+          ? (await nodeLlamaCpp.getLlamaGpuTypes('supported')).filter(
+              (backend): backend is Exclude<NodeLlamaCppGpuBackend, false> => backend !== false,
+            )
+          : [];
+      const requestedComputeBackend: EmbeddedInferenceComputeBackend =
+        devicePolicy === 'auto' ? (probedComputeBackends[0] ?? 'cpu') : devicePolicy;
+      let selectedComputeBackend = requestedComputeBackend;
+      let fallbackFromComputeBackend: Exclude<EmbeddedInferenceComputeBackend, 'cpu'> | null = null;
+      try {
+        resources = await loadQwenRerankingResourcesForBackend(
+          nodeLlamaCpp,
+          modelPath,
+          requestedComputeBackend,
+        );
+      } catch (error) {
+        if (devicePolicy !== 'auto' || requestedComputeBackend === 'cpu') {
+          throw error;
+        }
+        fallbackFromComputeBackend = requestedComputeBackend;
+        selectedComputeBackend = 'cpu';
+        if (!cpuFallbackWarningEmitted) {
+          cpuFallbackWarningEmitted = true;
           writeWarning(
-            `Recall embedded Qwen reranker accelerator initialization failed for ${fallbackFromComputeBackend}; retrying the same profile ${profile.profileId} on CPU: ${readQwenRerankingErrorMessage(error)}`,
+            `Recall embedded Qwen reranker accelerator initialization failed for ${requestedComputeBackend}; retrying the same profile ${profile.profileId} on CPU: ${readQwenRerankingErrorMessage(error)}`,
           );
-        },
-      });
-      const { deviceNames, physicalDeviceIdentity } = resolveRecallPhysicalDeviceIdentity(
-        initialized.selectedComputeBackend,
-        initialized.deviceNames,
-      );
+        }
+        resources = await loadQwenRerankingResourcesForBackend(nodeLlamaCpp, modelPath, 'cpu');
+      }
+      const deviceNames =
+        selectedComputeBackend === 'cpu'
+          ? ['CPU']
+          : ((await resources.runtime.getGpuDeviceNames?.()) ?? [selectedComputeBackend]);
       executionIdentity = Object.freeze({
-        ...createBaseExecutionIdentity(
-          initialized.selectedComputeBackend,
-          initialized.fallbackFromComputeBackend,
-          physicalDeviceIdentity,
-        ),
+        ...baseExecutionIdentity,
         adapterId: NODE_LLAMA_CPP_RERANKING_ADAPTER_ID,
-        backend: RecallInferenceBackend.EMBEDDED,
-        computeBackend: initialized.selectedComputeBackend,
+        backend: 'embedded',
+        computeBackend: selectedComputeBackend,
         deviceNames: Object.freeze([...deviceNames]),
         devicePolicy,
-        fallbackFromComputeBackend: initialized.fallbackFromComputeBackend,
-        contextSize,
-        threads: options.threads ?? null,
+        fallbackFromComputeBackend,
         nodeLlamaCppVersion: EMBEDDED_NODE_LLAMA_CPP_VERSION,
         parallelism,
-        idleTimeoutMilliseconds,
-        physicalDeviceIdentity,
-        probedComputeBackends: Object.freeze([...initialized.probedComputeBackends]),
+        probedComputeBackends: Object.freeze([...probedComputeBackends]),
       });
-      return initialized;
-    },
-    writeIdleDisposalWarning(error) {
-      writeWarning(
-        `Recall embedded Qwen reranker idle disposal failed: ${readQwenRerankingErrorMessage(error)}`,
-      );
-    },
-  });
+      return resources;
+    })();
+    try {
+      return await resourcesLoadPromise;
+    } finally {
+      if (!resources) {
+        resourcesLoadPromise = undefined;
+      }
+    }
+  }
 
   function startQwenRerankingContextOperation(
     loaded: LoadedQwenRerankingResources,
@@ -507,16 +475,15 @@ export function createEmbeddedQwenRerankingProvider(
     get executionIdentity() {
       return executionIdentity;
     },
-    async resolveExecutionIdentity() {
-      await resourceLifecycle.runWithResources(async () => undefined);
-      return executionIdentity;
-    },
     async rerankDocuments(query, documents, signal) {
       if (documents.length === 0) {
         return [];
       }
-      throwIfQwenRerankingAborted(signal);
-      return resourceLifecycle.runWithResources(async (loaded) => {
+      activeOperationCount += 1;
+      let loaded: LoadedQwenRerankingResources | undefined;
+      try {
+        throwIfQwenRerankingAborted(signal);
+        loaded = await loadQwenRerankingResources();
         throwIfQwenRerankingAborted(signal);
         const scores = await waitForQwenRerankingOperation(
           startQwenRerankingContextOperation(loaded, query, documents),
@@ -529,8 +496,26 @@ export function createEmbeddedQwenRerankingProvider(
           );
         }
         return scores.map(recoverLlamaCppQwenRerankingScore);
-      });
+      } finally {
+        activeOperationCount -= 1;
+        if (loaded) {
+          scheduleQwenRerankingIdleDisposal(loaded);
+        }
+      }
     },
-    dispose: () => resourceLifecycle.dispose(),
+    async dispose() {
+      if (disposed) {
+        return;
+      }
+      disposed = true;
+      clearQwenRerankingIdleDisposal();
+      await resourcesDisposalPromise;
+      const loaded = resources ?? (await resourcesLoadPromise);
+      resources = undefined;
+      resourcesLoadPromise = undefined;
+      if (loaded) {
+        await disposeQwenRerankingResources(loaded);
+      }
+    },
   };
 }

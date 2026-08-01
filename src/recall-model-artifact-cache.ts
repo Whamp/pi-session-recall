@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { createWriteStream } from 'node:fs';
 import { access, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
-import { isAbsolute, relative, resolve, sep } from 'node:path';
+import { dirname, join } from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 
@@ -10,10 +10,10 @@ import { Value } from 'typebox/value';
 
 import type { RecallModelArtifactSource } from './recall-model-profiles.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
-import { validateRecallGgufModelArtifact } from './validateRecallGgufModelArtifact.js';
+import { validateRecallGgufModelArtifact } from './validate-recall-gguf-model-artifact.js';
 
 const RECALL_MODEL_ARTIFACT_RECEIPT_SCHEMA_VERSION = 1;
-const RECALL_MODEL_ARTIFACT_RECEIPT_SCHEMA = Type.Object(
+const recallModelArtifactReceiptSchema = Type.Object(
   {
     schemaVersion: Type.Literal(RECALL_MODEL_ARTIFACT_RECEIPT_SCHEMA_VERSION),
     profileId: Type.String(),
@@ -159,7 +159,6 @@ function isExpectedArtifactReceipt(
 }
 
 async function listPartialArtifactPaths(
-  cacheDirectory: string,
   artifactDirectory: string,
   artifactName: string,
 ): Promise<string[]> {
@@ -168,9 +167,7 @@ async function listPartialArtifactPaths(
     return (await readdir(artifactDirectory))
       .filter((name) => name.startsWith(partialPrefix))
       .sort()
-      .map((name) =>
-        resolveContainedModelArtifactCachePath(cacheDirectory, artifactDirectory, name),
-      );
+      .map((name) => join(artifactDirectory, name));
   } catch (error) {
     if (readNodeErrorCode(error) === 'ENOENT') {
       return [];
@@ -180,14 +177,10 @@ async function listPartialArtifactPaths(
 }
 
 async function writeArtifactReceiptAtomically(
-  cacheDirectory: string,
   receiptPath: string,
   receipt: RecallModelArtifactReceipt,
 ): Promise<void> {
-  const temporaryPath = resolveContainedModelArtifactCachePath(
-    cacheDirectory,
-    `${receiptPath}.partial-${randomUUID()}`,
-  );
+  const temporaryPath = `${receiptPath}.partial-${randomUUID()}`;
   await writeFile(temporaryPath, `${JSON.stringify(receipt, undefined, 2)}\n`, {
     encoding: 'utf8',
     mode: 0o600,
@@ -195,65 +188,24 @@ async function writeArtifactReceiptAtomically(
   await rename(temporaryPath, receiptPath);
 }
 
-function validateModelArtifactCachePathSegment(name: string, value: string): void {
-  if (value === '.' || value === '..' || isAbsolute(value) || /[\\/]/u.test(value)) {
-    throw new Error(`Recall model artifact cache path segment invalid: ${name}`);
-  }
-}
-
-function resolveContainedModelArtifactCachePath(
-  cacheDirectory: string,
-  ...segments: readonly string[]
-): string {
-  const path = resolve(cacheDirectory, ...segments);
-  const pathFromCacheDirectory = relative(cacheDirectory, path);
-  if (
-    pathFromCacheDirectory === '' ||
-    pathFromCacheDirectory === '..' ||
-    pathFromCacheDirectory.startsWith(`..${sep}`) ||
-    isAbsolute(pathFromCacheDirectory)
-  ) {
-    throw new Error('Recall model artifact cache path containment invalid');
-  }
-  return path;
-}
-
 /** Creates explicit model artifact operations without downloading until approval is supplied. */
 export function createRecallModelArtifactCache(
   options: RecallModelArtifactCacheOptions,
 ): RecallModelArtifactCache {
-  const profileId = options.profile.profileId;
-  const revision = options.profile.source.revision;
-  const artifact = options.profile.source.artifact;
-  validateModelArtifactCachePathSegment('profileId', profileId);
-  validateModelArtifactCachePathSegment('revision', revision);
-  validateModelArtifactCachePathSegment('artifact', artifact);
-
-  const cacheDirectory = resolve(options.cacheDirectory);
-  const profileDirectory = resolveContainedModelArtifactCachePath(cacheDirectory, profileId);
-  const artifactDirectory = resolveContainedModelArtifactCachePath(
-    cacheDirectory,
-    profileId,
-    revision,
+  const artifactPath = join(
+    options.cacheDirectory,
+    options.profile.profileId,
+    options.profile.source.revision,
+    options.profile.source.artifact,
   );
-  const artifactPath = resolveContainedModelArtifactCachePath(
-    cacheDirectory,
-    profileId,
-    revision,
-    artifact,
-  );
-  const receiptPath = resolveContainedModelArtifactCachePath(
-    cacheDirectory,
-    profileId,
-    revision,
-    `${artifact}.receipt.json`,
-  );
+  const artifactDirectory = dirname(artifactPath);
+  const profileDirectory = join(options.cacheDirectory, options.profile.profileId);
+  const receiptPath = `${artifactPath}.receipt.json`;
   const expectedReceipt = createExpectedArtifactReceipt(options.profile);
   const transport = options.transport ?? createRecallHttpsModelArtifactTransport();
 
   async function verifyArtifact(): Promise<RecallModelArtifactStatus> {
     const partialPaths = await listPartialArtifactPaths(
-      cacheDirectory,
       artifactDirectory,
       options.profile.source.artifact,
     );
@@ -290,7 +242,7 @@ export function createRecallModelArtifactCache(
 
     try {
       const receipt = Value.Parse(
-        RECALL_MODEL_ARTIFACT_RECEIPT_SCHEMA,
+        recallModelArtifactReceiptSchema,
         JSON.parse(await readFile(receiptPath, 'utf8')),
       );
       if (!isExpectedArtifactReceipt(receipt, expectedReceipt)) {
@@ -350,10 +302,7 @@ export function createRecallModelArtifactCache(
       }
 
       await mkdir(artifactDirectory, { recursive: true, mode: 0o700 });
-      const partialPath = resolveContainedModelArtifactCachePath(
-        cacheDirectory,
-        `${artifactPath}.partial-${randomUUID()}`,
-      );
+      const partialPath = `${artifactPath}.partial-${randomUUID()}`;
       await transport.downloadArtifact(
         options.profile.source.downloadUrl,
         partialPath,
@@ -366,7 +315,7 @@ export function createRecallModelArtifactCache(
         throw new Error(`Recall downloaded model artifact rejected: ${message}`, { cause: error });
       }
       await rename(partialPath, artifactPath);
-      await writeArtifactReceiptAtomically(cacheDirectory, receiptPath, expectedReceipt);
+      await writeArtifactReceiptAtomically(receiptPath, expectedReceipt);
       await removePartialArtifacts(existingStatus.partialPaths);
       return verifyArtifact();
     },
@@ -379,7 +328,7 @@ export function createRecallModelArtifactCache(
         return status;
       }
       if (status.state === 'incompatible') {
-        await writeArtifactReceiptAtomically(cacheDirectory, receiptPath, expectedReceipt);
+        await writeArtifactReceiptAtomically(receiptPath, expectedReceipt);
         await removePartialArtifacts(status.partialPaths);
         return verifyArtifact();
       }

@@ -1,7 +1,7 @@
 import { basename } from 'node:path';
 
 import { RecallSearchScope } from './enums.js';
-import type { RecallSearchResult } from './fuse-recall-ranked-lists.js';
+import type { RecallSearchResult } from './fuse-recall-search-candidates.js';
 import type {
   RecallQualityCaseId,
   RecallQualityEvaluationCase,

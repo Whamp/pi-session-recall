@@ -13,8 +13,7 @@ import {
   createEmbeddingGemmaTokenizerManifestIdentity,
 } from './embedded-embeddinggemma-provider.js';
 import { RecallDiagnosticsMode, RecallSearchScope } from './enums.js';
-import { createLlamaCppHttpEmbeddingProvider } from './createLlamaCppHttpEmbeddingProvider.js';
-import { readRecallActiveGenerationSelection } from './recall-generation-state.js';
+import { createLlamaCppHttpEmbeddingProvider } from './llama-cpp-http-embedding-provider.js';
 import { readRecallIndexManifest } from './recall-index-manifest.js';
 import {
   createRecallConversationService,
@@ -23,7 +22,7 @@ import {
 import { createRecommendedEmbeddingGemmaModelProfile } from './recall-model-profiles.js';
 import { normalizeRecallProjectLineages } from './resolve-project-identity.js';
 
-const EMBEDDING_HTTP_REQUEST_SCHEMA = Type.Object({
+const embeddingHttpRequestSchema = Type.Object({
   model: Type.String(),
   input: Type.Array(Type.String()),
 });
@@ -34,18 +33,7 @@ function createEmbeddingGemmaServiceConfig(
 ): RecallConversationConfig {
   return {
     sessionsDirectory,
-    dataDirectory: directory,
     databasePath: join(directory, 'zvec'),
-    projectionDatabasePath: join(directory, 'session-projections'),
-    markerSpoolDirectory: join(directory, 'markers', 'pending'),
-    markerQuarantineDirectory: join(directory, 'markers', 'quarantine'),
-    markerControlDirectory: join(directory, 'markers', 'control'),
-    workerOwnershipLockPath: join(directory, 'incremental-worker.lock'),
-    generationRootDirectory: join(directory, 'generations'),
-    activeGenerationPointerPath: join(directory, 'active-generation.json'),
-    generationRegistryPath: join(directory, 'generation-registry.json'),
-    backlogSummaryPath: join(directory, 'backlog-summary.json'),
-    incrementalDiagnosticLogPath: join(directory, 'incremental-diagnostics.jsonl'),
     statePath: join(directory, 'index-state.json'),
     manifestPath: join(directory, 'index-manifest.json'),
     tokenizerCacheDirectory: join(directory, 'tokenizers'),
@@ -64,9 +52,6 @@ function createEmbeddingGemmaServiceConfig(
     embeddingBatchSize: 8,
     rerankerBaseUrl: 'http://unused-reranker.test/v1',
     rerankerModel: 'unused-reranker',
-    searchWriteWindowWaitMilliseconds: 500,
-    confirmedDeletionMaxMissingSourceCount: 1,
-    confirmedDeletionMaxMissingSourceRatio: 0.1,
     projectLineages: normalizeRecallProjectLineages({}),
     searchCandidateLimits: { dense: 8, lexical: 8, identifier: 8 },
   };
@@ -153,10 +138,7 @@ void test('recall service builds and searches one embedded-profile generation ac
               return {
                 embeddingVectorSize: 768,
                 tokenize(text) {
-                  return Array.from(text).map((character, index) => {
-                    void character;
-                    return index + 1;
-                  });
+                  return Array.from(text).map((_, index) => index + 1);
                 },
                 async createEmbeddingContext() {
                   return {
@@ -186,7 +168,7 @@ void test('recall service builds and searches one embedded-profile generation ac
     loadTokenizer: () => embeddedProvider.loadConversationTokenizer(),
   });
 
-  const indexed = await embeddedService.index({ rebuild: true });
+  const indexed = await embeddedService.index();
   const embeddedSearch = await embeddedService.search('atlas architecture rationale', 2, {
     scope: RecallSearchScope.GLOBAL,
   });
@@ -208,11 +190,7 @@ void test('recall service builds and searches one embedded-profile generation ac
   );
   assert.ok(embeddedInputs.every((input) => !input.includes('/tmp/atlas.txt')));
 
-  const activeGeneration = await readRecallActiveGenerationSelection(
-    config.activeGenerationPointerPath,
-    config.generationRootDirectory,
-  );
-  const manifest = await readRecallIndexManifest(activeGeneration.manifestPath);
+  const manifest = await readRecallIndexManifest(config.manifestPath);
   assert.equal(manifest?.embedding.dimensions, 768);
   assert.equal(manifest?.embedding.normalization, 'l2');
   assert.equal(manifest?.embedding.artifactSha256, profile.source.sha256);
@@ -226,7 +204,7 @@ void test('recall service builds and searches one embedded-profile generation ac
       body += chunk;
     });
     request.on('end', () => {
-      const payload = Value.Parse(EMBEDDING_HTTP_REQUEST_SCHEMA, JSON.parse(body));
+      const payload = Value.Parse(embeddingHttpRequestSchema, JSON.parse(body));
       httpRequests.push(payload);
       response.setHeader('content-type', 'application/json');
       response.end(
@@ -269,7 +247,7 @@ void test('recall service builds and searches one embedded-profile generation ac
       [`${profile.queryInputPrefix}atlas architecture rationale`],
     ],
   );
-  assert.match(await readFile(activeGeneration.manifestPath, 'utf8'), /"dimensions": 768/u);
+  assert.match(await readFile(config.manifestPath, 'utf8'), /"dimensions": 768/u);
 
   const octenService = createRecallConversationService(config, {
     embeddingProvider: {
@@ -324,10 +302,7 @@ void test('recall service indexes with the same profile after automatic accelera
               return {
                 embeddingVectorSize: 768,
                 tokenize(text) {
-                  return Array.from(text).map((character, index) => {
-                    void character;
-                    return index + 1;
-                  });
+                  return Array.from(text).map((_, index) => index + 1);
                 },
                 async createEmbeddingContext() {
                   return {
@@ -354,11 +329,10 @@ void test('recall service indexes with the same profile after automatic accelera
       embeddingProvider: provider,
       tokenizerIdentity: createEmbeddingGemmaTokenizerManifestIdentity(profile),
       loadTokenizer: () => provider.loadConversationTokenizer(),
-      workerSignal: { signalDetachedWorker() {} },
     },
   );
 
-  const indexed = await service.index({ rebuild: true });
+  const indexed = await service.index();
 
   assert.equal(indexed.totalChunks, 0);
   assert.deepEqual(requestedComputeBackends, ['cuda', false]);
@@ -403,7 +377,7 @@ void test('recall service rejects a non-repeatable EmbeddingGemma canary before 
   );
 
   await assert.rejects(
-    () => service.index({ rebuild: true }),
+    () => service.index(),
     /Recall embedding canary repeatability mismatch: expected cosine similarity at least 0\.9995, received 0/u,
   );
 });

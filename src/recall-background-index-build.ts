@@ -89,6 +89,7 @@ const BACKGROUND_INDEX_STATUS_SCHEMA = Type.Object(
     updatedAt: Type.String({ format: 'date-time' }),
     heartbeatAt: Type.Optional(Type.String({ format: 'date-time' })),
     cpuProfileLogPath: Type.Optional(Type.String({ minLength: 1 })),
+    operationLogPath: Type.Optional(Type.String({ minLength: 1 })),
     completedAt: Type.Union([Type.String({ format: 'date-time' }), Type.Null()]),
     progress: Type.Union([
       Type.Object(
@@ -261,6 +262,7 @@ export interface RecallBackgroundIndexGenerationStatus {
   updatedAt: string;
   heartbeatAt?: string;
   cpuProfileLogPath?: string;
+  operationLogPath?: string;
   completedAt: string | null;
   progress: ConversationIndexProgress | null;
   activeOperation?: RecallBackgroundIndexActiveOperation | null;
@@ -687,6 +689,7 @@ async function spawnBackgroundIndexWorker(
 
   const workerPath = fileURLToPath(new URL('./recall-background-index-worker.ts', import.meta.url));
   const cpuProfileLogPath = `${config.statusPath}.${buildId}.v8.log`;
+  const operationLogPath = `${config.statusPath}.${buildId}.operations.jsonl`;
   const child = spawn(
     process.execPath,
     [
@@ -723,6 +726,7 @@ async function spawnBackgroundIndexWorker(
     updatedAt: startedAt,
     heartbeatAt: startedAt,
     cpuProfileLogPath,
+    operationLogPath,
     completedAt: null,
     progress: null,
     activeOperation: null,

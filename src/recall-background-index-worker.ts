@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { readFile, writeFile } from 'node:fs/promises';
+import { appendFile, readFile, writeFile } from 'node:fs/promises';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -102,6 +102,7 @@ async function runRecallBackgroundIndexWatchdog(
             heartbeatAt: status.heartbeatAt ?? status.updatedAt,
             processStat,
             cpuProfileLogPath: `${statusPath}.${buildId}.v8.log`,
+            operationLogPath: `${statusPath}.${buildId}.operations.jsonl`,
             action: 'SIGKILL',
             reason:
               'Recall rebuild operation and worker heartbeat both exceeded the 30-minute stall limit',
@@ -195,6 +196,8 @@ async function runRecallBackgroundIndexWorker(REQUEST_PATH: string): Promise<voi
     updatedAt: runningAt,
     heartbeatAt: runningAt,
   }));
+  let activeOperationStartedAtEpochMilliseconds: number | null = null;
+  const operationLogPath = `${request.statusPath}.${request.buildId}.operations.jsonl`;
   const heartbeatTimer = setInterval(() => {
     queueStatusUpdate((current) => {
       if (
@@ -235,7 +238,28 @@ async function runRecallBackgroundIndexWorker(REQUEST_PATH: string): Promise<voi
         operation: Readonly<RecallFixedSnapshotBuildOperation>,
         state: RecallFixedSnapshotBuildOperationState,
       ) {
-        const observedAt = new Date().toISOString();
+        const observedAtEpochMilliseconds = Date.now();
+        const observedAt = new Date(observedAtEpochMilliseconds).toISOString();
+        const operationDurationMilliseconds =
+          activeOperationStartedAtEpochMilliseconds === null
+            ? null
+            : Math.max(0, observedAtEpochMilliseconds - activeOperationStartedAtEpochMilliseconds);
+        await appendFile(
+          operationLogPath,
+          `${JSON.stringify({
+            ...operation,
+            state,
+            observedAt,
+            ...(state === RecallFixedSnapshotBuildOperationState.STARTED
+              ? { startedAt: observedAt }
+              : { completedAt: observedAt, durationMilliseconds: operationDurationMilliseconds }),
+          })}\n`,
+          'utf8',
+        );
+        activeOperationStartedAtEpochMilliseconds =
+          state === RecallFixedSnapshotBuildOperationState.STARTED
+            ? observedAtEpochMilliseconds
+            : null;
         queueStatusUpdate((current) => {
           if (state === RecallFixedSnapshotBuildOperationState.COMPLETED) {
             const activeOperation = current.activeOperation;

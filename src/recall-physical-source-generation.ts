@@ -13,6 +13,7 @@ import {
   RecallProjectionEncodingStatus,
   RecallSessionProjectionKind,
 } from './enums.js';
+import { createRecallBranchLeafIdsByEntryId } from './create-recall-branch-leaf-ids.js';
 import { createRecallSessionProjectionBaselineFromImport } from './create-recall-session-projection-baseline.js';
 import type { RecallCoherentGenerationConfig } from './recall-coherent-generation.js';
 import {
@@ -234,39 +235,6 @@ function findLogicalProjection(
   return projection;
 }
 
-function createBranchLeafIdsByEntryId(
-  logicalSession: SessionConversationLogicalSession,
-): Map<string, string[]> {
-  const childIdsByEntryId = new Map<string, string[]>();
-  for (const [index, entryId] of logicalSession.entryIds.entries()) {
-    const parentEntryId = logicalSession.parentEntryIds[index] ?? null;
-    if (parentEntryId !== null) {
-      const childIds = childIdsByEntryId.get(parentEntryId) ?? [];
-      childIds.push(entryId);
-      childIdsByEntryId.set(parentEntryId, childIds);
-    }
-  }
-  const leafIds = logicalSession.entryIds.filter(
-    (entryId) => (childIdsByEntryId.get(entryId) ?? []).length === 0,
-  );
-  const result = new Map<string, string[]>();
-  for (const entryId of logicalSession.entryIds) {
-    const descendants = leafIds.filter((leafId) => {
-      let current: string | null = leafId;
-      while (current !== null) {
-        if (current === entryId) {
-          return true;
-        }
-        const currentIndex = logicalSession.entryIds.indexOf(current);
-        current = currentIndex < 0 ? null : (logicalSession.parentEntryIds[currentIndex] ?? null);
-      }
-      return false;
-    });
-    result.set(entryId, descendants.toSorted());
-  }
-  return result;
-}
-
 function encodeTargetIngestionProjection(projection: RecallSessionProjection) {
   const encoded = encodeRecallSessionProjection(projection);
   if (encoded.status !== RecallProjectionEncodingStatus.ENCODED) {
@@ -423,6 +391,13 @@ export async function materializeRecallPhysicalSourceGeneration(
     occurrenceIdsByLogicalEntryId.set(logicalEntryIdentity, entryOccurrenceIds);
   }
 
+  const logicalProjectionByOccurrenceId = new Map<string, LogicalSessionProjection>();
+  const entryDescriptorByLogicalEntryId = new Map<
+    string,
+    LogicalSessionProjection['entryDescriptors'][number]
+  >();
+  const childEntryIdsByLogicalEntryId = new Map<string, readonly string[]>();
+  const branchLeafIdsByLogicalEntryId = new Map<string, readonly string[]>();
   for (const logicalSession of imported.logicalSessions) {
     const logicalProjection = findLogicalProjection(logicalProjections, logicalSession);
     const logicalSessionOccurrenceId = createRecallLogicalSessionOccurrenceId(
@@ -430,6 +405,7 @@ export async function materializeRecallPhysicalSourceGeneration(
       logicalSession.sourceLineStart,
     );
     logicalSessionOccurrenceIds.push(logicalSessionOccurrenceId);
+    logicalProjectionByOccurrenceId.set(logicalSessionOccurrenceId, logicalProjection);
     const projectAttribution = await resolveSessionProjectAttribution(
       logicalProjection.headerDescriptor.cwd,
     );
@@ -442,9 +418,19 @@ export async function materializeRecallPhysicalSourceGeneration(
         childIdsByEntryId.set(parentEntryId, childIds);
       }
     }
-    const branchLeafIdsByEntryId = createBranchLeafIdsByEntryId(logicalSession);
+    const branchLeafIdsByEntryId = createRecallBranchLeafIdsByEntryId(logicalSession);
     const entryAnchorIds: string[] = [];
     for (const descriptor of logicalProjection.entryDescriptors) {
+      const logicalEntryId = `${logicalSessionOccurrenceId}:${descriptor.entryId}`;
+      entryDescriptorByLogicalEntryId.set(logicalEntryId, descriptor);
+      childEntryIdsByLogicalEntryId.set(
+        logicalEntryId,
+        childIdsByEntryId.get(descriptor.entryId) ?? [],
+      );
+      branchLeafIdsByLogicalEntryId.set(
+        logicalEntryId,
+        branchLeafIdsByEntryId.get(descriptor.entryId) ?? [],
+      );
       const entryAnchorId = createRecallEntryAnchorId({
         physicalSourceIdentity: physicalSource.physicalSourceIdentity,
         logicalSessionOccurrenceId,
@@ -544,19 +530,18 @@ export async function materializeRecallPhysicalSourceGeneration(
 
   for (const chunk of imported.chunks) {
     const logicalSession = findLogicalSessionForChunk(imported.logicalSessions, chunk);
-    const logicalProjection = findLogicalProjection(logicalProjections, logicalSession);
-    const descriptor = logicalProjection.entryDescriptors.find(
-      ({ entryId }) => entryId === chunk.entryId.value,
-    );
-    if (descriptor === undefined) {
-      throw new Error(
-        `Recall physical source generation entry anchor missing for ${physicalSessionPath}:${chunk.entryId.value}`,
-      );
-    }
     const logicalSessionOccurrenceId = createRecallLogicalSessionOccurrenceId(
       physicalSource.physicalSourceIdentity,
       logicalSession.sourceLineStart,
     );
+    const logicalProjection = logicalProjectionByOccurrenceId.get(logicalSessionOccurrenceId);
+    const logicalEntryId = `${logicalSessionOccurrenceId}:${chunk.entryId.value}`;
+    const descriptor = entryDescriptorByLogicalEntryId.get(logicalEntryId);
+    if (logicalProjection === undefined || descriptor === undefined) {
+      throw new Error(
+        `Recall physical source generation entry anchor missing for ${physicalSessionPath}:${chunk.entryId.value}`,
+      );
+    }
     const entryAnchorId = createRecallEntryAnchorId({
       physicalSourceIdentity: physicalSource.physicalSourceIdentity,
       logicalSessionOccurrenceId,
@@ -574,11 +559,8 @@ export async function materializeRecallPhysicalSourceGeneration(
       );
     }
     const projectAttribution = await resolveSessionProjectAttribution(chunk.cwd);
-    const childEntryIds = logicalSession.entryIds.filter((entryId, index) => {
-      void entryId;
-      return logicalSession.parentEntryIds[index] === chunk.entryId.value;
-    });
-    const branchPathLeafIds = createBranchLeafIdsByEntryId(logicalSession).get(chunk.entryId.value);
+    const childEntryIds = childEntryIdsByLogicalEntryId.get(logicalEntryId) ?? [];
+    const branchPathLeafIds = branchLeafIdsByLogicalEntryId.get(logicalEntryId) ?? [];
     const commonFields = createCommonLexicalFields({
       generationId,
       physicalSourceIdentity: physicalSource.physicalSourceIdentity,
@@ -590,7 +572,7 @@ export async function materializeRecallPhysicalSourceGeneration(
       entryId: chunk.entryId.value,
       parentEntryId: chunk.parentEntryId?.value ?? null,
       childEntryIds,
-      branchPathLeafIds: branchPathLeafIds ?? [],
+      branchPathLeafIds,
       evidenceOccurrenceIds:
         occurrenceIdsByLogicalEntryId.get(`${logicalSessionOccurrenceId}:${descriptor.entryId}`) ??
         [],

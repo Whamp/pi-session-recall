@@ -238,6 +238,11 @@ void test('background rebuild reports progress while active recall remains searc
     running?.cpuProfileLogPath,
     join(directory, `background-index-status.json.${started.buildId}.v8.log`),
   );
+  const operationLogPath = join(
+    directory,
+    `background-index-status.json.${started.buildId}.operations.jsonl`,
+  );
+  assert.equal(running?.operationLogPath, operationLogPath);
   assert.equal(running?.latestActionableError, null);
 
   const statusPath = join(directory, 'background-index-status.json');
@@ -265,6 +270,25 @@ void test('background rebuild reports progress while active recall remains searc
   );
   assert.equal(completed.activeOperation, null);
   assert.ok((completed.latestCompletedOperation?.durationMilliseconds ?? -1) >= 0);
+  const operationEvents = (await readFile(operationLogPath, 'utf8'))
+    .trim()
+    .split('\n')
+    .map((line): unknown => JSON.parse(line));
+  assert.ok(
+    operationEvents.some(
+      (event) =>
+        isUnknownRecord(event) && event.phase === 'document-embedding' && event.state === 'started',
+    ),
+  );
+  assert.ok(
+    operationEvents.some(
+      (event) =>
+        isUnknownRecord(event) &&
+        event.phase === 'document-embedding' &&
+        event.state === 'completed' &&
+        typeof event.durationMilliseconds === 'number',
+    ),
+  );
 });
 
 void test('detached staging build survives the client process that started it', async (t) => {

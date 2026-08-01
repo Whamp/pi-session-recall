@@ -42,6 +42,7 @@ import {
 import {
   searchRecallGenerationLexical,
   type CreateRecallGenerationFromPhysicalSourcesOptions,
+  type RecallFixedSnapshotBuildOperation,
   type RecallFixedSnapshotPhysicalSourceCheckpoint,
   type RecallGenerationLexicalEvidence,
 } from './recall-physical-source-generation.js';
@@ -56,6 +57,7 @@ import {
   RecallDiagnosticStatus,
   RecallEvidenceRelation,
   type RecallFixedSnapshotBuildFaultStage,
+  type RecallFixedSnapshotBuildOperationState,
   RecallGenerationCutoverState,
   RecallInferenceBackend,
   RecallIncrementalTransferOutcomeKind,
@@ -507,6 +509,11 @@ export interface BuildReplacementRecallGenerationOptions {
     this: void,
     checkpoint: Readonly<RecallFixedSnapshotPhysicalSourceCheckpoint>,
   ): void;
+  onBuildOperation?(
+    this: void,
+    operation: Readonly<RecallFixedSnapshotBuildOperation>,
+    state: RecallFixedSnapshotBuildOperationState,
+  ): void | Promise<void>;
 }
 
 /** Bounded result from one explicit short-lived incremental catch-up. */
@@ -2999,6 +3006,7 @@ export function createRecallConversationService(
         const generationStatus = await readCanonicalIndexGenerationStatus();
         const activeVectorSourceGenerationId = generationStatus.active?.generationId;
         const onPhysicalSourceCheckpoint = options.onPhysicalSourceCheckpoint;
+        const onBuildOperation = options.onBuildOperation;
         return runRecallReplacementGenerationBuild({
           config: backgroundIndexCoordinatorConfig,
           generationId: options.generationId,
@@ -3019,6 +3027,11 @@ export function createRecallConversationService(
                   ? {
                       onPhysicalSourceCheckpoint: (checkpoint) =>
                         onPhysicalSourceCheckpoint(checkpoint),
+                    }
+                  : {}),
+                ...(onBuildOperation
+                  ? {
+                      onBuildOperation: (operation, state) => onBuildOperation(operation, state),
                     }
                   : {}),
               },

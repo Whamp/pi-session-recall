@@ -7,7 +7,11 @@ import { ZVecOpen, type ZVecCollection, type ZVecStatus } from '@zvec/zvec';
 import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 
-import { RecallFixedSnapshotBuildFaultStage } from './enums.js';
+import {
+  RecallFixedSnapshotBuildFaultStage,
+  RecallFixedSnapshotBuildOperationPhase,
+  RecallFixedSnapshotBuildOperationState,
+} from './enums.js';
 import { InvalidRecallSessionSourceError } from './errors.js';
 import { isUnknownRecord } from './is-unknown-record.js';
 import {
@@ -44,6 +48,7 @@ import {
   type CapturedRecallPhysicalSource,
   type CreateRecallGenerationFromPhysicalSourcesOptions,
   type MaterializedRecallPhysicalSourceGeneration,
+  type RecallFixedSnapshotBuildOperation,
   type RecallFixedSnapshotPhysicalSourceCheckpoint,
   type RecallGenerationDenseExpectation,
   type RecallPhysicalSourceGenerationDependencies,
@@ -226,6 +231,17 @@ function isSkippedExpectedPhysicalSourceArtifact(
   artifact: Readonly<RecallExpectedPhysicalSourceArtifact>,
 ): artifact is RecallSkippedExpectedPhysicalSourceArtifact {
   return 'skipReason' in artifact;
+}
+
+async function runObservedFixedSnapshotBuildOperation<Result>(
+  operation: Readonly<RecallFixedSnapshotBuildOperation>,
+  onBuildOperation: CreateRecallGenerationFromPhysicalSourcesOptions['onBuildOperation'],
+  run: () => Result | Promise<Result>,
+): Promise<Result> {
+  await onBuildOperation?.(operation, RecallFixedSnapshotBuildOperationState.STARTED);
+  const result = await run();
+  await onBuildOperation?.(operation, RecallFixedSnapshotBuildOperationState.COMPLETED);
+  return result;
 }
 
 function countFixedSnapshotStoreSessionRecords(
@@ -739,44 +755,57 @@ async function materializeExpectedPhysicalSource(
   return { artifact, fingerprint: calculateSha256(content) };
 }
 
-function upsertRowsInBoundedBatches(
+async function upsertRowsInBoundedBatches(
   collection: ZVecCollection,
-  operation: string,
+  operationName: string,
+  phase: RecallFixedSnapshotBuildOperationPhase,
   rows: readonly (RecallGenerationScalarRow | RecallGenerationDenseRow)[],
-): void {
+  operationSource: Readonly<RecallFixedSnapshotBuildOperation>,
+  onBuildOperation: CreateRecallGenerationFromPhysicalSourcesOptions['onBuildOperation'],
+): Promise<void> {
   if (rows.length === 0) {
     return;
   }
-  const includeVector = rows.some((row) => 'vectors' in row);
-  const outputFields = [...new Set(rows.flatMap(({ fields }) => Object.keys(fields)))];
-  const fetched = collection.fetchSync({
-    ids: rows.map(({ id }) => id),
-    outputFields,
-    includeVector,
-  });
-  const rowsRequiringWrite = rows.filter((row) => {
-    const actual = fetched[row.id];
-    if (actual === undefined || !fieldsMatch(actual.fields, row.fields)) {
-      return true;
-    }
-    if (!('vectors' in row)) {
-      return false;
-    }
-    const actualVectorChecksum = calculateSha256(
-      Buffer.from(
-        new Float32Array(readRecallGenerationVectorValues(actual.vectors.embedding)).buffer,
-      ),
-    );
-    return actualVectorChecksum !== row.fields.vectorChecksum;
-  });
-  for (let offset = 0; offset < rowsRequiringWrite.length; offset += MAXIMUM_BUILD_WRITE_RECORDS) {
-    const batch = rowsRequiringWrite.slice(offset, offset + MAXIMUM_BUILD_WRITE_RECORDS);
-    assertCheckedBuildStatuses(
-      operation,
-      batch.map(({ id }) => id),
-      collection.upsertSync(batch),
-    );
-  }
+  await runObservedFixedSnapshotBuildOperation(
+    { ...operationSource, phase, batchRecordCount: rows.length, totalRecordCount: rows.length },
+    onBuildOperation,
+    () => {
+      const includeVector = rows.some((row) => 'vectors' in row);
+      const outputFields = [...new Set(rows.flatMap(({ fields }) => Object.keys(fields)))];
+      const fetched = collection.fetchSync({
+        ids: rows.map(({ id }) => id),
+        outputFields,
+        includeVector,
+      });
+      const rowsRequiringWrite = rows.filter((row) => {
+        const actual = fetched[row.id];
+        if (actual === undefined || !fieldsMatch(actual.fields, row.fields)) {
+          return true;
+        }
+        if (!('vectors' in row)) {
+          return false;
+        }
+        const actualVectorChecksum = calculateSha256(
+          Buffer.from(
+            new Float32Array(readRecallGenerationVectorValues(actual.vectors.embedding)).buffer,
+          ),
+        );
+        return actualVectorChecksum !== row.fields.vectorChecksum;
+      });
+      for (
+        let offset = 0;
+        offset < rowsRequiringWrite.length;
+        offset += MAXIMUM_BUILD_WRITE_RECORDS
+      ) {
+        const batch = rowsRequiringWrite.slice(offset, offset + MAXIMUM_BUILD_WRITE_RECORDS);
+        assertCheckedBuildStatuses(
+          operationName,
+          batch.map(({ id }) => id),
+          collection.upsertSync(batch),
+        );
+      }
+    },
+  );
 }
 
 function verifyExpectedScalarRows(
@@ -808,6 +837,10 @@ async function resolveDenseRows(
   buildVectorsByReuseKey: Map<string, number[]>,
   dependencies: Readonly<RecallPhysicalSourceGenerationDependencies>,
   validatedVectorSource: ZVecCollection | null,
+  operationSource: Readonly<
+    Pick<RecallFixedSnapshotBuildOperation, 'physicalSourceIdentity' | 'sessionsRootRelativePath'>
+  >,
+  onBuildOperation?: CreateRecallGenerationFromPhysicalSourcesOptions['onBuildOperation'],
   signal?: AbortSignal,
 ): Promise<RecallGenerationDenseRow[]> {
   const fetched =
@@ -904,10 +937,19 @@ async function resolveDenseRows(
       .filter((expectation): expectation is RecallGenerationDenseExpectation =>
         Boolean(expectation),
       );
+    const operation: RecallFixedSnapshotBuildOperation = {
+      ...operationSource,
+      phase: RecallFixedSnapshotBuildOperationPhase.DOCUMENT_EMBEDDING,
+      batchStartIndex: offset,
+      batchRecordCount: batch.length,
+      totalRecordCount: unresolvedRepresentatives.length,
+    };
+    await onBuildOperation?.(operation, RecallFixedSnapshotBuildOperationState.STARTED);
     const nativeVectors = await dependencies.embeddingProvider.embedDocuments(
       batch.map(({ embeddingInput }) => embeddingInput),
       signal,
     );
+    await onBuildOperation?.(operation, RecallFixedSnapshotBuildOperationState.COMPLETED);
     if (nativeVectors.length !== batch.length) {
       throw new Error(
         `Recall fixed snapshot generation document embedding count mismatch: expected ${batch.length}, received ${nativeVectors.length}`,
@@ -951,23 +993,39 @@ async function resolveDenseRows(
 
 async function openFixedSnapshotStoreSession(
   paths: Readonly<ReturnType<typeof createRecallGenerationComponentPaths>>,
+  operationSource: Readonly<RecallFixedSnapshotBuildOperation>,
+  onBuildOperation: CreateRecallGenerationFromPhysicalSourcesOptions['onBuildOperation'],
   signal?: AbortSignal,
 ): Promise<RecallFixedSnapshotStoreSession> {
   const opened: ZVecCollection[] = [];
   try {
-    const lexicalSource = await openRecallZvecWritableStoreAfterClose(
-      () => ZVecOpen(paths.lexicalSourceStorePath),
-      signal,
+    const lexicalSource = await runObservedFixedSnapshotBuildOperation(
+      {
+        ...operationSource,
+        phase: RecallFixedSnapshotBuildOperationPhase.LEXICAL_SOURCE_STORE_OPEN,
+      },
+      onBuildOperation,
+      () =>
+        openRecallZvecWritableStoreAfterClose(() => ZVecOpen(paths.lexicalSourceStorePath), signal),
     );
     opened.push(lexicalSource);
-    const dense = await openRecallZvecWritableStoreAfterClose(
-      () => ZVecOpen(paths.denseStorePath),
-      signal,
+    const dense = await runObservedFixedSnapshotBuildOperation(
+      { ...operationSource, phase: RecallFixedSnapshotBuildOperationPhase.DENSE_STORE_OPEN },
+      onBuildOperation,
+      () => openRecallZvecWritableStoreAfterClose(() => ZVecOpen(paths.denseStorePath), signal),
     );
     opened.push(dense);
-    const sessionProjection = await openRecallZvecWritableStoreAfterClose(
-      () => ZVecOpen(paths.sessionProjectionStorePath),
-      signal,
+    const sessionProjection = await runObservedFixedSnapshotBuildOperation(
+      {
+        ...operationSource,
+        phase: RecallFixedSnapshotBuildOperationPhase.SESSION_PROJECTION_STORE_OPEN,
+      },
+      onBuildOperation,
+      () =>
+        openRecallZvecWritableStoreAfterClose(
+          () => ZVecOpen(paths.sessionProjectionStorePath),
+          signal,
+        ),
     );
     opened.push(sessionProjection);
     return { lexicalSource, dense, sessionProjection };
@@ -979,11 +1037,30 @@ async function openFixedSnapshotStoreSession(
   }
 }
 
-function closeFixedSnapshotStoreSession(stores: RecallFixedSnapshotStoreSession): void {
+async function closeFixedSnapshotStoreSession(
+  stores: RecallFixedSnapshotStoreSession,
+  operationSource: Readonly<RecallFixedSnapshotBuildOperation>,
+  onBuildOperation: CreateRecallGenerationFromPhysicalSourcesOptions['onBuildOperation'],
+): Promise<void> {
   const errors: unknown[] = [];
-  for (const collection of [stores.sessionProjection, stores.dense, stores.lexicalSource]) {
+  const storesInCloseOrder = [
+    {
+      collection: stores.sessionProjection,
+      phase: RecallFixedSnapshotBuildOperationPhase.SESSION_PROJECTION_STORE_CLOSE,
+    },
+    { collection: stores.dense, phase: RecallFixedSnapshotBuildOperationPhase.DENSE_STORE_CLOSE },
+    {
+      collection: stores.lexicalSource,
+      phase: RecallFixedSnapshotBuildOperationPhase.LEXICAL_SOURCE_STORE_CLOSE,
+    },
+  ];
+  for (const { collection, phase } of storesInCloseOrder) {
     try {
-      collection.closeSync();
+      await runObservedFixedSnapshotBuildOperation(
+        { ...operationSource, phase },
+        onBuildOperation,
+        () => collection.closeSync(),
+      );
     } catch (error) {
       errors.push(error);
     }
@@ -1080,6 +1157,9 @@ async function writeExpectedPhysicalSource(
   buildVectorsByReuseKey: Map<string, number[]>,
   dependencies: Readonly<RecallPhysicalSourceGenerationDependencies>,
   validatedVectorSource: ZVecCollection | null,
+  sourceNumber: number,
+  totalPhysicalSourceCount: number,
+  onBuildOperation?: CreateRecallGenerationFromPhysicalSourcesOptions['onBuildOperation'],
   signal?: AbortSignal,
 ): Promise<void> {
   const recovery = {
@@ -1103,6 +1183,13 @@ async function writeExpectedPhysicalSource(
     });
   }
   throwIfFixedSnapshotBuildCancelled(signal);
+  const operationSource: RecallFixedSnapshotBuildOperation = {
+    phase: RecallFixedSnapshotBuildOperationPhase.SOURCE_MATERIALIZATION,
+    physicalSourceIdentity: artifact.physicalSourceIdentity,
+    sessionsRootRelativePath: artifact.sessionsRootRelativePath,
+    sourceNumber,
+    totalPhysicalSourceCount,
+  };
   const denseRows = await resolveDenseRows(
     config,
     stores.dense,
@@ -1110,25 +1197,56 @@ async function writeExpectedPhysicalSource(
     buildVectorsByReuseKey,
     dependencies,
     validatedVectorSource,
+    operationSource,
+    onBuildOperation,
     signal,
   );
-  upsertRowsInBoundedBatches(stores.lexicalSource, 'lexical/source write', artifact.lexicalSource);
-  upsertRowsInBoundedBatches(stores.dense, 'dense write', denseRows);
+  await upsertRowsInBoundedBatches(
+    stores.lexicalSource,
+    'lexical/source write',
+    RecallFixedSnapshotBuildOperationPhase.LEXICAL_SOURCE_WRITE,
+    artifact.lexicalSource,
+    operationSource,
+    onBuildOperation,
+  );
+  await upsertRowsInBoundedBatches(
+    stores.dense,
+    'dense write',
+    RecallFixedSnapshotBuildOperationPhase.DENSE_WRITE,
+    denseRows,
+    operationSource,
+    onBuildOperation,
+  );
   await invokeFixedSnapshotBuildFault(
     dependencies,
     RecallFixedSnapshotBuildFaultStage.AFTER_DENSE_WRITE,
     paths.generationDirectory,
     artifact.physicalSourceIdentity,
   );
-  upsertRowsInBoundedBatches(
+  await upsertRowsInBoundedBatches(
     stores.sessionProjection,
     'logical session projection write',
+    RecallFixedSnapshotBuildOperationPhase.LOGICAL_PROJECTION_WRITE,
     artifact.logicalSessionProjections,
+    operationSource,
+    onBuildOperation,
   );
-  upsertRowsInBoundedBatches(stores.sessionProjection, 'physical session projection write', [
-    artifact.physicalSessionProjection,
-  ]);
-  verifyExpectedPhysicalSourceRows(stores, artifact, 'checkpoint');
+  await upsertRowsInBoundedBatches(
+    stores.sessionProjection,
+    'physical session projection write',
+    RecallFixedSnapshotBuildOperationPhase.PHYSICAL_PROJECTION_WRITE,
+    [artifact.physicalSessionProjection],
+    operationSource,
+    onBuildOperation,
+  );
+  await runObservedFixedSnapshotBuildOperation(
+    {
+      ...operationSource,
+      phase: RecallFixedSnapshotBuildOperationPhase.SOURCE_CHECKPOINT_VERIFICATION,
+    },
+    onBuildOperation,
+    () => verifyExpectedPhysicalSourceRows(stores, artifact, 'checkpoint'),
+  );
   await rm(paths.recoveryRecordPath);
 }
 
@@ -1170,7 +1288,11 @@ async function validateExpectedFixedSnapshotArtifacts(
       }
     }
   } finally {
-    closeFixedSnapshotStoreSession(stores);
+    await closeFixedSnapshotStoreSession(
+      stores,
+      { phase: RecallFixedSnapshotBuildOperationPhase.FINAL_ARTIFACT_VALIDATION },
+      undefined,
+    );
   }
 }
 
@@ -1391,6 +1513,9 @@ export async function buildRecallFixedSnapshotGeneration(
     );
   }
   let storeSession: RecallFixedSnapshotStoreSession | null = null;
+  let storeSessionOperationSource: RecallFixedSnapshotBuildOperation = {
+    phase: RecallFixedSnapshotBuildOperationPhase.LEXICAL_SOURCE_STORE_OPEN,
+  };
   let pendingPhysicalSourceCheckpoints: RecallFixedSnapshotPhysicalSourceCheckpoint[] = [];
   try {
     let sourcesInBuildOrder = snapshot.sources;
@@ -1415,7 +1540,12 @@ export async function buildRecallFixedSnapshotGeneration(
         ),
       ];
     }
-    storeSession = await openFixedSnapshotStoreSession(paths, options.signal);
+    storeSession = await openFixedSnapshotStoreSession(
+      paths,
+      storeSessionOperationSource,
+      options.onBuildOperation,
+      options.signal,
+    );
     let checkpointedPhysicalSourceCount = 0;
     let storeSessionRecordCount = 0;
     for (const [sourceIndex, source] of sourcesInBuildOrder.entries()) {
@@ -1424,12 +1554,25 @@ export async function buildRecallFixedSnapshotGeneration(
         throw new Error('Recall fixed snapshot writable store session missing');
       }
       const activeStoreSession = storeSession;
-      const expected = await materializeExpectedPhysicalSource(
-        config,
-        options.generationId,
-        generationDirectory,
-        source,
-        buildDependencies,
+      const sourceOperation: RecallFixedSnapshotBuildOperation = {
+        phase: RecallFixedSnapshotBuildOperationPhase.SOURCE_MATERIALIZATION,
+        physicalSourceIdentity: source.physicalSourceIdentity,
+        sessionsRootRelativePath: source.sessionsRootRelativePath,
+        sourceNumber: sourceIndex + 1,
+        totalPhysicalSourceCount: snapshot.sources.length,
+      };
+      storeSessionOperationSource = sourceOperation;
+      const expected = await runObservedFixedSnapshotBuildOperation(
+        sourceOperation,
+        options.onBuildOperation,
+        () =>
+          materializeExpectedPhysicalSource(
+            config,
+            options.generationId,
+            generationDirectory,
+            source,
+            buildDependencies,
+          ),
       );
       artifacts.push(expected);
       if (!isSkippedExpectedPhysicalSourceArtifact(expected.artifact)) {
@@ -1442,6 +1585,9 @@ export async function buildRecallFixedSnapshotGeneration(
           buildVectorsByReuseKey,
           buildDependencies,
           validatedVectorSource,
+          sourceIndex + 1,
+          snapshot.sources.length,
+          options.onBuildOperation,
           options.signal,
         );
       }
@@ -1461,7 +1607,11 @@ export async function buildRecallFixedSnapshotGeneration(
       }
 
       storeSession = null;
-      closeFixedSnapshotStoreSession(activeStoreSession);
+      await closeFixedSnapshotStoreSession(
+        activeStoreSession,
+        sourceOperation,
+        options.onBuildOperation,
+      );
       await invokeFixedSnapshotBuildFault(
         dependencies,
         RecallFixedSnapshotBuildFaultStage.AFTER_STORE_CLOSE,
@@ -1474,12 +1624,21 @@ export async function buildRecallFixedSnapshotGeneration(
       pendingPhysicalSourceCheckpoints = [];
       storeSessionRecordCount = 0;
       if (sourceIndex < sourcesInBuildOrder.length - 1) {
-        storeSession = await openFixedSnapshotStoreSession(paths, options.signal);
+        storeSession = await openFixedSnapshotStoreSession(
+          paths,
+          sourceOperation,
+          options.onBuildOperation,
+          options.signal,
+        );
       }
     }
   } finally {
     if (storeSession !== null) {
-      closeFixedSnapshotStoreSession(storeSession);
+      await closeFixedSnapshotStoreSession(
+        storeSession,
+        storeSessionOperationSource,
+        options.onBuildOperation,
+      );
       for (const checkpoint of pendingPhysicalSourceCheckpoints) {
         options.onPhysicalSourceCheckpoint?.(checkpoint);
       }
@@ -1532,14 +1691,27 @@ export async function buildRecallFixedSnapshotGeneration(
     generationDirectory,
   );
   throwIfFixedSnapshotBuildCancelled(options.signal);
-  await validateExpectedFixedSnapshotArtifacts(generationDirectory, artifacts, options.signal);
-  validateRecallGenerationStores(paths, contracts, options.generationId, expectedRecordIds);
-  validateRecallGenerationDenseSubset(
-    paths,
-    options.generationId,
-    expectedManifest.embeddingProfile.profileId,
-    expectedManifest.embeddingProfile.storedDimensions,
-    expectedRecordIds,
+  await runObservedFixedSnapshotBuildOperation(
+    { phase: RecallFixedSnapshotBuildOperationPhase.FINAL_ARTIFACT_VALIDATION },
+    options.onBuildOperation,
+    () => validateExpectedFixedSnapshotArtifacts(generationDirectory, artifacts, options.signal),
+  );
+  await runObservedFixedSnapshotBuildOperation(
+    { phase: RecallFixedSnapshotBuildOperationPhase.FINAL_STORE_VALIDATION },
+    options.onBuildOperation,
+    () => validateRecallGenerationStores(paths, contracts, options.generationId, expectedRecordIds),
+  );
+  await runObservedFixedSnapshotBuildOperation(
+    { phase: RecallFixedSnapshotBuildOperationPhase.FINAL_DENSE_SUBSET_VALIDATION },
+    options.onBuildOperation,
+    () =>
+      validateRecallGenerationDenseSubset(
+        paths,
+        options.generationId,
+        expectedManifest.embeddingProfile.profileId,
+        expectedManifest.embeddingProfile.storedDimensions,
+        expectedRecordIds,
+      ),
   );
   const startingSnapshotFingerprint = calculateSha256(
     encodeStrictJson({

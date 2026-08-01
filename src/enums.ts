@@ -240,6 +240,32 @@ export enum RecallProjectionEncodingStatus {
   REQUIRES_RECONCILIATION = 'requires_reconciliation',
 }
 
+/** Observable fixed-snapshot operation that may dominate rebuild time. */
+export enum RecallFixedSnapshotBuildOperationPhase {
+  SOURCE_MATERIALIZATION = 'source-materialization',
+  DOCUMENT_EMBEDDING = 'document-embedding',
+  LEXICAL_SOURCE_WRITE = 'lexical-source-write',
+  DENSE_WRITE = 'dense-write',
+  LOGICAL_PROJECTION_WRITE = 'logical-projection-write',
+  PHYSICAL_PROJECTION_WRITE = 'physical-projection-write',
+  SOURCE_CHECKPOINT_VERIFICATION = 'source-checkpoint-verification',
+  LEXICAL_SOURCE_STORE_OPEN = 'lexical-source-store-open',
+  DENSE_STORE_OPEN = 'dense-store-open',
+  SESSION_PROJECTION_STORE_OPEN = 'session-projection-store-open',
+  SESSION_PROJECTION_STORE_CLOSE = 'session-projection-store-close',
+  DENSE_STORE_CLOSE = 'dense-store-close',
+  LEXICAL_SOURCE_STORE_CLOSE = 'lexical-source-store-close',
+  FINAL_ARTIFACT_VALIDATION = 'final-artifact-validation',
+  FINAL_STORE_VALIDATION = 'final-store-validation',
+  FINAL_DENSE_SUBSET_VALIDATION = 'final-dense-subset-validation',
+}
+
+/** Lifecycle state for one observable fixed-snapshot build operation. */
+export enum RecallFixedSnapshotBuildOperationState {
+  STARTED = 'started',
+  COMPLETED = 'completed',
+}
+
 /** Durable fixed-snapshot transitions available to process-death acceptance tests. */
 export enum RecallFixedSnapshotBuildFaultStage {
   AFTER_GENERATION_DIRECTORY_CREATION = 'after-generation-directory-creation',

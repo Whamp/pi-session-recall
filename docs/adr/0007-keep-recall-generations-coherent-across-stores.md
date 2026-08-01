@@ -67,6 +67,14 @@ A resumable build resolves a vector in this order:
 
 The destination always stores its own vector copy. It never keeps a live reference to another generation. A failed generation cannot supply vectors to a different build unless it is repaired and passes validation first.
 
+## Rebuild observability and stall containment
+
+The detached worker publishes the exact operation before entering any potentially long source, embedding, zvec write, store open, store close, or final validation call. The status names the source, source number, batch position, and record count when they apply. On completion, it records the operation's duration. This ordering matters because a synchronous native call can block the worker before it can report anything afterward.
+
+The worker also publishes a heartbeat every five seconds. If an operation and the heartbeat are both stale for 30 seconds, operator status records a stall diagnosis with the phase and elapsed times. A long asynchronous model request remains distinguishable from a blocked event loop because its heartbeat continues.
+
+Every detached rebuild runs with V8 CPU sampling enabled. The profile log is scoped to the build ID beside the background status file. A separate watchdog process observes the worker. It does not treat a long operation alone as failure. If both the named operation and heartbeat remain frozen for 30 minutes, it writes the active operation, heartbeat, Linux process statistics, and profile path to a stall artifact, then kills the worker. The ordinary crash path leaves the inactive generation resumable, but a run terminated by this watchdog is diagnostic evidence rather than acceptance evidence.
+
 ## Activation and replay
 
 All expensive work and the immutable validation receipt are complete before cutover. Inside the short cutover window, the generation transition owner:

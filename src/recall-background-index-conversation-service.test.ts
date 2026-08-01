@@ -220,12 +220,38 @@ void test('background rebuild reports progress while active recall remains searc
     join(directory, 'fixture-embedding-started'),
     join(directory, 'background-index-status.json'),
   );
+  await waitForPath(
+    join(directory, `background-index-status.json.${started.buildId}.v8.log`),
+    join(directory, 'background-index-status.json'),
+  );
   const running = await backgroundService.readBackgroundIndexGenerationStatus();
   assert.equal(running?.processState, 'running');
   assert.ok(running?.generationId);
   assert.equal(running?.progress, null);
   assert.equal(running?.latestCheckpoint, null);
+  assert.equal(running?.activeOperation?.phase, 'document-embedding');
+  assert.equal(running?.activeOperation?.sessionsRootRelativePath, 'session.jsonl');
+  assert.equal(running?.activeOperation?.batchRecordCount, 1);
+  assert.match(running?.activeOperation?.startedAt ?? '', /^\d{4}-\d{2}-\d{2}T/u);
+  assert.match(running?.heartbeatAt ?? '', /^\d{4}-\d{2}-\d{2}T/u);
+  assert.equal(
+    running?.cpuProfileLogPath,
+    join(directory, `background-index-status.json.${started.buildId}.v8.log`),
+  );
   assert.equal(running?.latestActionableError, null);
+
+  const statusPath = join(directory, 'background-index-status.json');
+  const persistedStatus: unknown = JSON.parse(await readFile(statusPath, 'utf8'));
+  assert.ok(isUnknownRecord(persistedStatus));
+  assert.ok(isUnknownRecord(persistedStatus.activeOperation));
+  const staleAt = new Date(Date.now() - 60_000).toISOString();
+  persistedStatus.heartbeatAt = staleAt;
+  persistedStatus.activeOperation = { ...persistedStatus.activeOperation, startedAt: staleAt };
+  await writeFile(statusPath, `${JSON.stringify(persistedStatus)}\n`, 'utf8');
+  const stalled = await backgroundService.readBackgroundIndexGenerationStatus();
+  assert.equal(stalled?.stallDiagnostic?.phase, 'document-embedding');
+  assert.ok((stalled?.stallDiagnostic?.operationElapsedMilliseconds ?? 0) >= 30_000);
+  assert.ok((stalled?.stallDiagnostic?.heartbeatLagMilliseconds ?? 0) >= 30_000);
 
   const activeSearch = await activeService.search('active generation evidence', 5, {
     scope: RecallSearchScope.GLOBAL,
@@ -233,10 +259,12 @@ void test('background rebuild reports progress while active recall remains searc
   assert.equal(activeSearch.results[0]?.content, 'active generation evidence');
 
   await writeFile(releasePath, 'release\n', 'utf8');
-  await waitForBackgroundProcessState(
+  const completed = await waitForBackgroundProcessState(
     backgroundService,
     RecallBackgroundIndexProcessState.SUCCEEDED,
   );
+  assert.equal(completed.activeOperation, null);
+  assert.ok((completed.latestCompletedOperation?.durationMilliseconds ?? -1) >= 0);
 });
 
 void test('detached staging build survives the client process that started it', async (t) => {

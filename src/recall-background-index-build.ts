@@ -10,7 +10,11 @@ import { Value } from 'typebox/value';
 
 import { coordinateRecallWriteWindow } from './coordinate-recall-write-window.js';
 import type { RecallConversationConfig } from './recall-conversation-config.js';
-import { RecallBackgroundIndexProcessState, RecallDiagnosticsMode } from './enums.js';
+import {
+  RecallBackgroundIndexProcessState,
+  RecallDiagnosticsMode,
+  RecallFixedSnapshotBuildOperationPhase,
+} from './enums.js';
 import type {
   ConversationIndexCheckpoint,
   ConversationIndexProgress,
@@ -38,6 +42,35 @@ import { normalizeRecallProjectLineages } from './resolve-project-identity.js';
 
 const RECALL_BACKGROUND_INDEX_STATUS_VERSION = 1;
 const MAX_RECALL_BACKGROUND_STATUS_TEXT_LENGTH = 4096;
+const RECALL_BACKGROUND_OPERATION_STALL_MILLISECONDS = 30_000;
+const BACKGROUND_BUILD_ACTIVE_OPERATION_SCHEMA = Type.Object(
+  {
+    phase: Type.Enum(RecallFixedSnapshotBuildOperationPhase),
+    startedAt: Type.String({ format: 'date-time' }),
+    physicalSourceIdentity: Type.Optional(
+      Type.String({ maxLength: MAX_RECALL_BACKGROUND_STATUS_TEXT_LENGTH }),
+    ),
+    sessionsRootRelativePath: Type.Optional(
+      Type.String({ maxLength: MAX_RECALL_BACKGROUND_STATUS_TEXT_LENGTH }),
+    ),
+    sourceNumber: Type.Optional(Type.Integer({ minimum: 1 })),
+    totalPhysicalSourceCount: Type.Optional(Type.Integer({ minimum: 0 })),
+    batchStartIndex: Type.Optional(Type.Integer({ minimum: 0 })),
+    batchRecordCount: Type.Optional(Type.Integer({ minimum: 0 })),
+    totalRecordCount: Type.Optional(Type.Integer({ minimum: 0 })),
+  },
+  { additionalProperties: false },
+);
+
+const BACKGROUND_BUILD_COMPLETED_OPERATION_SCHEMA = Type.Object(
+  {
+    ...BACKGROUND_BUILD_ACTIVE_OPERATION_SCHEMA.properties,
+    completedAt: Type.String({ format: 'date-time' }),
+    durationMilliseconds: Type.Number({ minimum: 0 }),
+  },
+  { additionalProperties: false },
+);
+
 const ACTIVE_BACKGROUND_INDEX_PROCESS_STATES = new Set<RecallBackgroundIndexProcessState>([
   RecallBackgroundIndexProcessState.STARTING,
   RecallBackgroundIndexProcessState.RUNNING,
@@ -54,6 +87,8 @@ const BACKGROUND_INDEX_STATUS_SCHEMA = Type.Object(
     processState: Type.Enum(RecallBackgroundIndexProcessState),
     startedAt: Type.String({ format: 'date-time' }),
     updatedAt: Type.String({ format: 'date-time' }),
+    heartbeatAt: Type.Optional(Type.String({ format: 'date-time' })),
+    cpuProfileLogPath: Type.Optional(Type.String({ minLength: 1 })),
     completedAt: Type.Union([Type.String({ format: 'date-time' }), Type.Null()]),
     progress: Type.Union([
       Type.Object(
@@ -66,6 +101,26 @@ const BACKGROUND_INDEX_STATUS_SCHEMA = Type.Object(
       ),
       Type.Null(),
     ]),
+    activeOperation: Type.Optional(
+      Type.Union([BACKGROUND_BUILD_ACTIVE_OPERATION_SCHEMA, Type.Null()]),
+    ),
+    latestCompletedOperation: Type.Optional(
+      Type.Union([BACKGROUND_BUILD_COMPLETED_OPERATION_SCHEMA, Type.Null()]),
+    ),
+    stallDiagnostic: Type.Optional(
+      Type.Union([
+        Type.Object(
+          {
+            detectedAt: Type.String({ format: 'date-time' }),
+            phase: Type.Enum(RecallFixedSnapshotBuildOperationPhase),
+            operationElapsedMilliseconds: Type.Number({ minimum: 0 }),
+            heartbeatLagMilliseconds: Type.Number({ minimum: 0 }),
+          },
+          { additionalProperties: false },
+        ),
+        Type.Null(),
+      ]),
+    ),
     latestCheckpoint: Type.Union([
       Type.Object(
         {
@@ -167,6 +222,33 @@ const BACKGROUND_INDEX_WORKER_REQUEST_SCHEMA = Type.Object(
   { additionalProperties: false },
 );
 
+/** Operation currently occupying a detached fixed-snapshot worker. */
+export interface RecallBackgroundIndexActiveOperation {
+  phase: RecallFixedSnapshotBuildOperationPhase;
+  startedAt: string;
+  physicalSourceIdentity?: string;
+  sessionsRootRelativePath?: string;
+  sourceNumber?: number;
+  totalPhysicalSourceCount?: number;
+  batchStartIndex?: number;
+  batchRecordCount?: number;
+  totalRecordCount?: number;
+}
+
+/** Latest fixed-snapshot operation completed by a detached worker. */
+export interface RecallBackgroundIndexCompletedOperation extends RecallBackgroundIndexActiveOperation {
+  completedAt: string;
+  durationMilliseconds: number;
+}
+
+/** Watchdog evidence that one named operation and the worker heartbeat stopped advancing. */
+export interface RecallBackgroundIndexStallDiagnostic {
+  detectedAt: string;
+  phase: RecallFixedSnapshotBuildOperationPhase;
+  operationElapsedMilliseconds: number;
+  heartbeatLagMilliseconds: number;
+}
+
 /** One bounded status record for a detached staging index build. */
 export interface RecallBackgroundIndexGenerationStatus {
   version: 1;
@@ -177,8 +259,13 @@ export interface RecallBackgroundIndexGenerationStatus {
   processState: RecallBackgroundIndexProcessState;
   startedAt: string;
   updatedAt: string;
+  heartbeatAt?: string;
+  cpuProfileLogPath?: string;
   completedAt: string | null;
   progress: ConversationIndexProgress | null;
+  activeOperation?: RecallBackgroundIndexActiveOperation | null;
+  latestCompletedOperation?: RecallBackgroundIndexCompletedOperation | null;
+  stallDiagnostic?: RecallBackgroundIndexStallDiagnostic | null;
   latestCheckpoint:
     | (ConversationIndexCheckpoint & {
         physicalSourceIdentity?: string;
@@ -401,6 +488,32 @@ async function refreshBackgroundIndexStatus(
     selectedGenerationId !== status.generationId
       ? { ...status, generationId: selectedGenerationId, updatedAt: new Date().toISOString() }
       : status;
+  const observedAtEpochMilliseconds = Date.now();
+  const activeOperation = refreshed.activeOperation;
+  const heartbeatAt = refreshed.heartbeatAt ?? refreshed.updatedAt;
+  const operationElapsedMilliseconds =
+    activeOperation === null || activeOperation === undefined
+      ? 0
+      : Math.max(0, observedAtEpochMilliseconds - Date.parse(activeOperation.startedAt));
+  const heartbeatLagMilliseconds = Math.max(
+    0,
+    observedAtEpochMilliseconds - Date.parse(heartbeatAt),
+  );
+  const stallDiagnostic =
+    activeOperation !== null &&
+    activeOperation !== undefined &&
+    operationElapsedMilliseconds >= RECALL_BACKGROUND_OPERATION_STALL_MILLISECONDS &&
+    heartbeatLagMilliseconds >= RECALL_BACKGROUND_OPERATION_STALL_MILLISECONDS
+      ? {
+          detectedAt: new Date(observedAtEpochMilliseconds).toISOString(),
+          phase: activeOperation.phase,
+          operationElapsedMilliseconds,
+          heartbeatLagMilliseconds,
+        }
+      : null;
+  if (JSON.stringify(refreshed.stallDiagnostic ?? null) !== JSON.stringify(stallDiagnostic)) {
+    refreshed = { ...refreshed, stallDiagnostic };
+  }
   if (
     ACTIVE_BACKGROUND_INDEX_PROCESS_STATES.has(refreshed.processState) &&
     !isProcessAlive(refreshed.processId)
@@ -573,11 +686,24 @@ async function spawnBackgroundIndexWorker(
   await writeAtomicJson(requestPath, request);
 
   const workerPath = fileURLToPath(new URL('./recall-background-index-worker.ts', import.meta.url));
-  const child = spawn(process.execPath, ['--import', 'tsx', workerPath, requestPath], {
-    cwd: dirname(workerPath),
-    detached: true,
-    stdio: 'ignore',
-  });
+  const cpuProfileLogPath = `${config.statusPath}.${buildId}.v8.log`;
+  const child = spawn(
+    process.execPath,
+    [
+      '--prof',
+      '--no-logfile-per-isolate',
+      `--logfile=${cpuProfileLogPath}`,
+      '--import',
+      'tsx',
+      workerPath,
+      requestPath,
+    ],
+    {
+      cwd: dirname(workerPath),
+      detached: true,
+      stdio: 'ignore',
+    },
+  );
   await new Promise<void>((resolve, reject) => {
     child.once('spawn', resolve);
     child.once('error', reject);
@@ -595,8 +721,13 @@ async function spawnBackgroundIndexWorker(
     processState: RecallBackgroundIndexProcessState.STARTING,
     startedAt,
     updatedAt: startedAt,
+    heartbeatAt: startedAt,
+    cpuProfileLogPath,
     completedAt: null,
     progress: null,
+    activeOperation: null,
+    latestCompletedOperation: null,
+    stallDiagnostic: null,
     latestCheckpoint: null,
     latestActionableError: null,
   };

@@ -8,6 +8,8 @@ import { Value } from 'typebox/value';
 
 import {
   type RecallFixedSnapshotBuildFaultStage,
+  type RecallFixedSnapshotBuildOperationPhase,
+  type RecallFixedSnapshotBuildOperationState,
   RecallProjectionEncodingStatus,
   RecallSessionProjectionKind,
 } from './enums.js';
@@ -54,6 +56,18 @@ export interface RecallFixedSnapshotPhysicalSourceCheckpoint {
   totalPhysicalSourceCount: number;
 }
 
+/** Identifies one timed operation inside a fixed-snapshot rebuild. */
+export interface RecallFixedSnapshotBuildOperation {
+  phase: RecallFixedSnapshotBuildOperationPhase;
+  physicalSourceIdentity?: string;
+  sessionsRootRelativePath?: string;
+  sourceNumber?: number;
+  totalPhysicalSourceCount?: number;
+  batchStartIndex?: number;
+  batchRecordCount?: number;
+  totalRecordCount?: number;
+}
+
 /** Fixed physical-source snapshot selected for one resumable inactive target generation. */
 export interface CreateRecallGenerationFromPhysicalSourcesOptions {
   generationId: string;
@@ -64,6 +78,10 @@ export interface CreateRecallGenerationFromPhysicalSourcesOptions {
   onPhysicalSourceCheckpoint?(
     checkpoint: Readonly<RecallFixedSnapshotPhysicalSourceCheckpoint>,
   ): void;
+  onBuildOperation?(
+    operation: Readonly<RecallFixedSnapshotBuildOperation>,
+    state: RecallFixedSnapshotBuildOperationState,
+  ): void | Promise<void>;
 }
 
 /** Source-faithful lexical evidence returned from one explicitly named inactive generation. */

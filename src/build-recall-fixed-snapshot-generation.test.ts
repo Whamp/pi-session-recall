@@ -78,10 +78,14 @@ void test('configured service builds one fixed snapshot into complete disposable
     },
   });
   const service = createRecallBackgroundIndexWorkerFixtureService(config);
+  const observedOperations: string[] = [];
 
   const built = await service.createRecallGenerationFromPhysicalSources({
     generationId: 'generation_fixed_snapshot_owner',
     physicalSessionPaths: [sessionPath],
+    onBuildOperation(operation, state) {
+      observedOperations.push(`${operation.phase}:${state}`);
+    },
   });
 
   assert.equal(built.generationId, 'generation_fixed_snapshot_owner');
@@ -89,6 +93,30 @@ void test('configured service builds one fixed snapshot into complete disposable
   assert.ok(built.storeCounts.dense > 0);
   assert.ok(built.storeCounts.sessionProjection > 0);
   assert.ok(built.startingSnapshotFingerprint.length > 0);
+  for (const phase of [
+    'source-materialization',
+    'document-embedding',
+    'lexical-source-write',
+    'dense-write',
+    'logical-projection-write',
+    'physical-projection-write',
+    'source-checkpoint-verification',
+    'session-projection-store-close',
+    'dense-store-close',
+    'lexical-source-store-close',
+    'final-artifact-validation',
+    'final-store-validation',
+    'final-dense-subset-validation',
+  ]) {
+    assert.ok(
+      observedOperations.includes(`${phase}:started`),
+      `missing ${phase} start in ${JSON.stringify(observedOperations)}`,
+    );
+    assert.ok(
+      observedOperations.includes(`${phase}:completed`),
+      `missing ${phase} completion in ${JSON.stringify(observedOperations)}`,
+    );
+  }
 });
 
 void test('fixed snapshot build keeps one writable store session across physical sources', async (t) => {

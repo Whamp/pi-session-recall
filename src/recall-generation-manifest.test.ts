@@ -25,5 +25,12 @@ void test('configured service persists one immutable manifest before exposing a 
   assert.ok(isUnknownRecord(manifest));
   assert.equal(manifest.generationId, created.generationId);
   assert.equal(manifest.generationFormatVersion, 1);
+  assert.ok(isUnknownRecord(manifest.stores));
+  assert.ok(isUnknownRecord(manifest.stores.dense));
+  assert.ok(Array.isArray(manifest.stores.dense.vectorFields));
+  const denseVectorField: unknown = manifest.stores.dense.vectorFields[0];
+  assert.ok(isUnknownRecord(denseVectorField));
+  assert.ok(isUnknownRecord(denseVectorField.index));
+  assert.equal(denseVectorField.index.metric, 'inner-product');
   assert.equal(created.manifestFingerprint.length, 64);
 });

@@ -427,6 +427,14 @@ export async function certifyRecallGenerationRecovery(
     const preflight = await runRecallGenerationRecoveryPreflight({
       disposableRoot,
       logicalSessionCount: PRODUCTION_LOGICAL_SESSION_COUNT,
+      onProgress(progress) {
+        process.stderr.write(
+          `[recall-generation-recovery] ${JSON.stringify({
+            ...progress,
+            elapsedMilliseconds: Math.round(performance.now() - preflightStartedAt),
+          })}\n`,
+        );
+      },
     });
     const preflightDurationMilliseconds = performance.now() - preflightStartedAt;
     assertProductionCardinality(preflight);

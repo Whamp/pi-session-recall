@@ -55,7 +55,7 @@ export interface RecallGenerationVectorFieldContract {
   dimensions: number;
   index: Readonly<{
     kind: 'hnsw';
-    metric: 'cosine';
+    metric: 'inner-product';
     m: number;
     efConstruction: number;
   }>;
@@ -235,7 +235,7 @@ export function createRecallGenerationStoreContracts(
           dimensions: storedDimensions,
           index: Object.freeze({
             kind: 'hnsw',
-            metric: 'cosine',
+            metric: 'inner-product',
             m: DENSE_HNSW_M,
             efConstruction: DENSE_HNSW_EF_CONSTRUCTION,
           }),
@@ -280,7 +280,7 @@ function createZvecVectorFieldSchema(
     dimension: field.dimensions,
     indexParams: {
       indexType: ZVecIndexType.HNSW,
-      metricType: ZVecMetricType.COSINE,
+      metricType: ZVecMetricType.IP,
       m: field.index.m,
       efConstruction: field.index.efConstruction,
     },
@@ -367,7 +367,7 @@ function assertRecallGenerationVectorSchema(
       actual.dataType !== ZVecDataType.VECTOR_FP32 ||
       actual.dimension !== expected.dimensions ||
       actual.indexParams?.indexType !== ZVecIndexType.HNSW ||
-      actual.indexParams.metricType !== ZVecMetricType.COSINE ||
+      actual.indexParams.metricType !== ZVecMetricType.IP ||
       actual.indexParams.m !== expected.index.m ||
       actual.indexParams.efConstruction !== expected.index.efConstruction
     ) {

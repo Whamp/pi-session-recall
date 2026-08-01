@@ -131,7 +131,7 @@ const vectorFieldSchema = Type.Object(
     index: Type.Object(
       {
         kind: Type.Literal('hnsw'),
-        metric: Type.Literal('cosine'),
+        metric: Type.Literal('inner-product'),
         m: Type.Integer({ minimum: 1 }),
         efConstruction: Type.Integer({ minimum: 1 }),
       },

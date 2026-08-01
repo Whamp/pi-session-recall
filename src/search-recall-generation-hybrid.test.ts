@@ -38,4 +38,5 @@ void test('configured service joins target dense and lexical candidates by evide
   assert.equal(results[0]?.evidence.content, 'hybrid ownership sentinel');
   assert.equal(results[0]?.lexicalRank, 1);
   assert.ok(results[0]?.denseRank !== null);
+  assert.equal(results[0]?.denseScore, 0);
 });

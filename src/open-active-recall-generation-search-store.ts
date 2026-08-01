@@ -9,7 +9,10 @@ import { createRecallGenerationComponentPaths } from './recall-generation-stores
 import { readActiveTargetRecallManifestFingerprint } from './read-active-target-recall-generation.js';
 import { parseRecallGenerationSearchDocument } from './recall-physical-source-generation.js';
 import type { ProjectIdentity } from './resolve-project-identity.js';
-import { createStoredRecallEmbedding } from './recall-stored-embedding.js';
+import {
+  convertNormalizedRecallInnerProductToCosineDistance,
+  createStoredRecallEmbedding,
+} from './recall-stored-embedding.js';
 import { visitExactZvecDocuments } from './visit-exact-zvec-documents.js';
 import type { SessionConversationChunk } from './session-conversation-index.js';
 import {
@@ -175,7 +178,10 @@ export async function openActiveRecallGenerationSearchStore(
             `Recall target generation dense occurrence join failed for ${document.id}`,
           );
         }
-        return { ...searchDocument, cosineDistance: document.score };
+        return {
+          ...searchDocument,
+          cosineDistance: convertNormalizedRecallInnerProductToCosineDistance(document.score),
+        };
       });
     },
     searchLexicalCandidates(query, limit, projectIdentity) {

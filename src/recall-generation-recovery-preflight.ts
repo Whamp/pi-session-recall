@@ -29,9 +29,17 @@ const RETAINED_SOURCE_FILE_NAME = 'b-retained.jsonl';
 const ORIGINAL_RETAINED_EVIDENCE = 'fixed snapshot retained evidence';
 const CHANGED_RETAINED_EVIDENCE = 'changed source must stay excluded';
 
+interface RecallGenerationRecoveryPreflightProgress {
+  phase: string;
+  state: 'started' | 'progress' | 'completed';
+  completedPhysicalSourceCount?: number;
+  totalPhysicalSourceCount?: number;
+}
+
 interface RecallGenerationRecoveryPreflightOptions {
   disposableRoot: string;
   logicalSessionCount: number;
+  onProgress?(progress: Readonly<RecallGenerationRecoveryPreflightProgress>): void;
 }
 
 interface ComparableRecallGenerationValidationReceipt {
@@ -501,6 +509,7 @@ export async function runRecallGenerationRecoveryPreflight(
     );
   }
   const disposableRoot = assertDisposablePreflightRoot(options.disposableRoot);
+  options.onProgress?.({ phase: 'source-snapshot', state: 'started' });
   const sessionsDirectory = join(disposableRoot, 'generated-sessions');
   await mkdir(sessionsDirectory, { recursive: true });
   const retainedSourcePath = join(sessionsDirectory, RETAINED_SOURCE_FILE_NAME);
@@ -513,7 +522,9 @@ export async function runRecallGenerationRecoveryPreflight(
     sessionsDirectory,
     cardinalitySourcePaths,
   );
+  options.onProgress?.({ phase: 'source-snapshot', state: 'completed' });
 
+  options.onProgress?.({ phase: 'uninterrupted-build', state: 'started' });
   const uninterruptedConfig = await createPreflightConfig(
     disposableRoot,
     'uninterrupted-data',
@@ -525,12 +536,22 @@ export async function runRecallGenerationRecoveryPreflight(
   );
   const uninterruptedGeneration = await uninterruptedService.buildReplacementRecallGeneration({
     generationId: RECOVERY_PREFLIGHT_GENERATION_ID,
+    onPhysicalSourceCheckpoint(checkpoint) {
+      options.onProgress?.({
+        phase: 'uninterrupted-build',
+        state: 'progress',
+        completedPhysicalSourceCount: checkpoint.completedPhysicalSourceCount,
+        totalPhysicalSourceCount: checkpoint.totalPhysicalSourceCount,
+      });
+    },
   });
   const uninterrupted = await measureValidatedGeneration(
     uninterruptedService,
     uninterruptedGeneration,
   );
+  options.onProgress?.({ phase: 'uninterrupted-build', state: 'completed' });
 
+  options.onProgress?.({ phase: 'interrupted-build', state: 'started' });
   let interruptSnapshotCapture = true;
   const interruptedConfig = await createPreflightConfig(
     disposableRoot,
@@ -572,7 +593,13 @@ export async function runRecallGenerationRecoveryPreflight(
     await interruptedService.buildReplacementRecallGeneration({
       generationId: RECOVERY_PREFLIGHT_GENERATION_ID,
       resumeExistingGeneration: true,
-      onPhysicalSourceCheckpoint() {
+      onPhysicalSourceCheckpoint(checkpoint) {
+        options.onProgress?.({
+          phase: 'interrupted-build',
+          state: 'progress',
+          completedPhysicalSourceCount: checkpoint.completedPhysicalSourceCount,
+          totalPhysicalSourceCount: checkpoint.totalPhysicalSourceCount,
+        });
         if (interruptPhysicalCheckpoint) {
           interruptPhysicalCheckpoint = false;
           throw new Error('fixture physical source checkpoint interruption');
@@ -592,10 +619,20 @@ export async function runRecallGenerationRecoveryPreflight(
   const interruptedGeneration = await interruptedService.buildReplacementRecallGeneration({
     generationId: RECOVERY_PREFLIGHT_GENERATION_ID,
     resumeExistingGeneration: true,
+    onPhysicalSourceCheckpoint(checkpoint) {
+      options.onProgress?.({
+        phase: 'interrupted-build',
+        state: 'progress',
+        completedPhysicalSourceCount: checkpoint.completedPhysicalSourceCount,
+        totalPhysicalSourceCount: checkpoint.totalPhysicalSourceCount,
+      });
+    },
   });
   const interrupted = await measureValidatedGeneration(interruptedService, interruptedGeneration);
   assertEquivalentValidatedGenerations(uninterrupted, interrupted);
+  options.onProgress?.({ phase: 'interrupted-build', state: 'completed' });
 
+  options.onProgress?.({ phase: 'fixed-snapshot-check', state: 'started' });
   const retainedOriginalEvidenceFound =
     (
       await interruptedService.searchRecallGenerationLexical(
@@ -615,7 +652,9 @@ export async function runRecallGenerationRecoveryPreflight(
   if (!retainedOriginalEvidenceFound || changedReplacementEvidenceFound) {
     throw new Error('Recall generation recovery preflight reopened changed original source bytes');
   }
+  options.onProgress?.({ phase: 'fixed-snapshot-check', state: 'completed' });
 
+  options.onProgress?.({ phase: 'failure-classification', state: 'started' });
   const malformedSessionsDirectory = join(disposableRoot, 'malformed-sessions');
   await mkdir(malformedSessionsDirectory);
   await Promise.all([
@@ -689,7 +728,12 @@ export async function runRecallGenerationRecoveryPreflight(
     }),
     expectedMessage: /generated implementation source classification failure/u,
   });
+  options.onProgress?.({ phase: 'failure-classification', state: 'completed' });
+
+  options.onProgress?.({ phase: 'detached-recovery', state: 'started' });
   const detached = await runDetachedRecoveryEquivalence(disposableRoot);
+  options.onProgress?.({ phase: 'detached-recovery', state: 'completed' });
+  options.onProgress?.({ phase: 'complete', state: 'completed' });
 
   return {
     logicalSessionCount: options.logicalSessionCount,

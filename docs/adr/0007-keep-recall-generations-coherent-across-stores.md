@@ -54,7 +54,9 @@ Read-only search never clears recovery state, starts ingestion, or repairs store
 
 A rebuild captures one fixed starting snapshot of approved physical sources, logical sessions, source byte boundaries, and eligible contributors. During the build's existing source pass, it records the expected occurrence IDs, anchor IDs, checksums, membership digests, counts, and physical session projections. Validation must not perform another full import or tokenization pass.
 
-After the build closes its stores, validation reopens the replacement and checks actual membership against that recorded evidence. It verifies every lexical/source occurrence and anchor, the exact dense-searchable subset and embedding profile, every cross-store checksum, projection coverage, store schema and indexes, counts and membership digests, and canaries. It also proves the replacement opens without raw session files, another generation, or an embedding cache. Counts and a few sample rows alone do not validate a generation.
+An inactive replacement is not searchable while it builds. Its writer may therefore keep all three stores open across several physical sources instead of applying the active generation's per-window reopen protocol. It closes the writable stores when the batch reaches 2,048 generated records, then publishes the covered physical-source checkpoints. This measured bound avoids both one index block per small source and an unbounded HNSW build. It does not add a read-only validation pass after each batch.
+
+After the build closes its final writable batch, validation reopens the replacement and checks actual membership against the recorded evidence. It verifies every lexical/source occurrence and anchor, the exact dense-searchable subset and embedding profile, every cross-store checksum, projection coverage, store schema and indexes, counts and membership digests, and canaries. It also proves the replacement opens without raw session files, another generation, or an embedding cache. Counts and a few sample rows alone do not validate a generation.
 
 A resumable build resolves a vector in this order:
 

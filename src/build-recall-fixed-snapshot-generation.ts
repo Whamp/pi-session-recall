@@ -41,6 +41,7 @@ import {
   type CapturedRecallPhysicalSource,
   type CreateRecallGenerationFromPhysicalSourcesOptions,
   type MaterializedRecallPhysicalSourceGeneration,
+  type RecallFixedSnapshotPhysicalSourceCheckpoint,
   type RecallGenerationDenseExpectation,
   type RecallPhysicalSourceGenerationDependencies,
 } from './recall-physical-source-generation.js';
@@ -52,6 +53,7 @@ import {
 
 const FIXED_SNAPSHOT_BUILD_VERSION = 1;
 const MAXIMUM_BUILD_WRITE_RECORDS = 32;
+const FIXED_SNAPSHOT_STORE_SESSION_RECORD_LIMIT = 2_048;
 const BOOTSTRAP_STATE_FILE = 'build-bootstrap.json';
 const SNAPSHOT_DESCRIPTOR_FILE = 'build-snapshot.json';
 const SNAPSHOT_SOURCE_DIRECTORY = 'build-sources';
@@ -64,6 +66,12 @@ interface RecallGenerationScalarRow {
 
 interface RecallGenerationDenseRow extends RecallGenerationScalarRow {
   vectors: { embedding: number[] };
+}
+
+interface RecallFixedSnapshotStoreSession {
+  lexicalSource: ZVecCollection;
+  dense: ZVecCollection;
+  sessionProjection: ZVecCollection;
 }
 
 interface RecallFixedSnapshotBootstrapSource {
@@ -215,6 +223,20 @@ function isSkippedExpectedPhysicalSourceArtifact(
   artifact: Readonly<RecallExpectedPhysicalSourceArtifact>,
 ): artifact is RecallSkippedExpectedPhysicalSourceArtifact {
   return 'skipReason' in artifact;
+}
+
+function countFixedSnapshotStoreSessionRecords(
+  artifact: Readonly<RecallExpectedPhysicalSourceArtifact>,
+): number {
+  if (!('lexicalSource' in artifact)) {
+    return 0;
+  }
+  return (
+    artifact.lexicalSource.length +
+    artifact.dense.length +
+    artifact.logicalSessionProjections.length +
+    1
+  );
 }
 
 function calculateSha256(value: string | Uint8Array): string {
@@ -924,9 +946,122 @@ async function resolveDenseRows(
   });
 }
 
+function openFixedSnapshotStoreSession(
+  paths: Readonly<ReturnType<typeof createRecallGenerationComponentPaths>>,
+): RecallFixedSnapshotStoreSession {
+  const opened: ZVecCollection[] = [];
+  try {
+    const lexicalSource = ZVecOpen(paths.lexicalSourceStorePath);
+    opened.push(lexicalSource);
+    const dense = ZVecOpen(paths.denseStorePath);
+    opened.push(dense);
+    const sessionProjection = ZVecOpen(paths.sessionProjectionStorePath);
+    opened.push(sessionProjection);
+    return { lexicalSource, dense, sessionProjection };
+  } catch (error) {
+    for (const collection of opened.reverse()) {
+      collection.closeSync();
+    }
+    throw error;
+  }
+}
+
+function closeFixedSnapshotStoreSession(stores: RecallFixedSnapshotStoreSession): void {
+  const errors: unknown[] = [];
+  for (const collection of [stores.sessionProjection, stores.dense, stores.lexicalSource]) {
+    try {
+      collection.closeSync();
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  if (errors.length > 0) {
+    throw new AggregateError(errors, 'Recall fixed snapshot store session close failed');
+  }
+}
+
+async function openFixedSnapshotValidationStoreSession(
+  paths: Readonly<ReturnType<typeof createRecallGenerationComponentPaths>>,
+  signal?: AbortSignal,
+): Promise<RecallFixedSnapshotStoreSession> {
+  const opened: ZVecCollection[] = [];
+  try {
+    const lexicalSource = await openRecallZvecValidationStore(
+      () => ZVecOpen(paths.lexicalSourceStorePath, { readOnly: true }),
+      signal,
+    );
+    opened.push(lexicalSource);
+    const dense = await openRecallZvecValidationStore(
+      () => ZVecOpen(paths.denseStorePath, { readOnly: true }),
+      signal,
+    );
+    opened.push(dense);
+    const sessionProjection = await openRecallZvecValidationStore(
+      () => ZVecOpen(paths.sessionProjectionStorePath, { readOnly: true }),
+      signal,
+    );
+    opened.push(sessionProjection);
+    return { lexicalSource, dense, sessionProjection };
+  } catch (error) {
+    for (const collection of opened.reverse()) {
+      collection.closeSync();
+    }
+    throw error;
+  }
+}
+
+function verifyExpectedPhysicalSourceRows(
+  stores: Readonly<RecallFixedSnapshotStoreSession>,
+  artifact: Readonly<RecallMaterializedExpectedPhysicalSourceArtifact>,
+  responsibility: 'checkpoint' | 'validation',
+): void {
+  verifyExpectedScalarRows(
+    stores.lexicalSource,
+    `lexical/source ${responsibility}`,
+    artifact.lexicalSource,
+  );
+  verifyExpectedScalarRows(
+    stores.sessionProjection,
+    `logical projection ${responsibility}`,
+    artifact.logicalSessionProjections,
+  );
+  verifyExpectedScalarRows(stores.sessionProjection, `physical projection ${responsibility}`, [
+    artifact.physicalSessionProjection,
+  ]);
+  const fetchedDense =
+    artifact.dense.length === 0
+      ? {}
+      : stores.dense.fetchSync({
+          ids: artifact.dense.map(({ id }) => id),
+          outputFields: [
+            'schemaVersion',
+            'generationId',
+            'evidenceOccurrenceId',
+            'physicalSourceIdentity',
+            'logicalSessionOccurrenceId',
+            'embeddingProfileId',
+            'storedDimensions',
+            'evidenceChecksum',
+            'embeddingInputChecksum',
+            'vectorChecksum',
+            'projectIdentity',
+            'projectIdentityDigest',
+          ],
+          includeVector: true,
+        });
+  for (const expectation of artifact.dense) {
+    if (verifyDenseCandidate(fetchedDense[expectation.id], expectation) === null) {
+      throw new Error(
+        `Recall fixed snapshot generation dense ${responsibility} mismatch: ${expectation.id}`,
+      );
+    }
+  }
+}
+
 async function writeExpectedPhysicalSource(
   config: Readonly<RecallCoherentGenerationConfig>,
-  generationDirectory: string,
+  paths: Readonly<ReturnType<typeof createRecallGenerationComponentPaths>>,
+  stores: Readonly<RecallFixedSnapshotStoreSession>,
   artifact: Readonly<RecallMaterializedExpectedPhysicalSourceArtifact>,
   expectedArtifactFingerprint: string,
   buildVectorsByReuseKey: Map<string, number[]>,
@@ -934,7 +1069,6 @@ async function writeExpectedPhysicalSource(
   validatedVectorSource: ZVecCollection | null,
   signal?: AbortSignal,
 ): Promise<void> {
-  const paths = createRecallGenerationComponentPaths(generationDirectory);
   const recovery = {
     version: FIXED_SNAPSHOT_BUILD_VERSION,
     generationId: artifact.generationId,
@@ -955,110 +1089,33 @@ async function writeExpectedPhysicalSource(
       flag: 'wx',
     });
   }
-  const lexicalSource = ZVecOpen(paths.lexicalSourceStorePath);
-  const dense = ZVecOpen(paths.denseStorePath);
-  const sessionProjection = ZVecOpen(paths.sessionProjectionStorePath);
-  try {
-    throwIfFixedSnapshotBuildCancelled(signal);
-    const denseRows = await resolveDenseRows(
-      config,
-      dense,
-      artifact.dense,
-      buildVectorsByReuseKey,
-      dependencies,
-      validatedVectorSource,
-      signal,
-    );
-    upsertRowsInBoundedBatches(lexicalSource, 'lexical/source write', artifact.lexicalSource);
-    upsertRowsInBoundedBatches(dense, 'dense write', denseRows);
-    await invokeFixedSnapshotBuildFault(
-      dependencies,
-      RecallFixedSnapshotBuildFaultStage.AFTER_DENSE_WRITE,
-      generationDirectory,
-      artifact.physicalSourceIdentity,
-    );
-    upsertRowsInBoundedBatches(
-      sessionProjection,
-      'logical session projection write',
-      artifact.logicalSessionProjections,
-    );
-    upsertRowsInBoundedBatches(sessionProjection, 'physical session projection write', [
-      artifact.physicalSessionProjection,
-    ]);
-  } finally {
-    lexicalSource.closeSync();
-    dense.closeSync();
-    sessionProjection.closeSync();
-  }
+  throwIfFixedSnapshotBuildCancelled(signal);
+  const denseRows = await resolveDenseRows(
+    config,
+    stores.dense,
+    artifact.dense,
+    buildVectorsByReuseKey,
+    dependencies,
+    validatedVectorSource,
+    signal,
+  );
+  upsertRowsInBoundedBatches(stores.lexicalSource, 'lexical/source write', artifact.lexicalSource);
+  upsertRowsInBoundedBatches(stores.dense, 'dense write', denseRows);
   await invokeFixedSnapshotBuildFault(
     dependencies,
-    RecallFixedSnapshotBuildFaultStage.AFTER_STORE_CLOSE,
-    generationDirectory,
+    RecallFixedSnapshotBuildFaultStage.AFTER_DENSE_WRITE,
+    paths.generationDirectory,
     artifact.physicalSourceIdentity,
   );
-  const reopenedCollections: ZVecCollection[] = [];
-  try {
-    const reopenedLexicalSource = await openRecallZvecValidationStore(
-      () => ZVecOpen(paths.lexicalSourceStorePath, { readOnly: true }),
-      signal,
-    );
-    reopenedCollections.push(reopenedLexicalSource);
-    const reopenedDense = await openRecallZvecValidationStore(
-      () => ZVecOpen(paths.denseStorePath, { readOnly: true }),
-      signal,
-    );
-    reopenedCollections.push(reopenedDense);
-    const reopenedSessionProjection = await openRecallZvecValidationStore(
-      () => ZVecOpen(paths.sessionProjectionStorePath, { readOnly: true }),
-      signal,
-    );
-    reopenedCollections.push(reopenedSessionProjection);
-    verifyExpectedScalarRows(
-      reopenedLexicalSource,
-      'lexical/source checkpoint',
-      artifact.lexicalSource,
-    );
-    verifyExpectedScalarRows(
-      reopenedSessionProjection,
-      'logical projection checkpoint',
-      artifact.logicalSessionProjections,
-    );
-    verifyExpectedScalarRows(reopenedSessionProjection, 'physical projection checkpoint', [
-      artifact.physicalSessionProjection,
-    ]);
-    const fetchedDense =
-      artifact.dense.length === 0
-        ? {}
-        : reopenedDense.fetchSync({
-            ids: artifact.dense.map(({ id }) => id),
-            outputFields: [
-              'schemaVersion',
-              'generationId',
-              'evidenceOccurrenceId',
-              'physicalSourceIdentity',
-              'logicalSessionOccurrenceId',
-              'embeddingProfileId',
-              'storedDimensions',
-              'evidenceChecksum',
-              'embeddingInputChecksum',
-              'vectorChecksum',
-              'projectIdentity',
-              'projectIdentityDigest',
-            ],
-            includeVector: true,
-          });
-    for (const expectation of artifact.dense) {
-      if (verifyDenseCandidate(fetchedDense[expectation.id], expectation) === null) {
-        throw new Error(
-          `Recall fixed snapshot generation dense checkpoint mismatch: ${expectation.id}`,
-        );
-      }
-    }
-  } finally {
-    for (const collection of reopenedCollections) {
-      collection.closeSync();
-    }
-  }
+  upsertRowsInBoundedBatches(
+    stores.sessionProjection,
+    'logical session projection write',
+    artifact.logicalSessionProjections,
+  );
+  upsertRowsInBoundedBatches(stores.sessionProjection, 'physical session projection write', [
+    artifact.physicalSessionProjection,
+  ]);
+  verifyExpectedPhysicalSourceRows(stores, artifact, 'checkpoint');
   await rm(paths.recoveryRecordPath);
 }
 
@@ -1068,6 +1125,7 @@ async function validateExpectedFixedSnapshotArtifacts(
     artifact: RecallExpectedPhysicalSourceArtifact;
     fingerprint: string;
   }>[],
+  signal?: AbortSignal,
 ): Promise<void> {
   for (const expected of artifacts) {
     const artifactPath = join(
@@ -1088,57 +1146,18 @@ async function validateExpectedFixedSnapshotArtifacts(
     }
   }
 
-  const paths = createRecallGenerationComponentPaths(generationDirectory);
-  const lexicalSource = ZVecOpen(paths.lexicalSourceStorePath, { readOnly: true });
-  const dense = ZVecOpen(paths.denseStorePath, { readOnly: true });
-  const sessionProjection = ZVecOpen(paths.sessionProjectionStorePath, { readOnly: true });
+  const stores = await openFixedSnapshotValidationStoreSession(
+    createRecallGenerationComponentPaths(generationDirectory),
+    signal,
+  );
   try {
     for (const { artifact } of artifacts) {
-      if (isSkippedExpectedPhysicalSourceArtifact(artifact)) {
-        continue;
-      }
-      verifyExpectedScalarRows(lexicalSource, 'lexical/source validation', artifact.lexicalSource);
-      verifyExpectedScalarRows(
-        sessionProjection,
-        'logical projection validation',
-        artifact.logicalSessionProjections,
-      );
-      verifyExpectedScalarRows(sessionProjection, 'physical projection validation', [
-        artifact.physicalSessionProjection,
-      ]);
-      const fetchedDense =
-        artifact.dense.length === 0
-          ? {}
-          : dense.fetchSync({
-              ids: artifact.dense.map(({ id }) => id),
-              outputFields: [
-                'schemaVersion',
-                'generationId',
-                'evidenceOccurrenceId',
-                'physicalSourceIdentity',
-                'logicalSessionOccurrenceId',
-                'embeddingProfileId',
-                'storedDimensions',
-                'evidenceChecksum',
-                'embeddingInputChecksum',
-                'vectorChecksum',
-                'projectIdentity',
-                'projectIdentityDigest',
-              ],
-              includeVector: true,
-            });
-      for (const expectation of artifact.dense) {
-        if (verifyDenseCandidate(fetchedDense[expectation.id], expectation) === null) {
-          throw new Error(
-            `Recall fixed snapshot generation dense validation row mismatch: ${expectation.id}`,
-          );
-        }
+      if (!isSkippedExpectedPhysicalSourceArtifact(artifact)) {
+        verifyExpectedPhysicalSourceRows(stores, artifact, 'validation');
       }
     }
   } finally {
-    lexicalSource.closeSync();
-    dense.closeSync();
-    sessionProjection.closeSync();
+    closeFixedSnapshotStoreSession(stores);
   }
 }
 
@@ -1358,6 +1377,8 @@ export async function buildRecallFixedSnapshotGeneration(
       { readOnly: true },
     );
   }
+  let storeSession: RecallFixedSnapshotStoreSession | null = null;
+  let pendingPhysicalSourceCheckpoints: RecallFixedSnapshotPhysicalSourceCheckpoint[] = [];
   try {
     let sourcesInBuildOrder = snapshot.sources;
     if (options.resumeExistingGeneration && existsSync(paths.recoveryRecordPath)) {
@@ -1381,8 +1402,15 @@ export async function buildRecallFixedSnapshotGeneration(
         ),
       ];
     }
-    for (const source of sourcesInBuildOrder) {
+    storeSession = openFixedSnapshotStoreSession(paths);
+    let checkpointedPhysicalSourceCount = 0;
+    let storeSessionRecordCount = 0;
+    for (const [sourceIndex, source] of sourcesInBuildOrder.entries()) {
       throwIfFixedSnapshotBuildCancelled(options.signal);
+      if (storeSession === null) {
+        throw new Error('Recall fixed snapshot writable store session missing');
+      }
+      const activeStoreSession = storeSession;
       const expected = await materializeExpectedPhysicalSource(
         config,
         options.generationId,
@@ -1394,7 +1422,8 @@ export async function buildRecallFixedSnapshotGeneration(
       if (!isSkippedExpectedPhysicalSourceArtifact(expected.artifact)) {
         await writeExpectedPhysicalSource(
           config,
-          generationDirectory,
+          paths,
+          activeStoreSession,
           expected.artifact,
           expected.fingerprint,
           buildVectorsByReuseKey,
@@ -1403,14 +1432,45 @@ export async function buildRecallFixedSnapshotGeneration(
           options.signal,
         );
       }
-      options.onPhysicalSourceCheckpoint?.({
-        physicalSourceIdentity: source.physicalSourceIdentity,
-        sessionsRootRelativePath: source.sessionsRootRelativePath,
-        completedPhysicalSourceCount: artifacts.length,
+      checkpointedPhysicalSourceCount += 1;
+      storeSessionRecordCount += countFixedSnapshotStoreSessionRecords(expected.artifact);
+      pendingPhysicalSourceCheckpoints.push({
+        physicalSourceIdentity: expected.artifact.physicalSourceIdentity,
+        sessionsRootRelativePath: expected.artifact.sessionsRootRelativePath,
+        completedPhysicalSourceCount: checkpointedPhysicalSourceCount,
         totalPhysicalSourceCount: snapshot.sources.length,
       });
+      const atStoreSessionBoundary =
+        storeSessionRecordCount >= FIXED_SNAPSHOT_STORE_SESSION_RECORD_LIMIT ||
+        sourceIndex === sourcesInBuildOrder.length - 1;
+      if (!atStoreSessionBoundary) {
+        continue;
+      }
+
+      storeSession = null;
+      closeFixedSnapshotStoreSession(activeStoreSession);
+      await invokeFixedSnapshotBuildFault(
+        dependencies,
+        RecallFixedSnapshotBuildFaultStage.AFTER_STORE_CLOSE,
+        generationDirectory,
+        source.physicalSourceIdentity,
+      );
+      for (const checkpoint of pendingPhysicalSourceCheckpoints) {
+        options.onPhysicalSourceCheckpoint?.(checkpoint);
+      }
+      pendingPhysicalSourceCheckpoints = [];
+      storeSessionRecordCount = 0;
+      if (sourceIndex < sourcesInBuildOrder.length - 1) {
+        storeSession = openFixedSnapshotStoreSession(paths);
+      }
     }
   } finally {
+    if (storeSession !== null) {
+      closeFixedSnapshotStoreSession(storeSession);
+      for (const checkpoint of pendingPhysicalSourceCheckpoints) {
+        options.onPhysicalSourceCheckpoint?.(checkpoint);
+      }
+    }
     validatedVectorSource?.closeSync();
   }
   const snapshotSourceOrder = new Map(
@@ -1459,7 +1519,7 @@ export async function buildRecallFixedSnapshotGeneration(
     generationDirectory,
   );
   throwIfFixedSnapshotBuildCancelled(options.signal);
-  await validateExpectedFixedSnapshotArtifacts(generationDirectory, artifacts);
+  await validateExpectedFixedSnapshotArtifacts(generationDirectory, artifacts, options.signal);
   validateRecallGenerationStores(paths, contracts, options.generationId, expectedRecordIds);
   validateRecallGenerationDenseSubset(
     paths,

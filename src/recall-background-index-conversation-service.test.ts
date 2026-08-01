@@ -351,8 +351,7 @@ void test('stopped background rebuild resumes from its durable session checkpoin
     service,
     RecallBackgroundIndexProcessState.RUNNING,
   );
-  assert.equal(running.latestCheckpoint?.checkpointedSessions, 1);
-  assert.match(running.latestCheckpoint?.sessionPath ?? '', /a\.jsonl$/u);
+  assert.equal(running.latestCheckpoint, null);
   await assert.rejects(() => service.discardStagingIndexGeneration(), /stop it before discard/u);
 
   const stopping = await service.stopBackgroundIndexGeneration();

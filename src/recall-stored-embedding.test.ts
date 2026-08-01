@@ -5,6 +5,7 @@ import fc from 'fast-check';
 
 import {
   assertRepeatableStoredRecallEmbeddings,
+  convertNormalizedRecallInnerProductToCosineDistance,
   createStoredRecallEmbedding,
 } from './recall-stored-embedding.js';
 
@@ -39,6 +40,35 @@ void test('stored recall embeddings retain the first N components at unit L2 nor
           assert.ok(
             Math.abs(storedValue * firstNativeValue - nativeValue * firstStoredValue) <= 1e-10,
           );
+        }
+      },
+    ),
+  );
+});
+
+void test('normalized recall inner product converts to bounded cosine distance', () => {
+  assert.equal(convertNormalizedRecallInnerProductToCosineDistance(1), 0);
+  assert.ok(Math.abs(convertNormalizedRecallInnerProductToCosineDistance(0.8) - 0.2) <= 1e-12);
+  assert.equal(convertNormalizedRecallInnerProductToCosineDistance(0), 1);
+  assert.equal(convertNormalizedRecallInnerProductToCosineDistance(-1), 2);
+  assert.equal(convertNormalizedRecallInnerProductToCosineDistance(1 + Number.EPSILON), 0);
+  assert.equal(convertNormalizedRecallInnerProductToCosineDistance(-1 - Number.EPSILON), 2);
+  assert.throws(
+    () => convertNormalizedRecallInnerProductToCosineDistance(Number.NaN),
+    /Recall normalized inner product invalid: score must be finite/u,
+  );
+
+  fc.assert(
+    fc.property(
+      fc.double({ min: -1.000_001, max: 1.000_001, noNaN: true, noDefaultInfinity: true }),
+      fc.double({ min: -1.000_001, max: 1.000_001, noNaN: true, noDefaultInfinity: true }),
+      (left, right) => {
+        const leftDistance = convertNormalizedRecallInnerProductToCosineDistance(left);
+        const rightDistance = convertNormalizedRecallInnerProductToCosineDistance(right);
+        assert.ok(leftDistance >= 0 && leftDistance <= 2);
+        assert.ok(rightDistance >= 0 && rightDistance <= 2);
+        if (left <= right) {
+          assert.ok(leftDistance >= rightDistance);
         }
       },
     ),

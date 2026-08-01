@@ -54,6 +54,14 @@ export function createStoredRecallEmbedding(
   return retainedPrefix.map((value) => value / norm);
 }
 
+/** Converts a normalized-vector inner product into the existing bounded cosine distance. */
+export function convertNormalizedRecallInnerProductToCosineDistance(innerProduct: number): number {
+  if (!Number.isFinite(innerProduct)) {
+    throw new Error('Recall normalized inner product invalid: score must be finite');
+  }
+  return Math.min(2, Math.max(0, 1 - innerProduct));
+}
+
 /** Rejects repeated stored-vector canaries whose cosine agreement is below policy. */
 export function assertRepeatableStoredRecallEmbeddings(
   first: readonly number[],

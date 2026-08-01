@@ -10,11 +10,32 @@ void test('disposable recovery preflight matches interrupted and uninterrupted g
   const disposableRoot = await mkdtemp(join(tmpdir(), 'recall-generation-recovery-preflight-'));
   t.after(() => rm(disposableRoot, { recursive: true, force: true }));
 
+  const progress: Array<{ phase: string; state: string }> = [];
   const result = await runRecallGenerationRecoveryPreflight({
     disposableRoot,
     logicalSessionCount: 1_001,
+    onProgress(update) {
+      if (update.state !== 'progress') {
+        progress.push({ phase: update.phase, state: update.state });
+      }
+    },
   });
 
+  assert.deepEqual(progress, [
+    { phase: 'source-snapshot', state: 'started' },
+    { phase: 'source-snapshot', state: 'completed' },
+    { phase: 'uninterrupted-build', state: 'started' },
+    { phase: 'uninterrupted-build', state: 'completed' },
+    { phase: 'interrupted-build', state: 'started' },
+    { phase: 'interrupted-build', state: 'completed' },
+    { phase: 'fixed-snapshot-check', state: 'started' },
+    { phase: 'fixed-snapshot-check', state: 'completed' },
+    { phase: 'failure-classification', state: 'started' },
+    { phase: 'failure-classification', state: 'completed' },
+    { phase: 'detached-recovery', state: 'started' },
+    { phase: 'detached-recovery', state: 'completed' },
+    { phase: 'complete', state: 'completed' },
+  ]);
   assert.equal(result.sourceSafety.originalPiSessionFilesAccessed, false);
   assert.equal(result.sourceSafety.liveRecallGenerationAccessed, false);
   assert.equal(result.fixedSnapshot.originalCardinalitySourceRemoved, true);

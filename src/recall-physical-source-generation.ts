@@ -46,7 +46,7 @@ import {
   serializeStoredConversationChunk,
 } from './zvec-conversation-store.js';
 
-/** Durable source progress emitted after a projection reopens or an invalid-source skip is recorded. */
+/** Durable source progress emitted after the containing writable store session closes. */
 export interface RecallFixedSnapshotPhysicalSourceCheckpoint {
   physicalSourceIdentity: string;
   sessionsRootRelativePath: string;

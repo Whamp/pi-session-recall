@@ -10,6 +10,7 @@ import {
 } from './recall-physical-source-generation.js';
 import { RECALL_RRF_RANK_CONSTANT } from './fuse-recall-ranked-lists.js';
 import { createRecallGenerationComponentPaths } from './recall-generation-stores.js';
+import { convertNormalizedRecallInnerProductToCosineDistance } from './recall-stored-embedding.js';
 
 /** One cross-store target result joined by exact evidence occurrence ID. */
 export interface RecallGenerationHybridSearchResult {
@@ -101,7 +102,7 @@ export async function searchRecallGenerationHybrid(
       const match = matches.get(document.id);
       if (match !== undefined) {
         match.denseRank = index + 1;
-        match.denseScore = document.score;
+        match.denseScore = convertNormalizedRecallInnerProductToCosineDistance(document.score);
       }
     }
     for (const [index, document] of lexicalDocuments.entries()) {

@@ -4,16 +4,16 @@
 
 **Repaired clean-candidate evidence: PASS. Release evidence: PENDING FULL-CORPUS MEASUREMENT.**
 
-The complete #132 read matrix, #133 write and lifecycle matrix, and #142 production-cardinality recovery certification all passed in disposable clean worktrees at runtime candidate `f5dad2667c8a0ab50832a21ea6f760244955968a`. The recovery run reopened exact membership above the observed 119,662-record failure boundary in every store and matched uninterrupted with SIGKILL/resumed detached terminal membership.
+The complete #132 read matrix, #133 write and lifecycle matrix, and #142 production-cardinality recovery certification all passed in disposable clean worktrees at runtime candidate `c492fa352d3f20c64de41f94f0cf2525a61710f9`. The recovery run reopened exact membership above the observed 119,662-record failure boundary in every store and matched uninterrupted with SIGKILL/resumed detached terminal membership.
 
 Release evidence remains incomplete because the repaired candidate has not completed a fresh build from the approved immutable snapshot of the existing Pi session JSONL source corpus. The committed 15-file quality corpus and generated production-cardinality corpus do not replace that source snapshot. Full-corpus generation size and rebuild duration remain unmeasured. The build output must be a new target-format generation in disposable storage; the prior mixed-commit generation is not evidence. Production rebuild and activation remain separate human-approved operations.
 
 ## Candidate and environment
 
-- Runtime candidate commit: `f5dad2667c8a0ab50832a21ea6f760244955968a`
-- Read-evidence candidate: `f5dad2667c8a0ab50832a21ea6f760244955968a`
-- Write-evidence candidate: `f5dad2667c8a0ab50832a21ea6f760244955968a`
-- Recovery-evidence candidate: `f5dad2667c8a0ab50832a21ea6f760244955968a`
+- Runtime candidate commit: `c492fa352d3f20c64de41f94f0cf2525a61710f9`
+- Read-evidence candidate: `c492fa352d3f20c64de41f94f0cf2525a61710f9`
+- Write-evidence candidate: `c492fa352d3f20c64de41f94f0cf2525a61710f9`
+- Recovery-evidence candidate: `c492fa352d3f20c64de41f94f0cf2525a61710f9`
 - Node: `v24.16.0`
 - Platform: `linux/x64`
 - CPU: AMD Ryzen 7 8845HS w/ Radeon 780M Graphics
@@ -41,7 +41,7 @@ slop-scan delta \
   --fail-on added,worsened
 ```
 
-The recovery certifier ran `npm test` against the clean runtime candidate. It reported 649 tests: 645 passed, 0 failed, and 4 expected skips.
+The recovery certifier ran `npm test` against the clean runtime candidate. It reported 650 tests: 646 passed, 0 failed, and 4 expected skips.
 
 ## Read and retrieval evidence
 
@@ -56,9 +56,9 @@ The recovery certifier ran `npm test` against the clean runtime candidate. It re
 | Exact source-neighborhood expansion and model-facing tool adapter                                    | PASS   |
 | Reads during replay, replacement work, and target-to-target rollback                                 | PASS   |
 
-The fixed policy remained 512/64 tokens/overlap, eight candidates per channel, and five final results. Candidate-pool recall, final recall, context usefulness, source-occurrence preservation, and provenance were 100%; final duplicate rate was 0%. Project query p95 was 122.9 ms and global query p95 was 143.7 ms against the 2,000 ms limit.
+The fixed policy remained 512/64 tokens/overlap, eight candidates per channel, and five final results. Candidate-pool recall, final recall, context usefulness, source-occurrence preservation, and provenance were 100%; final duplicate rate was 0%. Project query p95 was 137.4 ms and global query p95 was 164.7 ms against the 2,000 ms limit.
 
-The fresh bounded replacement generation contained 208 lexical/source rows, 113 dense rows, and 30 projection rows. Its on-disk generation size was 8,097,143 bytes. Fresh build and activation took 1.1 seconds; the complete build-and-evaluation command took 3,692.9 ms. Size and rebuild duration are reported values, not pass thresholds.
+The fresh bounded replacement generation contained 208 lexical/source rows, 113 dense rows, and 30 projection rows. Its on-disk generation size was 8,097,143 bytes. Fresh build and activation took 1.1 seconds; the complete build-and-evaluation command took 4,014.2 ms. Size and rebuild duration are reported values, not pass thresholds.
 
 Detailed artifacts:
 
@@ -88,11 +88,11 @@ A real detached child received `SIGKILL`, resumed the same generation, and compl
 
 | Foreground bound                           | Measured or enforced |           Limit | Result |
 | ------------------------------------------ | -------------------: | --------------: | ------ |
-| Marker publication plus detached spawn p95 |             4.405 ms |           25 ms | PASS   |
-| Metadata sweep p95 at 10,000 files         |            44.023 ms |          500 ms | PASS   |
+| Marker publication plus detached spawn p95 |             4.271 ms |           25 ms | PASS   |
+| Metadata sweep p95 at 10,000 files         |            46.456 ms |          500 ms | PASS   |
 | Projection payload                         |             enforced | 8,388,608 bytes | PASS   |
 | Evidence batch                             |             enforced |    32 documents | PASS   |
-| Close/reopen write-window p95, 20 samples  |            68.871 ms |          300 ms | PASS   |
+| Close/reopen write-window p95, 20 samples  |            63.922 ms |          300 ms | PASS   |
 | Search wait for the current write window   |             enforced |          500 ms | PASS   |
 
 Detailed artifacts:
@@ -102,7 +102,7 @@ Detailed artifacts:
 
 ## Production-cardinality recovery evidence
 
-`npm run evidence:generation-recovery` passed from the clean candidate with a separate exact `b04b350` slop-scan base. Reopened membership reached 239,328 lexical/source rows, 119,664 dense rows, and 119,785 session-projection rows. Uninterrupted and twice-resumed in-process builds matched exactly. Matched uninterrupted and SIGKILL/resumed detached workers reached terminal succeeded/ready validation with identical membership digests. The production-cardinality preflight completed in 763,772.889 ms; each large disposable generation occupied 3,137,647,268 bytes.
+`npm run evidence:generation-recovery` passed from the clean candidate with a separate exact `b04b350` slop-scan base. Reopened membership reached 239,328 lexical/source rows, 119,664 dense rows, and 119,785 session-projection rows. Uninterrupted and twice-resumed in-process builds matched exactly. Matched uninterrupted and SIGKILL/resumed detached workers reached terminal succeeded/ready validation with identical membership digests. The production-cardinality preflight completed in 773,120.301 ms; each large disposable generation occupied 3,137,647,268 bytes.
 
 Detailed artifacts:
 
@@ -115,7 +115,7 @@ Paired Sol and GLM reviewers found concrete scale, snapshot-isolation, bootstrap
 
 The final paired review then retained four bounded defects: focused-test gates accepted skipped/TODO declarations, the recorded Git whitespace command checked only an empty clean-worktree diff, the fault-stage contract violated the required exported-enum rule, and this report carried stale snapshot hashes. Runtime candidate `057cf4550fad535470490b85eeba43523770eb1f` closed those findings.
 
-Full-corpus acceptance later exposed zvec cosine-vector rewriting and rebuild block-scaling defects. Runtime candidate `f5dad2667c8a0ab50832a21ea6f760244955968a` supersedes the failed repair attempts: normalized vectors use inner-product HNSW while preserving cosine-distance result semantics, inactive rebuilds close by 2,048 generated records without per-batch read-only validation, and durable source checkpoints publish only after the containing writable store session closes. The evidence harness now emits phase and source progress.
+Full-corpus acceptance later exposed zvec cosine-vector rewriting and rebuild block-scaling defects. Runtime candidate `c492fa352d3f20c64de41f94f0cf2525a61710f9` supersedes the failed repair attempts: normalized vectors use inner-product HNSW while preserving cosine-distance result semantics, inactive rebuilds close by 2,048 generated records without per-batch read-only validation, and durable source checkpoints publish only after the containing writable store session closes. Bounded post-close retries now cover transient zvec locks on both read-only and read-write reopen. The evidence harness emits phase and source progress.
 
 ## Clean-candidate gates
 
@@ -126,7 +126,7 @@ Full-corpus acceptance later exposed zvec cosine-vector rewriting and rebuild bl
 - Type-aware oxlint over `src`: PASS.
 - oxfmt over the repository: PASS.
 - Slop-scan delta from the exact `b04b350` base worktree: 0 added, 0 worsened.
-- Full `npm test`: PASS — 645 passed, 0 failed, 4 expected skips out of 649 tests.
+- Full `npm test`: PASS — 646 passed, 0 failed, 4 expected skips out of 650 tests.
 
 ## Safety declaration
 
@@ -134,6 +134,6 @@ No production recall generation was opened or mutated. No original Pi session fi
 
 ## Remaining release gates
 
-1. Run a fresh replacement build from runtime candidate `f5dad2667c8a0ab50832a21ea6f760244955968a` against the approved checksum-bound immutable snapshot of the existing Pi session JSONL source corpus. Do not use the legacy recall database, a prior mixed-commit generation, or a new synthetic corpus. The replacement build must read only the disposable snapshot and must not open production recall storage or mutate original Pi session files.
+1. Run a fresh replacement build from runtime candidate `c492fa352d3f20c64de41f94f0cf2525a61710f9` against the approved checksum-bound immutable snapshot of the existing Pi session JSONL source corpus. Do not resume or cite the rejected `f5dad26` generation, use the legacy recall database, use a prior mixed-commit generation, or substitute a synthetic corpus. The replacement build must read only the disposable snapshot and must not open production recall storage or mutate original Pi session files.
 2. Interrupt that real process, resume the same generation to terminal validation, and record total duration and final generation size.
 3. Review the clean-candidate and full-corpus evidence together before any production rebuild or activation.

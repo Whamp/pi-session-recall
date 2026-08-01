@@ -2,16 +2,16 @@
 
 **Result:** PASS
 
-- Candidate commit: `f5dad2667c8a0ab50832a21ea6f760244955968a`
-- Completed: 2026-08-01T00:16:43.759Z
+- Candidate commit: `c492fa352d3f20c64de41f94f0cf2525a61710f9`
+- Completed: 2026-08-01T00:53:15.529Z
 - Generated source snapshot: `7de03f3ead3522a622d9f24bd6843ebcebfa871f30797432e0243678b04cc5e2`
-- Certification inputs: `fd605583cb4968d74bfe449506a179ec98fd2f4d7673b0a692c6254cb8c7634e`
+- Certification inputs: `7de61944ec1b2cf9378759da40894300ea29c8e65da41fe16bf224523a88adbe`
 - Runtime: v24.16.0 on linux/x64
 - CPU: AMD Ryzen 7 8845HS w/ Radeon 780M Graphics
 - zvec: 0.6.0
 - Deterministic embedding profile: `embedding-profile-b792b064200a2f84447527b7ecc8b076866e170003ae72c79c642b04608f068e`
 - Manifest fingerprint: `21c7e2340521ed228f97ea90cde46a3bfc90797a5c1ef90c13b69ba97e8c3863`
-- Starting snapshot fingerprint: `05e7f875c3d0929d4b3da62ccb73ff14ed7f6302cd344c8a13280811c5614cdc`
+- Starting snapshot fingerprint: `920078034a816c92b8d79b0e1dce82178e7dc085619c159a4b7e60851b139182`
 
 ## Production cardinality
 
@@ -54,13 +54,13 @@ Matched uninterrupted and SIGKILL/resumed detached workers used generated source
 
 - Disposable uninterrupted generation size: 3,137,647,268 bytes
 - Disposable interrupted generation size: 3,137,647,268 bytes
-- Production-cardinality preflight duration: 763772.889 ms
+- Production-cardinality preflight duration: 773120.301 ms
 
 These values are reported without release thresholds.
 
 ## Reproduction
 
-Create one clean worktree at candidate commit `f5dad2667c8a0ab50832a21ea6f760244955968a`. Create a separate clean worktree at `b04b350939de11ae56b67f8d1e8cce9ab0b12ec8` for the slop-scan base, then run from the candidate worktree:
+Create one clean worktree at candidate commit `c492fa352d3f20c64de41f94f0cf2525a61710f9`. Create a separate clean worktree at `b04b350939de11ae56b67f8d1e8cce9ab0b12ec8` for the slop-scan base, then run from the candidate worktree:
 
 ```bash
 PI_RECALL_SLOP_BASE_DIRECTORY=/path/to/clean/b04b350939de11ae56b67f8d1e8cce9ab0b12ec8 npm run evidence:generation-recovery
@@ -77,7 +77,7 @@ The certifier ran:
 - `npm run typecheck`
 - `npm run lint`
 - `npm run format:check`
-- `git diff --check b04b350939de11ae56b67f8d1e8cce9ab0b12ec8...f5dad2667c8a0ab50832a21ea6f760244955968a`
+- `git diff --check b04b350939de11ae56b67f8d1e8cce9ab0b12ec8...c492fa352d3f20c64de41f94f0cf2525a61710f9`
 - `slop-scan delta --base <exact-base-worktree> --head "$PWD" --fail-on added,worsened`
 - `npm run evidence:generation-recovery`
 

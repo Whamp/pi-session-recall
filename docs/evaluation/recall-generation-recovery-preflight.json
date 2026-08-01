@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "candidateCommit": "f5dad2667c8a0ab50832a21ea6f760244955968a",
-  "completedAt": "2026-08-01T00:16:43.759Z",
+  "candidateCommit": "c492fa352d3f20c64de41f94f0cf2525a61710f9",
+  "completedAt": "2026-08-01T00:53:15.529Z",
   "environment": {
     "nodeVersion": "v24.16.0",
     "platform": "linux",
@@ -9,82 +9,82 @@
     "cpuModel": "AMD Ryzen 7 8845HS w/ Radeon 780M Graphics",
     "zvecVersion": "0.6.0"
   },
-  "certificationInputChecksum": "fd605583cb4968d74bfe449506a179ec98fd2f4d7673b0a692c6254cb8c7634e",
+  "certificationInputChecksum": "7de61944ec1b2cf9378759da40894300ea29c8e65da41fe16bf224523a88adbe",
   "commands": [
     {
       "name": "bootstrap interruption model",
       "command": "/home/will/.local/share/mise/installs/node/24.16.0/bin/node --import tsx --test --test-reporter=tap --test-name-pattern=replacement generation bootstrap interruption model src/build-recall-fixed-snapshot-generation.test.ts",
-      "durationMilliseconds": 1968.421765,
+      "durationMilliseconds": 2004.358818,
       "passed": true
     },
     {
       "name": "malformed versus operational classification",
       "command": "/home/will/.local/share/mise/installs/node/24.16.0/bin/node --import tsx --test --test-reporter=tap --test-name-pattern=malformed-source skips once|parser-looking operational failures fatal|non-source failure category fatal src/recall-physical-source-generation.test.ts",
-      "durationMilliseconds": 1375.2749090000002,
+      "durationMilliseconds": 1357.4346250000003,
       "passed": true
     },
     {
       "name": "incremental versus rebuild membership equivalence",
       "command": "/home/will/.local/share/mise/installs/node/24.16.0/bin/node --import tsx --test --test-reporter=tap --test-name-pattern=generated incremental append, replay, branch, and deletion schedules match fresh rebuild membership src/transfer-incremental-recall-work-plan.test.ts",
-      "durationMilliseconds": 5545.048602999999,
+      "durationMilliseconds": 5478.069030999999,
       "passed": true
     },
     {
       "name": "detached worker interruption and terminal resume",
       "command": "/home/will/.local/share/mise/installs/node/24.16.0/bin/node --import tsx --test --test-reporter=tap --test-name-pattern=crashed workers at every staging phase remain resumable and idempotent src/recall-background-index-conversation-service.test.ts",
-      "durationMilliseconds": 4269.114529,
+      "durationMilliseconds": 4287.3947769999995,
       "passed": true
     },
     {
       "name": "operator CLI stop and terminal resume",
       "command": "/home/will/.local/share/mise/installs/node/24.16.0/bin/node --import tsx --test --test-reporter=tap --test-name-pattern=standalone rebuild stops, resumes the same snapshot, and discards inactive work src/pi-session-recall-cli.test.ts",
-      "durationMilliseconds": 3739.794823,
+      "durationMilliseconds": 3736.7670099999996,
       "passed": true
     },
     {
       "name": "full test suite",
       "command": "npm test",
-      "durationMilliseconds": 34545.277288,
+      "durationMilliseconds": 36601.912482,
       "passed": true
     },
     {
       "name": "typecheck",
       "command": "npm run typecheck",
-      "durationMilliseconds": 4838.499155000005,
+      "durationMilliseconds": 4858.465780999999,
       "passed": true
     },
     {
       "name": "type-aware lint",
       "command": "npm run lint",
-      "durationMilliseconds": 1185.868902000002,
+      "durationMilliseconds": 1327.4811259999988,
       "passed": true
     },
     {
       "name": "format check",
       "command": "npm run format:check",
-      "durationMilliseconds": 648.1074120000048,
+      "durationMilliseconds": 641.5625409999993,
       "passed": true
     },
     {
       "name": "Git whitespace check",
-      "command": "git diff --check b04b350939de11ae56b67f8d1e8cce9ab0b12ec8...f5dad2667c8a0ab50832a21ea6f760244955968a",
-      "durationMilliseconds": 15.84700399999565,
+      "command": "git diff --check b04b350939de11ae56b67f8d1e8cce9ab0b12ec8...c492fa352d3f20c64de41f94f0cf2525a61710f9",
+      "durationMilliseconds": 9.140683000005083,
       "passed": true
     },
     {
       "name": "repository-required slop scan",
       "command": "slop-scan delta --base <exact-base-worktree> --head \"$PWD\" --fail-on added,worsened",
-      "durationMilliseconds": 1946.1552389999997,
+      "durationMilliseconds": 1960.4171239999996,
       "passed": true
     },
     {
       "name": "public service and real-zvec production-cardinality recovery preflight",
       "command": "npm run evidence:generation-recovery",
-      "durationMilliseconds": 763772.888655,
+      "durationMilliseconds": 773120.300515,
       "passed": true
     }
   ],
-  "preflightDurationMilliseconds": 763772.888655,
+  "preflightDurationMilliseconds": 773120.300515,
   "productionFailureBoundary": 119662,
   "preflight": {
     "logicalSessionCount": 119663,
@@ -92,7 +92,7 @@
     "uninterrupted": {
       "manifestFingerprint": "21c7e2340521ed228f97ea90cde46a3bfc90797a5c1ef90c13b69ba97e8c3863",
       "embeddingProfileId": "embedding-profile-b792b064200a2f84447527b7ecc8b076866e170003ae72c79c642b04608f068e",
-      "startingSnapshotFingerprint": "05e7f875c3d0929d4b3da62ccb73ff14ed7f6302cd344c8a13280811c5614cdc",
+      "startingSnapshotFingerprint": "920078034a816c92b8d79b0e1dce82178e7dc085619c159a4b7e60851b139182",
       "storeCounts": {
         "lexicalSource": 239328,
         "dense": 119664,
@@ -116,7 +116,7 @@
         "manifestFingerprint": "21c7e2340521ed228f97ea90cde46a3bfc90797a5c1ef90c13b69ba97e8c3863",
         "startingSnapshot": {
           "version": 1,
-          "fingerprint": "05e7f875c3d0929d4b3da62ccb73ff14ed7f6302cd344c8a13280811c5614cdc",
+          "fingerprint": "920078034a816c92b8d79b0e1dce82178e7dc085619c159a4b7e60851b139182",
           "physicalSourceCount": 121,
           "logicalSessionOccurrenceCount": 119664
         },
@@ -146,7 +146,7 @@
     "interrupted": {
       "manifestFingerprint": "21c7e2340521ed228f97ea90cde46a3bfc90797a5c1ef90c13b69ba97e8c3863",
       "embeddingProfileId": "embedding-profile-b792b064200a2f84447527b7ecc8b076866e170003ae72c79c642b04608f068e",
-      "startingSnapshotFingerprint": "05e7f875c3d0929d4b3da62ccb73ff14ed7f6302cd344c8a13280811c5614cdc",
+      "startingSnapshotFingerprint": "920078034a816c92b8d79b0e1dce82178e7dc085619c159a4b7e60851b139182",
       "storeCounts": {
         "lexicalSource": 239328,
         "dense": 119664,
@@ -170,7 +170,7 @@
         "manifestFingerprint": "21c7e2340521ed228f97ea90cde46a3bfc90797a5c1ef90c13b69ba97e8c3863",
         "startingSnapshot": {
           "version": 1,
-          "fingerprint": "05e7f875c3d0929d4b3da62ccb73ff14ed7f6302cd344c8a13280811c5614cdc",
+          "fingerprint": "920078034a816c92b8d79b0e1dce82178e7dc085619c159a4b7e60851b139182",
           "physicalSourceCount": 121,
           "logicalSessionOccurrenceCount": 119664
         },
@@ -199,9 +199,9 @@
     },
     "detached": {
       "uninterrupted": {
-        "manifestFingerprint": "9542b15b284147e10b1c36ba88ba0a1a5624193e48349af75bda70888e473dfe",
+        "manifestFingerprint": "51bb4b0f6b5d43908f38ecd88bd0ca479de90fe410f21ae5f90d248d7e95846f",
         "embeddingProfileId": "embedding-profile-b792b064200a2f84447527b7ecc8b076866e170003ae72c79c642b04608f068e",
-        "startingSnapshotFingerprint": "5ccee98bf5ab1e3d0faabe26c18f0dee877d5d85340fde99d947fbf05648c37d",
+        "startingSnapshotFingerprint": "71371b929692b43b0135e58cd09c4a9927356f2a622fc7276d6d5d91595ef999",
         "storeCounts": {
           "lexicalSource": 2,
           "dense": 1,
@@ -222,10 +222,10 @@
           }
         },
         "receipt": {
-          "manifestFingerprint": "9542b15b284147e10b1c36ba88ba0a1a5624193e48349af75bda70888e473dfe",
+          "manifestFingerprint": "51bb4b0f6b5d43908f38ecd88bd0ca479de90fe410f21ae5f90d248d7e95846f",
           "startingSnapshot": {
             "version": 1,
-            "fingerprint": "5ccee98bf5ab1e3d0faabe26c18f0dee877d5d85340fde99d947fbf05648c37d",
+            "fingerprint": "71371b929692b43b0135e58cd09c4a9927356f2a622fc7276d6d5d91595ef999",
             "physicalSourceCount": 1,
             "logicalSessionOccurrenceCount": 1
           },
@@ -253,9 +253,9 @@
         "onDiskBytes": 5500574
       },
       "interrupted": {
-        "manifestFingerprint": "a3580e06e7db186bee97dc362f83c7c0592724850def3ce4c097265a263e90b6",
+        "manifestFingerprint": "c6d8e3f3859f3e169efd1bbcc68e098c6167d087ee75d8e6c4dc5c5a482a3d6a",
         "embeddingProfileId": "embedding-profile-b792b064200a2f84447527b7ecc8b076866e170003ae72c79c642b04608f068e",
-        "startingSnapshotFingerprint": "048b14b2f8849cb301e2eb5edc8486771e19582ea250ea54015476c22457bfc0",
+        "startingSnapshotFingerprint": "a56cdffc6dd4826cddcadda35fadf5bcbaf527bdd6a61f9ebbacb6339fbbbf6e",
         "storeCounts": {
           "lexicalSource": 2,
           "dense": 1,
@@ -276,10 +276,10 @@
           }
         },
         "receipt": {
-          "manifestFingerprint": "a3580e06e7db186bee97dc362f83c7c0592724850def3ce4c097265a263e90b6",
+          "manifestFingerprint": "c6d8e3f3859f3e169efd1bbcc68e098c6167d087ee75d8e6c4dc5c5a482a3d6a",
           "startingSnapshot": {
             "version": 1,
-            "fingerprint": "048b14b2f8849cb301e2eb5edc8486771e19582ea250ea54015476c22457bfc0",
+            "fingerprint": "a56cdffc6dd4826cddcadda35fadf5bcbaf527bdd6a61f9ebbacb6339fbbbf6e",
             "physicalSourceCount": 1,
             "logicalSessionOccurrenceCount": 1
           },

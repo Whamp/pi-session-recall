@@ -63,7 +63,6 @@ function formatRecallDuplicateOccurrence(occurrence: RecallSearchResult): string
 function formatRecallScoreComponents(result: RankedRecallSearchResult): string {
   const components = [
     `ranking ${result.rankingScore.toFixed(4)}`,
-    ...(result.rerankerScore === null ? [] : [`Qwen reranker ${result.rerankerScore.toFixed(4)}`]),
     `active prior +${result.activeBranchPrior.toFixed(4)}`,
     `fused RRF ${result.fusedScore.toFixed(4)}`,
   ];
@@ -85,15 +84,12 @@ function formatRecallScoreComponents(result: RankedRecallSearchResult): string {
   return components.join(' · ');
 }
 
-/** Formats hybrid or deeply reranked recall evidence with every source occurrence. */
+/** Formats deterministic hybrid recall evidence with every source occurrence. */
 export function formatRecallSearchResults(
   search: RecallConversationSearch,
   maxExcerptCharacters = 2_000,
 ): string {
-  const rankingDescription =
-    search.searchPolicy.rankingMode === 'deep-rerank'
-      ? `fusion v${search.searchPolicy.rankFusionVersion} (RRF k=${search.searchPolicy.reciprocalRankConstant}) and Qwen ${search.searchPolicy.rerankerModel} policy v${search.searchPolicy.rerankPolicyVersion}`
-      : `deterministic fusion v${search.searchPolicy.rankFusionVersion} (RRF k=${search.searchPolicy.reciprocalRankConstant}) without Qwen reranking`;
+  const rankingDescription = `deterministic fusion v${search.searchPolicy.rankFusionVersion} (RRF k=${search.searchPolicy.reciprocalRankConstant})`;
   const scopeDescription =
     search.searchPolicy.scope === RecallSearchScope.PROJECT
       ? `project scope for ${search.searchPolicy.invocationProjectIdentity ?? 'an unresolved project'}`
@@ -101,11 +97,6 @@ export function formatRecallSearchResults(
   const lines = [
     `Recall searched ${scopeDescription} across ${search.totalChunks} indexed evidence documents with ${rankingDescription} (active prior +${search.searchPolicy.activeBranchPrior.toFixed(4)}).`,
   ];
-  if (search.searchPolicy.rerankerIdentity) {
-    lines.push(
-      `Reranker identity: reranker profile ${search.searchPolicy.rerankerIdentity.profileId} · adapter ${search.searchPolicy.rerankerIdentity.adapterId} · cache ${search.searchPolicy.rerankerIdentity.cacheIdentity}.`,
-    );
-  }
   if (search.results.length === 0) {
     lines.push('No matching past conversations found.');
     if (search.searchPolicy.scope === RecallSearchScope.PROJECT) {
@@ -147,7 +138,9 @@ export function formatRecallSearchResults(
     for (const duplicateOccurrence of result.duplicateOccurrences) {
       lines.push(formatRecallDuplicateOccurrence(duplicateOccurrence));
     }
-    lines.push(`Source: ${result.sessionPath}#${result.entryId.value}`);
+    lines.push(
+      `Source: ${result.sessionPath}:${result.sourceLineStart}-${result.sourceLineEnd}#${result.entryId.value}`,
+    );
   }
   return lines.join('\n');
 }

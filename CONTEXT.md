@@ -84,69 +84,29 @@ _Avoid_: Duplicate result, source alias
 One representative recall candidate plus every overlapping-sibling or exact-copy occurrence suppressed from separate result slots. Raw evidence and synthetic summaries never share a group.
 _Avoid_: Duplicate result list
 
-**Reranked recall result**:
-One duplicate evidence group ordered by query relevance plus a small active-branch preference. Abandoned-branch evidence remains eligible and labeled.
-_Avoid_: Final match, semantic match
+**Ranked hybrid result**:
+One duplicate evidence group ordered by fused retrieval score plus a small active-branch preference. Abandoned-branch evidence remains eligible and labeled.
+_Avoid_: Reranked result, semantic match
 
 **Neighbor context**:
 Readable context formed from a winning atomic conversation chunk and its valid contiguous siblings in the same visible text run. The contributing chunks remain individually identified.
 _Avoid_: Expanded transcript, joined messages
 
 **Index manifest**:
-The versioned identity of the model, tokenizer, chunk policy, provenance schema, and zvec schema used by one index generation.
+The versioned identity of the Octen model, native and stored dimensions, prefix normalization, tokenizer, chunk policy, provenance schema, project identity, and zvec schema used by one manually maintained index.
 _Avoid_: Index state, configuration
 
-**Live session reconciliation**:
-A lower-level targeted update that reprocesses one session file without scanning sibling sessions. Interactive Pi operations do not invoke it because it still rebuilds the whole changed session.
-_Avoid_: Incremental active-session ingestion, append-only indexing, session watcher
+**Stored recall embedding**:
+The first configured dimensions of one native Octen vector, L2-normalized and stored as FP32 for inner-product search.
+_Avoid_: Raw embedding, independently verified MRL vector
 
-**Recall diagnostic operation**:
-One bounded, local account of recall work and its costs, identified independently from the session or query that caused it.
-_Avoid_: Trace, span, telemetry
+**Manual index maintenance**:
+An explicit `psr index` operation that scans physical session files and updates one zvec collection. `psr index --rebuild` replaces incompatible index state.
+_Avoid_: Live ingestion, background indexing, lifecycle reconciliation
 
-**Diagnostics mode**:
-The persistence policy for recall diagnostic operations: `slow`, `all`, or `off`.
-_Avoid_: Verbosity level, tracing mode
-
-**Lifecycle trigger**:
-The historical reason recorded for live session reconciliation diagnostics. Interactive Pi no longer starts reconciliation from lifecycle or search events.
-_Avoid_: Current runtime maintenance policy, session watcher event, polling reason
-
-**Manual maintenance trigger**:
-The explicit index command mode that requested a full corpus catch-up: incremental indexing or rebuilding.
-_Avoid_: Lifecycle trigger, rebuild flag
-
-**Physical session check**:
-One determination of whether a physical session file changed and therefore needs reconciliation work.
-_Avoid_: Session scan, logical session check
-
-**Diagnostic start record**:
-Evidence that a recall diagnostic operation began, retained when diagnostics mode is `all`.
-_Avoid_: Progress record, trace start
-
-**Diagnostic completion record**:
-The bounded outcome, counts, and costs of one completed or failed recall diagnostic operation.
-_Avoid_: Performance dump, trace end
-
-**Phase timing**:
-The exclusive elapsed time attributed to one named part of a recall diagnostic operation.
-_Avoid_: Nested timing, overlapping timing
-
-**Unattributed time**:
-The nonnegative part of a recall diagnostic operation's elapsed time not assigned to a phase timing.
-_Avoid_: Other phase, overhead bucket
-
-**Active diagnostic log**:
-The current bounded local sequence of recall diagnostic records.
-_Avoid_: Telemetry stream, trace file
-
-**Retained predecessor**:
-The one previous active diagnostic log kept after rotation.
-_Avoid_: Log archive, diagnostic history
-
-**Active-session freshness barrier**:
-The mandatory live session reconciliation completed from Pi's trusted current session path before a recall search opens zvec for reading.
-_Avoid_: Search-time full scan, eventual active-session indexing
+**Source locator**:
+The physical session path, source line range, and entry ID attached to one result so an agent can read the original JSONL records.
+_Avoid_: Source neighborhood, expanded transcript
 
 **Derived recall evidence**:
 The `pi-session-recall` tool call and its result. The index excludes both because they restate search inputs or previously indexed evidence and would create a feedback loop.

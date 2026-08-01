@@ -61,10 +61,8 @@ function createReportEnvironment(
     embeddingBaseUrl: config.embeddingBaseUrl,
     embeddingModel: config.embeddingModel,
     embeddingServedModelId: config.embeddingServedModelId,
-    embeddingArtifact: config.embeddingArtifact,
-    embeddingDimensions: config.embeddingDimensions,
-    rerankerBaseUrl: config.rerankerBaseUrl,
-    rerankerModel: config.rerankerModel,
+    embeddingNativeDimensions: config.embeddingNativeDimensions,
+    embeddingStoredDimensions: config.embeddingStoredDimensions,
   };
 }
 

@@ -105,7 +105,7 @@ void test('zvec conversation search returns ranked text and exact session proven
   const { embedding, ...expectedChunk } = firstChunk;
   const { cosineDistance, ...actualChunk } = result;
   assert.deepEqual(actualChunk, expectedChunk);
-  assert.equal(typeof cosineDistance, 'number');
+  assert.equal(cosineDistance, 0);
   assert.deepEqual(embedding, [1, 0, 0]);
   assert.deepEqual(store.fetchVectors(['chunk-a']), new Map([['chunk-a', [1, 0, 0]]]));
   assert.deepEqual(
@@ -133,13 +133,6 @@ void test('zvec conversation search returns ranked text and exact session proven
       .searchLexicalCandidates('find "alpha beta" in the marker', 10)
       .map((candidate) => candidate.id),
     ['chunk-c'],
-  );
-  const groups = store.groupDenseCandidates([1, 0, 0], 'entryId', 2, 1);
-  assert.equal(groups[0]?.groupByValue, 'entry-1');
-  assert.equal(groups[0]?.docs[0]?.id, 'chunk-a');
-  assert.throws(
-    () => store.groupDenseCandidates([1, 0, 0], 'entryId', 201, 1),
-    /dense grouping limits invalid/,
   );
   assert.throws(
     () => store.searchDenseCandidates([1, 0, 0], 201),
@@ -262,6 +255,6 @@ void test('zvec conversation store rejects an embedding dimension change that re
 
   assert.throws(
     () => openZvecConversationStore({ databasePath, dimensions: 2 }),
-    /Recall zvec dimension mismatch.*reindex/,
+    /Recall zvec dimension mismatch.*psr index --rebuild/,
   );
 });

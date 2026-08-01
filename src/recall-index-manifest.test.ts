@@ -1,342 +1,133 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { createEmbeddingVectorCacheIdentity } from './embedding-vector-cache.js';
-import { createEmbeddingGemmaTokenizerManifestIdentity } from './embedded-embeddinggemma-provider.js';
 import {
   assertRecallIndexManifestCompatible,
-  createRecallEmbeddingCanaryFingerprint,
   createRecallIndexManifest,
   readRecallIndexManifest,
-  RECALL_INDEX_MANIFEST_VERSION,
-  recoverRecallEmbeddingCanaryFromManifest,
   writeRecallIndexManifest,
+  type RecallEmbeddingModelIdentity,
 } from './recall-index-manifest.js';
-import { createRecommendedEmbeddingGemmaModelProfile } from './recall-model-profiles.js';
-import {
-  normalizeRecallProjectLineages,
-  PROJECT_IDENTITY_METADATA_SCHEMA_VERSION,
-} from './resolve-project-identity.js';
+import { normalizeRecallProjectLineages } from './resolve-project-identity.js';
 
-const embeddingIdentity = {
+const OCTEN_IDENTITY: RecallEmbeddingModelIdentity = {
   requestModel: 'octen-embed',
-  servedModelId: 'octen-embed',
-  artifact: 'Octen-Embedding-4B.Q8_0.gguf',
-  dimensions: 3,
-  quantization: 'Q8_0',
-  pooling: 'last',
+  servedModelId: 'Octen/Octen-Embedding-4B',
+  nativeDimensions: 2_560,
+  storedDimensions: 1_024,
+  transformation: 'vendor-prefix-then-l2-v1',
 };
 
-void test('index manifest round-trips the complete reproducibility identity atomically', async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), 'recall-manifest-'));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const manifestPath = join(directory, 'index-manifest.json');
-  const canaryEmbedding = [0.25, -0.5, 1];
-  const manifest = createRecallIndexManifest({ embeddingIdentity, canaryEmbedding });
-
-  await writeRecallIndexManifest(manifestPath, manifest);
-
-  assert.deepEqual(await readRecallIndexManifest(manifestPath), manifest);
-  assert.deepEqual(await readdir(directory), ['index-manifest.json']);
-  assert.equal(manifest.manifestVersion, 5);
-  assert.deepEqual(manifest.importPolicy, { version: 3 });
-  assert.equal(Object.hasOwn(createEmbeddingVectorCacheIdentity(manifest), 'importPolicy'), false);
-  assert.equal(
-    manifest.embedding.canaryFingerprint,
-    createRecallEmbeddingCanaryFingerprint(canaryEmbedding, 3),
-  );
-  assert.deepEqual(manifest.embedding.canaryVector, canaryEmbedding);
-  assert.equal(manifest.embedding.canaryMinimumCosineSimilarity, 0.9995);
-  assert.equal(manifest.tokenizer.assets[0]?.fileName, 'tokenizer.json');
-  assert.equal(manifest.tokenizer.assets[1]?.fileName, 'tokenizer_config.json');
-  assert.deepEqual(manifest.chunkPolicy, {
-    version: 2,
-    maxTokens: 1_024,
-    overlapTokens: 128,
-    boundaryAlgorithm: 'markdown-structure-v1',
-    normalization: 'unicode-nfc-v1',
-  });
-  assert.equal(manifest.conversationSchemaVersion, 8);
-  assert.equal(manifest.provenanceSchemaVersion, 8);
-  assert.equal(PROJECT_IDENTITY_METADATA_SCHEMA_VERSION, 3);
-  assert.deepEqual(manifest.projectIdentity, {
-    policyVersion: 4,
-    metadataSchemaVersion: 3,
-    lineagePolicyVersion: 1,
-    lineageDigest: '44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a',
-  });
-  assert.equal(manifest.zvec.schemaVersion, 7);
-  assert.equal(manifest.zvec.ftsConfigurationVersion, 2);
-});
-
-void test('index manifest records complete EmbeddingGemma semantics without changing Octen format', () => {
-  const profile = createRecommendedEmbeddingGemmaModelProfile();
-  const manifest = createRecallIndexManifest({
-    embeddingIdentity: profile.identity,
-    canaryEmbedding: [1, ...Array<number>(767).fill(0)],
-    embeddingCanary: profile.canary,
-    tokenizerIdentity: createEmbeddingGemmaTokenizerManifestIdentity(profile),
-  });
-
-  assert.equal(manifest.manifestVersion, 5);
-  assert.deepEqual(manifest.embedding, {
-    requestModel: 'embeddinggemma-300M-Q8_0',
-    servedModelId: 'google/embeddinggemma-300M',
-    artifact: 'embeddinggemma-300M-Q8_0.gguf',
-    artifactRepository: 'ggml-org/embeddinggemma-300M-GGUF',
-    artifactRevision: '0f741b5a6585bd53aeb15cd1372c56f2a0f65e12',
-    artifactSha256: 'b5ce9d77a3fc4b3b39ccb5643c36777911cc4eb46a66962eadfa3f5f60490d63',
-    dimensions: 768,
-    quantization: 'Q8_0',
-    pooling: 'mean',
-    normalization: 'l2',
-    canaryOperation: 'query',
-    canaryProbe: 'Which session evidence explains the retained implementation decision?',
-    canaryFingerprint: createRecallEmbeddingCanaryFingerprint(
-      [1, ...Array<number>(767).fill(0)],
-      768,
-    ),
-    canaryVector: [1, ...Array<number>(767).fill(0)],
-    canaryMinimumCosineSimilarity: 0.9995,
-  });
-  assert.deepEqual(manifest.tokenizer, {
-    model: 'google/embeddinggemma-300M',
-    revision: '0f741b5a6585bd53aeb15cd1372c56f2a0f65e12',
-    library: { name: 'node-llama-cpp', version: '3.18.1' },
-    encodeOptions: { addSpecialTokens: false, returnTokenTypeIds: false },
-    assets: [
-      {
-        fileName: 'embeddinggemma-300M-Q8_0.gguf',
-        sha256: 'b5ce9d77a3fc4b3b39ccb5643c36777911cc4eb46a66962eadfa3f5f60490d63',
-      },
-    ],
-  });
-});
-
-void test('index manifest canonically digests project lineage and rejects changed lineage policy', () => {
-  const target = 'git-origin:github.com/Whamp/successor';
-  const actual = createRecallIndexManifest({
-    embeddingIdentity,
-    canaryEmbedding: [0.25, -0.5, 1],
-    projectLineages: normalizeRecallProjectLineages({
-      [target]: ['/historical/zeta', '/historical/alpha'],
-    }),
-  });
-  const equivalent = createRecallIndexManifest({
-    embeddingIdentity,
-    canaryEmbedding: [0.25, -0.5, 1],
-    projectLineages: normalizeRecallProjectLineages({
-      [target]: ['/historical/alpha', '/historical/zeta'],
-    }),
-  });
-  const changed = createRecallIndexManifest({
-    embeddingIdentity,
-    canaryEmbedding: [0.25, -0.5, 1],
-    projectLineages: normalizeRecallProjectLineages({
-      [target]: ['/historical/alpha', '/historical/replacement'],
-    }),
-  });
-
-  assert.equal(actual.projectIdentity.lineagePolicyVersion, 1);
-  assert.match(actual.projectIdentity.lineageDigest, /^[a-f0-9]{64}$/u);
-  assert.equal(equivalent.projectIdentity.lineageDigest, actual.projectIdentity.lineageDigest);
-  assert.notEqual(changed.projectIdentity.lineageDigest, actual.projectIdentity.lineageDigest);
-  assert.throws(
-    () => assertRecallIndexManifestCompatible(actual, changed, '/data/index-manifest.json'),
-    /projectIdentity\.lineageDigest.*\/pi-session-recall-index --rebuild/s,
-  );
-});
-
-void test('index manifest records an explicitly bounded chunk policy', () => {
-  const manifest = createRecallIndexManifest({
-    embeddingIdentity,
-    canaryEmbedding: [0.25, -0.5, 1],
+function createManifest(overrides: Partial<RecallEmbeddingModelIdentity> = {}) {
+  return createRecallIndexManifest({
+    embeddingIdentity: { ...OCTEN_IDENTITY, ...overrides },
     chunkPolicy: { maxTokens: 512, overlapTokens: 64 },
   });
+}
 
-  assert.equal(manifest.chunkPolicy.maxTokens, 512);
-  assert.equal(manifest.chunkPolicy.overlapTokens, 64);
+void test('index manifest binds Octen native and stored widths, tokenizer, chunking, and inner product', () => {
+  const manifest = createManifest();
+
+  assert.deepEqual(manifest.embedding, OCTEN_IDENTITY);
+  assert.deepEqual(manifest.chunkPolicy, {
+    version: 3,
+    maxTokens: 512,
+    overlapTokens: 64,
+    boundaryAlgorithm: 'markdown-structure-v1',
+  });
+  assert.equal(manifest.tokenizer.model, 'Octen/Octen-Embedding-4B');
+  assert.equal(manifest.zvec.metric, 'inner-product');
+  assert.equal('embeddingCacheVersion' in manifest, false);
+  assert.equal('canaryVector' in manifest.embedding, false);
 });
 
-void test('index manifest rejects invalid chunk geometry before indexing', () => {
+void test('index manifest round-trips atomically', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-manifest-'));
+  const path = join(root, 'index-manifest.json');
+  try {
+    const expected = createManifest();
+    await writeRecallIndexManifest(path, expected);
+
+    assert.deepEqual(await readRecallIndexManifest(path), expected);
+    assert.equal((await readFile(path, 'utf8')).endsWith('\n'), true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+void test('manifest compatibility requires rebuild when model or stored width changes', () => {
+  const actual = createManifest();
+
   assert.throws(
     () =>
-      createRecallIndexManifest({
-        embeddingIdentity,
-        canaryEmbedding: [0.25, -0.5, 1],
-        chunkPolicy: { maxTokens: 512, overlapTokens: 512 },
-      }),
-    /Recall chunk policy invalid/,
+      assertRecallIndexManifestCompatible(
+        actual,
+        createManifest({ storedDimensions: 768 }),
+        '/recall/index-manifest.json',
+      ),
+    /embedding\.storedDimensions: expected 768, received 1024[\s\S]*psr index --rebuild/,
+  );
+  assert.throws(
+    () =>
+      assertRecallIndexManifestCompatible(
+        actual,
+        createManifest({ servedModelId: 'other/model' }),
+        '/recall/index-manifest.json',
+      ),
+    /embedding\.servedModelId: expected "other\/model"/,
   );
 });
 
-void test('index manifest tolerates same-model canary jitter and rejects material drift', () => {
+void test('manifest compatibility binds chunk and project-lineage policy', () => {
   const actual = createRecallIndexManifest({
-    embeddingIdentity,
-    canaryEmbedding: [1, 0, 0],
+    embeddingIdentity: OCTEN_IDENTITY,
+    chunkPolicy: { maxTokens: 512, overlapTokens: 64 },
+    projectLineages: normalizeRecallProjectLineages({}),
   });
-  const slotJitter = createRecallIndexManifest({
-    embeddingIdentity,
-    canaryEmbedding: [1, 0.027, 0],
+  const changedChunking = createRecallIndexManifest({
+    embeddingIdentity: OCTEN_IDENTITY,
+    chunkPolicy: { maxTokens: 256, overlapTokens: 32 },
+    projectLineages: normalizeRecallProjectLineages({}),
   });
-  const materialDrift = createRecallIndexManifest({
-    embeddingIdentity,
-    canaryEmbedding: [0, 1, 0],
-  });
-
-  assert.doesNotThrow(() =>
-    assertRecallIndexManifestCompatible(actual, slotJitter, '/data/index-manifest.json'),
-  );
-  assert.throws(
-    () => assertRecallIndexManifestCompatible(actual, materialDrift, '/data/index-manifest.json'),
-    /embedding\.canaryCosineSimilarity.*\/pi-session-recall-index --rebuild/s,
-  );
-});
-
-void test('index manifest incompatibility reports every mismatch with the rebuild command', () => {
-  const expected = createRecallIndexManifest({
-    embeddingIdentity,
-    canaryEmbedding: [0.25, -0.5, 1],
-  });
-  const actual = structuredClone(expected);
-  actual.embedding.dimensions = 2;
-  actual.embedding.pooling = 'mean';
-  actual.tokenizer.revision = 'mutable-main';
-  actual.chunkPolicy.maxTokens = 512;
-  actual.conversationSchemaVersion = 1;
-  actual.projectIdentity.policyVersion = 1;
-  actual.projectIdentity.metadataSchemaVersion = 1;
-  actual.projectIdentity.lineagePolicyVersion = 99;
-  actual.projectIdentity.lineageDigest = '0'.repeat(64);
-  actual.zvec.ftsConfigurationVersion = 99;
-
-  assert.throws(
-    () => assertRecallIndexManifestCompatible(actual, expected, '/data/index-manifest.json'),
-    (error) => {
-      assert.ok(error instanceof Error);
-      assert.match(error.message, /embedding\.dimensions/);
-      assert.match(error.message, /embedding\.pooling/);
-      assert.match(error.message, /tokenizer\.revision/);
-      assert.match(error.message, /chunkPolicy\.maxTokens/);
-      assert.match(error.message, /conversationSchemaVersion/);
-      assert.match(error.message, /projectIdentity\.policyVersion/);
-      assert.match(error.message, /projectIdentity\.metadataSchemaVersion/);
-      assert.match(error.message, /projectIdentity\.lineagePolicyVersion/);
-      assert.match(error.message, /projectIdentity\.lineageDigest/);
-      assert.match(error.message, /zvec\.ftsConfigurationVersion/);
-      assert.match(error.message, /\/pi-session-recall-index --rebuild/);
-      return true;
-    },
-  );
-  assert.throws(
-    () => assertRecallIndexManifestCompatible(null, expected, '/data/index-manifest.json'),
-    /Recall index manifest missing.*\/pi-session-recall-index --rebuild/,
-  );
-});
-
-void test('index manifest recovers only an intact canary from an incompatible generation', async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), 'recall-manifest-canary-recovery-'));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const manifestPath = join(directory, 'index-manifest.json');
-  const manifest = createRecallIndexManifest({
-    embeddingIdentity,
-    canaryEmbedding: [0.25, -0.5, 1],
-  });
-
-  await writeFile(
-    manifestPath,
-    JSON.stringify({ ...manifest, manifestVersion: manifest.manifestVersion - 1 }),
-  );
-  const recovered = await recoverRecallEmbeddingCanaryFromManifest(
-    manifestPath,
-    embeddingIdentity.dimensions,
-  );
-  assert.deepEqual(recovered?.canaryVector, manifest.embedding.canaryVector);
-  assert.equal(
-    recovered?.canaryMinimumCosineSimilarity,
-    manifest.embedding.canaryMinimumCosineSimilarity,
-  );
-
-  await writeFile(
-    manifestPath,
-    JSON.stringify({
-      ...manifest,
-      manifestVersion: manifest.manifestVersion - 1,
-      embedding: { ...manifest.embedding, canaryVector: [1, 0, 0] },
+  const changedLineage = createRecallIndexManifest({
+    embeddingIdentity: OCTEN_IDENTITY,
+    chunkPolicy: { maxTokens: 512, overlapTokens: 64 },
+    projectLineages: normalizeRecallProjectLineages({
+      'git-origin:github.com/Whamp/pi-session-recall': ['/historical/recall'],
     }),
-  );
-  assert.equal(
-    await recoverRecallEmbeddingCanaryFromManifest(manifestPath, embeddingIdentity.dimensions),
-    null,
-  );
+  });
 
-  await writeFile(manifestPath, '{broken');
-  assert.equal(
-    await recoverRecallEmbeddingCanaryFromManifest(manifestPath, embeddingIdentity.dimensions),
-    null,
+  assert.throws(
+    () => assertRecallIndexManifestCompatible(actual, changedChunking, '/manifest.json'),
+    /chunkPolicy\.maxTokens/,
+  );
+  assert.throws(
+    () => assertRecallIndexManifestCompatible(actual, changedLineage, '/manifest.json'),
+    /projectIdentity\.lineageDigest/,
   );
 });
 
-void test('index manifest reader tells an older extension to reload instead of rebuilding', async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), 'recall-newer-manifest-'));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const manifestPath = join(directory, 'index-manifest.json');
-  const manifest = createRecallIndexManifest({
-    embeddingIdentity,
-    canaryEmbedding: [0.25, -0.5, 1],
-  });
-  await writeFile(
-    manifestPath,
-    JSON.stringify({
-      ...manifest,
-      manifestVersion: RECALL_INDEX_MANIFEST_VERSION + 1,
-    }),
-  );
-
-  await assert.rejects(
-    () => readRecallIndexManifest(manifestPath),
-    (error) => {
-      assert.ok(error instanceof Error);
-      assert.match(error.message, /newer than this pi-session-recall extension supports/);
-      assert.match(error.message, /Reload Pi to load the installed extension/);
-      assert.match(error.message, /update pi-session-recall and reload Pi again/i);
-      assert.match(error.message, /do not rebuild/i);
-      assert.doesNotMatch(error.message, /pi-session-recall-index --rebuild/);
-      return true;
-    },
+void test('manifest creation rejects stored widths larger than the native Octen vector', () => {
+  assert.throws(
+    () => createManifest({ nativeDimensions: 512, storedDimensions: 1_024 }),
+    /stored dimensions 1024 exceed native dimensions 512/,
   );
 });
 
-void test('index manifest reader rejects malformed or unversioned data actionably', async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), 'recall-invalid-manifest-'));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const malformedPath = join(directory, 'malformed.json');
-  const unversionedPath = join(directory, 'unversioned.json');
-  const preScopePath = join(directory, 'pre-scope.json');
-  const currentManifest = createRecallIndexManifest({
-    embeddingIdentity,
-    canaryEmbedding: [0.25, -0.5, 1],
-  });
-  const { projectIdentity, ...preScopeManifest } = currentManifest;
-  void projectIdentity;
-  await writeFile(malformedPath, '{');
-  await writeFile(unversionedPath, '{}');
-  await writeFile(preScopePath, JSON.stringify(preScopeManifest));
+void test('manifest reader rejects old generation formats without compatibility adoption', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-old-manifest-'));
+  const path = join(root, 'index-manifest.json');
+  try {
+    await writeFile(path, '{"manifestVersion":5}\n', 'utf8');
 
-  await assert.rejects(
-    () => readRecallIndexManifest(malformedPath),
-    /Recall index manifest unreadable.*Reload Pi first.*Do not rebuild automatically/s,
-  );
-  await assert.rejects(
-    () => readRecallIndexManifest(unversionedPath),
-    /Recall index manifest invalid.*Reload Pi first.*Do not rebuild automatically/s,
-  );
-  await assert.rejects(
-    () => readRecallIndexManifest(preScopePath),
-    /Recall index manifest invalid.*Reload Pi first.*Do not rebuild automatically/s,
-  );
-  assert.equal(await readRecallIndexManifest(join(directory, 'missing.json')), null);
+    await assert.rejects(
+      readRecallIndexManifest(path),
+      /Recall index manifest invalid[\s\S]*psr index --rebuild/,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

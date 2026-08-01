@@ -83,15 +83,14 @@ export function createTestRecallSearchResult(
   };
 }
 
-/** Builds one reranked recall-result fixture with no duplicates or neighbor expansion. */
+/** Builds one ranked recall-result fixture with no duplicates or neighbor expansion. */
 export function createTestRankedRecallSearchResult(
   options: TestSessionConversationChunkOptions & Partial<RecallConversationSearchResult>,
 ): RecallConversationSearchResult {
   return {
     ...createTestRecallSearchResult(options),
-    rerankerScore: 0.9,
     activeBranchPrior: 0,
-    rankingScore: 0.9,
+    rankingScore: 0.02,
     duplicateOccurrences: [],
     neighborContext: null,
     evidenceRelation: RecallEvidenceRelation.UNRESTRICTED_GLOBAL,

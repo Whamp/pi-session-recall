@@ -108,7 +108,7 @@ void test('recall quality report records verdict, measured counts, sources, and 
     },
   };
   const result: RecallQualityEvaluationResult = {
-    version: 4,
+    version: 5,
     evaluationIdentity: {
       defaultScope: RecallSearchScope.PROJECT,
       projectScopePolicyVersion: 1,
@@ -138,7 +138,7 @@ void test('recall quality report records verdict, measured counts, sources, and 
           scannedSessions: 1,
           indexedSessions: 1,
           removedSessions: 0,
-          cacheHits: 0,
+          reusedVectors: 0,
           newlyEmbeddedChunks: 72,
           embeddingRequestCount: 5,
           deletedChunks: 0,
@@ -200,7 +200,6 @@ void test('recall quality report records verdict, measured counts, sources, and 
       evaluationCases: 1,
       indexRuns: 1,
       executedSearchRequests: 1,
-      rerankerRequests: 0,
       chunkEmbeddingRequests: 5,
       maximumCandidatesPerSearch: 24,
       repositoryIdentityResolutions: 0,
@@ -218,10 +217,8 @@ void test('recall quality report records verdict, measured counts, sources, and 
     embeddingBaseUrl: 'http://embedding.test/v1',
     embeddingModel: 'octen-embed',
     embeddingServedModelId: 'Octen/Octen-Embedding-4B',
-    embeddingArtifact: 'Octen-Embedding-4B.Q8_0.gguf',
-    embeddingDimensions: 2_560,
-    rerankerBaseUrl: 'http://reranker.test/v1',
-    rerankerModel: 'qwen3-rerank',
+    embeddingNativeDimensions: 2_560,
+    embeddingStoredDimensions: 1_024,
   });
 
   assert.match(report, /Automated gate: PASS/);

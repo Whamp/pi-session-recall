@@ -5,16 +5,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import {
-  RecallDiagnosticsMode,
-  RecallEvidenceRelation,
-  RecallProjectIdentitySource,
-  RecallSearchScope,
-} from './enums.js';
-import type { LocalEmbeddingClient } from './local-embedding-client.js';
+import { RecallEvidenceRelation, RecallProjectIdentitySource, RecallSearchScope } from './enums.js';
+import type { RecallEmbeddingProvider } from './recall-inference-capabilities.js';
 import { loadRecallQualityCorpus } from './recall-quality-corpus.js';
 import type { RecallConversationConfig } from './recall-conversation-service.js';
-import { RECALL_EMBEDDING_CANARY_TEXT } from './recall-index-manifest.js';
 import { normalizeRecallProjectLineages } from './resolve-project-identity.js';
 import { runRecallQualityEvaluation } from './run-recall-quality-evaluation.js';
 import type { ConversationTextTokenizer } from './session-conversation-index.js';
@@ -121,27 +115,23 @@ void test('recall quality runner indexes and searches only the bounded declared 
     statePath: join(directory, 'unused-state.json'),
     manifestPath: join(directory, 'unused-manifest.json'),
     tokenizerCacheDirectory: join(directory, 'unused-tokenizers'),
-    embeddingCacheDirectory: join(directory, 'unused-embedding-cache'),
     lockPath: join(directory, 'unused.lock'),
-    diagnosticsMode: RecallDiagnosticsMode.OFF,
-    diagnosticLogPath: join(directory, 'unused-diagnostics.jsonl'),
-    retainedDiagnosticLogPath: join(directory, 'unused-diagnostics.previous.jsonl'),
     embeddingBaseUrl: 'http://unused.test/v1',
     embeddingModel: 'test-embedding',
     embeddingServedModelId: 'test-embedding-served',
-    embeddingArtifact: 'test-embedding.fp32',
-    embeddingQuantization: 'fp32',
-    embeddingPooling: 'last',
-    embeddingDimensions: 3,
+    embeddingNativeDimensions: 3,
+    embeddingStoredDimensions: 3,
     embeddingBatchSize: 8,
-    rerankerBaseUrl: 'http://unused-reranker.test/v1',
-    rerankerModel: 'test-reranker',
     projectLineages: normalizeRecallProjectLineages({}),
     searchCandidateLimits: { dense: 8, lexical: 8, identifier: 8 },
+    chunkPolicy: { maxTokens: 512, overlapTokens: 64 },
   };
-  const embeddings: LocalEmbeddingClient = {
-    async embedTexts(texts) {
-      return texts.map((text) => (text === RECALL_EMBEDDING_CANARY_TEXT ? [0, 0, 1] : [1, 0, 0]));
+  const embeddingProvider: RecallEmbeddingProvider = {
+    async embedQuery() {
+      return [1, 0, 0];
+    },
+    async embedDocuments(documents) {
+      return documents.map(() => [1, 0, 0]);
     },
   };
   const tokenizer: ConversationTextTokenizer = {
@@ -157,17 +147,16 @@ void test('recall quality runner indexes and searches only the bounded declared 
     baseConfig,
     workDirectory: join(evaluationDirectory, '.recall-data', 'recall-quality-evaluation'),
     dependencies: {
-      embeddings,
+      embeddingProvider,
       async loadTokenizer() {
         return tokenizer;
       },
     },
   });
 
-  assert.equal(result.version, 4);
+  assert.equal(result.version, 5);
   assert.equal(result.boundedWork.indexRuns, 1);
   assert.equal(result.boundedWork.executedSearchRequests, 1);
-  assert.equal(result.boundedWork.rerankerRequests, 0);
   assert.equal(result.boundedWork.repositoryIdentityResolutions, 1);
   assert.deepEqual(result.evaluationIdentity, {
     defaultScope: RecallSearchScope.PROJECT,
@@ -200,7 +189,7 @@ void test('recall quality runner indexes and searches only the bounded declared 
         baseConfig,
         workDirectory: join(directory, 'recall-quality-evaluation'),
         dependencies: {
-          embeddings,
+          embeddingProvider,
           async loadTokenizer() {
             return tokenizer;
           },

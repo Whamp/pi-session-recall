@@ -85,7 +85,6 @@ void test('recall quality measures candidate-pool and fused final source preserv
   } = {
     ...representative,
     evidenceRelation: RecallEvidenceRelation.UNRESTRICTED_GLOBAL,
-    rerankerScore: 0.99,
     activeBranchPrior: 0.01,
     rankingScore: 1,
     duplicateOccurrences: [duplicate],

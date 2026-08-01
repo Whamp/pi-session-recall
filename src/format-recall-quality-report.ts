@@ -18,10 +18,8 @@ export interface RecallQualityReportEnvironment {
   embeddingBaseUrl: string;
   embeddingModel: string;
   embeddingServedModelId: string;
-  embeddingArtifact: string;
-  embeddingDimensions: number;
-  rerankerBaseUrl: string;
-  rerankerModel: string;
+  embeddingNativeDimensions: number;
+  embeddingStoredDimensions: number;
 }
 
 function escapeMarkdownTable(value: string): string {
@@ -249,7 +247,6 @@ export function formatRecallQualityReport(
     `| Evaluation cases | ${result.boundedWork.evaluationCases} | ${specification.bounds.maximumEvaluationCases} |`,
     `| Temporary index runs | ${result.boundedWork.indexRuns} | ${specification.bounds.maximumChunkPolicies} |`,
     `| Search requests, including warmups | ${result.boundedWork.executedSearchRequests} | ${specification.bounds.maximumSearchRequests} |`,
-    `| Reranker requests | ${result.boundedWork.rerankerRequests} | 0 |`,
     `| Chunk-embedding HTTP batches | ${result.boundedWork.chunkEmbeddingRequests} | ${specification.bounds.maximumChunkEmbeddingRequests} |`,
     `| Maximum fused candidates/search | ${result.boundedWork.maximumCandidatesPerSearch} | 200 |`,
     `| Production repository identity resolutions | ${result.boundedWork.repositoryIdentityResolutions} | ${
@@ -308,7 +305,7 @@ export function formatRecallQualityReport(
     '',
     '## Reproduce',
     '',
-    'Prerequisites: the pinned Octen tokenizer assets and configured local embedding endpoint must be available. The optional reranker is not called. The command deletes and recreates only the dedicated ignored evaluation work directory.',
+    'Prerequisites: the pinned Octen tokenizer assets and configured local embedding endpoint must be available. The command deletes and recreates only the dedicated ignored evaluation work directory.',
     '',
     '```bash',
     environment.command,
@@ -325,9 +322,8 @@ export function formatRecallQualityReport(
     `- Node: \`${environment.nodeVersion}\``,
     `- Platform: \`${environment.platform}/${environment.architecture}\``,
     `- CPU: ${environment.cpuModel}`,
-    `- Embedding: \`${environment.embeddingModel}\` → \`${environment.embeddingServedModelId}\`, \`${environment.embeddingArtifact}\`, ${environment.embeddingDimensions} dimensions at \`${environment.embeddingBaseUrl}\``,
+    `- Embedding: \`${environment.embeddingModel}\` → \`${environment.embeddingServedModelId}\`, native ${environment.embeddingNativeDimensions} dimensions stored as first-${environment.embeddingStoredDimensions} then L2-normalized at \`${environment.embeddingBaseUrl}\``,
     `- Hybrid ranking identity: fusion v${result.evaluationIdentity.rankFusionVersion}, RRF k=${result.evaluationIdentity.reciprocalRankConstant}, active prior +${result.evaluationIdentity.activeBranchPrior.toFixed(4)}`,
-    `- Optional deep reranker, not used by this evaluation: \`${environment.rerankerModel}\` at \`${environment.rerankerBaseUrl}\``,
     `- Specification: \`${corpus.specificationPath}\``,
     `- Specification SHA-256: \`${corpus.specificationSha256}\``,
     '',

@@ -6,37 +6,24 @@ import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 
 import type { RecallConversationConfig } from './recall-conversation-service.js';
-import { RecallDiagnosticsMode } from './enums.js';
+import { DEFAULT_RECALL_CHUNK_POLICY } from './recall-index-manifest.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
 import { normalizeRecallProjectLineages } from './resolve-project-identity.js';
 
-const DEFAULT_RECALL_CHANNEL_CANDIDATE_LIMIT = 40;
-const MAX_RECALL_CHANNEL_CANDIDATE_LIMIT = 200;
+const DEFAULT_RECALL_CHANNEL_CANDIDATE_LIMIT = 8;
+const DEFAULT_OCTEN_NATIVE_DIMENSIONS = 2_560;
+const DEFAULT_OCTEN_STORED_DIMENSIONS = 1_024;
 
 const recallConfigFileSchema = Type.Object(
   {
     sessionsDirectory: Type.Optional(Type.String({ minLength: 1 })),
     dataDirectory: Type.Optional(Type.String({ minLength: 1 })),
-    diagnostics: Type.Optional(Type.Enum(RecallDiagnosticsMode)),
     embeddingBaseUrl: Type.Optional(Type.String({ minLength: 1 })),
     embeddingModel: Type.Optional(Type.String({ minLength: 1 })),
     embeddingServedModelId: Type.Optional(Type.String({ minLength: 1 })),
-    embeddingArtifact: Type.Optional(Type.String({ minLength: 1 })),
-    embeddingQuantization: Type.Optional(Type.String({ minLength: 1 })),
-    embeddingPooling: Type.Optional(Type.String({ minLength: 1 })),
-    embeddingDimensions: Type.Optional(Type.Integer({ minimum: 1 })),
+    embeddingNativeDimensions: Type.Optional(Type.Integer({ minimum: 1 })),
+    embeddingStoredDimensions: Type.Optional(Type.Integer({ minimum: 1 })),
     embeddingBatchSize: Type.Optional(Type.Integer({ minimum: 1 })),
-    rerankerBaseUrl: Type.Optional(Type.String({ minLength: 1 })),
-    rerankerModel: Type.Optional(Type.String({ minLength: 1 })),
-    denseCandidateLimit: Type.Optional(
-      Type.Integer({ minimum: 1, maximum: MAX_RECALL_CHANNEL_CANDIDATE_LIMIT }),
-    ),
-    lexicalCandidateLimit: Type.Optional(
-      Type.Integer({ minimum: 1, maximum: MAX_RECALL_CHANNEL_CANDIDATE_LIMIT }),
-    ),
-    identifierCandidateLimit: Type.Optional(
-      Type.Integer({ minimum: 1, maximum: MAX_RECALL_CHANNEL_CANDIDATE_LIMIT }),
-    ),
     projectLineages: Type.Optional(
       Type.Record(
         Type.String({ minLength: 1 }),
@@ -47,7 +34,7 @@ const recallConfigFileSchema = Type.Object(
   { additionalProperties: false },
 );
 
-/** Inputs used to locate and override recall configuration, primarily for tests and embedding migrations. */
+/** Inputs used to locate and override the standalone recall configuration. */
 export interface RecallConversationConfigLoadOptions {
   homeDirectory?: string;
   configPath?: string;
@@ -60,26 +47,6 @@ function parsePositiveInteger(value: string, settingName: string): number {
     throw new Error(`Recall configuration invalid integer for ${settingName}: ${value}`);
   }
   return parsed;
-}
-
-function parseRecallCandidateLimit(value: string, settingName: string): number {
-  const parsed = parsePositiveInteger(value, settingName);
-  if (parsed > MAX_RECALL_CHANNEL_CANDIDATE_LIMIT) {
-    throw new Error(
-      `Recall configuration candidate limit for ${settingName} exceeds ${MAX_RECALL_CHANNEL_CANDIDATE_LIMIT}: ${value}`,
-    );
-  }
-  return parsed;
-}
-
-function resolveRecallCandidateLimit(
-  settingName: string,
-  environmentValue?: string,
-  fileValue?: number,
-): number {
-  return environmentValue === undefined
-    ? (fileValue ?? DEFAULT_RECALL_CHANNEL_CANDIDATE_LIMIT)
-    : parseRecallCandidateLimit(environmentValue, settingName);
 }
 
 async function readRecallConfigFile(
@@ -97,7 +64,7 @@ async function readRecallConfigFile(
   }
 }
 
-/** Loads validated conversation recall paths plus local embedding and Qwen reranker settings. */
+/** Loads paths and one direct Octen HTTP embedding profile for `psr` and read-only search. */
 export async function loadRecallConversationConfig(
   options: RecallConversationConfigLoadOptions = {},
 ): Promise<RecallConversationConfig> {
@@ -112,7 +79,23 @@ export async function loadRecallConversationConfig(
     environment.PI_RECALL_DATA_DIRECTORY ??
     file.dataDirectory ??
     join(homeDirectory, '.pi', 'agent', 'recall');
-  const projectLineages = normalizeRecallProjectLineages(file.projectLineages ?? {});
+  const embeddingNativeDimensions = environment.PI_RECALL_EMBEDDING_NATIVE_DIMENSIONS
+    ? parsePositiveInteger(
+        environment.PI_RECALL_EMBEDDING_NATIVE_DIMENSIONS,
+        'PI_RECALL_EMBEDDING_NATIVE_DIMENSIONS',
+      )
+    : (file.embeddingNativeDimensions ?? DEFAULT_OCTEN_NATIVE_DIMENSIONS);
+  const embeddingStoredDimensions = environment.PI_RECALL_EMBEDDING_STORED_DIMENSIONS
+    ? parsePositiveInteger(
+        environment.PI_RECALL_EMBEDDING_STORED_DIMENSIONS,
+        'PI_RECALL_EMBEDDING_STORED_DIMENSIONS',
+      )
+    : (file.embeddingStoredDimensions ?? DEFAULT_OCTEN_STORED_DIMENSIONS);
+  if (embeddingStoredDimensions > embeddingNativeDimensions) {
+    throw new Error(
+      `Recall configuration stored dimensions ${embeddingStoredDimensions} exceed native dimensions ${embeddingNativeDimensions}`,
+    );
+  }
 
   return {
     sessionsDirectory:
@@ -123,11 +106,7 @@ export async function loadRecallConversationConfig(
     statePath: join(dataDirectory, 'index-state.json'),
     manifestPath: join(dataDirectory, 'index-manifest.json'),
     tokenizerCacheDirectory: join(dataDirectory, 'tokenizers'),
-    embeddingCacheDirectory: join(dataDirectory, 'embedding-cache'),
     lockPath: join(dataDirectory, 'operation.lock'),
-    diagnosticsMode: file.diagnostics ?? RecallDiagnosticsMode.SLOW,
-    diagnosticLogPath: join(dataDirectory, 'diagnostics.jsonl'),
-    retainedDiagnosticLogPath: join(dataDirectory, 'diagnostics.previous.jsonl'),
     embeddingBaseUrl:
       environment.PI_RECALL_EMBEDDING_BASE_URL ??
       file.embeddingBaseUrl ??
@@ -137,47 +116,20 @@ export async function loadRecallConversationConfig(
       environment.PI_RECALL_EMBEDDING_SERVED_MODEL_ID ??
       file.embeddingServedModelId ??
       'Octen/Octen-Embedding-4B',
-    embeddingArtifact:
-      environment.PI_RECALL_EMBEDDING_ARTIFACT ??
-      file.embeddingArtifact ??
-      'Octen-Embedding-4B.Q8_0.gguf',
-    embeddingQuantization:
-      environment.PI_RECALL_EMBEDDING_QUANTIZATION ?? file.embeddingQuantization ?? 'Q8_0',
-    embeddingPooling: environment.PI_RECALL_EMBEDDING_POOLING ?? file.embeddingPooling ?? 'last',
-    embeddingDimensions: environment.PI_RECALL_EMBEDDING_DIMENSIONS
-      ? parsePositiveInteger(
-          environment.PI_RECALL_EMBEDDING_DIMENSIONS,
-          'PI_RECALL_EMBEDDING_DIMENSIONS',
-        )
-      : (file.embeddingDimensions ?? 2560),
+    embeddingNativeDimensions,
+    embeddingStoredDimensions,
     embeddingBatchSize: environment.PI_RECALL_EMBEDDING_BATCH_SIZE
       ? parsePositiveInteger(
           environment.PI_RECALL_EMBEDDING_BATCH_SIZE,
           'PI_RECALL_EMBEDDING_BATCH_SIZE',
         )
       : (file.embeddingBatchSize ?? 16),
-    rerankerBaseUrl:
-      environment.PI_RECALL_RERANKER_BASE_URL ??
-      file.rerankerBaseUrl ??
-      'http://192.168.0.67:8091/v1',
-    rerankerModel: environment.PI_RECALL_RERANKER_MODEL ?? file.rerankerModel ?? 'qwen3-rerank',
-    projectLineages,
+    projectLineages: normalizeRecallProjectLineages(file.projectLineages ?? {}),
     searchCandidateLimits: {
-      dense: resolveRecallCandidateLimit(
-        'PI_RECALL_DENSE_CANDIDATE_LIMIT',
-        environment.PI_RECALL_DENSE_CANDIDATE_LIMIT,
-        file.denseCandidateLimit,
-      ),
-      lexical: resolveRecallCandidateLimit(
-        'PI_RECALL_LEXICAL_CANDIDATE_LIMIT',
-        environment.PI_RECALL_LEXICAL_CANDIDATE_LIMIT,
-        file.lexicalCandidateLimit,
-      ),
-      identifier: resolveRecallCandidateLimit(
-        'PI_RECALL_IDENTIFIER_CANDIDATE_LIMIT',
-        environment.PI_RECALL_IDENTIFIER_CANDIDATE_LIMIT,
-        file.identifierCandidateLimit,
-      ),
+      dense: DEFAULT_RECALL_CHANNEL_CANDIDATE_LIMIT,
+      lexical: DEFAULT_RECALL_CHANNEL_CANDIDATE_LIMIT,
+      identifier: DEFAULT_RECALL_CHANNEL_CANDIDATE_LIMIT,
     },
+    chunkPolicy: { ...DEFAULT_RECALL_CHUNK_POLICY },
   };
 }

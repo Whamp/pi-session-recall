@@ -16,20 +16,15 @@ import {
   createRecallConversationService,
   type RecallConversationSearch,
   type RecallConversationService,
-  type RecallSearchMode,
 } from './recall-conversation-service.js';
-import { runRecallIndexCommand } from './recall-index-command.js';
-import {
-  MAX_RECALL_FINAL_RESULT_COUNT,
-  readRecallQualityGateDecision,
-  RECALL_QUALITY_RESULTS_PATH,
-} from './recall-quality-gate.js';
 
-/** Model-visible parameters for recall search; invocation directory is intentionally absent. */
+const DEFAULT_RECALL_FINAL_RESULT_COUNT = 5;
+const MAX_RECALL_FINAL_RESULT_COUNT = 10;
+
+/** Model-visible parameters for read-only recall search. */
 export interface PiRecallParameters {
   query: string;
   limit?: number;
-  mode?: RecallSearchMode;
   scope?: 'project' | 'global';
 }
 
@@ -37,60 +32,97 @@ interface PiRecallInvocationContext {
   cwd: ExtensionContext['cwd'];
 }
 
-/** Applies trusted Pi tool context and project-default scope to one recall service search. */
+/** Applies trusted Pi invocation context and project-default scope to one search. */
 export async function searchPiRecall(
   service: RecallConversationService,
   parameters: PiRecallParameters,
   context: PiRecallInvocationContext,
-  defaultResultLimit: number,
   signal?: AbortSignal,
 ): Promise<RecallConversationSearch> {
-  return service.search(parameters.query.trim(), parameters.limit ?? defaultResultLimit, {
-    mode: parameters.mode ?? 'hybrid',
-    scope: parameters.scope === 'global' ? RecallSearchScope.GLOBAL : RecallSearchScope.PROJECT,
-    invocationDirectory: context.cwd,
-    ...(signal ? { signal } : {}),
-  });
+  return service.search(
+    parameters.query.trim(),
+    parameters.limit ?? DEFAULT_RECALL_FINAL_RESULT_COUNT,
+    {
+      scope: parameters.scope === 'global' ? RecallSearchScope.GLOBAL : RecallSearchScope.PROJECT,
+      invocationDirectory: context.cwd,
+      ...(signal ? { signal } : {}),
+    },
+  );
 }
 
-/** Registers hybrid recall of past Pi conversations. Pi requires extension factories to be default exports. */
+/** Creates complete source geometry details for every displayed recall result. */
+export function createPiRecallToolDetails(search: RecallConversationSearch) {
+  return {
+    totalChunks: search.totalChunks,
+    searchPolicy: search.searchPolicy,
+    sources: search.results.map((result) => ({
+      documentKind: result.documentKind,
+      summaryKind: result.summaryKind,
+      evidenceKind: result.evidenceKind,
+      evidencePart: result.evidencePart,
+      evidenceRelation: result.evidenceRelation,
+      sessionOrigin: result.cwd,
+      projectIdentity: result.projectAttribution?.projectIdentity ?? null,
+      projectIdentitySource: result.projectAttribution?.identitySource ?? null,
+      sessionPath: result.sessionPath,
+      entryId: result.entryId.value,
+      contributingEntryIds: result.contributingEntryIds.map((id) => id.value),
+      sourceLineStart: result.sourceLineStart,
+      sourceLineEnd: result.sourceLineEnd,
+      sourceBlockStart: result.sourceBlockStart,
+      sourceBlockEnd: result.sourceBlockEnd,
+      characterStart: result.characterStart,
+      characterEnd: result.characterEnd,
+      isOnActiveBranch: result.isOnActiveBranch,
+      rankingScore: result.rankingScore,
+      activeBranchPrior: result.activeBranchPrior,
+      fusedScore: result.fusedScore,
+      dense: result.dense,
+      lexical: result.lexical,
+      identifier: result.identifier,
+      duplicateOccurrences: result.duplicateOccurrences.map((occurrence) => ({
+        documentId: occurrence.id,
+        sessionPath: occurrence.sessionPath,
+        entryId: occurrence.entryId.value,
+        contributingEntryIds: occurrence.contributingEntryIds.map((id) => id.value),
+        sourceLineStart: occurrence.sourceLineStart,
+        sourceLineEnd: occurrence.sourceLineEnd,
+        sourceBlockStart: occurrence.sourceBlockStart,
+        sourceBlockEnd: occurrence.sourceBlockEnd,
+        characterStart: occurrence.characterStart,
+        characterEnd: occurrence.characterEnd,
+      })),
+      expandedChunks:
+        result.neighborContext?.chunks.map((chunk) => ({
+          documentId: chunk.id,
+          sessionPath: chunk.sessionPath,
+          entryId: chunk.entryId.value,
+          sourceLineStart: chunk.sourceLineStart,
+          sourceLineEnd: chunk.sourceLineEnd,
+          sourceBlockStart: chunk.sourceBlockStart,
+          sourceBlockEnd: chunk.sourceBlockEnd,
+          characterStart: chunk.characterStart,
+          characterEnd: chunk.characterEnd,
+        })) ?? [],
+    })),
+  };
+}
+
+/** Registers read-only hybrid recall; all index writes belong to the standalone `psr` CLI. */
 export default async function recallExtension(
-  pi: Pick<ExtensionAPI, 'registerTool' | 'registerCommand'>,
+  pi: Pick<ExtensionAPI, 'registerTool'>,
 ): Promise<void> {
-  const qualityGateDecision = await readRecallQualityGateDecision(RECALL_QUALITY_RESULTS_PATH);
-  const configured = await loadRecallConversationConfig();
-  const selectedPolicy = qualityGateDecision.selectedPolicy;
-  const config = selectedPolicy
-    ? {
-        ...configured,
-        chunkPolicy: {
-          maxTokens: selectedPolicy.chunkPolicy.maxTokens,
-          overlapTokens: selectedPolicy.chunkPolicy.overlapTokens,
-        },
-        searchCandidateLimits: {
-          dense: selectedPolicy.candidateCount,
-          lexical: selectedPolicy.candidateCount,
-          identifier: selectedPolicy.candidateCount,
-        },
-      }
-    : configured;
-  const defaultResultLimit = selectedPolicy?.finalCount ?? 5;
-  let recallWarningHandler: ((message: string) => void) | undefined;
-  const service = createRecallConversationService(config, {
-    notifyWarning(message) {
-      recallWarningHandler?.(message);
-    },
-  });
+  const service = createRecallConversationService(await loadRecallConversationConfig());
   pi.registerTool({
     name: 'pi-session-recall',
     label: 'Pi Session Recall',
     description:
-      'Search past Pi conversations with dense, lexical, and case-preserving identifier retrieval. It defaults to project scope; choose global explicitly for cross-project evidence. Search defaults to deterministic hybrid ranking; choose deep-rerank only when ambiguous evidence warrants slower local Qwen scoring. Excludes hidden reasoning and derived recall output, keeps other raw tool evidence lexical-only, labels active and abandoned branches, and expands only valid same-run atomic neighbors with exact provenance. Use /pi-session-recall-index for explicit catch-up or repair; interactive Pi lifecycle and search operations never perform whole-session maintenance. Output is truncated to 2000 lines or 50KB.',
+      'Search the manually maintained Pi session index with dense, lexical, and case-preserving identifier retrieval. It defaults to project scope; choose global explicitly for cross-project evidence. Results cite the source JSONL path and line range so the surrounding records can be read directly. Search never updates the index; run `psr index` explicitly for maintenance. Output is truncated to 2000 lines or 50KB.',
     promptSnippet:
-      'Search past Pi conversations by meaning or exact text and recover remembered details',
+      'Search past Pi conversations by meaning or exact text and recover source-backed details',
     promptGuidelines: [
-      'Use pi-session-recall when a task depends on a conversation or detail from a past session and the current context does not contain reliable source evidence.',
-      'Treat pi-session-recall results as search leads; cite the primary source, every listed contributing entry, and any duplicate or expanded-chunk provenance used as evidence.',
+      'Use pi-session-recall when a task depends on a past conversation or detail absent from the current context.',
+      'Treat results as search leads and read the cited JSONL lines when surrounding source context matters.',
     ],
     parameters: Type.Object({
       query: Type.String({
@@ -102,13 +134,7 @@ export default async function recallExtension(
         Type.Integer({
           minimum: 1,
           maximum: MAX_RECALL_FINAL_RESULT_COUNT,
-          description: `Maximum matches to return (default ${defaultResultLimit})`,
-        }),
-      ),
-      mode: Type.Optional(
-        Type.Union([Type.Literal('hybrid'), Type.Literal('deep-rerank')], {
-          description:
-            'Ranking depth: hybrid is the fast default; deep-rerank adds slower local Qwen scoring',
+          description: `Maximum matches to return (default ${DEFAULT_RECALL_FINAL_RESULT_COUNT})`,
         }),
       ),
       scope: Type.Optional(
@@ -122,18 +148,11 @@ export default async function recallExtension(
     async execute(toolCallId, parameters, signal, onUpdate, context) {
       void onUpdate;
       void toolCallId;
-      recallWarningHandler = (message) => context.ui.notify(message, 'warning');
       const query = parameters.query.trim();
       if (!query) {
         throw new Error('Recall query must not be blank');
       }
-      const search = await searchPiRecall(
-        service,
-        { ...parameters, query },
-        context,
-        defaultResultLimit,
-        signal,
-      );
+      const search = await searchPiRecall(service, { ...parameters, query }, context, signal);
       const formatted = formatRecallSearchResults(search);
       const truncation = truncateHead(formatted, {
         maxLines: DEFAULT_MAX_LINES,
@@ -144,79 +163,8 @@ export default async function recallExtension(
         : truncation.content;
       return {
         content: [{ type: 'text', text }],
-        details: {
-          totalChunks: search.totalChunks,
-          searchPolicy: search.searchPolicy,
-          sources: search.results.map((result) => ({
-            documentKind: result.documentKind,
-            summaryKind: result.summaryKind,
-            evidenceKind: result.evidenceKind,
-            evidenceRelation: result.evidenceRelation,
-            sessionOrigin: result.cwd,
-            projectIdentity: result.projectAttribution?.projectIdentity ?? null,
-            projectIdentitySource: result.projectAttribution?.identitySource ?? null,
-            sessionPath: result.sessionPath,
-            entryId: result.entryId.value,
-            contributingEntryIds: result.contributingEntryIds.map((id) => id.value),
-            isOnActiveBranch: result.isOnActiveBranch,
-            rankingScore: result.rankingScore,
-            rerankerScore: result.rerankerScore,
-            activeBranchPrior: result.activeBranchPrior,
-            fusedScore: result.fusedScore,
-            dense: result.dense,
-            lexical: result.lexical,
-            identifier: result.identifier,
-            duplicateOccurrences: result.duplicateOccurrences.map((occurrence) => ({
-              documentId: occurrence.id,
-              documentKind: occurrence.documentKind,
-              summaryKind: occurrence.summaryKind,
-              evidenceKind: occurrence.evidenceKind,
-              sessionPath: occurrence.sessionPath,
-              entryId: occurrence.entryId.value,
-              contributingEntryIds: occurrence.contributingEntryIds.map((id) => id.value),
-              isOnActiveBranch: occurrence.isOnActiveBranch,
-              characterStart: occurrence.characterStart,
-              characterEnd: occurrence.characterEnd,
-              fusedScore: occurrence.fusedScore,
-              dense: occurrence.dense,
-              lexical: occurrence.lexical,
-              identifier: occurrence.identifier,
-            })),
-            expandedChunks:
-              result.neighborContext?.chunks.map((chunk) => ({
-                documentId: chunk.id,
-                sessionPath: chunk.sessionPath,
-                entryId: chunk.entryId.value,
-                role: chunk.role,
-                textRunId: chunk.textRunId,
-                chunkIndex: chunk.chunkIndex,
-                characterStart: chunk.characterStart,
-                characterEnd: chunk.characterEnd,
-              })) ?? [],
-          })),
-        },
+        details: createPiRecallToolDetails(search),
       };
-    },
-  });
-
-  pi.registerCommand('pi-session-recall-index', {
-    description:
-      'Index production sessions only after the committed quality gate passes; use --rebuild to replace an incompatible generation',
-    async handler(argumentsText, context) {
-      recallWarningHandler = (message) => context.ui.notify(message, 'warning');
-      await runRecallIndexCommand({
-        argumentsText,
-        qualityGateDecision,
-        service,
-        ui: {
-          setStatus(status) {
-            context.ui.setStatus('pi-session-recall', status);
-          },
-          notify(message, level) {
-            context.ui.notify(message, level);
-          },
-        },
-      });
     },
   });
 }

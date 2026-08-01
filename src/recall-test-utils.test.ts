@@ -15,11 +15,11 @@ void test('recall test fixtures derive source geometry and preserve explicit ove
   const result = createTestRankedRecallSearchResult({
     id: 'result',
     content: 'result text',
-    rerankerScore: 0.75,
+    rankingScore: 0.75,
   });
 
   assert.equal(chunk.characterEnd, 12);
   assert.equal(chunk.role, 'user');
-  assert.equal(result.rerankerScore, 0.75);
+  assert.equal(result.rankingScore, 0.75);
   assert.equal(result.content, 'result text');
 });

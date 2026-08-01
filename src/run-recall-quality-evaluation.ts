@@ -14,8 +14,8 @@ import {
   RECALL_RRF_RANK_CONSTANT,
 } from './fuse-recall-search-candidates.js';
 import type { ConversationIndexSummary } from './incremental-session-indexer.js';
-import { createLocalEmbeddingClient, type LocalEmbeddingClient } from './local-embedding-client.js';
-import type { LocalRerankerClient } from './local-reranker-client.js';
+import type { RecallEmbeddingProvider } from './recall-inference-capabilities.js';
+import { createOctenHttpEmbeddingProvider } from './octen-http-embedding-provider.js';
 import {
   measureRecallQuality,
   type RecallQualitySearchObservation,
@@ -54,7 +54,7 @@ const RECALL_QUALITY_WORK_DIRECTORY_NAME = 'recall-quality-evaluation';
 
 /** Local model and tokenizer boundaries that make the bounded runner integration-testable. */
 export interface RecallQualityEvaluationDependencies {
-  embeddings?: LocalEmbeddingClient;
+  embeddingProvider?: RecallEmbeddingProvider;
   loadTokenizer?: () => Promise<ConversationTextTokenizer>;
 }
 
@@ -80,7 +80,6 @@ export interface RecallQualityExecutedWork {
   evaluationCases: number;
   indexRuns: number;
   executedSearchRequests: number;
-  rerankerRequests: number;
   chunkEmbeddingRequests: number;
   maximumCandidatesPerSearch: number;
   repositoryIdentityResolutions: number;
@@ -104,7 +103,7 @@ export interface RecallQualityEvaluationIdentity {
 
 /** Raw measured configurations, gate selection, and bounded-work evidence from one run. */
 export interface RecallQualityEvaluationResult {
-  version: 4;
+  version: 5;
   evaluationIdentity: RecallQualityEvaluationIdentity;
   startedAt: string;
   completedAt: string;
@@ -146,7 +145,6 @@ function assertSafeRecallQualityPaths(
     baseConfig.databasePath,
     baseConfig.statePath,
     baseConfig.manifestPath,
-    baseConfig.embeddingCacheDirectory,
     baseConfig.lockPath,
   ].map((path) => resolve(path));
   for (const protectedPath of protectedPaths) {
@@ -162,16 +160,17 @@ function assertSafeRecallQualityPaths(
   return resolvedWorkDirectory;
 }
 
-function createEvaluationEmbeddingClient(
+function createEvaluationEmbeddingProvider(
   config: RecallConversationConfig,
-  dependency?: LocalEmbeddingClient,
-): LocalEmbeddingClient {
+  dependency?: RecallEmbeddingProvider,
+): RecallEmbeddingProvider {
   return (
     dependency ??
-    createLocalEmbeddingClient({
+    createOctenHttpEmbeddingProvider({
       baseUrl: config.embeddingBaseUrl,
       model: config.embeddingModel,
-      dimensions: config.embeddingDimensions,
+      nativeDimensions: config.embeddingNativeDimensions,
+      storedDimensions: config.embeddingStoredDimensions,
       batchSize: config.embeddingBatchSize,
     })
   );
@@ -191,7 +190,6 @@ function createChunkPolicyConfig(
     databasePath: join(policyDirectory, 'zvec'),
     statePath: join(policyDirectory, 'index-state.json'),
     manifestPath: join(policyDirectory, 'index-manifest.json'),
-    embeddingCacheDirectory: join(policyDirectory, 'embedding-cache'),
     lockPath: join(policyDirectory, 'operation.lock'),
     projectLineages: normalizeRecallProjectLineages(corpus.specification.projectLineages),
     chunkPolicy: {
@@ -288,14 +286,12 @@ async function createEvaluationProjectResolver(
 }
 
 function createServiceDependencies(
-  embeddings: LocalEmbeddingClient,
-  reranker: LocalRerankerClient,
+  embeddingProvider: RecallEmbeddingProvider,
   resolveProjectIdentity: (workingDirectory: string) => Promise<ResolvedProjectIdentity | null>,
   loadTokenizer?: () => Promise<ConversationTextTokenizer>,
 ): RecallConversationDependencies {
   return {
-    embeddings,
-    reranker,
+    embeddingProvider,
     resolveProjectIdentity,
     ...(loadTokenizer ? { loadTokenizer } : {}),
   };
@@ -305,7 +301,6 @@ function createEvaluationSearchOptions(
   evaluationCase: LoadedRecallQualityCorpus['specification']['cases'][number],
 ): RecallConversationSearchOptions {
   return {
-    mode: 'hybrid',
     scope: evaluationCase.scope,
     ...(evaluationCase.invocationDirectory
       ? { invocationDirectory: evaluationCase.invocationDirectory }
@@ -340,21 +335,14 @@ export async function runRecallQualityEvaluation(
   await rm(workDirectory, { recursive: true, force: true });
   await mkdir(workDirectory, { recursive: true });
 
-  const embeddings = createEvaluationEmbeddingClient(
+  const embeddingProvider = createEvaluationEmbeddingProvider(
     options.baseConfig,
-    options.dependencies?.embeddings,
+    options.dependencies?.embeddingProvider,
   );
   const projectResolver = await createEvaluationProjectResolver(options.corpus, workDirectory);
   const indexRuns: RecallQualityIndexRun[] = [];
   const configurations: RecallQualityConfigurationMeasurement[] = [];
   let executedSearchRequests = 0;
-  let rerankerRequests = 0;
-  const rejectingReranker: LocalRerankerClient = {
-    async rerankDocuments() {
-      rerankerRequests += 1;
-      throw new Error('Recall quality evaluation attempted an unexpected reranker request');
-    },
-  };
 
   for (const chunkPolicy of specification.chunkPolicies) {
     const firstCandidateCount = specification.candidateCounts[0];
@@ -371,8 +359,7 @@ export async function runRecallQualityEvaluation(
     const indexService = createRecallConversationService(
       indexConfig,
       createServiceDependencies(
-        embeddings,
-        rejectingReranker,
+        embeddingProvider,
         projectResolver.resolveProjectIdentity,
         options.dependencies?.loadTokenizer,
       ),
@@ -409,8 +396,7 @@ export async function runRecallQualityEvaluation(
       const searchService = createRecallConversationService(
         searchConfig,
         createServiceDependencies(
-          embeddings,
-          rejectingReranker,
+          embeddingProvider,
           projectResolver.resolveProjectIdentity,
           options.dependencies?.loadTokenizer,
         ),
@@ -453,7 +439,6 @@ export async function runRecallQualityEvaluation(
             evaluationCase.query,
             RECALL_QUALITY_FULL_POOL_LIMIT,
             {
-              mode: 'hybrid',
               scope: RecallSearchScope.GLOBAL,
               ...(evaluationCase.invocationDirectory
                 ? { invocationDirectory: evaluationCase.invocationDirectory }
@@ -484,11 +469,6 @@ export async function runRecallQualityEvaluation(
     }
   }
 
-  if (rerankerRequests !== 0) {
-    throw new Error(
-      `Recall quality reranker request bound exceeded: executed ${rerankerRequests}, maximum 0`,
-    );
-  }
   if (executedSearchRequests > specification.bounds.maximumSearchRequests) {
     throw new Error(
       `Recall quality search bound exceeded after run: executed ${executedSearchRequests}, maximum ${specification.bounds.maximumSearchRequests}`,
@@ -505,7 +485,7 @@ export async function runRecallQualityEvaluation(
   }
   const completedAt = new Date();
   return {
-    version: 4,
+    version: 5,
     evaluationIdentity: {
       defaultScope: RecallSearchScope.PROJECT,
       projectScopePolicyVersion: PROJECT_SCOPE_POLICY_VERSION,
@@ -536,7 +516,6 @@ export async function runRecallQualityEvaluation(
       evaluationCases: specification.cases.length,
       indexRuns: indexRuns.length,
       executedSearchRequests,
-      rerankerRequests,
       chunkEmbeddingRequests,
       maximumCandidatesPerSearch: Math.max(...specification.candidateCounts) * 3,
       repositoryIdentityResolutions: projectResolver.repositoryIdentityResolutions,

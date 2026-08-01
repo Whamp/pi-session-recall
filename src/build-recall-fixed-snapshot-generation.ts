@@ -10,7 +10,10 @@ import { Value } from 'typebox/value';
 import { RecallFixedSnapshotBuildFaultStage } from './enums.js';
 import { InvalidRecallSessionSourceError } from './errors.js';
 import { isUnknownRecord } from './is-unknown-record.js';
-import { openRecallZvecValidationStore } from './open-recall-zvec-validation-store.js';
+import {
+  openRecallZvecValidationStore,
+  openRecallZvecWritableStoreAfterClose,
+} from './open-recall-zvec-validation-store.js';
 import {
   openValidatedRecallGeneration,
   type OpenedValidatedRecallGeneration,
@@ -946,16 +949,26 @@ async function resolveDenseRows(
   });
 }
 
-function openFixedSnapshotStoreSession(
+async function openFixedSnapshotStoreSession(
   paths: Readonly<ReturnType<typeof createRecallGenerationComponentPaths>>,
-): RecallFixedSnapshotStoreSession {
+  signal?: AbortSignal,
+): Promise<RecallFixedSnapshotStoreSession> {
   const opened: ZVecCollection[] = [];
   try {
-    const lexicalSource = ZVecOpen(paths.lexicalSourceStorePath);
+    const lexicalSource = await openRecallZvecWritableStoreAfterClose(
+      () => ZVecOpen(paths.lexicalSourceStorePath),
+      signal,
+    );
     opened.push(lexicalSource);
-    const dense = ZVecOpen(paths.denseStorePath);
+    const dense = await openRecallZvecWritableStoreAfterClose(
+      () => ZVecOpen(paths.denseStorePath),
+      signal,
+    );
     opened.push(dense);
-    const sessionProjection = ZVecOpen(paths.sessionProjectionStorePath);
+    const sessionProjection = await openRecallZvecWritableStoreAfterClose(
+      () => ZVecOpen(paths.sessionProjectionStorePath),
+      signal,
+    );
     opened.push(sessionProjection);
     return { lexicalSource, dense, sessionProjection };
   } catch (error) {
@@ -1402,7 +1415,7 @@ export async function buildRecallFixedSnapshotGeneration(
         ),
       ];
     }
-    storeSession = openFixedSnapshotStoreSession(paths);
+    storeSession = await openFixedSnapshotStoreSession(paths, options.signal);
     let checkpointedPhysicalSourceCount = 0;
     let storeSessionRecordCount = 0;
     for (const [sourceIndex, source] of sourcesInBuildOrder.entries()) {
@@ -1461,7 +1474,7 @@ export async function buildRecallFixedSnapshotGeneration(
       pendingPhysicalSourceCheckpoints = [];
       storeSessionRecordCount = 0;
       if (sourceIndex < sourcesInBuildOrder.length - 1) {
-        storeSession = openFixedSnapshotStoreSession(paths);
+        storeSession = await openFixedSnapshotStoreSession(paths, options.signal);
       }
     }
   } finally {

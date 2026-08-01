@@ -162,7 +162,15 @@ void test('fixed snapshot build keeps one writable store session across physical
 
 void test('fixed snapshot build bounds writable store sessions by generated record volume', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'recall-fixed-snapshot-record-sessions-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  let transientWritableLock: ReturnType<typeof ZVecOpen> | undefined;
+  let releaseTimer: ReturnType<typeof setTimeout> | undefined;
+  t.after(async () => {
+    if (releaseTimer !== undefined) {
+      clearTimeout(releaseTimer);
+    }
+    transientWritableLock?.closeSync();
+    await rm(root, { recursive: true, force: true });
+  });
   const sessionsDirectory = join(root, 'sessions');
   const dataDirectory = join(root, 'data');
   await mkdir(sessionsDirectory, { recursive: true });
@@ -215,9 +223,17 @@ void test('fixed snapshot build bounds writable store sessions by generated reco
         },
       };
     },
-    fixedSnapshotBuildFault(stage) {
+    fixedSnapshotBuildFault(stage, context) {
       if (stage === RecallFixedSnapshotBuildFaultStage.AFTER_STORE_CLOSE) {
         storeCloseCount += 1;
+        if (storeCloseCount === 1) {
+          transientWritableLock = ZVecOpen(join(context.generationDirectory, 'lexical-source'));
+          releaseTimer = setTimeout(() => {
+            transientWritableLock?.closeSync();
+            transientWritableLock = undefined;
+            releaseTimer = undefined;
+          }, 75);
+        }
       }
     },
     workerSignal: { signalDetachedWorker() {} },

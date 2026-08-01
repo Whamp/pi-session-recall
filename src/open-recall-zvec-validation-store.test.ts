@@ -3,7 +3,10 @@ import test from 'node:test';
 
 import fc from 'fast-check';
 
-import { openRecallZvecValidationStore } from './open-recall-zvec-validation-store.js';
+import {
+  openRecallZvecValidationStore,
+  openRecallZvecWritableStoreAfterClose,
+} from './open-recall-zvec-validation-store.js';
 
 void test('zvec validation open retries every transient lock failure and returns the opened store', async () => {
   await fc.assert(
@@ -24,6 +27,22 @@ void test('zvec validation open retries every transient lock failure and returns
     }),
     { numRuns: 20 },
   );
+});
+
+void test('zvec writable reopen retries its transient post-close lock', async () => {
+  const openedStore = { kind: 'opened-writable-store' } as const;
+  let openAttemptCount = 0;
+
+  const result = await openRecallZvecWritableStoreAfterClose(() => {
+    openAttemptCount += 1;
+    if (openAttemptCount <= 4) {
+      throw new Error("Can't lock read-write collection: /tmp/generated-zvec/LOCK");
+    }
+    return openedStore;
+  });
+
+  assert.equal(result, openedStore);
+  assert.equal(openAttemptCount, 5);
 });
 
 void test('zvec validation open preserves unrelated failures without retrying', async () => {

@@ -2,18 +2,18 @@
 
 ## Decision
 
-**Repaired clean-candidate evidence: PASS. Release evidence: PENDING FULL-CORPUS MEASUREMENT.**
+**Latest implementation gates: PASS. Candidate-bound certification and release evidence: PENDING.**
 
-The complete #132 read matrix, #133 write and lifecycle matrix, and #142 production-cardinality recovery certification all passed in disposable clean worktrees at runtime candidate `c492fa352d3f20c64de41f94f0cf2525a61710f9`. The recovery run reopened exact membership above the observed 119,662-record failure boundary in every store and matched uninterrupted with SIGKILL/resumed detached terminal membership.
+The complete #132 read matrix, #133 write and lifecycle matrix, and #142 production-cardinality recovery certification passed in disposable clean worktrees at superseded runtime candidate `c492fa352d3f20c64de41f94f0cf2525a61710f9`. Full-corpus execution then exposed an unbounded branch-leaf materialization algorithm and inadequate build observability. Runtime candidate `e8a6519` fixes both defects, but the candidate-bound matrices have not yet been rerun at that exact commit.
 
 Release evidence remains incomplete because the repaired candidate has not completed a fresh build from the approved immutable snapshot of the existing Pi session JSONL source corpus. The committed 15-file quality corpus and generated production-cardinality corpus do not replace that source snapshot. Full-corpus generation size and rebuild duration remain unmeasured. The build output must be a new target-format generation in disposable storage; the prior mixed-commit generation is not evidence. Production rebuild and activation remain separate human-approved operations.
 
 ## Candidate and environment
 
-- Runtime candidate commit: `c492fa352d3f20c64de41f94f0cf2525a61710f9`
-- Read-evidence candidate: `c492fa352d3f20c64de41f94f0cf2525a61710f9`
-- Write-evidence candidate: `c492fa352d3f20c64de41f94f0cf2525a61710f9`
-- Recovery-evidence candidate: `c492fa352d3f20c64de41f94f0cf2525a61710f9`
+- Runtime candidate commit: `e8a6519` (candidate-bound certification pending)
+- Superseded read-evidence candidate: `c492fa352d3f20c64de41f94f0cf2525a61710f9`
+- Superseded write-evidence candidate: `c492fa352d3f20c64de41f94f0cf2525a61710f9`
+- Superseded recovery-evidence candidate: `c492fa352d3f20c64de41f94f0cf2525a61710f9`
 - Node: `v24.16.0`
 - Platform: `linux/x64`
 - CPU: AMD Ryzen 7 8845HS w/ Radeon 780M Graphics
@@ -115,7 +115,11 @@ Paired Sol and GLM reviewers found concrete scale, snapshot-isolation, bootstrap
 
 The final paired review then retained four bounded defects: focused-test gates accepted skipped/TODO declarations, the recorded Git whitespace command checked only an empty clean-worktree diff, the fault-stage contract violated the required exported-enum rule, and this report carried stale snapshot hashes. Runtime candidate `057cf4550fad535470490b85eeba43523770eb1f` closed those findings.
 
-Full-corpus acceptance later exposed zvec cosine-vector rewriting and rebuild block-scaling defects. Runtime candidate `c492fa352d3f20c64de41f94f0cf2525a61710f9` supersedes the failed repair attempts: normalized vectors use inner-product HNSW while preserving cosine-distance result semantics, inactive rebuilds close by 2,048 generated records without per-batch read-only validation, and durable source checkpoints publish only after the containing writable store session closes. Bounded post-close retries now cover transient zvec locks on both read-only and read-write reopen. The evidence harness emits phase and source progress.
+Full-corpus acceptance first exposed zvec cosine-vector rewriting and rebuild block-scaling defects. Candidate `c492fa3` addressed those defects but its fresh run stopped making progress after checkpoint 904. That run was stopped, force-killed after graceful cancellation could not interrupt it, and marked rejected with no activation.
+
+A reflinked diagnostic replay under `cfeb0d1` identified the frozen phase as source materialization for source 910. Continuous V8 profiling attributed 92.1% of `ArrayIndexOfSmiOrObject` samples to `createBranchLeafIdsByEntryId`: it searched the complete entry array while walking every leaf ancestor and recomputed branch metadata per chunk. Candidate `e8a6519` replaces that work with parent-map traversal and per-logical-session caches. A 5,000-entry chain completes in 6.3 ms, and a disposable copy of the original failed generation crossed the former boundary and durably checkpointed source 910. This replay is diagnostic proof only, not acceptance evidence.
+
+Detached builds now publish exact named phases before potentially blocking calls, a five-second heartbeat, completed durations, a durable per-build operation log, and a V8 CPU profile. Status reports a stall when both the operation and heartbeat are stale for 30 seconds. An independent watchdog captures the phase, process statistics, and profile path and terminates the worker if both remain frozen for 30 minutes.
 
 ## Clean-candidate gates
 
@@ -126,7 +130,7 @@ Full-corpus acceptance later exposed zvec cosine-vector rewriting and rebuild bl
 - Type-aware oxlint over `src`: PASS.
 - oxfmt over the repository: PASS.
 - Slop-scan delta from the exact `b04b350` base worktree: 0 added, 0 worsened.
-- Full `npm test`: PASS — 646 passed, 0 failed, 4 expected skips out of 650 tests.
+- Full `npm test` at `e8a6519`: PASS — 649 passed, 0 failed, 4 expected skips out of 653 tests.
 
 ## Safety declaration
 
@@ -134,6 +138,7 @@ No production recall generation was opened or mutated. No original Pi session fi
 
 ## Remaining release gates
 
-1. Run a fresh replacement build from runtime candidate `c492fa352d3f20c64de41f94f0cf2525a61710f9` against the approved checksum-bound immutable snapshot of the existing Pi session JSONL source corpus. Do not resume or cite the rejected `f5dad26` generation, use the legacy recall database, use a prior mixed-commit generation, or substitute a synthetic corpus. The replacement build must read only the disposable snapshot and must not open production recall storage or mutate original Pi session files.
-2. Interrupt that real process, resume the same generation to terminal validation, and record total duration and final generation size.
-3. Review the clean-candidate and full-corpus evidence together before any production rebuild or activation.
+1. Rerun the read, write, and production-cardinality recovery certification from clean worktrees at exact runtime candidate `e8a6519` and bind the generated evidence to that commit.
+2. Only after those matrices pass, run a fresh replacement build from the exact certified commit against the approved checksum-bound immutable snapshot. Do not resume or cite either rejected full-corpus generation, use the legacy recall database, use a prior mixed-commit generation, or substitute a synthetic corpus.
+3. Interrupt that fresh real process, resume the same generation to terminal validation, and record total duration and final generation size.
+4. Review the clean-candidate and full-corpus evidence together before any production rebuild or activation.

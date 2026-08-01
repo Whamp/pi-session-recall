@@ -2,7 +2,7 @@
   "version": 2,
   "environment": {
     "command": "npm run evaluate:recall",
-    "gitCommit": "b3a8facb6c7c4367c34e9cd8fbd4e9cc838ec284",
+    "gitCommit": "8d0914a5dbc30178f2e4c53ff701d3ad8c7ef7a2",
     "gitDirty": false,
     "nodeVersion": "v24.16.0",
     "platform": "linux",
@@ -11,10 +11,8 @@
     "embeddingBaseUrl": "http://192.168.0.67:8090/v1",
     "embeddingModel": "octen-embed",
     "embeddingServedModelId": "Octen/Octen-Embedding-4B",
-    "embeddingArtifact": "Octen-Embedding-4B.Q8_0.gguf",
-    "embeddingDimensions": 2560,
-    "rerankerBaseUrl": "http://192.168.0.67:8091/v1",
-    "rerankerModel": "qwen3-rerank"
+    "embeddingNativeDimensions": 2560,
+    "embeddingStoredDimensions": 1024
   },
   "specification": {
     "version": 3,
@@ -36,7 +34,7 @@
         },
         {
           "fileName": "summaries.jsonl",
-          "sha256": "ce199336000b428686853fd0d605a13df12cd31e83f7b3bfe5ad5f8ba6c07c8b"
+          "sha256": "fcca6d8d9f91b4fbace2bf793b8b191784beac402c6dd01f136e21fd811af98c"
         },
         {
           "fileName": "duplicate-a.jsonl",
@@ -537,7 +535,7 @@
     }
   },
   "result": {
-    "version": 4,
+    "version": 5,
     "evaluationIdentity": {
       "defaultScope": "project",
       "projectScopePolicyVersion": 1,
@@ -556,11 +554,11 @@
       },
       "finalResultCount": 5
     },
-    "startedAt": "2026-07-26T03:43:45.785Z",
-    "completedAt": "2026-07-26T03:43:52.892Z",
-    "durationMilliseconds": 7107.496068,
-    "specificationPath": "/home/will/projects/pi-session-recall/.worktrees/fix-recall-runtime-contention/evaluation/recall-quality-cases.json",
-    "specificationSha256": "b5209236a48feb2a8ffca5358ef62ac609ad82630d28d079466985470cbe39d9",
+    "startedAt": "2026-08-01T22:40:39.971Z",
+    "completedAt": "2026-08-01T22:40:45.741Z",
+    "durationMilliseconds": 5770.650694,
+    "specificationPath": "/home/will/projects/pi-session-recall/.worktrees/restore-simple-recall/evaluation/recall-quality-cases.json",
+    "specificationSha256": "9ef0222c96653542ce9f0a2aa23fa34c2743f7920d658e5675c2dcea4f947046",
     "corpusId": "recall-quality-project-scoped-bounded-v3",
     "indexRuns": [
       {
@@ -570,14 +568,14 @@
           "overlapTokens": 64
         },
         "totalChunks": 128,
-        "indexLatencyMilliseconds": 5849.12025,
+        "indexLatencyMilliseconds": 4845.313495,
         "indexSummary": {
           "scannedSessions": 15,
           "indexedSessions": 15,
           "removedSessions": 0,
-          "cacheHits": 1,
-          "newlyEmbeddedChunks": 124,
-          "embeddingRequestCount": 17,
+          "reusedVectors": 0,
+          "newlyEmbeddedChunks": 125,
+          "embeddingRequestCount": 15,
           "deletedChunks": 0,
           "failedSessions": []
         }
@@ -592,23 +590,23 @@
         },
         "candidateCount": 8,
         "totalChunks": 128,
-        "indexLatencyMilliseconds": 5849.12025,
+        "indexLatencyMilliseconds": 4845.313495,
         "measurement": {
           "caseCount": 17,
           "candidatePoolRecall": 1,
-          "candidatePoolDuplicateRate": 0.014705882352941176,
+          "candidatePoolDuplicateRate": 0.014184397163120567,
           "queryLatencyMilliseconds": {
-            "median": 58.93645900000047,
-            "p95": 61.89203400000042
+            "median": 42.025204999999914,
+            "p95": 47.066971000000194
           },
           "queryLatencyByScope": {
             "project": {
-              "median": 59.15794000000005,
-              "p95": 61.89203400000042
+              "median": 41.8255650000001,
+              "p95": 42.2302150000005
             },
             "global": {
-              "median": 58.760001999999986,
-              "p95": 60.7978949999997
+              "median": 42.376477000000705,
+              "p95": 47.066971000000194
             }
           },
           "policyFailureCaseIds": [],
@@ -624,10 +622,10 @@
               "preLimitChannelsVerified": true,
               "preLimitChannelMeasurements": [],
               "candidatePoolRecalled": true,
-              "rawCandidateCount": 12,
-              "groupedCandidateCount": 12,
+              "rawCandidateCount": 13,
+              "groupedCandidateCount": 13,
               "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 53.48255800000061,
+              "queryLatencyMilliseconds": 36.43575299999975,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -657,7 +655,7 @@
               "rawCandidateCount": 16,
               "groupedCandidateCount": 15,
               "candidatePoolDuplicateSlots": 1,
-              "queryLatencyMilliseconds": 60.7978949999997,
+              "queryLatencyMilliseconds": 47.066971000000194,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -687,7 +685,7 @@
               "rawCandidateCount": 3,
               "groupedCandidateCount": 3,
               "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 58.760001999999986,
+              "queryLatencyMilliseconds": 42.902743999999984,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -717,7 +715,7 @@
               "rawCandidateCount": 4,
               "groupedCandidateCount": 4,
               "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 58.93645900000047,
+              "queryLatencyMilliseconds": 42.5766279999998,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -747,7 +745,7 @@
               "rawCandidateCount": 8,
               "groupedCandidateCount": 8,
               "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 59.26466900000014,
+              "queryLatencyMilliseconds": 41.30415700000049,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -777,7 +775,7 @@
               "rawCandidateCount": 8,
               "groupedCandidateCount": 8,
               "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 58.00326700000005,
+              "queryLatencyMilliseconds": 41.83225700000003,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -807,7 +805,7 @@
               "rawCandidateCount": 12,
               "groupedCandidateCount": 12,
               "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 58.162882999999965,
+              "queryLatencyMilliseconds": 42.025204999999914,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -837,7 +835,7 @@
               "rawCandidateCount": 8,
               "groupedCandidateCount": 8,
               "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 56.46282799999972,
+              "queryLatencyMilliseconds": 44.37796199999957,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -867,7 +865,7 @@
               "rawCandidateCount": 9,
               "groupedCandidateCount": 9,
               "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 59.05843499999992,
+              "queryLatencyMilliseconds": 42.376477000000705,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -897,7 +895,7 @@
               "rawCandidateCount": 9,
               "groupedCandidateCount": 8,
               "candidatePoolDuplicateSlots": 1,
-              "queryLatencyMilliseconds": 58.94844100000046,
+              "queryLatencyMilliseconds": 42.99648700000034,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -949,7 +947,7 @@
               "rawCandidateCount": 3,
               "groupedCandidateCount": 3,
               "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 56.19625300000007,
+              "queryLatencyMilliseconds": 42.2302150000005,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -976,10 +974,10 @@
               "preLimitChannelsVerified": true,
               "preLimitChannelMeasurements": [],
               "candidatePoolRecalled": true,
-              "rawCandidateCount": 8,
-              "groupedCandidateCount": 8,
+              "rawCandidateCount": 9,
+              "groupedCandidateCount": 9,
               "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 58.759861999999885,
+              "queryLatencyMilliseconds": 41.615364999999656,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -1006,10 +1004,10 @@
               "preLimitChannelsVerified": true,
               "preLimitChannelMeasurements": [],
               "candidatePoolRecalled": true,
-              "rawCandidateCount": 10,
-              "groupedCandidateCount": 10,
+              "rawCandidateCount": 11,
+              "groupedCandidateCount": 11,
               "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 59.15794000000005,
+              "queryLatencyMilliseconds": 41.8255650000001,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -1039,7 +1037,7 @@
               "rawCandidateCount": 8,
               "groupedCandidateCount": 8,
               "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 59.65486200000032,
+              "queryLatencyMilliseconds": 41.861039999999775,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -1069,7 +1067,7 @@
               "rawCandidateCount": 7,
               "groupedCandidateCount": 7,
               "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 59.20821299999989,
+              "queryLatencyMilliseconds": 41.99819500000012,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -1099,7 +1097,7 @@
               "rawCandidateCount": 3,
               "groupedCandidateCount": 3,
               "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 61.89203400000042,
+              "queryLatencyMilliseconds": 41.291322999999466,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -1126,10 +1124,10 @@
               "preLimitChannelsVerified": true,
               "preLimitChannelMeasurements": [],
               "candidatePoolRecalled": true,
-              "rawCandidateCount": 8,
-              "groupedCandidateCount": 8,
+              "rawCandidateCount": 10,
+              "groupedCandidateCount": 10,
               "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 57.71616400000039,
+              "queryLatencyMilliseconds": 42.201162000000295,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -1183,9 +1181,9 @@
         "candidateCount": 8,
         "finalCount": 5,
         "totalChunks": 128,
-        "indexLatencyMilliseconds": 5849.12025,
+        "indexLatencyMilliseconds": 4845.313495,
         "candidatePoolRecall": 1,
-        "candidatePoolDuplicateRate": 0.014705882352941176,
+        "candidatePoolDuplicateRate": 0.014184397163120567,
         "finalRecall": 1,
         "contextUsefulness": 1,
         "sourceOccurrencePreservation": 1,
@@ -1195,17 +1193,17 @@
         "branchVerification": 1,
         "finalDuplicateRate": 0,
         "queryLatencyMilliseconds": {
-          "median": 58.93645900000047,
-          "p95": 61.89203400000042
+          "median": 42.025204999999914,
+          "p95": 47.066971000000194
         },
         "queryLatencyByScope": {
           "project": {
-            "median": 59.15794000000005,
-            "p95": 61.89203400000042
+            "median": 41.8255650000001,
+            "p95": 42.2302150000005
           },
           "global": {
-            "median": 58.760001999999986,
-            "p95": 60.7978949999997
+            "median": 42.376477000000705,
+            "p95": 47.066971000000194
           }
         },
         "policyFailureCaseIds": [],
@@ -1223,9 +1221,9 @@
           "candidateCount": 8,
           "finalCount": 5,
           "totalChunks": 128,
-          "indexLatencyMilliseconds": 5849.12025,
+          "indexLatencyMilliseconds": 4845.313495,
           "candidatePoolRecall": 1,
-          "candidatePoolDuplicateRate": 0.014705882352941176,
+          "candidatePoolDuplicateRate": 0.014184397163120567,
           "finalRecall": 1,
           "contextUsefulness": 1,
           "sourceOccurrencePreservation": 1,
@@ -1235,17 +1233,17 @@
           "branchVerification": 1,
           "finalDuplicateRate": 0,
           "queryLatencyMilliseconds": {
-            "median": 58.93645900000047,
-            "p95": 61.89203400000042
+            "median": 42.025204999999914,
+            "p95": 47.066971000000194
           },
           "queryLatencyByScope": {
             "project": {
-              "median": 59.15794000000005,
-              "p95": 61.89203400000042
+              "median": 41.8255650000001,
+              "p95": 42.2302150000005
             },
             "global": {
-              "median": 58.760001999999986,
-              "p95": 60.7978949999997
+              "median": 42.376477000000705,
+              "p95": 47.066971000000194
             }
           },
           "policyFailureCaseIds": [],
@@ -1259,8 +1257,7 @@
       "evaluationCases": 17,
       "indexRuns": 1,
       "executedSearchRequests": 20,
-      "rerankerRequests": 0,
-      "chunkEmbeddingRequests": 17,
+      "chunkEmbeddingRequests": 15,
       "maximumCandidatesPerSearch": 24,
       "repositoryIdentityResolutions": 5
     }

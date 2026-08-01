@@ -924,7 +924,7 @@ void test('applying a valid append in arbitrary record partitions equals applyin
   );
 });
 
-void test('projector rejects malformed links and payload overflow with explicit reconciliation', async () => {
+void test('projector rejects malformed links without imposing a whole-session payload ceiling', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'recall-project-reconcile-'));
   const sessionPath = join(directory, 'session.jsonl');
   await writeFile(
@@ -970,18 +970,14 @@ void test('projector rejects malformed links and payload overflow with explicit 
     ...appendDelta,
     records: appendDelta.records.filter(({ value }) => value.type === 'session'),
   };
-  assert.deepEqual(
+  assert.equal(
     projectRecallSessionAppend({
       physicalProjection,
       logicalProjections: [],
       appendDelta: validDelta,
       markers: [],
       quiescenceObserved: false,
-      maxProjectionPayloadBytes: 1,
-    }),
-    {
-      status: RecallAppendProjectionStatus.REQUIRES_RECONCILIATION,
-      repairReason: RecallProjectionRepairReason.PROJECTION_OVERFLOW,
-    },
+    }).status,
+    RecallAppendProjectionStatus.PROJECTED,
   );
 });

@@ -17,6 +17,7 @@ import {
 } from './enums.js';
 import { isUnknownRecord } from './is-unknown-record.js';
 import { createRecallConversationService } from './recall-conversation-service.js';
+import { readRecallGenerationSessionProjectionRecord } from './recall-generation-session-projection-records.js';
 import {
   createRecallActiveGenerationPointer,
   RECALL_GENERATION_REGISTRY_VERSION,
@@ -429,19 +430,16 @@ void test('configured service materializes removed sources from captured bytes a
       projectionRow.fields.physicalSourceIdentity,
       expectedSource.physicalSourceIdentity,
     );
-    const projection: unknown = JSON.parse(String(projectionRow.fields.projectionJson));
-    assert.ok(isUnknownRecord(projection));
-    const physicalSource: unknown = projection.physicalSource;
-    assert.deepEqual(physicalSource, expectedSource);
-    const ingestionProjectionPayload: unknown = projection.ingestionProjectionPayload;
-    assert.ok(isUnknownRecord(ingestionProjectionPayload));
-    const ingestionProjection: unknown = JSON.parse(
-      String(ingestionProjectionPayload.projectionJson),
-    );
-    assert.ok(isUnknownRecord(ingestionProjection));
-    assert.equal(ingestionProjection.sourcePath, sourcePath);
-    assert.equal(ingestionProjection.sourceDevice, capturedMetadata.dev.toString());
-    assert.equal(ingestionProjection.sourceInode, capturedMetadata.ino.toString());
+    const restored = readRecallGenerationSessionProjectionRecord({
+      collection: projectionStore,
+      generationId,
+      projectionRowId: projectionRow.id,
+    });
+    assert.deepEqual(restored.metadata.physicalSource, expectedSource);
+    assert.equal(restored.projection.projectionKind, 'physical_session');
+    assert.equal(restored.projection.sourcePath, sourcePath);
+    assert.equal(restored.projection.sourceDevice, capturedMetadata.dev.toString());
+    assert.equal(restored.projection.sourceInode, capturedMetadata.ino.toString());
   } finally {
     projectionStore.closeSync();
   }
@@ -1596,6 +1594,11 @@ void test('configured service keys lexical evidence, anchors, and projections by
       sourceProjectionRows.filter((row) => row.fields.projectionKind === 'logical_session').length,
       2,
     );
+    assert.equal(
+      sourceProjectionRows.filter((row) => row.fields.projectionKind === 'projection_segment')
+        .length,
+      0,
+    );
     const physicalProjectionRow = sourceProjectionRows.find(
       (row) => row.fields.projectionKind === 'physical_session',
     );
@@ -1647,5 +1650,109 @@ void test('configured service keys lexical evidence, anchors, and projections by
   } finally {
     afterDeletionLexical.closeSync();
     afterDeletionProjections.closeSync();
+  }
+});
+
+void test('configured service rebuilds logical state larger than one projection record', async (t) => {
+  const disposableRoot = await mkdtemp(join(tmpdir(), 'recall-segmented-large-projection-'));
+  t.after(() => rm(disposableRoot, { recursive: true, force: true }));
+  const sessionsDirectory = join(disposableRoot, 'sessions');
+  const dataDirectory = join(disposableRoot, 'recall');
+  const projectDirectory = join(disposableRoot, 'project');
+  const sourcePath = join(sessionsDirectory, 'large.jsonl');
+  await Promise.all([mkdir(sessionsDirectory), mkdir(dataDirectory), mkdir(projectDirectory)]);
+
+  const entryCount = 2;
+  await writeJsonl(sourcePath, [
+    {
+      type: 'session',
+      version: 3,
+      id: 'large-projection-session',
+      timestamp: '2026-08-01T00:00:00.000Z',
+      cwd: projectDirectory,
+    },
+    {
+      type: 'message',
+      id: 'large-entry',
+      parentId: null,
+      timestamp: '2026-08-01T00:00:01.000Z',
+      message: { role: 'assistant', content: [] },
+    },
+    {
+      type: 'session_info',
+      id: 'large-label',
+      parentId: 'large-entry',
+      timestamp: '2026-08-01T00:00:02.000Z',
+      name: `large-${'x'.repeat(9_000_000)}`,
+    },
+  ]);
+
+  const config = createPhysicalSourceGenerationTestConfig(dataDirectory, sessionsDirectory);
+  const service = createRecallConversationService(config, {
+    loadTokenizer: async () => tokenizer,
+    rerankingProfile: null,
+    reranker: null,
+    workerSignal: { signalDetachedWorker() {} },
+  });
+  const generationId = 'generation_segmented_large_projection';
+  const created = await service.createRecallGenerationFromPhysicalSources({
+    generationId,
+    physicalSessionPaths: [sourcePath],
+  });
+  assert.deepEqual(await service.openValidatedRecallGeneration(generationId), created);
+  assert.equal(created.storeCounts.lexicalSource, entryCount);
+
+  const generationDirectory = join(config.generationRootDirectory, generationId);
+  const projectionStore = ZVecOpen(join(generationDirectory, 'session-projections'), {
+    readOnly: true,
+  });
+  const lexicalSourceStore = ZVecOpen(join(generationDirectory, 'lexical-source'), {
+    readOnly: true,
+  });
+  try {
+    const [logicalHead] = projectionStore.querySync({
+      filter: "projectionKind = 'logical_session'",
+      topk: 1,
+      outputFields: ['projectionJson'],
+      includeVector: false,
+    });
+    assert.ok(logicalHead);
+    assert.doesNotMatch(
+      String(logicalHead.fields.projectionJson),
+      /entryAnchorIds|entryDescriptors/u,
+    );
+    const logicalMetadata: unknown = JSON.parse(String(logicalHead.fields.projectionJson));
+    assert.ok(isUnknownRecord(logicalMetadata));
+    assert.ok(isUnknownRecord(logicalMetadata.ingestionProjectionSegments));
+    assert.ok(Number(logicalMetadata.ingestionProjectionSegments.payloadByteLength) > 8_388_608);
+
+    const segmentRows = projectionStore.querySync({
+      filter: "projectionKind = 'projection_segment'",
+      topk: projectionStore.stats.docCount,
+      outputFields: ['projectionJson'],
+      includeVector: false,
+    });
+    assert.ok(segmentRows.length >= 2);
+    for (const row of segmentRows) {
+      const segment: unknown = JSON.parse(String(row.fields.projectionJson));
+      assert.ok(isUnknownRecord(segment));
+      assert.equal(typeof segment.payloadBase64, 'string');
+      assert.doesNotMatch(
+        Buffer.from(String(segment.payloadBase64), 'base64').toString('utf8'),
+        /entryDescriptors/u,
+      );
+    }
+
+    const restored = readRecallGenerationSessionProjectionRecord({
+      collection: projectionStore,
+      lexicalSourceCollection: lexicalSourceStore,
+      generationId,
+      projectionRowId: logicalHead.id,
+    });
+    assert.equal(restored.projection.projectionKind, 'logical_session');
+    assert.equal(restored.projection.entryDescriptors.length, entryCount);
+  } finally {
+    lexicalSourceStore.closeSync();
+    projectionStore.closeSync();
   }
 });

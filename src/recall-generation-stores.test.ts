@@ -81,6 +81,7 @@ void test('configured service enumerates exact real-zvec generation membership b
             fields: {
               schemaVersion: 1,
               generationId,
+              projectionRecordId: id,
               projectionKind: RecallSessionProjectionKind.LOGICAL_SESSION,
               physicalSourceIdentity: 'source_generated_fixture',
               logicalSessionOccurrenceId: `logical_${String(ordinal).padStart(6, '0')}`,

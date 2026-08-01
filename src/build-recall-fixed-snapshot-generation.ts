@@ -200,6 +200,7 @@ const materializedExpectedPhysicalSourceArtifactSchema = Type.Object(
     lexicalSource: Type.Array(scalarRowSchema),
     dense: Type.Array(denseExpectationSchema),
     logicalSessionProjections: Type.Array(scalarRowSchema),
+    sessionProjectionSegments: Type.Array(scalarRowSchema),
     physicalSessionProjection: scalarRowSchema,
     physicalSourceIdentities: Type.Array(Type.String({ minLength: 1 }), {
       minItems: 1,
@@ -254,6 +255,7 @@ function countFixedSnapshotStoreSessionRecords(
     artifact.lexicalSource.length +
     artifact.dense.length +
     artifact.logicalSessionProjections.length +
+    artifact.sessionProjectionSegments.length +
     1
   );
 }
@@ -1112,6 +1114,11 @@ function verifyExpectedPhysicalSourceRows(
   );
   verifyExpectedScalarRows(
     stores.sessionProjection,
+    `projection segment ${responsibility}`,
+    artifact.sessionProjectionSegments,
+  );
+  verifyExpectedScalarRows(
+    stores.sessionProjection,
     `logical projection ${responsibility}`,
     artifact.logicalSessionProjections,
   );
@@ -1222,6 +1229,14 @@ async function writeExpectedPhysicalSource(
     RecallFixedSnapshotBuildFaultStage.AFTER_DENSE_WRITE,
     paths.generationDirectory,
     artifact.physicalSourceIdentity,
+  );
+  await upsertRowsInBoundedBatches(
+    stores.sessionProjection,
+    'session projection segment write',
+    RecallFixedSnapshotBuildOperationPhase.LOGICAL_PROJECTION_WRITE,
+    artifact.sessionProjectionSegments,
+    operationSource,
+    onBuildOperation,
   );
   await upsertRowsInBoundedBatches(
     stores.sessionProjection,
@@ -1673,6 +1688,7 @@ export async function buildRecallFixedSnapshotGeneration(
           ? []
           : [
               ...artifact.logicalSessionProjections.map(({ id }) => id),
+              ...artifact.sessionProjectionSegments.map(({ id }) => id),
               artifact.physicalSessionProjection.id,
             ],
       )

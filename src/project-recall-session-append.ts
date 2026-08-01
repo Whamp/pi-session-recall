@@ -1,6 +1,5 @@
 import {
   RecallAppendProjectionStatus,
-  RecallProjectionEncodingStatus,
   RecallProjectionRepairReason,
   RecallProjectionRepairState,
   RecallSessionProjectionKind,
@@ -16,7 +15,6 @@ import {
   createLogicalSessionOccurrenceId,
   createLogicalSessionProjectionId,
   createPhysicalSessionProjectionId,
-  encodeRecallSessionProjection,
   mergeRecallMarkerCheckpoint,
   type LogicalSessionProjection,
   type PhysicalSessionProjection,
@@ -38,7 +36,6 @@ export interface ProjectRecallSessionAppendInput {
   appendDelta: RecallSessionAppendDelta;
   markers: readonly RecallWorkMarker[];
   quiescenceObserved: boolean;
-  maxProjectionPayloadBytes?: number;
 }
 
 /** Successful scalar projections plus source spans whose contributors just crossed eligibility. */
@@ -443,19 +440,6 @@ function updatePhysicalMarkerCheckpoint(
   });
 }
 
-function projectionPayloadOverflows(
-  physicalProjection: PhysicalSessionProjection,
-  logicalProjections: readonly LogicalSessionProjection[],
-  maxPayloadBytes?: number,
-): boolean {
-  const options = maxPayloadBytes === undefined ? {} : { maxPayloadBytes };
-  return [physicalProjection, ...logicalProjections].some(
-    (projection) =>
-      encodeRecallSessionProjection(projection, options).status ===
-      RecallProjectionEncodingStatus.REQUIRES_RECONCILIATION,
-  );
-}
-
 /** Applies a complete append delta to scalar projections and emits only newly eligible source spans. */
 export function projectRecallSessionAppend(
   input: ProjectRecallSessionAppendInput,
@@ -506,15 +490,6 @@ export function projectRecallSessionAppend(
     logicalSessionIds: logicalProjections.map(({ logicalSessionId }) => logicalSessionId),
     markerCheckpoint: updatePhysicalMarkerCheckpoint(input.physicalProjection, input.markers),
   };
-  if (
-    projectionPayloadOverflows(
-      physicalProjection,
-      logicalProjections,
-      input.maxProjectionPayloadBytes,
-    )
-  ) {
-    return reconciliation(RecallProjectionRepairReason.PROJECTION_OVERFLOW);
-  }
   return {
     status: RecallAppendProjectionStatus.PROJECTED,
     physicalProjection,

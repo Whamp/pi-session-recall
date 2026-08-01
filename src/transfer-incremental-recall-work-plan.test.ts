@@ -28,12 +28,12 @@ import {
   RecallSessionProjectionKind,
   RecallWorkMarkerTrigger,
 } from './enums.js';
-import { isUnknownRecord } from './is-unknown-record.js';
 import {
   createRecallPhysicalSourceStoreMembership,
   parseRecallGenerationPhysicalProjectionArtifact,
   type RecallPhysicalSourceExpectedMembership,
 } from './recall-generation-physical-projection.js';
+import { readRecallGenerationSessionProjectionRecord } from './recall-generation-session-projection-records.js';
 import {
   createRecallActiveGenerationPointer,
   RECALL_GENERATION_REGISTRY_VERSION,
@@ -44,10 +44,7 @@ import {
   createOctenEmbeddingModelProfile,
   createRecallEmbeddingProfileIdentity,
 } from './recall-model-profiles.js';
-import {
-  decodeRecallSessionProjection,
-  type RecallMarkerCheckpoint,
-} from './recall-session-projection.js';
+import { type RecallMarkerCheckpoint } from './recall-session-projection.js';
 import { createRecallWorkMarkerId, type RecallWorkMarker } from './recall-work-marker.js';
 import { resolveRecallPhysicalSourceIdentity } from './recall-source-identity.js';
 import { normalizeRecallProjectLineages } from './resolve-project-identity.js';
@@ -1054,13 +1051,8 @@ function readExactPhysicalSourceState(
       ]),
       sessionProjection: listExactFixtureRecordIds(sessionProjection, [
         {
-          filter: `(${sourceFilter}) AND (projectionKind = '${RecallSessionProjectionKind.PHYSICAL_SESSION}')`,
-          uniquePartitionField: 'physicalSourceIdentity',
-          outputFields: [],
-        },
-        {
-          filter: `(${sourceFilter}) AND (projectionKind = '${RecallSessionProjectionKind.LOGICAL_SESSION}')`,
-          uniquePartitionField: 'logicalSessionOccurrenceId',
+          filter: sourceFilter,
+          uniquePartitionField: 'projectionRecordId',
           outputFields: [],
         },
       ]),
@@ -1078,14 +1070,11 @@ function readExactPhysicalSourceState(
       physicalProjectionRow.fields.projectionJson,
       generationId,
     );
-    const projectionArtifact: unknown = JSON.parse(
-      String(physicalProjectionRow.fields.projectionJson),
-    );
-    assert.ok(isUnknownRecord(projectionArtifact));
-    const projection = decodeRecallSessionProjection(
-      projectionArtifact.ingestionProjectionPayload,
-      { expectedGenerationId: generationId },
-    );
+    const projection = readRecallGenerationSessionProjectionRecord({
+      collection: sessionProjection,
+      generationId,
+      projectionRowId: physicalProjectionRowId,
+    }).projection;
     assert.equal(projection.projectionKind, RecallSessionProjectionKind.PHYSICAL_SESSION);
     return {
       recordIds,

@@ -13,7 +13,6 @@ import {
   RecallAppendProjectionStatus,
   RecallEligibilityThreshold,
   RecallIncrementalTransferOutcomeKind,
-  RecallProjectionEncodingStatus,
   RecallSessionProjectionKind,
 } from './enums.js';
 import { isUnknownRecord } from './is-unknown-record.js';
@@ -32,6 +31,10 @@ import {
   type RecallPhysicalSourceExpectedMembership,
 } from './recall-generation-physical-projection.js';
 import {
+  createRecallGenerationSessionProjectionRecords,
+  readRecallGenerationSessionProjectionRecord,
+} from './recall-generation-session-projection-records.js';
+import {
   createRecallGenerationComponentPaths,
   readRecallGenerationVectorValues,
   type RecallGenerationStoreContract,
@@ -44,8 +47,6 @@ import { readRecallGenerationValidationReceipt } from './recall-generation-valid
 import type { RecallEmbeddingProvider } from './recall-inference-capabilities.js';
 import { acknowledgeCoveredRecallMarkers } from './recall-marker-spool.js';
 import {
-  decodeRecallSessionProjection,
-  encodeRecallSessionProjection,
   mergeRecallMarkerCheckpoint,
   type LogicalSessionProjection,
   type PhysicalSessionProjection,
@@ -98,6 +99,8 @@ interface PreparedTargetRecallTransfer {
   lexicalRows: RecallGenerationScalarRow[];
   denseRows: RecallGenerationDenseRow[];
   logicalProjectionRows: RecallGenerationScalarRow[];
+  sessionProjectionSegmentRows: RecallGenerationScalarRow[];
+  deletedSessionProjectionRowIds: string[];
   physicalProjectionRow: RecallGenerationScalarRow;
 }
 
@@ -421,30 +424,6 @@ function verifyRows(
   }
 }
 
-function parseIngestionProjection(
-  projectionJson: unknown,
-  generationId: string,
-): RecallSessionProjection {
-  if (typeof projectionJson !== 'string') {
-    throw new Error('Recall target incremental session projection JSON missing');
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(projectionJson);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`Recall target incremental session projection JSON invalid: ${message}`, {
-      cause: error,
-    });
-  }
-  if (typeof parsed !== 'object' || parsed === null || !('ingestionProjectionPayload' in parsed)) {
-    throw new Error('Recall target incremental ingestion projection missing');
-  }
-  return decodeRecallSessionProjection(parsed.ingestionProjectionPayload, {
-    expectedGenerationId: generationId,
-  });
-}
-
 function readCurrentTargetProjections(
   options: MarkerIncrementalRecallWorkPlanOptions,
   physicalSourceIdentity: string,
@@ -455,48 +434,42 @@ function readCurrentTargetProjections(
   const paths = createRecallGenerationComponentPaths(
     join(options.generation.generationRootDirectory, options.workPlan.targetGenerationId),
   );
-  const collection = ZVecOpen(paths.sessionProjectionStorePath, { readOnly: true });
+  const projectionCollection = ZVecOpen(paths.sessionProjectionStorePath, { readOnly: true });
+  let lexicalSourceCollection: ZVecCollection | undefined;
   try {
+    const openedLexicalSourceCollection = ZVecOpen(paths.lexicalSourceStorePath, {
+      readOnly: true,
+    });
+    lexicalSourceCollection = openedLexicalSourceCollection;
     const physicalRowId = `projection_${physicalSourceIdentity}`;
-    const fetchedPhysical = collection.fetchSync({
+    const physicalHead = projectionCollection.fetchSync({
       ids: [physicalRowId],
-      outputFields: ['projectionJson'],
+      outputFields: ['projectionRecordId'],
       includeVector: false,
     })[physicalRowId];
-    if (fetchedPhysical === undefined) {
+    if (physicalHead === undefined) {
       return { logicalProjections: [] };
     }
-    const physicalProjection = parseIngestionProjection(
-      fetchedPhysical.fields.projectionJson,
-      options.workPlan.targetGenerationId,
-    );
+    const physicalProjection = readRecallGenerationSessionProjectionRecord({
+      collection: projectionCollection,
+      generationId: options.workPlan.targetGenerationId,
+      projectionRowId: physicalRowId,
+    }).projection;
     if (physicalProjection.projectionKind !== RecallSessionProjectionKind.PHYSICAL_SESSION) {
       throw new Error('Recall target incremental physical projection kind mismatch');
     }
-    const logicalRowIds = physicalProjection.logicalSessionIds.map((logicalSessionId) => {
-      const logicalProjection = createRecallLogicalSessionOccurrenceId(
+    const logicalProjections = physicalProjection.logicalSessionIds.map((logicalSessionId) => {
+      const logicalSessionOccurrenceId = createRecallLogicalSessionOccurrenceId(
         physicalSourceIdentity,
         Number(logicalSessionId.split('@').at(-1)),
       );
-      return `projection_${logicalProjection}`;
-    });
-    const fetchedLogical =
-      logicalRowIds.length === 0
-        ? {}
-        : collection.fetchSync({
-            ids: logicalRowIds,
-            outputFields: ['projectionJson'],
-            includeVector: false,
-          });
-    const logicalProjections = logicalRowIds.map((rowId) => {
-      const row = fetchedLogical[rowId];
-      if (row === undefined) {
-        throw new Error(`Recall target incremental logical projection missing: ${rowId}`);
-      }
-      const projection = parseIngestionProjection(
-        row.fields.projectionJson,
-        options.workPlan.targetGenerationId,
-      );
+      const rowId = `projection_${logicalSessionOccurrenceId}`;
+      const projection = readRecallGenerationSessionProjectionRecord({
+        collection: projectionCollection,
+        lexicalSourceCollection: openedLexicalSourceCollection,
+        generationId: options.workPlan.targetGenerationId,
+        projectionRowId: rowId,
+      }).projection;
       if (projection.projectionKind !== RecallSessionProjectionKind.LOGICAL_SESSION) {
         throw new Error(`Recall target incremental logical projection kind mismatch: ${rowId}`);
       }
@@ -504,7 +477,8 @@ function readCurrentTargetProjections(
     });
     return { physicalProjection, logicalProjections };
   } finally {
-    collection.closeSync();
+    lexicalSourceCollection?.closeSync();
+    projectionCollection.closeSync();
   }
 }
 
@@ -630,6 +604,7 @@ async function materializePreparedTargetTransfer(
     embeddingInput: string;
   }> = [];
   const logicalProjectionRows: RecallGenerationScalarRow[] = [];
+  const sessionProjectionSegmentRows: RecallGenerationScalarRow[] = [];
   for (const eligibleSession of eligibleSessions) {
     const projection = eligibleSession.logicalProjection;
     const logicalSessionOccurrenceId = createRecallLogicalSessionOccurrenceId(
@@ -684,7 +659,6 @@ async function materializePreparedTargetTransfer(
       }
     }
     const branchLeafIdsByEntryId = createBranchLeafIdsByEntryId(projection);
-    const entryAnchorIds: string[] = [];
     for (const descriptor of projection.entryDescriptors) {
       const entryAnchorId = createRecallEntryAnchorId({
         physicalSourceIdentity: physicalSource.physicalSourceIdentity,
@@ -694,7 +668,6 @@ async function materializePreparedTargetTransfer(
         startByte: descriptor.startByte,
         endByte: descriptor.endByte,
       });
-      entryAnchorIds.push(entryAnchorId);
       const common = createCommonLexicalFields({
         generationId,
         physicalSource,
@@ -849,34 +822,24 @@ async function materializePreparedTargetTransfer(
         denseInputs.push({ row, embeddingInput: document.content });
       }
     }
-    const encodedLogical = encodeRecallSessionProjection(projection);
-    if (encodedLogical.status !== RecallProjectionEncodingStatus.ENCODED) {
-      throw new Error(
-        `Recall target incremental logical projection exceeds the bounded payload: ${projection.logicalSessionId}`,
-      );
-    }
-    logicalProjectionRows.push({
-      id: `projection_${logicalSessionOccurrenceId}`,
-      fields: {
-        schemaVersion: 1,
+    const projectionRecords = createRecallGenerationSessionProjectionRecords({
+      generationId,
+      physicalSourceIdentity: physicalSource.physicalSourceIdentity,
+      logicalSessionOccurrenceId,
+      projectionRowId: `projection_${logicalSessionOccurrenceId}`,
+      projection,
+      metadata: {
         generationId,
         projectionKind: RecallSessionProjectionKind.LOGICAL_SESSION,
-        physicalSourceIdentity: physicalSource.physicalSourceIdentity,
+        physicalSource,
         logicalSessionOccurrenceId,
-        projectionJson: JSON.stringify({
-          schemaVersion: 1,
-          generationId,
-          projectionKind: RecallSessionProjectionKind.LOGICAL_SESSION,
-          physicalSource,
-          logicalSessionOccurrenceId,
-          rawSessionId: projection.rawSessionId ?? eligibleSession.graphView.logicalSessionId,
-          headerSourceLine: projection.headerDescriptor.sourceLine,
-          projectAttribution,
-          entryAnchorIds,
-          ingestionProjectionPayload: encodedLogical.payload,
-        }),
+        rawSessionId: projection.rawSessionId ?? eligibleSession.graphView.logicalSessionId,
+        headerSourceLine: projection.headerDescriptor.sourceLine,
+        projectAttribution,
       },
     });
+    logicalProjectionRows.push(projectionRecords.headRow);
+    sessionProjectionSegmentRows.push(...projectionRecords.segmentRows);
   }
   const denseNativeVectors = await options.embeddingProvider.embedDocuments(
     denseInputs.map(({ embeddingInput }) => embeddingInput),
@@ -921,47 +884,55 @@ async function materializePreparedTargetTransfer(
       vectors: { embedding },
     };
   });
-  const encodedPhysical = encodeRecallSessionProjection(physicalProjection);
-  if (encodedPhysical.status !== RecallProjectionEncodingStatus.ENCODED) {
-    throw new Error('Recall target incremental physical projection exceeds the bounded payload');
-  }
-  const physicalProjectionRow: RecallGenerationScalarRow = {
-    id: `projection_${physicalSource.physicalSourceIdentity}`,
-    fields: {
-      schemaVersion: 1,
-      generationId,
-      projectionKind: RecallSessionProjectionKind.PHYSICAL_SESSION,
-      physicalSourceIdentity: physicalSource.physicalSourceIdentity,
-      logicalSessionOccurrenceId: '',
-      projectionJson: JSON.stringify({
-        schemaVersion: 1,
-        generationId,
-        projectionKind: RecallSessionProjectionKind.PHYSICAL_SESSION,
-        physicalSource,
-        sourceByteSize: physicalProjection.appendCursorBytes,
-        logicalSessionOccurrenceIds: logicalProjections.map((projection) =>
-          createRecallLogicalSessionOccurrenceId(
-            physicalSource.physicalSourceIdentity,
-            projection.headerDescriptor.sourceLine,
-          ),
-        ),
-        expectedMembership: createPhysicalSourceExpectedMembership({
-          lexicalSource: [
-            ...new Set([...currentRecordIds.lexicalSource, ...lexicalRows.map(({ id }) => id)]),
-          ],
-          dense: [...new Set([...currentRecordIds.dense, ...denseRows.map(({ id }) => id)])],
-          sessionProjection: [
-            ...new Set([
-              ...currentRecordIds.sessionProjection,
-              ...logicalProjectionRows.map(({ id }) => id),
-              `projection_${physicalSource.physicalSourceIdentity}`,
-            ]),
-          ],
-        }),
-        ingestionProjectionPayload: encodedPhysical.payload,
+  const physicalProjectionRowId = `projection_${physicalSource.physicalSourceIdentity}`;
+  const physicalProjectionMetadata = {
+    generationId,
+    projectionKind: RecallSessionProjectionKind.PHYSICAL_SESSION,
+    physicalSource,
+    sourceByteSize: physicalProjection.appendCursorBytes,
+    logicalSessionOccurrenceIds: logicalProjections.map((projection) =>
+      createRecallLogicalSessionOccurrenceId(
+        physicalSource.physicalSourceIdentity,
+        projection.headerDescriptor.sourceLine,
+      ),
+    ),
+  };
+  const provisionalPhysicalRecords = createRecallGenerationSessionProjectionRecords({
+    generationId,
+    physicalSourceIdentity: physicalSource.physicalSourceIdentity,
+    logicalSessionOccurrenceId: '',
+    projectionRowId: physicalProjectionRowId,
+    projection: physicalProjection,
+    metadata: physicalProjectionMetadata,
+  });
+  const expectedSessionProjectionIds = [
+    ...logicalProjectionRows.map(({ id }) => id),
+    ...sessionProjectionSegmentRows.map(({ id }) => id),
+    provisionalPhysicalRecords.headRow.id,
+    ...provisionalPhysicalRecords.segmentRows.map(({ id }) => id),
+  ];
+  const expectedSessionProjectionIdSet = new Set(expectedSessionProjectionIds);
+  const deletedSessionProjectionRowIds = currentRecordIds.sessionProjection.filter(
+    (recordId) => !expectedSessionProjectionIdSet.has(recordId),
+  );
+  const physicalProjectionRecords = createRecallGenerationSessionProjectionRecords({
+    generationId,
+    physicalSourceIdentity: physicalSource.physicalSourceIdentity,
+    logicalSessionOccurrenceId: '',
+    projectionRowId: physicalProjectionRowId,
+    projection: physicalProjection,
+    metadata: {
+      ...physicalProjectionMetadata,
+      expectedMembership: createPhysicalSourceExpectedMembership({
+        lexicalSource: [
+          ...new Set([...currentRecordIds.lexicalSource, ...lexicalRows.map(({ id }) => id)]),
+        ],
+        dense: [...new Set([...currentRecordIds.dense, ...denseRows.map(({ id }) => id)])],
+        sessionProjection: expectedSessionProjectionIds,
       }),
     },
-  };
+  });
+  sessionProjectionSegmentRows.push(...physicalProjectionRecords.segmentRows);
   return {
     physicalSource,
     physicalProjection,
@@ -969,7 +940,9 @@ async function materializePreparedTargetTransfer(
     lexicalRows,
     denseRows,
     logicalProjectionRows,
-    physicalProjectionRow,
+    sessionProjectionSegmentRows,
+    deletedSessionProjectionRowIds,
+    physicalProjectionRow: physicalProjectionRecords.headRow,
   };
 }
 
@@ -1089,6 +1062,10 @@ async function recoverPendingIncrementalTransfer(
     parsed.projectionRows,
     'projection rows',
   );
+  const deletedProjectionRowIds = parseRecoveryRecordIds(
+    parsed.deletedProjectionRowIds,
+    'deleted projection row IDs',
+  );
   await coordinateRecallWriteWindow(
     {
       lockPath: options.generation.lockPath,
@@ -1105,6 +1082,13 @@ async function recoverPendingIncrementalTransfer(
         upsertMissingOrDamagedRows(lexicalSource, 'recovery lexical/source write', lexicalRows);
         upsertMissingOrDamagedRows(dense, 'recovery dense write', denseRows);
         upsertMissingOrDamagedRows(sessionProjection, 'recovery projection write', projectionRows);
+        if (deletedProjectionRowIds.length > 0) {
+          assertCheckedStatuses(
+            'recovery projection delete',
+            deletedProjectionRowIds,
+            sessionProjection.deleteSync(deletedProjectionRowIds),
+          );
+        }
       } catch (error) {
         operationError = error;
       }
@@ -1159,10 +1143,17 @@ async function recoverPendingIncrementalTransfer(
   if (physicalProjectionRow === undefined) {
     return null;
   }
-  const projection = parseIngestionProjection(
-    physicalProjectionRow.fields.projectionJson,
-    generationId,
-  );
+  const projectionStore = ZVecOpen(paths.sessionProjectionStorePath, { readOnly: true });
+  let projection: RecallSessionProjection;
+  try {
+    projection = readRecallGenerationSessionProjectionRecord({
+      collection: projectionStore,
+      generationId,
+      projectionRowId: physicalProjectionRow.id,
+    }).projection;
+  } finally {
+    projectionStore.closeSync();
+  }
   if (projection.projectionKind !== RecallSessionProjectionKind.PHYSICAL_SESSION) {
     throw new Error('Recall target incremental recovered physical projection kind mismatch');
   }
@@ -1206,7 +1197,11 @@ async function commitPreparedTargetTransfer(
     const denseBatch = prepared.denseRows.filter(({ id }) => evidenceIds.has(id));
     const lexicalBatch = batchIndex === 0 ? [...anchorRows, ...evidenceBatch] : evidenceBatch;
     const projectionRows = finalWindow
-      ? [...prepared.logicalProjectionRows, prepared.physicalProjectionRow]
+      ? [
+          ...prepared.sessionProjectionSegmentRows,
+          ...prepared.logicalProjectionRows,
+          prepared.physicalProjectionRow,
+        ]
       : [];
     const recovery = {
       version: 1,
@@ -1217,6 +1212,7 @@ async function commitPreparedTargetTransfer(
       evidenceRows: lexicalBatch,
       denseRows: denseBatch,
       projectionRows,
+      deletedProjectionRowIds: finalWindow ? prepared.deletedSessionProjectionRowIds : [],
       coveredMarkerIds: options.workPlan.sourceMarkerIds,
     };
     await coordinateRecallWriteWindow(
@@ -1269,6 +1265,11 @@ async function commitPreparedTargetTransfer(
           if (finalWindow) {
             upsertMissingOrDamagedRows(
               sessionProjection,
+              'projection segment write',
+              prepared.sessionProjectionSegmentRows,
+            );
+            upsertMissingOrDamagedRows(
+              sessionProjection,
               'logical projection write',
               prepared.logicalProjectionRows,
             );
@@ -1282,6 +1283,13 @@ async function commitPreparedTargetTransfer(
             upsertMissingOrDamagedRows(sessionProjection, 'physical projection write', [
               prepared.physicalProjectionRow,
             ]);
+            if (prepared.deletedSessionProjectionRowIds.length > 0) {
+              assertCheckedStatuses(
+                'obsolete projection segment delete',
+                prepared.deletedSessionProjectionRowIds,
+                sessionProjection.deleteSync(prepared.deletedSessionProjectionRowIds),
+              );
+            }
             await invokeIncrementalTransferFault(
               options,
               'after-physical-projection-write',
@@ -1364,17 +1372,11 @@ async function commitPreparedTargetTransfer(
   }
   const projectionStore = ZVecOpen(paths.sessionProjectionStorePath, { readOnly: true });
   try {
-    const row = projectionStore.fetchSync({
-      ids: [prepared.physicalProjectionRow.id],
-      outputFields: ['projectionJson'],
-      includeVector: false,
-    })[prepared.physicalProjectionRow.id];
-    if (row === undefined) {
-      throw new Error(
-        'Recall target incremental physical projection missing after reopened verification',
-      );
-    }
-    const projection = parseIngestionProjection(row.fields.projectionJson, generationId);
+    const projection = readRecallGenerationSessionProjectionRecord({
+      collection: projectionStore,
+      generationId,
+      projectionRowId: prepared.physicalProjectionRow.id,
+    }).projection;
     if (projection.projectionKind !== RecallSessionProjectionKind.PHYSICAL_SESSION) {
       throw new Error(
         'Recall target incremental physical projection kind mismatch after verification',
@@ -1416,13 +1418,8 @@ function createPhysicalSourceRecordEnumerations(
     case 'session-projection':
       return [
         {
-          filter: `(${sourceFilter}) AND (projectionKind = '${RecallSessionProjectionKind.PHYSICAL_SESSION}')`,
-          uniquePartitionField: 'physicalSourceIdentity',
-          outputFields: [],
-        },
-        {
-          filter: `(${sourceFilter}) AND (projectionKind = '${RecallSessionProjectionKind.LOGICAL_SESSION}')`,
-          uniquePartitionField: 'logicalSessionOccurrenceId',
+          filter: sourceFilter,
+          uniquePartitionField: 'projectionRecordId',
           outputFields: [],
         },
       ];
@@ -1810,54 +1807,63 @@ async function transferPhysicalSessionProjectionUpdate(
   await readRecallGenerationValidationReceipt(paths.validationReceiptPath);
   const projectionRowId = `projection_${physicalSource.physicalSourceIdentity}`;
   const collection = ZVecOpen(paths.sessionProjectionStorePath, { readOnly: true });
-  let currentFields: Record<string, unknown>;
+  let currentMetadata: Record<string, unknown>;
+  let currentProjection: RecallSessionProjection;
   try {
-    const current = collection.fetchSync({
-      ids: [projectionRowId],
-      outputFields: [
-        'schemaVersion',
-        'generationId',
-        'projectionKind',
-        'physicalSourceIdentity',
-        'logicalSessionOccurrenceId',
-        'projectionJson',
-      ],
-      includeVector: false,
-    })[projectionRowId];
-    if (current === undefined || typeof current.fields.projectionJson !== 'string') {
-      throw new Error(
-        `Recall target physical projection update row missing for ${physicalSource.physicalSourceIdentity}`,
-      );
-    }
-    let artifact: unknown;
-    try {
-      artifact = JSON.parse(current.fields.projectionJson);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      throw new Error(
-        `Recall target physical projection update artifact invalid for ${physicalSource.physicalSourceIdentity}: ${message}`,
-        { cause: error },
-      );
-    }
-    if (!isUnknownRecord(artifact)) {
-      throw new Error(
-        `Recall target physical projection update artifact invalid for ${physicalSource.physicalSourceIdentity}`,
-      );
-    }
-    const encoded = encodeRecallSessionProjection(projection);
-    if (encoded.status !== RecallProjectionEncodingStatus.ENCODED) {
-      throw new Error('Recall target incremental physical projection exceeds the bounded payload');
-    }
-    currentFields = {
-      ...current.fields,
-      projectionJson: JSON.stringify({
-        ...artifact,
-        ingestionProjectionPayload: encoded.payload,
-      }),
-    };
+    const currentRecord = readRecallGenerationSessionProjectionRecord({
+      collection,
+      generationId: workPlan.targetGenerationId,
+      projectionRowId,
+    });
+    currentMetadata = currentRecord.metadata;
+    currentProjection = currentRecord.projection;
   } finally {
     collection.closeSync();
   }
+  const currentRecordIds = readPhysicalSourceRecordIds(
+    paths,
+    physicalSource.physicalSourceIdentity,
+  );
+  const provisionalProjectionRecords = createRecallGenerationSessionProjectionRecords({
+    generationId: workPlan.targetGenerationId,
+    physicalSourceIdentity: physicalSource.physicalSourceIdentity,
+    logicalSessionOccurrenceId: '',
+    projectionRowId,
+    projection,
+    metadata: currentMetadata,
+  });
+  const currentPhysicalSegmentIds = new Set(
+    createRecallGenerationSessionProjectionRecords({
+      generationId: workPlan.targetGenerationId,
+      physicalSourceIdentity: physicalSource.physicalSourceIdentity,
+      logicalSessionOccurrenceId: '',
+      projectionRowId,
+      projection: currentProjection,
+      metadata: currentMetadata,
+    }).segmentRows.map(({ id }) => id),
+  );
+  const expectedSessionProjectionIds = [
+    ...currentRecordIds.sessionProjection.filter(
+      (recordId) => !currentPhysicalSegmentIds.has(recordId),
+    ),
+    ...provisionalProjectionRecords.segmentRows.map(({ id }) => id),
+  ];
+  const expectedSessionProjectionIdSet = new Set(expectedSessionProjectionIds);
+  const projectionRecords = createRecallGenerationSessionProjectionRecords({
+    generationId: workPlan.targetGenerationId,
+    physicalSourceIdentity: physicalSource.physicalSourceIdentity,
+    logicalSessionOccurrenceId: '',
+    projectionRowId,
+    projection,
+    metadata: {
+      ...currentMetadata,
+      expectedMembership: createPhysicalSourceExpectedMembership({
+        lexicalSource: currentRecordIds.lexicalSource,
+        dense: currentRecordIds.dense,
+        sessionProjection: expectedSessionProjectionIds,
+      }),
+    },
+  });
   const commitWorkPlan =
     options.physicalSessionProjectionUpdate.acknowledgeMarkers === false
       ? { ...workPlan, sourceMarkerIds: [], workItems: [] }
@@ -1886,7 +1892,11 @@ async function transferPhysicalSessionProjectionUpdate(
     lexicalRows: [],
     denseRows: [],
     logicalProjectionRows: [],
-    physicalProjectionRow: { id: projectionRowId, fields: currentFields },
+    sessionProjectionSegmentRows: projectionRecords.segmentRows,
+    deletedSessionProjectionRowIds: currentRecordIds.sessionProjection.filter(
+      (recordId) => !expectedSessionProjectionIdSet.has(recordId),
+    ),
+    physicalProjectionRow: projectionRecords.headRow,
   });
   return {
     kind: RecallIncrementalTransferOutcomeKind.COMMITTED,

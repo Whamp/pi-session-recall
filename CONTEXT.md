@@ -93,7 +93,7 @@ The immutable lexical/source-store record for one indexed session-graph entry. I
 _Avoid_: Evidence occurrence, session projection, conversation chunk
 
 **Session projection**:
-The small mutable account of physical source ingestion and logical session state kept separately from immutable recall evidence.
+The mutable account of physical source ingestion and logical session state kept separately from immutable recall evidence. One bounded head and any number of bounded projection segments represent it; no whole-session payload ceiling applies.
 _Avoid_: Conversation index, evidence document, global index state
 
 **Physical session projection**:
@@ -101,8 +101,12 @@ The sole durable per-source account of one physical session file's processed pos
 _Avoid_: Logical session projection, process lease, file snapshot, global progress record
 
 **Logical session projection**:
-The session projection for one logical session's effective leaf, active context, branches, compaction boundary, labels, eligible spans, and repair status.
+The session projection for one logical session's effective leaf, active context, branches, compaction boundary, labels, eligible spans, and repair status. It binds immutable entry descriptors by count and checksum but reads their values from entry anchors instead of storing a second copy.
 _Avoid_: Physical session projection, session graph, evidence document
+
+**Session projection segment**:
+One deterministic bounded record containing part of a physical or logical session projection's serialized mutable state. A bounded projection head binds the ordered segment count, byte length, and checksum. Small state stays inline in the head; larger state spills into segment rows. Growth adds segments instead of enlarging one store record without bound.
+_Avoid_: Logical session, source chunk, evidence document
 
 **Dense candidate**:
 An atomic conversation chunk surfaced because its meaning is close to the search query.

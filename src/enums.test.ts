@@ -9,6 +9,7 @@ import {
   RecallEligibilityThreshold,
   RecallEvidenceRelation,
   RecallGenerationCutoverState,
+  RecallGenerationSessionProjectionRecordKind,
   RecallIncrementalTransferOutcomeKind,
   RecallProjectionEncodingStatus,
   RecallProjectionRepairReason,
@@ -48,6 +49,11 @@ void test('incremental recall contract values keep their persisted wire spelling
   assert.deepEqual(Object.values(RecallSessionProjectionKind), [
     'physical_session',
     'logical_session',
+  ]);
+  assert.deepEqual(Object.values(RecallGenerationSessionProjectionRecordKind), [
+    'physical_session',
+    'logical_session',
+    'projection_segment',
   ]);
   assert.deepEqual(Object.values(RecallProjectionRepairState), [
     'ready',

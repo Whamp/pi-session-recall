@@ -147,10 +147,17 @@ export enum RecallMetadataSweepStatus {
   SUSPICIOUS_MASS_LOSS = 'suspicious_mass_loss',
 }
 
-/** Record kind persisted in the scalar-only session projection collection. */
+/** Domain kind of one complete in-memory session projection. */
 export enum RecallSessionProjectionKind {
   PHYSICAL_SESSION = 'physical_session',
   LOGICAL_SESSION = 'logical_session',
+}
+
+/** Record kind persisted in the generation-local session projection store. */
+export enum RecallGenerationSessionProjectionRecordKind {
+  PHYSICAL_SESSION = 'physical_session',
+  LOGICAL_SESSION = 'logical_session',
+  PROJECTION_SEGMENT = 'projection_segment',
 }
 
 /** Whether a session projection may continue incremental ingestion. */

@@ -10,13 +10,13 @@ import {
   resolveRecallGenerationDirectory,
 } from './recall-generation-state.js';
 import { listQuarantinedRecallMarkerIds } from './recall-generation-replay-markers.js';
+import { readRecallGenerationSessionProjectionRecord } from './recall-generation-session-projection-records.js';
 import {
   readRecallGenerationReplaySnapshot,
   RECALL_ACTIVATION_REPLAY_SNAPSHOT_FILE_NAME,
 } from './recall-generation-replay-snapshot.js';
 import { createRecallGenerationComponentPaths } from './recall-generation-stores.js';
 import { completeRecallGenerationReplayTransition } from './recall-generation-transitions.js';
-import { decodeRecallSessionProjection } from './recall-session-projection.js';
 import { visitExactZvecDocuments } from './visit-exact-zvec-documents.js';
 
 /** Registry, spool, and fixed-snapshot inputs for proving replacement replay complete. */
@@ -48,34 +48,14 @@ function readTargetPhysicalProjectionCoveredMarkerIds(
       {
         filter: `projectionKind = '${RecallSessionProjectionKind.PHYSICAL_SESSION}'`,
         uniquePartitionField: 'physicalSourceIdentity',
-        outputFields: ['projectionKind', 'projectionJson'],
+        outputFields: ['projectionKind', 'projectionRecordId'],
       },
       (record) => {
-        if (typeof record.fields.projectionJson !== 'string') {
-          throw new Error(
-            `Recall generation replay physical projection JSON missing for ${record.id}`,
-          );
-        }
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(record.fields.projectionJson);
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          throw new Error(
-            `Recall generation replay physical projection JSON invalid for ${record.id}: ${message}`,
-            { cause: error },
-          );
-        }
-        if (
-          typeof parsed !== 'object' ||
-          parsed === null ||
-          !('ingestionProjectionPayload' in parsed)
-        ) {
-          throw new Error(`Recall generation replay ingestion projection missing for ${record.id}`);
-        }
-        const projection = decodeRecallSessionProjection(parsed.ingestionProjectionPayload, {
-          expectedGenerationId: generationId,
-        });
+        const projection = readRecallGenerationSessionProjectionRecord({
+          collection,
+          generationId,
+          projectionRowId: record.id,
+        }).projection;
         if (projection.projectionKind !== RecallSessionProjectionKind.PHYSICAL_SESSION) {
           throw new Error(
             `Recall generation replay physical projection kind mismatch for ${record.id}`,

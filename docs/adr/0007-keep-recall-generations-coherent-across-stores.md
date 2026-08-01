@@ -10,7 +10,7 @@ One recall generation owns independent lexical/source, dense, and session projec
 
 Pi session JSONL remains the source of truth. Recall generations are derived, disposable, and rebuildable.
 
-The lexical/source store is authoritative for indexed evidence and source-neighborhood data. The dense store is only the exact embedded subset of that catalog. The session projection store is the sole mutable per-source ingestion account. In particular, each physical session projection owns its processed source position, logical-session membership, marker coverage, expected store counts and digests, and repair state. No manifest, registry entry, status file, or second index-state database duplicates that per-source progress.
+The lexical/source store is authoritative for indexed evidence and source-neighborhood data. The dense store is only the exact embedded subset of that catalog. The session projection store is the sole mutable per-source ingestion account. A bounded projection head binds deterministic state segments by count, byte length, and checksum. Small state stays inline in the head; larger state spills into separate bounded segment records. Logical heads bind entry descriptors by count and checksum while the lexical/source entry anchors own the descriptor values. In particular, each physical session projection owns its processed source position, logical-session membership, marker coverage, expected store counts and digests, and repair state. No manifest, registry entry, status file, or second index-state database duplicates that per-source progress.
 
 The generation manifest is written once, before store content, and never changed. It identifies the generation, all store schemas and indexes, import and text-processing policies, provenance and project-identity policies, embedding profile and dimensions, validation canaries, and compatibility requirements. It contains no changing progress, backlog, or record counts.
 
@@ -24,7 +24,7 @@ The worker divides evidence changes into batches of at most 32 documents. Each w
 
 1. Acquire the exclusive write window and persist a generation-specific recovery-required record before the first store mutation.
 2. For additions, write lexical/source rows and anchors before their matching dense rows. For confirmed deletion, remove dense rows before lexical/source rows and anchors.
-3. In the final window for a physical source, save its logical session projections, then save the physical session projection last.
+3. In the final window for a physical source, save new projection segments, save logical projection heads, save the physical projection head last, then delete segment rows that no head references.
 4. Close every changed store, reopen it, and verify the exact IDs, checksums, profile data, cross-store membership, and final physical session projection covered by that window.
 5. Durably remove the recovery-required record and release the write window.
 6. Acknowledge only the exact recall work markers covered by the reopened physical session projection.
@@ -44,7 +44,7 @@ Any error after mutation begins, including an uncertain store close, retains rec
 
 ## Bounded recovery
 
-Recovery opens the affected stores with write capability and reconstructs the recorded batch from the immutable source, retained marker, stable IDs, and checksums. It fetches and verifies existing rows before inserting, inserts missing rows, replaces only isolated damaged rows, and completes deletions idempotently. It never blindly upserts already-valid immutable evidence.
+Recovery opens the affected stores with write capability and reconstructs the recorded batch from the immutable source, retained marker, stable IDs, and checksums. It fetches and verifies existing rows before inserting, inserts missing rows, replaces only isolated damaged rows, deletes only projection segments recorded as obsolete after their replacement heads are present, and completes source deletions idempotently. It never blindly upserts already-valid immutable evidence.
 
 Recovery verifies and clears only the recorded batch. Earlier completed batches remain usable. If the damage cannot be isolated, an active generation remains unavailable until explicit rollback or rebuild; a damaged replacement build fails without affecting the old active generation.
 
@@ -56,7 +56,7 @@ A rebuild captures one fixed starting snapshot of approved physical sources, log
 
 An inactive replacement is not searchable while it builds. Its writer may therefore keep all three stores open across several physical sources instead of applying the active generation's per-window reopen protocol. It closes the writable stores when the batch reaches 2,048 generated records, then publishes the covered physical-source checkpoints. This measured bound avoids both one index block per small source and an unbounded HNSW build. It does not add a read-only validation pass after each batch.
 
-After the build closes its final writable batch, validation reopens the replacement and checks actual membership against the recorded evidence. It verifies every lexical/source occurrence and anchor, the exact dense-searchable subset and embedding profile, every cross-store checksum, projection coverage, store schema and indexes, counts and membership digests, and canaries. It also proves the replacement opens without raw session files, another generation, or an embedding cache. Counts and a few sample rows alone do not validate a generation.
+After the build closes its final writable batch, validation reopens the replacement and checks actual membership against the recorded evidence. It verifies every lexical/source occurrence and anchor, the exact dense-searchable subset and embedding profile, every projection head and segment, every cross-store checksum, projection coverage, store schema and indexes, counts and membership digests, and canaries. It also proves the replacement opens without raw session files, another generation, or an embedding cache. Counts and a few sample rows alone do not validate a generation.
 
 A resumable build resolves a vector in this order:
 

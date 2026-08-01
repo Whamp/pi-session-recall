@@ -3,7 +3,10 @@ import { existsSync } from 'node:fs';
 
 import type { ZVecCollection } from '@zvec/zvec';
 
-import { RecallSessionProjectionKind } from './enums.js';
+import {
+  RecallGenerationSessionProjectionRecordKind,
+  RecallSessionProjectionKind,
+} from './enums.js';
 import {
   parseRecallGenerationPhysicalProjectionArtifact,
   type RecallGenerationPhysicalProjectionArtifact,
@@ -103,7 +106,13 @@ function assertFetchedCanary(
             'evidenceOccurrenceId',
             'evidenceChecksum',
           ]
-        : ['generationId', 'physicalSourceIdentity', 'projectionKind', 'projectionJson'];
+        : [
+            'generationId',
+            'projectionRecordId',
+            'physicalSourceIdentity',
+            'projectionKind',
+            'projectionJson',
+          ];
   const record = collection.fetchSync({
     ids: [canary.recordId],
     outputFields,
@@ -163,6 +172,11 @@ function assertFetchedCanary(
     throw new Error(`Recall rollback health lexical-source canary mismatch: ${canary.recordId}`);
   }
   if (responsibility === 'session-projection') {
+    if (record.fields.projectionRecordId !== canary.recordId) {
+      throw new Error(
+        `Recall rollback health session-projection canary mismatch: ${canary.recordId}`,
+      );
+    }
     if (record.fields.projectionKind === RecallSessionProjectionKind.PHYSICAL_SESSION) {
       const artifact = parseRecallGenerationPhysicalProjectionArtifact(
         record.fields.projectionJson,
@@ -173,7 +187,11 @@ function assertFetchedCanary(
           `Recall rollback health session-projection canary mismatch: ${canary.recordId}`,
         );
       }
-    } else if (record.fields.projectionKind !== RecallSessionProjectionKind.LOGICAL_SESSION) {
+    } else if (
+      record.fields.projectionKind !== RecallSessionProjectionKind.LOGICAL_SESSION &&
+      record.fields.projectionKind !==
+        RecallGenerationSessionProjectionRecordKind.PROJECTION_SEGMENT
+    ) {
       throw new Error(
         `Recall rollback health session-projection canary mismatch: ${canary.recordId}`,
       );

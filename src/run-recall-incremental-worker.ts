@@ -46,8 +46,8 @@ import {
   decideConfirmedSessionDeletion,
   type ConfirmedSessionDeletionReconciliationResult,
 } from './confirmed-session-deletion-policy.js';
+import { readRecallGenerationSessionProjectionRecord } from './recall-generation-session-projection-records.js';
 import {
-  decodeRecallSessionProjection,
   mergeRecallMarkerCheckpoint,
   type PhysicalSessionProjection,
 } from './recall-session-projection.js';
@@ -725,31 +725,14 @@ async function loadTargetRecallKnownSourceInventory(
       {
         filter: `projectionKind = '${RecallSessionProjectionKind.PHYSICAL_SESSION}'`,
         uniquePartitionField: 'physicalSourceIdentity',
-        outputFields: ['projectionJson'],
+        outputFields: ['projectionRecordId'],
       },
-      ({ id, fields }) => {
-        if (typeof fields.projectionJson !== 'string') {
-          throw new Error(`Recall target physical projection JSON missing for ${id}`);
-        }
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(fields.projectionJson);
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          throw new Error(`Recall target physical projection JSON invalid for ${id}: ${message}`, {
-            cause: error,
-          });
-        }
-        if (
-          typeof parsed !== 'object' ||
-          parsed === null ||
-          !('ingestionProjectionPayload' in parsed)
-        ) {
-          throw new Error(`Recall target physical ingestion projection missing for ${id}`);
-        }
-        const projection = decodeRecallSessionProjection(parsed.ingestionProjectionPayload, {
-          expectedGenerationId: generationId,
-        });
+      ({ id }) => {
+        const projection = readRecallGenerationSessionProjectionRecord({
+          collection: store,
+          generationId,
+          projectionRowId: id,
+        }).projection;
         if (projection.projectionKind !== RecallSessionProjectionKind.PHYSICAL_SESSION) {
           throw new Error(`Recall target physical projection kind mismatch for ${id}`);
         }

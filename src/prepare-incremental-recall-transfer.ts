@@ -1,10 +1,9 @@
 import type { RecallMarkerReplayWorkPlan } from './coordinate-recall-marker-replay.js';
-import { RecallProjectionEncodingStatus, RecallProjectionRepairReason } from './enums.js';
+import { RecallProjectionEncodingStatus } from './enums.js';
 import type { RecallEmbeddingProvider } from './recall-inference-capabilities.js';
 import type { IncrementalRecallEligibleGraphView } from './materialize-incremental-recall-eligible-graph-view.js';
 import type { RecallChunkPolicy } from './recall-chunk-policy.js';
 import {
-  encodeRecallSessionProjection,
   mergeRecallMarkerCheckpoint,
   type LogicalSessionProjection,
   type PhysicalSessionProjection,
@@ -42,17 +41,8 @@ export interface PreparedIncrementalRecallTransfer {
   readonly embeddingRequestCount: number;
 }
 
-/** Projection overflow result that prevents tokenizer, embedding, lock, or zvec work. */
-export interface IncrementalRecallTransferReconciliation {
-  readonly status: RecallProjectionEncodingStatus.REQUIRES_RECONCILIATION;
-  readonly repairReason: RecallProjectionRepairReason.PROJECTION_OVERFLOW;
-  readonly byteLength: number;
-}
-
-/** Prepared transfer or explicit projection-overflow reconciliation. */
-export type PrepareIncrementalRecallTransferResult =
-  | PreparedIncrementalRecallTransfer
-  | IncrementalRecallTransferReconciliation;
+/** Prepared transfer whose projections will be persisted as independently bounded records. */
+export type PrepareIncrementalRecallTransferResult = PreparedIncrementalRecallTransfer;
 
 /** Source projections and injectable heavy boundaries for one pre-lock transfer preparation. */
 export interface PrepareIncrementalRecallTransferOptions {
@@ -63,7 +53,6 @@ export interface PrepareIncrementalRecallTransferOptions {
   loadTokenizer(): Promise<ConversationTextTokenizer>;
   resolveProjectIdentity(sessionOrigin: string): Promise<ResolvedProjectIdentity | null>;
   embeddingProvider: Pick<RecallEmbeddingProvider, 'embedDocuments'>;
-  maxProjectionPayloadBytes?: number;
   signal?: AbortSignal;
 }
 
@@ -144,28 +133,6 @@ function createCheckpointIntent(
   };
 }
 
-function findProjectionOverflow(
-  checkpointIntent: IncrementalRecallCheckpointIntent,
-  maxProjectionPayloadBytes?: number,
-): IncrementalRecallTransferReconciliation | null {
-  const encodingOptions =
-    maxProjectionPayloadBytes === undefined ? {} : { maxPayloadBytes: maxProjectionPayloadBytes };
-  for (const projection of [
-    checkpointIntent.physicalProjection,
-    ...checkpointIntent.logicalProjections,
-  ]) {
-    const encoded = encodeRecallSessionProjection(projection, encodingOptions);
-    if (encoded.status === RecallProjectionEncodingStatus.REQUIRES_RECONCILIATION) {
-      return Object.freeze({
-        status: RecallProjectionEncodingStatus.REQUIRES_RECONCILIATION,
-        repairReason: RecallProjectionRepairReason.PROJECTION_OVERFLOW,
-        byteLength: encoded.byteLength,
-      });
-    }
-  }
-  return null;
-}
-
 async function attributeIncrementalRecallDocuments(
   documents: readonly ReturnType<typeof buildSessionConversationDocuments>[number][],
   resolveProjectIdentity: PrepareIncrementalRecallTransferOptions['resolveProjectIdentity'],
@@ -231,10 +198,6 @@ export async function prepareIncrementalRecallTransfer(
   options: PrepareIncrementalRecallTransferOptions,
 ): Promise<PrepareIncrementalRecallTransferResult> {
   const checkpointIntent = createCheckpointIntent(options);
-  const overflow = findProjectionOverflow(checkpointIntent, options.maxProjectionPayloadBytes);
-  if (overflow !== null) {
-    return overflow;
-  }
   const tokenizer = await options.loadTokenizer();
   const builtDocuments = options.eligibleSessions.flatMap(
     ({ graphView, logicalProjection, newlyEligibleSpans }) => {

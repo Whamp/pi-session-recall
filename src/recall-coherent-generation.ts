@@ -13,6 +13,7 @@ import {
   writeRecallGenerationManifest,
   type RecallGenerationManifest,
 } from './recall-generation-manifest.js';
+import { readRecallGenerationSessionProjectionRecord } from './recall-generation-session-projection-records.js';
 import {
   createEmptyRecallGenerationStores,
   createRecallGenerationComponentPaths,
@@ -38,7 +39,6 @@ import {
   resolveRecallGenerationDirectory,
 } from './recall-generation-state.js';
 import type { RecallEmbeddingModelProfile } from './recall-model-profiles.js';
-import { decodeRecallSessionProjection } from './recall-session-projection.js';
 import { visitExactZvecDocuments } from './visit-exact-zvec-documents.js';
 import type { RecallProjectLineages } from './resolve-project-identity.js';
 
@@ -120,23 +120,14 @@ function hasMarkerCoveredIncrementalProjection(
       {
         filter: `projectionKind = '${RecallSessionProjectionKind.PHYSICAL_SESSION}'`,
         uniquePartitionField: 'physicalSourceIdentity',
-        outputFields: ['projectionKind', 'projectionJson'],
+        outputFields: ['projectionKind', 'projectionRecordId'],
       },
-      ({ fields }) => {
-        if (typeof fields.projectionJson !== 'string') {
-          return;
-        }
-        const parsed: unknown = JSON.parse(fields.projectionJson);
-        if (
-          typeof parsed !== 'object' ||
-          parsed === null ||
-          !('ingestionProjectionPayload' in parsed)
-        ) {
-          return;
-        }
-        const projection = decodeRecallSessionProjection(parsed.ingestionProjectionPayload, {
-          expectedGenerationId: generationId,
-        });
+      ({ id }) => {
+        const projection = readRecallGenerationSessionProjectionRecord({
+          collection,
+          generationId,
+          projectionRowId: id,
+        }).projection;
         if (
           projection.projectionKind === RecallSessionProjectionKind.PHYSICAL_SESSION &&
           projection.markerCheckpoint.coveredMarkerIds.length > 0

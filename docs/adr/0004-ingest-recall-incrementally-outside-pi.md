@@ -45,15 +45,15 @@ recall/
 
 The three generation stores are independent. Lexical/source evidence is the authoritative catalog, dense evidence is its exact embedded subset, and session projections are the sole mutable per-source ingestion account. The generation has no persistent embedding cache and no live reference to another generation.
 
-A marker carries one runtime sequence and physical-session identity. The worker orders and coalesces activity while preserving every branch exit. It performs metadata-only recovery sweeps, validates the append cursor and its 4 KiB boundary fingerprint, and reads only appended bytes during normal processing. Projection payloads contain scalar IDs, links, boundaries, and spans; payloads above 8 MiB require explicit reconciliation.
+A marker carries one runtime sequence and physical-session identity. The worker orders and coalesces activity while preserving every branch exit. It performs metadata-only recovery sweeps, validates the append cursor and its 4 KiB boundary fingerprint, and reads only appended bytes during normal processing. A bounded projection head binds deterministic state segments by count, byte length, and checksum. Small state stays inline in the head; larger state spills into separate bounded segment records. Logical projection state binds immutable entry descriptors by count and checksum and reads their values from entry anchors. A session may add projection segments without a whole-session payload ceiling; each segment record remains at most 8 MiB.
 
 The worker exits when no eligible work remains. A detached coalesced successor waits when marker publication races with an owned worker interval, so work published after the running worker's snapshot cannot be stranded. Bounded metadata sweep continuations and first missing-source observations schedule follow-up work without another lifecycle event. The worker is not a daemon, watcher, process lease, or source of global leaf authority. Concurrent runtimes contribute a monotonic union of observed context exits.
 
-Every cross-store write follows ADR 0007: prepare before locking; persist recovery-required state; add lexical/source rows before dense rows; delete dense rows before lexical/source rows; save logical projections and the physical session projection last; close, reopen, and verify; then acknowledge covered markers. Search may use each completed coherent batch while later batches remain pending.
+Every cross-store write follows ADR 0007: prepare before locking; persist recovery-required state; add lexical/source rows before dense rows; delete dense rows before lexical/source rows; save projection segments before their heads and the physical projection head last; close, reopen, and verify; then acknowledge covered markers. Search may use each completed coherent batch while later batches remain pending.
 
 ## Rebuild, recovery, and rollback
 
-A rebuild freezes incremental commits but not marker publication or search. It captures one starting snapshot of approved physical sources, logical sessions, source boundaries, and eligible contributors. During its existing source pass, it records expected exact output membership. It builds and optimizes an independent replacement beside the active generation, validates reopened stores without a second import or tokenization pass, and writes an immutable validation receipt. A failed or cancelled replacement never changes the active pointer.
+A rebuild freezes incremental commits but not marker publication or search. It captures one starting snapshot of approved physical sources, logical sessions, source boundaries, and eligible contributors. During its existing source pass, it records expected exact output membership, including every projection head and segment. It builds and optimizes an independent replacement beside the active generation, validates reopened stores without a second import or tokenization pass, and writes an immutable validation receipt. A failed or cancelled replacement never changes the active pointer.
 
 Validated activation writes one immutable generation replay snapshot of pending and quarantined marker IDs inside the short cutover window. The replacement becomes searchable immediately after pointer cutover, while the ordinary worker replays only that snapshot. Newer markers remain ordinary best-effort backlog and do not delay replay completion. The former active generation remains as bounded rollback material. There are no dual-generation incremental writes.
 
@@ -67,7 +67,7 @@ The following values protect foreground work on the target host; they are not un
 
 - marker publication plus detached spawn: p95 at most 25 ms;
 - metadata sweep: at most 10,000 files or 500 ms per resumable slice;
-- projection payload: at most 8 MiB;
+- projection record payload: at most 8 MiB, with no whole-session projection ceiling;
 - evidence batch: at most 32 documents;
 - write window: p95 target at most 300 ms; and
 - search wait for the current window: at most 500 ms.

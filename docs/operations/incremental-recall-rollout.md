@@ -12,7 +12,7 @@ Record the operator, host, date, installed commit, command output, active genera
 - [ ] Confirm the active pointer and generation root share one filesystem.
 - [ ] Confirm free space can hold the active, replacement, and retained rollback target generations plus temporary build overhead.
 - [ ] Run `pi-session-recall status` and stop if another build, recovery, rollback, or cleanup owns the operation.
-- [ ] Stop if marker publication p95 exceeds 25 ms, a 10,000-file metadata sweep exceeds 500 ms, a batch exceeds 32 documents, write-window p95 exceeds 300 ms, search waits longer than 500 ms, or a projection payload exceeds 8 MiB.
+- [ ] Stop if marker publication p95 exceeds 25 ms, a 10,000-file metadata sweep exceeds 500 ms, a batch exceeds 32 documents, write-window p95 exceeds 300 ms, search waits longer than 500 ms, or a projection record payload exceeds 8 MiB.
 
 ## 2. Fresh target build
 

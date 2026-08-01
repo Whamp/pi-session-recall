@@ -237,6 +237,7 @@ void test('validated generation open and deletion fail closed for every incohere
         fields: {
           schemaVersion: 1,
           generationId: unexpectedProjection.generationId,
+          projectionRecordId: 'unexpected_projection',
           projectionKind: RecallSessionProjectionKind.PHYSICAL_SESSION,
           physicalSourceIdentity: 'unexpected-source',
           logicalSessionOccurrenceId: '',
@@ -250,7 +251,7 @@ void test('validated generation open and deletion fail closed for every incohere
   }
   await assert.rejects(
     service.openValidatedRecallGeneration(unexpectedProjection.generationId),
-    /Recall coherent generation session-projection membership mismatch: expected 0 rows, received 1/u,
+    /Recall generation session projection segments missing: unexpected_projection/u,
   );
 
   const crossGenerationLeft = await service.createEmptyRecallGeneration({

@@ -14,7 +14,7 @@ import {
   decodeRecallSessionProjection,
   encodeRecallSessionProjection,
   mergeRecallMarkerCheckpoint,
-  RECALL_SESSION_PROJECTION_MAX_BYTES,
+  RECALL_SESSION_PROJECTION_RECORD_MAX_BYTES,
   RECALL_SESSION_PROJECTION_SCHEMA_VERSION,
   type LogicalSessionProjection,
   type PhysicalSessionProjection,
@@ -327,7 +327,7 @@ void test('projection serialization accepts the exact production bound and rejec
   if (baseline.status !== RecallProjectionEncodingStatus.ENCODED) {
     return;
   }
-  const paddingLength = RECALL_SESSION_PROJECTION_MAX_BYTES - baseline.byteLength;
+  const paddingLength = RECALL_SESSION_PROJECTION_RECORD_MAX_BYTES - baseline.byteLength;
   assert.ok(paddingLength > 0);
 
   const exact = encodeRecallSessionProjection({
@@ -335,7 +335,7 @@ void test('projection serialization accepts the exact production bound and rejec
     labels: ['x'.repeat(paddingLength)],
   });
   assert.equal(exact.status, RecallProjectionEncodingStatus.ENCODED);
-  assert.equal(exact.byteLength, RECALL_SESSION_PROJECTION_MAX_BYTES);
+  assert.equal(exact.byteLength, RECALL_SESSION_PROJECTION_RECORD_MAX_BYTES);
 
   const overflow = encodeRecallSessionProjection({
     ...projection,
@@ -344,6 +344,6 @@ void test('projection serialization accepts the exact production bound and rejec
   assert.deepEqual(overflow, {
     status: RecallProjectionEncodingStatus.REQUIRES_RECONCILIATION,
     repairReason: RecallProjectionRepairReason.PROJECTION_OVERFLOW,
-    byteLength: RECALL_SESSION_PROJECTION_MAX_BYTES + 1,
+    byteLength: RECALL_SESSION_PROJECTION_RECORD_MAX_BYTES + 1,
   });
 });

@@ -15,7 +15,6 @@ import {
   type ZVecVectorSchema,
 } from '@zvec/zvec';
 
-import { RecallSessionProjectionKind } from './enums.js';
 import {
   type ExactZvecDocumentEnumeration,
   visitExactZvecDocuments,
@@ -158,6 +157,7 @@ const DENSE_SCALAR_FIELDS = Object.freeze([
 const SESSION_PROJECTION_SCALAR_FIELDS = Object.freeze([
   { name: 'schemaVersion', type: 'int32' },
   { name: 'generationId', type: 'string' },
+  { name: 'projectionRecordId', type: 'string' },
   { name: 'projectionKind', type: 'string' },
   { name: 'physicalSourceIdentity', type: 'string' },
   { name: 'logicalSessionOccurrenceId', type: 'string' },
@@ -528,18 +528,7 @@ function createRecallGenerationStoreEnumerations(
     case 'dense-evidence':
       return [{ uniquePartitionField: 'evidenceOccurrenceId', outputFields: [] }];
     case 'session-projection':
-      return [
-        {
-          filter: `projectionKind = '${RecallSessionProjectionKind.PHYSICAL_SESSION}'`,
-          uniquePartitionField: 'physicalSourceIdentity',
-          outputFields: [],
-        },
-        {
-          filter: `projectionKind = '${RecallSessionProjectionKind.LOGICAL_SESSION}'`,
-          uniquePartitionField: 'logicalSessionOccurrenceId',
-          outputFields: [],
-        },
-      ];
+      return [{ uniquePartitionField: 'projectionRecordId', outputFields: [] }];
     default:
       throw new Error('Recall coherent generation store responsibility unsupported');
   }

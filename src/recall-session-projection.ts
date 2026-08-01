@@ -15,8 +15,8 @@ import {
 /** Current strict schema version for physical and logical session projections. */
 export const RECALL_SESSION_PROJECTION_SCHEMA_VERSION = 3;
 
-/** Maximum encoded scalar projection candidate size accepted without reconciliation. */
-export const RECALL_SESSION_PROJECTION_MAX_BYTES = 8_388_608;
+/** Maximum encoded payload bytes in one scalar session projection store record. */
+export const RECALL_SESSION_PROJECTION_RECORD_MAX_BYTES = 8_388_608;
 
 /** Highest durably processed marker sequence for one Pi runtime instance. */
 export interface RecallMarkerRuntimeCheckpoint {
@@ -265,6 +265,36 @@ const physicalSessionProjectionSchema = Type.Object(
   },
   { additionalProperties: false },
 );
+const recallProjectedEntryDescriptorSchema = Type.Object(
+  {
+    entryId: nonemptyStringSchema,
+    parentEntryId: nullableIdentifierSchema,
+    entryType: nonemptyStringSchema,
+    timestamp: nonemptyStringSchema,
+    messageRole: Type.Union([nonemptyStringSchema, Type.Null()]),
+    branchSummaryFromEntryId: nullableIdentifierSchema,
+    sourceLine: Type.Integer({ minimum: 1 }),
+    startByte: Type.Integer({ minimum: 0 }),
+    endByte: Type.Integer({ minimum: 1 }),
+    sourceFingerprint: Type.String({ pattern: '^[a-f0-9]{64}$' }),
+    firstKeptEntryId: nullableIdentifierSchema,
+    hasRetainedTail: Type.Boolean(),
+    toolCalls: Type.Array(
+      Type.Object(
+        { toolCallId: nonemptyStringSchema, toolName: nonemptyStringSchema },
+        { additionalProperties: false },
+      ),
+    ),
+    toolResult: Type.Union([
+      Type.Object(
+        { toolCallId: nonemptyStringSchema, toolName: nonemptyStringSchema },
+        { additionalProperties: false },
+      ),
+      Type.Null(),
+    ]),
+  },
+  { additionalProperties: false },
+);
 const logicalSessionProjectionSchema = Type.Object(
   {
     ...projectionBaseSchema,
@@ -320,38 +350,7 @@ const logicalSessionProjectionSchema = Type.Object(
       },
       { additionalProperties: false },
     ),
-    entryDescriptors: Type.Array(
-      Type.Object(
-        {
-          entryId: nonemptyStringSchema,
-          parentEntryId: nullableIdentifierSchema,
-          entryType: nonemptyStringSchema,
-          timestamp: nonemptyStringSchema,
-          messageRole: Type.Union([nonemptyStringSchema, Type.Null()]),
-          branchSummaryFromEntryId: nullableIdentifierSchema,
-          sourceLine: Type.Integer({ minimum: 1 }),
-          startByte: Type.Integer({ minimum: 0 }),
-          endByte: Type.Integer({ minimum: 1 }),
-          sourceFingerprint: Type.String({ pattern: '^[a-f0-9]{64}$' }),
-          firstKeptEntryId: nullableIdentifierSchema,
-          hasRetainedTail: Type.Boolean(),
-          toolCalls: Type.Array(
-            Type.Object(
-              { toolCallId: nonemptyStringSchema, toolName: nonemptyStringSchema },
-              { additionalProperties: false },
-            ),
-          ),
-          toolResult: Type.Union([
-            Type.Object(
-              { toolCallId: nonemptyStringSchema, toolName: nonemptyStringSchema },
-              { additionalProperties: false },
-            ),
-            Type.Null(),
-          ]),
-        },
-        { additionalProperties: false },
-      ),
-    ),
+    entryDescriptors: Type.Array(recallProjectedEntryDescriptorSchema),
     eligibleContributorEntryIds: Type.Array(nonemptyStringSchema),
     eligibleSpans: Type.Array(
       Type.Object(
@@ -589,7 +588,20 @@ function assertRecallSessionProjectionInvariants(projection: RecallSessionProjec
   }
 }
 
-function parseRecallSessionProjection(value: unknown): RecallSessionProjection {
+/** Parses one immutable entry descriptor loaded from a lexical/source entry anchor. */
+export function parseRecallProjectedEntryDescriptor(
+  value: unknown,
+): RecallProjectedEntryDescriptor {
+  try {
+    return Value.Parse(recallProjectedEntryDescriptorSchema, value);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Recall projected entry descriptor invalid: ${message}`, { cause: error });
+  }
+}
+
+/** Parses and validates one complete in-memory physical or logical session projection. */
+export function parseRecallSessionProjection(value: unknown): RecallSessionProjection {
   let projection: RecallSessionProjection;
   try {
     projection = Value.Parse(recallSessionProjectionSchema, value);
@@ -606,7 +618,7 @@ export function encodeRecallSessionProjection(
   candidate: RecallSessionProjection,
   options: RecallSessionProjectionEncodingOptions = {},
 ): RecallSessionProjectionEncodingResult {
-  const maxPayloadBytes = options.maxPayloadBytes ?? RECALL_SESSION_PROJECTION_MAX_BYTES;
+  const maxPayloadBytes = options.maxPayloadBytes ?? RECALL_SESSION_PROJECTION_RECORD_MAX_BYTES;
   if (!Number.isSafeInteger(maxPayloadBytes) || maxPayloadBytes < 1) {
     throw new Error(`Recall session projection maximum payload bytes invalid: ${maxPayloadBytes}`);
   }

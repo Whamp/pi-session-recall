@@ -10,7 +10,6 @@ import {
   type RecallFixedSnapshotBuildFaultStage,
   type RecallFixedSnapshotBuildOperationPhase,
   type RecallFixedSnapshotBuildOperationState,
-  RecallProjectionEncodingStatus,
   RecallSessionProjectionKind,
 } from './enums.js';
 import { createRecallBranchLeafIdsByEntryId } from './create-recall-branch-leaf-ids.js';
@@ -22,6 +21,7 @@ import {
   readRecallGenerationManifest,
 } from './recall-generation-manifest.js';
 import { createRecallPhysicalSourceStoreMembership } from './recall-generation-physical-projection.js';
+import { createRecallGenerationSessionProjectionRecords } from './recall-generation-session-projection-records.js';
 import { createRecallGenerationComponentPaths } from './recall-generation-stores.js';
 import { readRecallGenerationValidationReceipt } from './recall-generation-validation-receipt.js';
 import {
@@ -32,10 +32,8 @@ import {
 } from './recall-source-identity.js';
 import type { RecallEmbeddingProvider } from './recall-inference-capabilities.js';
 import {
-  encodeRecallSessionProjection,
   type LogicalSessionProjection,
   type PhysicalSessionProjection,
-  type RecallSessionProjection,
 } from './recall-session-projection.js';
 import type { ResolvedProjectIdentity } from './resolve-project-identity.js';
 import {
@@ -178,6 +176,7 @@ export interface MaterializedRecallPhysicalSourceGeneration {
   lexicalSource: Array<{ id: string; fields: Record<string, unknown> }>;
   dense: RecallGenerationDenseExpectation[];
   logicalSessionProjections: Array<{ id: string; fields: Record<string, unknown> }>;
+  sessionProjectionSegments: Array<{ id: string; fields: Record<string, unknown> }>;
   physicalSessionProjection: { id: string; fields: Record<string, unknown> };
   physicalSourceIdentities: string[];
   logicalSessionOccurrenceIds: string[];
@@ -233,16 +232,6 @@ function findLogicalProjection(
     );
   }
   return projection;
-}
-
-function encodeTargetIngestionProjection(projection: RecallSessionProjection) {
-  const encoded = encodeRecallSessionProjection(projection);
-  if (encoded.status !== RecallProjectionEncodingStatus.ENCODED) {
-    throw new Error(
-      `Recall physical source generation projection exceeds bounded payload: ${projection.projectionId}`,
-    );
-  }
-  return encoded.payload;
 }
 
 function createCommonLexicalFields(options: {
@@ -340,6 +329,8 @@ export async function materializeRecallPhysicalSourceGeneration(
   }> = [];
   const logicalSessionProjections: MaterializedRecallPhysicalSourceGeneration['logicalSessionProjections'] =
     [];
+  const sessionProjectionSegments: MaterializedRecallPhysicalSourceGeneration['sessionProjectionSegments'] =
+    [];
   const logicalSessionOccurrenceIds: string[] = [];
   const projectAttributionBySessionOrigin = new Map<
     string,
@@ -419,7 +410,6 @@ export async function materializeRecallPhysicalSourceGeneration(
       }
     }
     const branchLeafIdsByEntryId = createRecallBranchLeafIdsByEntryId(logicalSession);
-    const entryAnchorIds: string[] = [];
     for (const descriptor of logicalProjection.entryDescriptors) {
       const logicalEntryId = `${logicalSessionOccurrenceId}:${descriptor.entryId}`;
       entryDescriptorByLogicalEntryId.set(logicalEntryId, descriptor);
@@ -439,7 +429,6 @@ export async function materializeRecallPhysicalSourceGeneration(
         startByte: descriptor.startByte,
         endByte: descriptor.endByte,
       });
-      entryAnchorIds.push(entryAnchorId);
       const commonFields = createCommonLexicalFields({
         generationId,
         physicalSourceIdentity: physicalSource.physicalSourceIdentity,
@@ -504,28 +493,24 @@ export async function materializeRecallPhysicalSourceGeneration(
       };
       lexicalSource.push({ id: entryAnchorId, fields: anchorRecord });
     }
-    logicalSessionProjections.push({
-      id: `projection_${logicalSessionOccurrenceId}`,
-      fields: {
-        schemaVersion: 1,
+    const projectionRecords = createRecallGenerationSessionProjectionRecords({
+      generationId,
+      physicalSourceIdentity: physicalSource.physicalSourceIdentity,
+      logicalSessionOccurrenceId,
+      projectionRowId: `projection_${logicalSessionOccurrenceId}`,
+      projection: logicalProjection,
+      metadata: {
         generationId,
         projectionKind: RecallSessionProjectionKind.LOGICAL_SESSION,
-        physicalSourceIdentity: physicalSource.physicalSourceIdentity,
+        physicalSource,
         logicalSessionOccurrenceId,
-        projectionJson: JSON.stringify({
-          schemaVersion: 1,
-          generationId,
-          projectionKind: RecallSessionProjectionKind.LOGICAL_SESSION,
-          physicalSource,
-          logicalSessionOccurrenceId,
-          rawSessionId: logicalSession.sessionId,
-          headerSourceLine: logicalSession.sourceLineStart,
-          projectAttribution,
-          entryAnchorIds,
-          ingestionProjectionPayload: encodeTargetIngestionProjection(logicalProjection),
-        }),
+        rawSessionId: logicalSession.sessionId,
+        headerSourceLine: logicalSession.sourceLineStart,
+        projectAttribution,
       },
     });
+    logicalSessionProjections.push(projectionRecords.headRow);
+    sessionProjectionSegments.push(...projectionRecords.segmentRows);
   }
 
   for (const chunk of imported.chunks) {
@@ -687,40 +672,49 @@ export async function materializeRecallPhysicalSourceGeneration(
     },
   }));
   const physicalSessionProjectionId = `projection_${physicalSource.physicalSourceIdentity}`;
-  const physicalSessionProjection = {
-    id: physicalSessionProjectionId,
-    fields: {
-      schemaVersion: 1,
-      generationId,
-      projectionKind: RecallSessionProjectionKind.PHYSICAL_SESSION,
-      physicalSourceIdentity: physicalSource.physicalSourceIdentity,
-      logicalSessionOccurrenceId: '',
-      projectionJson: JSON.stringify({
-        schemaVersion: 1,
-        generationId,
-        projectionKind: RecallSessionProjectionKind.PHYSICAL_SESSION,
-        physicalSource,
-        sourceByteSize: capturedSource.sourceByteSize,
-        logicalSessionOccurrenceIds,
-        expectedMembership: {
-          lexicalSource: createRecallPhysicalSourceStoreMembership(
-            lexicalSource.map(({ id }) => id),
-          ),
-          dense: createRecallPhysicalSourceStoreMembership(dense.map(({ id }) => id)),
-          sessionProjection: createRecallPhysicalSourceStoreMembership([
-            ...logicalSessionProjections.map(({ id }) => id),
-            physicalSessionProjectionId,
-          ]),
-        },
-        ingestionProjectionPayload: encodeTargetIngestionProjection(targetPhysicalProjection),
-      }),
-    },
+  const physicalProjectionMetadata = {
+    generationId,
+    projectionKind: RecallSessionProjectionKind.PHYSICAL_SESSION,
+    physicalSource,
+    sourceByteSize: capturedSource.sourceByteSize,
+    logicalSessionOccurrenceIds,
   };
+  const provisionalPhysicalRecords = createRecallGenerationSessionProjectionRecords({
+    generationId,
+    physicalSourceIdentity: physicalSource.physicalSourceIdentity,
+    logicalSessionOccurrenceId: '',
+    projectionRowId: physicalSessionProjectionId,
+    projection: targetPhysicalProjection,
+    metadata: physicalProjectionMetadata,
+  });
+  const expectedSessionProjectionIds = [
+    ...logicalSessionProjections.map(({ id }) => id),
+    ...sessionProjectionSegments.map(({ id }) => id),
+    provisionalPhysicalRecords.headRow.id,
+    ...provisionalPhysicalRecords.segmentRows.map(({ id }) => id),
+  ];
+  const physicalProjectionRecords = createRecallGenerationSessionProjectionRecords({
+    generationId,
+    physicalSourceIdentity: physicalSource.physicalSourceIdentity,
+    logicalSessionOccurrenceId: '',
+    projectionRowId: physicalSessionProjectionId,
+    projection: targetPhysicalProjection,
+    metadata: {
+      ...physicalProjectionMetadata,
+      expectedMembership: {
+        lexicalSource: createRecallPhysicalSourceStoreMembership(lexicalSource.map(({ id }) => id)),
+        dense: createRecallPhysicalSourceStoreMembership(dense.map(({ id }) => id)),
+        sessionProjection: createRecallPhysicalSourceStoreMembership(expectedSessionProjectionIds),
+      },
+    },
+  });
+  sessionProjectionSegments.push(...physicalProjectionRecords.segmentRows);
   return {
     lexicalSource,
     dense,
     logicalSessionProjections,
-    physicalSessionProjection,
+    sessionProjectionSegments,
+    physicalSessionProjection: physicalProjectionRecords.headRow,
     physicalSourceIdentities: [physicalSource.physicalSourceIdentity],
     logicalSessionOccurrenceIds,
   };

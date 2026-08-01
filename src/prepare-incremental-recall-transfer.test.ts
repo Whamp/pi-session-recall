@@ -298,31 +298,42 @@ void test('incremental preparation finishes tokenizer, attribution, and document
   );
 });
 
-void test('oversized projection requires reconciliation before tokenizer, inference, lock, or zvec work', async () => {
+void test('incremental preparation accepts logical state larger than one projection record', async () => {
   const fixture = createPreparationFixture();
-  let forbiddenCallCount = 0;
+  const eligibleSession = fixture.eligibleSessions[0];
+  assert.ok(eligibleSession);
+  const logicalProjection = eligibleSession.logicalProjection;
+  let embeddingRequestCount = 0;
   const result = await prepareIncrementalRecallTransfer({
     ...fixture,
-    maxProjectionPayloadBytes: 1,
+    eligibleSessions: [
+      {
+        ...eligibleSession,
+        logicalProjection: { ...logicalProjection, labels: ['x'.repeat(9_000_000)] },
+      },
+    ],
     chunkPolicy: { maxTokens: 64, overlapTokens: 8 },
     async loadTokenizer() {
-      forbiddenCallCount += 1;
-      throw new Error('tokenizer must not open for projection overflow');
+      return {
+        encodeConversationText(text: string) {
+          return { ids: Array.from(text.split(/\s+/u).filter(Boolean).keys()) };
+        },
+      };
     },
     async resolveProjectIdentity() {
-      forbiddenCallCount += 1;
       return null;
     },
     embeddingProvider: {
-      async embedDocuments() {
-        forbiddenCallCount += 1;
-        throw new Error('embedding provider must not open for projection overflow');
+      async embedDocuments(documents) {
+        embeddingRequestCount += 1;
+        return documents.map(() => [1, 0, 0]);
       },
     },
   });
 
-  assert.equal(result.status, RecallProjectionEncodingStatus.REQUIRES_RECONCILIATION);
-  assert.equal(forbiddenCallCount, 0);
+  assert.equal(result.status, RecallProjectionEncodingStatus.ENCODED);
+  assert.equal(embeddingRequestCount, 1);
+  assert.equal(result.checkpointIntent.logicalProjections[0]?.labels[0]?.length, 9_000_000);
 });
 
 void test('preparation rejects cross-physical marker intent before tokenizer or inference work', async () => {

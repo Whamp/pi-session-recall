@@ -241,11 +241,30 @@ void test(
   },
 );
 
-void test('session import replay refuses the production recall data directory', async () => {
-  await assert.rejects(
-    () => replaySessionImportCorpus(join(process.env.HOME ?? '', '.pi/agent/recall')),
-    /refuses the production recall index directory/u,
-  );
+void test('session import replay refuses a missing production recall data directory', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-replay-missing-production-'));
+  const dataDirectory = join(directory, 'production-recall');
+  const previousConfigPath = process.env.PI_RECALL_CONFIG;
+  const previousDataDirectory = process.env.PI_RECALL_DATA_DIRECTORY;
+  process.env.PI_RECALL_CONFIG = join(directory, 'missing-recall.json');
+  process.env.PI_RECALL_DATA_DIRECTORY = dataDirectory;
+  try {
+    await assert.rejects(
+      () => replaySessionImportCorpus(dataDirectory),
+      /refuses the production recall index directory/u,
+    );
+  } finally {
+    if (previousConfigPath === undefined) {
+      delete process.env.PI_RECALL_CONFIG;
+    } else {
+      process.env.PI_RECALL_CONFIG = previousConfigPath;
+    }
+    if (previousDataDirectory === undefined) {
+      delete process.env.PI_RECALL_DATA_DIRECTORY;
+    } else {
+      process.env.PI_RECALL_DATA_DIRECTORY = previousDataDirectory;
+    }
+  }
 });
 
 void test('session import replay refuses the environment-configured recall data directory', async () => {

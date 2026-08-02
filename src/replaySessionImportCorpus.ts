@@ -116,15 +116,24 @@ function overlapsPath(left: string, right: string): boolean {
   return contains(leftToRight) || contains(rightToLeft);
 }
 
-async function resolveReplayCorpusRoot(corpusRoot: string): Promise<string> {
-  const resolvedRoot = await realpath(resolve(corpusRoot));
-  const recallConfig = await loadRecallConversationConfig();
-  const productionRecallDirectory = resolve(dirname(recallConfig.databasePath));
-  if (overlapsPath(resolvedRoot, productionRecallDirectory)) {
+function assertReplayCorpusOutsideProduction(
+  corpusRoot: string,
+  productionRecallDirectory: string,
+): void {
+  if (overlapsPath(corpusRoot, productionRecallDirectory)) {
     throw new Error(
-      `Recall session import replay refuses the production recall index directory: ${resolvedRoot}`,
+      `Recall session import replay refuses the production recall index directory: ${corpusRoot}`,
     );
   }
+}
+
+async function resolveReplayCorpusRoot(corpusRoot: string): Promise<string> {
+  const requestedRoot = resolve(corpusRoot);
+  const recallConfig = await loadRecallConversationConfig();
+  const productionRecallDirectory = resolve(dirname(recallConfig.databasePath));
+  assertReplayCorpusOutsideProduction(requestedRoot, productionRecallDirectory);
+  const resolvedRoot = await realpath(requestedRoot);
+  assertReplayCorpusOutsideProduction(resolvedRoot, productionRecallDirectory);
   const rootStats = await stat(resolvedRoot);
   if (!rootStats.isDirectory()) {
     throw new Error(`Recall session import replay corpus root is not a directory: ${resolvedRoot}`);

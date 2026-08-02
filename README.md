@@ -9,7 +9,7 @@ Index maintenance is manual. The standalone `psr` command is the only writer. Th
 ```bash
 npm install
 npm link
-pi install /home/will/projects/pi-session-recall
+pi install /path/to/pi-session-recall
 ```
 
 Reload Pi after installation. Build the first index explicitly:
@@ -36,6 +36,8 @@ psr index --rebuild   # replace incompatible or damaged index state
 - optimizes zvec after a changed pass.
 
 No startup hook, completed-turn hook, shutdown hook, watcher, background worker, daemon, or search request updates the index.
+
+The indexer checkpoints `index-state.json` after every 100 changed sessions and after the final partial batch. If indexing stops between checkpoints, rerun `psr index`; it safely revisits the uncheckpointed sessions and reuses matching vectors already stored in zvec.
 
 ## Search
 
@@ -72,7 +74,7 @@ Application-side reciprocal-rank fusion retains every component rank and score. 
 Each model-visible result ends with a locator such as:
 
 ```text
-Source: /home/will/.pi/agent/sessions/project/session.jsonl:142-146#entry-id
+Source: /home/you/.pi/agent/sessions/project/session.jsonl:142-146#entry-id
 ```
 
 Tool details also include:
@@ -150,6 +152,8 @@ The default profile uses:
 
 The same transformation applies to document and query vectors. Inner product preserves cosine ordering because both sides are normalized. The feature is vendor-supported prefix storage; this repository does not claim independently verified MRL quality at every cutoff.
 
+Both `psr index` and `pi-session-recall` require the configured Octen HTTP endpoint. This package has no local embedding fallback.
+
 The manifest binds request model, served model, native width, stored width, transformation, tokenizer assets, 512/64 chunking, import policy, project identity policy, and zvec schema. Any change requires:
 
 ```bash
@@ -162,8 +166,6 @@ Configuration defaults to `~/.pi/agent/recall.json`:
 
 ```json
 {
-  "sessionsDirectory": "/home/will/.pi/agent/sessions",
-  "dataDirectory": "/home/will/.pi/agent/recall",
   "embeddingBaseUrl": "http://192.168.0.67:8090/v1",
   "embeddingModel": "octen-embed",
   "embeddingServedModelId": "Octen/Octen-Embedding-4B",

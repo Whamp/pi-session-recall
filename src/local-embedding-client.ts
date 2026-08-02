@@ -2,6 +2,7 @@ import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 
 const DEFAULT_LOCAL_EMBEDDING_REQUEST_TIMEOUT_MILLISECONDS = 60_000;
+const MAX_LOCAL_EMBEDDING_REQUEST_ATTEMPTS = 2;
 
 const localEmbeddingResponseSchema = Type.Object({
   data: Type.Array(
@@ -26,6 +27,41 @@ export interface LocalEmbeddingClient {
   embedTexts(texts: string[], signal?: AbortSignal): Promise<number[][]>;
 }
 
+async function fetchLocalEmbeddingResponse(
+  endpoint: string,
+  model: string,
+  input: string[],
+  requestTimeoutMilliseconds: number,
+  signal?: AbortSignal,
+): Promise<Response> {
+  const timeoutSignal = AbortSignal.timeout(requestTimeoutMilliseconds);
+  const requestSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+  for (let attempt = 1; attempt <= MAX_LOCAL_EMBEDDING_REQUEST_ATTEMPTS; attempt += 1) {
+    try {
+      return await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model, input }),
+        signal: requestSignal,
+      });
+    } catch (error) {
+      if (timeoutSignal.aborted && !signal?.aborted) {
+        throw new Error(
+          `Recall embedding request timed out after ${requestTimeoutMilliseconds} ms at ${endpoint}`,
+          { cause: error },
+        );
+      }
+      if (signal?.aborted || attempt === MAX_LOCAL_EMBEDDING_REQUEST_ATTEMPTS) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`Recall embedding request failed at ${endpoint}: ${message}`, {
+          cause: error,
+        });
+      }
+    }
+  }
+  throw new Error(`Recall embedding request failed at ${endpoint}: retry attempts exhausted`);
+}
+
 /** Creates an OpenAI-compatible client for a locally served embedding model. */
 export function createLocalEmbeddingClient(
   config: LocalEmbeddingClientConfig,
@@ -45,28 +81,13 @@ export function createLocalEmbeddingClient(
       const vectors: number[][] = [];
       for (let start = 0; start < texts.length; start += batchSize) {
         const input = texts.slice(start, start + batchSize);
-        const timeoutSignal = AbortSignal.timeout(requestTimeoutMilliseconds);
-        const requestSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
-        let response: Response;
-        try {
-          response = await fetch(endpoint, {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ model: config.model, input }),
-            signal: requestSignal,
-          });
-        } catch (error) {
-          if (timeoutSignal.aborted && !signal?.aborted) {
-            throw new Error(
-              `Recall embedding request timed out after ${requestTimeoutMilliseconds} ms at ${endpoint}`,
-              { cause: error },
-            );
-          }
-          const message = error instanceof Error ? error.message : String(error);
-          throw new Error(`Recall embedding request failed at ${endpoint}: ${message}`, {
-            cause: error,
-          });
-        }
+        const response = await fetchLocalEmbeddingResponse(
+          endpoint,
+          config.model,
+          input,
+          requestTimeoutMilliseconds,
+          signal,
+        );
         if (!response.ok) {
           const body = await response.text();
           throw new Error(

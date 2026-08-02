@@ -56,6 +56,35 @@ void test('local embedding client batches OpenAI-compatible requests and preserv
   assert.equal(requests.length, 2);
 });
 
+void test('local embedding client retries a transport failure before receiving a response', async (t) => {
+  let requestCount = 0;
+  const server = createServer((request, response) => {
+    request.resume();
+    requestCount += 1;
+    if (requestCount === 1) {
+      request.socket.destroy();
+      return;
+    }
+    response.setHeader('content-type', 'application/json');
+    response.end(JSON.stringify({ data: [{ index: 0, embedding: [1, 2, 3] }] }));
+  });
+  await new Promise<void>((resolve) => {
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  t.after(() => server.close());
+  const address = server.address();
+  assert.ok(address && typeof address === 'object');
+
+  const client = createLocalEmbeddingClient({
+    baseUrl: `http://127.0.0.1:${address.port}/v1`,
+    model: 'local-test',
+    dimensions: 3,
+  });
+
+  assert.deepEqual(await client.embedTexts(['retry transport failure']), [[1, 2, 3]]);
+  assert.equal(requestCount, 2);
+});
+
 void test('local embedding client times out a request without relying on caller cancellation', async (t) => {
   const server = createServer((request) => {
     request.resume();

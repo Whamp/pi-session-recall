@@ -108,6 +108,10 @@ _Avoid_: Raw embedding, independently verified MRL vector
 An explicit `psr index` operation that scans physical session files and updates one zvec collection. `psr index --rebuild` replaces incompatible index state.
 _Avoid_: Live ingestion, background indexing, lifecycle reconciliation
 
+**Maintenance workset**:
+The new or changed physical session files and missing previously indexed files identified during one manual index maintenance operation. It forecasts file-level work; the number of documents requiring embeddings emerges as changed files are processed.
+_Avoid_: Sessions to embed, embedding total
+
 **Source locator**:
 The physical session path, source line range, and entry ID attached to one result so an agent can read the original JSONL records.
 _Avoid_: Source neighborhood, expanded transcript

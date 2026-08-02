@@ -18,10 +18,8 @@ export interface RecallQualityReportEnvironment {
   embeddingBaseUrl: string;
   embeddingModel: string;
   embeddingServedModelId: string;
-  embeddingArtifact: string;
-  embeddingDimensions: number;
-  rerankerBaseUrl: string;
-  rerankerModel: string;
+  embeddingNativeDimensions: number;
+  embeddingStoredDimensions: number;
 }
 
 function escapeMarkdownTable(value: string): string {
@@ -229,12 +227,11 @@ export function formatRecallQualityReport(
     '',
     '## Evaluation identity',
     '',
-    `- Storage: conversation schema v${result.storageIdentity.conversationSchemaVersion}, zvec schema v${result.storageIdentity.zvecSchemaVersion}, manifest v${result.storageIdentity.indexManifestVersion}, incremental eligibility policy v${result.storageIdentity.incrementalEligibilityPolicyVersion}`,
     `- Default scope: \`${result.evaluationIdentity.defaultScope}\` (policy v${result.evaluationIdentity.projectScopePolicyVersion})`,
     `- Project identity policy: v${result.evaluationIdentity.projectIdentityPolicyVersion}; metadata schema v${result.evaluationIdentity.projectIdentityMetadataSchemaVersion}`,
     `- Project lineage policy: v${result.evaluationIdentity.lineagePolicyVersion}; digest \`${result.evaluationIdentity.lineageDigest}\``,
     `- Hybrid ranking: fusion v${result.evaluationIdentity.rankFusionVersion}, RRF k=${result.evaluationIdentity.reciprocalRankConstant}, active prior +${result.evaluationIdentity.activeBranchPrior.toFixed(4)}`,
-    `- Ranked-list limits: dense ${result.evaluationIdentity.candidateLimits.dense}, lexical ${result.evaluationIdentity.candidateLimits.lexical}, identifier ${result.evaluationIdentity.candidateLimits.identifier}; fused pool ${result.evaluationIdentity.fusedPoolLimit}; rerank pool ${result.evaluationIdentity.rerankPoolLimit}; final results ${result.evaluationIdentity.finalResultCount}`,
+    `- Candidate limits: dense ${result.evaluationIdentity.candidateLimits.dense}, lexical ${result.evaluationIdentity.candidateLimits.lexical}, identifier ${result.evaluationIdentity.candidateLimits.identifier}; final results ${result.evaluationIdentity.finalResultCount}`,
     '',
     '## Frozen quality gate',
     '',
@@ -250,7 +247,6 @@ export function formatRecallQualityReport(
     `| Evaluation cases | ${result.boundedWork.evaluationCases} | ${specification.bounds.maximumEvaluationCases} |`,
     `| Temporary index runs | ${result.boundedWork.indexRuns} | ${specification.bounds.maximumChunkPolicies} |`,
     `| Search requests, including warmups | ${result.boundedWork.executedSearchRequests} | ${specification.bounds.maximumSearchRequests} |`,
-    `| Reranker requests | ${result.boundedWork.rerankerRequests} | 0 |`,
     `| Chunk-embedding HTTP batches | ${result.boundedWork.chunkEmbeddingRequests} | ${specification.bounds.maximumChunkEmbeddingRequests} |`,
     `| Maximum fused candidates/search | ${result.boundedWork.maximumCandidatesPerSearch} | 200 |`,
     `| Production repository identity resolutions | ${result.boundedWork.repositoryIdentityResolutions} | ${
@@ -309,7 +305,7 @@ export function formatRecallQualityReport(
     '',
     '## Reproduce',
     '',
-    'Prerequisites: the pinned Octen tokenizer assets and configured local embedding endpoint must be available. The optional reranker is not called. The command deletes and recreates only the dedicated ignored evaluation work directory.',
+    'Prerequisites: the pinned Octen tokenizer assets and configured local embedding endpoint must be available. The command deletes and recreates only the dedicated ignored evaluation work directory.',
     '',
     '```bash',
     environment.command,
@@ -326,9 +322,8 @@ export function formatRecallQualityReport(
     `- Node: \`${environment.nodeVersion}\``,
     `- Platform: \`${environment.platform}/${environment.architecture}\``,
     `- CPU: ${environment.cpuModel}`,
-    `- Embedding: \`${environment.embeddingModel}\` → \`${environment.embeddingServedModelId}\`, \`${environment.embeddingArtifact}\`, ${environment.embeddingDimensions} dimensions at \`${environment.embeddingBaseUrl}\``,
+    `- Embedding: \`${environment.embeddingModel}\` → \`${environment.embeddingServedModelId}\`, native ${environment.embeddingNativeDimensions} dimensions stored as first-${environment.embeddingStoredDimensions} then L2-normalized at \`${environment.embeddingBaseUrl}\``,
     `- Hybrid ranking identity: fusion v${result.evaluationIdentity.rankFusionVersion}, RRF k=${result.evaluationIdentity.reciprocalRankConstant}, active prior +${result.evaluationIdentity.activeBranchPrior.toFixed(4)}`,
-    `- Optional deep reranker, not used by this evaluation: \`${environment.rerankerModel}\` at \`${environment.rerankerBaseUrl}\``,
     `- Specification: \`${corpus.specificationPath}\``,
     `- Specification SHA-256: \`${corpus.specificationSha256}\``,
     '',
@@ -343,7 +338,6 @@ export function formatRecallQualityReport(
     '## Limits of this evidence',
     '',
     '- The corpus is a committed synthetic-but-session-shaped fixture, not a sample of private production logs. It covers the required retrieval and project-identity classes but cannot estimate all real-corpus failure modes.',
-    '- Deterministic fixture embeddings prove retrieval plumbing, channel fusion, evidence shaping, and scope policy. They do not measure production embedding-model semantics.',
     ...(hasNoDiscriminatingRecallQualityVariance(result.selection.combinations)
       ? [
           '- The measured grid has no discriminating quality variance across gated recall, context, source-preservation, and visible-duplicate metrics; it can identify the smallest passing candidate pool but cannot rank quality among passing pools.',

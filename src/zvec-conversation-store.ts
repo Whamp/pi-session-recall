@@ -12,27 +12,26 @@ import {
   type ZVecCollection,
   type ZVecDoc,
   type ZVecFieldSchema,
-  type ZVecFtsIndexParams,
   type ZVecFtsQuery,
-  type ZVecGroupResult,
-  type ZVecInvertIndexParams,
-  type ZVecStatus,
   type ZVecVector,
 } from '@zvec/zvec';
 
 import { RecallProjectIdentitySource } from './enums.js';
-import type { RecallDenseCandidate, RecallFullTextCandidate } from './fuse-recall-ranked-lists.js';
+import { convertNormalizedRecallInnerProductToCosineDistance } from './recall-stored-embedding.js';
+import type {
+  RecallDenseCandidate,
+  RecallFullTextCandidate,
+} from './fuse-recall-search-candidates.js';
 import {
   isCanonicalRepositoryIdentity,
   parseProjectIdentity,
   type ProjectIdentity,
   type ResolvedProjectIdentity,
 } from './resolve-project-identity.js';
-import {
-  SESSION_CONVERSATION_SCHEMA_VERSION,
-  type PiSessionEntryId,
-  type PiSessionId,
-  type SessionConversationChunk,
+import type {
+  PiSessionEntryId,
+  PiSessionId,
+  SessionConversationChunk,
 } from './session-conversation-index.js';
 
 /** Version of the scalar/vector schema persisted in the zvec collection. */
@@ -47,11 +46,8 @@ export const ZVEC_HNSW_M = 50;
 /** Pinned HNSW construction candidate count used to make index geometry reproducible. */
 export const ZVEC_HNSW_EF_CONSTRUCTION = 500;
 
-/** Pinned HNSW query candidate count used by dense conversation search. */
+/** HNSW query candidate count for dense conversation search. */
 export const ZVEC_HNSW_EF_SEARCH = 300;
-
-/** Maximum exact evidence IDs returned for one confirmed deletion write window. */
-export const CONFIRMED_DELETION_BATCH_SIZE = 32;
 
 /** A dense-searchable recall document paired with its local embedding. */
 export interface EmbeddedSessionConversationChunk extends SessionConversationChunk {
@@ -70,44 +66,33 @@ export type IndexedSessionConversationChunk =
   | EmbeddedSessionConversationChunk
   | LexicalSessionConversationChunk;
 
-/** The narrow checked persistence contract required by recall evidence indexing. */
+/** The narrow persistence contract required by incremental recall evidence indexing. */
 export interface ConversationChunkStore {
-  upsertChunks(chunks: readonly IndexedSessionConversationChunk[]): Promise<void>;
-  deleteChunks(ids: readonly string[]): Promise<void>;
+  upsertChunks(chunks: IndexedSessionConversationChunk[]): void;
+  deleteChunks(ids: string[]): void;
+  fetchConversationChunks(this: void, ids: string[]): Map<string, SessionConversationChunk>;
+  fetchVectors(ids: string[]): Map<string, number[]>;
 }
 
 /** Durable conversation operations plus zvec evolution and bounded-query capabilities. */
 export interface ZvecConversationStore extends ConversationChunkStore {
-  listChunkIdsByPhysicalSessionProjectionId(
-    physicalSessionProjectionId: string,
-    limit: number,
-  ): Promise<string[]>;
   searchDenseCandidates(
     embedding: number[],
     limit: number,
     projectIdentity?: ProjectIdentity,
-  ): Promise<RecallDenseCandidate[]>;
+  ): RecallDenseCandidate[];
   searchLexicalCandidates(
     query: string,
     limit: number,
     projectIdentity?: ProjectIdentity,
-  ): Promise<RecallFullTextCandidate[]>;
+  ): RecallFullTextCandidate[];
   searchIdentifierCandidates(
     query: string,
     limit: number,
     projectIdentity?: ProjectIdentity,
-  ): Promise<RecallFullTextCandidate[]>;
+  ): RecallFullTextCandidate[];
   fetchConversationChunks(this: void, ids: string[]): Map<string, SessionConversationChunk>;
   fetchVectors(ids: string[]): Map<string, number[]>;
-  groupDenseCandidates(
-    embedding: number[],
-    groupByFieldName: string,
-    groupCount: number,
-    topkPerGroup: number,
-  ): ZVecGroupResult[];
-  addColumn(fieldSchema: ZVecFieldSchema, expression?: string): void;
-  alterColumn(columnName: string, fieldSchema: ZVecFieldSchema): void;
-  createIndex(fieldName: string, indexParams: ZVecInvertIndexParams | ZVecFtsIndexParams): void;
   optimize(): Promise<void>;
   close(): void;
   count(): number;
@@ -123,7 +108,6 @@ const RECALL_FIELD_SCHEMAS: ZVecFieldSchema[] = [
   { name: 'checksum', dataType: ZVecDataType.STRING },
   { name: 'sessionId', dataType: ZVecDataType.STRING },
   { name: 'sessionPath', dataType: ZVecDataType.STRING },
-  { name: 'physicalSessionProjectionId', dataType: ZVecDataType.STRING },
   { name: 'parentSessionPath', dataType: ZVecDataType.STRING },
   { name: 'cwd', dataType: ZVecDataType.STRING },
   { name: 'projectPath', dataType: ZVecDataType.STRING },
@@ -190,20 +174,6 @@ const RECALL_OUTPUT_FIELDS = RECALL_FIELD_SCHEMAS.map((field) => field.name).fil
   (name) => name !== 'identifierContent',
 );
 
-function assertConversationCollectionScalarSchema(collection: ZVecCollection): void {
-  const storedFields = new Map(
-    collection.schema.fields().map(({ name, dataType }) => [name, dataType]),
-  );
-  if (
-    storedFields.size !== RECALL_FIELD_SCHEMAS.length ||
-    RECALL_FIELD_SCHEMAS.some(({ name, dataType }) => storedFields.get(name) !== dataType)
-  ) {
-    throw new Error(
-      `Recall zvec scalar schema mismatch: expected schema version ${ZVEC_CONVERSATION_SCHEMA_VERSION}; reindex with /pi-session-recall-index --rebuild`,
-    );
-  }
-}
-
 function serializeNullableEntryId(value: PiSessionEntryId | null): string {
   return value?.value ?? '';
 }
@@ -219,7 +189,6 @@ function serializeConversationChunk(chunk: SessionConversationChunk): Record<str
     checksum: chunk.checksum,
     sessionId: chunk.sessionId.value,
     sessionPath: chunk.sessionPath,
-    physicalSessionProjectionId: chunk.physicalSessionProjectionId,
     parentSessionPath: chunk.parentSessionPath ?? '',
     cwd: chunk.cwd,
     projectPath: chunk.projectPath,
@@ -445,7 +414,6 @@ function deserializeConversationChunk(doc: ZVecDoc): SessionConversationChunk {
     checksum: readStringField(fields, 'checksum'),
     sessionId: { value: readStringField(fields, 'sessionId') } satisfies PiSessionId,
     sessionPath: readStringField(fields, 'sessionPath'),
-    physicalSessionProjectionId: readStringField(fields, 'physicalSessionProjectionId'),
     parentSessionPath: parseNullableString(readStringField(fields, 'parentSessionPath')),
     cwd: readStringField(fields, 'cwd'),
     projectPath: readStringField(fields, 'projectPath'),
@@ -510,39 +478,6 @@ function convertDenseVector(id: string, vector?: ZVecVector): number[] {
   throw new Error(`Recall zvec vector invalid for document ${id}: expected dense vector`);
 }
 
-function assertCheckedConversationStatuses(
-  operation: string,
-  ids: readonly string[],
-  statuses: readonly ZVecStatus[],
-): void {
-  if (statuses.length !== ids.length) {
-    throw new Error(
-      `Recall ${operation} status count mismatch: expected ${ids.length}, received ${statuses.length}`,
-    );
-  }
-  for (const [index, status] of statuses.entries()) {
-    if (!status.ok) {
-      throw new Error(
-        `Recall ${operation} failed at position ${index} for ${ids[index] ?? 'unknown'} [${status.code}]: ${status.message}`,
-      );
-    }
-  }
-}
-
-function assertPhysicalSessionProjectionId(physicalSessionProjectionId: string): void {
-  if (!/^[A-Za-z0-9_-]+$/u.test(physicalSessionProjectionId)) {
-    throw new Error('Recall physical session projection ID invalid for evidence deletion');
-  }
-}
-
-function assertPhysicalSessionProjectionChunkLimit(limit: number): void {
-  if (!Number.isSafeInteger(limit) || limit < 1) {
-    throw new Error(
-      'Recall physical session projection chunk limit invalid: expected a positive safe integer',
-    );
-  }
-}
-
 function assertRecallCandidateLimit(limit: number, channelName: string): void {
   if (!Number.isInteger(limit) || limit < 1 || limit > 200) {
     throw new Error(
@@ -582,7 +517,7 @@ export function openZvecConversationStore(config: {
   const databaseExists = existsSync(config.databasePath);
   if (!databaseExists && config.createIfMissing === false) {
     throw new Error(
-      `Recall zvec collection missing at ${config.databasePath}; reindex with /pi-session-recall-index --rebuild`,
+      `Recall zvec collection missing at ${config.databasePath}; rebuild with psr index --rebuild`,
     );
   }
   if (!databaseExists) {
@@ -602,7 +537,7 @@ export function openZvecConversationStore(config: {
             dimension: config.dimensions,
             indexParams: {
               indexType: ZVecIndexType.HNSW,
-              metricType: ZVecMetricType.COSINE,
+              metricType: ZVecMetricType.IP,
               m: ZVEC_HNSW_M,
               efConstruction: ZVEC_HNSW_EF_CONSTRUCTION,
             },
@@ -614,57 +549,42 @@ export function openZvecConversationStore(config: {
   if (storedDimensions !== config.dimensions) {
     collection.closeSync();
     throw new Error(
-      `Recall zvec dimension mismatch: collection uses ${storedDimensions}, configured model uses ${config.dimensions}; reindex with /pi-session-recall-index --rebuild`,
+      `Recall zvec dimension mismatch: collection uses ${storedDimensions}, configured profile uses ${config.dimensions}; rebuild with psr index --rebuild`,
     );
   }
-  try {
-    assertConversationCollectionScalarSchema(collection);
-  } catch (error) {
-    collection.closeSync();
-    throw error instanceof Error
-      ? error
-      : new Error('Recall zvec scalar schema validation failed', { cause: error });
-  }
 
-  const searchFullTextCandidates = async (
+  const searchFullTextCandidates = (
     fieldName: string,
     query: string,
     limit: number,
     channelName: string,
     defaultOperator: 'AND' | 'OR',
     projectIdentity?: ProjectIdentity,
-  ): Promise<RecallFullTextCandidate[]> => {
+  ): RecallFullTextCandidate[] => {
     assertRecallCandidateLimit(limit, channelName);
     const projectFilter = createRecallProjectIdentityFilter(projectIdentity);
-    const documents = await collection.query({
-      fieldName,
-      fts: createRecallFullTextQuery(query),
-      topk: limit,
-      outputFields: RECALL_OUTPUT_FIELDS,
-      includeVector: false,
-      ...(projectFilter ? { filter: projectFilter } : {}),
-      params: { indexType: ZVecIndexType.FTS, defaultOperator },
-    });
-    return documents.map((doc) => ({
-      ...deserializeConversationChunk(doc),
-      fullTextScore: doc.score,
-    }));
+    return collection
+      .querySync({
+        fieldName,
+        fts: createRecallFullTextQuery(query),
+        topk: limit,
+        outputFields: RECALL_OUTPUT_FIELDS,
+        includeVector: false,
+        ...(projectFilter ? { filter: projectFilter } : {}),
+        params: { indexType: ZVecIndexType.FTS, defaultOperator },
+      })
+      .map((doc) => ({
+        ...deserializeConversationChunk(doc),
+        fullTextScore: doc.score,
+      }));
   };
 
   return {
-    async upsertChunks(chunks) {
+    upsertChunks(chunks) {
       if (chunks.length === 0) {
         return;
       }
-      for (const chunk of chunks) {
-        if (chunk.schemaVersion !== SESSION_CONVERSATION_SCHEMA_VERSION) {
-          throw new Error(
-            `Recall evidence schema version mismatch: expected ${SESSION_CONVERSATION_SCHEMA_VERSION}, received ${chunk.schemaVersion}`,
-          );
-        }
-      }
-      const ids = chunks.map(({ id }) => id);
-      const statuses = collection.upsertSync(
+      collection.upsertSync(
         chunks.map((indexedChunk) => {
           if (indexedChunk.isDenseSearchable) {
             const { embedding, ...chunk } = indexedChunk;
@@ -676,53 +596,36 @@ export function openZvecConversationStore(config: {
           }
           return {
             id: indexedChunk.id,
-            vectors: { embedding: new Array<number>(storedDimensions).fill(0) },
+            vectors: { embedding: Array.from({ length: storedDimensions }, () => 0) },
             fields: serializeConversationChunk(indexedChunk),
           };
         }),
       );
-      assertCheckedConversationStatuses('evidence upsert', ids, statuses);
     },
-    async deleteChunks(ids) {
-      if (ids.length === 0) {
-        return;
+    deleteChunks(ids) {
+      if (ids.length > 0) {
+        collection.deleteSync(ids);
       }
-      const copiedIds = [...ids];
-      assertCheckedConversationStatuses(
-        'evidence delete',
-        copiedIds,
-        collection.deleteSync(copiedIds),
-      );
     },
-    async listChunkIdsByPhysicalSessionProjectionId(physicalSessionProjectionId, limit) {
-      assertPhysicalSessionProjectionId(physicalSessionProjectionId);
-      assertPhysicalSessionProjectionChunkLimit(limit);
-      const documents = await collection.query({
-        filter: `physicalSessionProjectionId = '${physicalSessionProjectionId}'`,
-        topk: limit,
-        outputFields: [],
-        includeVector: false,
-      });
-      return documents.map(({ id }) => id).toSorted();
-    },
-    async searchDenseCandidates(embedding, limit, projectIdentity) {
+    searchDenseCandidates(embedding, limit, projectIdentity) {
       assertRecallCandidateLimit(limit, 'dense');
       const projectFilter = createRecallProjectIdentityFilter(projectIdentity);
-      const documents = await collection.query({
-        fieldName: 'embedding',
-        vector: embedding,
-        topk: limit,
-        outputFields: RECALL_OUTPUT_FIELDS,
-        includeVector: false,
-        filter: projectFilter
-          ? `isDenseSearchable = true AND ${projectFilter}`
-          : 'isDenseSearchable = true',
-        params: { indexType: ZVecIndexType.HNSW, ef: ZVEC_HNSW_EF_SEARCH },
-      });
-      return documents.map((doc) => ({
-        ...deserializeConversationChunk(doc),
-        cosineDistance: doc.score,
-      }));
+      return collection
+        .querySync({
+          fieldName: 'embedding',
+          vector: embedding,
+          topk: limit,
+          outputFields: RECALL_OUTPUT_FIELDS,
+          includeVector: false,
+          filter: projectFilter
+            ? `isDenseSearchable = true AND ${projectFilter}`
+            : 'isDenseSearchable = true',
+          params: { indexType: ZVecIndexType.HNSW, ef: ZVEC_HNSW_EF_SEARCH },
+        })
+        .map((doc) => ({
+          ...deserializeConversationChunk(doc),
+          cosineDistance: convertNormalizedRecallInnerProductToCosineDistance(doc.score),
+        }));
     },
     searchLexicalCandidates(query, limit, projectIdentity) {
       return searchFullTextCandidates('content', query, limit, 'lexical', 'OR', projectIdentity);
@@ -759,42 +662,6 @@ export function openZvecConversationStore(config: {
           convertDenseVector(doc.id, doc.vectors.embedding),
         ]),
       );
-    },
-    groupDenseCandidates(embedding, groupByFieldName, groupCount, topkPerGroup) {
-      if (
-        !Number.isInteger(groupCount) ||
-        groupCount < 1 ||
-        groupCount > 200 ||
-        !Number.isInteger(topkPerGroup) ||
-        topkPerGroup < 1 ||
-        topkPerGroup > 20
-      ) {
-        throw new Error(
-          'Recall dense grouping limits invalid: expected 1..200 groups and 1..20 candidates per group',
-        );
-      }
-      return collection.groupByQuerySync({
-        fieldName: 'embedding',
-        vector: embedding,
-        groupByFieldName,
-        groupCount,
-        topkPerGroup,
-        includeVector: false,
-        outputFields: RECALL_OUTPUT_FIELDS,
-        params: { indexType: ZVecIndexType.HNSW, ef: ZVEC_HNSW_EF_SEARCH },
-      });
-    },
-    addColumn(fieldSchema, expression) {
-      collection.addColumnSync({
-        fieldSchema,
-        ...(expression === undefined ? {} : { expression }),
-      });
-    },
-    alterColumn(columnName, fieldSchema) {
-      collection.alterColumnSync({ columnName, fieldSchema });
-    },
-    createIndex(fieldName, indexParams) {
-      collection.createIndexSync({ fieldName, indexParams });
     },
     async optimize() {
       if (collection.stats.docCount > 0) {

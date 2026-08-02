@@ -5,9 +5,6 @@ import { isAbsolute, normalize, relative, sep } from 'node:path';
 
 import { RecallProjectIdentitySource } from './enums.js';
 
-/** Version of trusted-invocation exact project filtering before every retrieval-channel limit. */
-export const PROJECT_SCOPE_POLICY_VERSION = 1;
-
 /** Version of lineage-first, exact-origin, and canonical Git project identity resolution. */
 export const PROJECT_IDENTITY_POLICY_VERSION = 4;
 

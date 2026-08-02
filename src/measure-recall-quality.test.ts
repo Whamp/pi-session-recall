@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import { RecallEvidenceRelation, RecallSearchScope } from './enums.js';
-import type { RecallSearchResult } from './fuse-recall-ranked-lists.js';
+import type { RecallSearchResult } from './fuse-recall-search-candidates.js';
 import { measureRecallQuality } from './measure-recall-quality.js';
 import {
   parseQualityCaseId,
@@ -36,7 +36,6 @@ function createSearchResult(
     dense: { rank: 1, cosineDistance: 0.1 },
     lexical: null,
     identifier: null,
-    rankedListEvidence: [],
     fusedScore,
   };
 }
@@ -86,7 +85,6 @@ void test('recall quality measures candidate-pool and fused final source preserv
   } = {
     ...representative,
     evidenceRelation: RecallEvidenceRelation.UNRESTRICTED_GLOBAL,
-    rerankerScore: 0.99,
     activeBranchPrior: 0.01,
     rankingScore: 1,
     duplicateOccurrences: [duplicate],

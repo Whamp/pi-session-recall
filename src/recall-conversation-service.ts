@@ -1,871 +1,226 @@
-import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { readFile, rm } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { dirname } from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 
-import { adoptLegacyRecallGeneration } from './adopt-legacy-recall-generation.js';
-import { collectRetiredRecallGenerations } from './collect-retired-recall-generations.js';
+import { RecallEvidenceRelation, RecallProjectIdentitySource, RecallSearchScope } from './enums.js';
 import {
-  coordinateRecallReadWindow,
-  coordinateRecallWriteWindow,
-  createRecallWriteWindowAcquisitionSignal,
-  type RecallWriteWindow,
-} from './coordinate-recall-write-window.js';
-import {
-  createRecallDetachedWorkerSignal,
-  type RecallDetachedWorkerSignal,
-} from './create-recall-detached-worker-signal.js';
-import { createRecallSessionProjectionBaseline } from './create-recall-session-projection-baseline.js';
-import {
-  createEmbeddingVectorCache,
-  createEmbeddingVectorCacheIdentity,
-} from './embedding-vector-cache.js';
-import type {
-  RecallConversationConfig,
-  RecallSearchCandidateLimits,
-} from './recall-conversation-config.js';
-import {
-  RecallBackgroundIndexProcessState,
-  RecallDiagnosticErrorCategory,
-  RecallDiagnosticStatus,
-  RecallEvidenceRelation,
-  RecallGenerationCutoverState,
-  RecallInferenceBackend,
-  RecallManualMaintenanceTrigger,
-  RecallProjectIdentitySource,
-  RecallRankedListSource,
-  RecallSearchScope,
-  RecallSessionProjectionKind,
-} from './enums.js';
-import {
-  fuseRecallRankedLists,
+  fuseRecallSearchCandidates,
   RECALL_RANK_FUSION_VERSION,
   RECALL_RRF_RANK_CONSTANT,
-  type RecallRankedList,
-  type RecallSearchResult,
-} from './fuse-recall-ranked-lists.js';
-import {
-  markRecallBackgroundIndexGenerationDiscarded,
-  readRecallBackgroundIndexGenerationStatus,
-  readRecallBackgroundIndexStatusRecord,
-  resumeRecallBackgroundIndexGeneration,
-  startRecallBackgroundIndexGeneration,
-  stopRecallBackgroundIndexGeneration,
-  type RecallBackgroundIndexCoordinatorConfig,
-  type RecallBackgroundIndexGenerationStatus,
-  type RecallBackgroundIndexServiceFactory,
-} from './recall-background-index-build.js';
-import {
-  inspectRecallConversationCorpus,
-  MAX_RECALL_FIRST_INDEX_SAMPLE_SESSION_COUNT,
-  selectRecallConversationCorpusSample,
-  type RecallConversationCorpusInspection,
-} from './recall-conversation-corpus.js';
+} from './fuse-recall-search-candidates.js';
 import {
   indexChangedConversationSessions,
-  type ConversationIndexCheckpoint,
   type ConversationIndexProgress,
   type ConversationIndexSummary,
 } from './incremental-session-indexer.js';
-import { createLlamaCppHttpEmbeddingProvider } from './createLlamaCppHttpEmbeddingProvider.js';
-import { createQwenHttpRerankingProvider } from './createQwenHttpRerankingProvider.js';
-import { isUnknownRecord } from './is-unknown-record.js';
-import type { LocalEmbeddingClient } from './local-embedding-client.js';
 import { loadOctenConversationTokenizer } from './octen-conversation-tokenizer.js';
-import { openRecallZvecValidationStore } from './open-recall-zvec-validation-store.js';
+import { createOctenHttpEmbeddingProvider } from './octen-http-embedding-provider.js';
+import type { RecallChunkPolicy } from './recall-chunk-policy.js';
+import type { RecallEmbeddingProvider } from './recall-inference-capabilities.js';
 import {
   assertRecallIndexManifestCompatible,
-  calculateRecallEmbeddingCanaryCosineSimilarity,
   createRecallIndexManifest,
   readRecallIndexManifest,
-  readRecallSearchManifest,
-  recoverRecallEmbeddingCanaryFromManifest,
-  RECALL_EMBEDDING_CANARY_TEXT,
   writeRecallIndexManifest,
   type RecallEmbeddingModelIdentity,
   type RecallIndexManifest,
   type RecallTokenizerManifestIdentity,
 } from './recall-index-manifest.js';
-import {
-  readRecallActiveGenerationPointer,
-  readRecallActiveGenerationSelection,
-  readRecallGenerationRegistry,
-  readRecallMaterialBacklogWarning,
-  resolveRecallGenerationDirectory,
-} from './recall-generation-state.js';
-import {
-  completeStagingRecallGenerationDiscardTransition,
-  prepareStagingRecallGenerationDiscardTransition,
-} from './recall-generation-transitions.js';
-import {
-  createOctenEmbeddingModelProfile,
-  createQwenRerankingModelProfile,
-  type RecallEmbeddingModelProfile,
-  type RecallQueryPlanningModelProfile,
-  type RecallRerankingModelProfile,
-} from './recall-model-profiles.js';
-import {
-  createRecallRerankingExecutionIdentity,
-  type RecallEmbeddingProvider,
-  type RecallIdentifiedQueryPlanningProvider,
-  type RecallPlannedRetrievalQuery,
-  type RecallQueryPlanningExecutionIdentity,
-  type RecallRerankingExecutionIdentity,
-  type RecallRerankingProvider,
-} from './recall-inference-capabilities.js';
-import { clearPendingRecallEmbeddingReplacement } from './recall-inference-configuration.js';
-import {
-  persistRecallIncrementalWorkerSchedule,
-  RECALL_INCREMENTAL_WORKER_SCHEDULE_VERSION,
-} from './recall-incremental-worker-schedule.js';
-import { validateQmdQueryPlanningPlan } from './recall-query-planning-policy.js';
-import {
-  measureRecallQueryPlanningProviderConformance,
-  measureRecallRerankingProviderConformance,
-  type RecallQueryPlanningProviderConformanceMeasurement,
-  type RecallRerankingProviderConformanceMeasurement,
-} from './recall-inference-conformance.js';
-import { rebuildRecallGeneration } from './rebuild-recall-generation.js';
-import {
-  recallRebuildOwnershipLockPath,
-  tryAcquireRecallRebuildOwnershipLock,
-} from './recall-rebuild-ownership-lock.js';
-import {
-  createLogicalSessionProjectionId,
-  type PhysicalSessionProjection,
-  type RecallSessionProjection,
-} from './recall-session-projection.js';
-import { readRecallSessionSourceRange } from './read-recall-session-append-delta.js';
-import {
-  createRecallIndexMetrics,
-  createRecallOperationDiagnostics,
-  createRecallSearchDiagnosticMetrics,
-  type RecallDiagnosticsClock,
-  type RecallIndexDiagnosticMetrics,
-  type RecallOperationDiagnostics,
-  type RecallPhysicalSessionDiagnostic,
-  type RecallSearchDiagnosticMetrics,
-} from './recall-operation-diagnostics.js';
+import { readNodeErrorCode } from './read-node-error-code.js';
 import {
   createLineageResolver,
   resolveProjectIdentity,
   type ProjectIdentity,
+  type RecallProjectLineages,
   type ResolvedProjectIdentity,
 } from './resolve-project-identity.js';
-import { rollbackRecallGeneration } from './rollback-recall-generation.js';
 import {
-  QUERY_PLANNED_RECALL_FUSED_RANK_BLEND,
-  QUERY_PLANNED_RECALL_RERANK_POLICY_VERSION,
   rankFusedRecallSearchResults,
-  rerankRecallSearchResults,
   RECALL_ACTIVE_BRANCH_PRIOR,
-  RECALL_RERANK_POLICY_VERSION,
   type RankedRecallSearchResult,
-  type RecallFusedRankBlendBand,
 } from './rank-recall-search-results.js';
-import {
-  readSessionConversationChunks,
-  type ConversationTextTokenizer,
-} from './session-conversation-index.js';
+import type { ConversationTextTokenizer } from './session-conversation-index.js';
 import {
   openZvecConversationStore,
   type ZvecConversationStore,
 } from './zvec-conversation-store.js';
-import { openZvecSessionProjectionStore } from './zvec-session-projection-store.js';
 
-export type {
-  RecallConversationConfig,
-  RecallSearchCandidateLimits,
-} from './recall-conversation-config.js';
-/** One typed lexical, semantic, or hypothetical-answer query accepted by planned recall. */
-export type { RecallPlannedRetrievalQuery } from './recall-inference-capabilities.js';
-
-/** Maximum agent-supplied retrieval queries admitted by one query-planned recall search. */
-export const MAX_AGENT_RECALL_PLANNED_QUERY_COUNT = 10;
-
-/** Fixed project-eligible candidate admission limit for every query-planned ranked list. */
-export const QUERY_PLANNED_RECALL_LIST_CANDIDATE_LIMIT = 20;
-
-/** Duplicate evidence group limit applied before query-planned reranking. */
-export const QUERY_PLANNED_RECALL_GROUP_LIMIT = 40;
-
-/** Final result cap applied before query-planned neighbor context expansion. */
-export const QUERY_PLANNED_RECALL_FINAL_RESULT_LIMIT = 5;
-
-/** User-selected ranking depth for hybrid-only, local Qwen, or query-planned recall search. */
-export type RecallSearchMode = 'hybrid' | 'deep-rerank' | 'query-planned';
-
-/** One project-eligible ranked-list admission trace from query-planned retrieval. */
-export interface RecallRankedListTrace {
-  source: RecallRankedListSource;
-  query: string;
-  weight: number;
-  candidateLimit: number;
-  admittedCandidateCount: number;
+/** Paths, one Octen profile, and bounded hybrid retrieval settings. */
+export interface RecallConversationConfig {
+  sessionsDirectory: string;
+  databasePath: string;
+  statePath: string;
+  manifestPath: string;
+  tokenizerCacheDirectory: string;
+  lockPath: string;
+  embeddingBaseUrl: string;
+  embeddingModel: string;
+  embeddingServedModelId: string;
+  embeddingNativeDimensions: number;
+  embeddingStoredDimensions: number;
+  embeddingBatchSize: number;
+  projectLineages: RecallProjectLineages;
+  searchCandidateLimits: RecallSearchCandidateLimits;
+  chunkPolicy: RecallChunkPolicy;
 }
 
-/** QMD fusion constants used for one agent-supplied or model-generated query plan. */
-export interface RecallQueryPlannedFusionPolicy {
-  reciprocalRankConstant: number;
-  submittedQueryListWeight: number;
-  plannedQueryListWeight: number;
-  rankOneBonus: number;
-  rankTwoOrThreeBonus: number;
+/** Per-channel candidate caps applied before deterministic rank fusion. */
+export interface RecallSearchCandidateLimits {
+  dense: number;
+  lexical: number;
+  identifier: number;
 }
 
-/** Reranker model and position-aware blend profile used by query-planned recall. */
-export interface RecallQueryPlannedRerankerProfile {
-  model: string;
-  policyVersion: number;
-  fusedRankBlend: readonly RecallFusedRankBlendBand[];
-}
-
-/** Profile, adapter policy, and request-complete cache identity for configured planning. */
-export interface RecallSearchPlannerIdentity {
-  profileId: string;
-  model: string;
-  adapterId: string;
-  backend: RecallQueryPlanningExecutionIdentity['backend'];
-  promptPolicy: string;
-  grammarVersion: string;
-  cacheIdentity: string;
-}
-
-/** Actual plan source, planner identity, intent, traces, fusion constants, and reranker profile. */
-export interface RecallQueryPlanEvidence {
-  source: 'agent' | 'planner' | 'fallback';
-  plannerIdentity: RecallSearchPlannerIdentity | null;
-  intent: string | null;
-  plannedQueries: readonly RecallPlannedRetrievalQuery[];
-  rankedLists: readonly RecallRankedListTrace[];
-  fusionPolicy: RecallQueryPlannedFusionPolicy;
-  rerankerProfile: RecallQueryPlannedRerankerProfile;
-}
-
-/** Trusted invocation context, cancellation, and ranking depth for one recall search. */
+/** Trusted invocation context and cancellation for one read-only recall search. */
 export interface RecallConversationSearchOptions {
-  mode?: RecallSearchMode;
   scope?: RecallSearchScope;
   invocationDirectory?: string;
-  plan?: readonly RecallPlannedRetrievalQuery[];
-  intent?: string;
   signal?: AbortSignal;
 }
 
-/** Profile, adapter, and cache identity for the reranker used by one deep search. */
-export interface RecallSearchRerankerIdentity {
-  profileId: string;
-  adapterId: string;
-  cacheIdentity: string;
-}
-
-/** Exact fusion, optional Qwen reranking, branch-prior, and neighbor policy for one search. */
+/** Reports the fixed hybrid rank-fusion settings used by one search. */
 export interface RecallSearchPolicy {
   scope: RecallSearchScope;
   invocationProjectIdentity: ProjectIdentity | null;
-  rankingMode: RecallSearchMode;
+  rankingMode: 'hybrid';
   rankFusionVersion: number;
   reciprocalRankConstant: number;
-  rerankPolicyVersion: number | null;
-  rerankerModel: string | null;
-  rerankerIdentity: RecallSearchRerankerIdentity | null;
   activeBranchPrior: number;
   candidateLimits: RecallSearchCandidateLimits;
-  /** Maximum fused documents retained before duplicate evidence grouping. */
-  fusedPoolLimit: number;
-  /** Maximum duplicate evidence groups admitted to reranking. */
-  rerankPoolLimit: number;
-  /** Maximum ranked results retained before neighbor context expansion. */
-  finalResultLimit: number;
-  queryPlan?: RecallQueryPlanEvidence;
 }
 
-/** One fused candidate captured before duplicate grouping, rerank limits, and final truncation. */
-export interface RecallCandidateAdmission extends RecallSearchResult {
-  evidenceRelation: RecallEvidenceRelation;
-}
-
-/** One ranked recall result labeled by its explicit relationship to the invocation project. */
+/** One ranked result labeled by its relationship to the invoking project. */
 export interface RecallConversationSearchResult extends RankedRecallSearchResult {
   evidenceRelation: RecallEvidenceRelation;
 }
 
-/** One read-only hybrid query against a previously built compatible index. */
+/** One read-only hybrid query against a compatible manually built index. */
 export interface RecallConversationSearch {
   results: RecallConversationSearchResult[];
-  candidateAdmission: RecallCandidateAdmission[];
   totalChunks: number;
   searchPolicy: RecallSearchPolicy;
 }
 
-interface RecallConversationIndexBaseOptions {
+/** Options accepted only by explicit `psr` index maintenance. */
+export interface RecallConversationIndexOptions {
+  rebuild?: boolean;
   signal?: AbortSignal;
-  lockWaitMilliseconds?: number;
-  requireExistingGeneration?: boolean;
   onProgress?: (progress: ConversationIndexProgress) => void;
-  onCheckpoint?: (checkpoint: ConversationIndexCheckpoint) => void;
-}
-
-interface RecallAutomaticIndexOptions extends RecallConversationIndexBaseOptions {
-  rebuild?: false;
-  manualMaintenanceTrigger?: never;
-  optimize?: never;
-}
-
-interface RecallAutomaticRebuildIndexOptions extends RecallConversationIndexBaseOptions {
-  rebuild: true;
-  manualMaintenanceTrigger?: never;
-  optimize?: boolean;
-  generationId?: string;
-  resumeGenerationId?: string;
-}
-
-interface RecallManualIncrementalIndexOptions extends RecallConversationIndexBaseOptions {
-  rebuild?: false;
-  manualMaintenanceTrigger: RecallManualMaintenanceTrigger.MANUAL_INCREMENTAL_INDEX;
   optimize?: boolean;
 }
 
-interface RecallManualRebuildIndexOptions extends RecallConversationIndexBaseOptions {
-  rebuild: true;
-  manualMaintenanceTrigger: RecallManualMaintenanceTrigger.MANUAL_REBUILD;
-  optimize?: boolean;
-  generationId?: string;
-  resumeGenerationId?: string;
-}
-
-/** Valid automatic or manually attributed conversation index invocation. */
-export type RecallConversationIndexOptions =
-  | RecallAutomaticIndexOptions
-  | RecallAutomaticRebuildIndexOptions
-  | RecallManualIncrementalIndexOptions
-  | RecallManualRebuildIndexOptions;
-
-/** Counts from one completed full or targeted conversation index update. */
+/** Counts from one completed manual index update. */
 export interface RecallConversationIndexResult {
   indexSummary: ConversationIndexSummary;
   totalChunks: number;
 }
 
-/** Generation paths used by one ordinary update or isolated replacement build. */
-interface RecallIndexTargetPaths {
-  databasePath: string;
-  statePath: string;
-  manifestPath: string;
-}
-
-/** Verified embedding profile and tokenizer identity accepted before guided setup persists it. */
-export interface RecallEmbeddingCapabilityVerification {
-  embeddingProfileId: string;
-  model: string;
-  dimensions: number;
-  normalization: 'l2' | null;
-  tokenizerModel: string;
-}
-
-/** Bound and cancellation for one optional first-index measurement sample. */
-export interface RecallFirstIndexSampleOptions {
-  maximumSessionCount?: number;
-  signal?: AbortSignal;
-}
-
-/** Cold start, throughput, cache reuse, and duration range from one bounded corpus sample. */
-export interface RecallFirstIndexSampleMeasurement {
-  corpus: RecallConversationCorpusInspection;
-  sampledSessionCount: number;
-  sampledSourceByteSize: number;
-  sampledDenseDocumentCount: number;
-  coldStartMilliseconds: number;
-  measuredSampleMilliseconds: number;
-  sourceBytesPerSecond: number;
-  denseDocumentsPerSecond: number;
-  cacheHitCount: number;
-  newlyEmbeddedDocumentCount: number;
-  embeddingRequestCount: number;
-  estimatedDurationMilliseconds: { minimum: number; maximum: number };
-}
-
-/** Independent fixed-score fixture required to accept one reranking adapter. */
-export interface RecallRerankingCapabilityVerificationOptions {
-  query: string;
-  documents: readonly string[];
-  expectedScores: readonly number[];
-  maximumAbsoluteDifference?: number;
-  signal?: AbortSignal;
-}
-
-/** Inspectable profile, adapter, score policy, and measurement from reranker conformance. */
-export interface RecallRerankingCapabilityVerification {
-  profileId: string;
-  model: string;
-  scorePolicy: string;
-  executionIdentity: Readonly<RecallRerankingExecutionIdentity>;
-  measurement: RecallRerankingProviderConformanceMeasurement;
-}
-
-/** Cancellation accepted by independent query planner setup verification. */
-export interface RecallQueryPlanningCapabilityVerificationOptions {
-  expectedPlan?: readonly Readonly<RecallPlannedRetrievalQuery>[];
-  signal?: AbortSignal;
-}
-
-/** Inspectable profile, adapter, policy, and measurement from accepted planner conformance. */
-export interface RecallQueryPlanningCapabilityVerification {
-  profileId: string;
-  model: string;
-  promptPolicy: string;
-  grammarVersion: string;
-  executionIdentity: Readonly<RecallQueryPlanningExecutionIdentity>;
-  measurement: RecallQueryPlanningProviderConformanceMeasurement;
-}
-
-/** Public projection of #59's active and building generation registry states. */
-export interface RecallIndexGenerationStatus {
-  active: {
-    kind?: 'legacy' | 'managed';
-    generationId: string;
-    embeddingProfileId: string;
-    status?: 'active';
-    manifestPath?: string;
-  } | null;
-  staging: {
-    kind?: 'managed';
-    generationId: string;
-    embeddingProfileId: string;
-    status: 'building' | 'resumable';
-    manifestPath?: string;
-  } | null;
-}
-
-/** Search, inference verification, detached rebuild control, and generation recovery. */
+/** Read-only search and explicit manual indexing for one zvec recall collection. */
 export interface RecallConversationService {
-  verifyEmbeddingCapability(options?: {
-    signal?: AbortSignal;
-  }): Promise<RecallEmbeddingCapabilityVerification>;
-  inspectConversationCorpus(): Promise<RecallConversationCorpusInspection>;
-  measureFirstIndexSample(
-    options?: RecallFirstIndexSampleOptions,
-  ): Promise<RecallFirstIndexSampleMeasurement>;
-  verifyRerankingCapability(
-    options: RecallRerankingCapabilityVerificationOptions,
-  ): Promise<RecallRerankingCapabilityVerification>;
-  verifyQueryPlanningCapability(
-    options?: RecallQueryPlanningCapabilityVerificationOptions,
-  ): Promise<RecallQueryPlanningCapabilityVerification>;
   search(
     query: string,
     limit: number,
     options?: RecallConversationSearchOptions,
   ): Promise<RecallConversationSearch>;
   index(options?: RecallConversationIndexOptions): Promise<RecallConversationIndexResult>;
-  startBackgroundIndexGeneration(): Promise<RecallBackgroundIndexGenerationStatus>;
-  resumeBackgroundIndexGeneration(): Promise<RecallBackgroundIndexGenerationStatus>;
-  readBackgroundIndexGenerationStatus(): Promise<RecallBackgroundIndexGenerationStatus | null>;
-  stopBackgroundIndexGeneration(): Promise<RecallBackgroundIndexGenerationStatus>;
-  readIndexGenerationStatus(): Promise<RecallIndexGenerationStatus>;
-  discardStagingIndexGeneration(): Promise<boolean>;
-  /** Restores the bounded rollback generation and republishes retained markers. */
-  rollback(): Promise<void>;
-  /** Explicitly adopts the exact pre-generation version-5 layout as read-only. */
-  adoptLegacy(): Promise<void>;
-  /** Collects only expired validated generations after replay completes. */
-  collectRetired(): Promise<void>;
 }
 
-/** Injectable inference, tokenizer, zvec, generation worker, and diagnostic boundaries. */
+/** Injectable boundaries for public-seam tests and bounded evaluation. */
 export interface RecallConversationDependencies {
-  embeddingProfile?: RecallEmbeddingModelProfile;
   embeddingProvider?: RecallEmbeddingProvider;
-  /** @deprecated Use embeddingProvider so query and document semantics stay distinct. */
-  embeddings?: LocalEmbeddingClient;
-  rerankingProfile?: RecallRerankingModelProfile | null;
-  reranker?: RecallRerankingProvider | null;
-  rerankerExecutionIdentity?: RecallRerankingExecutionIdentity | null;
-  queryPlanningProfile?: RecallQueryPlanningModelProfile;
-  /** Optional identified planner invoked when query-planned search receives no agent plan. */
-  queryPlanner?: RecallIdentifiedQueryPlanningProvider;
   tokenizerIdentity?: RecallTokenizerManifestIdentity;
   loadTokenizer?: () => Promise<ConversationTextTokenizer>;
-  openStore?: (mode: 'read' | 'write', databasePath?: string) => ZvecConversationStore;
+  openStore?: (mode: 'read' | 'write') => ZvecConversationStore;
   resolveProjectIdentity?: (workingDirectory: string) => Promise<ResolvedProjectIdentity | null>;
-  diagnostics?: RecallOperationDiagnostics;
-  diagnosticsClock?: RecallDiagnosticsClock;
-  notifyWarning?: (message: string) => void;
-  workerSignal?: RecallDetachedWorkerSignal;
-  /** Reconstructs the same configured inference runtime inside a detached rebuild worker. */
-  backgroundIndexServiceFactory?: RecallBackgroundIndexServiceFactory;
 }
 
-interface ValidatedRecallQueryPlanningOptions {
-  plannedQueries: RecallPlannedRetrievalQuery[] | null;
-  intent: string | null;
-}
-
-const QUERY_PLANNED_RECALL_SUBMITTED_QUERY_LIST_WEIGHT = 2;
-const QUERY_PLANNED_RECALL_PLANNED_QUERY_LIST_WEIGHT = 1;
-const QUERY_PLANNED_RECALL_RANK_ONE_BONUS = 0.05;
-const QUERY_PLANNED_RECALL_RANK_TWO_OR_THREE_BONUS = 0.02;
-
-function validateRecallQueryPlanningOptions(
-  mode: RecallSearchMode,
-  query: string,
-  plan?: readonly RecallPlannedRetrievalQuery[],
-  intent?: string,
-): ValidatedRecallQueryPlanningOptions {
-  if (mode === 'hybrid' && intent !== undefined) {
-    throw new Error(
-      'Recall hybrid mode does not accept intent; remove intent or choose deep-rerank or query-planned mode',
-    );
-  }
-  if (mode !== 'query-planned' && plan !== undefined) {
-    throw new Error(
-      'Recall query plan is supported only in query-planned mode; remove plan or choose query-planned mode',
-    );
-  }
-  const normalizedIntent = intent?.trim() ?? null;
-  if (intent !== undefined && !normalizedIntent) {
-    throw new Error('Recall intent must not be blank');
-  }
-  if (mode !== 'query-planned') {
-    return { plannedQueries: [], intent: normalizedIntent };
-  }
-  if (/\r|\n/u.test(query)) {
-    throw new Error('Recall query-planned query invalid: expected a single-line string');
-  }
-  if (normalizedIntent !== null && /\r|\n/u.test(normalizedIntent)) {
-    throw new Error('Recall query-planned intent invalid: expected a single-line string');
-  }
-  if (plan === undefined) {
-    return { plannedQueries: null, intent: normalizedIntent };
-  }
-  if (!Array.isArray(plan)) {
-    throw new Error(
-      'Recall query plan invalid: provide plan with 1 to 10 { type: lex|vec|hyde, query: string } entries',
-    );
-  }
-  if (plan.length < 1 || plan.length > MAX_AGENT_RECALL_PLANNED_QUERY_COUNT) {
-    throw new Error(
-      `Recall query plan invalid: expected 1 to ${MAX_AGENT_RECALL_PLANNED_QUERY_COUNT} entries, received ${plan.length}`,
-    );
-  }
-  const plannedQueries: RecallPlannedRetrievalQuery[] = [];
-  const plannedQueryEntryByIdentity = new Map<string, number>();
-  for (const [index, plannedQuery] of plan.entries()) {
-    if (!isUnknownRecord(plannedQuery)) {
-      throw new Error(
-        `Recall query plan invalid at entry ${index + 1}: expected { type: lex|vec|hyde, query: string }`,
-      );
-    }
-    const unexpectedKeys = Object.keys(plannedQuery).filter(
-      (key) => key !== 'type' && key !== 'query',
-    );
-    if (unexpectedKeys.length > 0) {
-      throw new Error(
-        `Recall query plan invalid at entry ${index + 1}: unsupported field ${unexpectedKeys[0]}; use only type and query`,
-      );
-    }
-    const queryType = plannedQuery.type;
-    if (queryType !== 'lex' && queryType !== 'vec' && queryType !== 'hyde') {
-      throw new Error(
-        `Recall query plan invalid at entry ${index + 1}: unsupported type ${String(queryType)}; use lex, vec, or hyde`,
-      );
-    }
-    if (typeof plannedQuery.query !== 'string' || !plannedQuery.query.trim()) {
-      throw new Error(
-        `Recall query plan invalid at entry ${index + 1}: query must be a nonblank string`,
-      );
-    }
-    if (/\r|\n/u.test(plannedQuery.query)) {
-      throw new Error(`Recall query plan invalid at entry ${index + 1}: query must be single-line`);
-    }
-    const normalizedQuery = plannedQuery.query.trim();
-    const plannedQueryIdentity = `${queryType}:${normalizedQuery}`;
-    const matchingEntry = plannedQueryEntryByIdentity.get(plannedQueryIdentity);
-    if (matchingEntry !== undefined) {
-      throw new Error(
-        `Recall query plan invalid at entry ${index + 1}: duplicate ${queryType} query matches entry ${matchingEntry}; remove one duplicate entry`,
-      );
-    }
-    plannedQueryEntryByIdentity.set(plannedQueryIdentity, index + 1);
-    plannedQueries.push({ type: queryType, query: normalizedQuery });
-  }
-  return { plannedQueries, intent: normalizedIntent };
-}
-
-function createRecallRerankerQuery(query: string, intent: string | null): string {
-  return intent ? `${intent}\n\n${query}` : query;
-}
-
-function createRecallQueryPlanningCacheIdentity(
-  submittedQuery: string,
-  recallIntent: string | null,
-  profile: RecallQueryPlanningModelProfile,
-  executionIdentity: RecallQueryPlanningExecutionIdentity,
-): string {
-  const identityInput = JSON.stringify({
-    submittedQuery,
-    recallIntent,
-    modelProfile: {
-      profileId: profile.profileId,
-      model: profile.model,
-      promptPolicy: profile.promptPolicy,
-      grammarVersion: profile.grammarVersion,
-      grammar: profile.grammar,
-      planBounds: profile.planBounds,
-      generationPolicy: profile.generationPolicy,
-      conformanceCanary: profile.conformanceCanary,
-    },
-    adapterPolicy: {
-      adapterId: executionIdentity.adapterId,
-      adapterConfigurationIdentity: executionIdentity.adapterConfigurationIdentity,
-      backend: executionIdentity.backend,
-      cacheIdentity: executionIdentity.cacheIdentity,
-      modelProfileId: executionIdentity.modelProfileId,
-      promptPolicy: executionIdentity.promptPolicy,
-      grammarVersion: executionIdentity.grammarVersion,
-      requestTimeoutMilliseconds: executionIdentity.requestTimeoutMilliseconds,
-    },
-  });
-  return `query-plan-v1:${createHash('sha256').update(identityInput).digest('hex')}`;
-}
-
-interface RecallSearchDiagnosticRunOptions {
-  diagnostics: RecallOperationDiagnostics;
-  searchMode: RecallSearchMode;
-  recallScope: RecallSearchScope;
-  signal?: AbortSignal;
-  search: (diagnosticMetrics: RecallSearchDiagnosticMetrics) => Promise<RecallConversationSearch>;
-}
-
-interface ManualIndexDiagnosticRunOptions {
-  diagnostics: RecallOperationDiagnostics;
-  manualMaintenanceTrigger: RecallManualMaintenanceTrigger;
-  signal?: AbortSignal;
-  runIndexMaintenance: (
-    diagnosticMetrics: RecallIndexDiagnosticMetrics,
-    onPhysicalSessionCheck: (completion: RecallPhysicalSessionDiagnostic) => void,
-    runOptimizationWithDiagnostics: (optimize: () => Promise<void>) => Promise<void>,
-  ) => Promise<RecallConversationIndexResult>;
-}
-
-function assertRecallManualMaintenanceTriggerMatchesIndexOptions(
-  options: RecallConversationIndexOptions,
-): void {
-  if (!options.manualMaintenanceTrigger) {
-    return;
-  }
-  const expectedTrigger = options.rebuild
-    ? RecallManualMaintenanceTrigger.MANUAL_REBUILD
-    : RecallManualMaintenanceTrigger.MANUAL_INCREMENTAL_INDEX;
-  if (options.manualMaintenanceTrigger !== expectedTrigger) {
-    throw new Error(
-      `Recall manual maintenance trigger mismatch: expected ${expectedTrigger}, received ${options.manualMaintenanceTrigger}`,
-    );
-  }
-}
-
-function isRecallOperationCancelled(error: unknown, signal?: AbortSignal): boolean {
-  return (
-    signal?.aborted === true ||
-    (error instanceof Error &&
-      (error.message === 'Recall conversation operation cancelled' ||
-        error.message === 'Recall conversation indexing cancelled'))
-  );
-}
-
-function throwIfRecallSearchCancelled(signal?: AbortSignal): void {
-  if (!signal?.aborted) {
-    return;
-  }
-  if (signal.reason instanceof Error) {
-    throw signal.reason;
-  }
-  throw new Error('Recall conversation operation cancelled', { cause: signal.reason });
-}
-
-interface RunRecallStoreOptimizationOptions {
-  optimize(): Promise<void>;
-  diagnosticsClock: RecallDiagnosticsClock;
-  diagnosticMetrics?: RecallIndexDiagnosticMetrics;
-  runOptimizationWithDiagnostics?: (optimize: () => Promise<void>) => Promise<void>;
-}
-
-async function runRecallStoreOptimization(
-  options: RunRecallStoreOptimizationOptions,
-): Promise<void> {
-  const optimizationStartedAtMilliseconds = options.diagnosticsClock.monotonicMilliseconds();
-  if (options.diagnosticMetrics) {
-    options.diagnosticMetrics.optimizationRan = true;
-  }
+function readLockOwnerProcessId(value: string): number | undefined {
   try {
-    if (options.runOptimizationWithDiagnostics) {
-      await options.runOptimizationWithDiagnostics(() => options.optimize());
-    } else {
-      await options.optimize();
+    const parsed: unknown = JSON.parse(value);
+    if (!parsed || typeof parsed !== 'object' || !('pid' in parsed)) {
+      return undefined;
     }
-  } finally {
-    if (options.diagnosticMetrics) {
-      options.diagnosticMetrics.optimizationMilliseconds += Math.max(
-        options.diagnosticsClock.monotonicMilliseconds() - optimizationStartedAtMilliseconds,
-        0,
-      );
-    }
+    const processId = Reflect.get(parsed, 'pid');
+    return typeof processId === 'number' && Number.isInteger(processId) ? processId : undefined;
+  } catch {
+    return undefined;
   }
 }
 
-async function runManualIndexWithDiagnostics(
-  options: ManualIndexDiagnosticRunOptions,
-): Promise<RecallConversationIndexResult> {
-  const diagnosticOperation = options.diagnostics.startManualIndexMaintenance({
-    manualMaintenanceTrigger: options.manualMaintenanceTrigger,
-  });
-  const diagnosticMetrics = createRecallIndexMetrics();
-  async function runOptimizationWithDiagnostics(optimize: () => Promise<void>): Promise<void> {
-    const optimizationDiagnostic = diagnosticOperation.startOptimization();
+function isProcessAlive(processId: number): boolean {
+  try {
+    process.kill(processId, 0);
+    return true;
+  } catch (error) {
+    return readNodeErrorCode(error) === 'EPERM';
+  }
+}
+
+async function acquireRecallConversationLock(
+  lockPath: string,
+  signal?: AbortSignal,
+): Promise<() => Promise<void>> {
+  await mkdir(dirname(lockPath), { recursive: true });
+  let unreadableOwnerCount = 0;
+  while (true) {
+    if (signal?.aborted) {
+      throw new Error('Recall conversation operation cancelled', { cause: signal.reason });
+    }
     try {
-      await optimize();
+      await mkdir(lockPath);
+      await writeFile(
+        `${lockPath}/owner.json`,
+        `${JSON.stringify({ pid: process.pid })}\n`,
+        'utf8',
+      );
+      return async () => rm(lockPath, { recursive: true, force: true });
     } catch (error) {
-      const cancelled = isRecallOperationCancelled(error, options.signal);
-      optimizationDiagnostic.complete({
-        status: cancelled ? RecallDiagnosticStatus.CANCELLED : RecallDiagnosticStatus.FAILED,
-        errorCategory: cancelled
-          ? RecallDiagnosticErrorCategory.OPERATION_CANCELLED
-          : RecallDiagnosticErrorCategory.OPERATION_FAILED,
-      });
-      throw error;
+      if (readNodeErrorCode(error) !== 'EEXIST') {
+        throw error;
+      }
+      let ownerProcessId: number | undefined;
+      try {
+        ownerProcessId = readLockOwnerProcessId(await readFile(`${lockPath}/owner.json`, 'utf8'));
+      } catch (readError) {
+        if (readNodeErrorCode(readError) !== 'ENOENT') {
+          throw readError;
+        }
+      }
+      if (ownerProcessId === undefined) {
+        unreadableOwnerCount += 1;
+        if (unreadableOwnerCount >= 4) {
+          await rm(lockPath, { recursive: true, force: true });
+          unreadableOwnerCount = 0;
+          continue;
+        }
+      } else if (!isProcessAlive(ownerProcessId)) {
+        await rm(lockPath, { recursive: true, force: true });
+        unreadableOwnerCount = 0;
+        continue;
+      } else {
+        unreadableOwnerCount = 0;
+      }
+      await sleep(250, undefined, signal ? { signal } : undefined);
     }
-    optimizationDiagnostic.complete({ status: RecallDiagnosticStatus.SUCCEEDED });
   }
+}
 
-  let result: RecallConversationIndexResult;
+async function assertRecallIndexUnlockedForSearch(lockPath: string): Promise<void> {
+  let owner: string;
   try {
-    result = await options.runIndexMaintenance(
-      diagnosticMetrics,
-      (completion) => {
-        diagnosticOperation.recordPhysicalSessionCheck(completion);
-      },
-      runOptimizationWithDiagnostics,
-    );
+    owner = await readFile(`${lockPath}/owner.json`, 'utf8');
   } catch (error) {
-    const cancelled = isRecallOperationCancelled(error, options.signal);
-    diagnosticOperation.complete({
-      status: cancelled ? RecallDiagnosticStatus.CANCELLED : RecallDiagnosticStatus.FAILED,
-      errorCategory: cancelled
-        ? RecallDiagnosticErrorCategory.OPERATION_CANCELLED
-        : RecallDiagnosticErrorCategory.OPERATION_FAILED,
-      metrics: diagnosticMetrics,
-      scannedSessionCount: diagnosticMetrics.scannedSessionCount,
-      indexedSessionCount: diagnosticMetrics.indexedSessionCount,
-      removedSessionCount: diagnosticMetrics.removedSessionCount,
-      failedSessionCount: diagnosticMetrics.failedSessionCount,
-      cacheHitCount: diagnosticMetrics.cacheHitCount,
-      newEmbeddingCount: diagnosticMetrics.newEmbeddingCount,
-      embeddingRequestCount: diagnosticMetrics.embeddingRequestCount,
-      deletedDocumentCount: diagnosticMetrics.deletedDocumentCount,
-      totalDocumentCount: null,
-    });
+    if (readNodeErrorCode(error) === 'ENOENT') {
+      return;
+    }
     throw error;
   }
-  const failed = result.indexSummary.failedSessions.length > 0;
-  diagnosticOperation.complete({
-    status: failed ? RecallDiagnosticStatus.FAILED : RecallDiagnosticStatus.SUCCEEDED,
-    ...(failed ? { errorCategory: RecallDiagnosticErrorCategory.OPERATION_FAILED } : {}),
-    metrics: diagnosticMetrics,
-    scannedSessionCount: result.indexSummary.scannedSessions,
-    indexedSessionCount: result.indexSummary.indexedSessions,
-    removedSessionCount: result.indexSummary.removedSessions,
-    failedSessionCount: result.indexSummary.failedSessions.length,
-    cacheHitCount: result.indexSummary.cacheHits,
-    newEmbeddingCount: result.indexSummary.newlyEmbeddedChunks,
-    embeddingRequestCount: result.indexSummary.embeddingRequestCount,
-    deletedDocumentCount: result.indexSummary.deletedChunks,
-    totalDocumentCount: result.totalChunks,
-  });
-  return result;
-}
-
-async function runRecallSearchWithDiagnostics(
-  options: RecallSearchDiagnosticRunOptions,
-): Promise<RecallConversationSearch> {
-  const diagnosticOperation = options.diagnostics.startRecallSearch({
-    searchMode: options.searchMode,
-    recallScope: options.recallScope,
-  });
-  const diagnosticMetrics = createRecallSearchDiagnosticMetrics();
-  try {
-    const result = await options.search(diagnosticMetrics);
-    diagnosticOperation.complete({
-      status: RecallDiagnosticStatus.SUCCEEDED,
-      metrics: diagnosticMetrics,
-      totalDocumentCount: result.totalChunks,
-    });
-    return result;
-  } catch (error) {
-    const cancelled = isRecallOperationCancelled(error, options.signal);
-    diagnosticOperation.complete({
-      status: cancelled ? RecallDiagnosticStatus.CANCELLED : RecallDiagnosticStatus.FAILED,
-      errorCategory: cancelled
-        ? RecallDiagnosticErrorCategory.OPERATION_CANCELLED
-        : RecallDiagnosticErrorCategory.OPERATION_FAILED,
-      metrics: diagnosticMetrics,
-      totalDocumentCount: null,
-    });
-    throw error;
-  }
-}
-
-function closeRecallWriteStore(
-  writeWindow: RecallWriteWindow,
-  failureMessage: string,
-  store?: ZvecConversationStore,
-): void {
-  try {
-    store?.close();
-  } catch (error) {
-    writeWindow.retainRecoveryRequired();
-    throw error instanceof Error ? error : new Error(failureMessage, { cause: error });
-  }
-}
-
-function readRecallRerankingExecutionIdentity(
-  provider: RecallRerankingProvider,
-): RecallRerankingExecutionIdentity | undefined {
-  if (!('executionIdentity' in provider)) {
-    return undefined;
-  }
-  const identity = provider.executionIdentity;
-  if (
-    !isUnknownRecord(identity) ||
-    typeof identity.adapterId !== 'string' ||
-    typeof identity.adapterVersion !== 'string' ||
-    typeof identity.adapterConfigurationIdentity !== 'string' ||
-    typeof identity.cacheIdentity !== 'string' ||
-    typeof identity.modelProfileId !== 'string' ||
-    typeof identity.modelProfileIdentity !== 'string' ||
-    typeof identity.requestTimeoutMilliseconds !== 'number'
-  ) {
-    return undefined;
-  }
-  let backend: RecallInferenceBackend;
-  if (identity.backend === RecallInferenceBackend.EMBEDDED) {
-    backend = RecallInferenceBackend.EMBEDDED;
-  } else if (identity.backend === RecallInferenceBackend.LLAMA_CPP_HTTP) {
-    backend = RecallInferenceBackend.LLAMA_CPP_HTTP;
-  } else if (identity.backend === RecallInferenceBackend.CUSTOM) {
-    backend = RecallInferenceBackend.CUSTOM;
-  } else {
-    return undefined;
-  }
-  return {
-    adapterId: identity.adapterId,
-    adapterVersion: identity.adapterVersion,
-    adapterConfigurationIdentity: identity.adapterConfigurationIdentity,
-    backend,
-    cacheIdentity: identity.cacheIdentity,
-    modelProfileId: identity.modelProfileId,
-    modelProfileIdentity: identity.modelProfileIdentity,
-    requestTimeoutMilliseconds: identity.requestTimeoutMilliseconds,
-  };
+  const ownerProcessId = readLockOwnerProcessId(owner);
+  const ownerDescription = ownerProcessId ? `owned by process ${ownerProcessId}` : 'unreadable';
+  throw new Error(
+    `Recall index write lock at ${lockPath} is ${ownerDescription}; read-only search did not remove the lock`,
+  );
 }
 
 function createEmbeddingModelIdentity(
@@ -874,324 +229,26 @@ function createEmbeddingModelIdentity(
   return {
     requestModel: config.embeddingModel,
     servedModelId: config.embeddingServedModelId,
-    artifact: config.embeddingArtifact,
-    dimensions: config.embeddingDimensions,
-    quantization: config.embeddingQuantization,
-    pooling: config.embeddingPooling,
+    nativeDimensions: config.embeddingNativeDimensions,
+    storedDimensions: config.embeddingStoredDimensions,
+    transformation: 'vendor-prefix-then-l2-v1',
   };
 }
 
-interface ApprovedRecallRebuildSnapshot {
-  projections: RecallSessionProjection[];
-  eligibleContributorEntryIdsBySessionPath: Map<string, Map<string, ReadonlySet<string>>>;
-}
-
-async function readApprovedSourceRange(
-  sourcePath: string,
-  startByte: number,
-  endByteExclusive: number,
-): Promise<Buffer> {
-  const chunks: Buffer[] = [];
-  let byteLength = 0;
-  for await (const chunk of readRecallSessionSourceRange(sourcePath, startByte, endByteExclusive)) {
-    chunks.push(chunk);
-    byteLength += chunk.length;
-  }
-  const bytes = Buffer.concat(chunks, byteLength);
-  if (bytes.length !== endByteExclusive - startByte) {
-    throw new Error(
-      `Recall rebuild approved evidence source range incomplete at ${sourcePath}:${startByte}-${endByteExclusive}`,
-    );
-  }
-  return bytes;
-}
-
-/**
- * Validates that every approved logical projection's descriptors still match the live source
- * fingerprints. Throws if any descriptor's fingerprint no longer matches the live file, preventing
- * rebuild cutover with stale evidence.
- */
-async function validateApprovedRebuildSourceFingerprints(
-  projections: RecallSessionProjection[],
-): Promise<void> {
-  const sourcePathByProjectionId = new Map<string, string>();
-  for (const projection of projections) {
-    if (projection.projectionKind === RecallSessionProjectionKind.PHYSICAL_SESSION) {
-      sourcePathByProjectionId.set(projection.projectionId, projection.sourcePath);
-    }
-  }
-  for (const projection of projections) {
-    if (projection.projectionKind !== RecallSessionProjectionKind.LOGICAL_SESSION) {
-      continue;
-    }
-    const sourcePath = sourcePathByProjectionId.get(projection.physicalProjectionId);
-    if (sourcePath === undefined) {
-      throw new Error(
-        `Recall rebuild approved evidence changed: physical source missing for ${projection.projectionId}`,
-      );
-    }
-    const descriptors: Array<{
-      sourceLine: number;
-      startByte: number;
-      endByte: number;
-      sourceFingerprint: string;
-    }> = [projection.headerDescriptor, ...projection.entryDescriptors];
-    for (const descriptor of descriptors) {
-      const bytes = await readApprovedSourceRange(
-        sourcePath,
-        descriptor.startByte,
-        descriptor.endByte,
-      );
-      const lineEnd = bytes.at(-1) === 0x0a ? bytes.length - 1 : bytes.length;
-      const contentEnd = lineEnd > 0 && bytes.at(lineEnd - 1) === 0x0d ? lineEnd - 1 : lineEnd;
-      const text = bytes.subarray(0, contentEnd).toString('utf8');
-      const fingerprint = createHash('sha256').update(text).digest('hex');
-      if (fingerprint !== descriptor.sourceFingerprint) {
-        throw new Error(
-          `Recall rebuild approved evidence changed: fingerprint mismatch at ${sourcePath}:${descriptor.sourceLine}`,
-        );
-      }
-    }
-  }
-}
-
-async function readApprovedRecallRebuildSnapshot(
-  projectionDatabasePath: string,
-  generationId: string,
-): Promise<ApprovedRecallRebuildSnapshot> {
-  const store = openZvecSessionProjectionStore({
-    databasePath: projectionDatabasePath,
-    generationId,
-    createIfMissing: false,
-    readOnly: true,
-  });
-  try {
-    const physicalProjections = store.listPhysicalProjections();
-    const projections: RecallSessionProjection[] = [...physicalProjections];
-    const eligibleContributorEntryIdsBySessionPath = new Map<
-      string,
-      Map<string, ReadonlySet<string>>
-    >();
-    for (const physicalProjection of physicalProjections) {
-      const logicalProjectionIds = physicalProjection.logicalSessionIds.map((logicalSessionId) =>
-        createLogicalSessionProjectionId(physicalProjection.physicalSessionId, logicalSessionId),
-      );
-      const fetched = store.fetchProjections(logicalProjectionIds);
-      const eligibleByLogicalSessionId = new Map<string, ReadonlySet<string>>();
-      for (const projectionId of logicalProjectionIds) {
-        const projection = fetched.get(projectionId);
-        if (projection?.projectionKind !== RecallSessionProjectionKind.LOGICAL_SESSION) {
-          throw new Error(`Recall rebuild approved logical projection missing: ${projectionId}`);
-        }
-        projections.push(projection);
-        eligibleByLogicalSessionId.set(
-          projection.logicalSessionId,
-          new Set(projection.eligibleContributorEntryIds),
-        );
-      }
-      eligibleContributorEntryIdsBySessionPath.set(
-        physicalProjection.sourcePath,
-        eligibleByLogicalSessionId,
-      );
-    }
-    return { projections, eligibleContributorEntryIdsBySessionPath };
-  } finally {
-    store.close();
-  }
-}
-
-async function validateApprovedRebuildEvidenceMembership(
-  store: ZvecConversationStore,
-  approvedRebuildSnapshot: ApprovedRecallRebuildSnapshot,
-  totalChunkCount: number,
-): Promise<void> {
-  const physicalProjectionBySourcePath = new Map<string, PhysicalSessionProjection>();
-  for (const projection of approvedRebuildSnapshot.projections) {
-    if (projection.projectionKind === RecallSessionProjectionKind.PHYSICAL_SESSION) {
-      physicalProjectionBySourcePath.set(projection.sourcePath, projection);
-    }
-  }
-
-  const indexedChunkIds = new Set<string>();
-  for (const [
-    sourcePath,
-    eligibleByLogicalSessionId,
-  ] of approvedRebuildSnapshot.eligibleContributorEntryIdsBySessionPath) {
-    const physicalProjection = physicalProjectionBySourcePath.get(sourcePath);
-    if (physicalProjection === undefined) {
-      throw new Error(`Recall rebuild approved physical projection missing: ${sourcePath}`);
-    }
-    const chunkIds = await store.listChunkIdsByPhysicalSessionProjectionId(
-      physicalProjection.projectionId,
-      totalChunkCount + 1,
-    );
-    const chunks = store.fetchConversationChunks(chunkIds);
-    if (chunks.size !== chunkIds.length) {
-      throw new Error(`Recall rebuild indexed evidence could not be reloaded: ${sourcePath}`);
-    }
-    const unexpectedSourceChunk = [...chunks.values()].find(
-      (chunk) =>
-        chunk.sessionPath !== sourcePath ||
-        chunk.physicalSessionProjectionId !== physicalProjection.projectionId,
-    );
-    if (unexpectedSourceChunk !== undefined) {
-      throw new Error(
-        `Recall rebuild indexed evidence outside approved snapshot: ${unexpectedSourceChunk.sessionPath}`,
-      );
-    }
-    const approvedContributorEntryIds = new Set(
-      [...eligibleByLogicalSessionId.values()].flatMap((entryIds) => [...entryIds]),
-    );
-    const indexedContributorEntryIds = new Set<string>();
-    for (const [chunkId, chunk] of chunks) {
-      indexedChunkIds.add(chunkId);
-      for (const { value } of chunk.contributingEntryIds) {
-        indexedContributorEntryIds.add(value);
-      }
-    }
-    const unexpectedContributorEntryId = [...indexedContributorEntryIds].find(
-      (entryId) => !approvedContributorEntryIds.has(entryId),
-    );
-    if (unexpectedContributorEntryId !== undefined) {
-      throw new Error(
-        `Recall rebuild indexed evidence outside approved snapshot: ${sourcePath}:${unexpectedContributorEntryId}`,
-      );
-    }
-    const missingContributorEntryId = [...approvedContributorEntryIds].find(
-      (entryId) => !indexedContributorEntryIds.has(entryId),
-    );
-    if (missingContributorEntryId !== undefined) {
-      throw new Error(
-        `Recall rebuild approved evidence was not reproduced: ${sourcePath}:${missingContributorEntryId}`,
-      );
-    }
-  }
-  if (indexedChunkIds.size !== totalChunkCount) {
-    throw new Error('Recall rebuild indexed evidence outside approved snapshot: unknown source');
-  }
-}
-
-function retargetRecallRebuildProjection(
-  projection: RecallSessionProjection,
-  generationId: string,
-): RecallSessionProjection {
-  return {
-    ...projection,
-    generationId,
-    markerCheckpoint: { ...projection.markerCheckpoint, generationId },
-  };
-}
-
-/** Creates the explicit indexing and read-only search service used by the Pi recall extension. */
+/** Creates the service used by the read-only Pi tool and standalone `psr` writer. */
 export function createRecallConversationService(
   config: RecallConversationConfig,
   dependencies: RecallConversationDependencies = {},
 ): RecallConversationService {
-  const embeddingProfile =
-    dependencies.embeddingProfile ??
-    createOctenEmbeddingModelProfile(createEmbeddingModelIdentity(config));
-  if (dependencies.embeddingProfile && !dependencies.tokenizerIdentity) {
-    throw new Error(
-      'Recall embedding profile configuration incomplete: tokenizer manifest identity is required',
-    );
-  }
-  if (
-    embeddingProfile.canary &&
-    (embeddingProfile.canary.expectedDimensions !== embeddingProfile.identity.dimensions ||
-      embeddingProfile.canary.expectedNormalization !== embeddingProfile.identity.normalization)
-  ) {
-    throw new Error(
-      'Recall embedding profile canary incompatible: dimensions and normalization must match the embedding identity',
-    );
-  }
-  const legacyEmbeddings = dependencies.embeddings;
-  const embeddingProvider: RecallEmbeddingProvider =
+  const embeddingProvider =
     dependencies.embeddingProvider ??
-    (legacyEmbeddings
-      ? {
-          async embedQuery(query, signal) {
-            const embedding = (await legacyEmbeddings.embedTexts([query], signal))[0];
-            if (!embedding) {
-              throw new Error('Recall embedding response missing query vector');
-            }
-            return embedding;
-          },
-          embedDocuments(documents, signal) {
-            return legacyEmbeddings.embedTexts([...documents], signal);
-          },
-        }
-      : createLlamaCppHttpEmbeddingProvider(embeddingProfile, {
-          baseUrl: config.embeddingBaseUrl,
-          batchSize: config.embeddingBatchSize,
-        }));
-  const rerankingDisabled =
-    dependencies.rerankingProfile === null && dependencies.reranker === null;
-  if (
-    (dependencies.rerankingProfile === null) !== (dependencies.reranker === null) ||
-    (rerankingDisabled && dependencies.rerankerExecutionIdentity)
-  ) {
-    throw new Error(
-      'Recall reranker configuration incomplete: profile and provider must both be configured or both be null',
-    );
-  }
-  let rerankingProfile: RecallRerankingModelProfile | null;
-  let reranker: RecallRerankingProvider | null;
-  if (rerankingDisabled) {
-    rerankingProfile = null;
-    reranker = null;
-  } else {
-    rerankingProfile =
-      dependencies.rerankingProfile ?? createQwenRerankingModelProfile(config.rerankerModel);
-    reranker =
-      dependencies.reranker ??
-      createQwenHttpRerankingProvider(rerankingProfile, { baseUrl: config.rerankerBaseUrl });
-  }
-  const providerExecutionIdentity = reranker
-    ? readRecallRerankingExecutionIdentity(reranker)
-    : null;
-  const rerankerExecutionIdentity = rerankingProfile
-    ? (dependencies.rerankerExecutionIdentity ??
-      providerExecutionIdentity ??
-      createRecallRerankingExecutionIdentity(
-        rerankingProfile,
-        'custom-injected-reranking-v1',
-        'custom-injected-reranking-config-v1',
-        RecallInferenceBackend.CUSTOM,
-        60_000,
-      ))
-    : null;
-  if (
-    rerankingProfile &&
-    rerankerExecutionIdentity &&
-    rerankerExecutionIdentity.modelProfileId !== rerankingProfile.profileId
-  ) {
-    throw new Error(
-      `Recall reranker profile identity mismatch: expected ${rerankingProfile.profileId}, received ${rerankerExecutionIdentity.modelProfileId}`,
-    );
-  }
-  function readCurrentRerankerExecutionIdentity(): RecallRerankingExecutionIdentity | null {
-    return (
-      dependencies.rerankerExecutionIdentity ??
-      (reranker ? readRecallRerankingExecutionIdentity(reranker) : undefined) ??
-      rerankerExecutionIdentity
-    );
-  }
-  const queryPlanningProfile = dependencies.queryPlanningProfile;
-  const queryPlanner = dependencies.queryPlanner;
-  if ((queryPlanningProfile && !queryPlanner) || (!queryPlanningProfile && queryPlanner)) {
-    throw new Error(
-      'Recall query planner configuration incomplete: profile and identified provider are both required',
-    );
-  }
-  if (
-    queryPlanningProfile &&
-    queryPlanner &&
-    queryPlanner.executionIdentity.modelProfileId !== queryPlanningProfile.profileId
-  ) {
-    throw new Error(
-      `Recall query planner profile identity mismatch: expected ${queryPlanningProfile.profileId}, received ${queryPlanner.executionIdentity.modelProfileId}`,
-    );
-  }
+    createOctenHttpEmbeddingProvider({
+      baseUrl: config.embeddingBaseUrl,
+      model: config.embeddingModel,
+      nativeDimensions: config.embeddingNativeDimensions,
+      storedDimensions: config.embeddingStoredDimensions,
+      batchSize: config.embeddingBatchSize,
+    });
   const loadTokenizer =
     dependencies.loadTokenizer ??
     (() => loadOctenConversationTokenizer({ cacheDirectory: config.tokenizerCacheDirectory }));
@@ -1199,1607 +256,183 @@ export function createRecallConversationService(
     config.projectLineages,
     dependencies.resolveProjectIdentity ?? resolveProjectIdentity,
   );
-  const embeddingProfileId = `embedding-profile-${createHash('sha256')
-    .update(
-      JSON.stringify({
-        identity: embeddingProfile.identity,
-        queryInputPrefix: embeddingProfile.queryInputPrefix,
-        documentInputPrefix: embeddingProfile.documentInputPrefix,
-        canary: embeddingProfile.canary ?? null,
-      }),
-    )
-    .digest('hex')}`;
   const openStore =
     dependencies.openStore ??
-    ((mode, databasePath = config.databasePath) =>
+    ((mode) =>
       openZvecConversationStore({
-        databasePath,
-        dimensions: embeddingProfile.identity.dimensions,
+        databasePath: config.databasePath,
+        dimensions: config.embeddingStoredDimensions,
         createIfMissing: mode === 'write',
         readOnly: mode === 'read',
       }));
-  const diagnosticsClock = dependencies.diagnosticsClock ?? {
-    monotonicMilliseconds: () => performance.now(),
-    wallClockIsoTimestamp: () => new Date().toISOString(),
-  };
-  const workerSignal =
-    dependencies.workerSignal ?? createRecallDetachedWorkerSignal(config.workerOwnershipLockPath);
-  const backgroundIndexStatusPath =
-    config.backgroundIndexStatusPath ?? join(config.dataDirectory, 'background-index-status.json');
-  const backgroundIndexRequestPath =
-    config.backgroundIndexRequestPath ??
-    join(config.dataDirectory, 'background-index-request.json');
-  const backgroundWorkerNeedsCustomFactory =
-    !dependencies.backgroundIndexServiceFactory &&
-    Boolean(
-      dependencies.embeddingProfile ||
-      dependencies.embeddingProvider ||
-      dependencies.embeddings ||
-      dependencies.tokenizerIdentity ||
-      dependencies.loadTokenizer ||
-      dependencies.openStore ||
-      dependencies.resolveProjectIdentity,
-    );
-  function assertBackgroundIndexWorkerCanReconstructService(): void {
-    if (backgroundWorkerNeedsCustomFactory) {
-      throw new Error(
-        'Recall background index worker cannot reconstruct injected indexing dependencies; configure backgroundIndexServiceFactory',
-      );
-    }
-  }
-  const backgroundIndexCoordinatorConfig: RecallBackgroundIndexCoordinatorConfig = {
-    serviceConfig: config,
-    generationService: { readIndexGenerationStatus: readCanonicalIndexGenerationStatus },
-    statusPath: backgroundIndexStatusPath,
-    requestPath: backgroundIndexRequestPath,
-    embeddingProfileId,
-    serviceFactory: dependencies.backgroundIndexServiceFactory ?? {
-      moduleUrl: import.meta.url,
-      exportName: 'createRecallConversationService',
-    },
-  };
-  const diagnostics =
-    dependencies.diagnostics ??
-    createRecallOperationDiagnostics({
-      mode: config.diagnosticsMode,
-      activeLogPath: config.diagnosticLogPath,
-      retainedLogPath: config.retainedDiagnosticLogPath,
-      clock: diagnosticsClock,
-      notifyWarning: dependencies.notifyWarning ?? (() => undefined),
-    });
-  let activeOperation: Promise<void> | undefined;
-  let conversationTokenizer: ConversationTextTokenizer | undefined;
+  let tokenizer: ConversationTextTokenizer | undefined;
 
-  async function runSerialized<T>(operation: () => Promise<T>): Promise<T> {
-    while (activeOperation) {
-      await activeOperation;
-    }
-    const operationFinished = Promise.withResolvers<void>();
-    activeOperation = operationFinished.promise;
-    try {
-      return await operation();
-    } finally {
-      activeOperation = undefined;
-      operationFinished.resolve();
-    }
-  }
-
-  async function getConversationTokenizer(): Promise<ConversationTextTokenizer> {
-    if (!conversationTokenizer) {
-      conversationTokenizer = await loadTokenizer();
-    }
-    return conversationTokenizer;
-  }
-
-  async function readCanonicalIndexGenerationStatus(): Promise<RecallIndexGenerationStatus> {
-    const [pointer, registry, backgroundStatus] = await Promise.all([
-      readRecallActiveGenerationPointer(config.activeGenerationPointerPath),
-      readRecallGenerationRegistry(config.generationRegistryPath),
-      readRecallBackgroundIndexStatusRecord(backgroundIndexStatusPath),
-    ]);
-    const activeEntry = pointer
-      ? registry?.generations.find(
-          ({ generationId }) => generationId === pointer.activeGenerationId,
-        )
-      : undefined;
-    const buildingEntry = registry?.buildingGenerationId
-      ? registry.generations.find(
-          ({ generationId }) => generationId === registry.buildingGenerationId,
-        )
-      : undefined;
-    const resumableEntry = registry?.generations
-      .filter(({ state }) => state === RecallGenerationCutoverState.FAILED)
-      .toSorted(
-        (left, right) =>
-          right.stateChangedAtEpochMilliseconds - left.stateChangedAtEpochMilliseconds,
-      )[0];
-    const stagingEntry = buildingEntry ?? resumableEntry;
-    const backgroundOwnsBuildingEntry =
-      buildingEntry !== undefined &&
-      backgroundStatus?.generationId === buildingEntry.generationId &&
-      (backgroundStatus.processState === RecallBackgroundIndexProcessState.STARTING ||
-        backgroundStatus.processState === RecallBackgroundIndexProcessState.RUNNING ||
-        backgroundStatus.processState === RecallBackgroundIndexProcessState.STOPPING);
-    const stagingStatus = buildingEntry && backgroundOwnsBuildingEntry ? 'building' : 'resumable';
-    const activeGenerationDirectory = pointer
-      ? await resolveRecallGenerationDirectory(
-          config.generationRootDirectory,
-          pointer.activeGenerationId,
-        )
-      : null;
-    const stagingGenerationDirectory = stagingEntry
-      ? await resolveRecallGenerationDirectory(
-          config.generationRootDirectory,
-          stagingEntry.generationId,
-        )
-      : null;
-    return {
-      active: pointer
-        ? {
-            kind:
-              activeEntry?.state === RecallGenerationCutoverState.LEGACY_READ_ONLY
-                ? 'legacy'
-                : 'managed',
-            generationId: pointer.activeGenerationId,
-            embeddingProfileId: activeEntry?.embeddingProfileId ?? embeddingProfileId,
-            status: 'active',
-            manifestPath: join(activeGenerationDirectory!, 'index-manifest.json'),
-          }
-        : null,
-      staging: stagingEntry
-        ? {
-            kind: 'managed',
-            generationId: stagingEntry.generationId,
-            embeddingProfileId: stagingEntry.embeddingProfileId ?? embeddingProfileId,
-            status: stagingStatus,
-            manifestPath: join(stagingGenerationDirectory!, 'index-manifest.json'),
-          }
-        : null,
-    };
-  }
-
-  async function readCurrentEmbeddingCanary(signal?: AbortSignal): Promise<number[]> {
-    if (embeddingProfile.canary) {
-      const firstEmbedding = await embeddingProvider.embedQuery(
-        embeddingProfile.canary.query,
-        signal,
-      );
-      const repeatedEmbedding = await embeddingProvider.embedQuery(
-        embeddingProfile.canary.query,
-        signal,
-      );
-      const repeatCosineSimilarity = calculateRecallEmbeddingCanaryCosineSimilarity(
-        firstEmbedding,
-        repeatedEmbedding,
-        embeddingProfile.identity.dimensions,
-      );
-      if (repeatCosineSimilarity < embeddingProfile.canary.minimumRepeatCosineSimilarity) {
-        throw new Error(
-          `Recall embedding canary repeatability mismatch: expected cosine similarity at least ${embeddingProfile.canary.minimumRepeatCosineSimilarity}, received ${repeatCosineSimilarity}`,
-        );
-      }
-      return [...firstEmbedding];
-    }
-    const embedding = (
-      await embeddingProvider.embedDocuments([RECALL_EMBEDDING_CANARY_TEXT], signal)
-    )[0];
-    if (!embedding) {
-      throw new Error('Recall embedding response missing canary vector');
-    }
-    return [...embedding];
-  }
-
-  async function readIndexEmbeddingCanary(
-    signal?: AbortSignal,
-    diagnosticMetrics?: RecallIndexDiagnosticMetrics,
-  ): Promise<number[]> {
-    const embeddingRequestStartedAtMilliseconds = diagnosticsClock.monotonicMilliseconds();
-    try {
-      return await readCurrentEmbeddingCanary(signal);
-    } finally {
-      if (diagnosticMetrics) {
-        diagnosticMetrics.embeddingServerRequestMilliseconds += Math.max(
-          diagnosticsClock.monotonicMilliseconds() - embeddingRequestStartedAtMilliseconds,
-          0,
-        );
-      }
-    }
-  }
-
-  function createExpectedManifest(canaryEmbedding: readonly number[]): RecallIndexManifest {
+  function createExpectedManifest(): RecallIndexManifest {
     return createRecallIndexManifest({
-      embeddingIdentity: embeddingProfile.identity,
-      canaryEmbedding,
-      ...(embeddingProfile.canary ? { embeddingCanary: embeddingProfile.canary } : {}),
+      embeddingIdentity: createEmbeddingModelIdentity(config),
       ...(dependencies.tokenizerIdentity
         ? { tokenizerIdentity: dependencies.tokenizerIdentity }
         : {}),
+      chunkPolicy: config.chunkPolicy,
       projectLineages: config.projectLineages,
-      ...(config.chunkPolicy ? { chunkPolicy: config.chunkPolicy } : {}),
     });
   }
 
-  async function readCanonicalRebuildCanary(
-    activeManifestPath: string | null,
-    signal?: AbortSignal,
-    diagnosticMetrics?: RecallIndexDiagnosticMetrics,
-  ): Promise<number[]> {
-    const currentEmbeddingCanary = await readIndexEmbeddingCanary(signal, diagnosticMetrics);
-    const currentManifest = createExpectedManifest(currentEmbeddingCanary);
-    const currentCanary = currentManifest.embedding.canaryVector;
-    let previousCanary:
-      | {
-          dimensions: number;
-          canaryVector: number[];
-          canaryMinimumCosineSimilarity: number;
-        }
-      | undefined;
-    if (activeManifestPath !== null) {
-      try {
-        const actualManifest = await readRecallSearchManifest(activeManifestPath);
-        previousCanary = actualManifest?.embedding;
-      } catch (error) {
-        if (
-          !(error instanceof Error) ||
-          !error.message.startsWith(`Recall index manifest invalid at ${activeManifestPath}:`)
-        ) {
-          throw error;
-        }
-        previousCanary =
-          (await recoverRecallEmbeddingCanaryFromManifest(
-            activeManifestPath,
-            embeddingProfile.identity.dimensions,
-          )) ?? undefined;
-      }
-    }
-    if (!previousCanary || previousCanary.dimensions !== embeddingProfile.identity.dimensions) {
-      return currentCanary;
-    }
-    const cosineSimilarity = calculateRecallEmbeddingCanaryCosineSimilarity(
-      previousCanary.canaryVector,
-      currentCanary,
-      embeddingProfile.identity.dimensions,
-    );
-    return cosineSimilarity >= previousCanary.canaryMinimumCosineSimilarity
-      ? [...previousCanary.canaryVector]
-      : currentCanary;
+  async function getTokenizer(): Promise<ConversationTextTokenizer> {
+    tokenizer ??= await loadTokenizer();
+    return tokenizer;
   }
 
-  async function readRequiredManifest(manifestPath: string): Promise<RecallIndexManifest> {
-    const actual = await readRecallSearchManifest(manifestPath);
-    if (!actual) {
-      throw new Error(
-        `Recall index manifest missing at ${manifestPath}; reindex with /pi-session-recall-index --rebuild`,
-      );
-    }
+  async function readCompatibleManifest(): Promise<RecallIndexManifest> {
+    const actual = await readRecallIndexManifest(config.manifestPath);
+    const expected = createExpectedManifest();
+    assertRecallIndexManifestCompatible(actual, expected, config.manifestPath);
     return actual;
   }
 
-  async function prepareIndexForWrite(
-    targetPaths: RecallIndexTargetPaths,
-    signal?: AbortSignal,
-    preflightedCanary?: readonly number[],
-    requireExistingGeneration = false,
-    diagnosticMetrics?: RecallIndexDiagnosticMetrics,
-  ): Promise<{
-    tokenizer: ConversationTextTokenizer;
-    manifest: RecallIndexManifest;
-    embeddingModelPreflighted: boolean;
-  }> {
-    const actual = await readRecallIndexManifest(targetPaths.manifestPath);
-    if (!actual && requireExistingGeneration) {
+  async function prepareIndexManifest(): Promise<RecallIndexManifest> {
+    const actual = await readRecallIndexManifest(config.manifestPath);
+    const expected = createExpectedManifest();
+    if (!actual && (existsSync(config.databasePath) || existsSync(config.statePath))) {
       throw new Error(
-        `Recall automatic session ingestion requires an existing index generation at ${targetPaths.manifestPath}; initialize it with /pi-session-recall-index --rebuild`,
+        `Recall index manifest missing at ${config.manifestPath} for existing index data; rebuild with psr index --rebuild`,
       );
     }
-    if (!actual && (existsSync(targetPaths.databasePath) || existsSync(targetPaths.statePath))) {
-      throw new Error(
-        `Recall index manifest missing at ${targetPaths.manifestPath} for existing index data; reindex with /pi-session-recall-index --rebuild`,
-      );
-    }
-    const tokenizer = await getConversationTokenizer();
     if (actual) {
-      const expected = createExpectedManifest(actual.embedding.canaryVector);
-      assertRecallIndexManifestCompatible(actual, expected, targetPaths.manifestPath);
-      return { tokenizer, manifest: actual, embeddingModelPreflighted: false };
+      assertRecallIndexManifestCompatible(actual, expected, config.manifestPath);
+      return actual;
     }
-    const expected = createExpectedManifest(
-      preflightedCanary ?? (await readIndexEmbeddingCanary(signal, diagnosticMetrics)),
-    );
-    await writeRecallIndexManifest(targetPaths.manifestPath, expected);
-    return { tokenizer, manifest: expected, embeddingModelPreflighted: true };
-  }
-
-  async function updateConversationIndex(
-    store: ZvecConversationStore,
-    tokenizer: ConversationTextTokenizer,
-    manifest: RecallIndexManifest,
-    embeddingModelPreflighted: boolean,
-    targetPaths: RecallIndexTargetPaths,
-    signal?: AbortSignal,
-    onProgress?: (progress: ConversationIndexProgress) => void,
-    onCheckpoint?: (checkpoint: ConversationIndexCheckpoint) => void,
-    diagnosticMetrics?: RecallIndexDiagnosticMetrics,
-    onPhysicalSessionCheck?: (completion: RecallPhysicalSessionDiagnostic) => void,
-    eligibleContributorEntryIdsBySessionPath?: ReadonlyMap<
-      string,
-      ReadonlyMap<string, ReadonlySet<string>>
-    >,
-    retireMissingSourcesImmediately?: boolean,
-  ): Promise<ConversationIndexSummary> {
-    let modelPreflighted = embeddingModelPreflighted;
-    async function embedTextsAfterModelPreflight(
-      texts: string[],
-      embeddingSignal?: AbortSignal,
-    ): Promise<number[][]> {
-      if (!modelPreflighted) {
-        const expected = createExpectedManifest(await readCurrentEmbeddingCanary(embeddingSignal));
-        assertRecallIndexManifestCompatible(manifest, expected, targetPaths.manifestPath);
-        modelPreflighted = true;
-      }
-      return embeddingProvider.embedDocuments(texts, embeddingSignal);
-    }
-    const preflightedEmbeddings: LocalEmbeddingClient = {
-      embedTexts: embedTextsAfterModelPreflight,
-    };
-    const embeddingCache = createEmbeddingVectorCache({
-      cacheDirectory: config.embeddingCacheDirectory,
-      identity: createEmbeddingVectorCacheIdentity(manifest),
-      embeddingRequestBatchSize: config.embeddingBatchSize,
-      embeddings: preflightedEmbeddings,
-      diagnosticsClock,
-    });
-    const indexerOptions = {
-      statePath: targetPaths.statePath,
-      store,
-      embeddingCache,
-      tokenizer,
-      chunkPolicy: {
-        maxTokens: manifest.chunkPolicy.maxTokens,
-        overlapTokens: manifest.chunkPolicy.overlapTokens,
-      },
-      resolveProjectIdentity: resolveSearchProjectIdentity,
-      ...(signal ? { signal } : {}),
-      ...(diagnosticMetrics ? { diagnosticMetrics, diagnosticsClock } : {}),
-      ...(onPhysicalSessionCheck ? { onPhysicalSessionCheck } : {}),
-      ...(onCheckpoint ? { onCheckpoint } : {}),
-      ...(eligibleContributorEntryIdsBySessionPath
-        ? { eligibleContributorEntryIdsBySessionPath }
-        : {}),
-      ...(retireMissingSourcesImmediately === false
-        ? { retireMissingSourcesImmediately: false }
-        : {}),
-    };
-    return indexChangedConversationSessions({
-      ...indexerOptions,
-      sessionsDirectory: config.sessionsDirectory,
-      ...(onProgress ? { onProgress } : {}),
-    });
+    await writeRecallIndexManifest(config.manifestPath, expected);
+    return expected;
   }
 
   return {
-    async verifyEmbeddingCapability(options = {}) {
-      const canary = await readCurrentEmbeddingCanary(options.signal);
-      await getConversationTokenizer();
-      const manifest = createExpectedManifest(canary);
-      return {
-        embeddingProfileId,
-        model: embeddingProfile.identity.requestModel,
-        dimensions: embeddingProfile.identity.dimensions,
-        normalization: embeddingProfile.identity.normalization ?? null,
-        tokenizerModel: manifest.tokenizer.model,
-      };
-    },
-    async inspectConversationCorpus() {
-      return (await inspectRecallConversationCorpus(config.sessionsDirectory)).inspection;
-    },
-    measureFirstIndexSample(options = {}) {
-      return runSerialized(async () => {
-        const activePointer = await readRecallActiveGenerationPointer(
-          config.activeGenerationPointerPath,
+    async search(query, limit, options = {}) {
+      const searchQuery = query.trim();
+      if (!searchQuery) {
+        throw new Error('Recall query must not be blank');
+      }
+      const scope = options.scope ?? RecallSearchScope.PROJECT;
+      await readCompatibleManifest();
+      await assertRecallIndexUnlockedForSearch(config.lockPath);
+      if (scope === RecallSearchScope.PROJECT && !options.invocationDirectory) {
+        throw new Error('Project-scoped recall requires Pi trusted invocation directory context');
+      }
+      const invocationProject = options.invocationDirectory
+        ? await resolveSearchProjectIdentity(options.invocationDirectory)
+        : null;
+      if (scope === RecallSearchScope.PROJECT && !invocationProject) {
+        throw new Error(
+          `Project-scoped recall could not resolve a project identity from Pi invocation directory ${options.invocationDirectory}`,
         );
-        if (activePointer) {
-          throw new Error(
-            `Recall first-index sample requires no active generation; active generation ${activePointer.activeGenerationId} already exists`,
-          );
-        }
-        const maximumSessionCount =
-          options.maximumSessionCount ?? MAX_RECALL_FIRST_INDEX_SAMPLE_SESSION_COUNT;
-        const corpus = await inspectRecallConversationCorpus(config.sessionsDirectory);
-        const sampleFiles = selectRecallConversationCorpusSample(corpus.files, maximumSessionCount);
-        const coldStartStartedAtMilliseconds = diagnosticsClock.monotonicMilliseconds();
-        const canary = await readCurrentEmbeddingCanary(options.signal);
-        const tokenizer = await getConversationTokenizer();
-        const manifest = createExpectedManifest(canary);
-        const coldStartMilliseconds = Math.max(
-          diagnosticsClock.monotonicMilliseconds() - coldStartStartedAtMilliseconds,
-          0,
+      }
+      const projectIdentity =
+        scope === RecallSearchScope.PROJECT ? invocationProject?.projectIdentity : undefined;
+      const queryEmbedding = await embeddingProvider.embedQuery(searchQuery, options.signal);
+      await assertRecallIndexUnlockedForSearch(config.lockPath);
+      const store = openStore('read');
+      try {
+        const fusedCandidates = fuseRecallSearchCandidates(
+          {
+            denseCandidates: store.searchDenseCandidates(
+              queryEmbedding,
+              config.searchCandidateLimits.dense,
+              projectIdentity,
+            ),
+            lexicalCandidates: store.searchLexicalCandidates(
+              searchQuery,
+              config.searchCandidateLimits.lexical,
+              projectIdentity,
+            ),
+            identifierCandidates: store.searchIdentifierCandidates(
+              searchQuery,
+              config.searchCandidateLimits.identifier,
+              projectIdentity,
+            ),
+          },
+          config.searchCandidateLimits.dense +
+            config.searchCandidateLimits.lexical +
+            config.searchCandidateLimits.identifier,
         );
-        const embeddingCache = createEmbeddingVectorCache({
-          cacheDirectory: config.embeddingCacheDirectory,
-          identity: createEmbeddingVectorCacheIdentity(manifest),
-          embeddingRequestBatchSize: config.embeddingBatchSize,
-          embeddings: { embedTexts: embeddingProvider.embedDocuments.bind(embeddingProvider) },
-          diagnosticsClock,
-        });
-        let sampledDenseDocumentCount = 0;
-        let cacheHitCount = 0;
-        let newlyEmbeddedDocumentCount = 0;
-        let embeddingRequestCount = 0;
-        const measuredSampleStartedAtMilliseconds = diagnosticsClock.monotonicMilliseconds();
-        for (const file of sampleFiles) {
-          if (options.signal?.aborted) {
-            throw new Error('Recall first-index sample cancelled', {
-              cause: options.signal.reason,
-            });
-          }
-          const chunks = await readSessionConversationChunks(file.sessionPath, {
-            tokenizer,
-            maxTokens: manifest.chunkPolicy.maxTokens,
-            overlapTokens: manifest.chunkPolicy.overlapTokens,
-          });
-          const denseDocuments = chunks
-            .filter((chunk) => chunk.isDenseSearchable)
-            .map((chunk) => chunk.content);
-          sampledDenseDocumentCount += denseDocuments.length;
-          for (let start = 0; start < denseDocuments.length; start += 128) {
-            const cacheResult = await embeddingCache.resolveEmbeddingVectors(
-              denseDocuments.slice(start, start + 128),
-              options.signal,
-            );
-            cacheHitCount += cacheResult.cacheHits;
-            newlyEmbeddedDocumentCount += cacheResult.newlyEmbeddedChunks;
-            embeddingRequestCount += cacheResult.embeddingRequestCount;
-          }
-        }
-        const measuredSampleMilliseconds = Math.max(
-          diagnosticsClock.monotonicMilliseconds() - measuredSampleStartedAtMilliseconds,
-          0,
-        );
-        const sampledSourceByteSize = sampleFiles.reduce(
-          (total, file) => total + file.sourceByteSize,
-          0,
-        );
-        const measuredSampleSeconds = measuredSampleMilliseconds / 1_000;
-        const sourceBytesPerSecond =
-          measuredSampleSeconds > 0 ? sampledSourceByteSize / measuredSampleSeconds : 0;
-        const denseDocumentsPerSecond =
-          measuredSampleSeconds > 0 ? sampledDenseDocumentCount / measuredSampleSeconds : 0;
-        const projectedVariableMilliseconds =
-          sampledSourceByteSize > 0
-            ? measuredSampleMilliseconds *
-              (corpus.inspection.sourceByteSize / sampledSourceByteSize)
-            : 0;
-        const projectedDurationMilliseconds = coldStartMilliseconds + projectedVariableMilliseconds;
+        const results: RecallConversationSearchResult[] = rankFusedRecallSearchResults(
+          fusedCandidates,
+          limit,
+          store.fetchConversationChunks,
+        ).map((result) => ({
+          ...result,
+          evidenceRelation:
+            !invocationProject ||
+            invocationProject.projectIdentity !== result.projectAttribution?.projectIdentity
+              ? RecallEvidenceRelation.UNRESTRICTED_GLOBAL
+              : result.projectAttribution.identitySource ===
+                    RecallProjectIdentitySource.CONFIGURED_PROJECT_LINEAGE ||
+                  invocationProject.identitySource ===
+                    RecallProjectIdentitySource.CONFIGURED_PROJECT_LINEAGE
+                ? RecallEvidenceRelation.CONFIGURED_PROJECT_LINEAGE
+                : invocationProject.identitySource ===
+                    RecallProjectIdentitySource.NON_GIT_SESSION_ORIGIN
+                  ? RecallEvidenceRelation.SAME_SESSION_ORIGIN
+                  : RecallEvidenceRelation.SAME_REPOSITORY,
+        }));
         return {
-          corpus: corpus.inspection,
-          sampledSessionCount: sampleFiles.length,
-          sampledSourceByteSize,
-          sampledDenseDocumentCount,
-          coldStartMilliseconds,
-          measuredSampleMilliseconds,
-          sourceBytesPerSecond,
-          denseDocumentsPerSecond,
-          cacheHitCount,
-          newlyEmbeddedDocumentCount,
-          embeddingRequestCount,
-          estimatedDurationMilliseconds: {
-            minimum: Math.floor(projectedDurationMilliseconds * 0.8),
-            maximum: Math.ceil(projectedDurationMilliseconds * 1.25),
+          results,
+          totalChunks: store.count(),
+          searchPolicy: {
+            scope,
+            invocationProjectIdentity: invocationProject?.projectIdentity ?? null,
+            rankingMode: 'hybrid',
+            rankFusionVersion: RECALL_RANK_FUSION_VERSION,
+            reciprocalRankConstant: RECALL_RRF_RANK_CONSTANT,
+            activeBranchPrior: RECALL_ACTIVE_BRANCH_PRIOR,
+            candidateLimits: { ...config.searchCandidateLimits },
           },
         };
-      });
-    },
-    async verifyRerankingCapability(options) {
-      if (!rerankingProfile || !reranker || !rerankerExecutionIdentity) {
-        throw new Error(
-          'Recall reranking is not configured: select a profile and adapter before verification',
-        );
-      }
-      const measurement = await measureRecallRerankingProviderConformance({
-        provider: {
-          get executionIdentity() {
-            return readCurrentRerankerExecutionIdentity() ?? rerankerExecutionIdentity;
-          },
-          rerankDocuments: reranker.rerankDocuments.bind(reranker),
-        },
-        profile: rerankingProfile,
-        query: options.query,
-        documents: options.documents,
-        expectedScores: options.expectedScores,
-        ...(options.maximumAbsoluteDifference === undefined
-          ? {}
-          : { maximumAbsoluteDifference: options.maximumAbsoluteDifference }),
-        ...(options.signal ? { signal: options.signal } : {}),
-      });
-      return {
-        profileId: rerankingProfile.profileId,
-        model: rerankingProfile.model,
-        scorePolicy: rerankingProfile.scorePolicy,
-        executionIdentity: readCurrentRerankerExecutionIdentity() ?? rerankerExecutionIdentity,
-        measurement,
-      };
-    },
-    async verifyQueryPlanningCapability(options = {}) {
-      if (!queryPlanningProfile || !queryPlanner) {
-        throw new Error(
-          'Recall query planner is not configured: select a profile and adapter before verification',
-        );
-      }
-      const measurement = await measureRecallQueryPlanningProviderConformance({
-        provider: queryPlanner,
-        profile: queryPlanningProfile,
-        query: queryPlanningProfile.conformanceCanary.query,
-        recallIntent: queryPlanningProfile.conformanceCanary.recallIntent,
-        protectedTerms: queryPlanningProfile.conformanceCanary.protectedTerms,
-        ...(options.expectedPlan ? { expectedPlan: options.expectedPlan } : {}),
-        ...(options.signal ? { signal: options.signal } : {}),
-      });
-      return {
-        profileId: queryPlanningProfile.profileId,
-        model: queryPlanningProfile.model,
-        promptPolicy: queryPlanningProfile.promptPolicy,
-        grammarVersion: queryPlanningProfile.grammarVersion,
-        executionIdentity: queryPlanner.executionIdentity,
-        measurement,
-      };
-    },
-    search(query, limit, options = {}) {
-      const {
-        mode = 'hybrid',
-        scope = RecallSearchScope.PROJECT,
-        invocationDirectory,
-        plan,
-        intent,
-        signal,
-      } = options;
-      let queryPlanning: ValidatedRecallQueryPlanningOptions;
-      try {
-        queryPlanning = validateRecallQueryPlanningOptions(mode, query, plan, intent);
-      } catch (error) {
-        return Promise.reject(
-          error instanceof Error
-            ? error
-            : new Error('Recall query planning validation failed with a non-Error cause', {
-                cause: error,
-              }),
-        );
-      }
-      if (
-        mode === 'query-planned' &&
-        queryPlanning.plannedQueries === null &&
-        (!queryPlanningProfile || !queryPlanner)
-      ) {
-        return Promise.reject(
-          new Error(
-            'Recall query planner is not configured: select and verify a query-planning capability before query-planned search without an agent plan',
-          ),
-        );
-      }
-      if (mode !== 'hybrid' && (!rerankingProfile || !reranker || !rerankerExecutionIdentity)) {
-        throw new Error(
-          `Recall reranking is not configured: select and verify a reranking capability before ${mode} search`,
-        );
-      }
-      return runRecallSearchWithDiagnostics({
-        diagnostics,
-        searchMode: mode,
-        recallScope: scope,
-        ...(signal ? { signal } : {}),
-        search: (diagnosticMetrics) =>
-          runSerialized(async () => {
-            const searchQuery = query.trim();
-            if (!searchQuery) {
-              throw new Error('Recall query must not be blank');
-            }
-            let planSource: RecallQueryPlanEvidence['source'] = 'agent';
-            let plannerIdentity: RecallSearchPlannerIdentity | null = null;
-            if (queryPlanning.plannedQueries === null) {
-              if (!queryPlanningProfile || !queryPlanner) {
-                throw new Error(
-                  'Recall query planner became unavailable before query-planned search',
-                );
-              }
-              try {
-                const generatedPlan = await queryPlanner.planRecallQuery(
-                  {
-                    query: searchQuery,
-                    ...(queryPlanning.intent === null
-                      ? {}
-                      : { recallIntent: queryPlanning.intent }),
-                  },
-                  signal,
-                );
-                queryPlanning = {
-                  plannedQueries: validateQmdQueryPlanningPlan(generatedPlan, queryPlanningProfile),
-                  intent: queryPlanning.intent,
-                };
-                planSource = 'planner';
-              } catch (error: unknown) {
-                if (isRecallOperationCancelled(error, signal)) {
-                  throw error;
-                }
-                const reason = error instanceof Error ? error.message : String(error);
-                dependencies.notifyWarning?.(
-                  `Recall query planner failed; using submitted-query deep reranking without changing the configured planner or reranker: ${reason}`,
-                );
-                queryPlanning = { plannedQueries: [], intent: queryPlanning.intent };
-                planSource = 'fallback';
-              }
-              const executionIdentity = queryPlanner.executionIdentity;
-              plannerIdentity = {
-                profileId: queryPlanningProfile.profileId,
-                model: queryPlanningProfile.model,
-                adapterId: executionIdentity.adapterId,
-                backend: executionIdentity.backend,
-                promptPolicy: queryPlanningProfile.promptPolicy,
-                grammarVersion: queryPlanningProfile.grammarVersion,
-                cacheIdentity: createRecallQueryPlanningCacheIdentity(
-                  searchQuery,
-                  queryPlanning.intent,
-                  queryPlanningProfile,
-                  executionIdentity,
-                ),
-              };
-            }
-            if (scope === RecallSearchScope.PROJECT && !invocationDirectory) {
-              throw new Error(
-                'Project-scoped recall requires Pi trusted invocation directory context',
-              );
-            }
-            const invocationProject = invocationDirectory
-              ? await resolveSearchProjectIdentity(invocationDirectory)
-              : null;
-            if (scope === RecallSearchScope.PROJECT && !invocationProject) {
-              throw new Error(
-                `Project-scoped recall could not resolve a project identity from Pi invocation directory ${invocationDirectory}`,
-              );
-            }
-            const projectIdentityPredicate =
-              scope === RecallSearchScope.PROJECT ? invocationProject?.projectIdentity : undefined;
-
-            const canaryVerificationStartedAtMilliseconds =
-              diagnosticsClock.monotonicMilliseconds();
-            let expectedManifest: RecallIndexManifest;
-            try {
-              expectedManifest = createExpectedManifest(await readCurrentEmbeddingCanary(signal));
-            } finally {
-              diagnosticMetrics.embeddingModelVerificationMilliseconds += Math.max(
-                diagnosticsClock.monotonicMilliseconds() - canaryVerificationStartedAtMilliseconds,
-                0,
-              );
-            }
-            const plannedQueries = queryPlanning.plannedQueries ?? [];
-            const semanticQueryTexts = [
-              searchQuery,
-              ...plannedQueries
-                .filter(
-                  (plannedQuery) => plannedQuery.type === 'vec' || plannedQuery.type === 'hyde',
-                )
-                .map((plannedQuery) => plannedQuery.query),
-            ];
-            const queryEmbeddingStartedAtMilliseconds = diagnosticsClock.monotonicMilliseconds();
-            let queryEmbeddings: number[][];
-            try {
-              throwIfRecallSearchCancelled(signal);
-              queryEmbeddings = await Promise.all(
-                semanticQueryTexts.map((semanticQueryText) =>
-                  embeddingProvider.embedQuery(semanticQueryText, signal),
-                ),
-              );
-              throwIfRecallSearchCancelled(signal);
-            } finally {
-              diagnosticMetrics.queryEmbeddingMilliseconds += Math.max(
-                diagnosticsClock.monotonicMilliseconds() - queryEmbeddingStartedAtMilliseconds,
-                0,
-              );
-            }
-            if (queryEmbeddings.length !== semanticQueryTexts.length) {
-              throw new Error(
-                `Recall embedding response vector count mismatch: expected ${semanticQueryTexts.length}, received ${queryEmbeddings.length}`,
-              );
-            }
-            const queryEmbedding = queryEmbeddings[0];
-            if (!queryEmbedding) {
-              throw new Error('Recall embedding response missing submitted query vector');
-            }
-
-            return coordinateRecallReadWindow(
-              {
-                lockPath: config.lockPath,
-                waitMilliseconds: config.searchWriteWindowWaitMilliseconds,
-                ...(signal ? { signal } : {}),
-              },
-              async () => {
-                const manifestReadStartedAtMilliseconds = diagnosticsClock.monotonicMilliseconds();
-                const activeGeneration = await readRecallActiveGenerationSelection(
-                  config.activeGenerationPointerPath,
-                  config.generationRootDirectory,
-                );
-                try {
-                  const actualManifest = await readRequiredManifest(activeGeneration.manifestPath);
-                  assertRecallIndexManifestCompatible(
-                    actualManifest,
-                    expectedManifest,
-                    activeGeneration.manifestPath,
-                  );
-                } finally {
-                  diagnosticMetrics.embeddingModelVerificationMilliseconds += Math.max(
-                    diagnosticsClock.monotonicMilliseconds() - manifestReadStartedAtMilliseconds,
-                    0,
-                  );
-                }
-                try {
-                  const warning = await readRecallMaterialBacklogWarning(
-                    config.backlogSummaryPath,
-                    activeGeneration.activeGenerationId,
-                  );
-                  if (warning) {
-                    try {
-                      dependencies.notifyWarning?.(warning);
-                    } catch (warningError) {
-                      void warningError;
-                    }
-                  }
-                } catch (backlogError) {
-                  void backlogError;
-                }
-
-                const store = openStore('read', activeGeneration.databasePath);
-                try {
-                  const retrievalStartedAtMilliseconds = diagnosticsClock.monotonicMilliseconds();
-                  const deepRerankStartedWithMilliseconds =
-                    diagnosticMetrics.deepRerankMilliseconds;
-                  try {
-                    const usesQueryPlannedRanking =
-                      mode === 'query-planned' && planSource !== 'fallback';
-                    const submittedQueryCandidateLimits = usesQueryPlannedRanking
-                      ? {
-                          dense: QUERY_PLANNED_RECALL_LIST_CANDIDATE_LIMIT,
-                          lexical: QUERY_PLANNED_RECALL_LIST_CANDIDATE_LIMIT,
-                          identifier: QUERY_PLANNED_RECALL_LIST_CANDIDATE_LIMIT,
-                        }
-                      : config.searchCandidateLimits;
-                    const submittedQueryListWeight = usesQueryPlannedRanking
-                      ? QUERY_PLANNED_RECALL_SUBMITTED_QUERY_LIST_WEIGHT
-                      : 1;
-                    const maximumCurrentCandidateCount =
-                      config.searchCandidateLimits.dense +
-                      config.searchCandidateLimits.lexical +
-                      config.searchCandidateLimits.identifier;
-                    const fusedPoolLimit = usesQueryPlannedRanking
-                      ? (3 + plannedQueries.length) * QUERY_PLANNED_RECALL_LIST_CANDIDATE_LIMIT
-                      : (config.fusedPoolLimit ?? maximumCurrentCandidateCount);
-                    const rerankPoolLimit = usesQueryPlannedRanking
-                      ? QUERY_PLANNED_RECALL_GROUP_LIMIT
-                      : (config.rerankPoolLimit ?? fusedPoolLimit);
-                    if (
-                      !Number.isInteger(rerankPoolLimit) ||
-                      rerankPoolLimit < 1 ||
-                      rerankPoolLimit > fusedPoolLimit
-                    ) {
-                      throw new Error(
-                        `Recall rerank pool limit invalid: expected an integer from 1 to fused pool limit ${fusedPoolLimit}`,
-                      );
-                    }
-                    throwIfRecallSearchCancelled(signal);
-                    const denseCandidates = await store.searchDenseCandidates(
-                      queryEmbedding,
-                      submittedQueryCandidateLimits.dense,
-                      projectIdentityPredicate,
-                    );
-                    throwIfRecallSearchCancelled(signal);
-                    const lexicalCandidates = await store.searchLexicalCandidates(
-                      searchQuery,
-                      submittedQueryCandidateLimits.lexical,
-                      projectIdentityPredicate,
-                    );
-                    throwIfRecallSearchCancelled(signal);
-                    const identifierCandidates = await store.searchIdentifierCandidates(
-                      searchQuery,
-                      submittedQueryCandidateLimits.identifier,
-                      projectIdentityPredicate,
-                    );
-                    throwIfRecallSearchCancelled(signal);
-                    const rankedLists: RecallRankedList[] = [
-                      {
-                        source: RecallRankedListSource.DENSE,
-                        query: searchQuery,
-                        weight: submittedQueryListWeight,
-                        candidateLimit: submittedQueryCandidateLimits.dense,
-                        higherNativeScoresRankFirst: false,
-                        candidates: denseCandidates.map(({ cosineDistance, ...document }) => ({
-                          document,
-                          nativeScore: cosineDistance,
-                        })),
-                      },
-                      {
-                        source: RecallRankedListSource.LEXICAL,
-                        query: searchQuery,
-                        weight: submittedQueryListWeight,
-                        candidateLimit: submittedQueryCandidateLimits.lexical,
-                        higherNativeScoresRankFirst: true,
-                        candidates: lexicalCandidates.map(({ fullTextScore, ...document }) => ({
-                          document,
-                          nativeScore: fullTextScore,
-                        })),
-                      },
-                      {
-                        source: RecallRankedListSource.IDENTIFIER,
-                        query: searchQuery,
-                        weight: submittedQueryListWeight,
-                        candidateLimit: submittedQueryCandidateLimits.identifier,
-                        higherNativeScoresRankFirst: true,
-                        candidates: identifierCandidates.map(({ fullTextScore, ...document }) => ({
-                          document,
-                          nativeScore: fullTextScore,
-                        })),
-                      },
-                    ];
-                    const rankedListTraces: RecallRankedListTrace[] = rankedLists.map((list) => ({
-                      source: list.source,
-                      query: list.query,
-                      weight: list.weight,
-                      candidateLimit: list.candidateLimit,
-                      admittedCandidateCount: list.candidates.length,
-                    }));
-                    let semanticEmbeddingIndex = 1;
-                    for (const plannedQuery of plannedQueries) {
-                      if (plannedQuery.type === 'lex') {
-                        throwIfRecallSearchCancelled(signal);
-                        const plannedCandidates = await store.searchLexicalCandidates(
-                          plannedQuery.query,
-                          QUERY_PLANNED_RECALL_LIST_CANDIDATE_LIMIT,
-                          projectIdentityPredicate,
-                        );
-                        throwIfRecallSearchCancelled(signal);
-                        rankedLists.push({
-                          source: RecallRankedListSource.PLANNED_LEX,
-                          query: plannedQuery.query,
-                          weight: QUERY_PLANNED_RECALL_PLANNED_QUERY_LIST_WEIGHT,
-                          candidateLimit: QUERY_PLANNED_RECALL_LIST_CANDIDATE_LIMIT,
-                          higherNativeScoresRankFirst: true,
-                          candidates: plannedCandidates.map(({ fullTextScore, ...document }) => ({
-                            document,
-                            nativeScore: fullTextScore,
-                          })),
-                        });
-                        rankedListTraces.push({
-                          source: RecallRankedListSource.PLANNED_LEX,
-                          query: plannedQuery.query,
-                          weight: QUERY_PLANNED_RECALL_PLANNED_QUERY_LIST_WEIGHT,
-                          candidateLimit: QUERY_PLANNED_RECALL_LIST_CANDIDATE_LIMIT,
-                          admittedCandidateCount: plannedCandidates.length,
-                        });
-                        continue;
-                      }
-                      const plannedEmbedding = queryEmbeddings[semanticEmbeddingIndex];
-                      semanticEmbeddingIndex += 1;
-                      if (!plannedEmbedding) {
-                        throw new Error(
-                          `Recall embedding response missing ${plannedQuery.type} plan vector at entry ${semanticEmbeddingIndex - 1}`,
-                        );
-                      }
-                      throwIfRecallSearchCancelled(signal);
-                      const plannedCandidates = await store.searchDenseCandidates(
-                        plannedEmbedding,
-                        QUERY_PLANNED_RECALL_LIST_CANDIDATE_LIMIT,
-                        projectIdentityPredicate,
-                      );
-                      throwIfRecallSearchCancelled(signal);
-                      const plannedSource =
-                        plannedQuery.type === 'vec'
-                          ? RecallRankedListSource.PLANNED_VEC
-                          : RecallRankedListSource.PLANNED_HYDE;
-                      rankedLists.push({
-                        source: plannedSource,
-                        query: plannedQuery.query,
-                        weight: QUERY_PLANNED_RECALL_PLANNED_QUERY_LIST_WEIGHT,
-                        candidateLimit: QUERY_PLANNED_RECALL_LIST_CANDIDATE_LIMIT,
-                        higherNativeScoresRankFirst: false,
-                        candidates: plannedCandidates.map(({ cosineDistance, ...document }) => ({
-                          document,
-                          nativeScore: cosineDistance,
-                        })),
-                      });
-                      rankedListTraces.push({
-                        source: plannedSource,
-                        query: plannedQuery.query,
-                        weight: QUERY_PLANNED_RECALL_PLANNED_QUERY_LIST_WEIGHT,
-                        candidateLimit: QUERY_PLANNED_RECALL_LIST_CANDIDATE_LIMIT,
-                        admittedCandidateCount: plannedCandidates.length,
-                      });
-                    }
-                    const fusedCandidates = fuseRecallRankedLists(
-                      rankedLists,
-                      fusedPoolLimit,
-                      usesQueryPlannedRanking
-                        ? {
-                            rankOne: QUERY_PLANNED_RECALL_RANK_ONE_BONUS,
-                            rankTwoOrThree: QUERY_PLANNED_RECALL_RANK_TWO_OR_THREE_BONUS,
-                          }
-                        : undefined,
-                    );
-                    const createEvidenceRelation = (
-                      candidate: RecallSearchResult,
-                    ): RecallEvidenceRelation =>
-                      !invocationProject ||
-                      invocationProject.projectIdentity !==
-                        candidate.projectAttribution?.projectIdentity
-                        ? RecallEvidenceRelation.UNRESTRICTED_GLOBAL
-                        : candidate.projectAttribution.identitySource ===
-                              RecallProjectIdentitySource.CONFIGURED_PROJECT_LINEAGE ||
-                            invocationProject.identitySource ===
-                              RecallProjectIdentitySource.CONFIGURED_PROJECT_LINEAGE
-                          ? RecallEvidenceRelation.CONFIGURED_PROJECT_LINEAGE
-                          : invocationProject.identitySource ===
-                              RecallProjectIdentitySource.NON_GIT_SESSION_ORIGIN
-                            ? RecallEvidenceRelation.SAME_SESSION_ORIGIN
-                            : RecallEvidenceRelation.SAME_REPOSITORY;
-                    const candidateAdmission: RecallCandidateAdmission[] = fusedCandidates.map(
-                      (candidate) => ({
-                        ...candidate,
-                        evidenceRelation: createEvidenceRelation(candidate),
-                      }),
-                    );
-                    const diagnosticReranker: RecallRerankingProvider = {
-                      async rerankDocuments(rerankerQuery, documents, rerankerSignal) {
-                        const deepRerankStartedAtMilliseconds =
-                          diagnosticsClock.monotonicMilliseconds();
-                        try {
-                          if (!reranker) {
-                            throw new Error(
-                              'Recall reranking became unavailable during deep-rerank search',
-                            );
-                          }
-                          return await reranker.rerankDocuments(
-                            rerankerQuery,
-                            documents,
-                            rerankerSignal,
-                          );
-                        } finally {
-                          diagnosticMetrics.deepRerankMilliseconds += Math.max(
-                            diagnosticsClock.monotonicMilliseconds() -
-                              deepRerankStartedAtMilliseconds,
-                            0,
-                          );
-                        }
-                      },
-                    };
-                    const finalResultLimit = usesQueryPlannedRanking
-                      ? Math.min(limit, QUERY_PLANNED_RECALL_FINAL_RESULT_LIMIT)
-                      : limit;
-                    let rankedResults: RankedRecallSearchResult[];
-                    if (mode === 'hybrid') {
-                      rankedResults = rankFusedRecallSearchResults(
-                        fusedCandidates,
-                        finalResultLimit,
-                        store.fetchConversationChunks,
-                      );
-                    } else {
-                      try {
-                        rankedResults = await rerankRecallSearchResults({
-                          query: createRecallRerankerQuery(searchQuery, queryPlanning.intent),
-                          candidates: fusedCandidates,
-                          rerankPoolLimit,
-                          resultLimit: finalResultLimit,
-                          reranker: diagnosticReranker,
-                          fetchConversationChunks: store.fetchConversationChunks,
-                          ...(usesQueryPlannedRanking
-                            ? { useQueryPlannedPositionBlend: true }
-                            : {}),
-                          ...(signal ? { signal } : {}),
-                        });
-                      } catch (error: unknown) {
-                        if (!usesQueryPlannedRanking || isRecallOperationCancelled(error, signal)) {
-                          throw error;
-                        }
-                        const reason = error instanceof Error ? error.message : String(error);
-                        throw new Error(
-                          `Recall query-planned reranking failed: verify the configured reranker and retry; ${reason}`,
-                          { cause: error },
-                        );
-                      }
-                    }
-                    const results: RecallConversationSearchResult[] = rankedResults.map(
-                      (result) => ({
-                        ...result,
-                        evidenceRelation: createEvidenceRelation(result),
-                      }),
-                    );
-                    const completedRerankerExecutionIdentity =
-                      readCurrentRerankerExecutionIdentity();
-                    return {
-                      results,
-                      candidateAdmission,
-                      totalChunks: store.count(),
-                      searchPolicy: {
-                        scope,
-                        invocationProjectIdentity: invocationProject?.projectIdentity ?? null,
-                        rankingMode: mode,
-                        rankFusionVersion: RECALL_RANK_FUSION_VERSION,
-                        reciprocalRankConstant: RECALL_RRF_RANK_CONSTANT,
-                        rerankPolicyVersion: usesQueryPlannedRanking
-                          ? QUERY_PLANNED_RECALL_RERANK_POLICY_VERSION
-                          : mode !== 'hybrid'
-                            ? RECALL_RERANK_POLICY_VERSION
-                            : null,
-                        rerankerModel:
-                          mode !== 'hybrid' && rerankingProfile ? rerankingProfile.model : null,
-                        rerankerIdentity:
-                          mode !== 'hybrid' &&
-                          rerankingProfile &&
-                          completedRerankerExecutionIdentity
-                            ? {
-                                profileId: rerankingProfile.profileId,
-                                adapterId: completedRerankerExecutionIdentity.adapterId,
-                                cacheIdentity: completedRerankerExecutionIdentity.cacheIdentity,
-                              }
-                            : null,
-                        activeBranchPrior: RECALL_ACTIVE_BRANCH_PRIOR,
-                        candidateLimits: { ...submittedQueryCandidateLimits },
-                        fusedPoolLimit,
-                        rerankPoolLimit,
-                        finalResultLimit,
-                        ...(mode === 'query-planned'
-                          ? {
-                              queryPlan: {
-                                source: planSource,
-                                plannerIdentity,
-                                intent: queryPlanning.intent,
-                                plannedQueries,
-                                rankedLists: rankedListTraces,
-                                fusionPolicy: {
-                                  reciprocalRankConstant: RECALL_RRF_RANK_CONSTANT,
-                                  submittedQueryListWeight,
-                                  plannedQueryListWeight:
-                                    QUERY_PLANNED_RECALL_PLANNED_QUERY_LIST_WEIGHT,
-                                  rankOneBonus: usesQueryPlannedRanking
-                                    ? QUERY_PLANNED_RECALL_RANK_ONE_BONUS
-                                    : 0,
-                                  rankTwoOrThreeBonus: usesQueryPlannedRanking
-                                    ? QUERY_PLANNED_RECALL_RANK_TWO_OR_THREE_BONUS
-                                    : 0,
-                                },
-                                rerankerProfile: {
-                                  model: rerankingProfile?.model ?? config.rerankerModel,
-                                  policyVersion: usesQueryPlannedRanking
-                                    ? QUERY_PLANNED_RECALL_RERANK_POLICY_VERSION
-                                    : RECALL_RERANK_POLICY_VERSION,
-                                  fusedRankBlend: usesQueryPlannedRanking
-                                    ? QUERY_PLANNED_RECALL_FUSED_RANK_BLEND
-                                    : [],
-                                },
-                              },
-                            }
-                          : {}),
-                      },
-                    };
-                  } finally {
-                    const retrievalElapsedMilliseconds = Math.max(
-                      diagnosticsClock.monotonicMilliseconds() - retrievalStartedAtMilliseconds,
-                      0,
-                    );
-                    const deepRerankElapsedMilliseconds = Math.max(
-                      diagnosticMetrics.deepRerankMilliseconds - deepRerankStartedWithMilliseconds,
-                      0,
-                    );
-                    diagnosticMetrics.retrievalRankingMilliseconds += Math.max(
-                      retrievalElapsedMilliseconds - deepRerankElapsedMilliseconds,
-                      0,
-                    );
-                  }
-                } finally {
-                  store.close();
-                }
-              },
-            );
-          }),
-      });
-    },
-    async index(options = {}) {
-      assertRecallManualMaintenanceTriggerMatchesIndexOptions(options);
-      if (options.rebuild && options.generationId && options.resumeGenerationId) {
-        throw new Error('Recall rebuild cannot create and resume a generation simultaneously');
-      }
-      const runConversationIndexMaintenance = async (
-        diagnosticMetrics?: RecallIndexDiagnosticMetrics,
-        onPhysicalSessionCheck?: (completion: RecallPhysicalSessionDiagnostic) => void,
-        runOptimizationWithDiagnostics?: (optimize: () => Promise<void>) => Promise<void>,
-      ): Promise<RecallConversationIndexResult> => {
-        if (options.rebuild) {
-          const startingPointer = await readRecallActiveGenerationPointer(
-            config.activeGenerationPointerPath,
-          );
-          const startingGeneration = startingPointer
-            ? await readRecallActiveGenerationSelection(
-                config.activeGenerationPointerPath,
-                config.generationRootDirectory,
-              )
-            : null;
-          const activeManifestPath = startingGeneration?.manifestPath ?? null;
-          let rebuiltProjectionIds: string[] = [];
-          let rebuiltPhysicalProjectionCount = 0;
-          const rebuilt = await rebuildRecallGeneration({
-            generationRootDirectory: config.generationRootDirectory,
-            activeGenerationPointerPath: config.activeGenerationPointerPath,
-            generationRegistryPath: config.generationRegistryPath,
-            backlogSummaryPath: config.backlogSummaryPath,
-            markerSpoolDirectory: config.markerSpoolDirectory,
-            lockPath: config.lockPath,
-            workerSignal,
-            embeddingProfileId,
-            ...(options.generationId ? { generationId: options.generationId } : {}),
-            ...(options.resumeGenerationId
-              ? {
-                  generationId: options.resumeGenerationId,
-                  resumeExistingGeneration: true,
-                }
-              : {}),
-            ...(options.signal ? { signal: options.signal } : {}),
-            async captureBuildSnapshot() {
-              return startingGeneration && existsSync(startingGeneration.projectionDatabasePath)
-                ? readApprovedRecallRebuildSnapshot(
-                    startingGeneration.projectionDatabasePath,
-                    startingGeneration.activeGenerationId,
-                  )
-                : null;
-            },
-            async buildGeneration(paths, approvedRebuildSnapshot) {
-              const preparationStartedAtMilliseconds = diagnosticsClock.monotonicMilliseconds();
-              const embeddingServerMillisecondsBeforePreparation =
-                diagnosticMetrics?.embeddingServerRequestMilliseconds ?? 0;
-              const targetPaths: RecallIndexTargetPaths = paths;
-              let store: ZvecConversationStore | undefined;
-              let preparedIndex: Awaited<ReturnType<typeof prepareIndexForWrite>>;
-              try {
-                const rebuildCanary = await readCanonicalRebuildCanary(
-                  activeManifestPath,
-                  options.signal,
-                  diagnosticMetrics,
-                );
-                preparedIndex = await prepareIndexForWrite(
-                  targetPaths,
-                  options.signal,
-                  rebuildCanary,
-                  false,
-                  diagnosticMetrics,
-                );
-                store = openStore('write', paths.databasePath);
-              } finally {
-                if (diagnosticMetrics) {
-                  const preparationElapsedMilliseconds = Math.max(
-                    diagnosticsClock.monotonicMilliseconds() - preparationStartedAtMilliseconds,
-                    0,
-                  );
-                  const embeddingServerMillisecondsDuringPreparation = Math.max(
-                    diagnosticMetrics.embeddingServerRequestMilliseconds -
-                      embeddingServerMillisecondsBeforePreparation,
-                    0,
-                  );
-                  diagnosticMetrics.manifestStorePreparationMilliseconds += Math.max(
-                    preparationElapsedMilliseconds - embeddingServerMillisecondsDuringPreparation,
-                    0,
-                  );
-                }
-              }
-              try {
-                const reproducedApprovedSourcePaths = new Set<string>();
-                const indexedSourceByteSizes = new Map<string, number>();
-                const rebuildSourceOutcomes = new Map<string, string>();
-                const recordPhysicalSessionCheck = (
-                  completion: RecallPhysicalSessionDiagnostic,
-                ): void => {
-                  rebuildSourceOutcomes.set(
-                    completion.sessionPath,
-                    `${completion.status}:${completion.failedSessionCount}`,
-                  );
-                  if (
-                    completion.status === RecallDiagnosticStatus.SUCCEEDED &&
-                    completion.failedSessionCount === 0
-                  ) {
-                    const sourceByteSize = completion.metrics.sourceByteSize;
-                    if (sourceByteSize === null) {
-                      throw new Error(
-                        `Recall rebuild indexed source size missing: ${completion.sessionPath}`,
-                      );
-                    }
-                    reproducedApprovedSourcePaths.add(completion.sessionPath);
-                    indexedSourceByteSizes.set(completion.sessionPath, sourceByteSize);
-                  }
-                  onPhysicalSessionCheck?.(completion);
-                };
-                const indexSummary = await updateConversationIndex(
-                  store,
-                  preparedIndex.tokenizer,
-                  preparedIndex.manifest,
-                  preparedIndex.embeddingModelPreflighted,
-                  targetPaths,
-                  options.signal,
-                  options.onProgress,
-                  options.onCheckpoint,
-                  diagnosticMetrics,
-                  recordPhysicalSessionCheck,
-                  approvedRebuildSnapshot?.eligibleContributorEntryIdsBySessionPath,
-                );
-                for (const approvedSourcePath of approvedRebuildSnapshot?.eligibleContributorEntryIdsBySessionPath.keys() ??
-                  []) {
-                  if (!reproducedApprovedSourcePaths.has(approvedSourcePath)) {
-                    throw new Error(
-                      `Recall rebuild approved physical source was not reproduced: ${approvedSourcePath}; observed ${rebuildSourceOutcomes.get(approvedSourcePath) ?? 'no physical-session check'}; failure ${indexSummary.failedSessions[0]?.error ?? 'none'}`,
-                    );
-                  }
-                }
-                if (approvedRebuildSnapshot != null) {
-                  const extraSourcePath = [...reproducedApprovedSourcePaths].find(
-                    (sourcePath) =>
-                      !approvedRebuildSnapshot.eligibleContributorEntryIdsBySessionPath.has(
-                        sourcePath,
-                      ),
-                  );
-                  if (extraSourcePath !== undefined) {
-                    throw new Error(
-                      `Recall rebuild indexed physical source outside approved snapshot: ${extraSourcePath}`,
-                    );
-                  }
-                }
-                const result = { indexSummary, totalChunks: store.count() };
-                if (approvedRebuildSnapshot != null) {
-                  await validateApprovedRebuildSourceFingerprints(
-                    approvedRebuildSnapshot.projections,
-                  );
-                }
-                const replacementProjections: RecallSessionProjection[] =
-                  approvedRebuildSnapshot == null
-                    ? (
-                        await Promise.all(
-                          [...reproducedApprovedSourcePaths].toSorted().map((sessionPath) => {
-                            const expectedSourceByteSize = indexedSourceByteSizes.get(sessionPath);
-                            if (expectedSourceByteSize === undefined) {
-                              throw new Error(
-                                `Recall rebuild indexed source size unavailable: ${sessionPath}`,
-                              );
-                            }
-                            return createRecallSessionProjectionBaseline({
-                              physicalSessionPath: sessionPath,
-                              generationId: paths.generationId,
-                              tokenizer: preparedIndex.tokenizer,
-                              expectedSourceByteSize,
-                              ...(config.chunkPolicy ? { chunkPolicy: config.chunkPolicy } : {}),
-                            });
-                          }),
-                        )
-                      ).flat()
-                    : approvedRebuildSnapshot.projections.map((projection) =>
-                        retargetRecallRebuildProjection(projection, paths.generationId),
-                      );
-                rebuiltProjectionIds = replacementProjections.map(
-                  ({ projectionId }) => projectionId,
-                );
-                rebuiltPhysicalProjectionCount = replacementProjections.filter(
-                  ({ projectionKind }) =>
-                    projectionKind === RecallSessionProjectionKind.PHYSICAL_SESSION,
-                ).length;
-                const storeToClose = store;
-                store = undefined;
-                const shouldOptimize =
-                  options.optimize === true &&
-                  (indexSummary.cacheHits > 0 ||
-                    indexSummary.newlyEmbeddedChunks > 0 ||
-                    indexSummary.deletedChunks > 0);
-                return {
-                  result,
-                  ...(shouldOptimize
-                    ? {
-                        async optimize() {
-                          await runRecallStoreOptimization({
-                            optimize: () => storeToClose.optimize(),
-                            diagnosticsClock,
-                            ...(diagnosticMetrics ? { diagnosticMetrics } : {}),
-                            ...(runOptimizationWithDiagnostics
-                              ? { runOptimizationWithDiagnostics }
-                              : {}),
-                          });
-                        },
-                      }
-                    : {}),
-                  async close() {
-                    storeToClose.close();
-                    const projectionStore = openZvecSessionProjectionStore({
-                      databasePath: paths.projectionDatabasePath,
-                      generationId: paths.generationId,
-                      createIfMissing: true,
-                      readOnly: false,
-                    });
-                    try {
-                      await projectionStore.upsertProjections(replacementProjections);
-                    } finally {
-                      projectionStore.close();
-                    }
-                  },
-                };
-              } catch (error) {
-                store?.close();
-                throw error;
-              }
-            },
-            async validateGeneration(paths, result, approvedRebuildSnapshot) {
-              const manifest = await readRecallIndexManifest(paths.manifestPath);
-              if (!manifest) {
-                throw new Error('Recall replacement generation manifest missing during validation');
-              }
-              const validationStore = await openRecallZvecValidationStore(
-                () => openStore('read', paths.databasePath),
-                options.signal,
-              );
-              try {
-                if (validationStore.count() !== result.totalChunks) {
-                  throw new Error('Recall replacement generation count changed during validation');
-                }
-                if (approvedRebuildSnapshot != null) {
-                  await validateApprovedRebuildEvidenceMembership(
-                    validationStore,
-                    approvedRebuildSnapshot,
-                    result.totalChunks,
-                  );
-                }
-              } finally {
-                validationStore.close();
-              }
-              const projectionValidationStore = openZvecSessionProjectionStore({
-                databasePath: paths.projectionDatabasePath,
-                generationId: paths.generationId,
-                createIfMissing: false,
-                readOnly: true,
-              });
-              try {
-                const physicalProjections = projectionValidationStore.listPhysicalProjections();
-                const expectedPhysicalProjectionCount =
-                  approvedRebuildSnapshot?.eligibleContributorEntryIdsBySessionPath.size ??
-                  rebuiltPhysicalProjectionCount;
-                if (physicalProjections.length !== expectedPhysicalProjectionCount) {
-                  throw new Error(
-                    'Recall replacement generation projection snapshot changed during validation',
-                  );
-                }
-                const expectedProjectionIds =
-                  approvedRebuildSnapshot?.projections.map(({ projectionId }) => projectionId) ??
-                  rebuiltProjectionIds;
-                if (
-                  projectionValidationStore.fetchProjections(expectedProjectionIds).size !==
-                  expectedProjectionIds.length
-                ) {
-                  throw new Error(
-                    'Recall replacement generation logical projection snapshot incomplete',
-                  );
-                }
-              } finally {
-                projectionValidationStore.close();
-              }
-              return {
-                indexManifestFingerprint: createHash('sha256')
-                  .update(await readFile(paths.manifestPath))
-                  .digest('hex'),
-              };
-            },
-          });
-          return rebuilt.result;
-        }
-
-        return runSerialized(async () => {
-          const lockSignal = createRecallWriteWindowAcquisitionSignal(
-            options.signal,
-            options.lockWaitMilliseconds,
-          );
-          const lockStartedAtMilliseconds = diagnosticsClock.monotonicMilliseconds();
-          return coordinateRecallWriteWindow(
-            {
-              lockPath: config.lockPath,
-              allowRecovery: false,
-              ...(lockSignal ? { signal: lockSignal } : {}),
-            },
-            async (writeWindow) => {
-              const activeGeneration = await readRecallActiveGenerationSelection(
-                config.activeGenerationPointerPath,
-                config.generationRootDirectory,
-              );
-              const registry = await readRecallGenerationRegistry(config.generationRegistryPath);
-              const activeRegistryEntry = registry?.generations.find(
-                ({ generationId }) => generationId === activeGeneration.activeGenerationId,
-              );
-              if (registry?.buildingGenerationId != null) {
-                throw new Error(
-                  'Recall incremental commits are frozen while a replacement generation builds',
-                );
-              }
-              if (activeRegistryEntry?.state === RecallGenerationCutoverState.LEGACY_READ_ONLY) {
-                throw new Error(
-                  'Recall adopted legacy generation is read-only; run an explicit rebuild',
-                );
-              }
-              const targetPaths: RecallIndexTargetPaths = activeGeneration;
-              if (diagnosticMetrics) {
-                diagnosticMetrics.writerLockWaitMilliseconds += Math.max(
-                  diagnosticsClock.monotonicMilliseconds() - lockStartedAtMilliseconds,
-                  0,
-                );
-              }
-              let store: ZvecConversationStore | undefined;
-              try {
-                const preparedIndex = await prepareIndexForWrite(
-                  targetPaths,
-                  options.signal,
-                  undefined,
-                  options.requireExistingGeneration,
-                  diagnosticMetrics,
-                );
-                store = openStore('write', targetPaths.databasePath);
-                const indexSummary = await updateConversationIndex(
-                  store,
-                  preparedIndex.tokenizer,
-                  preparedIndex.manifest,
-                  preparedIndex.embeddingModelPreflighted,
-                  targetPaths,
-                  options.signal,
-                  options.onProgress,
-                  options.onCheckpoint,
-                  diagnosticMetrics,
-                  onPhysicalSessionCheck,
-                  undefined,
-                  false,
-                );
-                if (options.optimize === true) {
-                  await runRecallStoreOptimization({
-                    optimize: () => store?.optimize() ?? Promise.resolve(),
-                    diagnosticsClock,
-                    ...(diagnosticMetrics ? { diagnosticMetrics } : {}),
-                    ...(runOptimizationWithDiagnostics ? { runOptimizationWithDiagnostics } : {}),
-                  });
-                }
-                const indexResult = { indexSummary, totalChunks: store.count() };
-                await persistRecallIncrementalWorkerSchedule({
-                  schedulePath: join(
-                    config.markerControlDirectory,
-                    'incremental-worker-schedule.json',
-                  ),
-                  nowEpochMilliseconds: diagnosticsClock.monotonicMilliseconds(),
-                  schedule: {
-                    version: RECALL_INCREMENTAL_WORKER_SCHEDULE_VERSION,
-                    nextWakeAtEpochMilliseconds: null,
-                    metadataSweepRequested: true,
-                    largeTransferDeferrals: [],
-                  },
-                });
-                workerSignal.signalDetachedWorker();
-                return indexResult;
-              } finally {
-                closeRecallWriteStore(writeWindow, 'Recall maintenance store close failed', store);
-              }
-            },
-          );
-        });
-      };
-      return options.manualMaintenanceTrigger
-        ? runManualIndexWithDiagnostics({
-            diagnostics,
-            manualMaintenanceTrigger: options.manualMaintenanceTrigger,
-            ...(options.signal ? { signal: options.signal } : {}),
-            runIndexMaintenance: runConversationIndexMaintenance,
-          })
-        : runConversationIndexMaintenance();
-    },
-    startBackgroundIndexGeneration() {
-      assertBackgroundIndexWorkerCanReconstructService();
-      return startRecallBackgroundIndexGeneration(backgroundIndexCoordinatorConfig);
-    },
-    resumeBackgroundIndexGeneration() {
-      assertBackgroundIndexWorkerCanReconstructService();
-      return resumeRecallBackgroundIndexGeneration(backgroundIndexCoordinatorConfig);
-    },
-    readBackgroundIndexGenerationStatus() {
-      return readRecallBackgroundIndexGenerationStatus(backgroundIndexCoordinatorConfig);
-    },
-    stopBackgroundIndexGeneration() {
-      return stopRecallBackgroundIndexGeneration(backgroundIndexCoordinatorConfig);
-    },
-    readIndexGenerationStatus: readCanonicalIndexGenerationStatus,
-    async discardStagingIndexGeneration() {
-      const status = await readCanonicalIndexGenerationStatus();
-      if (!status.staging) {
-        return false;
-      }
-      const discardedGenerationId = status.staging.generationId;
-      const ownership = await tryAcquireRecallRebuildOwnershipLock(
-        recallRebuildOwnershipLockPath(config.lockPath),
-      );
-      if (!ownership) {
-        throw new Error(
-          `Recall staging generation ${discardedGenerationId} is owned by a live rebuild; stop it before discard`,
-        );
-      }
-      try {
-        await coordinateRecallWriteWindow(
-          { lockPath: config.lockPath, allowRecovery: false },
-          async () => {
-            await prepareStagingRecallGenerationDiscardTransition({
-              activeGenerationPointerPath: config.activeGenerationPointerPath,
-              generationRegistryPath: config.generationRegistryPath,
-              backlogSummaryPath: config.backlogSummaryPath,
-              discardedGenerationId,
-              discardedAtEpochMilliseconds: Date.now(),
-            });
-            await clearPendingRecallEmbeddingReplacement(
-              join(dirname(config.manifestPath), 'inference-configuration.json'),
-              {
-                generationRegistryPath: config.generationRegistryPath,
-              },
-            );
-          },
-        );
-        const stagingGenerationDirectory = await resolveRecallGenerationDirectory(
-          config.generationRootDirectory,
-          discardedGenerationId,
-        );
-        await rm(stagingGenerationDirectory, { recursive: true, force: true });
-        await coordinateRecallWriteWindow(
-          { lockPath: config.lockPath, allowRecovery: false },
-          async () => {
-            await completeStagingRecallGenerationDiscardTransition({
-              activeGenerationPointerPath: config.activeGenerationPointerPath,
-              generationRegistryPath: config.generationRegistryPath,
-              discardedGenerationId,
-            });
-          },
-        );
-        await markRecallBackgroundIndexGenerationDiscarded(backgroundIndexCoordinatorConfig);
-        workerSignal.signalDetachedWorker();
-        return true;
       } finally {
-        await ownership.release();
+        store.close();
       }
     },
-    async rollback() {
-      await rollbackRecallGeneration({
-        activeGenerationPointerPath: config.activeGenerationPointerPath,
-        generationRegistryPath: config.generationRegistryPath,
-        generationRootDirectory: config.generationRootDirectory,
-        backlogSummaryPath: config.backlogSummaryPath,
-        markerSpoolDirectory: config.markerSpoolDirectory,
-        retainedMarkerDirectory: join(config.markerControlDirectory, 'rollback-retained'),
-        lockPath: config.lockPath,
-        workerSignal,
-      });
-    },
-    async adoptLegacy() {
-      await adoptLegacyRecallGeneration({
-        dataDirectory: config.dataDirectory,
-        legacyDatabasePath: config.databasePath,
-        legacyStatePath: config.statePath,
-        legacyManifestPath: config.manifestPath,
-        generationRootDirectory: config.generationRootDirectory,
-        activeGenerationPointerPath: config.activeGenerationPointerPath,
-        generationRegistryPath: config.generationRegistryPath,
-        backlogSummaryPath: config.backlogSummaryPath,
-        backupEvidencePath: join(config.dataDirectory, 'legacy-adoption-backup.json'),
-        lockPath: config.lockPath,
-        async validateLegacyDatabase(databasePath) {
-          const legacyStore = openStore('read', databasePath);
-          try {
-            legacyStore.count();
-          } finally {
-            legacyStore.close();
-          }
-        },
-      });
-    },
-    async collectRetired() {
-      await collectRetiredRecallGenerations({
-        activeGenerationPointerPath: config.activeGenerationPointerPath,
-        generationRegistryPath: config.generationRegistryPath,
-        generationRootDirectory: config.generationRootDirectory,
-        lockPath: config.lockPath,
-        retainedMarkerDirectory: join(config.markerControlDirectory, 'rollback-retained'),
-      });
+
+    async index(options = {}) {
+      const releaseLock = await acquireRecallConversationLock(config.lockPath, options.signal);
+      let store: ZvecConversationStore | undefined;
+      try {
+        if (options.rebuild) {
+          await rm(config.databasePath, { recursive: true, force: true });
+          await rm(config.statePath, { force: true });
+          await rm(config.manifestPath, { force: true });
+        }
+        const [manifest, conversationTokenizer] = await Promise.all([
+          prepareIndexManifest(),
+          getTokenizer(),
+        ]);
+        store = openStore('write');
+        const indexSummary = await indexChangedConversationSessions({
+          sessionsDirectory: config.sessionsDirectory,
+          statePath: config.statePath,
+          store,
+          embeddingProvider,
+          tokenizer: conversationTokenizer,
+          chunkPolicy: {
+            maxTokens: manifest.chunkPolicy.maxTokens,
+            overlapTokens: manifest.chunkPolicy.overlapTokens,
+          },
+          resolveProjectIdentity: resolveSearchProjectIdentity,
+          ...(options.signal ? { signal: options.signal } : {}),
+          ...(options.onProgress ? { onProgress: options.onProgress } : {}),
+        });
+        if (
+          options.optimize &&
+          (indexSummary.newlyEmbeddedChunks > 0 ||
+            indexSummary.deletedChunks > 0 ||
+            indexSummary.indexedSessions > 0)
+        ) {
+          await store.optimize();
+        }
+        return { indexSummary, totalChunks: store.count() };
+      } finally {
+        store?.close();
+        await releaseLock();
+      }
     },
   };
 }

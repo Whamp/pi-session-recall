@@ -4,8 +4,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { ZVecCollectionSchema, ZVecCreateAndOpen, ZVecDataType } from '@zvec/zvec';
-
 import { createTestSessionConversationChunk } from './recall-test-utils.js';
 import type { SessionConversationChunk } from './session-conversation-index.js';
 import {
@@ -68,7 +66,7 @@ void test('zvec conversation search returns ranked text and exact session proven
     checksum: 'sum-a',
     embedding: [1, 0, 0],
   };
-  await store.upsertChunks([
+  store.upsertChunks([
     firstChunk,
     {
       ...baseChunk,
@@ -99,9 +97,7 @@ void test('zvec conversation search returns ranked text and exact session proven
     },
   ]);
 
-  const pendingResults = store.searchDenseCandidates([1, 0, 0], 1);
-  assert.ok(pendingResults instanceof Promise);
-  const results = await pendingResults;
+  const results = store.searchDenseCandidates([1, 0, 0], 1);
 
   assert.equal(results.length, 1);
   const result = results[0];
@@ -109,54 +105,44 @@ void test('zvec conversation search returns ranked text and exact session proven
   const { embedding, ...expectedChunk } = firstChunk;
   const { cosineDistance, ...actualChunk } = result;
   assert.deepEqual(actualChunk, expectedChunk);
-  assert.equal(typeof cosineDistance, 'number');
+  assert.equal(cosineDistance, 0);
   assert.deepEqual(embedding, [1, 0, 0]);
   assert.deepEqual(store.fetchVectors(['chunk-a']), new Map([['chunk-a', [1, 0, 0]]]));
   assert.deepEqual(
     store.fetchConversationChunks(['chunk-a', 'missing-chunk']),
     new Map([['chunk-a', expectedChunk]]),
   );
-  const lexicalResults = await store.searchLexicalCandidates('readnodeerrorcode', 2);
+  const lexicalResults = store.searchLexicalCandidates('readnodeerrorcode', 2);
   assert.equal(lexicalResults[0]?.id, 'chunk-a');
   assert.ok((lexicalResults[0]?.fullTextScore ?? 0) > 0);
-  const identifierResults = await store.searchIdentifierCandidates('readNodeErrorCode EPERM', 2);
+  const identifierResults = store.searchIdentifierCandidates('readNodeErrorCode EPERM', 2);
   assert.equal(identifierResults[0]?.id, 'chunk-a');
   assert.ok((identifierResults[0]?.fullTextScore ?? 0) > 0);
-  assert.deepEqual(await store.searchIdentifierCandidates('readnodeerrorcode', 2), []);
+  assert.deepEqual(store.searchIdentifierCandidates('readnodeerrorcode', 2), []);
+  assert.deepEqual(store.searchIdentifierCandidates('readNodeErrorCode missingIdentifier', 2), []);
   assert.deepEqual(
-    await store.searchIdentifierCandidates('readNodeErrorCode missingIdentifier', 2),
-    [],
-  );
-  assert.deepEqual(
-    (await store.searchLexicalCandidates('"alpha beta"', 10)).map((candidate) => candidate.id),
+    store.searchLexicalCandidates('"alpha beta"', 10).map((candidate) => candidate.id),
     ['chunk-c'],
   );
   assert.deepEqual(
-    (await store.searchIdentifierCandidates('"alpha beta"', 10)).map((candidate) => candidate.id),
+    store.searchIdentifierCandidates('"alpha beta"', 10).map((candidate) => candidate.id),
     ['chunk-c'],
   );
   assert.deepEqual(
-    (await store.searchLexicalCandidates('find "alpha beta" in the marker', 10)).map(
-      (candidate) => candidate.id,
-    ),
+    store
+      .searchLexicalCandidates('find "alpha beta" in the marker', 10)
+      .map((candidate) => candidate.id),
     ['chunk-c'],
   );
-  const groups = store.groupDenseCandidates([1, 0, 0], 'entryId', 2, 1);
-  assert.equal(groups[0]?.groupByValue, 'entry-1');
-  assert.equal(groups[0]?.docs[0]?.id, 'chunk-a');
   assert.throws(
-    () => store.groupDenseCandidates([1, 0, 0], 'entryId', 201, 1),
-    /dense grouping limits invalid/,
-  );
-  await assert.rejects(
     () => store.searchDenseCandidates([1, 0, 0], 201),
     /candidate limit invalid \(dense\)/,
   );
-  await assert.rejects(
+  assert.throws(
     () => store.searchLexicalCandidates('queue', 201),
     /candidate limit invalid \(lexical\)/,
   );
-  await assert.rejects(
+  assert.throws(
     () => store.searchIdentifierCandidates('EPERM', 201),
     /candidate limit invalid \(identifier\)/,
   );
@@ -199,15 +185,16 @@ void test('zvec hybrid search returns atomic and turn-context document kinds', a
     embedding: [1, 0, 0],
   };
 
-  await store.upsertChunks([atomicChunk, turnContextChunk]);
+  store.upsertChunks([atomicChunk, turnContextChunk]);
 
   assert.deepEqual(
-    (await store.searchDenseCandidates([1, 0, 0], 2))
+    store
+      .searchDenseCandidates([1, 0, 0], 2)
       .map((candidate) => candidate.documentKind)
       .toSorted(),
     ['conversation', 'turn_context'],
   );
-  const lexicalTurn = (await store.searchLexicalCandidates('Atlas', 2))[0];
+  const lexicalTurn = store.searchLexicalCandidates('Atlas', 2)[0];
   assert.equal(lexicalTurn?.id, 'turn-context-reply');
   assert.equal(lexicalTurn?.documentKind, 'turn_context');
   assert.equal(lexicalTurn?.evidenceKind, 'turn_context');
@@ -248,38 +235,14 @@ void test('zvec round-trips lexical-only tool evidence and excludes it from dens
     content: 'TOOL_ONLY_EPERM /tmp/locked-file',
   };
 
-  await store.upsertChunks([toolChunk]);
+  store.upsertChunks([toolChunk]);
 
-  assert.deepEqual(await store.searchDenseCandidates([1, 0, 0], 10), []);
-  const lexicalResult = (await store.searchIdentifierCandidates('TOOL_ONLY_EPERM', 10))[0];
+  assert.deepEqual(store.searchDenseCandidates([1, 0, 0], 10), []);
+  const lexicalResult = store.searchIdentifierCandidates('TOOL_ONLY_EPERM', 10)[0];
   assert.ok(lexicalResult);
   const { fullTextScore, ...storedToolChunk } = lexicalResult;
   assert.ok(fullTextScore > 0);
   assert.deepEqual(storedToolChunk, toolChunk);
-});
-
-void test('zvec conversation store rejects an old scalar schema before a schema-9 write', async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), 'recall-zvec-old-schema-'));
-  const databasePath = join(directory, 'collection');
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const legacy = ZVecCreateAndOpen(
-    databasePath,
-    new ZVecCollectionSchema({
-      name: 'legacy_recall',
-      vectors: {
-        name: 'embedding',
-        dataType: ZVecDataType.VECTOR_FP32,
-        dimension: 3,
-      },
-      fields: [{ name: 'schemaVersion', dataType: ZVecDataType.INT32 }],
-    }),
-  );
-  legacy.closeSync();
-
-  assert.throws(
-    () => openZvecConversationStore({ databasePath, dimensions: 3 }),
-    /scalar schema mismatch.*reindex/u,
-  );
 });
 
 void test('zvec conversation store rejects an embedding dimension change that requires reindexing', async (t) => {
@@ -292,125 +255,6 @@ void test('zvec conversation store rejects an embedding dimension change that re
 
   assert.throws(
     () => openZvecConversationStore({ databasePath, dimensions: 2 }),
-    /Recall zvec dimension mismatch.*reindex/,
-  );
-});
-
-void test('fresh unoptimized 1, 8, and 32 document batches survive close and read-only reopen on every route', async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), 'recall-zvec-unoptimized-batches-'));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-
-  for (const batchSize of [1, 8, 32]) {
-    const databasePath = join(directory, `collection-${batchSize}`);
-    const writer = openZvecConversationStore({ databasePath, dimensions: 3 });
-    let optimizeCallCount = 0;
-    const checkedWriter = {
-      ...writer,
-      async optimize() {
-        optimizeCallCount += 1;
-        await writer.optimize();
-      },
-    };
-    const documents: EmbeddedSessionConversationChunk[] = Array.from(
-      { length: batchSize },
-      (_, index) => ({
-        ...baseChunk,
-        id: `fresh-${batchSize}-${index}`,
-        physicalSessionProjectionId: `physical-batch-${batchSize}`,
-        entryId: { value: `entry-${batchSize}-${index}` },
-        contributingEntryIds: [{ value: `entry-${batchSize}-${index}` }],
-        checksum: `checksum-${batchSize}-${index}`,
-        content:
-          index === 0
-            ? `ordinaryneedle fresh batch ${batchSize} BatchIdentifier${batchSize}`
-            : `background evidence ${batchSize} ${index}`,
-        embedding: index === 0 ? [1, 0, 0] : [0, 1, 0],
-      }),
-    );
-    await checkedWriter.upsertChunks(documents);
-    checkedWriter.close();
-    assert.equal(optimizeCallCount, 0);
-
-    const reader = openZvecConversationStore({
-      databasePath,
-      dimensions: 3,
-      createIfMissing: false,
-      readOnly: true,
-    });
-    const targetId = `fresh-${batchSize}-0`;
-    assert.equal((await reader.searchDenseCandidates([1, 0, 0], 1))[0]?.id, targetId);
-    assert.equal((await reader.searchLexicalCandidates('ordinaryneedle', 1))[0]?.id, targetId);
-    assert.equal(
-      (await reader.searchIdentifierCandidates(`BatchIdentifier${batchSize}`, 1))[0]?.id,
-      targetId,
-    );
-    assert.equal(reader.fetchConversationChunks([targetId]).get(targetId)?.id, targetId);
-    reader.close();
-  }
-});
-
-void test('physical session projection enumeration supports complete rebuild validation', async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), 'recall-zvec-physical-complete-'));
-  const store = openZvecConversationStore({
-    databasePath: join(directory, 'collection'),
-    dimensions: 3,
-  });
-  t.after(async () => {
-    store.close();
-    await rm(directory, { recursive: true, force: true });
-  });
-  const evidenceIndexes = [...Array.from({ length: 33 }).keys()];
-  await store.upsertChunks(
-    evidenceIndexes.map((index) => ({
-      ...baseChunk,
-      id: `physical-complete-evidence-${index.toString().padStart(2, '0')}`,
-      physicalSessionProjectionId: 'physical_complete',
-      embedding: [1, 0, 0],
-    })),
-  );
-
-  const physicalEvidenceIds = await store.listChunkIdsByPhysicalSessionProjectionId(
-    'physical_complete',
-    34,
-  );
-
-  assert.equal(physicalEvidenceIds.length, 33);
-});
-
-void test('physical session projection enumeration returns exact bounded evidence occurrence IDs', async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), 'recall-zvec-physical-filter-'));
-  const store = openZvecConversationStore({
-    databasePath: join(directory, 'collection'),
-    dimensions: 3,
-  });
-  t.after(async () => {
-    store.close();
-    await rm(directory, { recursive: true, force: true });
-  });
-  await store.upsertChunks([
-    {
-      ...baseChunk,
-      id: 'physical-a-evidence',
-      physicalSessionProjectionId: 'physical_A',
-      embedding: [1, 0, 0],
-    },
-    {
-      ...baseChunk,
-      id: 'physical-b-evidence',
-      physicalSessionProjectionId: 'physical_B',
-      embedding: [1, 0, 0],
-    },
-  ]);
-
-  const physicalEvidenceIds = await store.listChunkIdsByPhysicalSessionProjectionId(
-    'physical_A',
-    1,
-  );
-  assert.deepEqual(physicalEvidenceIds, ['physical-a-evidence']);
-  await store.deleteChunks(physicalEvidenceIds);
-
-  assert.deepEqual(
-    [...store.fetchConversationChunks(['physical-a-evidence', 'physical-b-evidence']).keys()],
-    ['physical-b-evidence'],
+    /Recall zvec dimension mismatch.*psr index --rebuild/,
   );
 });

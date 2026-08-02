@@ -1,13 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import type { RecallSearchResult } from './fuse-recall-ranked-lists.js';
-import type { LocalRerankerClient } from './local-reranker-client.js';
-import { createTestRecallSearchResult } from './recall-test-utils.js';
+import type { RecallSearchResult } from './fuse-recall-search-candidates.js';
 import {
-  rankFusedRecallSearchResults,
-  rerankRecallSearchResults,
-} from './rank-recall-search-results.js';
+  createTestRecallSearchResult,
+  createTestSessionConversationChunk,
+} from './recall-test-utils.js';
+import { rankFusedRecallSearchResults } from './rank-recall-search-results.js';
 
 function createRecallCandidate(
   id: string,
@@ -24,122 +23,59 @@ function createRecallCandidate(
   });
 }
 
-void test('hybrid ranking rejects weak dense-only matches without hiding exact or strong dense evidence', () => {
+void test('hybrid ranking rejects weak dense-only matches without hiding exact or strong evidence', () => {
   const fusedScore = 1 / 61;
-  const candidates = [
-    createRecallCandidate('weak-dense-marker', 'LIVE_RECALL_PROBE_20260725_AF755B6', {
-      isOnActiveBranch: true,
-      dense: { rank: 1, cosineDistance: 0.6473 },
-      fusedScore,
-    }),
-    createRecallCandidate('exact-evidence', 'Repository identity follows normalized origin.', {
-      isOnActiveBranch: true,
-      dense: null,
-      lexical: { rank: 1, fullTextScore: 14.25 },
-      fusedScore,
-    }),
-    createRecallCandidate('strong-dense-evidence', 'Worktrees share one repository identity.', {
-      dense: { rank: 2, cosineDistance: 0.49 },
-      fusedScore: 1 / 62,
-    }),
-  ];
-
-  const results = rankFusedRecallSearchResults(candidates, 5, () => new Map());
+  const results = rankFusedRecallSearchResults(
+    [
+      createRecallCandidate('weak-dense', 'weak', {
+        isOnActiveBranch: true,
+        dense: { rank: 1, cosineDistance: 0.6473 },
+        fusedScore,
+      }),
+      createRecallCandidate('exact', 'exact', {
+        isOnActiveBranch: true,
+        dense: null,
+        lexical: { rank: 1, fullTextScore: 14.25 },
+        fusedScore,
+      }),
+      createRecallCandidate('strong-dense', 'strong', {
+        dense: { rank: 2, cosineDistance: 0.49 },
+        fusedScore: 1 / 62,
+      }),
+    ],
+    5,
+    () => new Map(),
+  );
 
   assert.deepEqual(
     results.map((result) => result.id),
-    ['exact-evidence', 'strong-dense-evidence'],
+    ['exact', 'strong-dense'],
   );
 });
 
-void test('recall reranking sends every candidate kind as original text and preserves component scores', async () => {
-  const candidates = [
-    createRecallCandidate('conversation', 'Original atomic conversation.'),
-    createRecallCandidate('turn', 'User:\nShip Atlas.\n\nAssistant:\nDone.', {
-      documentKind: 'turn_context',
-      evidenceKind: 'turn_context',
-      role: 'turn',
-      dense: null,
-      lexical: { rank: 1, fullTextScore: 4.5 },
-    }),
-    createRecallCandidate('tool', 'EPERM /tmp/locked-file', {
-      documentKind: 'tool',
-      evidenceKind: 'tool_result',
-      evidencePart: 'result',
-      isDenseSearchable: false,
-      role: 'tool',
-      dense: null,
-      identifier: { rank: 1, fullTextScore: 8.25 },
-    }),
-    createRecallCandidate('compaction', 'Compacted queue decision.', {
-      documentKind: 'summary',
-      summaryKind: 'compaction',
-      evidenceKind: 'compaction_summary',
-      role: 'summary',
-    }),
-    createRecallCandidate('branch', 'Abandoned polling branch.', {
-      documentKind: 'summary',
-      summaryKind: 'branch',
-      evidenceKind: 'branch_summary',
-      role: 'summary',
-    }),
-  ];
-  const rerankerInputs: string[][] = [];
-  const reranker: LocalRerankerClient = {
-    async rerankDocuments(query, documents) {
-      assert.equal(query, 'How did Atlas fail?');
-      rerankerInputs.push([...documents]);
-      return [0.1, 0.95, 0.8, 0.6, 0.4];
-    },
-  };
-
-  const results = await rerankRecallSearchResults({
-    query: 'How did Atlas fail?',
-    candidates,
-    rerankPoolLimit: candidates.length,
-    resultLimit: 5,
-    reranker,
-    fetchConversationChunks() {
-      return new Map();
-    },
-  });
-
-  assert.deepEqual(rerankerInputs, [candidates.map((candidate) => candidate.content)]);
-  assert.deepEqual(
-    results.map((result) => result.id),
-    ['turn', 'tool', 'compaction', 'branch', 'conversation'],
-  );
-  assert.equal(results[0]?.rerankerScore, 0.95);
-  assert.deepEqual(results[0]?.lexical, { rank: 1, fullTextScore: 4.5 });
-  assert.deepEqual(results[1]?.identifier, { rank: 1, fullTextScore: 8.25 });
-  assert.equal(results[2]?.summaryKind, 'compaction');
-  assert.equal(results[3]?.summaryKind, 'branch');
-});
-
-void test('recall reranking suppresses overlapping sibling slots and preserves the duplicate candidate', async () => {
-  const first = createRecallCandidate('first', 'alpha beta gamma', {
+void test('hybrid ranking suppresses overlapping sibling slots and retains exact provenance', () => {
+  const shared = {
     sessionId: { value: 'shared-session' },
     sessionPath: '/sessions/shared.jsonl',
     entryId: { value: 'shared-entry' },
     contributingEntryIds: [{ value: 'shared-entry' }],
     textRunId: 'shared-run',
+    chunkCount: 2,
+  };
+  const first = createRecallCandidate('first', 'alpha beta gamma', {
+    ...shared,
     characterStart: 0,
     characterEnd: 16,
     tokenStart: 0,
     tokenEnd: 3,
     tokenCount: 3,
     chunkIndex: 0,
-    chunkCount: 2,
     siblingIds: ['second'],
     nextSiblingId: 'second',
     fusedScore: 0.04,
   });
   const second = createRecallCandidate('second', 'gamma delta epsilon', {
-    sessionId: { value: 'shared-session' },
-    sessionPath: '/sessions/shared.jsonl',
-    entryId: { value: 'shared-entry' },
-    contributingEntryIds: [{ value: 'shared-entry' }],
-    textRunId: 'shared-run',
+    ...shared,
     characterStart: 11,
     characterEnd: 30,
     tokenStart: 2,
@@ -147,365 +83,105 @@ void test('recall reranking suppresses overlapping sibling slots and preserves t
     tokenCount: 3,
     overlapTokenCount: 1,
     chunkIndex: 1,
-    chunkCount: 2,
     siblingIds: ['first'],
     previousSiblingId: 'first',
     fusedScore: 0.03,
-    lexical: { rank: 2, fullTextScore: 3.25 },
-  });
-  const unrelated = createRecallCandidate('unrelated', 'different evidence', {
-    fusedScore: 0.02,
-  });
-  const rerankerInputs: string[][] = [];
-  const reranker: LocalRerankerClient = {
-    async rerankDocuments(query, documents) {
-      void query;
-      rerankerInputs.push([...documents]);
-      return [0.9, 0.2];
-    },
-  };
-
-  const results = await rerankRecallSearchResults({
-    query: 'gamma',
-    candidates: [second, unrelated, first],
-    rerankPoolLimit: 600,
-    resultLimit: 3,
-    reranker,
-    fetchConversationChunks() {
-      return new Map();
-    },
   });
 
-  assert.deepEqual(rerankerInputs, [['alpha beta gamma', 'different evidence']]);
+  const results = rankFusedRecallSearchResults([first, second], 5, () => new Map());
+
+  assert.equal(results.length, 1);
+  assert.equal(results[0]?.id, 'first');
   assert.deepEqual(
-    results.map((result) => result.id),
-    ['first', 'unrelated'],
+    results[0]?.duplicateOccurrences.map((item) => item.id),
+    ['second'],
   );
-  assert.equal(results[0]?.duplicateOccurrences.length, 1);
-  assert.equal(results[0]?.duplicateOccurrences[0]?.id, 'second');
-  assert.deepEqual(results[0]?.duplicateOccurrences[0]?.lexical, {
-    rank: 2,
-    fullTextScore: 3.25,
-  });
-  assert.equal(results[0]?.duplicateOccurrences[0]?.sessionPath, '/sessions/shared.jsonl');
-  assert.equal(results[0]?.duplicateOccurrences[0]?.characterStart, 11);
-  assert.equal(results[0]?.duplicateOccurrences[0]?.characterEnd, 30);
 });
 
-void test('recall reranking keeps reciprocal siblings whose overlap text does not match', async () => {
-  const sharedGeometry = {
-    sessionId: { value: 'mismatched-session' },
-    sessionPath: '/sessions/mismatched.jsonl',
-    entryId: { value: 'mismatched-entry' },
-    contributingEntryIds: [{ value: 'mismatched-entry' }],
-    textRunId: 'mismatched-run',
-    textRunIndex: 0,
-    chunkCount: 2,
-  };
-  const first = createRecallCandidate('mismatched-first', 'alpha beta', {
-    ...sharedGeometry,
-    characterStart: 0,
-    characterEnd: 10,
-    tokenStart: 0,
-    tokenEnd: 2,
-    tokenCount: 2,
-    chunkIndex: 0,
-    siblingIds: ['mismatched-second'],
-    nextSiblingId: 'mismatched-second',
-  });
-  const second = createRecallCandidate('mismatched-second', 'WRONG gamma', {
-    ...sharedGeometry,
-    characterStart: 6,
-    characterEnd: 17,
-    tokenStart: 1,
-    tokenEnd: 3,
-    tokenCount: 2,
-    overlapTokenCount: 1,
-    chunkIndex: 1,
-    siblingIds: ['mismatched-first'],
-    previousSiblingId: 'mismatched-first',
-  });
-  const reranker: LocalRerankerClient = {
-    async rerankDocuments(query, documents) {
-      void query;
-      assert.deepEqual(documents, ['alpha beta', 'WRONG gamma']);
-      return [0.9, 0.8];
-    },
-  };
-
-  const results = await rerankRecallSearchResults({
-    query: 'gamma',
-    candidates: [first, second],
-    rerankPoolLimit: 600,
-    resultLimit: 2,
-    reranker,
-    fetchConversationChunks() {
-      return new Map();
-    },
-  });
-
-  assert.deepEqual(
-    results.map((result) => result.id),
-    ['mismatched-first', 'mismatched-second'],
-  );
-  assert.ok(results.every((result) => result.duplicateOccurrences.length === 0));
-});
-
-void test('recall reranking suppresses exact cross-session copies without conflating summaries or checksum collisions', async () => {
-  const copiedContent = 'Preserve exact source provenance.';
-  const firstCopy = createRecallCandidate('copy-a', copiedContent, {
-    checksum: 'shared-checksum',
+void test('hybrid ranking suppresses exact cross-session copies without conflating summaries', () => {
+  const original = createRecallCandidate('original', 'same text', {
+    checksum: 'same-checksum',
+    sessionPath: '/sessions/original.jsonl',
     fusedScore: 0.04,
   });
-  const secondCopy = createRecallCandidate('copy-b', copiedContent, {
-    checksum: 'shared-checksum',
-    isOnActiveBranch: true,
-    isVisibleInActiveContext: true,
+  const copy = createRecallCandidate('copy', 'same text', {
+    checksum: 'same-checksum',
+    sessionPath: '/sessions/copy.jsonl',
     fusedScore: 0.03,
   });
-  const syntheticSummary = createRecallCandidate('summary-copy', copiedContent, {
-    checksum: 'shared-checksum',
+  const summary = createRecallCandidate('summary', 'same text', {
+    checksum: 'same-checksum',
+    sessionPath: '/sessions/summary.jsonl',
     documentKind: 'summary',
     summaryKind: 'compaction',
     evidenceKind: 'compaction_summary',
     role: 'summary',
     fusedScore: 0.02,
   });
-  const checksumCollision = createRecallCandidate('checksum-collision', 'Different source text.', {
-    checksum: 'shared-checksum',
-    fusedScore: 0.01,
-  });
-  const rerankerInputs: string[][] = [];
-  const reranker: LocalRerankerClient = {
-    async rerankDocuments(query, documents) {
-      void query;
-      rerankerInputs.push([...documents]);
-      return [0.9, 0.8, 0.7];
-    },
-  };
 
-  const results = await rerankRecallSearchResults({
-    query: 'source provenance',
-    candidates: [firstCopy, secondCopy, syntheticSummary, checksumCollision],
-    rerankPoolLimit: 600,
-    resultLimit: 4,
-    reranker,
-    fetchConversationChunks() {
-      return new Map();
-    },
-  });
-
-  assert.deepEqual(rerankerInputs, [[copiedContent, copiedContent, 'Different source text.']]);
-  assert.deepEqual(
-    results.map((result) => result.id),
-    ['copy-a', 'summary-copy', 'checksum-collision'],
-  );
-  assert.equal(results[0]?.duplicateOccurrences.length, 1);
-  assert.equal(results[0]?.isOnActiveBranch, false);
-  assert.equal(results[0]?.activeBranchPrior, 0.01);
-  assert.equal(results[0]?.duplicateOccurrences[0]?.id, 'copy-b');
-  assert.equal(results[0]?.duplicateOccurrences[0]?.sessionPath, '/sessions/copy-b.jsonl');
-  assert.equal(results[0]?.duplicateOccurrences[0]?.isOnActiveBranch, true);
-  assert.equal(results[1]?.documentKind, 'summary');
-  assert.equal(results[1]?.summaryKind, 'compaction');
-});
-
-void test('recall reranking favors an active branch without hiding a stronger abandoned match', async () => {
-  const abandoned = createRecallCandidate('abandoned', 'Abandoned branch evidence.', {
-    isOnActiveBranch: false,
-    fusedScore: 0.04,
-  });
-  const active = createRecallCandidate('active', 'Active branch evidence.', {
-    isOnActiveBranch: true,
-    isVisibleInActiveContext: true,
-    fusedScore: 0.03,
-  });
-  const reranker: LocalRerankerClient = {
-    async rerankDocuments(query, documents) {
-      void query;
-      assert.deepEqual(documents, ['Abandoned branch evidence.', 'Active branch evidence.']);
-      return [0.5, 0.495];
-    },
-  };
-
-  const results = await rerankRecallSearchResults({
-    query: 'branch evidence',
-    candidates: [abandoned, active],
-    rerankPoolLimit: 600,
-    resultLimit: 2,
-    reranker,
-    fetchConversationChunks() {
-      return new Map();
-    },
-  });
+  const results = rankFusedRecallSearchResults([copy, summary, original], 5, () => new Map());
 
   assert.deepEqual(
     results.map((result) => result.id),
-    ['active', 'abandoned'],
-  );
-  assert.equal(results[0]?.rerankerScore, 0.495);
-  assert.equal(results[0]?.activeBranchPrior, 0.01);
-  assert.equal(results[0]?.rankingScore, 0.505);
-  assert.equal(results[1]?.rerankerScore, 0.5);
-  assert.equal(results[1]?.activeBranchPrior, 0);
-  assert.equal(results[1]?.rankingScore, 0.5);
-  assert.equal(results[1]?.isOnActiveBranch, false);
-});
-
-void test('query-planned reranking uses all fused-rank blend bands before active-branch preference', async () => {
-  const candidates = Array.from({ length: 12 }, (_, index) =>
-    createRecallCandidate(`position-${index + 1}`, `Position ${index + 1} evidence.`, {
-      fusedScore: 1 - index / 20,
-      isOnActiveBranch: index === 1,
-    }),
-  );
-  const rerankerScores = candidates.map((_, index) => {
-    if (index === 3) {
-      return 0.5;
-    }
-    if (index === 10) {
-      return 1;
-    }
-    return 0;
-  });
-
-  const results = await rerankRecallSearchResults({
-    query: 'position-aware ranking',
-    candidates,
-    rerankPoolLimit: 40,
-    resultLimit: 12,
-    reranker: {
-      async rerankDocuments(query, documents) {
-        assert.equal(query, 'position-aware ranking');
-        assert.deepEqual(
-          documents,
-          candidates.map((candidate) => candidate.content),
-        );
-        return rerankerScores;
-      },
-    },
-    fetchConversationChunks() {
-      return new Map();
-    },
-    useQueryPlannedPositionBlend: true,
-  });
-  const byId = new Map(results.map((result) => [result.id, result]));
-
-  assert.deepEqual(
-    {
-      rank: byId.get('position-1')?.retrievalPositionRank,
-      position: byId.get('position-1')?.retrievalPositionScore,
-      retrievalWeight: byId.get('position-1')?.retrievalScoreWeight,
-      rerankerWeight: byId.get('position-1')?.rerankerScoreWeight,
-      score: byId.get('position-1')?.rankingScore,
-    },
-    { rank: 1, position: 1, retrievalWeight: 0.75, rerankerWeight: 0.25, score: 0.75 },
+    ['original', 'summary'],
   );
   assert.deepEqual(
-    {
-      rank: byId.get('position-4')?.retrievalPositionRank,
-      position: byId.get('position-4')?.retrievalPositionScore,
-      retrievalWeight: byId.get('position-4')?.retrievalScoreWeight,
-      rerankerWeight: byId.get('position-4')?.rerankerScoreWeight,
-      score: byId.get('position-4')?.rankingScore,
-    },
-    { rank: 4, position: 0.25, retrievalWeight: 0.6, rerankerWeight: 0.4, score: 0.35 },
-  );
-  assert.deepEqual(
-    {
-      rank: byId.get('position-11')?.retrievalPositionRank,
-      position: byId.get('position-11')?.retrievalPositionScore,
-      retrievalWeight: byId.get('position-11')?.retrievalScoreWeight,
-      rerankerWeight: byId.get('position-11')?.rerankerScoreWeight,
-      score: byId.get('position-11')?.rankingScore,
-    },
-    {
-      rank: 11,
-      position: 1 / 11,
-      retrievalWeight: 0.4,
-      rerankerWeight: 0.6,
-      score: 0.4 / 11 + 0.6,
-    },
-  );
-  assert.equal(byId.get('position-2')?.activeBranchPrior, 0.01);
-  assert.ok(
-    (byId.get('position-11')?.rankingScore ?? 0) > (byId.get('position-2')?.rankingScore ?? 0),
-  );
-  assert.ok(
-    results.findIndex((result) => result.id === 'position-11') <
-      results.findIndex((result) => result.id === 'position-2'),
+    results[0]?.duplicateOccurrences.map((item) => item.id),
+    ['copy'],
   );
 });
 
-void test('query-planned reranking groups duplicates before admitting forty reranker candidates', async () => {
-  const representative = createRecallCandidate('group-representative', 'Copied evidence.', {
-    checksum: 'copied-checksum',
-    fusedScore: 1,
-  });
-  const distinctCandidates = Array.from({ length: 40 }, (_, index) =>
-    createRecallCandidate(`distinct-${index + 1}`, `Distinct evidence ${index + 1}.`, {
-      fusedScore: 0.9 - index / 100,
-    }),
+void test('hybrid ranking applies a small active-branch prior without hiding stronger evidence', () => {
+  const results = rankFusedRecallSearchResults(
+    [
+      createRecallCandidate('active', 'active', {
+        isOnActiveBranch: true,
+        fusedScore: 0.02,
+      }),
+      createRecallCandidate('stronger-abandoned', 'abandoned', {
+        fusedScore: 0.04,
+      }),
+    ],
+    5,
+    () => new Map(),
   );
-  const duplicateOccurrence = createRecallCandidate('group-duplicate', 'Copied evidence.', {
-    checksum: 'copied-checksum',
-    fusedScore: 0.01,
-  });
-  const rerankerDocumentCounts: number[] = [];
 
-  const results = await rerankRecallSearchResults({
-    query: 'duplicate grouping',
-    candidates: [representative, ...distinctCandidates, duplicateOccurrence],
-    rerankPoolLimit: 40,
-    resultLimit: 40,
-    reranker: {
-      async rerankDocuments(query, documents) {
-        void query;
-        rerankerDocumentCounts.push(documents.length);
-        return documents.map(() => 0.5);
-      },
-    },
-    fetchConversationChunks() {
-      return new Map();
-    },
-    useQueryPlannedPositionBlend: true,
-  });
-
-  assert.deepEqual(rerankerDocumentCounts, [40]);
-  assert.equal(results.length, 40);
-  const copiedGroup = results.find((result) => result.id === 'group-representative');
-  assert.equal(copiedGroup?.duplicateOccurrences.length, 1);
-  assert.equal(copiedGroup?.duplicateOccurrences[0]?.id, 'group-duplicate');
+  assert.deepEqual(
+    results.map((result) => result.id),
+    ['stronger-abandoned', 'active'],
+  );
+  assert.equal(results[1]?.activeBranchPrior, 0.01);
 });
 
-void test('recall reranking expands a winning atomic chunk through valid same-run neighbors', async () => {
-  const sharedGeometry = {
-    sessionId: { value: 'expansion-session' },
-    sessionPath: '/sessions/expansion.jsonl',
-    entryId: { value: 'expansion-entry' },
-    contributingEntryIds: [{ value: 'expansion-entry' }],
-    textRunId: 'expansion-run',
+void test('hybrid ranking expands only exact contiguous siblings from one visible text run', () => {
+  const common = {
+    sessionId: { value: 'session' },
+    sessionPath: '/sessions/source.jsonl',
+    entryId: { value: 'entry' },
+    contributingEntryIds: [{ value: 'entry' }],
+    textRunId: 'run',
     textRunIndex: 0,
-    chunkCount: 3,
     sourceLineStart: 2,
     sourceLineEnd: 2,
     sourceBlockStart: 0,
     sourceBlockEnd: 0,
+    chunkCount: 3,
   };
-  const previous = createRecallCandidate('previous', 'alpha beta gamma', {
-    ...sharedGeometry,
+  const previous = createTestSessionConversationChunk({
+    id: 'previous',
+    content: 'alpha beta gamma',
+    ...common,
     characterStart: 0,
     characterEnd: 16,
     tokenStart: 0,
     tokenEnd: 3,
     tokenCount: 3,
-    overlapTokenCount: 0,
     chunkIndex: 0,
     siblingIds: ['winner'],
     nextSiblingId: 'winner',
   });
   const winner = createRecallCandidate('winner', 'gamma delta', {
-    ...sharedGeometry,
+    ...common,
     characterStart: 11,
     characterEnd: 22,
     tokenStart: 2,
@@ -517,8 +193,10 @@ void test('recall reranking expands a winning atomic chunk through valid same-ru
     previousSiblingId: 'previous',
     nextSiblingId: 'next',
   });
-  const next = createRecallCandidate('next', 'delta epsilon', {
-    ...sharedGeometry,
+  const next = createTestSessionConversationChunk({
+    id: 'next',
+    content: 'delta epsilon',
+    ...common,
     characterStart: 17,
     characterEnd: 30,
     tokenStart: 3,
@@ -529,181 +207,62 @@ void test('recall reranking expands a winning atomic chunk through valid same-ru
     siblingIds: ['winner'],
     previousSiblingId: 'winner',
   });
-  const fetchedIds: string[][] = [];
-  const reranker: LocalRerankerClient = {
-    async rerankDocuments(query, documents) {
-      void query;
-      assert.deepEqual(documents, ['gamma delta']);
-      return [0.9];
-    },
-  };
 
-  const results = await rerankRecallSearchResults({
-    query: 'delta',
-    candidates: [winner],
-    rerankPoolLimit: 600,
-    resultLimit: 1,
-    reranker,
-    fetchConversationChunks(ids) {
-      fetchedIds.push([...ids]);
-      return new Map([
-        ['previous', previous],
-        ['next', next],
-      ]);
-    },
-  });
+  const results = rankFusedRecallSearchResults(
+    [winner],
+    5,
+    (ids) =>
+      new Map(
+        ids.flatMap((id) => {
+          const chunk = id === 'previous' ? previous : id === 'next' ? next : undefined;
+          return chunk ? [[id, chunk]] : [];
+        }),
+      ),
+  );
 
-  assert.deepEqual(fetchedIds, [['previous', 'next']]);
-  assert.equal(results[0]?.content, 'gamma delta');
   assert.equal(results[0]?.neighborContext?.content, 'alpha beta gamma delta epsilon');
   assert.deepEqual(
-    results[0]?.neighborContext?.chunks.map((chunk) => ({
-      id: chunk.id,
-      characterStart: chunk.characterStart,
-      characterEnd: chunk.characterEnd,
-    })),
-    [
-      { id: 'previous', characterStart: 0, characterEnd: 16 },
-      { id: 'winner', characterStart: 11, characterEnd: 22 },
-      { id: 'next', characterStart: 17, characterEnd: 30 },
-    ],
+    results[0]?.neighborContext?.chunks.map((chunk) => chunk.id),
+    ['previous', 'winner', 'next'],
   );
 });
 
-void test('recall neighbor expansion rejects a source-offset gap between reciprocal siblings', async () => {
-  const sharedGeometry = {
-    sessionId: { value: 'gapped-session' },
-    sessionPath: '/sessions/gapped.jsonl',
-    entryId: { value: 'gapped-entry' },
-    contributingEntryIds: [{ value: 'gapped-entry' }],
-    textRunId: 'gapped-run',
-    textRunIndex: 0,
+void test('hybrid ranking refuses neighbor expansion across a source geometry gap', () => {
+  const winner = createRecallCandidate('winner', 'gamma delta', {
+    sessionPath: '/sessions/source.jsonl',
+    entryId: { value: 'entry' },
+    contributingEntryIds: [{ value: 'entry' }],
+    textRunId: 'run',
     chunkCount: 2,
-  };
-  const winner = createRecallCandidate('gapped-winner', 'alpha beta', {
-    ...sharedGeometry,
-    characterStart: 0,
-    characterEnd: 10,
-    tokenStart: 0,
-    tokenEnd: 2,
-    tokenCount: 2,
-    chunkIndex: 0,
-    siblingIds: ['gapped-next'],
-    nextSiblingId: 'gapped-next',
-  });
-  const gappedNext = createRecallCandidate('gapped-next', 'gamma delta', {
-    ...sharedGeometry,
-    characterStart: 12,
-    characterEnd: 23,
+    chunkIndex: 1,
+    characterStart: 20,
+    characterEnd: 31,
     tokenStart: 2,
     tokenEnd: 4,
-    tokenCount: 2,
-    overlapTokenCount: 0,
-    chunkIndex: 1,
-    siblingIds: ['gapped-winner'],
-    previousSiblingId: 'gapped-winner',
+    overlapTokenCount: 1,
+    siblingIds: ['previous'],
+    previousSiblingId: 'previous',
   });
-  const reranker: LocalRerankerClient = {
-    async rerankDocuments(query, documents) {
-      void query;
-      assert.deepEqual(documents, ['alpha beta']);
-      return [0.9];
-    },
-  };
-
-  const results = await rerankRecallSearchResults({
-    query: 'alpha',
-    candidates: [winner],
-    rerankPoolLimit: 600,
-    resultLimit: 1,
-    reranker,
-    fetchConversationChunks() {
-      return new Map([['gapped-next', gappedNext]]);
-    },
-  });
-
-  assert.equal(results[0]?.neighborContext, null);
-});
-
-void test('recall neighbor expansion rejects reciprocal pointers across entry, role, and evidence boundaries', async () => {
-  const winner = createRecallCandidate('guarded-winner', 'middle evidence', {
-    sessionId: { value: 'guarded-session' },
-    sessionPath: '/sessions/guarded.jsonl',
-    entryId: { value: 'guarded-entry' },
-    contributingEntryIds: [{ value: 'guarded-entry' }],
-    textRunId: 'guarded-run',
-    chunkIndex: 1,
-    chunkCount: 3,
-    characterStart: 10,
-    characterEnd: 25,
-    tokenStart: 2,
-    tokenEnd: 5,
-    siblingIds: ['wrong-role', 'tool-neighbor'],
-    previousSiblingId: 'wrong-role',
-    nextSiblingId: 'tool-neighbor',
-  });
-  const wrongRole = createRecallCandidate('wrong-role', 'wrong role evidence', {
-    sessionId: { value: 'guarded-session' },
-    sessionPath: '/sessions/guarded.jsonl',
-    entryId: { value: 'different-entry' },
-    contributingEntryIds: [{ value: 'different-entry' }],
-    role: 'user',
-    textRunId: 'guarded-run',
+  const previous = createTestSessionConversationChunk({
+    ...winner,
+    id: 'previous',
+    content: 'alpha beta gamma',
     chunkIndex: 0,
-    chunkCount: 3,
     characterStart: 0,
-    characterEnd: 15,
+    characterEnd: 16,
     tokenStart: 0,
     tokenEnd: 3,
-    siblingIds: ['guarded-winner'],
-    nextSiblingId: 'guarded-winner',
+    overlapTokenCount: 0,
+    siblingIds: ['winner'],
+    previousSiblingId: null,
+    nextSiblingId: 'winner',
   });
-  const toolNeighbor = createRecallCandidate('tool-neighbor', 'tool output evidence', {
-    sessionId: { value: 'guarded-session' },
-    sessionPath: '/sessions/guarded.jsonl',
-    entryId: { value: 'guarded-entry' },
-    contributingEntryIds: [{ value: 'guarded-entry' }],
-    documentKind: 'tool',
-    evidenceKind: 'tool_result',
-    evidencePart: 'result',
-    isDenseSearchable: false,
-    role: 'tool',
-    textRunId: 'guarded-run',
-    chunkIndex: 2,
-    chunkCount: 3,
-    characterStart: 20,
-    characterEnd: 40,
-    tokenStart: 4,
-    tokenEnd: 7,
-    overlapTokenCount: 1,
-    siblingIds: ['guarded-winner'],
-    previousSiblingId: 'guarded-winner',
-    toolCallId: 'call-guarded',
-    toolName: 'bash',
-    toolResultEntryId: { value: 'guarded-entry' },
-    toolError: false,
-  });
-  const reranker: LocalRerankerClient = {
-    async rerankDocuments(query, documents) {
-      void query;
-      assert.deepEqual(documents, ['middle evidence']);
-      return [0.9];
-    },
-  };
 
-  const results = await rerankRecallSearchResults({
-    query: 'middle',
-    candidates: [winner],
-    rerankPoolLimit: 600,
-    resultLimit: 1,
-    reranker,
-    fetchConversationChunks() {
-      return new Map([
-        ['wrong-role', wrongRole],
-        ['tool-neighbor', toolNeighbor],
-      ]);
-    },
-  });
+  const results = rankFusedRecallSearchResults(
+    [winner],
+    5,
+    () => new Map([['previous', previous]]),
+  );
 
   assert.equal(results[0]?.neighborContext, null);
 });

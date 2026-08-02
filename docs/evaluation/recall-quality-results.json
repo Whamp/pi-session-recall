@@ -2,19 +2,17 @@
   "version": 2,
   "environment": {
     "command": "npm run evaluate:recall",
-    "gitCommit": "bc2767e9724c55332867716864549c00af3f3a63",
+    "gitCommit": "07ef8e5b64631ba4063363f1f00d9524a00c4964",
     "gitDirty": false,
     "nodeVersion": "v24.16.0",
     "platform": "linux",
     "architecture": "x64",
     "cpuModel": "AMD Ryzen 7 8845HS w/ Radeon 780M Graphics",
-    "embeddingBaseUrl": "in-process://deterministic-fixture-v1",
-    "embeddingModel": "deterministic-fixture-v1",
-    "embeddingServedModelId": "deterministic-fixture-v1",
-    "embeddingArtifact": "committed-corpus-concept-hash-fp32",
-    "embeddingDimensions": 64,
-    "rerankerBaseUrl": "disabled://unexpected-request-fails",
-    "rerankerModel": "rejecting-fake"
+    "embeddingBaseUrl": "http://192.168.0.67:8090/v1",
+    "embeddingModel": "octen-embed",
+    "embeddingServedModelId": "Octen/Octen-Embedding-4B",
+    "embeddingNativeDimensions": 2560,
+    "embeddingStoredDimensions": 1024
   },
   "specification": {
     "version": 3,
@@ -36,7 +34,7 @@
         },
         {
           "fileName": "summaries.jsonl",
-          "sha256": "3751aaf0f003240f1e0443ba2b47eb3a88f0e8f4368b3e6407aa2195b520916b"
+          "sha256": "fcca6d8d9f91b4fbace2bf793b8b191784beac402c6dd01f136e21fd811af98c"
         },
         {
           "fileName": "duplicate-a.jsonl",
@@ -538,12 +536,6 @@
   },
   "result": {
     "version": 5,
-    "storageIdentity": {
-      "conversationSchemaVersion": 9,
-      "zvecSchemaVersion": 8,
-      "indexManifestVersion": 6,
-      "incrementalEligibilityPolicyVersion": 1
-    },
     "evaluationIdentity": {
       "defaultScope": "project",
       "projectScopePolicyVersion": 1,
@@ -560,15 +552,13 @@
         "lexical": 8,
         "identifier": 8
       },
-      "fusedPoolLimit": 24,
-      "rerankPoolLimit": 24,
       "finalResultCount": 5
     },
-    "startedAt": "2026-07-28T07:56:39.913Z",
-    "completedAt": "2026-07-28T07:56:42.853Z",
-    "durationMilliseconds": 2940.307203,
-    "specificationPath": "/home/will/projects/pi-session-recall/.worktrees/incremental-recall-ingestion/evaluation/recall-quality-cases.json",
-    "specificationSha256": "6208cfc632c8ff53815567dd5385297bb6cc513f62e3d50a5bfa8ae687c34439",
+    "startedAt": "2026-08-02T01:09:53.018Z",
+    "completedAt": "2026-08-02T01:09:58.766Z",
+    "durationMilliseconds": 5747.855191,
+    "specificationPath": "/home/will/projects/pi-session-recall/.worktrees/restore-simple-recall/evaluation/recall-quality-cases.json",
+    "specificationSha256": "9ef0222c96653542ce9f0a2aa23fa34c2743f7920d658e5675c2dcea4f947046",
     "corpusId": "recall-quality-project-scoped-bounded-v3",
     "indexRuns": [
       {
@@ -577,15 +567,15 @@
           "maxTokens": 512,
           "overlapTokens": 64
         },
-        "totalChunks": 116,
-        "indexLatencyMilliseconds": 1534.17183,
+        "totalChunks": 128,
+        "indexLatencyMilliseconds": 4838.8458900000005,
         "indexSummary": {
           "scannedSessions": 15,
           "indexedSessions": 15,
           "removedSessions": 0,
-          "cacheHits": 1,
-          "newlyEmbeddedChunks": 112,
-          "embeddingRequestCount": 16,
+          "reusedVectors": 0,
+          "newlyEmbeddedChunks": 125,
+          "embeddingRequestCount": 15,
           "deletedChunks": 0,
           "failedSessions": []
         }
@@ -599,24 +589,24 @@
           "overlapTokens": 64
         },
         "candidateCount": 8,
-        "totalChunks": 116,
-        "indexLatencyMilliseconds": 1534.17183,
+        "totalChunks": 128,
+        "indexLatencyMilliseconds": 4838.8458900000005,
         "measurement": {
           "caseCount": 17,
           "candidatePoolRecall": 1,
-          "candidatePoolDuplicateRate": 0.007936507936507936,
+          "candidatePoolDuplicateRate": 0.014184397163120567,
           "queryLatencyMilliseconds": {
-            "median": 66.1834530000001,
-            "p95": 68.64248899999984
+            "median": 41.78915700000016,
+            "p95": 44.35391499999969
           },
           "queryLatencyByScope": {
             "project": {
-              "median": 64.37492999999995,
-              "p95": 66.1834530000001
+              "median": 41.51866500000051,
+              "p95": 42.80995999999959
             },
             "global": {
-              "median": 67.41458999999986,
-              "p95": 68.64248899999984
+              "median": 41.82779800000026,
+              "p95": 44.35391499999969
             }
           },
           "policyFailureCaseIds": [],
@@ -632,10 +622,10 @@
               "preLimitChannelsVerified": true,
               "preLimitChannelMeasurements": [],
               "candidatePoolRecalled": true,
-              "rawCandidateCount": 8,
-              "groupedCandidateCount": 8,
+              "rawCandidateCount": 13,
+              "groupedCandidateCount": 13,
               "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 67.47799800000007,
+              "queryLatencyMilliseconds": 37.180256000000554,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -662,10 +652,10 @@
               "preLimitChannelsVerified": true,
               "preLimitChannelMeasurements": [],
               "candidatePoolRecalled": true,
-              "rawCandidateCount": 10,
-              "groupedCandidateCount": 10,
-              "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 67.54295899999988,
+              "rawCandidateCount": 16,
+              "groupedCandidateCount": 15,
+              "candidatePoolDuplicateSlots": 1,
+              "queryLatencyMilliseconds": 42.81845599999997,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -695,7 +685,7 @@
               "rawCandidateCount": 3,
               "groupedCandidateCount": 3,
               "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 65.66491700000006,
+              "queryLatencyMilliseconds": 41.78915700000016,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -722,10 +712,10 @@
               "preLimitChannelsVerified": true,
               "preLimitChannelMeasurements": [],
               "candidatePoolRecalled": true,
-              "rawCandidateCount": 8,
-              "groupedCandidateCount": 8,
+              "rawCandidateCount": 4,
+              "groupedCandidateCount": 4,
               "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 66.70431599999984,
+              "queryLatencyMilliseconds": 42.79787800000031,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -738,7 +728,7 @@
                   "contributingEntriesVerified": true,
                   "branchesVerified": true,
                   "finalDuplicateSlots": 0,
-                  "finalResultSlots": 5
+                  "finalResultSlots": 4
                 }
               ]
             },
@@ -752,10 +742,10 @@
               "preLimitChannelsVerified": true,
               "preLimitChannelMeasurements": [],
               "candidatePoolRecalled": true,
-              "rawCandidateCount": 9,
-              "groupedCandidateCount": 9,
+              "rawCandidateCount": 8,
+              "groupedCandidateCount": 8,
               "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 67.41458999999986,
+              "queryLatencyMilliseconds": 41.7800500000003,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -785,7 +775,7 @@
               "rawCandidateCount": 8,
               "groupedCandidateCount": 8,
               "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 68.24645099999998,
+              "queryLatencyMilliseconds": 44.14822399999957,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -812,10 +802,10 @@
               "preLimitChannelsVerified": true,
               "preLimitChannelMeasurements": [],
               "candidatePoolRecalled": true,
-              "rawCandidateCount": 9,
-              "groupedCandidateCount": 9,
+              "rawCandidateCount": 12,
+              "groupedCandidateCount": 12,
               "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 67.03321799999958,
+              "queryLatencyMilliseconds": 42.313640000000305,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -845,7 +835,7 @@
               "rawCandidateCount": 8,
               "groupedCandidateCount": 8,
               "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 67.54438200000004,
+              "queryLatencyMilliseconds": 41.19375200000013,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -872,10 +862,10 @@
               "preLimitChannelsVerified": true,
               "preLimitChannelMeasurements": [],
               "candidatePoolRecalled": true,
-              "rawCandidateCount": 8,
-              "groupedCandidateCount": 8,
+              "rawCandidateCount": 9,
+              "groupedCandidateCount": 9,
               "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 68.64248899999984,
+              "queryLatencyMilliseconds": 44.35391499999969,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -902,10 +892,10 @@
               "preLimitChannelsVerified": true,
               "preLimitChannelMeasurements": [],
               "candidatePoolRecalled": true,
-              "rawCandidateCount": 8,
-              "groupedCandidateCount": 7,
+              "rawCandidateCount": 9,
+              "groupedCandidateCount": 8,
               "candidatePoolDuplicateSlots": 1,
-              "queryLatencyMilliseconds": 64.80375099999992,
+              "queryLatencyMilliseconds": 41.82779800000026,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -957,7 +947,7 @@
               "rawCandidateCount": 3,
               "groupedCandidateCount": 3,
               "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 63.444866000000275,
+              "queryLatencyMilliseconds": 41.02818500000012,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -987,7 +977,7 @@
               "rawCandidateCount": 9,
               "groupedCandidateCount": 9,
               "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 64.965643,
+              "queryLatencyMilliseconds": 42.297209000000294,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -1014,10 +1004,10 @@
               "preLimitChannelsVerified": true,
               "preLimitChannelMeasurements": [],
               "candidatePoolRecalled": true,
-              "rawCandidateCount": 9,
-              "groupedCandidateCount": 9,
+              "rawCandidateCount": 11,
+              "groupedCandidateCount": 11,
               "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 64.37492999999995,
+              "queryLatencyMilliseconds": 42.80995999999959,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -1047,7 +1037,7 @@
               "rawCandidateCount": 8,
               "groupedCandidateCount": 8,
               "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 61.688470999999936,
+              "queryLatencyMilliseconds": 40.615068000000065,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -1077,7 +1067,7 @@
               "rawCandidateCount": 7,
               "groupedCandidateCount": 7,
               "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 66.1834530000001,
+              "queryLatencyMilliseconds": 41.51866500000051,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -1107,7 +1097,7 @@
               "rawCandidateCount": 3,
               "groupedCandidateCount": 3,
               "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 65.32755799999995,
+              "queryLatencyMilliseconds": 41.647313000000395,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -1134,10 +1124,10 @@
               "preLimitChannelsVerified": true,
               "preLimitChannelMeasurements": [],
               "candidatePoolRecalled": true,
-              "rawCandidateCount": 8,
-              "groupedCandidateCount": 8,
+              "rawCandidateCount": 10,
+              "groupedCandidateCount": 10,
               "candidatePoolDuplicateSlots": 0,
-              "queryLatencyMilliseconds": 63.931093000000146,
+              "queryLatencyMilliseconds": 40.66828699999951,
               "finalCounts": [
                 {
                   "finalCount": 5,
@@ -1174,7 +1164,7 @@
               "contributingEntryFailureCaseIds": [],
               "branchFailureCaseIds": [],
               "finalDuplicateSlots": 0,
-              "finalResultSlots": 79
+              "finalResultSlots": 78
             }
           ]
         }
@@ -1190,10 +1180,10 @@
         },
         "candidateCount": 8,
         "finalCount": 5,
-        "totalChunks": 116,
-        "indexLatencyMilliseconds": 1534.17183,
+        "totalChunks": 128,
+        "indexLatencyMilliseconds": 4838.8458900000005,
         "candidatePoolRecall": 1,
-        "candidatePoolDuplicateRate": 0.007936507936507936,
+        "candidatePoolDuplicateRate": 0.014184397163120567,
         "finalRecall": 1,
         "contextUsefulness": 1,
         "sourceOccurrencePreservation": 1,
@@ -1203,17 +1193,17 @@
         "branchVerification": 1,
         "finalDuplicateRate": 0,
         "queryLatencyMilliseconds": {
-          "median": 66.1834530000001,
-          "p95": 68.64248899999984
+          "median": 41.78915700000016,
+          "p95": 44.35391499999969
         },
         "queryLatencyByScope": {
           "project": {
-            "median": 64.37492999999995,
-            "p95": 66.1834530000001
+            "median": 41.51866500000051,
+            "p95": 42.80995999999959
           },
           "global": {
-            "median": 67.41458999999986,
-            "p95": 68.64248899999984
+            "median": 41.82779800000026,
+            "p95": 44.35391499999969
           }
         },
         "policyFailureCaseIds": [],
@@ -1230,10 +1220,10 @@
           },
           "candidateCount": 8,
           "finalCount": 5,
-          "totalChunks": 116,
-          "indexLatencyMilliseconds": 1534.17183,
+          "totalChunks": 128,
+          "indexLatencyMilliseconds": 4838.8458900000005,
           "candidatePoolRecall": 1,
-          "candidatePoolDuplicateRate": 0.007936507936507936,
+          "candidatePoolDuplicateRate": 0.014184397163120567,
           "finalRecall": 1,
           "contextUsefulness": 1,
           "sourceOccurrencePreservation": 1,
@@ -1243,17 +1233,17 @@
           "branchVerification": 1,
           "finalDuplicateRate": 0,
           "queryLatencyMilliseconds": {
-            "median": 66.1834530000001,
-            "p95": 68.64248899999984
+            "median": 41.78915700000016,
+            "p95": 44.35391499999969
           },
           "queryLatencyByScope": {
             "project": {
-              "median": 64.37492999999995,
-              "p95": 66.1834530000001
+              "median": 41.51866500000051,
+              "p95": 42.80995999999959
             },
             "global": {
-              "median": 67.41458999999986,
-              "p95": 68.64248899999984
+              "median": 41.82779800000026,
+              "p95": 44.35391499999969
             }
           },
           "policyFailureCaseIds": [],
@@ -1267,8 +1257,7 @@
       "evaluationCases": 17,
       "indexRuns": 1,
       "executedSearchRequests": 20,
-      "rerankerRequests": 0,
-      "chunkEmbeddingRequests": 16,
+      "chunkEmbeddingRequests": 15,
       "maximumCandidatesPerSearch": 24,
       "repositoryIdentityResolutions": 5
     }

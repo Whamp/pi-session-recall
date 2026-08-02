@@ -1,28 +1,6 @@
 import { compareRecallDocumentIds } from './compare-recall-document-ids.js';
-import type { RecallSearchResult } from './fuse-recall-ranked-lists.js';
-import type { LocalRerankerClient } from './local-reranker-client.js';
+import type { RecallSearchResult } from './fuse-recall-search-candidates.js';
 import type { SessionConversationChunk } from './session-conversation-index.js';
-
-/** Version of Qwen reranking, duplicate suppression, and active-branch scoring policy. */
-export const RECALL_RERANK_POLICY_VERSION = 1;
-
-/** Version of QMD position-aware reranking after duplicate evidence grouping. */
-export const QUERY_PLANNED_RECALL_RERANK_POLICY_VERSION = 2;
-
-/** One fused-rank interval and its retrieval-versus-reranker score weights. */
-export interface RecallFusedRankBlendBand {
-  firstRank: number;
-  lastRank: number | null;
-  retrievalWeight: number;
-  rerankerWeight: number;
-}
-
-/** QMD fused-rank bands that progressively give the reranker more influence. */
-export const QUERY_PLANNED_RECALL_FUSED_RANK_BLEND: readonly RecallFusedRankBlendBand[] = [
-  { firstRank: 1, lastRank: 3, retrievalWeight: 0.75, rerankerWeight: 0.25 },
-  { firstRank: 4, lastRank: 10, retrievalWeight: 0.6, rerankerWeight: 0.4 },
-  { firstRank: 11, lastRank: null, retrievalWeight: 0.4, rerankerWeight: 0.6 },
-];
 
 /** Small additive prior used to favor active-branch evidence without filtering other branches. */
 export const RECALL_ACTIVE_BRANCH_PRIOR = 0.01;
@@ -36,15 +14,10 @@ export interface RecallNeighborContext {
   chunks: SessionConversationChunk[];
 }
 
-/** One hybrid recall candidate after deterministic fusion or optional local Qwen scoring. */
+/** One hybrid recall candidate after deterministic fusion and duplicate suppression. */
 export interface RankedRecallSearchResult extends RecallSearchResult {
-  rerankerScore: number | null;
   activeBranchPrior: number;
   rankingScore: number;
-  retrievalPositionRank?: number;
-  retrievalPositionScore?: number;
-  retrievalScoreWeight?: number;
-  rerankerScoreWeight?: number;
   duplicateOccurrences: RecallSearchResult[];
   neighborContext: RecallNeighborContext | null;
 }
@@ -52,18 +25,6 @@ export interface RankedRecallSearchResult extends RecallSearchResult {
 interface RecallCandidateGroup {
   representative: RecallSearchResult;
   duplicateOccurrences: RecallSearchResult[];
-}
-
-/** Inputs for reranking one bounded, already-fused recall candidate pool. */
-export interface RerankRecallSearchResultsOptions {
-  query: string;
-  candidates: readonly RecallSearchResult[];
-  rerankPoolLimit: number;
-  resultLimit: number;
-  reranker: LocalRerankerClient;
-  fetchConversationChunks: (ids: string[]) => Map<string, SessionConversationChunk>;
-  useQueryPlannedPositionBlend?: boolean;
-  signal?: AbortSignal;
 }
 
 function compareRecallCandidatePreference(
@@ -373,66 +334,18 @@ function getRecallCandidateGroupActivePrior(group: RecallCandidateGroup): number
     : 0;
 }
 
-interface RecallPositionAwareBlendEvidence {
-  retrievalPositionRank: number;
-  retrievalPositionScore: number;
-  retrievalScoreWeight: number;
-  rerankerScoreWeight: number;
-  blendedScore: number;
-}
-
-function createRecallPositionAwareBlendEvidence(
-  retrievalPositionRank: number,
-  rerankerScore: number,
-): RecallPositionAwareBlendEvidence {
-  const blendBand = QUERY_PLANNED_RECALL_FUSED_RANK_BLEND.find(
-    (band) =>
-      retrievalPositionRank >= band.firstRank &&
-      (band.lastRank === null || retrievalPositionRank <= band.lastRank),
-  );
-  if (!blendBand) {
-    throw new Error(
-      `Recall query-planned blend missing policy for fused rank ${retrievalPositionRank}`,
-    );
-  }
-  const retrievalPositionScore = 1 / retrievalPositionRank;
-  return {
-    retrievalPositionRank,
-    retrievalPositionScore,
-    retrievalScoreWeight: blendBand.retrievalWeight,
-    rerankerScoreWeight: blendBand.rerankerWeight,
-    blendedScore:
-      blendBand.retrievalWeight * retrievalPositionScore + blendBand.rerankerWeight * rerankerScore,
-  };
-}
-
-function createRankedRecallSearchResult(
-  group: RecallCandidateGroup,
-  rerankerScore: number | null,
-  positionAwareBlend?: RecallPositionAwareBlendEvidence,
-): RankedRecallSearchResult {
+function createRankedRecallSearchResult(group: RecallCandidateGroup): RankedRecallSearchResult {
   const activeBranchPrior = getRecallCandidateGroupActivePrior(group);
   return {
     ...group.representative,
-    rerankerScore,
     activeBranchPrior,
-    rankingScore:
-      (positionAwareBlend?.blendedScore ?? rerankerScore ?? group.representative.fusedScore) +
-      activeBranchPrior,
-    ...(positionAwareBlend
-      ? {
-          retrievalPositionRank: positionAwareBlend.retrievalPositionRank,
-          retrievalPositionScore: positionAwareBlend.retrievalPositionScore,
-          retrievalScoreWeight: positionAwareBlend.retrievalScoreWeight,
-          rerankerScoreWeight: positionAwareBlend.rerankerScoreWeight,
-        }
-      : {}),
+    rankingScore: group.representative.fusedScore + activeBranchPrior,
     duplicateOccurrences: group.duplicateOccurrences,
     neighborContext: null,
   };
 }
 
-/** Ranks fused recall candidates without Qwen while preserving duplicate and neighbor provenance. */
+/** Ranks fused recall candidates while preserving duplicate and neighbor provenance. */
 export function rankFusedRecallSearchResults(
   candidates: readonly RecallSearchResult[],
   resultLimit: number,
@@ -444,7 +357,7 @@ export function rankFusedRecallSearchResults(
   );
   const eligibleCandidates = candidates.filter(isEligibleHybridRecallCandidate);
   const rankedResults = createRecallCandidateGroups(eligibleCandidates)
-    .map((group) => createRankedRecallSearchResult(group, null))
+    .map(createRankedRecallSearchResult)
     .toSorted(
       (left, right) =>
         right.rankingScore - left.rankingScore ||
@@ -453,63 +366,4 @@ export function rankFusedRecallSearchResults(
     )
     .slice(0, resultLimit);
   return expandRankedRecallNeighbors(rankedResults, fetchConversationChunks);
-}
-
-/** Reranks original recall candidate text while retaining every hybrid component score. */
-export async function rerankRecallSearchResults(
-  options: RerankRecallSearchResultsOptions,
-): Promise<RankedRecallSearchResult[]> {
-  assertRecallRankingResultLimit(
-    options.resultLimit,
-    'Recall reranked result limit invalid: expected an integer from 1 to 200',
-  );
-  if (
-    !Number.isInteger(options.rerankPoolLimit) ||
-    options.rerankPoolLimit < 1 ||
-    options.rerankPoolLimit > 600
-  ) {
-    throw new Error('Recall rerank pool limit invalid: expected an integer from 1 to 600');
-  }
-  if (options.candidates.length === 0) {
-    return [];
-  }
-  const candidateGroups = createRecallCandidateGroups(options.candidates).slice(
-    0,
-    options.rerankPoolLimit,
-  );
-  const scores = await options.reranker.rerankDocuments(
-    options.query,
-    candidateGroups.map((group) => group.representative.content),
-    options.signal,
-  );
-  if (scores.length !== candidateGroups.length) {
-    throw new Error(
-      `Recall reranker score count mismatch: expected ${candidateGroups.length}, received ${scores.length}`,
-    );
-  }
-  const rerankedResults = candidateGroups
-    .map((group, index) => {
-      const rerankerScore = scores[index];
-      if (rerankerScore === undefined || !Number.isFinite(rerankerScore)) {
-        throw new Error(
-          `Recall reranker score invalid for candidate index ${index}: expected finite number`,
-        );
-      }
-      return createRankedRecallSearchResult(
-        group,
-        rerankerScore,
-        options.useQueryPlannedPositionBlend
-          ? createRecallPositionAwareBlendEvidence(index + 1, rerankerScore)
-          : undefined,
-      );
-    })
-    .toSorted(
-      (left, right) =>
-        right.rankingScore - left.rankingScore ||
-        (right.rerankerScore ?? 0) - (left.rerankerScore ?? 0) ||
-        right.fusedScore - left.fusedScore ||
-        compareRecallDocumentIds(left.id, right.id),
-    )
-    .slice(0, options.resultLimit);
-  return expandRankedRecallNeighbors(rerankedResults, options.fetchConversationChunks);
 }

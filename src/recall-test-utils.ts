@@ -1,10 +1,7 @@
 import { RecallEvidenceRelation } from './enums.js';
-import type { RecallSearchResult } from './fuse-recall-ranked-lists.js';
+import type { RecallSearchResult } from './fuse-recall-search-candidates.js';
 import type { RecallConversationSearchResult } from './recall-conversation-service.js';
-import {
-  SESSION_CONVERSATION_SCHEMA_VERSION,
-  type SessionConversationChunk,
-} from './session-conversation-index.js';
+import type { SessionConversationChunk } from './session-conversation-index.js';
 
 /** Test-only overrides for one complete recall evidence document fixture. */
 export interface TestSessionConversationChunkOptions extends Partial<SessionConversationChunk> {
@@ -17,7 +14,7 @@ export function createTestSessionConversationChunk(
 ): SessionConversationChunk {
   const content = options.content ?? `content ${options.id}`;
   return {
-    schemaVersion: SESSION_CONVERSATION_SCHEMA_VERSION,
+    schemaVersion: 8,
     documentKind: 'conversation',
     summaryKind: null,
     evidenceKind: 'conversation',
@@ -26,7 +23,6 @@ export function createTestSessionConversationChunk(
     checksum: `checksum-${options.id}`,
     sessionId: { value: `session-${options.id}` },
     sessionPath: `/sessions/${options.id}.jsonl`,
-    physicalSessionProjectionId: `physical-${options.id}`,
     parentSessionPath: null,
     cwd: '/project',
     projectPath: '/project',
@@ -82,21 +78,19 @@ export function createTestRecallSearchResult(
     dense: { rank: 1, cosineDistance: 0.1 },
     lexical: null,
     identifier: null,
-    rankedListEvidence: [],
     fusedScore: 0.02,
     ...options,
   };
 }
 
-/** Builds one reranked recall-result fixture with no duplicates or neighbor expansion. */
+/** Builds one ranked recall-result fixture with no duplicates or neighbor expansion. */
 export function createTestRankedRecallSearchResult(
   options: TestSessionConversationChunkOptions & Partial<RecallConversationSearchResult>,
 ): RecallConversationSearchResult {
   return {
     ...createTestRecallSearchResult(options),
-    rerankerScore: 0.9,
     activeBranchPrior: 0,
-    rankingScore: 0.9,
+    rankingScore: 0.02,
     duplicateOccurrences: [],
     neighborContext: null,
     evidenceRelation: RecallEvidenceRelation.UNRESTRICTED_GLOBAL,

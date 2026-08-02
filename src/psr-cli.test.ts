@@ -122,9 +122,109 @@ void test('psr index keeps progress on stderr and the completed summary on stdou
   assert.match(fixture.progressOutput.join(''), /Preparing/i);
   assert.match(fixture.progressOutput.join(''), /Discovering physical session files/i);
   assert.doesNotMatch(fixture.output.join(''), /Preparing|Discovering/iu);
-  assert.match(fixture.output.join(''), /Indexed 2 of 3 sessions/);
-  assert.match(fixture.output.join(''), /7 searchable documents/);
+  assert.match(fixture.output.join(''), /Sessions: 2 indexed of 3 scanned/iu);
+  assert.match(fixture.output.join(''), /Searchable documents: 7/iu);
   assert.doesNotMatch(fixture.progressOutput.join(''), /7 searchable documents/iu);
+});
+
+void test('psr index writes a readable multiline summary with elapsed time', async () => {
+  const sessionPath = '/sessions/damaged.jsonl';
+  const fixture = createPsrCliFixture([{ kind: 'completed' }], {
+    monotonicTimes: [0, 65_000],
+    failedSessions: [{ sessionPath, error: 'Session graph invalid: missing parent' }],
+  });
+
+  const exitCode = await runPsrCli(['index'], fixture.dependencies);
+
+  assert.equal(exitCode, 1);
+  assert.equal(
+    fixture.output.join(''),
+    [
+      'Summary',
+      '  Elapsed: 1m 05s',
+      '  Sessions: 2 indexed of 3 scanned; 1 removed',
+      '  Documents: 5 embedded; 4 vectors reused; 2 deleted',
+      '  Searchable documents: 7',
+      '  Failed sessions: 1',
+      '',
+      'Failures',
+      `  ${sessionPath}`,
+      '    Session graph invalid: missing parent',
+      '',
+    ].join('\n'),
+  );
+});
+
+void test('psr index renders concise human progress with elapsed time and a rolling estimate', async () => {
+  const sessionPath = '/sessions/a-very-long-physical-session-file-name.jsonl';
+  const fixture = createPsrCliFixture(
+    [
+      { kind: 'indexing-changed-physical-session-files' },
+      {
+        kind: 'indexing-maintenance-workset',
+        completedFiles: 1,
+        totalFiles: 4,
+        sessionPath,
+        indexedSessions: 1,
+        newlyEmbeddedDocuments: 1_234,
+        reusedVectors: 56_789,
+        deletedDocuments: 1,
+        failedSessions: 0,
+      },
+      { kind: 'completed' },
+    ],
+    { monotonicTimes: [0, 1_000, 10_000, 65_000] },
+  );
+
+  await runPsrCli(['index'], fixture.dependencies);
+
+  const progress = fixture.progressOutput.join('');
+  assert.match(progress, /Recall index maintenance/iu);
+  assert.match(progress, /1\/4 files/iu);
+  assert.match(progress, /10s elapsed/iu);
+  assert.match(progress, /about 27s remaining/iu);
+  assert.match(progress, /1,234 embedded/iu);
+  assert.match(progress, /56,789 reused/iu);
+  assert.match(progress, /Completed in 1m 05s/iu);
+  assert.doesNotMatch(progress, new RegExp(sessionPath, 'u'));
+});
+
+void test('psr index waits for a healthy completed file before estimating remaining time', async () => {
+  const fixture = createPsrCliFixture(
+    [
+      { kind: 'indexing-changed-physical-session-files' },
+      { kind: 'physical-session-file-failed', sessionPath: '/sessions/damaged.jsonl' },
+      {
+        kind: 'indexing-maintenance-workset',
+        completedFiles: 1,
+        totalFiles: 4,
+        sessionPath: '/sessions/damaged.jsonl',
+        indexedSessions: 0,
+        newlyEmbeddedDocuments: 0,
+        reusedVectors: 0,
+        deletedDocuments: 0,
+        failedSessions: 1,
+      },
+      {
+        kind: 'indexing-maintenance-workset',
+        completedFiles: 2,
+        totalFiles: 4,
+        sessionPath: '/sessions/healthy.jsonl',
+        indexedSessions: 1,
+        newlyEmbeddedDocuments: 3,
+        reusedVectors: 5,
+        deletedDocuments: 0,
+        failedSessions: 1,
+      },
+    ],
+    { monotonicTimes: [0, 0, 100, 1_000, 11_000] },
+  );
+
+  await runPsrCli(['index'], fixture.dependencies);
+
+  const progressLines = fixture.progressOutput.filter((line) => /^\s+\d+\/\d+ files/u.test(line));
+  assert.match(progressLines[0] ?? '', /estimating time remaining/iu);
+  assert.match(progressLines[1] ?? '', /about 22s remaining/iu);
 });
 
 void test('psr index prints planning and indexing phase transitions in event order', async () => {
@@ -145,8 +245,14 @@ void test('psr index prints planning and indexing phase transitions in event ord
 
   assert.deepEqual(fixture.progressOutput.slice(1, 4), [
     'Planning maintenance workset...\n',
-    'Maintenance workset: 1 physical session files discovered; 1 new, 0 changed, 0 missing.\n',
-    'Indexing changed physical session files...\n',
+    [
+      '',
+      'Found 1 physical session file.',
+      'Maintenance workset: 1 file (1 new, 0 changed, 0 missing).',
+      'Estimated time: calculating after the first file completes.',
+      '',
+    ].join('\n'),
+    '\nIndexing maintenance workset...\n',
   ]);
 });
 
@@ -250,9 +356,9 @@ void test('psr index throttles routine updates but emits phase changes and warni
 
   await runPsrCli(['index'], fixture.dependencies);
 
-  assert.equal(fixture.progressOutput.filter((line) => line.startsWith('Indexing ')).length, 3);
+  assert.equal(fixture.progressOutput.filter((line) => /^\s+\d+\/\d+ files/u.test(line)).length, 3);
   assert.match(fixture.progressOutput.join(''), new RegExp(failedPath, 'u'));
-  assert.match(fixture.progressOutput.join(''), /Optimizing recall collection/iu);
+  assert.match(fixture.progressOutput.join(''), /Optimizing searchable collection/iu);
 });
 
 void test('psr index prints terminal file progress before the throttle interval elapses', async () => {
@@ -288,8 +394,8 @@ void test('psr index prints terminal file progress before the throttle interval 
 
   assert.deepEqual(
     fixture.progressOutput
-      .filter((line) => line.startsWith('Indexing '))
-      .map((line) => line.match(/^Indexing (\d+\/\d+) files/u)?.[1]),
+      .filter((line) => /^\s+\d+\/\d+ files/u.test(line))
+      .map((line) => line.match(/^\s+(\d+\/\d+) files/u)?.[1]),
     ['0/1', '1/1'],
   );
 });
@@ -306,7 +412,8 @@ void test('psr index warns immediately while retaining complete failure details 
   assert.equal(exitCode, 1);
   assert.match(fixture.progressOutput.join(''), new RegExp(sessionPath, 'u'));
   assert.doesNotMatch(fixture.progressOutput.join(''), new RegExp(error, 'u'));
-  assert.match(fixture.output.join(''), new RegExp(`Failed: ${sessionPath}: ${error}`, 'u'));
+  assert.match(fixture.output.join(''), new RegExp(sessionPath, 'u'));
+  assert.match(fixture.output.join(''), new RegExp(error, 'u'));
 });
 
 void test('psr index lets fatal service errors reach the standalone process handler', async () => {
@@ -316,6 +423,26 @@ void test('psr index lets fatal service errors reach the standalone process hand
 
   assert.equal(fixture.output.join(''), '');
   assert.match(fixture.progressOutput.join(''), /Preparing recall index/iu);
+});
+
+void test('psr index --compact preserves the former one-line stdout summary', async () => {
+  const sessionPath = '/sessions/damaged.jsonl';
+  const error = 'Session graph invalid: missing parent';
+  const fixture = createPsrCliFixture([], {
+    failedSessions: [{ sessionPath, error }],
+  });
+
+  const exitCode = await runPsrCli(['index', '--compact'], fixture.dependencies);
+
+  assert.equal(exitCode, 1);
+  assert.equal(
+    fixture.output.join(''),
+    [
+      'Indexed 2 of 3 sessions · removed 1 · embedded 5 · reused 4 vectors · deleted 2 documents · 7 searchable documents · 1 failed sessions',
+      `Failed: ${sessionPath}: ${error}`,
+      '',
+    ].join('\n'),
+  );
 });
 
 void test('psr index --rebuild explicitly replaces the index', async () => {

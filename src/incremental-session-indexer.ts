@@ -5,6 +5,7 @@ import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 
 import type { RecallChunkPolicy } from './recall-chunk-policy.js';
+import type { RecallIndexProgressEvent } from './recall-index-progress.js';
 import type { RecallEmbeddingProvider } from './recall-inference-capabilities.js';
 import { SESSION_IMPORT_POLICY_VERSION } from './import-session-jsonl.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
@@ -44,13 +45,6 @@ interface ConversationIndexState {
   sessions: Record<string, IndexedSessionState>;
 }
 
-/** Progress from scanning physical session files during explicit `psr` maintenance. */
-export interface ConversationIndexProgress {
-  scannedSessions: number;
-  totalSessions: number;
-  sessionPath: string;
-}
-
 /** Counts and source failures from one explicit incremental indexing pass. */
 export interface ConversationIndexSummary {
   scannedSessions: number;
@@ -73,7 +67,21 @@ export interface IncrementalSessionIndexerOptions {
   chunkPolicy: RecallChunkPolicy;
   resolveProjectIdentity?: (sessionOrigin: string) => Promise<ResolvedProjectIdentity | null>;
   signal?: AbortSignal;
-  onProgress?: (progress: ConversationIndexProgress) => void;
+  rebuild?: boolean;
+  onProgress?: (event: RecallIndexProgressEvent) => void;
+}
+
+interface PlannedPhysicalSessionFile {
+  sessionPath: string;
+  size: number;
+  mtimeMs: number;
+  change: 'new' | 'changed';
+}
+
+interface MaintenanceWorksetPlan {
+  discoveredFiles: number;
+  filesToIndex: PlannedPhysicalSessionFile[];
+  missingFiles: string[];
 }
 
 async function listRecallSessionFiles(directory: string): Promise<string[]> {
@@ -147,6 +155,26 @@ function createConversationIndexSummary(): ConversationIndexSummary {
   };
 }
 
+function emitMaintenanceWorksetProgress(
+  options: IncrementalSessionIndexerOptions,
+  summary: ConversationIndexSummary,
+  completedFiles: number,
+  totalFiles: number,
+  sessionPath: string,
+): void {
+  options.onProgress?.({
+    kind: 'indexing-maintenance-workset',
+    completedFiles,
+    totalFiles,
+    sessionPath,
+    indexedSessions: summary.indexedSessions,
+    newlyEmbeddedDocuments: summary.newlyEmbeddedChunks,
+    reusedVectors: summary.reusedVectors,
+    deletedDocuments: summary.deletedChunks,
+    failedSessions: summary.failedSessions.length,
+  });
+}
+
 function removeIndexedSession(
   state: ConversationIndexState,
   sessionPath: string,
@@ -207,6 +235,7 @@ async function prepareChangedRecallRows(
   store: ConversationChunkStore,
   embeddingProvider: RecallEmbeddingProvider,
   summary: ConversationIndexSummary,
+  onBatchPrepared: () => void,
   signal?: AbortSignal,
 ): Promise<IndexedSessionConversationChunk[]> {
   const changedRows: IndexedSessionConversationChunk[] = [];
@@ -257,6 +286,7 @@ async function prepareChangedRecallRows(
       }
       changedRows.push({ ...chunk, isDenseSearchable: true, embedding });
     }
+    onBatchPrepared();
   }
   return changedRows;
 }
@@ -264,15 +294,13 @@ async function prepareChangedRecallRows(
 async function indexChangedRecallSessionFile(
   options: IncrementalSessionIndexerOptions,
   state: ConversationIndexState,
-  sessionPath: string,
+  plannedFile: PlannedPhysicalSessionFile,
   summary: ConversationIndexSummary,
   resolveSessionProjectIdentity: (sessionOrigin: string) => Promise<ResolvedProjectIdentity | null>,
+  onBatchPrepared: () => void,
 ): Promise<boolean> {
+  const { sessionPath } = plannedFile;
   const previous = state.sessions[sessionPath];
-  const fileStats = await stat(sessionPath);
-  if (previous && previous.size === fileStats.size && previous.mtimeMs === fileStats.mtimeMs) {
-    return false;
-  }
 
   let chunks: SessionConversationChunk[];
   try {
@@ -285,6 +313,7 @@ async function indexChangedRecallSessionFile(
       sessionPath,
       error: error instanceof Error ? error.message : String(error),
     });
+    options.onProgress?.({ kind: 'physical-session-file-failed', sessionPath });
     if (previous) {
       removeIndexedSession(state, sessionPath, options.store, summary);
       return true;
@@ -304,6 +333,7 @@ async function indexChangedRecallSessionFile(
     options.store,
     options.embeddingProvider,
     summary,
+    onBatchPrepared,
     options.signal,
   );
 
@@ -313,28 +343,81 @@ async function indexChangedRecallSessionFile(
   }
   summary.deletedChunks += removedIds.length;
   state.sessions[sessionPath] = {
-    size: fileStats.size,
-    mtimeMs: fileStats.mtimeMs,
+    size: plannedFile.size,
+    mtimeMs: plannedFile.mtimeMs,
     chunks: attributedChunks.map(({ id }) => ({ id })),
   };
   summary.indexedSessions += 1;
   return true;
 }
 
-/** Incrementally updates one zvec collection from changed, new, and removed session files. */
+async function planMaintenanceWorkset(
+  sessionFiles: readonly string[],
+  state: ConversationIndexState,
+): Promise<MaintenanceWorksetPlan> {
+  const filesToIndex: PlannedPhysicalSessionFile[] = [];
+  for (const sessionPath of sessionFiles) {
+    const fileStats = await stat(sessionPath);
+    const previous = state.sessions[sessionPath];
+    if (!previous) {
+      filesToIndex.push({
+        sessionPath,
+        size: fileStats.size,
+        mtimeMs: fileStats.mtimeMs,
+        change: 'new',
+      });
+    } else if (previous.size !== fileStats.size || previous.mtimeMs !== fileStats.mtimeMs) {
+      filesToIndex.push({
+        sessionPath,
+        size: fileStats.size,
+        mtimeMs: fileStats.mtimeMs,
+        change: 'changed',
+      });
+    }
+  }
+  const liveSessionPaths = new Set(sessionFiles);
+  return {
+    discoveredFiles: sessionFiles.length,
+    filesToIndex,
+    missingFiles: Object.keys(state.sessions)
+      .filter((sessionPath) => !liveSessionPaths.has(sessionPath))
+      .sort(),
+  };
+}
+
+/** Incrementally updates one zvec collection from changed, new, and missing physical session files. */
 export async function indexChangedConversationSessions(
   options: IncrementalSessionIndexerOptions,
 ): Promise<ConversationIndexSummary> {
   const state = await readConversationIndexState(options.statePath);
+  options.onProgress?.({ kind: 'discovering-physical-session-files' });
   const sessionFiles = await listRecallSessionFiles(options.sessionsDirectory);
-  const liveSessionPaths = new Set(sessionFiles);
+  options.onProgress?.({ kind: 'planning-maintenance-workset' });
+  const workset = await planMaintenanceWorkset(sessionFiles, state);
   const summary = createConversationIndexSummary();
+  summary.scannedSessions = workset.discoveredFiles;
+  options.onProgress?.({
+    kind: 'maintenance-workset-planned',
+    discoveredFiles: workset.discoveredFiles,
+    newFiles: workset.filesToIndex.filter((file) => file.change === 'new').length,
+    changedFiles: workset.filesToIndex.filter((file) => file.change === 'changed').length,
+    missingFiles: workset.missingFiles.length,
+    rebuild: options.rebuild ?? false,
+  });
 
-  for (const stalePath of Object.keys(state.sessions).filter(
-    (path) => !liveSessionPaths.has(path),
-  )) {
+  const totalWorksetFiles = workset.missingFiles.length + workset.filesToIndex.length;
+  let completedWorksetFiles = 0;
+  for (const missingPath of workset.missingFiles) {
     throwIfIndexingAborted(options.signal);
-    removeIndexedSession(state, stalePath, options.store, summary);
+    removeIndexedSession(state, missingPath, options.store, summary);
+    completedWorksetFiles += 1;
+    emitMaintenanceWorksetProgress(
+      options,
+      summary,
+      completedWorksetFiles,
+      totalWorksetFiles,
+      missingPath,
+    );
   }
   if (summary.removedSessions > 0) {
     await writeConversationIndexState(options.statePath, state);
@@ -344,20 +427,34 @@ export async function indexChangedConversationSessions(
     options.resolveProjectIdentity,
   );
   let sessionsSinceCheckpoint = 0;
-  for (const sessionPath of sessionFiles) {
+  if (workset.filesToIndex.length > 0) {
+    options.onProgress?.({ kind: 'indexing-changed-physical-session-files' });
+  }
+  for (const plannedFile of workset.filesToIndex) {
     throwIfIndexingAborted(options.signal);
-    summary.scannedSessions += 1;
-    options.onProgress?.({
-      scannedSessions: summary.scannedSessions,
-      totalSessions: sessionFiles.length,
-      sessionPath,
-    });
     const stateChanged = await indexChangedRecallSessionFile(
       options,
       state,
-      sessionPath,
+      plannedFile,
       summary,
       resolveSessionProjectIdentity,
+      () => {
+        emitMaintenanceWorksetProgress(
+          options,
+          summary,
+          completedWorksetFiles,
+          totalWorksetFiles,
+          plannedFile.sessionPath,
+        );
+      },
+    );
+    completedWorksetFiles += 1;
+    emitMaintenanceWorksetProgress(
+      options,
+      summary,
+      completedWorksetFiles,
+      totalWorksetFiles,
+      plannedFile.sessionPath,
     );
     if (stateChanged) {
       sessionsSinceCheckpoint += 1;

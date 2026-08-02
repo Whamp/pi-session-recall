@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import { indexChangedConversationSessions } from './incremental-session-indexer.js';
+import type { RecallIndexProgressEvent } from './recall-index-progress.js';
 import type { RecallEmbeddingProvider } from './recall-inference-capabilities.js';
 import type { ConversationTextTokenizer } from './session-conversation-index.js';
 import type {
@@ -46,6 +47,17 @@ class MemoryConversationStore implements ConversationChunkStore {
   }
 }
 
+type IndexingMaintenanceWorksetEvent = Extract<
+  RecallIndexProgressEvent,
+  { kind: 'indexing-maintenance-workset' }
+>;
+
+function isIndexingMaintenanceWorksetEvent(
+  event: RecallIndexProgressEvent,
+): event is IndexingMaintenanceWorksetEvent {
+  return event.kind === 'indexing-maintenance-workset';
+}
+
 function sessionLines(entries: object[]): string {
   return `${entries.map((entry) => JSON.stringify(entry)).join('\n')}\n`;
 }
@@ -68,6 +80,26 @@ function createRecordingEmbeddingProvider(batches: string[][]): RecallEmbeddingP
   };
 }
 
+async function writeSimplePhysicalSessionFile(
+  sessionPath: string,
+  sessionId: string,
+  content: string,
+): Promise<void> {
+  await writeFile(
+    sessionPath,
+    sessionLines([
+      { type: 'session', version: 3, id: sessionId, timestamp: '2026-01-01', cwd: '/p' },
+      {
+        type: 'message',
+        id: `user-${sessionId}`,
+        parentId: null,
+        timestamp: '2026-01-01',
+        message: { role: 'user', content },
+      },
+    ]),
+  );
+}
+
 function createIndexerOptions(options: {
   sessionsDirectory: string;
   statePath: string;
@@ -80,6 +112,114 @@ function createIndexerOptions(options: {
     chunkPolicy: { maxTokens: 512, overlapTokens: 64 },
   };
 }
+
+void test('manual index maintenance announces planning and indexing before their work begins', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-indexer-phase-order-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const sessionsDirectory = join(root, 'sessions');
+  const statePath = join(root, 'index-state.json');
+  const sessionPath = join(sessionsDirectory, 'one.jsonl');
+  await mkdir(sessionsDirectory, { recursive: true });
+  await writeSimplePhysicalSessionFile(sessionPath, 'one', 'phase order evidence');
+  const operationLog: string[] = [];
+  const embeddingProvider = createRecordingEmbeddingProvider([]);
+
+  await indexChangedConversationSessions({
+    ...createIndexerOptions({
+      sessionsDirectory,
+      statePath,
+      store: new MemoryConversationStore(),
+      embeddingProvider: {
+        ...embeddingProvider,
+        async embedDocuments(documents, signal) {
+          operationLog.push('embed documents');
+          return embeddingProvider.embedDocuments(documents, signal);
+        },
+      },
+    }),
+    onProgress(event) {
+      operationLog.push(`progress: ${event.kind}`);
+    },
+  });
+
+  assert.deepEqual(operationLog.slice(0, 5), [
+    'progress: discovering-physical-session-files',
+    'progress: planning-maintenance-workset',
+    'progress: maintenance-workset-planned',
+    'progress: indexing-changed-physical-session-files',
+    'embed documents',
+  ]);
+});
+
+void test('manual index maintenance plans exact new, changed, unchanged, and missing files', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-indexer-workset-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const sessionsDirectory = join(root, 'sessions');
+  const statePath = join(root, 'index-state.json');
+  await mkdir(sessionsDirectory, { recursive: true });
+  const changedPath = join(sessionsDirectory, 'changed.jsonl');
+  const missingPath = join(sessionsDirectory, 'missing.jsonl');
+  const unchangedPath = join(sessionsDirectory, 'unchanged.jsonl');
+  await writeSimplePhysicalSessionFile(changedPath, 'changed', 'original changed evidence');
+  await writeSimplePhysicalSessionFile(missingPath, 'missing', 'soon missing evidence');
+  await writeSimplePhysicalSessionFile(unchangedPath, 'unchanged', 'stable evidence');
+  const store = new MemoryConversationStore();
+  const options = createIndexerOptions({
+    sessionsDirectory,
+    statePath,
+    store,
+    embeddingProvider: createRecordingEmbeddingProvider([]),
+  });
+  await indexChangedConversationSessions(options);
+
+  await writeSimplePhysicalSessionFile(
+    changedPath,
+    'changed',
+    'updated and longer changed evidence',
+  );
+  await rm(missingPath);
+  await writeSimplePhysicalSessionFile(join(sessionsDirectory, 'new.jsonl'), 'new', 'new evidence');
+  const events: RecallIndexProgressEvent[] = [];
+
+  const summary = await indexChangedConversationSessions({
+    ...options,
+    onProgress(event) {
+      events.push(event);
+    },
+  });
+
+  assert.equal(summary.scannedSessions, 3);
+  assert.deepEqual(
+    events.find((event) => event.kind === 'maintenance-workset-planned'),
+    {
+      kind: 'maintenance-workset-planned',
+      discoveredFiles: 3,
+      newFiles: 1,
+      changedFiles: 1,
+      missingFiles: 1,
+      rebuild: false,
+    },
+  );
+
+  const unchangedEvents: RecallIndexProgressEvent[] = [];
+  await indexChangedConversationSessions({
+    ...options,
+    onProgress(event) {
+      unchangedEvents.push(event);
+    },
+  });
+  assert.deepEqual(
+    unchangedEvents.find((event) => event.kind === 'maintenance-workset-planned'),
+    {
+      kind: 'maintenance-workset-planned',
+      discoveredFiles: 3,
+      newFiles: 0,
+      changedFiles: 0,
+      missingFiles: 0,
+      rebuild: false,
+    },
+  );
+});
 
 void test('manual incremental indexing adds, reuses, changes, and deletes zvec rows', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'recall-indexer-'));
@@ -145,26 +285,16 @@ void test('manual incremental indexing adds, reuses, changes, and deletes zvec r
   assert.equal(store.chunks.size, 0);
 });
 
-void test('manual incremental indexing drops stale rows when a changed session becomes invalid', async (t) => {
+void test('manual index maintenance reports cumulative progress and continues after a damaged file', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'recall-indexer-invalid-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const sessionsDirectory = join(root, 'sessions');
   const statePath = join(root, 'index-state.json');
-  const sessionPath = join(sessionsDirectory, 'one.jsonl');
+  const damagedPath = join(sessionsDirectory, 'a-damaged.jsonl');
+  const healthyPath = join(sessionsDirectory, 'z-healthy.jsonl');
   await mkdir(sessionsDirectory, { recursive: true });
-  await writeFile(
-    sessionPath,
-    sessionLines([
-      { type: 'session', version: 3, id: 'session-1', timestamp: '2026-01-01', cwd: '/p' },
-      {
-        type: 'message',
-        id: 'user-1',
-        parentId: null,
-        timestamp: '2026-01-01',
-        message: { role: 'user', content: 'valid source' },
-      },
-    ]),
-  );
+  await writeSimplePhysicalSessionFile(damagedPath, 'damaged', 'initial damaged evidence');
+  await writeSimplePhysicalSessionFile(healthyPath, 'healthy', 'initial healthy evidence');
   const store = new MemoryConversationStore();
   const options = createIndexerOptions({
     sessionsDirectory,
@@ -173,13 +303,118 @@ void test('manual incremental indexing drops stale rows when a changed session b
     embeddingProvider: createRecordingEmbeddingProvider([]),
   });
   await indexChangedConversationSessions(options);
-  assert.equal(store.chunks.size, 1);
 
-  await writeFile(sessionPath, '{"type":"session"}\n');
-  const result = await indexChangedConversationSessions(options);
+  await writeFile(damagedPath, '{"type":"session"}\n');
+  await writeSimplePhysicalSessionFile(
+    healthyPath,
+    'healthy',
+    'updated healthy evidence with more words',
+  );
+  const events: RecallIndexProgressEvent[] = [];
+  const result = await indexChangedConversationSessions({
+    ...options,
+    onProgress(event) {
+      events.push(event);
+    },
+  });
 
+  const warningIndex = events.findIndex((event) => event.kind === 'physical-session-file-failed');
+  const laterHealthyProgressIndex = events.findIndex(
+    (event) =>
+      event.kind === 'indexing-maintenance-workset' &&
+      event.sessionPath === healthyPath &&
+      event.completedFiles === 2,
+  );
+  assert.ok(warningIndex >= 0);
+  assert.ok(laterHealthyProgressIndex > warningIndex);
+  assert.deepEqual(events[warningIndex], {
+    kind: 'physical-session-file-failed',
+    sessionPath: damagedPath,
+  });
   assert.equal(result.failedSessions.length, 1);
-  assert.equal(store.chunks.size, 0);
+  assert.match(result.failedSessions[0]?.error ?? '', /session/iu);
+  assert.ok([...store.chunks.values()].every((chunk) => chunk.sessionPath !== damagedPath));
+  assert.ok([...store.chunks.values()].some((chunk) => chunk.sessionPath === healthyPath));
+
+  const progressEvents = events.filter(isIndexingMaintenanceWorksetEvent);
+  for (let index = 1; index < progressEvents.length; index += 1) {
+    const previous = progressEvents[index - 1];
+    const current = progressEvents[index];
+    assert.ok(previous);
+    assert.ok(current);
+    assert.ok(current.completedFiles >= previous.completedFiles);
+    assert.ok(current.indexedSessions >= previous.indexedSessions);
+    assert.ok(current.newlyEmbeddedDocuments >= previous.newlyEmbeddedDocuments);
+    assert.ok(current.reusedVectors >= previous.reusedVectors);
+    assert.ok(current.deletedDocuments >= previous.deletedDocuments);
+    assert.ok(current.failedSessions >= previous.failedSessions);
+  }
+  const finalProgress = progressEvents.at(-1);
+  assert.ok(finalProgress);
+  assert.equal(finalProgress.completedFiles, finalProgress.totalFiles);
+  assert.equal(finalProgress.indexedSessions, result.indexedSessions);
+  assert.equal(finalProgress.newlyEmbeddedDocuments, result.newlyEmbeddedChunks);
+  assert.equal(finalProgress.reusedVectors, result.reusedVectors);
+  assert.equal(finalProgress.deletedDocuments, result.deletedChunks);
+  assert.equal(finalProgress.failedSessions, result.failedSessions.length);
+});
+
+void test('manual index maintenance reports multiple batches within one large physical session file', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-indexer-batches-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const sessionsDirectory = join(root, 'sessions');
+  const statePath = join(root, 'index-state.json');
+  const sessionPath = join(sessionsDirectory, 'large.jsonl');
+  await mkdir(sessionsDirectory, { recursive: true });
+  const messages = Array.from({ length: 140 }, (_, index) => ({
+    type: 'message',
+    id: `message-${index}`,
+    parentId: index === 0 ? null : `message-${index - 1}`,
+    timestamp: '2026-01-01',
+    message: {
+      role: index % 2 === 0 ? 'user' : 'assistant',
+      content: `dense evidence message ${index}`,
+    },
+  }));
+  await writeFile(
+    sessionPath,
+    sessionLines([
+      { type: 'session', version: 3, id: 'large', timestamp: '2026-01-01', cwd: '/p' },
+      ...messages,
+    ]),
+  );
+  const events: RecallIndexProgressEvent[] = [];
+
+  const result = await indexChangedConversationSessions({
+    ...createIndexerOptions({
+      sessionsDirectory,
+      statePath,
+      store: new MemoryConversationStore(),
+      embeddingProvider: createRecordingEmbeddingProvider([]),
+    }),
+    onProgress(event) {
+      events.push(event);
+    },
+  });
+
+  const inFileProgress = events
+    .filter(isIndexingMaintenanceWorksetEvent)
+    .filter((event) => event.sessionPath === sessionPath && event.completedFiles === 0);
+  assert.ok(inFileProgress.length >= 2);
+  const firstBatchProgress = inFileProgress[0];
+  const lastBatchProgress = inFileProgress.at(-1);
+  assert.ok(firstBatchProgress);
+  assert.ok(lastBatchProgress);
+  assert.ok(lastBatchProgress.newlyEmbeddedDocuments > firstBatchProgress.newlyEmbeddedDocuments);
+  assert.equal(result.embeddingRequestCount, inFileProgress.length);
+  assert.ok(
+    events.some(
+      (event) =>
+        event.kind === 'indexing-maintenance-workset' &&
+        event.sessionPath === sessionPath &&
+        event.completedFiles === 1,
+    ),
+  );
 });
 
 void test('manual incremental indexing keeps lexical-only tool evidence away from Octen', async (t) => {

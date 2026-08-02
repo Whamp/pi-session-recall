@@ -1,4 +1,7 @@
+import { performance } from 'node:perf_hooks';
+
 import { loadRecallConversationConfig } from './recall-conversation-config.js';
+import type { RecallIndexProgressEvent } from './recall-index-progress.js';
 import {
   createRecallConversationService,
   type RecallConversationConfig,
@@ -12,6 +15,8 @@ export interface PsrCliDependencies {
   loadConfig: () => Promise<RecallConversationConfig>;
   createService: (config: RecallConversationConfig) => RecallConversationService;
   writeOutput: (text: string) => void;
+  writeProgress: (text: string) => void;
+  getMonotonicTimeMs: () => number;
 }
 
 const DEFAULT_PSR_CLI_DEPENDENCIES: PsrCliDependencies = {
@@ -20,7 +25,44 @@ const DEFAULT_PSR_CLI_DEPENDENCIES: PsrCliDependencies = {
   writeOutput(text) {
     process.stdout.write(text);
   },
+  writeProgress(text) {
+    process.stderr.write(text);
+  },
+  getMonotonicTimeMs: performance.now.bind(performance),
 };
+
+function formatRecallIndexProgress(event: RecallIndexProgressEvent): string {
+  switch (event.kind) {
+    case 'preparing':
+      return 'Preparing recall index...';
+    case 'waiting-for-write-lock':
+      return 'Waiting for recall index write lock...';
+    case 'discovering-physical-session-files':
+      return 'Discovering physical session files...';
+    case 'planning-maintenance-workset':
+      return 'Planning maintenance workset...';
+    case 'maintenance-workset-planned': {
+      const plannedFiles = event.newFiles + event.changedFiles + event.missingFiles;
+      if (event.rebuild) {
+        return `Rebuild maintenance workset: ${event.discoveredFiles} physical session files discovered; all ${event.discoveredFiles} scheduled for indexing.`;
+      }
+      if (plannedFiles === 0) {
+        return `Maintenance workset: ${event.discoveredFiles} physical session files discovered; no files require indexing or removal.`;
+      }
+      return `Maintenance workset: ${event.discoveredFiles} physical session files discovered; ${event.newFiles} new, ${event.changedFiles} changed, ${event.missingFiles} missing.`;
+    }
+    case 'indexing-changed-physical-session-files':
+      return 'Indexing changed physical session files...';
+    case 'indexing-maintenance-workset':
+      return `Indexing ${event.completedFiles}/${event.totalFiles} files · ${event.indexedSessions} indexed sessions · ${event.newlyEmbeddedDocuments} embedded documents · ${event.reusedVectors} reused vectors · ${event.deletedDocuments} deleted documents · ${event.failedSessions} failed sessions · ${event.sessionPath}`;
+    case 'physical-session-file-failed':
+      return `Warning: physical session file failed: ${event.sessionPath}`;
+    case 'optimizing-collection':
+      return 'Optimizing recall collection...';
+    case 'completed':
+      return 'Recall index maintenance completed.';
+  }
+}
 
 /** Runs the complete standalone CLI; only explicit incremental indexing and rebuild can write. */
 export async function runPsrCli(
@@ -36,8 +78,30 @@ export async function runPsrCli(
     throw new Error(PSR_USAGE);
   }
 
+  let lastProgressKind: RecallIndexProgressEvent['kind'] | undefined;
+  let lastProgressTimeMs = Number.NEGATIVE_INFINITY;
+  const reportProgress = (event: RecallIndexProgressEvent): void => {
+    const currentTimeMs = dependencies.getMonotonicTimeMs();
+    if (
+      event.kind === 'indexing-maintenance-workset' &&
+      event.completedFiles !== event.totalFiles &&
+      lastProgressKind === event.kind &&
+      currentTimeMs - lastProgressTimeMs < 1_000
+    ) {
+      return;
+    }
+    dependencies.writeProgress(`${formatRecallIndexProgress(event)}\n`);
+    lastProgressKind = event.kind;
+    lastProgressTimeMs = currentTimeMs;
+  };
+
+  reportProgress({ kind: 'preparing' });
   const config = await dependencies.loadConfig();
-  const result = await dependencies.createService(config).index({ rebuild, optimize: true });
+  const result = await dependencies.createService(config).index({
+    rebuild,
+    optimize: true,
+    onProgress: reportProgress,
+  });
   const summary = result.indexSummary;
   dependencies.writeOutput(
     [

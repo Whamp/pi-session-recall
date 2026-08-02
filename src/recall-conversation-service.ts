@@ -11,10 +11,10 @@ import {
 } from './fuse-recall-search-candidates.js';
 import {
   indexChangedConversationSessions,
-  type ConversationIndexProgress,
   type ConversationIndexSummary,
 } from './incremental-session-indexer.js';
 import { loadOctenConversationTokenizer } from './octen-conversation-tokenizer.js';
+import type { RecallIndexProgressEvent } from './recall-index-progress.js';
 import { createOctenHttpEmbeddingProvider } from './octen-http-embedding-provider.js';
 import type { RecallChunkPolicy } from './recall-chunk-policy.js';
 import type { RecallEmbeddingProvider } from './recall-inference-capabilities.js';
@@ -106,7 +106,7 @@ export interface RecallConversationSearch {
 export interface RecallConversationIndexOptions {
   rebuild?: boolean;
   signal?: AbortSignal;
-  onProgress?: (progress: ConversationIndexProgress) => void;
+  onProgress?: (event: RecallIndexProgressEvent) => void;
   optimize?: boolean;
 }
 
@@ -160,9 +160,11 @@ function isProcessAlive(processId: number): boolean {
 async function acquireRecallConversationLock(
   lockPath: string,
   signal?: AbortSignal,
+  onWait?: () => void,
 ): Promise<() => Promise<void>> {
   await mkdir(dirname(lockPath), { recursive: true });
   let unreadableOwnerCount = 0;
+  let reportedWait = false;
   while (true) {
     if (signal?.aborted) {
       throw new Error('Recall conversation operation cancelled', { cause: signal.reason });
@@ -200,6 +202,10 @@ async function acquireRecallConversationLock(
         continue;
       } else {
         unreadableOwnerCount = 0;
+      }
+      if (!reportedWait) {
+        onWait?.();
+        reportedWait = true;
       }
       await sleep(250, undefined, signal ? { signal } : undefined);
     }
@@ -393,7 +399,13 @@ export function createRecallConversationService(
     },
 
     async index(options = {}) {
-      const releaseLock = await acquireRecallConversationLock(config.lockPath, options.signal);
+      const releaseLock = await acquireRecallConversationLock(
+        config.lockPath,
+        options.signal,
+        options.onProgress
+          ? () => options.onProgress?.({ kind: 'waiting-for-write-lock' })
+          : undefined,
+      );
       let store: ZvecConversationStore | undefined;
       try {
         if (options.rebuild) {
@@ -417,6 +429,7 @@ export function createRecallConversationService(
             overlapTokens: manifest.chunkPolicy.overlapTokens,
           },
           resolveProjectIdentity: resolveSearchProjectIdentity,
+          rebuild: options.rebuild ?? false,
           ...(options.signal ? { signal: options.signal } : {}),
           ...(options.onProgress ? { onProgress: options.onProgress } : {}),
         });
@@ -426,9 +439,12 @@ export function createRecallConversationService(
             indexSummary.deletedChunks > 0 ||
             indexSummary.indexedSessions > 0)
         ) {
+          options.onProgress?.({ kind: 'optimizing-collection' });
           await store.optimize();
         }
-        return { indexSummary, totalChunks: store.count() };
+        const totalChunks = store.count();
+        options.onProgress?.({ kind: 'completed' });
+        return { indexSummary, totalChunks };
       } finally {
         store?.close();
         await releaseLock();

@@ -23,6 +23,7 @@ psr index --rebuild
 ```bash
 psr index             # add, update, and remove changed session evidence
 psr index --rebuild   # replace incompatible or damaged index state
+psr index --compact   # keep the former one-line stdout summary
 ```
 
 `psr index`:
@@ -33,7 +34,10 @@ psr index --rebuild   # replace incompatible or damaged index state
 - calls Octen only for changed dense-searchable evidence;
 - removes evidence for deleted session files;
 - reports malformed session files and continues with healthy files;
+- shows elapsed time and estimates time remaining after a healthy file completes;
 - optimizes zvec after a changed pass.
+
+The estimate uses the observed rate of healthy files in the current run. Until enough work completes, the command says that it is calculating the estimate rather than inventing an initial duration. `--compact` preserves the former one-line completed summary and `Failed: ...` lines on stdout; progress remains on stderr.
 
 No startup hook, completed-turn hook, shutdown hook, watcher, background worker, daemon, or search request updates the index.
 

@@ -76,6 +76,10 @@ _Avoid_: Exact result
 One conversation, summary, or tool evidence document deduplicated across retrieval channels, with its document kind and each component rank and score retained.
 _Avoid_: Semantic match
 
+**Recall result presentation**:
+The Pi TUI view of completed `pi-session-recall` output. It keeps model-visible recall evidence unchanged, shows a one-line summary while collapsed, and reveals the full output through Pi's configured tool-expansion action. It is a UI concept, not a Hybrid recall result or Tool evidence document.
+_Avoid_: Recall result, tool evidence
+
 **Evidence occurrence**:
 One exact source location for recalled evidence, including its session, graph position, and source geometry. Copied evidence can have several occurrences.
 _Avoid_: Duplicate result, source alias

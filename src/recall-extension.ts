@@ -15,7 +15,7 @@ import {
   keyHint,
   truncateHead,
 } from '@earendil-works/pi-coding-agent';
-import { Text, type Component } from '@earendil-works/pi-tui';
+import { Text } from '@earendil-works/pi-tui';
 
 import { RecallSearchScope } from './enums.js';
 import { formatRecallSearchResults } from './format-recall-search-results.js';
@@ -147,7 +147,7 @@ export interface PiRecallToolDetails {
 
 interface PiRecallRenderContext {
   isError: boolean;
-  lastComponent: Component | undefined;
+  lastComponent?: unknown;
 }
 
 type PiRecallRenderTheme = Pick<Theme, 'fg'>;

@@ -2,7 +2,7 @@
 
 Pi Session Recall searches past Pi conversations by meaning or exact text. It reads Pi session JSONL files, stores searchable evidence in one local zvec collection, and returns the original file and line range for every result.
 
-The standalone `psr index` command is the only writer. Run it directly or opt into a native per-user schedule. Pi lifecycle and the `pi-session-recall` tool remain read-only.
+The standalone `psr index` command is the only index writer. Run it directly or opt into a native per-user schedule. `psr ignore` writes PSR policy state but never opens the index. Pi lifecycle and the `pi-session-recall` tool remain read-only.
 
 ## Install
 
@@ -27,6 +27,9 @@ psr index --compact                            # keep the former one-line stdout
 psr auto-index install                         # schedule psr index every hour
 psr auto-index install --interval 30m          # replace the schedule with another interval
 psr auto-index uninstall                       # remove the schedule
+psr ignore add path/to/session.jsonl            # exclude one exact physical session path
+psr ignore list                                 # print sorted excluded paths
+psr ignore remove path/to/session.jsonl         # make one exact path eligible again
 ```
 
 `psr index`:
@@ -35,14 +38,25 @@ psr auto-index uninstall                       # remove the schedule
 - skips files whose size and modification time have not changed;
 - reuses matching vectors already stored in zvec;
 - calls Octen only for changed dense-searchable evidence;
-- removes evidence for deleted session files;
-- reports malformed session files and continues with healthy files;
+- removes evidence for deleted or newly ignored indexed session files;
+- skips ignored files before parsing or embedding them;
+- reports malformed eligible session files and continues with healthy files;
 - shows elapsed time and estimates time remaining after a healthy file completes;
 - optimizes zvec after a changed pass.
 
 The estimate uses the observed rate of healthy files in the current run. Until enough work completes, the command says that it is calculating the estimate rather than inventing an initial duration. `--compact` preserves the former one-line completed summary and `Failed: ...` lines on stdout; progress remains on stderr.
 
 No startup hook, completed-turn hook, shutdown hook, watcher, package daemon, or search request updates the index.
+
+### Ignoring exact physical session paths
+
+Ignore state persists in `~/.pi/agent/recall/physical-session-ignore.json`. Both manual and scheduled `psr index` runs read one snapshot after acquiring the index lock. An ignored new file is not parsed, embedded, stored, or added to `index-state.json`. If the file is already indexed, the next maintenance pass removes its documents and state. Removing the ignore makes the unchanged source eligible as a new file on the next pass.
+
+`add` and `remove` are idempotent. They report `Already ignored` or `Not ignored` and exit successfully when no state changes. `list` prints normalized paths in ordinary string order, one per line, and prints nothing when the list is empty.
+
+Path identity is exact and lexical. Relative command arguments resolve from the command's current working directory with `path.resolve`. Commands do not expand `~`, resolve symlinks, inspect the filesystem, require a `.jsonl` suffix, restrict paths to the configured sessions directory, or interpret glob characters. For example, `*.jsonl` names a path containing a literal asterisk. Symlink aliases remain distinct paths.
+
+`psr index --rebuild` preserves ignore state and rebuilds only eligible files. Invalid ignore state aborts maintenance before rebuild removes the working index.
 
 ### Automatic index maintenance
 
@@ -230,7 +244,8 @@ Durable recall state contains only:
 ~/.pi/agent/recall/
 ├── zvec/
 ├── index-state.json
-└── index-manifest.json
+├── index-manifest.json
+└── physical-session-ignore.json
 ```
 
 The tokenizer loader also keeps checksum-verified tokenizer assets under `tokenizers/`; these are replaceable inference inputs, not recall state. `operation.lock` exists only while `psr` owns the writer lock and is removed when the command exits.

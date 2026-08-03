@@ -54,6 +54,7 @@ function createTestConfig(root: string): RecallConversationConfig {
     statePath: join(data, 'index-state.json'),
     manifestPath: join(data, 'index-manifest.json'),
     indexMaintenanceStatusPath: join(data, 'index-maintenance-status.json'),
+    physicalSessionIgnorePath: join(data, 'physical-session-ignore.json'),
     tokenizerCacheDirectory: join(data, 'tokenizers'),
     lockPath: join(data, 'operation.lock'),
     embeddingBaseUrl: 'http://127.0.0.1:8090/v1',
@@ -66,6 +67,18 @@ function createTestConfig(root: string): RecallConversationConfig {
     searchCandidateLimits: { dense: 8, lexical: 8, identifier: 8 },
     chunkPolicy: { maxTokens: 512, overlapTokens: 64 },
   };
+}
+
+async function writePhysicalSessionIgnoreState(
+  config: RecallConversationConfig,
+  ignoredPhysicalSessionPaths: readonly string[],
+): Promise<void> {
+  await mkdir(join(config.physicalSessionIgnorePath, '..'), { recursive: true });
+  await writeFile(
+    config.physicalSessionIgnorePath,
+    `${JSON.stringify({ version: 1, ignoredPhysicalSessionPaths })}\n`,
+    'utf8',
+  );
 }
 
 async function writeConversationSession(
@@ -315,6 +328,95 @@ void test('failed rebuild removes stale status and successful rebuild replaces i
     scannedSessions: 1,
     failedSessions: 0,
   });
+});
+
+void test('service maintenance reads persisted ignores and rebuild preserves them', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-service-ignore-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const config = createTestConfig(root);
+  const ignoredPath = join(config.sessionsDirectory, 'ignored.jsonl');
+  const eligiblePath = join(config.sessionsDirectory, 'eligible.jsonl');
+  await writeConversationSession(ignoredPath, 'IGNORED_POLICY_EVIDENCE', 'ignored');
+  await writeConversationSession(eligiblePath, 'ELIGIBLE_POLICY_EVIDENCE', 'eligible');
+  const service = createRecallConversationService(config, {
+    embeddingProvider: TEST_EMBEDDING_PROVIDER,
+    loadTokenizer: async () => tokenizer,
+  });
+  await service.index({ rebuild: true });
+  await writePhysicalSessionIgnoreState(config, [ignoredPath]);
+
+  const removed = await service.index();
+  assert.equal(removed.indexSummary.removedSessions, 1);
+  const searchAfterIgnore = await service.search('IGNORED_POLICY_EVIDENCE', 5, {
+    scope: RecallSearchScope.GLOBAL,
+  });
+  assert.ok(searchAfterIgnore.results.every((result) => result.sessionPath !== ignoredPath));
+  const ignoreStateBeforeRebuild = await readFile(config.physicalSessionIgnorePath, 'utf8');
+
+  const rebuilt = await service.index({ rebuild: true });
+
+  assert.equal(rebuilt.indexSummary.indexedSessions, 1);
+  assert.equal(await readFile(config.physicalSessionIgnorePath, 'utf8'), ignoreStateBeforeRebuild);
+  const stateText = await readFile(config.statePath, 'utf8');
+  const manifestText = await readFile(config.manifestPath, 'utf8');
+  assert.ok(stateText.includes(JSON.stringify(eligiblePath)));
+  assert.ok(!stateText.includes(JSON.stringify(ignoredPath)));
+  assert.ok(!stateText.includes('ignoredPhysicalSessionPaths'));
+  assert.ok(!manifestText.includes('ignoredPhysicalSessionPaths'));
+  assert.ok(!manifestText.includes('physical-session-ignore.json'));
+});
+
+void test('malformed ignore state aborts rebuild before deleting a working index generation', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-service-ignore-invalid-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const config = createTestConfig(root);
+  const sessionPath = join(config.sessionsDirectory, 'one.jsonl');
+  await writeConversationSession(sessionPath, 'WORKING_GENERATION_EVIDENCE');
+  const service = createRecallConversationService(config, {
+    embeddingProvider: TEST_EMBEDDING_PROVIDER,
+    loadTokenizer: async () => tokenizer,
+  });
+  await service.index({ rebuild: true });
+  const stateBefore = await readFile(config.statePath, 'utf8');
+  const manifestBefore = await readFile(config.manifestPath, 'utf8');
+  await writeFile(config.physicalSessionIgnorePath, '{"version":1}\n', 'utf8');
+
+  await assert.rejects(service.index({ rebuild: true }), /Physical session ignore state invalid/u);
+
+  assert.equal(await readFile(config.statePath, 'utf8'), stateBefore);
+  assert.equal(await readFile(config.manifestPath, 'utf8'), manifestBefore);
+  const search = await service.search('WORKING_GENERATION_EVIDENCE', 5, {
+    scope: RecallSearchScope.GLOBAL,
+  });
+  assert.equal(search.results.length, 1);
+});
+
+void test('ignore mutation after service snapshot acquisition affects the next pass', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-service-ignore-snapshot-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const config = createTestConfig(root);
+  const sessionPath = join(config.sessionsDirectory, 'one.jsonl');
+  await writeConversationSession(sessionPath, 'SNAPSHOT_POLICY_EVIDENCE');
+  await writePhysicalSessionIgnoreState(config, [sessionPath]);
+  let mutateAfterSnapshot = true;
+  const service = createRecallConversationService(config, {
+    embeddingProvider: TEST_EMBEDDING_PROVIDER,
+    async loadTokenizer() {
+      if (mutateAfterSnapshot) {
+        mutateAfterSnapshot = false;
+        await writePhysicalSessionIgnoreState(config, []);
+      }
+      return tokenizer;
+    },
+  });
+
+  const first = await service.index({ rebuild: true });
+  assert.equal(first.indexSummary.indexedSessions, 0);
+  assert.equal(first.totalChunks, 0);
+
+  const second = await service.index();
+  assert.equal(second.indexSummary.indexedSessions, 1);
+  assert.ok(second.totalChunks > 0);
 });
 
 void test('search tolerates unavailable status without catching up changed sessions', async (t) => {

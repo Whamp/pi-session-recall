@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import test from 'node:test';
 
 import { indexChangedConversationSessions } from './incremental-session-indexer.js';
@@ -108,6 +108,7 @@ function createIndexerOptions(options: {
 }) {
   return {
     ...options,
+    ignoredPhysicalSessionPaths: new Set<string>(),
     tokenizer,
     chunkPolicy: { maxTokens: 512, overlapTokens: 64 },
   };
@@ -197,6 +198,7 @@ void test('manual index maintenance plans exact new, changed, unchanged, and mis
       newFiles: 1,
       changedFiles: 1,
       missingFiles: 1,
+      ignoredFiles: 0,
       rebuild: false,
     },
   );
@@ -216,9 +218,198 @@ void test('manual index maintenance plans exact new, changed, unchanged, and mis
       newFiles: 0,
       changedFiles: 0,
       missingFiles: 0,
+      ignoredFiles: 0,
       rebuild: false,
     },
   );
+});
+
+void test('manual index maintenance skips ignored new files before strict parsing', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-indexer-ignore-new-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const sessionsDirectory = join(root, 'sessions');
+  const statePath = join(root, 'index-state.json');
+  const ignoredPath = join(sessionsDirectory, 'ignored-malformed.jsonl');
+  const eligiblePath = join(sessionsDirectory, 'eligible.jsonl');
+  await mkdir(sessionsDirectory, { recursive: true });
+  await writeFile(ignoredPath, '{"type":"session"}\n');
+  await writeSimplePhysicalSessionFile(eligiblePath, 'eligible', 'eligible exact path evidence');
+  const store = new MemoryConversationStore();
+  const embeddedBatches: string[][] = [];
+  const events: RecallIndexProgressEvent[] = [];
+  const options = createIndexerOptions({
+    sessionsDirectory,
+    statePath,
+    store,
+    embeddingProvider: createRecordingEmbeddingProvider(embeddedBatches),
+  });
+
+  const ignored = await indexChangedConversationSessions({
+    ...options,
+    ignoredPhysicalSessionPaths: new Set([ignoredPath]),
+    onProgress(event) {
+      events.push(event);
+    },
+  });
+
+  assert.equal(ignored.scannedSessions, 2);
+  assert.equal(ignored.indexedSessions, 1);
+  assert.equal(ignored.failedSessions.length, 0);
+  assert.deepEqual(embeddedBatches, [['eligible exact path evidence']]);
+  assert.ok([...store.chunks.values()].every((chunk) => chunk.sessionPath === eligiblePath));
+  const stateText = await readFile(statePath, 'utf8');
+  assert.ok(stateText.includes(JSON.stringify(eligiblePath)));
+  assert.ok(!stateText.includes(JSON.stringify(ignoredPath)));
+  assert.deepEqual(
+    events.find((event) => event.kind === 'maintenance-workset-planned'),
+    {
+      kind: 'maintenance-workset-planned',
+      discoveredFiles: 2,
+      newFiles: 1,
+      changedFiles: 0,
+      missingFiles: 0,
+      ignoredFiles: 0,
+      rebuild: false,
+    },
+  );
+
+  const unignored = await indexChangedConversationSessions({
+    ...options,
+    ignoredPhysicalSessionPaths: new Set(),
+  });
+  assert.equal(unignored.indexedSessions, 0);
+  assert.equal(unignored.failedSessions.length, 1);
+  assert.equal(unignored.failedSessions[0]?.sessionPath, ignoredPath);
+  assert.match(unignored.failedSessions[0]?.error ?? '', /session/iu);
+});
+
+void test('manual index maintenance removes ignored indexed files and reindexes after unignore', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-indexer-ignore-indexed-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const sessionsDirectory = join(root, 'sessions');
+  const statePath = join(root, 'index-state.json');
+  const sessionPath = join(sessionsDirectory, 'one.jsonl');
+  await mkdir(sessionsDirectory, { recursive: true });
+  await writeSimplePhysicalSessionFile(sessionPath, 'one', 'indexed then ignored evidence');
+  const store = new MemoryConversationStore();
+  const options = createIndexerOptions({
+    sessionsDirectory,
+    statePath,
+    store,
+    embeddingProvider: createRecordingEmbeddingProvider([]),
+  });
+  await indexChangedConversationSessions({
+    ...options,
+    ignoredPhysicalSessionPaths: new Set(),
+  });
+  assert.ok(store.chunks.size > 0);
+  const events: RecallIndexProgressEvent[] = [];
+
+  const removed = await indexChangedConversationSessions({
+    ...options,
+    ignoredPhysicalSessionPaths: new Set([sessionPath]),
+    onProgress(event) {
+      events.push(event);
+    },
+  });
+
+  assert.equal(removed.removedSessions, 1);
+  assert.ok(removed.deletedChunks > 0);
+  assert.equal(store.chunks.size, 0);
+  assert.ok(!(await readFile(statePath, 'utf8')).includes(JSON.stringify(sessionPath)));
+  assert.deepEqual(
+    events.find((event) => event.kind === 'maintenance-workset-planned'),
+    {
+      kind: 'maintenance-workset-planned',
+      discoveredFiles: 1,
+      newFiles: 0,
+      changedFiles: 0,
+      missingFiles: 0,
+      ignoredFiles: 1,
+      rebuild: false,
+    },
+  );
+  const progress = events.filter(isIndexingMaintenanceWorksetEvent);
+  assert.equal(progress.at(-1)?.completedFiles, 1);
+  assert.equal(progress.at(-1)?.totalFiles, 1);
+
+  const reindexed = await indexChangedConversationSessions({
+    ...options,
+    ignoredPhysicalSessionPaths: new Set(),
+  });
+  assert.equal(reindexed.indexedSessions, 1);
+  assert.ok(store.chunks.size > 0);
+  assert.ok((await readFile(statePath, 'utf8')).includes(JSON.stringify(sessionPath)));
+});
+
+void test('manual index maintenance classifies an ignored missing indexed path only once', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-indexer-ignore-missing-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const sessionsDirectory = join(root, 'sessions');
+  const statePath = join(root, 'index-state.json');
+  const sessionPath = join(sessionsDirectory, 'one.jsonl');
+  await mkdir(sessionsDirectory, { recursive: true });
+  await writeSimplePhysicalSessionFile(sessionPath, 'one', 'ignored missing evidence');
+  const store = new MemoryConversationStore();
+  const options = createIndexerOptions({
+    sessionsDirectory,
+    statePath,
+    store,
+    embeddingProvider: createRecordingEmbeddingProvider([]),
+  });
+  await indexChangedConversationSessions({
+    ...options,
+    ignoredPhysicalSessionPaths: new Set(),
+  });
+  await rm(sessionPath);
+  const events: RecallIndexProgressEvent[] = [];
+
+  const result = await indexChangedConversationSessions({
+    ...options,
+    ignoredPhysicalSessionPaths: new Set([sessionPath]),
+    onProgress(event) {
+      events.push(event);
+    },
+  });
+
+  assert.equal(result.removedSessions, 1);
+  assert.deepEqual(
+    events.find((event) => event.kind === 'maintenance-workset-planned'),
+    {
+      kind: 'maintenance-workset-planned',
+      discoveredFiles: 0,
+      newFiles: 0,
+      changedFiles: 0,
+      missingFiles: 0,
+      ignoredFiles: 1,
+      rebuild: false,
+    },
+  );
+});
+
+void test('manual index maintenance resolves a relative sessions directory to absolute state keys', async (t) => {
+  const root = await mkdtemp(join(process.cwd(), 'recall-indexer-relative-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const sessionsDirectory = join(root, 'sessions');
+  const relativeSessionsDirectory = relative(process.cwd(), sessionsDirectory);
+  const statePath = join(root, 'index-state.json');
+  const sessionPath = join(sessionsDirectory, 'one.jsonl');
+  await mkdir(sessionsDirectory, { recursive: true });
+  await writeSimplePhysicalSessionFile(sessionPath, 'one', 'absolute state identity evidence');
+
+  await indexChangedConversationSessions({
+    ...createIndexerOptions({
+      sessionsDirectory: relativeSessionsDirectory,
+      statePath,
+      store: new MemoryConversationStore(),
+      embeddingProvider: createRecordingEmbeddingProvider([]),
+    }),
+    ignoredPhysicalSessionPaths: new Set(),
+  });
+
+  const stateText = await readFile(statePath, 'utf8');
+  assert.ok(stateText.includes(JSON.stringify(sessionPath)));
+  assert.ok(!stateText.includes(JSON.stringify(join(relativeSessionsDirectory, 'one.jsonl'))));
 });
 
 void test('manual incremental indexing adds, reuses, changes, and deletes zvec rows', async (t) => {

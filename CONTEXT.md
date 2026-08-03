@@ -8,6 +8,10 @@ Conversation Recall turns Pi session history into source-backed evidence that ca
 One source JSONL file under Pi's session store. Historical file reuse can place several logical sessions in one physical session file.
 _Avoid_: Session graph, logical session
 
+**Ignored physical session path**:
+One absolute, lexically normalized physical session path that PSR policy excludes from index maintenance. Identity is exact: no glob, realpath, containment, case, or Unicode normalization applies.
+_Avoid_: Ignore pattern, parser exclusion
+
 **Logical session**:
 One complete session header and the records that follow it until the next complete header or physical end of file. Each logical session owns one independently validated session graph.
 _Avoid_: Physical session file, segment
@@ -109,7 +113,7 @@ One standalone `psr index` operation that scans physical session files and updat
 _Avoid_: Live ingestion, lifecycle reconciliation
 
 **Maintenance workset**:
-The new or changed physical session files and missing previously indexed files identified during one index maintenance operation. It forecasts file-level work; the number of documents requiring embeddings emerges as changed files are processed.
+The eligible new or changed physical session files, missing previously indexed files, and ignored indexed files scheduled for removal during one index maintenance operation. It forecasts file-level work; the number of documents requiring embeddings emerges as changed files are processed.
 _Avoid_: Sessions to embed, embedding total
 
 **Index maintenance status**:

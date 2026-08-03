@@ -191,6 +191,7 @@ function createChunkPolicyConfig(
     statePath: join(policyDirectory, 'index-state.json'),
     manifestPath: join(policyDirectory, 'index-manifest.json'),
     indexMaintenanceStatusPath: join(policyDirectory, 'index-maintenance-status.json'),
+    physicalSessionIgnorePath: join(policyDirectory, 'physical-session-ignore.json'),
     lockPath: join(policyDirectory, 'operation.lock'),
     projectLineages: normalizeRecallProjectLineages(corpus.specification.projectLineages),
     chunkPolicy: {

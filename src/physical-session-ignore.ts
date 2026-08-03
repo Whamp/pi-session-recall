@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { link, lstat, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, normalize, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 
@@ -9,6 +9,7 @@ import { Value } from 'typebox/value';
 import { readNodeErrorCode } from './read-node-error-code.js';
 
 const PHYSICAL_SESSION_IGNORE_LOCK_RETRY_MS = 250;
+const PHYSICAL_SESSION_IGNORE_LOCK_TOKEN_PATTERN = /^[0-9a-f-]{36}$/u;
 const PHYSICAL_SESSION_IGNORE_STATE_SCHEMA = Type.Object(
   {
     version: Type.Literal(1),
@@ -42,14 +43,51 @@ function assertCanonicalIgnoredPhysicalSessionPaths(paths: readonly string[]): v
   }
 }
 
-function readPhysicalSessionIgnoreLockOwnerProcessId(value: string): number | undefined {
+interface PhysicalSessionIgnoreLockOwner {
+  processId: number;
+  token?: string;
+}
+
+interface PhysicalSessionIgnoreLockObservation {
+  ownerValue?: string;
+  owner?: PhysicalSessionIgnoreLockOwner;
+}
+
+function readPhysicalSessionIgnoreLockToken(value: string): string | undefined {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!parsed || typeof parsed !== 'object' || !('token' in parsed)) {
+      return undefined;
+    }
+    const token = parsed.token;
+    return typeof token === 'string' && PHYSICAL_SESSION_IGNORE_LOCK_TOKEN_PATTERN.test(token)
+      ? token
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function readPhysicalSessionIgnoreLockOwner(
+  value: string,
+): PhysicalSessionIgnoreLockOwner | undefined {
   try {
     const parsed: unknown = JSON.parse(value);
     if (!parsed || typeof parsed !== 'object' || !('pid' in parsed)) {
       return undefined;
     }
-    const processId = Reflect.get(parsed, 'pid');
-    return typeof processId === 'number' && Number.isInteger(processId) ? processId : undefined;
+    const processId = parsed.pid;
+    if (typeof processId !== 'number' || !Number.isSafeInteger(processId) || processId <= 0) {
+      return undefined;
+    }
+    if (!('token' in parsed)) {
+      return { processId };
+    }
+    const token = parsed.token;
+    if (typeof token !== 'string' || !PHYSICAL_SESSION_IGNORE_LOCK_TOKEN_PATTERN.test(token)) {
+      return undefined;
+    }
+    return { processId, token };
   } catch {
     return undefined;
   }
@@ -60,8 +98,151 @@ function isPhysicalSessionIgnoreLockOwnerAlive(processId: number): boolean {
     process.kill(processId, 0);
     return true;
   } catch (error) {
-    return readNodeErrorCode(error) === 'EPERM';
+    const errorCode = readNodeErrorCode(error);
+    if (errorCode === 'ESRCH') {
+      return false;
+    }
+    if (errorCode === 'EPERM') {
+      return true;
+    }
+    throw error;
   }
+}
+
+async function observePhysicalSessionIgnoreLock(
+  lockPath: string,
+): Promise<PhysicalSessionIgnoreLockObservation | undefined> {
+  try {
+    const lockStats = await lstat(lockPath);
+    if (!lockStats.isDirectory()) {
+      throw new Error(`Physical session ignore lock is not a directory at ${lockPath}`);
+    }
+  } catch (error) {
+    if (readNodeErrorCode(error) === 'ENOENT') {
+      return undefined;
+    }
+    throw error;
+  }
+
+  try {
+    const ownerValue = await readFile(`${lockPath}/owner.json`, 'utf8');
+    const owner = readPhysicalSessionIgnoreLockOwner(ownerValue);
+    return owner === undefined ? { ownerValue } : { ownerValue, owner };
+  } catch (error) {
+    if (readNodeErrorCode(error) === 'ENOENT') {
+      return {};
+    }
+    throw error;
+  }
+}
+
+async function readPhysicalSessionIgnoreDirectoryRecoveryToken(
+  recoveryPath: string,
+): Promise<string | undefined> {
+  let recoveryValue: string;
+  try {
+    recoveryValue = await readFile(recoveryPath, 'utf8');
+  } catch (error) {
+    if (readNodeErrorCode(error) === 'ENOENT') {
+      return undefined;
+    }
+    throw error;
+  }
+  const token = readPhysicalSessionIgnoreLockToken(recoveryValue);
+  if (token === undefined) {
+    throw new Error(`Physical session ignore lock recovery metadata invalid at ${recoveryPath}`);
+  }
+  return token;
+}
+
+async function readOrCreatePhysicalSessionIgnoreDirectoryRecoveryToken(
+  lockPath: string,
+): Promise<string | undefined> {
+  const recoveryPath = `${lockPath}/recovery.json`;
+  const existingToken = await readPhysicalSessionIgnoreDirectoryRecoveryToken(recoveryPath);
+  if (existingToken !== undefined) {
+    return existingToken;
+  }
+
+  const token = randomUUID();
+  const candidatePath = `${lockPath}/recovery.${process.pid}.${token}.candidate`;
+  try {
+    await writeFile(candidatePath, `${JSON.stringify({ token })}\n`, {
+      encoding: 'utf8',
+      flag: 'wx',
+    });
+  } catch (error) {
+    if (readNodeErrorCode(error) === 'ENOENT') {
+      return undefined;
+    }
+    throw error;
+  }
+  try {
+    try {
+      await link(candidatePath, recoveryPath);
+      return token;
+    } catch (error) {
+      const errorCode = readNodeErrorCode(error);
+      if (errorCode === 'ENOENT') {
+        return undefined;
+      }
+      if (errorCode !== 'EEXIST') {
+        throw error;
+      }
+      return readPhysicalSessionIgnoreDirectoryRecoveryToken(recoveryPath);
+    }
+  } finally {
+    await rm(candidatePath, { force: true });
+  }
+}
+
+async function recoverStalePhysicalSessionIgnoreLock(
+  lockPath: string,
+  staleObservation: PhysicalSessionIgnoreLockObservation,
+): Promise<boolean> {
+  const recoveryToken =
+    staleObservation.owner?.token ??
+    (await readOrCreatePhysicalSessionIgnoreDirectoryRecoveryToken(lockPath));
+  if (recoveryToken === undefined) {
+    return false;
+  }
+
+  const currentObservation = await observePhysicalSessionIgnoreLock(lockPath);
+  if (
+    currentObservation === undefined ||
+    currentObservation.ownerValue !== staleObservation.ownerValue ||
+    (currentObservation.owner !== undefined &&
+      isPhysicalSessionIgnoreLockOwnerAlive(currentObservation.owner.processId))
+  ) {
+    return false;
+  }
+
+  const recoveredPath = `${lockPath}.recovered.${recoveryToken}`;
+  try {
+    // Retain the nonempty recovered generation so delayed reclaimers cannot rename a successor.
+    await rename(lockPath, recoveredPath);
+    return true;
+  } catch (error) {
+    const errorCode = readNodeErrorCode(error);
+    if (errorCode === 'EEXIST' || errorCode === 'ENOENT' || errorCode === 'ENOTEMPTY') {
+      return false;
+    }
+    throw error;
+  }
+}
+
+async function releasePhysicalSessionIgnoreStateLock(
+  lockPath: string,
+  ownerValue: string,
+  ownerToken: string,
+): Promise<void> {
+  const observation = await observePhysicalSessionIgnoreLock(lockPath);
+  if (observation?.ownerValue !== ownerValue) {
+    throw new Error(`Physical session ignore lock ownership changed before release at ${lockPath}`);
+  }
+  const releasedPath = `${lockPath}.released.${ownerToken}`;
+  await rename(lockPath, releasedPath);
+  await rm(releasedPath, { recursive: true, force: true });
 }
 
 async function acquirePhysicalSessionIgnoreStateLock(
@@ -69,46 +250,45 @@ async function acquirePhysicalSessionIgnoreStateLock(
 ): Promise<() => Promise<void>> {
   await mkdir(dirname(physicalSessionIgnoreStatePath), { recursive: true });
   const lockPath = `${physicalSessionIgnoreStatePath}.lock`;
+  const ownerToken = randomUUID();
+  const ownerValue = `${JSON.stringify({ pid: process.pid, token: ownerToken })}\n`;
+  const candidatePath = `${lockPath}.${process.pid}.${ownerToken}.candidate`;
+  await mkdir(candidatePath);
+  await writeFile(`${candidatePath}/owner.json`, ownerValue, 'utf8');
   let unreadableOwnerCount = 0;
-  while (true) {
-    try {
-      await mkdir(lockPath);
-      await writeFile(
-        `${lockPath}/owner.json`,
-        `${JSON.stringify({ pid: process.pid })}\n`,
-        'utf8',
-      );
-      return async () => rm(lockPath, { recursive: true, force: true });
-    } catch (error) {
-      if (readNodeErrorCode(error) !== 'EEXIST') {
-        throw error;
-      }
-      let ownerProcessId: number | undefined;
-      try {
-        ownerProcessId = readPhysicalSessionIgnoreLockOwnerProcessId(
-          await readFile(`${lockPath}/owner.json`, 'utf8'),
-        );
-      } catch (readError) {
-        if (readNodeErrorCode(readError) !== 'ENOENT') {
-          throw readError;
-        }
-      }
-      if (ownerProcessId === undefined) {
-        unreadableOwnerCount += 1;
-        if (unreadableOwnerCount >= 4) {
-          await rm(lockPath, { recursive: true, force: true });
-          unreadableOwnerCount = 0;
+  try {
+    while (true) {
+      const observation = await observePhysicalSessionIgnoreLock(lockPath);
+      if (observation === undefined) {
+        try {
+          await rename(candidatePath, lockPath);
+          return async () =>
+            releasePhysicalSessionIgnoreStateLock(lockPath, ownerValue, ownerToken);
+        } catch (error) {
+          const errorCode = readNodeErrorCode(error);
+          if (errorCode !== 'EEXIST' && errorCode !== 'ENOTEMPTY') {
+            throw error;
+          }
           continue;
         }
-      } else if (!isPhysicalSessionIgnoreLockOwnerAlive(ownerProcessId)) {
-        await rm(lockPath, { recursive: true, force: true });
-        unreadableOwnerCount = 0;
-        continue;
-      } else {
-        unreadableOwnerCount = 0;
       }
-      await sleep(PHYSICAL_SESSION_IGNORE_LOCK_RETRY_MS);
+      if (observation.owner === undefined) {
+        unreadableOwnerCount += 1;
+        if (unreadableOwnerCount < 4) {
+          await sleep(PHYSICAL_SESSION_IGNORE_LOCK_RETRY_MS);
+          continue;
+        }
+      } else if (isPhysicalSessionIgnoreLockOwnerAlive(observation.owner.processId)) {
+        unreadableOwnerCount = 0;
+        await sleep(PHYSICAL_SESSION_IGNORE_LOCK_RETRY_MS);
+        continue;
+      }
+
+      await recoverStalePhysicalSessionIgnoreLock(lockPath, observation);
+      unreadableOwnerCount = 0;
     }
+  } finally {
+    await rm(candidatePath, { recursive: true, force: true });
   }
 }
 

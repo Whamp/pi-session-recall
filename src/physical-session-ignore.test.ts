@@ -85,6 +85,61 @@ void test('physical session ignore mutations recover a lock owned by a dead proc
   assert.deepEqual(await listIgnoredPhysicalSessionPaths(statePath), []);
 });
 
+void test('physical session ignore mutations recover invalid lock owner process IDs', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'physical-session-ignore-invalid-lock-owner-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const dataDirectory = join(root, 'recall');
+  const statePath = join(dataDirectory, 'physical-session-ignore.json');
+  const lockPath = `${statePath}.lock`;
+  const ignoredPath = resolve(root, 'sessions', 'session.jsonl');
+  const environment = { ...process.env, PI_RECALL_DATA_DIRECTORY: dataDirectory };
+
+  await mkdir(lockPath, { recursive: true });
+  await writeFile(join(lockPath, 'owner.json'), `${JSON.stringify({ pid: 0 })}\n`, 'utf8');
+  const addition = await EXEC_FILE_ASYNC(PSR_EXECUTABLE_PATH, ['ignore', 'add', ignoredPath], {
+    cwd: PSR_PROJECT_DIRECTORY,
+    env: environment,
+    timeout: 2_500,
+  });
+
+  assert.equal(addition.stderr, '');
+  assert.equal(addition.stdout, `Ignored: ${ignoredPath}\n`);
+  assert.deepEqual(await listIgnoredPhysicalSessionPaths(statePath), [ignoredPath]);
+});
+
+void test('concurrent physical session ignore mutations recover one stale lock without lost updates', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'physical-session-ignore-concurrent-stale-lock-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const dataDirectory = join(root, 'recall');
+  const statePath = join(dataDirectory, 'physical-session-ignore.json');
+  const lockPath = `${statePath}.lock`;
+  const ignoredPaths = Array.from({ length: 24 }, (_, index) =>
+    resolve(root, 'sessions', `stale-session-${String(index).padStart(2, '0')}.jsonl`),
+  );
+  const environment = { ...process.env, PI_RECALL_DATA_DIRECTORY: dataDirectory };
+
+  await mkdir(lockPath, { recursive: true });
+  await writeFile(
+    join(lockPath, 'owner.json'),
+    `${JSON.stringify({ pid: 2_147_483_647 })}\n`,
+    'utf8',
+  );
+  const additions = await Promise.all(
+    ignoredPaths.map((ignoredPath) =>
+      EXEC_FILE_ASYNC(PSR_EXECUTABLE_PATH, ['ignore', 'add', ignoredPath], {
+        cwd: PSR_PROJECT_DIRECTORY,
+        env: environment,
+      }),
+    ),
+  );
+
+  for (const [index, addition] of additions.entries()) {
+    assert.equal(addition.stderr, '');
+    assert.equal(addition.stdout, `Ignored: ${ignoredPaths[index]}\n`);
+  }
+  assert.deepEqual(await listIgnoredPhysicalSessionPaths(statePath), ignoredPaths);
+});
+
 void test('physical session ignore state rejects malformed and noncanonical persistence', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'physical-session-ignore-invalid-'));
   t.after(() => rm(root, { recursive: true, force: true }));

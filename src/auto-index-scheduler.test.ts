@@ -70,7 +70,7 @@ void test('installs a default hourly systemd user timer with direct absolute inv
       '',
       '[Service]',
       'Type=oneshot',
-      'WorkingDirectory="/opt/pi session recall"',
+      'WorkingDirectory=/opt/pi session recall',
       'ExecStart="/opt/node/bin/node" --import tsx "/opt/pi session recall/bin/psr" index',
       'StandardOutput=journal',
       'StandardError=journal',
@@ -191,7 +191,7 @@ void test('escapes systemd paths and renders explicit minutes', async () => {
     fixture.files.get(
       '/home/recall-user/.config-test/systemd/user/pi-session-recall-index.timer',
     ) ?? '';
-  assert.match(service, /WorkingDirectory="\/opt\/pi\$\$session %%42"/u);
+  assert.match(service, /WorkingDirectory=\/opt\/pi\$session %%42/u);
   assert.match(
     service,
     /ExecStart="\/opt\/node%%build\/bin\/node" --import tsx "\/opt\/pi\$\$session %%42\/bin\/psr" index/u,

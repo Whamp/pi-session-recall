@@ -99,6 +99,10 @@ function quoteSystemdValue(value: string): string {
   return `"${escaped}"`;
 }
 
+function escapeSystemdWorkingDirectory(value: string): string {
+  return value.replaceAll('%', '%%');
+}
+
 function renderSystemdInterval(interval: AutoIndexInterval): string {
   return interval.unit === 'm' ? `${interval.value}min` : `${interval.value}h`;
 }
@@ -160,7 +164,7 @@ function renderLaunchAgentPlist(
 
 function renderSystemdService(system: AutoIndexSchedulerSystem): string {
   const executablePath = quoteSystemdValue(system.nodeExecutablePath);
-  const packageRoot = quoteSystemdValue(system.packageRoot);
+  const packageRoot = escapeSystemdWorkingDirectory(system.packageRoot);
   const psrExecutablePath = quoteSystemdValue(join(system.packageRoot, 'bin', 'psr'));
   return [
     '[Unit]',

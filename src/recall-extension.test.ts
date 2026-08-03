@@ -11,6 +11,7 @@ import { isUnknownRecord } from './is-unknown-record.js';
 import recallExtension, {
   createPiRecallToolDefinition,
   createPiRecallToolDetails,
+  type PiRecallParameters,
   searchPiRecall,
 } from './recall-extension.js';
 import type { RecallConversationService } from './recall-conversation-service.js';
@@ -122,6 +123,64 @@ void test('Pi recall applies trusted cwd and project-default scope without a wri
   ]);
 });
 
+void test('Pi recall call shows a concise exact query without changing retrieval input', async () => {
+  const calls: unknown[] = [];
+  const service = {
+    async search(query, limit, options) {
+      calls.push({ query, limit, options });
+      return createEmptySearch(options?.scope ?? RecallSearchScope.PROJECT);
+    },
+    async index() {
+      throw new Error('search adapter must not index');
+    },
+  } satisfies RecallConversationService;
+  const tool = createPiRecallToolDefinition(service);
+  const parameters: PiRecallParameters = {
+    query:
+      '  decision\tto\nschedule   automatic psr index maintenance after every completed conversation while preserving exact retrieval whitespace  ',
+    limit: 3,
+    scope: 'global',
+  };
+  const originalParameters = structuredClone(parameters);
+
+  const component = tool.renderCall(
+    parameters,
+    {
+      bold(text) {
+        return text;
+      },
+      fg(color, text) {
+        void color;
+        return text;
+      },
+    },
+    { isError: false, lastComponent: undefined },
+  );
+  const rendered = stripVTControlCharacters(component.render(1_000).join('\n')).trimEnd();
+
+  assert.equal(
+    rendered,
+    'pi-session-recall “decision to schedule automatic psr index maintenance after …”',
+  );
+
+  await tool.execute('call-presentation', parameters, undefined, undefined, {
+    cwd: '/trusted/project',
+  });
+
+  assert.deepEqual(parameters, originalParameters);
+  assert.deepEqual(calls, [
+    {
+      query:
+        'decision\tto\nschedule   automatic psr index maintenance after every completed conversation while preserving exact retrieval whitespace',
+      limit: 3,
+      options: {
+        scope: RecallSearchScope.GLOBAL,
+        invocationDirectory: '/trusted/project',
+      },
+    },
+  ]);
+});
+
 void test('service-injected Pi recall tool definition executes complete recall evidence', async () => {
   const calls: unknown[] = [];
   const result = createTestRankedRecallSearchResult({
@@ -203,13 +262,19 @@ void test('service-injected Pi recall tool definition executes complete recall e
   });
 });
 
-void test('collapsed Pi recall results show a plural summary and configured expansion hint', async () => {
+void test('untruncated Pi recall results show exact UTF-8 payload metrics and expansion hint', async () => {
   initTheme('dark');
   const restoreKeybindings = await usePiToolExpansionKeybinding('alt+x');
 
   try {
-    const firstResult = createTestRankedRecallSearchResult({ id: 'collapsed-first' });
-    const secondResult = createTestRankedRecallSearchResult({ id: 'collapsed-second' });
+    const firstResult = createTestRankedRecallSearchResult({
+      id: 'collapsed-first',
+      content: 'Café résumé 🙂',
+    });
+    const secondResult = createTestRankedRecallSearchResult({
+      id: 'collapsed-second',
+      content: 'Second evidence line.',
+    });
     const service = {
       async search() {
         return {
@@ -244,11 +309,10 @@ void test('collapsed Pi recall results show a plural summary and configured expa
     );
     const rendered = stripVTControlCharacters(component.render(1_000).join('\n')).trimEnd();
 
-    assert.equal(
-      rendered,
-      '2 recall results · project scope · 42,318 indexed documents (alt+x to expand)',
-    );
-    assert.equal('renderCall' in tool, false);
+    assert.equal(execution.details.returnedBytes, 850);
+    assert.equal(execution.details.returnedLines, 11);
+    assert.equal('truncation' in execution.details, false);
+    assert.equal(rendered, '2 recall results · project scope · 850B / 11 lines (alt+x to expand)');
   } finally {
     restoreKeybindings();
   }
@@ -294,10 +358,53 @@ void test('collapsed Pi recall result uses singular wording', async () => {
     );
     const rendered = stripVTControlCharacters(component.render(1_000).join('\n')).trimEnd();
 
-    assert.equal(
-      rendered,
-      '1 recall result · global scope · 9 indexed documents (alt+x to expand)',
+    assert.equal(rendered, '1 recall result · global scope · 487B / 6 lines (alt+x to expand)');
+
+    const oneLineComponent = tool.renderResult(
+      {
+        ...execution,
+        details: {
+          ...execution.details,
+          returnedBytes: 1,
+          returnedLines: 1,
+        },
+      },
+      { expanded: false, isPartial: false },
+      {
+        fg(color, text) {
+          void color;
+          return text;
+        },
+      },
+      { isError: false, lastComponent: undefined },
     );
+    const oneLineRendered = stripVTControlCharacters(
+      oneLineComponent.render(1_000).join('\n'),
+    ).trimEnd();
+    assert.equal(oneLineRendered, '1 recall result · global scope · 1B / 1 line (alt+x to expand)');
+
+    const {
+      returnedBytes: persistedReturnedBytes,
+      returnedLines: persistedReturnedLines,
+      ...persistedDetails
+    } = execution.details;
+    void persistedReturnedBytes;
+    void persistedReturnedLines;
+    const persistedComponent = tool.renderResult(
+      { ...execution, details: persistedDetails },
+      { expanded: false, isPartial: false },
+      {
+        fg(color, text) {
+          void color;
+          return text;
+        },
+      },
+      { isError: false, lastComponent: undefined },
+    );
+    const persistedRendered = stripVTControlCharacters(
+      persistedComponent.render(1_000).join('\n'),
+    ).trimEnd();
+    assert.equal(persistedRendered, '1 recall result · global scope (alt+x to expand)');
   } finally {
     restoreKeybindings();
   }
@@ -404,6 +511,9 @@ void test('zero-match Pi recall rendering stays concise without an expansion hin
       { cwd: '/trusted/project' },
     );
 
+    assert.equal('returnedBytes' in execution.details, false);
+    assert.equal('returnedLines' in execution.details, false);
+
     for (const expanded of [false, true]) {
       const component = tool.renderResult(
         execution,
@@ -484,6 +594,9 @@ void test('truncated Pi recall execution stores full metadata and marks collapse
     assert.equal(truncation.maxBytes, 50 * 1_024);
     assert.ok(truncation.totalLines > 2_000);
     assert.ok(truncation.outputBytes <= truncation.maxBytes);
+    assert.equal(truncatedExecution.details.returnedBytes, truncation.outputBytes);
+    assert.equal(truncatedExecution.details.returnedLines, truncation.outputLines);
+    assert.ok(Buffer.byteLength(truncatedText, 'utf8') > truncation.outputBytes);
 
     const component = truncatedTool.renderResult(
       truncatedExecution,
@@ -499,8 +612,25 @@ void test('truncated Pi recall execution stores full metadata and marks collapse
     const rendered = stripVTControlCharacters(component.render(1_000).join('\n')).trimEnd();
     assert.equal(
       rendered,
-      '1 recall result · project scope · 42,318 indexed documents · output truncated (alt+x to expand)',
+      '1 recall result · project scope · 50.0KB / 278 lines · output truncated (alt+x to expand)',
     );
+
+    const expandedComponent = truncatedTool.renderResult(
+      truncatedExecution,
+      { expanded: true, isPartial: false },
+      {
+        fg(color, text) {
+          void color;
+          return text;
+        },
+      },
+      { isError: false, lastComponent: undefined },
+    );
+    const expandedText = expandedComponent
+      .render(100_000)
+      .map((line) => line.trimEnd())
+      .join('\n');
+    assert.equal(expandedText, truncatedText);
 
     const untruncatedService = {
       async search() {
@@ -546,6 +676,23 @@ void test('Pi recall validation and execution errors retain error presentation',
     }),
     /Recall index unavailable/u,
   );
+
+  const callComponent = tool.renderCall(
+    { query: 'missing index' },
+    {
+      bold(text) {
+        return text;
+      },
+      fg(color, text) {
+        void color;
+        return text;
+      },
+    },
+    { isError: true, lastComponent: undefined },
+  );
+  const renderedCall = stripVTControlCharacters(callComponent.render(1_000).join('\n')).trimEnd();
+  assert.equal(renderedCall, 'pi-session-recall');
+  assert.doesNotMatch(renderedCall, /missing index/iu);
 
   const component = tool.renderResult(
     { content: [{ type: 'text', text: 'Recall index unavailable' }], details: undefined },

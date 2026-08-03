@@ -15,7 +15,7 @@ import {
   keyHint,
   truncateHead,
 } from '@earendil-works/pi-coding-agent';
-import { Text } from '@earendil-works/pi-tui';
+import { Text, truncateToWidth } from '@earendil-works/pi-tui';
 
 import { RecallSearchScope } from './enums.js';
 import { formatRecallSearchResults } from './format-recall-search-results.js';
@@ -142,6 +142,10 @@ export interface PiRecallToolDetails {
   totalChunks: number;
   searchPolicy: RecallConversationSearch['searchPolicy'];
   sources: ReturnType<typeof createPiRecallToolDetails>['sources'];
+  /** UTF-8 bytes in the bounded evidence body returned for nonzero results. */
+  returnedBytes?: number;
+  /** Lines in the bounded evidence body returned for nonzero results. */
+  returnedLines?: number;
   truncation?: TruncationResult;
 }
 
@@ -150,6 +154,7 @@ interface PiRecallRenderContext {
   lastComponent?: unknown;
 }
 
+type PiRecallCallRenderTheme = Pick<Theme, 'bold' | 'fg'>;
 type PiRecallRenderTheme = Pick<Theme, 'fg'>;
 
 /** Creates the complete Pi recall tool definition around one conversation service. */
@@ -166,6 +171,20 @@ export function createPiRecallToolDefinition(service: RecallConversationService)
       'Treat results as search leads and read the cited JSONL lines when surrounding source context matters.',
     ],
     parameters: PI_RECALL_PARAMETERS,
+
+    renderCall(parameters, theme: PiRecallCallRenderTheme, context: PiRecallRenderContext) {
+      const text =
+        context.lastComponent instanceof Text ? context.lastComponent : new Text('', 0, 0);
+      const title = theme.fg('toolTitle', theme.bold('pi-session-recall'));
+      if (context.isError) {
+        text.setText(title);
+        return text;
+      }
+
+      const displayQuery = truncateToWidth(parameters.query.trim().replace(/\s+/gu, ' '), 60, '…');
+      text.setText(`${title} ${theme.fg('muted', `“${displayQuery}”`)}`);
+      return text;
+    },
 
     async execute(toolCallId, parameters, signal, onUpdate, context: PiRecallInvocationContext) {
       void onUpdate;
@@ -187,6 +206,12 @@ export function createPiRecallToolDefinition(service: RecallConversationService)
         content: [{ type: 'text', text }],
         details: {
           ...createPiRecallToolDetails(search),
+          ...(search.results.length > 0
+            ? {
+                returnedBytes: truncation.outputBytes,
+                returnedLines: truncation.outputLines,
+              }
+            : {}),
           ...(truncation.truncated ? { truncation } : {}),
         },
       };
@@ -224,11 +249,13 @@ export function createPiRecallToolDefinition(service: RecallConversationService)
       }
 
       const resultLabel = resultCount === 1 ? 'recall result' : 'recall results';
-      const summaryParts = [
-        `${resultCount} ${resultLabel}`,
-        scope,
-        `${details.totalChunks.toLocaleString('en-US')} indexed documents`,
-      ];
+      const summaryParts = [`${resultCount} ${resultLabel}`, scope];
+      if (details.returnedBytes !== undefined && details.returnedLines !== undefined) {
+        const lineLabel = details.returnedLines === 1 ? 'line' : 'lines';
+        summaryParts.push(
+          `${formatSize(details.returnedBytes)} / ${details.returnedLines.toLocaleString('en-US')} ${lineLabel}`,
+        );
+      }
       if (details.truncation?.truncated) {
         summaryParts.push('output truncated');
       }

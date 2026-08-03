@@ -66,6 +66,28 @@ void test('physical session ignore state rejects malformed and noncanonical pers
   }
 });
 
+void test('public CLI resolves its runtime while normalizing paths from the caller directory', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'physical-session-ignore-cli-cwd-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const dataDirectory = join(root, 'recall');
+  const relativeIgnoredPath = join('sessions', 'session.jsonl');
+  const normalizedIgnoredPath = resolve(root, relativeIgnoredPath);
+  const environment = { ...process.env, PI_RECALL_DATA_DIRECTORY: dataDirectory };
+
+  const addition = await EXEC_FILE_ASYNC(
+    PSR_EXECUTABLE_PATH,
+    ['ignore', 'add', relativeIgnoredPath],
+    { cwd: root, env: environment },
+  );
+
+  assert.equal(addition.stderr, '');
+  assert.equal(addition.stdout, `Ignored: ${normalizedIgnoredPath}\n`);
+  assert.deepEqual(
+    await listIgnoredPhysicalSessionPaths(join(dataDirectory, 'physical-session-ignore.json')),
+    [normalizedIgnoredPath],
+  );
+});
+
 void test('concurrent public CLI additions retain every acknowledged ignore path', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'physical-session-ignore-concurrent-'));
   t.after(() => rm(root, { recursive: true, force: true }));

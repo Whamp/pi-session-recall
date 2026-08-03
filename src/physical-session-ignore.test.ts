@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
@@ -45,6 +45,44 @@ void test('physical session ignore state persists sorted idempotent additions an
   assert.equal(await removeIgnoredPhysicalSessionPath(statePath, firstPath), false);
   assert.deepEqual(await listIgnoredPhysicalSessionPaths(statePath), [secondPath]);
   assert.deepEqual(await readdir(root), ['physical-session-ignore.json']);
+});
+
+void test('physical session ignore mutations recover a lock owned by a dead process', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'physical-session-ignore-stale-lock-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const dataDirectory = join(root, 'recall');
+  const statePath = join(dataDirectory, 'physical-session-ignore.json');
+  const lockPath = `${statePath}.lock`;
+  const ignoredPath = resolve(root, 'sessions', 'session.jsonl');
+  const environment = { ...process.env, PI_RECALL_DATA_DIRECTORY: dataDirectory };
+  const deadOwnerProcessId = 2_147_483_647;
+
+  await mkdir(lockPath, { recursive: true });
+  await writeFile(
+    join(lockPath, 'owner.json'),
+    `${JSON.stringify({ pid: deadOwnerProcessId })}\n`,
+    'utf8',
+  );
+  const addition = await EXEC_FILE_ASYNC(PSR_EXECUTABLE_PATH, ['ignore', 'add', ignoredPath], {
+    cwd: PSR_PROJECT_DIRECTORY,
+    env: environment,
+    timeout: 2_000,
+  });
+  assert.equal(addition.stdout, `Ignored: ${ignoredPath}\n`);
+
+  await mkdir(lockPath, { recursive: true });
+  await writeFile(
+    join(lockPath, 'owner.json'),
+    `${JSON.stringify({ pid: deadOwnerProcessId })}\n`,
+    'utf8',
+  );
+  const removal = await EXEC_FILE_ASYNC(PSR_EXECUTABLE_PATH, ['ignore', 'remove', ignoredPath], {
+    cwd: PSR_PROJECT_DIRECTORY,
+    env: environment,
+    timeout: 2_000,
+  });
+  assert.equal(removal.stdout, `Removed: ${ignoredPath}\n`);
+  assert.deepEqual(await listIgnoredPhysicalSessionPaths(statePath), []);
 });
 
 void test('physical session ignore state rejects malformed and noncanonical persistence', async (t) => {

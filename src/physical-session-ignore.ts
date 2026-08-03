@@ -8,7 +8,7 @@ import { Value } from 'typebox/value';
 
 import { readNodeErrorCode } from './read-node-error-code.js';
 
-const PHYSICAL_SESSION_IGNORE_LOCK_RETRY_MS = 10;
+const PHYSICAL_SESSION_IGNORE_LOCK_RETRY_MS = 250;
 const PHYSICAL_SESSION_IGNORE_STATE_SCHEMA = Type.Object(
   {
     version: Type.Literal(1),
@@ -42,18 +42,70 @@ function assertCanonicalIgnoredPhysicalSessionPaths(paths: readonly string[]): v
   }
 }
 
+function readPhysicalSessionIgnoreLockOwnerProcessId(value: string): number | undefined {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!parsed || typeof parsed !== 'object' || !('pid' in parsed)) {
+      return undefined;
+    }
+    const processId = Reflect.get(parsed, 'pid');
+    return typeof processId === 'number' && Number.isInteger(processId) ? processId : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isPhysicalSessionIgnoreLockOwnerAlive(processId: number): boolean {
+  try {
+    process.kill(processId, 0);
+    return true;
+  } catch (error) {
+    return readNodeErrorCode(error) === 'EPERM';
+  }
+}
+
 async function acquirePhysicalSessionIgnoreStateLock(
   physicalSessionIgnoreStatePath: string,
 ): Promise<() => Promise<void>> {
   await mkdir(dirname(physicalSessionIgnoreStatePath), { recursive: true });
   const lockPath = `${physicalSessionIgnoreStatePath}.lock`;
+  let unreadableOwnerCount = 0;
   while (true) {
     try {
       await mkdir(lockPath);
+      await writeFile(
+        `${lockPath}/owner.json`,
+        `${JSON.stringify({ pid: process.pid })}\n`,
+        'utf8',
+      );
       return async () => rm(lockPath, { recursive: true, force: true });
     } catch (error) {
       if (readNodeErrorCode(error) !== 'EEXIST') {
         throw error;
+      }
+      let ownerProcessId: number | undefined;
+      try {
+        ownerProcessId = readPhysicalSessionIgnoreLockOwnerProcessId(
+          await readFile(`${lockPath}/owner.json`, 'utf8'),
+        );
+      } catch (readError) {
+        if (readNodeErrorCode(readError) !== 'ENOENT') {
+          throw readError;
+        }
+      }
+      if (ownerProcessId === undefined) {
+        unreadableOwnerCount += 1;
+        if (unreadableOwnerCount >= 4) {
+          await rm(lockPath, { recursive: true, force: true });
+          unreadableOwnerCount = 0;
+          continue;
+        }
+      } else if (!isPhysicalSessionIgnoreLockOwnerAlive(ownerProcessId)) {
+        await rm(lockPath, { recursive: true, force: true });
+        unreadableOwnerCount = 0;
+        continue;
+      } else {
+        unreadableOwnerCount = 0;
       }
       await sleep(PHYSICAL_SESSION_IGNORE_LOCK_RETRY_MS);
     }

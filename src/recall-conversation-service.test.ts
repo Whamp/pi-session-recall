@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -53,6 +53,7 @@ function createTestConfig(root: string): RecallConversationConfig {
     databasePath: join(data, 'zvec'),
     statePath: join(data, 'index-state.json'),
     manifestPath: join(data, 'index-manifest.json'),
+    indexMaintenanceStatusPath: join(data, 'index-maintenance-status.json'),
     tokenizerCacheDirectory: join(data, 'tokenizers'),
     lockPath: join(data, 'operation.lock'),
     embeddingBaseUrl: 'http://127.0.0.1:8090/v1',
@@ -104,6 +105,7 @@ void test('service builds one zvec collection and performs read-only hybrid sear
   const service = createRecallConversationService(config, {
     embeddingProvider: TEST_EMBEDDING_PROVIDER,
     loadTokenizer: async () => tokenizer,
+    getCurrentTime: () => new Date('2026-07-25T12:00:00.000Z'),
     openStore(mode) {
       openedModes.push(mode);
       return openZvecConversationStore({
@@ -117,8 +119,10 @@ void test('service builds one zvec collection and performs read-only hybrid sear
 
   const indexed = await service.index({ rebuild: true, optimize: true });
   const stateBeforeSearch = await readFile(config.statePath, 'utf8');
+  const statusBeforeSearch = await readFile(config.indexMaintenanceStatusPath, 'utf8');
   const search = await service.search('manual zvec', 5, { scope: RecallSearchScope.GLOBAL });
   const stateAfterSearch = await readFile(config.statePath, 'utf8');
+  const statusAfterSearch = await readFile(config.indexMaintenanceStatusPath, 'utf8');
 
   assert.equal(indexed.indexSummary.indexedSessions, 1);
   assert.ok(indexed.totalChunks >= 1);
@@ -126,11 +130,194 @@ void test('service builds one zvec collection and performs read-only hybrid sear
   assert.equal(search.results[0]?.sourceLineStart, 2);
   assert.equal(search.searchPolicy.rankingMode, 'hybrid');
   assert.deepEqual(search.searchPolicy.candidateLimits, { dense: 8, lexical: 8, identifier: 8 });
+  assert.deepEqual(search.indexMaintenanceStatus, {
+    version: 1,
+    completedAt: '2026-07-25T12:00:00.000Z',
+    scannedSessions: 1,
+    failedSessions: 0,
+  });
+  assert.equal(statusBeforeSearch, `${JSON.stringify(search.indexMaintenanceStatus, null, 2)}\n`);
   assert.equal(stateAfterSearch, stateBeforeSearch);
+  assert.equal(statusAfterSearch, statusBeforeSearch);
+  assert.deepEqual(
+    (await readdir(join(root, 'recall'))).filter((name) =>
+      name.startsWith('index-maintenance-status.json.'),
+    ),
+    [],
+  );
   assert.deepEqual(openedModes, ['write', 'read']);
 });
 
-void test('search never catches up a session changed after explicit indexing', async (t) => {
+void test('completed no-op Index maintenance refreshes its durable status', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-no-op-status-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const config = createTestConfig(root);
+  await writeConversationSession(
+    join(config.sessionsDirectory, 'one.jsonl'),
+    'No-op maintenance evidence.',
+  );
+  const completedTimes = [
+    new Date('2026-07-25T12:00:00.000Z'),
+    new Date('2026-07-25T12:30:00.000Z'),
+  ];
+  const service = createRecallConversationService(config, {
+    embeddingProvider: TEST_EMBEDDING_PROVIDER,
+    loadTokenizer: async () => tokenizer,
+    getCurrentTime() {
+      const currentTime = completedTimes.shift();
+      assert.ok(currentTime);
+      return currentTime;
+    },
+  });
+
+  await service.index({ rebuild: true });
+  const noOp = await service.index();
+  const search = await service.search('No-op', 5, { scope: RecallSearchScope.GLOBAL });
+
+  assert.equal(noOp.indexSummary.scannedSessions, 1);
+  assert.equal(noOp.indexSummary.indexedSessions, 0);
+  assert.deepEqual(search.indexMaintenanceStatus, {
+    version: 1,
+    completedAt: '2026-07-25T12:30:00.000Z',
+    scannedSessions: 1,
+    failedSessions: 0,
+  });
+});
+
+void test('completed failures publish status while fatal and interrupted passes preserve it', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-failure-status-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const config = createTestConfig(root);
+  const sessionPath = join(config.sessionsDirectory, 'damaged.jsonl');
+  await mkdir(config.sessionsDirectory, { recursive: true });
+  await writeFile(sessionPath, 'not JSON\n', 'utf8');
+  await writeFile(join(config.sessionsDirectory, 'also-damaged.jsonl'), 'still not JSON\n', 'utf8');
+  const service = createRecallConversationService(config, {
+    embeddingProvider: TEST_EMBEDDING_PROVIDER,
+    loadTokenizer: async () => tokenizer,
+    getCurrentTime: () => new Date('2026-07-25T13:00:00.000Z'),
+  });
+
+  const completedWithFailure = await service.index({ rebuild: true });
+  const completedStatus = await readFile(config.indexMaintenanceStatusPath, 'utf8');
+
+  assert.equal(completedWithFailure.indexSummary.scannedSessions, 2);
+  assert.equal(completedWithFailure.indexSummary.failedSessions.length, 2);
+  assert.deepEqual(JSON.parse(completedStatus), {
+    version: 1,
+    completedAt: '2026-07-25T13:00:00.000Z',
+    scannedSessions: 2,
+    failedSessions: 2,
+  });
+
+  await writeConversationSession(sessionPath, 'A fatal embedding attempt follows.');
+  const fatalService = createRecallConversationService(config, {
+    embeddingProvider: {
+      ...TEST_EMBEDDING_PROVIDER,
+      async embedDocuments() {
+        throw new Error('Fatal embedding failure');
+      },
+    },
+    loadTokenizer: async () => tokenizer,
+    getCurrentTime: () => new Date('2026-07-25T14:00:00.000Z'),
+  });
+  await assert.rejects(fatalService.index(), /Fatal embedding failure/u);
+  assert.equal(await readFile(config.indexMaintenanceStatusPath, 'utf8'), completedStatus);
+
+  const abortController = new AbortController();
+  const interruptedService = createRecallConversationService(config, {
+    embeddingProvider: {
+      ...TEST_EMBEDDING_PROVIDER,
+      async embedDocuments(documents, signal) {
+        void documents;
+        abortController.abort(new Error('Index maintenance interrupted'));
+        signal?.throwIfAborted();
+        return [];
+      },
+    },
+    loadTokenizer: async () => tokenizer,
+    getCurrentTime: () => new Date('2026-07-25T15:00:00.000Z'),
+  });
+  await assert.rejects(
+    interruptedService.index({ signal: abortController.signal }),
+    /Index maintenance interrupted/u,
+  );
+  assert.equal(await readFile(config.indexMaintenanceStatusPath, 'utf8'), completedStatus);
+});
+
+void test('aborted no-op maintenance preserves the prior completed status', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-aborted-no-op-status-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const config = createTestConfig(root);
+  await writeConversationSession(
+    join(config.sessionsDirectory, 'one.jsonl'),
+    'No-op interruption evidence.',
+  );
+  const service = createRecallConversationService(config, {
+    embeddingProvider: TEST_EMBEDDING_PROVIDER,
+    loadTokenizer: async () => tokenizer,
+    getCurrentTime: () => new Date('2026-07-25T15:00:00.000Z'),
+  });
+  await service.index({ rebuild: true });
+  const completedStatus = await readFile(config.indexMaintenanceStatusPath, 'utf8');
+  const abortController = new AbortController();
+
+  await assert.rejects(
+    service.index({
+      signal: abortController.signal,
+      onProgress(event) {
+        if (event.kind === 'maintenance-workset-planned') {
+          abortController.abort(new Error('No-op maintenance interrupted'));
+        }
+      },
+    }),
+    /Recall conversation operation cancelled/u,
+  );
+  assert.equal(await readFile(config.indexMaintenanceStatusPath, 'utf8'), completedStatus);
+});
+
+void test('failed rebuild removes stale status and successful rebuild replaces it', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-rebuild-status-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const config = createTestConfig(root);
+  await writeConversationSession(
+    join(config.sessionsDirectory, 'one.jsonl'),
+    'Rebuild maintenance evidence.',
+  );
+  const initialService = createRecallConversationService(config, {
+    embeddingProvider: TEST_EMBEDDING_PROVIDER,
+    loadTokenizer: async () => tokenizer,
+    getCurrentTime: () => new Date('2026-07-25T16:00:00.000Z'),
+  });
+  await initialService.index({ rebuild: true });
+
+  const failingRebuild = createRecallConversationService(config, {
+    embeddingProvider: {
+      ...TEST_EMBEDDING_PROVIDER,
+      async embedDocuments() {
+        throw new Error('Rebuild embedding failure');
+      },
+    },
+    loadTokenizer: async () => tokenizer,
+  });
+  await assert.rejects(failingRebuild.index({ rebuild: true }), /Rebuild embedding failure/u);
+  await assert.rejects(readFile(config.indexMaintenanceStatusPath, 'utf8'), /ENOENT/u);
+
+  const successfulRebuild = createRecallConversationService(config, {
+    embeddingProvider: TEST_EMBEDDING_PROVIDER,
+    loadTokenizer: async () => tokenizer,
+    getCurrentTime: () => new Date('2026-07-25T17:00:00.000Z'),
+  });
+  await successfulRebuild.index({ rebuild: true });
+  assert.deepEqual(JSON.parse(await readFile(config.indexMaintenanceStatusPath, 'utf8')), {
+    version: 1,
+    completedAt: '2026-07-25T17:00:00.000Z',
+    scannedSessions: 1,
+    failedSessions: 0,
+  });
+});
+
+void test('search tolerates unavailable status without catching up changed sessions', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'recall-read-only-search-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const config = createTestConfig(root);
@@ -141,17 +328,55 @@ void test('search never catches up a session changed after explicit indexing', a
     loadTokenizer: async () => tokenizer,
   });
   await service.index({ rebuild: true });
-  const before = await readFile(config.statePath, 'utf8');
+  const stateBeforeSearch = await readFile(config.statePath, 'utf8');
   await writeConversationSession(sessionPath, 'NEW_UNINDEXED_SOURCE_MARKER');
+  const unavailableStatuses: Array<{ name: string; content: string | null }> = [
+    { name: 'missing', content: null },
+    { name: 'malformed JSON', content: '{\n' },
+    {
+      name: 'unsupported version',
+      content:
+        '{"version":2,"completedAt":"2026-07-25T12:00:00.000Z","scannedSessions":1,"failedSessions":0}\n',
+    },
+    {
+      name: 'invalid count',
+      content:
+        '{"version":1,"completedAt":"2026-07-25T12:00:00.000Z","scannedSessions":-1,"failedSessions":0}\n',
+    },
+    {
+      name: 'invalid timestamp',
+      content:
+        '{"version":1,"completedAt":"2026-02-30T12:00:00.000Z","scannedSessions":1,"failedSessions":0}\n',
+    },
+  ];
 
-  const search = await service.search('NEW_UNINDEXED_SOURCE_MARKER', 5, {
-    scope: RecallSearchScope.GLOBAL,
-  });
+  for (const unavailableStatus of unavailableStatuses) {
+    if (unavailableStatus.content === null) {
+      await rm(config.indexMaintenanceStatusPath, { force: true });
+    } else {
+      await writeFile(config.indexMaintenanceStatusPath, unavailableStatus.content, 'utf8');
+    }
 
-  assert.equal(await readFile(config.statePath, 'utf8'), before);
-  assert.ok(
-    search.results.every((result) => !result.content.includes('NEW_UNINDEXED_SOURCE_MARKER')),
-  );
+    const search = await service.search('NEW_UNINDEXED_SOURCE_MARKER', 5, {
+      scope: RecallSearchScope.GLOBAL,
+    });
+
+    assert.equal(search.indexMaintenanceStatus, null, unavailableStatus.name);
+    assert.equal(await readFile(config.statePath, 'utf8'), stateBeforeSearch);
+    assert.ok(
+      search.results.every((result) => !result.content.includes('NEW_UNINDEXED_SOURCE_MARKER')),
+      unavailableStatus.name,
+    );
+    if (unavailableStatus.content === null) {
+      await assert.rejects(readFile(config.indexMaintenanceStatusPath, 'utf8'), /ENOENT/u);
+    } else {
+      assert.equal(
+        await readFile(config.indexMaintenanceStatusPath, 'utf8'),
+        unavailableStatus.content,
+        unavailableStatus.name,
+      );
+    }
+  }
 });
 
 void test('manual rebuild replaces incompatible stored-dimension manifests', async (t) => {

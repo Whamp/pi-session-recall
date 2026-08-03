@@ -105,6 +105,7 @@ export async function loadRecallConversationConfig(
     databasePath: join(dataDirectory, 'zvec'),
     statePath: join(dataDirectory, 'index-state.json'),
     manifestPath: join(dataDirectory, 'index-manifest.json'),
+    indexMaintenanceStatusPath: join(dataDirectory, 'index-maintenance-status.json'),
     tokenizerCacheDirectory: join(dataDirectory, 'tokenizers'),
     lockPath: join(dataDirectory, 'operation.lock'),
     embeddingBaseUrl:

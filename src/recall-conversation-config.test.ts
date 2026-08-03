@@ -21,6 +21,10 @@ void test('recall config defaults to one Octen profile and the frozen search pol
     assert.equal(config.databasePath, join(home, '.pi', 'agent', 'recall', 'zvec'));
     assert.equal(config.statePath, join(home, '.pi', 'agent', 'recall', 'index-state.json'));
     assert.equal(config.manifestPath, join(home, '.pi', 'agent', 'recall', 'index-manifest.json'));
+    assert.equal(
+      config.indexMaintenanceStatusPath,
+      join(home, '.pi', 'agent', 'recall', 'index-maintenance-status.json'),
+    );
     assert.equal('embeddingCacheDirectory' in config, false);
     assert.equal('diagnosticLogPath' in config, false);
   } finally {

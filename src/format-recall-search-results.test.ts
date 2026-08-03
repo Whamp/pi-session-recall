@@ -38,7 +38,12 @@ const result = createTestRankedRecallSearchResult({
 
 void test('recall output includes concise evidence and an agent-readable JSONL source locator', () => {
   const output = formatRecallSearchResults(
-    { totalChunks: 42, results: [result], searchPolicy: createSearchPolicy() },
+    {
+      totalChunks: 42,
+      results: [result],
+      indexMaintenanceStatus: null,
+      searchPolicy: createSearchPolicy(),
+    },
     40,
   );
 
@@ -55,6 +60,7 @@ void test('empty project recall recommends an explicit global retry', () => {
   const output = formatRecallSearchResults({
     totalChunks: 42,
     results: [],
+    indexMaintenanceStatus: null,
     searchPolicy: createSearchPolicy(RecallSearchScope.PROJECT),
   });
 
@@ -78,6 +84,7 @@ void test('turn-context output names every contributing entry and exact source l
   const output = formatRecallSearchResults({
     totalChunks: 1,
     results: [{ ...turn, evidenceRelation: RecallEvidenceRelation.UNRESTRICTED_GLOBAL }],
+    indexMaintenanceStatus: null,
     searchPolicy: createSearchPolicy(),
   });
 
@@ -108,6 +115,7 @@ void test('tool evidence output preserves call linkage and source geometry', () 
   const output = formatRecallSearchResults({
     totalChunks: 1,
     results: [{ ...toolResult, evidenceRelation: RecallEvidenceRelation.UNRESTRICTED_GLOBAL }],
+    indexMaintenanceStatus: null,
     searchPolicy: createSearchPolicy(),
   });
 
@@ -133,6 +141,7 @@ void test('recall output retains stitched chunks and suppressed source occurrenc
   const output = formatRecallSearchResults({
     totalChunks: 2,
     results: [{ ...expanded, evidenceRelation: RecallEvidenceRelation.UNRESTRICTED_GLOBAL }],
+    indexMaintenanceStatus: null,
     searchPolicy: createSearchPolicy(),
   });
 

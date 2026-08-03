@@ -25,6 +25,7 @@ import {
   type RecallConversationSearch,
   type RecallConversationService,
 } from './recall-conversation-service.js';
+import type { RecallIndexMaintenanceStatus } from './recall-index-maintenance-status.js';
 
 const DEFAULT_RECALL_FINAL_RESULT_COUNT = 5;
 const MAX_RECALL_FINAL_RESULT_COUNT = 10;
@@ -137,11 +138,17 @@ export function createPiRecallToolDetails(search: RecallConversationSearch) {
   };
 }
 
+interface PiRecallIndexMaintenanceDetails extends Omit<RecallIndexMaintenanceStatus, 'version'> {
+  ageMinutesAtExecution: number;
+}
+
 /** Search policy and source geometry retained with one Pi recall tool result. */
 export interface PiRecallToolDetails {
   totalChunks: number;
   searchPolicy: RecallConversationSearch['searchPolicy'];
   sources: ReturnType<typeof createPiRecallToolDetails>['sources'];
+  /** Index maintenance freshness fixed at tool execution time. */
+  indexMaintenanceStatus?: PiRecallIndexMaintenanceDetails;
   /** UTF-8 bytes in the bounded evidence body returned for nonzero results. */
   returnedBytes?: number;
   /** Lines in the bounded evidence body returned for nonzero results. */
@@ -157,8 +164,35 @@ interface PiRecallRenderContext {
 type PiRecallCallRenderTheme = Pick<Theme, 'bold' | 'fg'>;
 type PiRecallRenderTheme = Pick<Theme, 'fg'>;
 
+function createPiRecallIndexMaintenanceDetails(
+  status: RecallIndexMaintenanceStatus,
+  currentTime: Date,
+): PiRecallIndexMaintenanceDetails {
+  return {
+    completedAt: status.completedAt,
+    scannedSessions: status.scannedSessions,
+    failedSessions: status.failedSessions,
+    ageMinutesAtExecution: Math.floor(
+      Math.max(0, currentTime.valueOf() - new Date(status.completedAt).valueOf()) / 60_000,
+    ),
+  };
+}
+
+function formatPiRecallIndexMaintenanceAge(ageMinutes: number): string {
+  if (ageMinutes < 60) {
+    return `${ageMinutes}m`;
+  }
+  if (ageMinutes < 24 * 60) {
+    return `${Math.floor(ageMinutes / 60)}h`;
+  }
+  return `${Math.floor(ageMinutes / (24 * 60))}d`;
+}
+
 /** Creates the complete Pi recall tool definition around one conversation service. */
-export function createPiRecallToolDefinition(service: RecallConversationService) {
+export function createPiRecallToolDefinition(
+  service: RecallConversationService,
+  getCurrentTime: () => Date = () => new Date(),
+) {
   return {
     name: 'pi-session-recall',
     label: 'Pi Session Recall',
@@ -206,6 +240,14 @@ export function createPiRecallToolDefinition(service: RecallConversationService)
         content: [{ type: 'text', text }],
         details: {
           ...createPiRecallToolDetails(search),
+          ...(search.indexMaintenanceStatus
+            ? {
+                indexMaintenanceStatus: createPiRecallIndexMaintenanceDetails(
+                  search.indexMaintenanceStatus,
+                  getCurrentTime(),
+                ),
+              }
+            : {}),
           ...(search.results.length > 0
             ? {
                 returnedBytes: truncation.outputBytes,
@@ -239,8 +281,24 @@ export function createPiRecallToolDefinition(service: RecallConversationService)
       const resultCount = details.sources.length;
       const scope =
         details.searchPolicy.scope === RecallSearchScope.PROJECT ? 'project scope' : 'global scope';
+      const indexMaintenanceStatus = details.indexMaintenanceStatus;
+      const freshnessParts = indexMaintenanceStatus
+        ? [
+            `index checked ${formatPiRecallIndexMaintenanceAge(indexMaintenanceStatus.ageMinutesAtExecution)} ago`,
+            ...(indexMaintenanceStatus.failedSessions > 0
+              ? [
+                  `${indexMaintenanceStatus.failedSessions.toLocaleString('en-US')} failed ${indexMaintenanceStatus.failedSessions === 1 ? 'session' : 'sessions'}`,
+                ]
+              : []),
+          ]
+        : [];
       if (resultCount === 0) {
-        text.setText(theme.fg('toolOutput', `No matching past conversations found · ${scope}`));
+        const zeroMatchSummary = [
+          'No matching past conversations found',
+          scope,
+          ...freshnessParts,
+        ].join(' · ');
+        text.setText(theme.fg('toolOutput', zeroMatchSummary));
         return text;
       }
       if (options.expanded) {
@@ -259,6 +317,7 @@ export function createPiRecallToolDefinition(service: RecallConversationService)
       if (details.truncation?.truncated) {
         summaryParts.push('output truncated');
       }
+      summaryParts.push(...freshnessParts);
       const summary = summaryParts.join(' · ');
       const rendered = `${theme.fg('toolOutput', summary)} ${theme.fg('muted', '(')}${keyHint('app.tools.expand', 'to expand')}${theme.fg('muted', ')')}`;
       text.setText(rendered);

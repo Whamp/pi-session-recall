@@ -30,6 +30,7 @@ function createPsrCliFixture(
     databasePath: '/recall/zvec',
     statePath: '/recall/index-state.json',
     manifestPath: '/recall/index-manifest.json',
+    indexMaintenanceStatusPath: '/recall/index-maintenance-status.json',
     tokenizerCacheDirectory: '/recall/tokenizers',
     lockPath: '/recall/operation.lock',
     embeddingBaseUrl: 'http://127.0.0.1:8090/v1',

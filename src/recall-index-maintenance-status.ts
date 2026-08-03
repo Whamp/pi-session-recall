@@ -9,7 +9,7 @@ import { readNodeErrorCode } from './read-node-error-code.js';
 
 const ISO_TIMESTAMP_PATTERN = '^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$';
 
-const recallIndexMaintenanceStatusSchema = Type.Object(
+const RECALL_INDEX_MAINTENANCE_STATUS_SCHEMA = Type.Object(
   {
     version: Type.Literal(1),
     completedAt: Type.String({ pattern: ISO_TIMESTAMP_PATTERN }),
@@ -48,7 +48,7 @@ export async function readRecallIndexMaintenanceStatus(
 
   try {
     const parsed: unknown = JSON.parse(content);
-    const status = Value.Parse(recallIndexMaintenanceStatusSchema, parsed);
+    const status = Value.Parse(RECALL_INDEX_MAINTENANCE_STATUS_SCHEMA, parsed);
     return isValidIndexMaintenanceTimestamp(status.completedAt) ? status : null;
   } catch {
     return null;
@@ -60,7 +60,7 @@ export async function writeRecallIndexMaintenanceStatus(
   statusPath: string,
   status: RecallIndexMaintenanceStatus,
 ): Promise<void> {
-  Value.Parse(recallIndexMaintenanceStatusSchema, status);
+  Value.Parse(RECALL_INDEX_MAINTENANCE_STATUS_SCHEMA, status);
   if (!isValidIndexMaintenanceTimestamp(status.completedAt)) {
     throw new Error(`Recall Index maintenance status timestamp invalid: ${status.completedAt}`);
   }

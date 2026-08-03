@@ -192,6 +192,18 @@ function renderSystemdTimer(interval: AutoIndexInterval): string {
   ].join('\n');
 }
 
+function throwSchedulerProcessError(
+  executable: string,
+  argumentsList: readonly string[],
+  result: AutoIndexSchedulerProcessResult,
+): never {
+  const detail = result.stderr.trim();
+  const suffix = detail.length === 0 ? '' : `: ${detail}`;
+  throw new Error(
+    `Auto-index scheduler command failed: ${executable} ${argumentsList.join(' ')}${suffix}`,
+  );
+}
+
 async function runRequiredSchedulerProcess(
   system: AutoIndexSchedulerSystem,
   executable: string,
@@ -199,11 +211,48 @@ async function runRequiredSchedulerProcess(
 ): Promise<void> {
   const result = await system.runProcess(executable, argumentsList);
   if (result.exitCode !== 0) {
-    const detail = result.stderr.trim();
-    const suffix = detail.length === 0 ? '' : `: ${detail}`;
-    throw new Error(
-      `Auto-index scheduler command failed: ${executable} ${argumentsList.join(' ')}${suffix}`,
-    );
+    throwSchedulerProcessError(executable, argumentsList, result);
+  }
+}
+
+function isLaunchAgentAlreadyUnloaded(result: AutoIndexSchedulerProcessResult): boolean {
+  const detail = result.stderr.toLowerCase();
+  return (
+    detail.includes('could not find specified service') ||
+    detail.includes('nothing found to unload') ||
+    detail.includes('no such process')
+  );
+}
+
+async function unloadLaunchAgent(
+  system: AutoIndexSchedulerSystem,
+  plistPath: string,
+): Promise<void> {
+  const argumentsList = ['unload', plistPath];
+  const result = await system.runProcess('launchctl', argumentsList);
+  if (result.exitCode !== 0 && !isLaunchAgentAlreadyUnloaded(result)) {
+    throwSchedulerProcessError('launchctl', argumentsList, result);
+  }
+}
+
+function isSystemdUnitAbsent(result: AutoIndexSchedulerProcessResult, unitName: string): boolean {
+  const detail = result.stderr.toLowerCase();
+  const normalizedUnitName = unitName.toLowerCase();
+  return (
+    detail.includes(`unit ${normalizedUnitName} does not exist`) ||
+    detail.includes(`unit file ${normalizedUnitName} does not exist`) ||
+    detail.includes(`unit ${normalizedUnitName} not loaded`)
+  );
+}
+
+async function runSystemdUninstallProcess(
+  system: AutoIndexSchedulerSystem,
+  argumentsList: readonly string[],
+  unitName: string,
+): Promise<void> {
+  const result = await system.runProcess('systemctl', argumentsList);
+  if (result.exitCode !== 0 && !isSystemdUnitAbsent(result, unitName)) {
+    throwSchedulerProcessError('systemctl', argumentsList, result);
   }
 }
 
@@ -247,7 +296,7 @@ async function installLaunchAgentAutoIndexSchedule(
   const launchAgentsDirectory = join(system.homeDirectory, 'Library', 'LaunchAgents');
   const plistPath = join(launchAgentsDirectory, LAUNCH_AGENT_FILE_NAME);
   const logsDirectory = join(system.homeDirectory, '.pi', 'agent', 'logs');
-  await system.runProcess('launchctl', ['unload', plistPath]);
+  await unloadLaunchAgent(system, plistPath);
   await system.makeDirectory(launchAgentsDirectory);
   await system.makeDirectory(logsDirectory);
   await system.writeFile(plistPath, renderLaunchAgentPlist(interval, system));
@@ -260,14 +309,22 @@ async function uninstallLaunchAgentAutoIndexSchedule(
   system: AutoIndexSchedulerSystem,
 ): Promise<void> {
   const plistPath = join(system.homeDirectory, 'Library', 'LaunchAgents', LAUNCH_AGENT_FILE_NAME);
-  await system.runProcess('launchctl', ['unload', plistPath]);
+  await unloadLaunchAgent(system, plistPath);
   await system.removeFile(plistPath);
 }
 
 async function uninstallSystemdAutoIndexSchedule(system: AutoIndexSchedulerSystem): Promise<void> {
   const userUnitDirectory = join(readSystemdConfigHome(system), 'systemd', 'user');
-  await system.runProcess('systemctl', ['--user', 'disable', '--now', SYSTEMD_TIMER_NAME]);
-  await system.runProcess('systemctl', ['--user', 'stop', SYSTEMD_SERVICE_NAME]);
+  await runSystemdUninstallProcess(
+    system,
+    ['--user', 'disable', '--now', SYSTEMD_TIMER_NAME],
+    SYSTEMD_TIMER_NAME,
+  );
+  await runSystemdUninstallProcess(
+    system,
+    ['--user', 'stop', SYSTEMD_SERVICE_NAME],
+    SYSTEMD_SERVICE_NAME,
+  );
   await system.removeFile(join(userUnitDirectory, SYSTEMD_SERVICE_NAME));
   await system.removeFile(join(userUnitDirectory, SYSTEMD_TIMER_NAME));
   await runRequiredSchedulerProcess(system, 'systemctl', ['--user', 'daemon-reload']);

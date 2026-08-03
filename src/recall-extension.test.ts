@@ -634,7 +634,7 @@ void test('Pi extension registers only the read-only recall tool and directs mai
 
   assert.equal(registeredToolCount, 1);
   assert.equal(registeredName, 'pi-session-recall');
-  assert.match(registeredDescription, /run `psr index` explicitly/);
+  assert.match(registeredDescription, /only standalone `psr index` maintenance does/);
   assert.doesNotMatch(registeredDescription, /Qwen|query.plann|background/iu);
   const schemaText = JSON.stringify(registeredParameters);
   assert.match(schemaText, /query/);

@@ -16,12 +16,15 @@ function createPsrCliFixture(
     monotonicTimes?: number[];
     failedSessions?: Array<{ sessionPath: string; error: string }>;
     fatalError?: Error;
+    schedulerPlatform?: NodeJS.Platform;
+    schedulerProcessResults?: Array<{ exitCode: number; stderr: string }>;
   } = {},
 ) {
   const calls: RecallConversationIndexOptions[] = [];
   const output: string[] = [];
   const progressOutput: string[] = [];
   const executionLog: string[] = [];
+  const schedulerProcessCalls: Array<{ executable: string; argumentsList: readonly string[] }> = [];
   const config: RecallConversationConfig = {
     sessionsDirectory: '/sessions',
     databasePath: '/recall/zvec',
@@ -90,7 +93,23 @@ function createPsrCliFixture(
       getMonotonicTimeMs() {
         return options.monotonicTimes?.shift() ?? 0;
       },
+      schedulerSystem: {
+        platform: options.schedulerPlatform ?? 'linux',
+        homeDirectory: '/home/recall-user',
+        xdgConfigHome: '/home/recall-user/.config-test',
+        nodeExecutablePath: '/opt/node/bin/node',
+        packageRoot: '/opt/pi-session-recall',
+        async makeDirectory() {},
+        async writeFile() {},
+        async setFileMode() {},
+        async removeFile() {},
+        async runProcess(executable: string, argumentsList: readonly string[]) {
+          schedulerProcessCalls.push({ executable, argumentsList });
+          return options.schedulerProcessResults?.shift() ?? { exitCode: 0, stderr: '' };
+        },
+      },
     },
+    schedulerProcessCalls,
   };
 }
 
@@ -458,7 +477,86 @@ void test('psr index --rebuild explicitly replaces the index', async () => {
   );
 });
 
-void test('psr rejects every command surface other than manual index and rebuild', async () => {
+void test('psr auto-index install routes the default interval and reports success', async () => {
+  const fixture = createPsrCliFixture();
+
+  const exitCode = await runPsrCli(['auto-index', 'install'], fixture.dependencies);
+
+  assert.equal(exitCode, 0);
+  assert.equal(fixture.output.join(''), 'Automatic recall indexing installed every 1h.\n');
+  assert.equal(fixture.schedulerProcessCalls.length, 4);
+  assert.deepEqual(fixture.calls, []);
+});
+
+void test('psr auto-index install accepts and reports an explicit interval', async () => {
+  const fixture = createPsrCliFixture();
+
+  const exitCode = await runPsrCli(
+    ['auto-index', 'install', '--interval', '30m'],
+    fixture.dependencies,
+  );
+
+  assert.equal(exitCode, 0);
+  assert.equal(fixture.output.join(''), 'Automatic recall indexing installed every 30m.\n');
+});
+
+void test('psr auto-index install reports a nonfatal immediate indexing warning', async () => {
+  const fixture = createPsrCliFixture([], {
+    schedulerProcessResults: [
+      { exitCode: 0, stderr: '' },
+      { exitCode: 0, stderr: '' },
+      { exitCode: 0, stderr: '' },
+      { exitCode: 1, stderr: 'psr index exited with status 1' },
+    ],
+  });
+
+  const exitCode = await runPsrCli(['auto-index', 'install'], fixture.dependencies);
+
+  assert.equal(exitCode, 0);
+  assert.equal(fixture.output.join(''), 'Automatic recall indexing installed every 1h.\n');
+  assert.match(
+    fixture.progressOutput.join(''),
+    /Warning: Automatic recall indexing was installed, but the immediate psr index attempt failed: psr index exited with status 1/iu,
+  );
+});
+
+void test('psr auto-index uninstall routes scheduler removal and reports success', async () => {
+  const fixture = createPsrCliFixture();
+
+  const exitCode = await runPsrCli(['auto-index', 'uninstall'], fixture.dependencies);
+
+  assert.equal(exitCode, 0);
+  assert.equal(fixture.output.join(''), 'Automatic recall indexing uninstalled.\n');
+  assert.equal(fixture.schedulerProcessCalls.length, 3);
+  assert.deepEqual(fixture.calls, []);
+});
+
+void test('psr auto-index rejects invalid intervals before touching index maintenance', async () => {
+  const fixture = createPsrCliFixture();
+
+  for (const interval of ['0m', '-1h', '1.5h', '1', '1H', ' 1h', '1d', '01h']) {
+    await assert.rejects(
+      runPsrCli(['auto-index', 'install', '--interval', interval], fixture.dependencies),
+      /psr auto-index interval must be a positive whole number followed by m or h/u,
+    );
+  }
+
+  assert.deepEqual(fixture.calls, []);
+  assert.deepEqual(fixture.executionLog, []);
+});
+
+void test('psr auto-index rejects unsupported platforms with one clear error', async () => {
+  const fixture = createPsrCliFixture([], { schedulerPlatform: 'win32' });
+
+  await assert.rejects(
+    runPsrCli(['auto-index', 'install'], fixture.dependencies),
+    /Auto-index scheduler is not supported on platform win32/u,
+  );
+
+  assert.equal(fixture.schedulerProcessCalls.length, 0);
+});
+
+void test('psr rejects every command surface other than index and auto-index', async () => {
   const fixture = createPsrCliFixture();
 
   await assert.rejects(

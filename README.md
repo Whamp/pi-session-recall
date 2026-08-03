@@ -2,7 +2,7 @@
 
 Pi Session Recall searches past Pi conversations by meaning or exact text. It reads Pi session JSONL files, stores searchable evidence in one local zvec collection, and returns the original file and line range for every result.
 
-Index maintenance is manual. The standalone `psr` command is the only writer. The Pi `pi-session-recall` tool is read-only.
+The standalone `psr index` command is the only writer. Run it directly or opt into a native per-user schedule. Pi lifecycle and the `pi-session-recall` tool remain read-only.
 
 ## Install
 
@@ -21,9 +21,12 @@ psr index --rebuild
 ## Commands
 
 ```bash
-psr index             # add, update, and remove changed session evidence
-psr index --rebuild   # replace incompatible or damaged index state
-psr index --compact   # keep the former one-line stdout summary
+psr index                                      # add, update, and remove changed session evidence
+psr index --rebuild                            # replace incompatible or damaged index state
+psr index --compact                            # keep the former one-line stdout summary
+psr auto-index install                         # schedule psr index every hour
+psr auto-index install --interval 30m          # replace the schedule with another interval
+psr auto-index uninstall                       # remove the schedule
 ```
 
 `psr index`:
@@ -39,7 +42,34 @@ psr index --compact   # keep the former one-line stdout summary
 
 The estimate uses the observed rate of healthy files in the current run. Until enough work completes, the command says that it is calculating the estimate rather than inventing an initial duration. `--compact` preserves the former one-line completed summary and `Failed: ...` lines on stdout; progress remains on stderr.
 
-No startup hook, completed-turn hook, shutdown hook, watcher, background worker, daemon, or search request updates the index.
+No startup hook, completed-turn hook, shutdown hook, watcher, package daemon, or search request updates the index.
+
+### Automatic index maintenance
+
+`psr auto-index install` creates a per-user native schedule. It accepts a positive whole number followed by lowercase `m` or `h`; the default is `1h`. Installation never uses `sudo`. Reinstalling replaces the existing definition and captures absolute paths to the current Node executable and installed package.
+
+The generated definition runs the equivalent of:
+
+```text
+<absolute-node> --import tsx <absolute-package-root>/bin/psr index
+```
+
+It does not copy `PI_RECALL_*` overrides from the installation shell. Scheduled runs use the durable recall configuration file and normal defaults.
+
+On Linux, installation writes a systemd user service and timer under `${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/`. It starts the timer, then attempts one immediate index run. If that run fails, installation warns but leaves the timer active; the next interval retries through the ordinary `psr index` behavior. Read logs with:
+
+```bash
+journalctl --user-unit=pi-session-recall-index.service
+```
+
+On macOS, installation writes `~/Library/LaunchAgents/dev.pi-session-recall.auto-index.plist` with mode `0600`. `RunAtLoad` requests the immediate run. The plist directs standard output and error to:
+
+```text
+~/.pi/agent/logs/pi-session-recall-auto-index.out.log
+~/.pi/agent/logs/pi-session-recall-auto-index.err.log
+```
+
+The macOS path is runtime-untested. No Mac was available to verify plist acceptance; `RunAtLoad` and recurring `StartInterval` execution; retry after an exit-status-1 run; overlap suppression; absolute Node plus `--import tsx`; log appends; or access to the durable recall configuration and embedding endpoint from the LaunchAgent environment. Other platforms fail with an unsupported-platform error.
 
 The indexer checkpoints `index-state.json` after every 100 changed sessions and after the final partial batch. If indexing stops between checkpoints, rerun `psr index`; it safely revisits the uncheckpointed sessions and reuses matching vectors already stored in zvec.
 

@@ -110,13 +110,13 @@ export interface RecallConversationIndexOptions {
   optimize?: boolean;
 }
 
-/** Counts from one completed manual index update. */
+/** Counts from one completed standalone index update. */
 export interface RecallConversationIndexResult {
   indexSummary: ConversationIndexSummary;
   totalChunks: number;
 }
 
-/** Read-only search and explicit manual indexing for one zvec recall collection. */
+/** Read-only search and standalone indexing for one zvec recall collection. */
 export interface RecallConversationService {
   search(
     query: string,

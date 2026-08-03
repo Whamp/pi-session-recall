@@ -1,4 +1,4 @@
-/** Observable phases and cumulative facts from one explicit manual index maintenance operation. */
+/** Observable phases and cumulative facts from one standalone index maintenance operation. */
 export type RecallIndexProgressEvent =
   | { kind: 'preparing' }
   | { kind: 'waiting-for-write-lock' }

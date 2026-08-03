@@ -1,6 +1,13 @@
 import { performance } from 'node:perf_hooks';
 
 import {
+  addIgnoredPhysicalSessionPath,
+  listIgnoredPhysicalSessionPaths,
+  normalizePhysicalSessionPath,
+  removeIgnoredPhysicalSessionPath,
+} from './physical-session-ignore.js';
+
+import {
   DEFAULT_AUTO_INDEX_SCHEDULER_SYSTEM,
   installAutoIndexSchedule,
   uninstallAutoIndexSchedule,
@@ -20,6 +27,9 @@ const PSR_USAGE = [
   'psr usage: psr index [--rebuild] [--compact]',
   '           psr auto-index install [--interval <N>m|<N>h]',
   '           psr auto-index uninstall',
+  '           psr ignore add <session-path>',
+  '           psr ignore list',
+  '           psr ignore remove <session-path>',
 ].join('\n');
 const AUTO_INDEX_INTERVAL_PATTERN = /^[1-9][0-9]*[mh]$/u;
 const AUTO_INDEX_INTERVAL_ERROR =
@@ -33,6 +43,7 @@ export interface PsrCliDependencies {
   writeOutput: (text: string) => void;
   writeProgress: (text: string) => void;
   getMonotonicTimeMs: () => number;
+  getCurrentDirectory: () => string;
   schedulerSystem: AutoIndexSchedulerSystem;
 }
 
@@ -46,6 +57,7 @@ const DEFAULT_PSR_CLI_DEPENDENCIES: PsrCliDependencies = {
     process.stderr.write(text);
   },
   getMonotonicTimeMs: performance.now.bind(performance),
+  getCurrentDirectory: () => process.cwd(),
   schedulerSystem: DEFAULT_AUTO_INDEX_SCHEDULER_SYSTEM,
 };
 
@@ -160,7 +172,8 @@ function formatRecallIndexProgress(
     case 'planning-maintenance-workset':
       return 'Planning maintenance workset...';
     case 'maintenance-workset-planned': {
-      const plannedFiles = event.newFiles + event.changedFiles + event.missingFiles;
+      const plannedFiles =
+        event.newFiles + event.changedFiles + event.missingFiles + event.ignoredRemovals;
       const lines = [
         '',
         `Found ${formatCountedNoun(event.discoveredFiles, 'physical session file')}.`,
@@ -173,7 +186,7 @@ function formatRecallIndexProgress(
         lines.push('No files require indexing or removal.');
       } else {
         lines.push(
-          `Maintenance workset: ${formatCountedNoun(plannedFiles, 'file')} (${ENGLISH_INTEGER_FORMAT.format(event.newFiles)} new, ${ENGLISH_INTEGER_FORMAT.format(event.changedFiles)} changed, ${ENGLISH_INTEGER_FORMAT.format(event.missingFiles)} missing).`,
+          `Maintenance workset: ${formatCountedNoun(plannedFiles, 'file')} (${ENGLISH_INTEGER_FORMAT.format(event.newFiles)} new, ${ENGLISH_INTEGER_FORMAT.format(event.changedFiles)} changed, ${ENGLISH_INTEGER_FORMAT.format(event.missingFiles)} missing, ${ENGLISH_INTEGER_FORMAT.format(event.ignoredRemovals)} ignored removals).`,
         );
       }
       if (plannedFiles > 0) {
@@ -194,7 +207,50 @@ function formatRecallIndexProgress(
   }
 }
 
-/** Runs the standalone CLI; only the `index` command writes recall index state. */
+async function runPsrIgnoreCommand(
+  argumentsList: readonly string[],
+  dependencies: PsrCliDependencies,
+): Promise<number> {
+  const subcommand = argumentsList[1];
+  const expectedLength = subcommand === 'list' ? 2 : 3;
+  if (
+    (subcommand !== 'add' && subcommand !== 'list' && subcommand !== 'remove') ||
+    argumentsList.length !== expectedLength
+  ) {
+    throw new Error(PSR_USAGE);
+  }
+  const config = await dependencies.loadConfig();
+  if (subcommand === 'list') {
+    const paths = await listIgnoredPhysicalSessionPaths(config.physicalSessionIgnoreStatePath);
+    if (paths.length > 0) {
+      dependencies.writeOutput(`${paths.join('\n')}\n`);
+    }
+    return 0;
+  }
+
+  const inputPath = argumentsList[2] ?? '';
+  const normalizedPath = normalizePhysicalSessionPath(
+    dependencies.getCurrentDirectory(),
+    inputPath,
+  );
+  if (subcommand === 'add') {
+    const added = await addIgnoredPhysicalSessionPath(
+      config.physicalSessionIgnoreStatePath,
+      normalizedPath,
+    );
+    dependencies.writeOutput(`${added ? 'Ignored' : 'Already ignored'}: ${normalizedPath}\n`);
+    return 0;
+  }
+
+  const removed = await removeIgnoredPhysicalSessionPath(
+    config.physicalSessionIgnoreStatePath,
+    normalizedPath,
+  );
+  dependencies.writeOutput(`${removed ? 'Removed' : 'Not ignored'}: ${normalizedPath}\n`);
+  return 0;
+}
+
+/** Runs the standalone CLI; index writes recall index state and ignore writes PSR policy state. */
 export async function runPsrCli(
   argumentsList: readonly string[],
   dependencies: PsrCliDependencies = DEFAULT_PSR_CLI_DEPENDENCIES,
@@ -202,6 +258,9 @@ export async function runPsrCli(
   if (argumentsList.length === 0 || argumentsList[0] === '--help') {
     dependencies.writeOutput(`${PSR_USAGE}\n`);
     return 0;
+  }
+  if (argumentsList[0] === 'ignore') {
+    return runPsrIgnoreCommand(argumentsList, dependencies);
   }
   if (argumentsList[0] === 'auto-index') {
     if (argumentsList[1] === 'uninstall' && argumentsList.length === 2) {

@@ -14,6 +14,7 @@ import {
   type ConversationIndexSummary,
 } from './incremental-session-indexer.js';
 import { loadOctenConversationTokenizer } from './octen-conversation-tokenizer.js';
+import { listIgnoredPhysicalSessionPaths } from './physical-session-ignore.js';
 import type { RecallIndexProgressEvent } from './recall-index-progress.js';
 import { createOctenHttpEmbeddingProvider } from './octen-http-embedding-provider.js';
 import type { RecallChunkPolicy } from './recall-chunk-policy.js';
@@ -58,6 +59,7 @@ export interface RecallConversationConfig {
   statePath: string;
   manifestPath: string;
   indexMaintenanceStatusPath: string;
+  physicalSessionIgnoreStatePath: string;
   tokenizerCacheDirectory: string;
   lockPath: string;
   embeddingBaseUrl: string;
@@ -421,6 +423,9 @@ export function createRecallConversationService(
       );
       let store: ZvecConversationStore | undefined;
       try {
+        const ignoredPhysicalSessionPaths: ReadonlySet<string> = new Set(
+          await listIgnoredPhysicalSessionPaths(config.physicalSessionIgnoreStatePath),
+        );
         if (options.rebuild) {
           await rm(config.indexMaintenanceStatusPath, { force: true });
           await rm(config.databasePath, { recursive: true, force: true });
@@ -438,6 +443,7 @@ export function createRecallConversationService(
           store,
           embeddingProvider,
           tokenizer: conversationTokenizer,
+          ignoredPhysicalSessionPaths,
           chunkPolicy: {
             maxTokens: manifest.chunkPolicy.maxTokens,
             overlapTokens: manifest.chunkPolicy.overlapTokens,

@@ -1,5 +1,5 @@
 import { mkdir, readdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
 import { Type } from 'typebox';
 import { Value } from 'typebox/value';
@@ -65,6 +65,7 @@ export interface IncrementalSessionIndexerOptions {
   embeddingProvider: RecallEmbeddingProvider;
   tokenizer: ConversationTextTokenizer;
   chunkPolicy: RecallChunkPolicy;
+  ignoredPhysicalSessionPaths: ReadonlySet<string>;
   resolveProjectIdentity?: (sessionOrigin: string) => Promise<ResolvedProjectIdentity | null>;
   signal?: AbortSignal;
   rebuild?: boolean;
@@ -82,6 +83,7 @@ interface MaintenanceWorksetPlan {
   discoveredFiles: number;
   filesToIndex: PlannedPhysicalSessionFile[];
   missingFiles: string[];
+  ignoredIndexedFiles: string[];
 }
 
 async function listRecallSessionFiles(directory: string): Promise<string[]> {
@@ -354,9 +356,13 @@ async function indexChangedRecallSessionFile(
 async function planMaintenanceWorkset(
   sessionFiles: readonly string[],
   state: ConversationIndexState,
+  ignoredPhysicalSessionPaths: ReadonlySet<string>,
 ): Promise<MaintenanceWorksetPlan> {
   const filesToIndex: PlannedPhysicalSessionFile[] = [];
   for (const sessionPath of sessionFiles) {
+    if (ignoredPhysicalSessionPaths.has(sessionPath)) {
+      continue;
+    }
     const fileStats = await stat(sessionPath);
     const previous = state.sessions[sessionPath];
     if (!previous) {
@@ -376,24 +382,36 @@ async function planMaintenanceWorkset(
     }
   }
   const liveSessionPaths = new Set(sessionFiles);
+  const indexedSessionPaths = Object.keys(state.sessions);
   return {
     discoveredFiles: sessionFiles.length,
     filesToIndex,
-    missingFiles: Object.keys(state.sessions)
-      .filter((sessionPath) => !liveSessionPaths.has(sessionPath))
+    missingFiles: indexedSessionPaths
+      .filter(
+        (sessionPath) =>
+          !ignoredPhysicalSessionPaths.has(sessionPath) && !liveSessionPaths.has(sessionPath),
+      )
+      .sort(),
+    ignoredIndexedFiles: indexedSessionPaths
+      .filter((sessionPath) => ignoredPhysicalSessionPaths.has(sessionPath))
       .sort(),
   };
 }
 
-/** Incrementally updates one zvec collection from changed, new, and missing physical session files. */
+/** Indexes eligible new or changed physical session files and removes missing or ignored ones. */
 export async function indexChangedConversationSessions(
   options: IncrementalSessionIndexerOptions,
 ): Promise<ConversationIndexSummary> {
   const state = await readConversationIndexState(options.statePath);
   options.onProgress?.({ kind: 'discovering-physical-session-files' });
-  const sessionFiles = await listRecallSessionFiles(options.sessionsDirectory);
+  const sessionsDirectory = resolve(options.sessionsDirectory);
+  const sessionFiles = await listRecallSessionFiles(sessionsDirectory);
   options.onProgress?.({ kind: 'planning-maintenance-workset' });
-  const workset = await planMaintenanceWorkset(sessionFiles, state);
+  const workset = await planMaintenanceWorkset(
+    sessionFiles,
+    state,
+    options.ignoredPhysicalSessionPaths,
+  );
   const summary = createConversationIndexSummary();
   summary.scannedSessions = workset.discoveredFiles;
   options.onProgress?.({
@@ -402,21 +420,23 @@ export async function indexChangedConversationSessions(
     newFiles: workset.filesToIndex.filter((file) => file.change === 'new').length,
     changedFiles: workset.filesToIndex.filter((file) => file.change === 'changed').length,
     missingFiles: workset.missingFiles.length,
+    ignoredRemovals: workset.ignoredIndexedFiles.length,
     rebuild: options.rebuild ?? false,
   });
 
-  const totalWorksetFiles = workset.missingFiles.length + workset.filesToIndex.length;
+  const indexedPathsToRemove = [...workset.missingFiles, ...workset.ignoredIndexedFiles];
+  const totalWorksetFiles = indexedPathsToRemove.length + workset.filesToIndex.length;
   let completedWorksetFiles = 0;
-  for (const missingPath of workset.missingFiles) {
+  for (const sessionPath of indexedPathsToRemove) {
     throwIfIndexingAborted(options.signal);
-    removeIndexedSession(state, missingPath, options.store, summary);
+    removeIndexedSession(state, sessionPath, options.store, summary);
     completedWorksetFiles += 1;
     emitMaintenanceWorksetProgress(
       options,
       summary,
       completedWorksetFiles,
       totalWorksetFiles,
-      missingPath,
+      sessionPath,
     );
   }
   if (summary.removedSessions > 0) {

@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import test from 'node:test';
 
 import type {
@@ -18,6 +21,8 @@ function createPsrCliFixture(
     fatalError?: Error;
     schedulerPlatform?: NodeJS.Platform;
     schedulerProcessResults?: Array<{ exitCode: number; stderr: string }>;
+    physicalSessionIgnoreStatePath?: string;
+    currentDirectory?: string;
   } = {},
 ) {
   const calls: RecallConversationIndexOptions[] = [];
@@ -31,6 +36,8 @@ function createPsrCliFixture(
     statePath: '/recall/index-state.json',
     manifestPath: '/recall/index-manifest.json',
     indexMaintenanceStatusPath: '/recall/index-maintenance-status.json',
+    physicalSessionIgnoreStatePath:
+      options.physicalSessionIgnoreStatePath ?? '/recall/physical-session-ignore.json',
     tokenizerCacheDirectory: '/recall/tokenizers',
     lockPath: '/recall/operation.lock',
     embeddingBaseUrl: 'http://127.0.0.1:8090/v1',
@@ -81,6 +88,7 @@ function createPsrCliFixture(
         return config;
       },
       createService(receivedConfig: RecallConversationConfig) {
+        executionLog.push('create service');
         assert.equal(receivedConfig, config);
         return service;
       },
@@ -93,6 +101,9 @@ function createPsrCliFixture(
       },
       getMonotonicTimeMs() {
         return options.monotonicTimes?.shift() ?? 0;
+      },
+      getCurrentDirectory() {
+        return options.currentDirectory ?? '/working-directory';
       },
       schedulerSystem: {
         platform: options.schedulerPlatform ?? 'linux',
@@ -114,6 +125,134 @@ function createPsrCliFixture(
   };
 }
 
+void test('psr ignore add, list, and remove persist normalized exact paths without creating the service', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'psr-ignore-cli-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const fixture = createPsrCliFixture([], {
+    physicalSessionIgnoreStatePath: join(root, 'physical-session-ignore.json'),
+    currentDirectory: join(root, 'working'),
+  });
+  const normalizedPath = resolve(root, 'sessions', 'one.jsonl');
+
+  assert.equal(
+    await runPsrCli(['ignore', 'add', '../sessions/one.jsonl'], fixture.dependencies),
+    0,
+  );
+  assert.equal(fixture.output.join(''), `Ignored: ${normalizedPath}\n`);
+  assert.equal(
+    await readFile(join(root, 'physical-session-ignore.json'), 'utf8'),
+    `${JSON.stringify({ version: 1, ignoredPhysicalSessionPaths: [normalizedPath] })}\n`,
+  );
+
+  fixture.output.length = 0;
+  assert.equal(await runPsrCli(['ignore', 'list'], fixture.dependencies), 0);
+  assert.equal(fixture.output.join(''), `${normalizedPath}\n`);
+
+  fixture.output.length = 0;
+  assert.equal(
+    await runPsrCli(['ignore', 'remove', '../sessions/one.jsonl'], fixture.dependencies),
+    0,
+  );
+  assert.equal(fixture.output.join(''), `Removed: ${normalizedPath}\n`);
+  fixture.output.length = 0;
+  assert.equal(await runPsrCli(['ignore', 'list'], fixture.dependencies), 0);
+  assert.equal(fixture.output.join(''), '');
+  assert.ok(!fixture.executionLog.includes('create service'));
+});
+
+void test('psr ignore mutations are deterministic and idempotent for literal paths', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'psr-ignore-idempotent-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const statePath = join(root, 'physical-session-ignore.json');
+  const fixture = createPsrCliFixture([], {
+    physicalSessionIgnoreStatePath: statePath,
+    currentDirectory: root,
+  });
+  const nonexistentPath = resolve(root, 'z-no-extension');
+  const literalGlobPath = resolve(root, '*.jsonl');
+
+  await runPsrCli(['ignore', 'add', 'z-no-extension'], fixture.dependencies);
+  await runPsrCli(['ignore', 'add', '*.jsonl'], fixture.dependencies);
+  const persisted = await readFile(statePath, 'utf8');
+  const persistedInode = (await stat(statePath)).ino;
+  fixture.output.length = 0;
+
+  assert.equal(await runPsrCli(['ignore', 'add', 'z-no-extension'], fixture.dependencies), 0);
+  assert.equal(fixture.output.join(''), `Already ignored: ${nonexistentPath}\n`);
+  assert.equal(await readFile(statePath, 'utf8'), persisted);
+  assert.equal((await stat(statePath)).ino, persistedInode);
+
+  fixture.output.length = 0;
+  assert.equal(await runPsrCli(['ignore', 'remove', 'absent'], fixture.dependencies), 0);
+  assert.equal(fixture.output.join(''), `Not ignored: ${resolve(root, 'absent')}\n`);
+  assert.equal(await readFile(statePath, 'utf8'), persisted);
+  assert.equal((await stat(statePath)).ino, persistedInode);
+
+  fixture.output.length = 0;
+  await runPsrCli(['ignore', 'list'], fixture.dependencies);
+  assert.equal(fixture.output.join(''), `${literalGlobPath}\n${nonexistentPath}\n`);
+  assert.ok(!fixture.executionLog.includes('create service'));
+});
+
+void test('psr ignore rejects malformed or noncanonical persisted policy state', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'psr-ignore-invalid-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const statePath = join(root, 'physical-session-ignore.json');
+  const fixture = createPsrCliFixture([], {
+    physicalSessionIgnoreStatePath: statePath,
+    currentDirectory: root,
+  });
+  const invalidStates = [
+    '{',
+    '{"version":2,"ignoredPhysicalSessionPaths":[]}',
+    '{"version":1,"ignoredPhysicalSessionPaths":[],"extra":true}',
+    '{"version":1,"ignoredPhysicalSessionPaths":["relative.jsonl"]}',
+    '{"version":1,"ignoredPhysicalSessionPaths":["/same.jsonl","/same.jsonl"]}',
+    '{"version":1,"ignoredPhysicalSessionPaths":["/z.jsonl","/a.jsonl"]}',
+    '{"version":1,"ignoredPhysicalSessionPaths":["/not/../normalized.jsonl"]}',
+  ];
+
+  for (const invalidState of invalidStates) {
+    await writeFile(statePath, `${invalidState}\n`, 'utf8');
+    await assert.rejects(
+      runPsrCli(['ignore', 'add', 'new.jsonl'], fixture.dependencies),
+      new RegExp(`Physical session ignore state invalid at ${statePath}`, 'u'),
+    );
+    assert.equal(await readFile(statePath, 'utf8'), `${invalidState}\n`);
+  }
+  assert.ok(!fixture.executionLog.includes('create service'));
+});
+
+void test('psr ignore rejects invalid subcommands and arity with the complete usage', async () => {
+  const fixture = createPsrCliFixture();
+  const usage = [
+    'psr usage: psr index [--rebuild] [--compact]',
+    '           psr auto-index install [--interval <N>m|<N>h]',
+    '           psr auto-index uninstall',
+    '           psr ignore add <session-path>',
+    '           psr ignore list',
+    '           psr ignore remove <session-path>',
+  ].join('\n');
+  const invalidArguments = [
+    ['ignore'],
+    ['ignore', 'unknown'],
+    ['ignore', 'add'],
+    ['ignore', 'add', 'one', 'two'],
+    ['ignore', 'list', 'one'],
+    ['ignore', 'remove'],
+    ['ignore', 'remove', 'one', 'two'],
+  ];
+
+  for (const argumentsList of invalidArguments) {
+    await assert.rejects(runPsrCli(argumentsList, fixture.dependencies), (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.equal(error.message, usage);
+      return true;
+    });
+  }
+  assert.deepEqual(fixture.executionLog, []);
+});
+
 void test('psr index keeps progress on stderr and the completed summary on stdout', async () => {
   const fixture = createPsrCliFixture([
     { kind: 'discovering-physical-session-files' },
@@ -123,6 +262,7 @@ void test('psr index keeps progress on stderr and the completed summary on stdou
       newFiles: 1,
       changedFiles: 1,
       missingFiles: 0,
+      ignoredRemovals: 0,
       rebuild: false,
     },
     { kind: 'optimizing-collection' },
@@ -256,6 +396,7 @@ void test('psr index prints planning and indexing phase transitions in event ord
       newFiles: 1,
       changedFiles: 0,
       missingFiles: 0,
+      ignoredRemovals: 0,
       rebuild: false,
     },
     { kind: 'indexing-changed-physical-session-files' },
@@ -268,7 +409,7 @@ void test('psr index prints planning and indexing phase transitions in event ord
     [
       '',
       'Found 1 physical session file.',
-      'Maintenance workset: 1 file (1 new, 0 changed, 0 missing).',
+      'Maintenance workset: 1 file (1 new, 0 changed, 0 missing, 0 ignored removals).',
       'Estimated time: calculating after the first file completes.',
       '',
     ].join('\n'),
@@ -284,11 +425,26 @@ void test('psr index describes empty and rebuild maintenance worksets in plain t
       newFiles: 0,
       changedFiles: 0,
       missingFiles: 0,
+      ignoredRemovals: 0,
       rebuild: false,
     },
   ]);
   await runPsrCli(['index'], emptyFixture.dependencies);
   assert.match(emptyFixture.progressOutput.join(''), /no files require indexing or removal/iu);
+
+  const ignoredRemovalFixture = createPsrCliFixture([
+    {
+      kind: 'maintenance-workset-planned',
+      discoveredFiles: 1,
+      newFiles: 0,
+      changedFiles: 0,
+      missingFiles: 0,
+      ignoredRemovals: 1,
+      rebuild: false,
+    },
+  ]);
+  await runPsrCli(['index'], ignoredRemovalFixture.dependencies);
+  assert.match(ignoredRemovalFixture.progressOutput.join(''), /0 missing, 1 ignored removal/iu);
 
   const rebuildFixture = createPsrCliFixture([
     {
@@ -297,6 +453,7 @@ void test('psr index describes empty and rebuild maintenance worksets in plain t
       newFiles: 4,
       changedFiles: 0,
       missingFiles: 0,
+      ignoredRemovals: 0,
       rebuild: true,
     },
   ]);
@@ -557,7 +714,7 @@ void test('psr auto-index rejects unsupported platforms with one clear error', a
   assert.equal(fixture.schedulerProcessCalls.length, 0);
 });
 
-void test('psr rejects every command surface other than index and auto-index', async () => {
+void test('psr rejects every command surface other than index, auto-index, and ignore', async () => {
   const fixture = createPsrCliFixture();
 
   await assert.rejects(

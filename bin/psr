@@ -1,11 +1,15 @@
-#!/usr/bin/env -S node --import tsx
+#!/usr/bin/env node
 
-import { runPsrCli } from '../src/psr-cli.ts';
+import { register } from 'tsx/esm/api';
 
+const unregisterTsx = register();
 try {
+  const { runPsrCli } = await import('../src/psr-cli.ts');
   process.exitCode = await runPsrCli(process.argv.slice(2));
 } catch (error) {
   const message = error instanceof Error ? error.message : String(error);
   process.stderr.write(`${message}\n`);
   process.exitCode = 1;
+} finally {
+  await unregisterTsx();
 }

@@ -115,6 +115,7 @@ void test('recall quality runner indexes and searches only the bounded declared 
     statePath: join(directory, 'unused-state.json'),
     manifestPath: join(directory, 'unused-manifest.json'),
     indexMaintenanceStatusPath: join(directory, 'unused-maintenance-status.json'),
+    physicalSessionIgnoreStatePath: join(directory, 'unused-physical-session-ignore.json'),
     tokenizerCacheDirectory: join(directory, 'unused-tokenizers'),
     lockPath: join(directory, 'unused.lock'),
     embeddingBaseUrl: 'http://unused.test/v1',

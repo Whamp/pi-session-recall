@@ -158,7 +158,7 @@ export function createPiRecallToolDefinition(service: RecallConversationService)
     name: 'pi-session-recall',
     label: 'Pi Session Recall',
     description:
-      'Search the manually maintained Pi session index with dense, lexical, and case-preserving identifier retrieval. It defaults to project scope; choose global explicitly for cross-project evidence. Results cite the source JSONL path and line range so the surrounding records can be read directly. Search never updates the index; run `psr index` explicitly for maintenance. Output is truncated to 2000 lines or 50KB.',
+      'Search the explicitly maintained Pi session index with dense, lexical, and case-preserving identifier retrieval. It defaults to project scope; choose global explicitly for cross-project evidence. Results cite the source JSONL path and line range so the surrounding records can be read directly. Search never updates the index; only standalone `psr index` maintenance does. Output is truncated to 2000 lines or 50KB.',
     promptSnippet:
       'Search past Pi conversations by meaning or exact text and recover source-backed details',
     promptGuidelines: [

@@ -11,7 +11,7 @@ psr auto-index uninstall
 
 The default interval is `1h`. An explicit interval must match `[1-9][0-9]*[mh]`: a positive base-10 whole number followed by lowercase `m` or `h`. Reject zero, signs, fractions, whitespace, missing or uppercase units, and every other duration form. Do not add status, notification, retry, watcher, daemon, or other lifecycle commands. This is the interface requested by [Ship scheduled automatic recall index maintenance](https://github.com/Whamp/pi-session-recall/issues/153) and investigated by [Verify native user-scheduler behavior](https://github.com/Whamp/pi-session-recall/issues/154).
 
-Scheduling is opt-in, per-user, and never uses `sudo`. The scheduled operation is exactly `psr index`. It remains the sole writer and change detector required by [Keep whole-session recall maintenance explicit](../adr/0003-keep-whole-session-recall-maintenance-explicit.md); scheduler code must not scan sessions, write index state, or add locks.
+Scheduling is opt-in, per-user, and never uses `sudo`. The scheduled operation is exactly `psr index`. It remains the sole writer and change detector required by [Keep whole-session recall maintenance outside interactive Pi](../adr/0003-keep-whole-session-recall-maintenance-explicit.md); scheduler code must not scan sessions, write index state, or add locks.
 
 ## Shared invocation contract
 

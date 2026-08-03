@@ -8,4 +8,4 @@ Conversation Recall uses one configured Octen HTTP model. It retains the first c
 
 Octen supports first-N output truncation, but this decision does not claim independently verified MRL quality at every width. The index manifest binds the model, native width, stored width, transformation, tokenizer, and chunk policy; changing any of them requires `psr index --rebuild`.
 
-Inner product preserves cosine ordering for normalized document and query vectors and avoids zvec's second cosine normalization. We rejected embedded model management, separate model profiles, persistent vector caches, and post-write vector repair because the manually maintained product needs one direct provider and one durable collection.
+Inner product preserves cosine ordering for normalized document and query vectors and avoids zvec's second cosine normalization. We rejected embedded model management, separate model profiles, persistent vector caches, and post-write vector repair because the product uses standalone index maintenance and needs one direct provider and one durable collection.

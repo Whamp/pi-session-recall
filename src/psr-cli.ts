@@ -1,5 +1,12 @@
 import { performance } from 'node:perf_hooks';
 
+import {
+  DEFAULT_AUTO_INDEX_SCHEDULER_SYSTEM,
+  installAutoIndexSchedule,
+  uninstallAutoIndexSchedule,
+  type AutoIndexInterval,
+  type AutoIndexSchedulerSystem,
+} from './auto-index-scheduler.js';
 import { loadRecallConversationConfig } from './recall-conversation-config.js';
 import type { RecallIndexProgressEvent } from './recall-index-progress.js';
 import {
@@ -9,7 +16,14 @@ import {
   type RecallConversationService,
 } from './recall-conversation-service.js';
 
-const PSR_USAGE = 'psr usage: psr index [--rebuild] [--compact]';
+const PSR_USAGE = [
+  'psr usage: psr index [--rebuild] [--compact]',
+  '           psr auto-index install [--interval <N>m|<N>h]',
+  '           psr auto-index uninstall',
+].join('\n');
+const AUTO_INDEX_INTERVAL_PATTERN = /^[1-9][0-9]*[mh]$/u;
+const AUTO_INDEX_INTERVAL_ERROR =
+  'psr auto-index interval must be a positive whole number followed by m or h';
 const ENGLISH_INTEGER_FORMAT = new Intl.NumberFormat('en-US');
 
 /** Replaceable process boundaries for the standalone `psr` command. */
@@ -19,6 +33,7 @@ export interface PsrCliDependencies {
   writeOutput: (text: string) => void;
   writeProgress: (text: string) => void;
   getMonotonicTimeMs: () => number;
+  schedulerSystem: AutoIndexSchedulerSystem;
 }
 
 const DEFAULT_PSR_CLI_DEPENDENCIES: PsrCliDependencies = {
@@ -31,11 +46,30 @@ const DEFAULT_PSR_CLI_DEPENDENCIES: PsrCliDependencies = {
     process.stderr.write(text);
   },
   getMonotonicTimeMs: performance.now.bind(performance),
+  schedulerSystem: DEFAULT_AUTO_INDEX_SCHEDULER_SYSTEM,
 };
 
 interface RecallIndexProgressTiming {
   elapsedMs: number;
   indexingElapsedMs?: number;
+}
+
+function readAutoIndexInstallInterval(argumentsList: readonly string[]): AutoIndexInterval {
+  if (argumentsList.length === 2) {
+    return { value: 1n, unit: 'h' };
+  }
+  if (argumentsList[2] !== '--interval' || argumentsList.length !== 4) {
+    throw new Error(PSR_USAGE);
+  }
+  const intervalText = argumentsList[3] ?? '';
+  if (!AUTO_INDEX_INTERVAL_PATTERN.test(intervalText)) {
+    throw new Error(AUTO_INDEX_INTERVAL_ERROR);
+  }
+  const unit = intervalText.slice(-1);
+  if (unit !== 'm' && unit !== 'h') {
+    throw new Error(AUTO_INDEX_INTERVAL_ERROR);
+  }
+  return { value: BigInt(intervalText.slice(0, -1)), unit };
 }
 
 function formatCountedNoun(count: number, singularNoun: string): string {
@@ -160,7 +194,7 @@ function formatRecallIndexProgress(
   }
 }
 
-/** Runs the complete standalone CLI; only explicit incremental indexing and rebuild can write. */
+/** Runs the standalone CLI; only the `index` command writes recall index state. */
 export async function runPsrCli(
   argumentsList: readonly string[],
   dependencies: PsrCliDependencies = DEFAULT_PSR_CLI_DEPENDENCIES,
@@ -169,6 +203,28 @@ export async function runPsrCli(
     dependencies.writeOutput(`${PSR_USAGE}\n`);
     return 0;
   }
+  if (argumentsList[0] === 'auto-index') {
+    if (argumentsList[1] === 'uninstall' && argumentsList.length === 2) {
+      await uninstallAutoIndexSchedule(dependencies.schedulerSystem);
+      dependencies.writeOutput('Automatic recall indexing uninstalled.\n');
+      return 0;
+    }
+    if (argumentsList[1] !== 'install') {
+      throw new Error(PSR_USAGE);
+    }
+    const interval = readAutoIndexInstallInterval(argumentsList);
+    const installation = await installAutoIndexSchedule(interval, dependencies.schedulerSystem);
+    if (installation.immediateRunWarning !== undefined) {
+      dependencies.writeProgress(
+        `Warning: Automatic recall indexing was installed, but ${installation.immediateRunWarning}.\n`,
+      );
+    }
+    dependencies.writeOutput(
+      `Automatic recall indexing installed every ${interval.value}${interval.unit}.\n`,
+    );
+    return 0;
+  }
+
   const flags = argumentsList.slice(1);
   const distinctFlags = new Set(flags);
   const validFlags = flags.every((flag) => flag === '--rebuild' || flag === '--compact');

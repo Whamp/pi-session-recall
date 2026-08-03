@@ -16,12 +16,23 @@ function createPsrCliFixture(
     monotonicTimes?: number[];
     failedSessions?: Array<{ sessionPath: string; error: string }>;
     fatalError?: Error;
+    schedulerPlatform?: NodeJS.Platform;
+    schedulerHomeDirectory?: string;
+    schedulerXdgConfigHome?: string;
+    schedulerNodeExecutablePath?: string;
+    schedulerPackageRoot?: string;
+    schedulerProcessResults?: Array<{ exitCode: number; stderr: string }>;
   } = {},
 ) {
   const calls: RecallConversationIndexOptions[] = [];
   const output: string[] = [];
   const progressOutput: string[] = [];
   const executionLog: string[] = [];
+  const schedulerFiles = new Map<string, string>();
+  const schedulerFileModes = new Map<string, number>();
+  const schedulerDirectories: string[] = [];
+  const schedulerActions: string[] = [];
+  const schedulerProcessCalls: Array<{ executable: string; argumentsList: readonly string[] }> = [];
   const config: RecallConversationConfig = {
     sessionsDirectory: '/sessions',
     databasePath: '/recall/zvec',
@@ -90,7 +101,40 @@ function createPsrCliFixture(
       getMonotonicTimeMs() {
         return options.monotonicTimes?.shift() ?? 0;
       },
+      schedulerSystem: {
+        platform: options.schedulerPlatform ?? 'linux',
+        homeDirectory: options.schedulerHomeDirectory ?? '/home/recall-user',
+        xdgConfigHome: options.schedulerXdgConfigHome ?? '/home/recall-user/.config-test',
+        nodeExecutablePath: options.schedulerNodeExecutablePath ?? '/opt/node/bin/node',
+        packageRoot: options.schedulerPackageRoot ?? '/opt/pi session recall',
+        async makeDirectory(directoryPath: string) {
+          schedulerDirectories.push(directoryPath);
+          schedulerActions.push(`mkdir ${directoryPath}`);
+        },
+        async writeFile(filePath: string, contents: string) {
+          schedulerFiles.set(filePath, contents);
+          schedulerActions.push(`write ${filePath}`);
+        },
+        async setFileMode(filePath: string, mode: number) {
+          schedulerFileModes.set(filePath, mode);
+          schedulerActions.push(`chmod ${mode.toString(8)} ${filePath}`);
+        },
+        async removeFile(filePath: string) {
+          schedulerFiles.delete(filePath);
+          schedulerActions.push(`remove ${filePath}`);
+        },
+        async runProcess(executable: string, argumentsList: readonly string[]) {
+          schedulerProcessCalls.push({ executable, argumentsList });
+          schedulerActions.push(`${executable} ${argumentsList.join(' ')}`);
+          return options.schedulerProcessResults?.shift() ?? { exitCode: 0, stderr: '' };
+        },
+      },
     },
+    schedulerFiles,
+    schedulerFileModes,
+    schedulerDirectories,
+    schedulerActions,
+    schedulerProcessCalls,
   };
 }
 
@@ -458,7 +502,338 @@ void test('psr index --rebuild explicitly replaces the index', async () => {
   );
 });
 
-void test('psr rejects every command surface other than manual index and rebuild', async () => {
+void test('psr auto-index install creates and starts a default hourly systemd user timer', async () => {
+  const fixture = createPsrCliFixture();
+
+  const exitCode = await runPsrCli(['auto-index', 'install'], fixture.dependencies);
+
+  assert.equal(exitCode, 0);
+  assert.equal(
+    fixture.schedulerFiles.get(
+      '/home/recall-user/.config-test/systemd/user/pi-session-recall-index.service',
+    ),
+    [
+      '[Unit]',
+      'Description=Maintain the pi-session-recall index',
+      '',
+      '[Service]',
+      'Type=oneshot',
+      'WorkingDirectory="/opt/pi session recall"',
+      'ExecStart="/opt/node/bin/node" --import tsx "/opt/pi session recall/bin/psr" index',
+      'StandardOutput=journal',
+      'StandardError=journal',
+      '',
+    ].join('\n'),
+  );
+  assert.equal(
+    fixture.schedulerFiles.get(
+      '/home/recall-user/.config-test/systemd/user/pi-session-recall-index.timer',
+    ),
+    [
+      '[Unit]',
+      'Description=Schedule pi-session-recall index maintenance',
+      '',
+      '[Timer]',
+      'OnActiveSec=1h',
+      'OnUnitActiveSec=1h',
+      '',
+      '[Install]',
+      'WantedBy=timers.target',
+      '',
+    ].join('\n'),
+  );
+  const systemdService = [...fixture.schedulerFiles.entries()].find(([filePath]) =>
+    filePath.endsWith('.service'),
+  )?.[1];
+  const systemdTimer = [...fixture.schedulerFiles.entries()].find(([filePath]) =>
+    filePath.endsWith('.timer'),
+  )?.[1];
+  assert.doesNotMatch(systemdService ?? '', /Restart|RemainAfterExit/iu);
+  assert.doesNotMatch(systemdTimer ?? '', /Persistent|OnCalendar/iu);
+  assert.deepEqual(fixture.schedulerProcessCalls, [
+    { executable: 'systemctl', argumentsList: ['--user', 'daemon-reload'] },
+    {
+      executable: 'systemctl',
+      argumentsList: ['--user', 'enable', 'pi-session-recall-index.timer'],
+    },
+    {
+      executable: 'systemctl',
+      argumentsList: ['--user', 'restart', 'pi-session-recall-index.timer'],
+    },
+    {
+      executable: 'systemctl',
+      argumentsList: ['--user', 'start', 'pi-session-recall-index.service'],
+    },
+  ]);
+  assert.equal(fixture.output.join(''), 'Automatic recall indexing installed every 1h.\n');
+  assert.deepEqual(fixture.calls, []);
+});
+
+void test('psr auto-index uses the home config directory when XDG_CONFIG_HOME is empty', async () => {
+  const fixture = createPsrCliFixture([], { schedulerXdgConfigHome: '' });
+
+  await runPsrCli(['auto-index', 'install'], fixture.dependencies);
+
+  assert.ok(
+    fixture.schedulerFiles.has(
+      '/home/recall-user/.config/systemd/user/pi-session-recall-index.timer',
+    ),
+  );
+});
+
+void test('psr auto-index reinstall replaces the systemd definition and refreshes its interval', async () => {
+  const fixture = createPsrCliFixture();
+
+  await runPsrCli(['auto-index', 'install', '--interval', '5m'], fixture.dependencies);
+  await runPsrCli(['auto-index', 'install', '--interval', '2h'], fixture.dependencies);
+
+  assert.equal(fixture.schedulerFiles.size, 2);
+  const timer =
+    fixture.schedulerFiles.get(
+      '/home/recall-user/.config-test/systemd/user/pi-session-recall-index.timer',
+    ) ?? '';
+  assert.match(timer, /OnActiveSec=2h\nOnUnitActiveSec=2h/u);
+  assert.doesNotMatch(timer, /5min/u);
+  assert.equal(fixture.schedulerProcessCalls.length, 8);
+});
+
+void test('psr auto-index install fails when durable Linux timer setup fails', async () => {
+  const fixture = createPsrCliFixture([], {
+    schedulerProcessResults: [{ exitCode: 1, stderr: 'Failed to connect to user bus' }],
+  });
+
+  await assert.rejects(
+    runPsrCli(['auto-index', 'install'], fixture.dependencies),
+    /Auto-index scheduler command failed: systemctl --user daemon-reload: Failed to connect to user bus/u,
+  );
+
+  assert.equal(fixture.schedulerProcessCalls.length, 1);
+  assert.equal(fixture.output.join(''), '');
+});
+
+void test('psr auto-index install keeps the Linux timer after immediate indexing fails', async () => {
+  const fixture = createPsrCliFixture([], {
+    schedulerProcessResults: [
+      { exitCode: 0, stderr: '' },
+      { exitCode: 0, stderr: '' },
+      { exitCode: 0, stderr: '' },
+      { exitCode: 1, stderr: 'psr index exited with status 1' },
+    ],
+  });
+
+  const exitCode = await runPsrCli(['auto-index', 'install'], fixture.dependencies);
+
+  assert.equal(exitCode, 0);
+  assert.equal(fixture.schedulerFiles.size, 2);
+  assert.equal(fixture.output.join(''), 'Automatic recall indexing installed every 1h.\n');
+  assert.match(
+    fixture.progressOutput.join(''),
+    /Warning: Automatic recall indexing was installed, but the immediate psr index attempt failed: psr index exited with status 1/iu,
+  );
+});
+
+void test('psr auto-index install escapes systemd paths and renders explicit minutes', async () => {
+  const fixture = createPsrCliFixture([], {
+    schedulerNodeExecutablePath: '/opt/node%build/bin/node',
+    schedulerPackageRoot: '/opt/pi$session %42',
+  });
+
+  await runPsrCli(['auto-index', 'install', '--interval', '30m'], fixture.dependencies);
+
+  const service =
+    fixture.schedulerFiles.get(
+      '/home/recall-user/.config-test/systemd/user/pi-session-recall-index.service',
+    ) ?? '';
+  const timer =
+    fixture.schedulerFiles.get(
+      '/home/recall-user/.config-test/systemd/user/pi-session-recall-index.timer',
+    ) ?? '';
+  assert.match(service, /WorkingDirectory="\/opt\/pi\$\$session %%42"/u);
+  assert.match(
+    service,
+    /ExecStart="\/opt\/node%%build\/bin\/node" --import tsx "\/opt\/pi\$\$session %%42\/bin\/psr" index/u,
+  );
+  assert.match(timer, /OnActiveSec=30min\nOnUnitActiveSec=30min/u);
+});
+
+void test('psr auto-index install creates a per-user macOS LaunchAgent', async () => {
+  const fixture = createPsrCliFixture([], {
+    schedulerPlatform: 'darwin',
+    schedulerHomeDirectory: '/Users/recall-user',
+    schedulerNodeExecutablePath: '/Applications/Node & Tools/bin/node',
+    schedulerPackageRoot: '/Applications/Pi & Recall',
+    schedulerProcessResults: [
+      { exitCode: 1, stderr: 'Could not find specified service' },
+      { exitCode: 0, stderr: '' },
+    ],
+  });
+  const plistPath =
+    '/Users/recall-user/Library/LaunchAgents/dev.pi-session-recall.auto-index.plist';
+
+  const exitCode = await runPsrCli(
+    ['auto-index', 'install', '--interval', '15m'],
+    fixture.dependencies,
+  );
+
+  assert.equal(exitCode, 0);
+  assert.equal(
+    fixture.schedulerFiles.get(plistPath),
+    [
+      '<?xml version="1.0" encoding="UTF-8"?>',
+      '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
+      '<plist version="1.0">',
+      '<dict>',
+      '  <key>Label</key>',
+      '  <string>dev.pi-session-recall.auto-index</string>',
+      '  <key>ProgramArguments</key>',
+      '  <array>',
+      '    <string>/Applications/Node &amp; Tools/bin/node</string>',
+      '    <string>--import</string>',
+      '    <string>tsx</string>',
+      '    <string>/Applications/Pi &amp; Recall/bin/psr</string>',
+      '    <string>index</string>',
+      '  </array>',
+      '  <key>WorkingDirectory</key>',
+      '  <string>/Applications/Pi &amp; Recall</string>',
+      '  <key>StartInterval</key>',
+      '  <integer>900</integer>',
+      '  <key>RunAtLoad</key>',
+      '  <true/>',
+      '  <key>StandardOutPath</key>',
+      '  <string>/Users/recall-user/.pi/agent/logs/pi-session-recall-auto-index.out.log</string>',
+      '  <key>StandardErrorPath</key>',
+      '  <string>/Users/recall-user/.pi/agent/logs/pi-session-recall-auto-index.err.log</string>',
+      '</dict>',
+      '</plist>',
+      '',
+    ].join('\n'),
+  );
+  assert.equal(fixture.schedulerFileModes.get(plistPath), 0o600);
+  assert.deepEqual(fixture.schedulerActions, [
+    `launchctl unload ${plistPath}`,
+    'mkdir /Users/recall-user/Library/LaunchAgents',
+    'mkdir /Users/recall-user/.pi/agent/logs',
+    `write ${plistPath}`,
+    `chmod 600 ${plistPath}`,
+    `launchctl load ${plistPath}`,
+  ]);
+  assert.deepEqual(fixture.schedulerDirectories, [
+    '/Users/recall-user/Library/LaunchAgents',
+    '/Users/recall-user/.pi/agent/logs',
+  ]);
+  const plist = fixture.schedulerFiles.get(plistPath) ?? '';
+  assert.doesNotMatch(plist, /KeepAlive|LaunchOnlyOnce|Persistent|Restart/iu);
+  assert.equal(fixture.output.join(''), 'Automatic recall indexing installed every 15m.\n');
+  assert.equal(fixture.progressOutput.join(''), '');
+  assert.deepEqual(fixture.calls, []);
+});
+
+void test('psr auto-index converts an explicit macOS hour interval to seconds', async () => {
+  const fixture = createPsrCliFixture([], {
+    schedulerPlatform: 'darwin',
+    schedulerHomeDirectory: '/Users/recall-user',
+  });
+  const plistPath =
+    '/Users/recall-user/Library/LaunchAgents/dev.pi-session-recall.auto-index.plist';
+
+  await runPsrCli(['auto-index', 'install', '--interval', '2h'], fixture.dependencies);
+
+  assert.match(fixture.schedulerFiles.get(plistPath) ?? '', /<integer>7200<\/integer>/u);
+});
+
+void test('psr auto-index install fails when launchctl cannot load the durable plist', async () => {
+  const fixture = createPsrCliFixture([], {
+    schedulerPlatform: 'darwin',
+    schedulerHomeDirectory: '/Users/recall-user',
+    schedulerProcessResults: [
+      { exitCode: 1, stderr: 'Could not find specified service' },
+      { exitCode: 5, stderr: 'Load failed: invalid property list' },
+    ],
+  });
+
+  await assert.rejects(
+    runPsrCli(['auto-index', 'install'], fixture.dependencies),
+    /Auto-index scheduler command failed: launchctl load .*: Load failed: invalid property list/u,
+  );
+
+  assert.equal(fixture.schedulerFiles.size, 1);
+  assert.equal(fixture.output.join(''), '');
+});
+
+void test('psr auto-index uninstall safely removes an absent macOS LaunchAgent', async () => {
+  const fixture = createPsrCliFixture([], {
+    schedulerPlatform: 'darwin',
+    schedulerHomeDirectory: '/Users/recall-user',
+    schedulerProcessResults: [{ exitCode: 1, stderr: 'Could not find specified service' }],
+  });
+  const plistPath =
+    '/Users/recall-user/Library/LaunchAgents/dev.pi-session-recall.auto-index.plist';
+
+  const exitCode = await runPsrCli(['auto-index', 'uninstall'], fixture.dependencies);
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(fixture.schedulerActions, [
+    `launchctl unload ${plistPath}`,
+    `remove ${plistPath}`,
+  ]);
+  assert.equal(fixture.output.join(''), 'Automatic recall indexing uninstalled.\n');
+  assert.deepEqual(fixture.calls, []);
+});
+
+void test('psr auto-index uninstall safely removes an absent systemd user schedule', async () => {
+  const fixture = createPsrCliFixture([], {
+    schedulerProcessResults: [
+      { exitCode: 1, stderr: 'Unit pi-session-recall-index.timer does not exist' },
+      { exitCode: 5, stderr: 'Unit pi-session-recall-index.service not loaded' },
+      { exitCode: 0, stderr: '' },
+    ],
+  });
+
+  const exitCode = await runPsrCli(['auto-index', 'uninstall'], fixture.dependencies);
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(fixture.schedulerProcessCalls, [
+    {
+      executable: 'systemctl',
+      argumentsList: ['--user', 'disable', '--now', 'pi-session-recall-index.timer'],
+    },
+    {
+      executable: 'systemctl',
+      argumentsList: ['--user', 'stop', 'pi-session-recall-index.service'],
+    },
+    { executable: 'systemctl', argumentsList: ['--user', 'daemon-reload'] },
+  ]);
+  assert.equal(fixture.schedulerFiles.size, 0);
+  assert.equal(fixture.output.join(''), 'Automatic recall indexing uninstalled.\n');
+  assert.deepEqual(fixture.calls, []);
+});
+
+void test('psr auto-index rejects invalid intervals before touching index maintenance', async () => {
+  const fixture = createPsrCliFixture();
+
+  for (const interval of ['0m', '-1h', '1.5h', '1', '1H', ' 1h', '1d', '01h']) {
+    await assert.rejects(
+      runPsrCli(['auto-index', 'install', '--interval', interval], fixture.dependencies),
+      /psr auto-index interval must be a positive whole number followed by m or h/u,
+    );
+  }
+
+  assert.deepEqual(fixture.calls, []);
+  assert.deepEqual(fixture.executionLog, []);
+});
+
+void test('psr auto-index rejects unsupported platforms with one clear error', async () => {
+  const fixture = createPsrCliFixture([], { schedulerPlatform: 'win32' });
+
+  await assert.rejects(
+    runPsrCli(['auto-index', 'install'], fixture.dependencies),
+    /Auto-index scheduler is not supported on platform win32/u,
+  );
+
+  assert.equal(fixture.schedulerProcessCalls.length, 0);
+});
+
+void test('psr rejects every command surface other than index and auto-index', async () => {
   const fixture = createPsrCliFixture();
 
   await assert.rejects(

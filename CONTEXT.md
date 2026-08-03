@@ -97,19 +97,19 @@ Readable context formed from a winning atomic conversation chunk and its valid c
 _Avoid_: Expanded transcript, joined messages
 
 **Index manifest**:
-The versioned identity of the Octen model, native and stored dimensions, prefix normalization, tokenizer, chunk policy, provenance schema, project identity, and zvec schema used by one manually maintained index.
+The versioned identity of the Octen model, native and stored dimensions, prefix normalization, tokenizer, chunk policy, provenance schema, project identity, and zvec schema used by one explicitly maintained index.
 _Avoid_: Index state, configuration
 
 **Stored recall embedding**:
 The first configured dimensions of one native Octen vector, L2-normalized and stored as FP32 for inner-product search.
 _Avoid_: Raw embedding, independently verified MRL vector
 
-**Manual index maintenance**:
-An explicit `psr index` operation that scans physical session files and updates one zvec collection. `psr index --rebuild` replaces incompatible index state.
-_Avoid_: Live ingestion, background indexing, lifecycle reconciliation
+**Index maintenance**:
+One standalone `psr index` operation that scans physical session files and updates one zvec collection. An operator or opt-in user schedule may start it. `psr index --rebuild` replaces incompatible index state.
+_Avoid_: Live ingestion, lifecycle reconciliation
 
 **Maintenance workset**:
-The new or changed physical session files and missing previously indexed files identified during one manual index maintenance operation. It forecasts file-level work; the number of documents requiring embeddings emerges as changed files are processed.
+The new or changed physical session files and missing previously indexed files identified during one index maintenance operation. It forecasts file-level work; the number of documents requiring embeddings emerges as changed files are processed.
 _Avoid_: Sessions to embed, embedding total
 
 **Source locator**:

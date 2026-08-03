@@ -57,7 +57,7 @@ export interface RecallTokenizerManifestIdentity {
   assets: Array<{ fileName: string; sha256: string }>;
 }
 
-/** Complete compatibility identity for one manually maintained zvec index. */
+/** Complete compatibility identity for one explicitly maintained zvec index. */
 export interface RecallIndexManifest {
   manifestVersion: 6;
   importPolicy: { version: number };

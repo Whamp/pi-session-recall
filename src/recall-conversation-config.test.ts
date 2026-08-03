@@ -26,7 +26,7 @@ void test('recall config defaults to one Octen profile and the frozen search pol
       join(home, '.pi', 'agent', 'recall', 'index-maintenance-status.json'),
     );
     assert.equal(
-      config.physicalSessionIgnorePath,
+      config.physicalSessionIgnoreStatePath,
       join(home, '.pi', 'agent', 'recall', 'physical-session-ignore.json'),
     );
     assert.equal('embeddingCacheDirectory' in config, false);

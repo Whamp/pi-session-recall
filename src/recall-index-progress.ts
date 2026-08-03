@@ -10,7 +10,7 @@ export type RecallIndexProgressEvent =
       newFiles: number;
       changedFiles: number;
       missingFiles: number;
-      ignoredFiles: number;
+      ignoredRemovals: number;
       rebuild: boolean;
     }
   | { kind: 'indexing-changed-physical-session-files' }

@@ -173,7 +173,7 @@ function formatRecallIndexProgress(
       return 'Planning maintenance workset...';
     case 'maintenance-workset-planned': {
       const plannedFiles =
-        event.newFiles + event.changedFiles + event.missingFiles + event.ignoredFiles;
+        event.newFiles + event.changedFiles + event.missingFiles + event.ignoredRemovals;
       const lines = [
         '',
         `Found ${formatCountedNoun(event.discoveredFiles, 'physical session file')}.`,
@@ -186,7 +186,7 @@ function formatRecallIndexProgress(
         lines.push('No files require indexing or removal.');
       } else {
         lines.push(
-          `Maintenance workset: ${formatCountedNoun(plannedFiles, 'file')} (${ENGLISH_INTEGER_FORMAT.format(event.newFiles)} new, ${ENGLISH_INTEGER_FORMAT.format(event.changedFiles)} changed, ${ENGLISH_INTEGER_FORMAT.format(event.missingFiles)} missing, ${ENGLISH_INTEGER_FORMAT.format(event.ignoredFiles)} ignored removals).`,
+          `Maintenance workset: ${formatCountedNoun(plannedFiles, 'file')} (${ENGLISH_INTEGER_FORMAT.format(event.newFiles)} new, ${ENGLISH_INTEGER_FORMAT.format(event.changedFiles)} changed, ${ENGLISH_INTEGER_FORMAT.format(event.missingFiles)} missing, ${ENGLISH_INTEGER_FORMAT.format(event.ignoredRemovals)} ignored removals).`,
         );
       }
       if (plannedFiles > 0) {
@@ -221,7 +221,7 @@ async function runPsrIgnoreCommand(
   }
   const config = await dependencies.loadConfig();
   if (subcommand === 'list') {
-    const paths = await listIgnoredPhysicalSessionPaths(config.physicalSessionIgnorePath);
+    const paths = await listIgnoredPhysicalSessionPaths(config.physicalSessionIgnoreStatePath);
     if (paths.length > 0) {
       dependencies.writeOutput(`${paths.join('\n')}\n`);
     }
@@ -235,7 +235,7 @@ async function runPsrIgnoreCommand(
   );
   if (subcommand === 'add') {
     const added = await addIgnoredPhysicalSessionPath(
-      config.physicalSessionIgnorePath,
+      config.physicalSessionIgnoreStatePath,
       normalizedPath,
     );
     dependencies.writeOutput(`${added ? 'Ignored' : 'Already ignored'}: ${normalizedPath}\n`);
@@ -243,7 +243,7 @@ async function runPsrIgnoreCommand(
   }
 
   const removed = await removeIgnoredPhysicalSessionPath(
-    config.physicalSessionIgnorePath,
+    config.physicalSessionIgnoreStatePath,
     normalizedPath,
   );
   dependencies.writeOutput(`${removed ? 'Removed' : 'Not ignored'}: ${normalizedPath}\n`);

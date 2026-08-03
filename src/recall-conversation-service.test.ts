@@ -54,7 +54,7 @@ function createTestConfig(root: string): RecallConversationConfig {
     statePath: join(data, 'index-state.json'),
     manifestPath: join(data, 'index-manifest.json'),
     indexMaintenanceStatusPath: join(data, 'index-maintenance-status.json'),
-    physicalSessionIgnorePath: join(data, 'physical-session-ignore.json'),
+    physicalSessionIgnoreStatePath: join(data, 'physical-session-ignore.json'),
     tokenizerCacheDirectory: join(data, 'tokenizers'),
     lockPath: join(data, 'operation.lock'),
     embeddingBaseUrl: 'http://127.0.0.1:8090/v1',
@@ -73,9 +73,9 @@ async function writePhysicalSessionIgnoreState(
   config: RecallConversationConfig,
   ignoredPhysicalSessionPaths: readonly string[],
 ): Promise<void> {
-  await mkdir(join(config.physicalSessionIgnorePath, '..'), { recursive: true });
+  await mkdir(join(config.physicalSessionIgnoreStatePath, '..'), { recursive: true });
   await writeFile(
-    config.physicalSessionIgnorePath,
+    config.physicalSessionIgnoreStatePath,
     `${JSON.stringify({ version: 1, ignoredPhysicalSessionPaths })}\n`,
     'utf8',
   );
@@ -351,12 +351,15 @@ void test('service maintenance reads persisted ignores and rebuild preserves the
     scope: RecallSearchScope.GLOBAL,
   });
   assert.ok(searchAfterIgnore.results.every((result) => result.sessionPath !== ignoredPath));
-  const ignoreStateBeforeRebuild = await readFile(config.physicalSessionIgnorePath, 'utf8');
+  const ignoreStateBeforeRebuild = await readFile(config.physicalSessionIgnoreStatePath, 'utf8');
 
   const rebuilt = await service.index({ rebuild: true });
 
   assert.equal(rebuilt.indexSummary.indexedSessions, 1);
-  assert.equal(await readFile(config.physicalSessionIgnorePath, 'utf8'), ignoreStateBeforeRebuild);
+  assert.equal(
+    await readFile(config.physicalSessionIgnoreStatePath, 'utf8'),
+    ignoreStateBeforeRebuild,
+  );
   const stateText = await readFile(config.statePath, 'utf8');
   const manifestText = await readFile(config.manifestPath, 'utf8');
   assert.ok(stateText.includes(JSON.stringify(eligiblePath)));
@@ -379,7 +382,7 @@ void test('malformed ignore state aborts rebuild before deleting a working index
   await service.index({ rebuild: true });
   const stateBefore = await readFile(config.statePath, 'utf8');
   const manifestBefore = await readFile(config.manifestPath, 'utf8');
-  await writeFile(config.physicalSessionIgnorePath, '{"version":1}\n', 'utf8');
+  await writeFile(config.physicalSessionIgnoreStatePath, '{"version":1}\n', 'utf8');
 
   await assert.rejects(service.index({ rebuild: true }), /Physical session ignore state invalid/u);
 

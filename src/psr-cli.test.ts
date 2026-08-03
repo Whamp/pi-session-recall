@@ -21,7 +21,7 @@ function createPsrCliFixture(
     fatalError?: Error;
     schedulerPlatform?: NodeJS.Platform;
     schedulerProcessResults?: Array<{ exitCode: number; stderr: string }>;
-    physicalSessionIgnorePath?: string;
+    physicalSessionIgnoreStatePath?: string;
     currentDirectory?: string;
   } = {},
 ) {
@@ -36,8 +36,8 @@ function createPsrCliFixture(
     statePath: '/recall/index-state.json',
     manifestPath: '/recall/index-manifest.json',
     indexMaintenanceStatusPath: '/recall/index-maintenance-status.json',
-    physicalSessionIgnorePath:
-      options.physicalSessionIgnorePath ?? '/recall/physical-session-ignore.json',
+    physicalSessionIgnoreStatePath:
+      options.physicalSessionIgnoreStatePath ?? '/recall/physical-session-ignore.json',
     tokenizerCacheDirectory: '/recall/tokenizers',
     lockPath: '/recall/operation.lock',
     embeddingBaseUrl: 'http://127.0.0.1:8090/v1',
@@ -129,7 +129,7 @@ void test('psr ignore add, list, and remove persist normalized exact paths witho
   const root = await mkdtemp(join(tmpdir(), 'psr-ignore-cli-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const fixture = createPsrCliFixture([], {
-    physicalSessionIgnorePath: join(root, 'physical-session-ignore.json'),
+    physicalSessionIgnoreStatePath: join(root, 'physical-session-ignore.json'),
     currentDirectory: join(root, 'working'),
   });
   const normalizedPath = resolve(root, 'sessions', 'one.jsonl');
@@ -165,7 +165,7 @@ void test('psr ignore mutations are deterministic and idempotent for literal pat
   t.after(() => rm(root, { recursive: true, force: true }));
   const statePath = join(root, 'physical-session-ignore.json');
   const fixture = createPsrCliFixture([], {
-    physicalSessionIgnorePath: statePath,
+    physicalSessionIgnoreStatePath: statePath,
     currentDirectory: root,
   });
   const nonexistentPath = resolve(root, 'z-no-extension');
@@ -199,7 +199,7 @@ void test('psr ignore rejects malformed or noncanonical persisted policy state',
   t.after(() => rm(root, { recursive: true, force: true }));
   const statePath = join(root, 'physical-session-ignore.json');
   const fixture = createPsrCliFixture([], {
-    physicalSessionIgnorePath: statePath,
+    physicalSessionIgnoreStatePath: statePath,
     currentDirectory: root,
   });
   const invalidStates = [
@@ -262,7 +262,7 @@ void test('psr index keeps progress on stderr and the completed summary on stdou
       newFiles: 1,
       changedFiles: 1,
       missingFiles: 0,
-      ignoredFiles: 0,
+      ignoredRemovals: 0,
       rebuild: false,
     },
     { kind: 'optimizing-collection' },
@@ -396,7 +396,7 @@ void test('psr index prints planning and indexing phase transitions in event ord
       newFiles: 1,
       changedFiles: 0,
       missingFiles: 0,
-      ignoredFiles: 0,
+      ignoredRemovals: 0,
       rebuild: false,
     },
     { kind: 'indexing-changed-physical-session-files' },
@@ -425,7 +425,7 @@ void test('psr index describes empty and rebuild maintenance worksets in plain t
       newFiles: 0,
       changedFiles: 0,
       missingFiles: 0,
-      ignoredFiles: 0,
+      ignoredRemovals: 0,
       rebuild: false,
     },
   ]);
@@ -439,7 +439,7 @@ void test('psr index describes empty and rebuild maintenance worksets in plain t
       newFiles: 0,
       changedFiles: 0,
       missingFiles: 0,
-      ignoredFiles: 1,
+      ignoredRemovals: 1,
       rebuild: false,
     },
   ]);
@@ -453,7 +453,7 @@ void test('psr index describes empty and rebuild maintenance worksets in plain t
       newFiles: 4,
       changedFiles: 0,
       missingFiles: 0,
-      ignoredFiles: 0,
+      ignoredRemovals: 0,
       rebuild: true,
     },
   ]);

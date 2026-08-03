@@ -106,7 +106,7 @@ export async function loadRecallConversationConfig(
     statePath: join(dataDirectory, 'index-state.json'),
     manifestPath: join(dataDirectory, 'index-manifest.json'),
     indexMaintenanceStatusPath: join(dataDirectory, 'index-maintenance-status.json'),
-    physicalSessionIgnorePath: join(dataDirectory, 'physical-session-ignore.json'),
+    physicalSessionIgnoreStatePath: join(dataDirectory, 'physical-session-ignore.json'),
     tokenizerCacheDirectory: join(dataDirectory, 'tokenizers'),
     lockPath: join(dataDirectory, 'operation.lock'),
     embeddingBaseUrl:

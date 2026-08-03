@@ -59,7 +59,7 @@ export interface RecallConversationConfig {
   statePath: string;
   manifestPath: string;
   indexMaintenanceStatusPath: string;
-  physicalSessionIgnorePath: string;
+  physicalSessionIgnoreStatePath: string;
   tokenizerCacheDirectory: string;
   lockPath: string;
   embeddingBaseUrl: string;
@@ -424,7 +424,7 @@ export function createRecallConversationService(
       let store: ZvecConversationStore | undefined;
       try {
         const ignoredPhysicalSessionPaths: ReadonlySet<string> = new Set(
-          await listIgnoredPhysicalSessionPaths(config.physicalSessionIgnorePath),
+          await listIgnoredPhysicalSessionPaths(config.physicalSessionIgnoreStatePath),
         );
         if (options.rebuild) {
           await rm(config.indexMaintenanceStatusPath, { force: true });

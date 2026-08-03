@@ -1,12 +1,15 @@
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, normalize, resolve } from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 
 import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 
 import { readNodeErrorCode } from './read-node-error-code.js';
 
-const physicalSessionIgnoreStateSchema = Type.Object(
+const PHYSICAL_SESSION_IGNORE_LOCK_RETRY_MS = 10;
+const PHYSICAL_SESSION_IGNORE_STATE_SCHEMA = Type.Object(
   {
     version: Type.Literal(1),
     ignoredPhysicalSessionPaths: Type.Array(Type.String()),
@@ -39,12 +42,30 @@ function assertCanonicalIgnoredPhysicalSessionPaths(paths: readonly string[]): v
   }
 }
 
+async function acquirePhysicalSessionIgnoreStateLock(
+  physicalSessionIgnoreStatePath: string,
+): Promise<() => Promise<void>> {
+  await mkdir(dirname(physicalSessionIgnoreStatePath), { recursive: true });
+  const lockPath = `${physicalSessionIgnoreStatePath}.lock`;
+  while (true) {
+    try {
+      await mkdir(lockPath);
+      return async () => rm(lockPath, { recursive: true, force: true });
+    } catch (error) {
+      if (readNodeErrorCode(error) !== 'EEXIST') {
+        throw error;
+      }
+      await sleep(PHYSICAL_SESSION_IGNORE_LOCK_RETRY_MS);
+    }
+  }
+}
+
 async function readPhysicalSessionIgnoreState(
-  physicalSessionIgnorePath: string,
+  physicalSessionIgnoreStatePath: string,
 ): Promise<PhysicalSessionIgnoreState> {
   try {
-    const parsed: unknown = JSON.parse(await readFile(physicalSessionIgnorePath, 'utf8'));
-    const state = Value.Parse(physicalSessionIgnoreStateSchema, parsed);
+    const parsed: unknown = JSON.parse(await readFile(physicalSessionIgnoreStatePath, 'utf8'));
+    const state = Value.Parse(PHYSICAL_SESSION_IGNORE_STATE_SCHEMA, parsed);
     assertCanonicalIgnoredPhysicalSessionPaths(state.ignoredPhysicalSessionPaths);
     return state;
   } catch (error) {
@@ -53,24 +74,28 @@ async function readPhysicalSessionIgnoreState(
     }
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(
-      `Physical session ignore state invalid at ${physicalSessionIgnorePath}: ${message}`,
+      `Physical session ignore state invalid at ${physicalSessionIgnoreStatePath}: ${message}`,
       { cause: error },
     );
   }
 }
 
 async function writePhysicalSessionIgnoreState(
-  physicalSessionIgnorePath: string,
+  physicalSessionIgnoreStatePath: string,
   ignoredPhysicalSessionPaths: readonly string[],
 ): Promise<void> {
-  await mkdir(dirname(physicalSessionIgnorePath), { recursive: true });
-  const temporaryPath = `${physicalSessionIgnorePath}.${process.pid}.tmp`;
+  await mkdir(dirname(physicalSessionIgnoreStatePath), { recursive: true });
+  const temporaryPath = `${physicalSessionIgnoreStatePath}.${process.pid}.${randomUUID()}.tmp`;
   const state: PhysicalSessionIgnoreState = {
     version: 1,
     ignoredPhysicalSessionPaths: [...ignoredPhysicalSessionPaths],
   };
-  await writeFile(temporaryPath, `${JSON.stringify(state)}\n`, 'utf8');
-  await rename(temporaryPath, physicalSessionIgnorePath);
+  try {
+    await writeFile(temporaryPath, `${JSON.stringify(state)}\n`, 'utf8');
+    await rename(temporaryPath, physicalSessionIgnoreStatePath);
+  } finally {
+    await rm(temporaryPath, { force: true });
+  }
 }
 
 /** Resolves one exact physical session path lexically against the supplied base directory. */
@@ -80,42 +105,52 @@ export function normalizePhysicalSessionPath(baseDirectory: string, inputPath: s
 
 /** Lists the validated, sorted exact physical session paths excluded from index maintenance. */
 export async function listIgnoredPhysicalSessionPaths(
-  physicalSessionIgnorePath: string,
+  physicalSessionIgnoreStatePath: string,
 ): Promise<readonly string[]> {
-  const state = await readPhysicalSessionIgnoreState(physicalSessionIgnorePath);
+  const state = await readPhysicalSessionIgnoreState(physicalSessionIgnoreStatePath);
   return [...state.ignoredPhysicalSessionPaths];
 }
 
 /** Persists one canonical exact physical session path; returns false when it was already ignored. */
 export async function addIgnoredPhysicalSessionPath(
-  physicalSessionIgnorePath: string,
+  physicalSessionIgnoreStatePath: string,
   normalizedSessionPath: string,
 ): Promise<boolean> {
   assertCanonicalIgnoredPhysicalSessionPaths([normalizedSessionPath]);
-  const state = await readPhysicalSessionIgnoreState(physicalSessionIgnorePath);
-  if (state.ignoredPhysicalSessionPaths.includes(normalizedSessionPath)) {
-    return false;
+  const releaseLock = await acquirePhysicalSessionIgnoreStateLock(physicalSessionIgnoreStatePath);
+  try {
+    const state = await readPhysicalSessionIgnoreState(physicalSessionIgnoreStatePath);
+    if (state.ignoredPhysicalSessionPaths.includes(normalizedSessionPath)) {
+      return false;
+    }
+    const paths = [...state.ignoredPhysicalSessionPaths, normalizedSessionPath].sort();
+    await writePhysicalSessionIgnoreState(physicalSessionIgnoreStatePath, paths);
+    return true;
+  } finally {
+    await releaseLock();
   }
-  const paths = [...state.ignoredPhysicalSessionPaths, normalizedSessionPath].sort();
-  await writePhysicalSessionIgnoreState(physicalSessionIgnorePath, paths);
-  return true;
 }
 
 /** Removes one canonical exact physical session path; returns false when it was not ignored. */
 export async function removeIgnoredPhysicalSessionPath(
-  physicalSessionIgnorePath: string,
+  physicalSessionIgnoreStatePath: string,
   normalizedSessionPath: string,
 ): Promise<boolean> {
   assertCanonicalIgnoredPhysicalSessionPaths([normalizedSessionPath]);
-  const state = await readPhysicalSessionIgnoreState(physicalSessionIgnorePath);
-  if (!state.ignoredPhysicalSessionPaths.includes(normalizedSessionPath)) {
-    return false;
+  const releaseLock = await acquirePhysicalSessionIgnoreStateLock(physicalSessionIgnoreStatePath);
+  try {
+    const state = await readPhysicalSessionIgnoreState(physicalSessionIgnoreStatePath);
+    if (!state.ignoredPhysicalSessionPaths.includes(normalizedSessionPath)) {
+      return false;
+    }
+    await writePhysicalSessionIgnoreState(
+      physicalSessionIgnoreStatePath,
+      state.ignoredPhysicalSessionPaths.filter(
+        (physicalSessionPath) => physicalSessionPath !== normalizedSessionPath,
+      ),
+    );
+    return true;
+  } finally {
+    await releaseLock();
   }
-  await writePhysicalSessionIgnoreState(
-    physicalSessionIgnorePath,
-    state.ignoredPhysicalSessionPaths.filter(
-      (physicalSessionPath) => physicalSessionPath !== normalizedSessionPath,
-    ),
-  );
-  return true;
 }

@@ -198,7 +198,7 @@ void test('manual index maintenance plans exact new, changed, unchanged, and mis
       newFiles: 1,
       changedFiles: 1,
       missingFiles: 1,
-      ignoredFiles: 0,
+      ignoredRemovals: 0,
       rebuild: false,
     },
   );
@@ -218,7 +218,7 @@ void test('manual index maintenance plans exact new, changed, unchanged, and mis
       newFiles: 0,
       changedFiles: 0,
       missingFiles: 0,
-      ignoredFiles: 0,
+      ignoredRemovals: 0,
       rebuild: false,
     },
   );
@@ -268,7 +268,7 @@ void test('manual index maintenance skips ignored new files before strict parsin
       newFiles: 1,
       changedFiles: 0,
       missingFiles: 0,
-      ignoredFiles: 0,
+      ignoredRemovals: 0,
       rebuild: false,
     },
   );
@@ -325,7 +325,7 @@ void test('manual index maintenance removes ignored indexed files and reindexes 
       newFiles: 0,
       changedFiles: 0,
       missingFiles: 0,
-      ignoredFiles: 1,
+      ignoredRemovals: 1,
       rebuild: false,
     },
   );
@@ -381,7 +381,7 @@ void test('manual index maintenance classifies an ignored missing indexed path o
       newFiles: 0,
       changedFiles: 0,
       missingFiles: 0,
-      ignoredFiles: 1,
+      ignoredRemovals: 1,
       rebuild: false,
     },
   );

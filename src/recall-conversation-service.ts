@@ -27,6 +27,11 @@ import {
   type RecallIndexManifest,
   type RecallTokenizerManifestIdentity,
 } from './recall-index-manifest.js';
+import {
+  readRecallIndexMaintenanceStatus,
+  writeRecallIndexMaintenanceStatus,
+  type RecallIndexMaintenanceStatus,
+} from './recall-index-maintenance-status.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
 import {
   createLineageResolver,
@@ -52,6 +57,7 @@ export interface RecallConversationConfig {
   databasePath: string;
   statePath: string;
   manifestPath: string;
+  indexMaintenanceStatusPath: string;
   tokenizerCacheDirectory: string;
   lockPath: string;
   embeddingBaseUrl: string;
@@ -100,6 +106,7 @@ export interface RecallConversationSearch {
   results: RecallConversationSearchResult[];
   totalChunks: number;
   searchPolicy: RecallSearchPolicy;
+  indexMaintenanceStatus: RecallIndexMaintenanceStatus | null;
 }
 
 /** Options accepted only by explicit `psr` index maintenance. */
@@ -133,6 +140,7 @@ export interface RecallConversationDependencies {
   loadTokenizer?: () => Promise<ConversationTextTokenizer>;
   openStore?: (mode: 'read' | 'write') => ZvecConversationStore;
   resolveProjectIdentity?: (workingDirectory: string) => Promise<ResolvedProjectIdentity | null>;
+  getCurrentTime?: () => Date;
 }
 
 function readLockOwnerProcessId(value: string): number | undefined {
@@ -262,6 +270,7 @@ export function createRecallConversationService(
     config.projectLineages,
     dependencies.resolveProjectIdentity ?? resolveProjectIdentity,
   );
+  const getCurrentTime = dependencies.getCurrentTime ?? (() => new Date());
   const openStore =
     dependencies.openStore ??
     ((mode) =>
@@ -320,6 +329,9 @@ export function createRecallConversationService(
       }
       const scope = options.scope ?? RecallSearchScope.PROJECT;
       await readCompatibleManifest();
+      const indexMaintenanceStatus = await readRecallIndexMaintenanceStatus(
+        config.indexMaintenanceStatusPath,
+      );
       await assertRecallIndexUnlockedForSearch(config.lockPath);
       if (scope === RecallSearchScope.PROJECT && !options.invocationDirectory) {
         throw new Error('Project-scoped recall requires Pi trusted invocation directory context');
@@ -392,6 +404,7 @@ export function createRecallConversationService(
             activeBranchPrior: RECALL_ACTIVE_BRANCH_PRIOR,
             candidateLimits: { ...config.searchCandidateLimits },
           },
+          indexMaintenanceStatus,
         };
       } finally {
         store.close();
@@ -409,6 +422,7 @@ export function createRecallConversationService(
       let store: ZvecConversationStore | undefined;
       try {
         if (options.rebuild) {
+          await rm(config.indexMaintenanceStatusPath, { force: true });
           await rm(config.databasePath, { recursive: true, force: true });
           await rm(config.statePath, { force: true });
           await rm(config.manifestPath, { force: true });
@@ -443,6 +457,17 @@ export function createRecallConversationService(
           await store.optimize();
         }
         const totalChunks = store.count();
+        if (options.signal?.aborted) {
+          throw new Error('Recall conversation operation cancelled', {
+            cause: options.signal.reason,
+          });
+        }
+        await writeRecallIndexMaintenanceStatus(config.indexMaintenanceStatusPath, {
+          version: 1,
+          completedAt: getCurrentTime().toISOString(),
+          scannedSessions: indexSummary.scannedSessions,
+          failedSessions: indexSummary.failedSessions.length,
+        });
         options.onProgress?.({ kind: 'completed' });
         return { indexSummary, totalChunks };
       } finally {

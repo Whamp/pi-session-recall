@@ -112,6 +112,10 @@ _Avoid_: Live ingestion, lifecycle reconciliation
 The new or changed physical session files and missing previously indexed files identified during one index maintenance operation. It forecasts file-level work; the number of documents requiring embeddings emerges as changed files are processed.
 _Avoid_: Sessions to embed, embedding total
 
+**Index maintenance status**:
+The durable completion record for the latest normally completed Index maintenance operation. It records when the operation completed and how many Physical session files it scanned or failed. Its absence means freshness is unavailable, not that a live backlog was measured.
+_Avoid_: Index state, live backlog
+
 **Source locator**:
 The physical session path, source line range, and entry ID attached to one result so an agent can read the original JSONL records.
 _Avoid_: Source neighborhood, expanded transcript

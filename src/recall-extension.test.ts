@@ -11,6 +11,7 @@ import { isUnknownRecord } from './is-unknown-record.js';
 import recallExtension, {
   createPiRecallToolDefinition,
   createPiRecallToolDetails,
+  type PiRecallParameters,
   searchPiRecall,
 } from './recall-extension.js';
 import type { RecallConversationService } from './recall-conversation-service.js';
@@ -71,6 +72,7 @@ function createEmptySearch(scope: RecallSearchScope, invocationProjectIdentity: 
   return {
     results: [],
     totalChunks: 0,
+    indexMaintenanceStatus: null,
     searchPolicy: {
       scope,
       invocationProjectIdentity,
@@ -122,6 +124,64 @@ void test('Pi recall applies trusted cwd and project-default scope without a wri
   ]);
 });
 
+void test('Pi recall call shows a concise exact query without changing retrieval input', async () => {
+  const calls: unknown[] = [];
+  const service = {
+    async search(query, limit, options) {
+      calls.push({ query, limit, options });
+      return createEmptySearch(options?.scope ?? RecallSearchScope.PROJECT);
+    },
+    async index() {
+      throw new Error('search adapter must not index');
+    },
+  } satisfies RecallConversationService;
+  const tool = createPiRecallToolDefinition(service);
+  const parameters: PiRecallParameters = {
+    query:
+      '  decision\tto\nschedule   automatic psr index maintenance after every completed conversation while preserving exact retrieval whitespace  ',
+    limit: 3,
+    scope: 'global',
+  };
+  const originalParameters = structuredClone(parameters);
+
+  const component = tool.renderCall(
+    parameters,
+    {
+      bold(text) {
+        return text;
+      },
+      fg(color, text) {
+        void color;
+        return text;
+      },
+    },
+    { isError: false, lastComponent: undefined },
+  );
+  const rendered = stripVTControlCharacters(component.render(1_000).join('\n')).trimEnd();
+
+  assert.equal(
+    rendered,
+    'pi-session-recall “decision to schedule automatic psr index maintenance after …”',
+  );
+
+  await tool.execute('call-presentation', parameters, undefined, undefined, {
+    cwd: '/trusted/project',
+  });
+
+  assert.deepEqual(parameters, originalParameters);
+  assert.deepEqual(calls, [
+    {
+      query:
+        'decision\tto\nschedule   automatic psr index maintenance after every completed conversation while preserving exact retrieval whitespace',
+      limit: 3,
+      options: {
+        scope: RecallSearchScope.GLOBAL,
+        invocationDirectory: '/trusted/project',
+      },
+    },
+  ]);
+});
+
 void test('service-injected Pi recall tool definition executes complete recall evidence', async () => {
   const calls: unknown[] = [];
   const result = createTestRankedRecallSearchResult({
@@ -135,6 +195,7 @@ void test('service-injected Pi recall tool definition executes complete recall e
   const search = {
     results: [result],
     totalChunks: 42_318,
+    indexMaintenanceStatus: null,
     searchPolicy: createEmptySearch(RecallSearchScope.PROJECT).searchPolicy,
   };
   const service = {
@@ -203,18 +264,30 @@ void test('service-injected Pi recall tool definition executes complete recall e
   });
 });
 
-void test('collapsed Pi recall results show a plural summary and configured expansion hint', async () => {
+void test('untruncated Pi recall results show exact UTF-8 payload metrics and expansion hint', async () => {
   initTheme('dark');
   const restoreKeybindings = await usePiToolExpansionKeybinding('alt+x');
 
   try {
-    const firstResult = createTestRankedRecallSearchResult({ id: 'collapsed-first' });
-    const secondResult = createTestRankedRecallSearchResult({ id: 'collapsed-second' });
+    const firstResult = createTestRankedRecallSearchResult({
+      id: 'collapsed-first',
+      content: 'Café résumé 🙂',
+    });
+    const secondResult = createTestRankedRecallSearchResult({
+      id: 'collapsed-second',
+      content: 'Second evidence line.',
+    });
     const service = {
       async search() {
         return {
           results: [firstResult, secondResult],
           totalChunks: 42_318,
+          indexMaintenanceStatus: {
+            version: 1,
+            completedAt: '2026-07-25T12:00:00.000Z',
+            scannedSessions: 123,
+            failedSessions: 1,
+          },
           searchPolicy: createEmptySearch(RecallSearchScope.PROJECT).searchPolicy,
         };
       },
@@ -222,7 +295,7 @@ void test('collapsed Pi recall results show a plural summary and configured expa
         throw new Error('search adapter must not index');
       },
     } satisfies RecallConversationService;
-    const tool = createPiRecallToolDefinition(service);
+    const tool = createPiRecallToolDefinition(service, () => new Date('2026-07-25T12:30:59.999Z'));
     const execution = await tool.execute(
       'collapsed-call',
       { query: 'queue decision' },
@@ -244,11 +317,121 @@ void test('collapsed Pi recall results show a plural summary and configured expa
     );
     const rendered = stripVTControlCharacters(component.render(1_000).join('\n')).trimEnd();
 
+    assert.equal(execution.details.returnedBytes, 850);
+    assert.equal(execution.details.returnedLines, 11);
+    assert.deepEqual(execution.details.indexMaintenanceStatus, {
+      completedAt: '2026-07-25T12:00:00.000Z',
+      scannedSessions: 123,
+      failedSessions: 1,
+      ageMinutesAtExecution: 30,
+    });
+    assert.equal('truncation' in execution.details, false);
     assert.equal(
       rendered,
-      '2 recall results · project scope · 42,318 indexed documents (alt+x to expand)',
+      '2 recall results · project scope · 850B / 11 lines · index checked 30m ago · 1 failed session (alt+x to expand)',
     );
-    assert.equal('renderCall' in tool, false);
+  } finally {
+    restoreKeybindings();
+  }
+});
+
+void test('Pi recall freshness uses fixed execution-time minute, hour, and day ages', async () => {
+  initTheme('dark');
+  const restoreKeybindings = await usePiToolExpansionKeybinding('alt+x');
+
+  try {
+    const result = createTestRankedRecallSearchResult({ id: 'freshness-boundaries' });
+    const cases = [
+      {
+        completedAt: '2026-07-25T12:05:00.000Z',
+        currentTime: '2026-07-25T12:00:00.000Z',
+        failedSessions: 0,
+        expectedFreshness: 'index checked 0m ago',
+      },
+      {
+        completedAt: '2026-07-25T10:01:00.000Z',
+        currentTime: '2026-07-25T12:00:59.999Z',
+        failedSessions: 0,
+        expectedFreshness: 'index checked 1h ago',
+      },
+      {
+        completedAt: '2026-07-23T11:59:00.000Z',
+        currentTime: '2026-07-25T12:00:00.000Z',
+        failedSessions: 2,
+        expectedFreshness: 'index checked 2d ago · 2 failed sessions',
+      },
+    ];
+
+    for (const freshnessCase of cases) {
+      let currentTime = new Date(freshnessCase.currentTime);
+      let clockCalls = 0;
+      const service = {
+        async search() {
+          return {
+            results: [result],
+            totalChunks: 1,
+            indexMaintenanceStatus: {
+              version: 1 as const,
+              completedAt: freshnessCase.completedAt,
+              scannedSessions: 7,
+              failedSessions: freshnessCase.failedSessions,
+            },
+            searchPolicy: createEmptySearch(RecallSearchScope.PROJECT).searchPolicy,
+          };
+        },
+        async index() {
+          throw new Error('search adapter must not index');
+        },
+      } satisfies RecallConversationService;
+      const tool = createPiRecallToolDefinition(service, () => {
+        clockCalls += 1;
+        return currentTime;
+      });
+      const execution = await tool.execute(
+        'freshness-boundary-call',
+        { query: 'freshness boundary' },
+        undefined,
+        undefined,
+        { cwd: '/trusted/project' },
+      );
+      currentTime = new Date('2026-08-25T12:00:00.000Z');
+
+      for (let renderCount = 0; renderCount < 2; renderCount += 1) {
+        const component = tool.renderResult(
+          execution,
+          { expanded: false, isPartial: false },
+          {
+            fg(color, text) {
+              void color;
+              return text;
+            },
+          },
+          { isError: false, lastComponent: undefined },
+        );
+        const rendered = stripVTControlCharacters(component.render(1_000).join('\n')).trimEnd();
+        assert.match(rendered, new RegExp(freshnessCase.expectedFreshness, 'u'));
+      }
+      assert.equal(clockCalls, 1);
+
+      const expanded = tool.renderResult(
+        execution,
+        { expanded: true, isPartial: false },
+        {
+          fg(color, text) {
+            void color;
+            return text;
+          },
+        },
+        { isError: false, lastComponent: undefined },
+      );
+      assert.equal(
+        expanded
+          .render(2_000)
+          .map((line) => line.trimEnd())
+          .join('\n'),
+        execution.content[0]?.type === 'text' ? execution.content[0].text : '',
+      );
+    }
   } finally {
     restoreKeybindings();
   }
@@ -265,6 +448,7 @@ void test('collapsed Pi recall result uses singular wording', async () => {
         return {
           results: [result],
           totalChunks: 9,
+          indexMaintenanceStatus: null,
           searchPolicy: createEmptySearch(RecallSearchScope.GLOBAL).searchPolicy,
         };
       },
@@ -294,10 +478,53 @@ void test('collapsed Pi recall result uses singular wording', async () => {
     );
     const rendered = stripVTControlCharacters(component.render(1_000).join('\n')).trimEnd();
 
-    assert.equal(
-      rendered,
-      '1 recall result · global scope · 9 indexed documents (alt+x to expand)',
+    assert.equal(rendered, '1 recall result · global scope · 487B / 6 lines (alt+x to expand)');
+
+    const oneLineComponent = tool.renderResult(
+      {
+        ...execution,
+        details: {
+          ...execution.details,
+          returnedBytes: 1,
+          returnedLines: 1,
+        },
+      },
+      { expanded: false, isPartial: false },
+      {
+        fg(color, text) {
+          void color;
+          return text;
+        },
+      },
+      { isError: false, lastComponent: undefined },
     );
+    const oneLineRendered = stripVTControlCharacters(
+      oneLineComponent.render(1_000).join('\n'),
+    ).trimEnd();
+    assert.equal(oneLineRendered, '1 recall result · global scope · 1B / 1 line (alt+x to expand)');
+
+    const {
+      returnedBytes: persistedReturnedBytes,
+      returnedLines: persistedReturnedLines,
+      ...persistedDetails
+    } = execution.details;
+    void persistedReturnedBytes;
+    void persistedReturnedLines;
+    const persistedComponent = tool.renderResult(
+      { ...execution, details: persistedDetails },
+      { expanded: false, isPartial: false },
+      {
+        fg(color, text) {
+          void color;
+          return text;
+        },
+      },
+      { isError: false, lastComponent: undefined },
+    );
+    const persistedRendered = stripVTControlCharacters(
+      persistedComponent.render(1_000).join('\n'),
+    ).trimEnd();
+    assert.equal(persistedRendered, '1 recall result · global scope (alt+x to expand)');
   } finally {
     restoreKeybindings();
   }
@@ -335,6 +562,7 @@ void test('expanded Pi recall rendering equals complete execution evidence exact
       return {
         results: [result],
         totalChunks: 12,
+        indexMaintenanceStatus: null,
         searchPolicy: createEmptySearch(RecallSearchScope.GLOBAL).searchPolicy,
       };
     },
@@ -389,13 +617,19 @@ void test('zero-match Pi recall rendering stays concise without an expansion hin
         return {
           ...createEmptySearch(RecallSearchScope.PROJECT),
           totalChunks: 42_318,
+          indexMaintenanceStatus: {
+            version: 1,
+            completedAt: '2026-07-25T12:00:00.000Z',
+            scannedSessions: 123,
+            failedSessions: 2,
+          },
         };
       },
       async index() {
         throw new Error('search adapter must not index');
       },
     } satisfies RecallConversationService;
-    const tool = createPiRecallToolDefinition(service);
+    const tool = createPiRecallToolDefinition(service, () => new Date('2026-07-25T13:00:00.000Z'));
     const execution = await tool.execute(
       'zero-match-call',
       { query: 'missing decision' },
@@ -403,6 +637,9 @@ void test('zero-match Pi recall rendering stays concise without an expansion hin
       undefined,
       { cwd: '/trusted/project' },
     );
+
+    assert.equal('returnedBytes' in execution.details, false);
+    assert.equal('returnedLines' in execution.details, false);
 
     for (const expanded of [false, true]) {
       const component = tool.renderResult(
@@ -418,7 +655,10 @@ void test('zero-match Pi recall rendering stays concise without an expansion hin
       );
       const rendered = stripVTControlCharacters(component.render(1_000).join('\n')).trimEnd();
 
-      assert.equal(rendered, 'No matching past conversations found · project scope');
+      assert.equal(
+        rendered,
+        'No matching past conversations found · project scope · index checked 1h ago · 2 failed sessions',
+      );
       assert.doesNotMatch(rendered, /alt\+x|expand/iu);
     }
   } finally {
@@ -443,6 +683,7 @@ void test('truncated Pi recall execution stores full metadata and marks collapse
         return {
           results: [result],
           totalChunks: 42_318,
+          indexMaintenanceStatus: null,
           searchPolicy: createEmptySearch(RecallSearchScope.PROJECT).searchPolicy,
         };
       },
@@ -484,6 +725,9 @@ void test('truncated Pi recall execution stores full metadata and marks collapse
     assert.equal(truncation.maxBytes, 50 * 1_024);
     assert.ok(truncation.totalLines > 2_000);
     assert.ok(truncation.outputBytes <= truncation.maxBytes);
+    assert.equal(truncatedExecution.details.returnedBytes, truncation.outputBytes);
+    assert.equal(truncatedExecution.details.returnedLines, truncation.outputLines);
+    assert.ok(Buffer.byteLength(truncatedText, 'utf8') > truncation.outputBytes);
 
     const component = truncatedTool.renderResult(
       truncatedExecution,
@@ -499,8 +743,25 @@ void test('truncated Pi recall execution stores full metadata and marks collapse
     const rendered = stripVTControlCharacters(component.render(1_000).join('\n')).trimEnd();
     assert.equal(
       rendered,
-      '1 recall result · project scope · 42,318 indexed documents · output truncated (alt+x to expand)',
+      '1 recall result · project scope · 50.0KB / 278 lines · output truncated (alt+x to expand)',
     );
+
+    const expandedComponent = truncatedTool.renderResult(
+      truncatedExecution,
+      { expanded: true, isPartial: false },
+      {
+        fg(color, text) {
+          void color;
+          return text;
+        },
+      },
+      { isError: false, lastComponent: undefined },
+    );
+    const expandedText = expandedComponent
+      .render(100_000)
+      .map((line) => line.trimEnd())
+      .join('\n');
+    assert.equal(expandedText, truncatedText);
 
     const untruncatedService = {
       async search() {
@@ -547,6 +808,23 @@ void test('Pi recall validation and execution errors retain error presentation',
     /Recall index unavailable/u,
   );
 
+  const callComponent = tool.renderCall(
+    { query: 'missing index' },
+    {
+      bold(text) {
+        return text;
+      },
+      fg(color, text) {
+        void color;
+        return text;
+      },
+    },
+    { isError: true, lastComponent: undefined },
+  );
+  const renderedCall = stripVTControlCharacters(callComponent.render(1_000).join('\n')).trimEnd();
+  assert.equal(renderedCall, 'pi-session-recall');
+  assert.doesNotMatch(renderedCall, /missing index/iu);
+
   const component = tool.renderResult(
     { content: [{ type: 'text', text: 'Recall index unavailable' }], details: undefined },
     { expanded: false, isPartial: false },
@@ -585,6 +863,7 @@ void test('Pi tool details retain line, block, character, and contributing-entry
   const details = createPiRecallToolDetails({
     results: [result],
     totalChunks: 1,
+    indexMaintenanceStatus: null,
     searchPolicy: createEmptySearch(RecallSearchScope.GLOBAL).searchPolicy,
   });
 

@@ -190,6 +190,7 @@ function createChunkPolicyConfig(
     databasePath: join(policyDirectory, 'zvec'),
     statePath: join(policyDirectory, 'index-state.json'),
     manifestPath: join(policyDirectory, 'index-manifest.json'),
+    indexMaintenanceStatusPath: join(policyDirectory, 'index-maintenance-status.json'),
     lockPath: join(policyDirectory, 'operation.lock'),
     projectLineages: normalizeRecallProjectLineages(corpus.specification.projectLineages),
     chunkPolicy: {

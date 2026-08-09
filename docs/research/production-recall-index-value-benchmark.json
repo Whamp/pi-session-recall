@@ -1,0 +1,850 @@
+{
+  "queries": [
+    "Why have recent pi-session-recall optimization attempts failed?",
+    "Why did agents not appear to have access to the pi-session-recall tool?",
+    "Which corrupted February session files were ignored, and why?",
+    "How large is the recall database and which old data can be removed?",
+    "What indexing and optimization schedule was chosen?"
+  ],
+  "repetitions": 5,
+  "stats": {
+    "docCount": 1443367,
+    "indexCompleteness": 0.9518535733222961
+  },
+  "summaries": [
+    {
+      "scope": "project",
+      "mode": "hnsw",
+      "samples": 25,
+      "wallMs": {
+        "median": 11.197979000000487,
+        "p95": 19.398528000001534,
+        "minimum": 9.008668000002217,
+        "maximum": 21.544699000000037
+      },
+      "cpuMs": {
+        "median": 43.272,
+        "p95": 52.791
+      }
+    },
+    {
+      "scope": "project",
+      "mode": "linear",
+      "samples": 25,
+      "wallMs": {
+        "median": 262.7317089999997,
+        "p95": 273.28779700000086,
+        "minimum": 250.6275689999984,
+        "maximum": 276.56749000000127
+      },
+      "cpuMs": {
+        "median": 288.863,
+        "p95": 308.171
+      }
+    },
+    {
+      "scope": "global",
+      "mode": "hnsw",
+      "samples": 25,
+      "wallMs": {
+        "median": 8.315252000000328,
+        "p95": 10.397793999996793,
+        "minimum": 6.478896000000532,
+        "maximum": 14.296426000000793
+      },
+      "cpuMs": {
+        "median": 40.219,
+        "p95": 59.468
+      }
+    },
+    {
+      "scope": "global",
+      "mode": "linear",
+      "samples": 25,
+      "wallMs": {
+        "median": 379.9179089999998,
+        "p95": 388.36947500000133,
+        "minimum": 372.72547999999915,
+        "maximum": 395.7118530000007
+      },
+      "cpuMs": {
+        "median": 409.279,
+        "p95": 417.041
+      }
+    }
+  ],
+  "overlaps": [
+    {
+      "queryIndex": 0,
+      "query": "Why have recent pi-session-recall optimization attempts failed?",
+      "scope": "project",
+      "top8Overlap": 5,
+      "sameTopResult": true
+    },
+    {
+      "queryIndex": 0,
+      "query": "Why have recent pi-session-recall optimization attempts failed?",
+      "scope": "global",
+      "top8Overlap": 7,
+      "sameTopResult": true
+    },
+    {
+      "queryIndex": 1,
+      "query": "Why did agents not appear to have access to the pi-session-recall tool?",
+      "scope": "project",
+      "top8Overlap": 8,
+      "sameTopResult": true
+    },
+    {
+      "queryIndex": 1,
+      "query": "Why did agents not appear to have access to the pi-session-recall tool?",
+      "scope": "global",
+      "top8Overlap": 8,
+      "sameTopResult": true
+    },
+    {
+      "queryIndex": 2,
+      "query": "Which corrupted February session files were ignored, and why?",
+      "scope": "project",
+      "top8Overlap": 8,
+      "sameTopResult": true
+    },
+    {
+      "queryIndex": 2,
+      "query": "Which corrupted February session files were ignored, and why?",
+      "scope": "global",
+      "top8Overlap": 8,
+      "sameTopResult": true
+    },
+    {
+      "queryIndex": 3,
+      "query": "How large is the recall database and which old data can be removed?",
+      "scope": "project",
+      "top8Overlap": 8,
+      "sameTopResult": true
+    },
+    {
+      "queryIndex": 3,
+      "query": "How large is the recall database and which old data can be removed?",
+      "scope": "global",
+      "top8Overlap": 8,
+      "sameTopResult": true
+    },
+    {
+      "queryIndex": 4,
+      "query": "What indexing and optimization schedule was chosen?",
+      "scope": "project",
+      "top8Overlap": 8,
+      "sameTopResult": true
+    },
+    {
+      "queryIndex": 4,
+      "query": "What indexing and optimization schedule was chosen?",
+      "scope": "global",
+      "top8Overlap": 8,
+      "sameTopResult": true
+    }
+  ],
+  "observations": [
+    {
+      "queryIndex": 0,
+      "scope": "project",
+      "mode": "hnsw",
+      "wallMs": 12.13357299999916,
+      "cpuMs": 40.263
+    },
+    {
+      "queryIndex": 0,
+      "scope": "project",
+      "mode": "linear",
+      "wallMs": 266.4098100000001,
+      "cpuMs": 294.568
+    },
+    {
+      "queryIndex": 0,
+      "scope": "global",
+      "mode": "hnsw",
+      "wallMs": 7.741949000000204,
+      "cpuMs": 38.11
+    },
+    {
+      "queryIndex": 0,
+      "scope": "global",
+      "mode": "linear",
+      "wallMs": 376.2372829999995,
+      "cpuMs": 408.538
+    },
+    {
+      "queryIndex": 1,
+      "scope": "project",
+      "mode": "hnsw",
+      "wallMs": 18.380199000000175,
+      "cpuMs": 48.817
+    },
+    {
+      "queryIndex": 1,
+      "scope": "project",
+      "mode": "linear",
+      "wallMs": 262.7317089999997,
+      "cpuMs": 291.928
+    },
+    {
+      "queryIndex": 1,
+      "scope": "global",
+      "mode": "hnsw",
+      "wallMs": 9.722602000000734,
+      "cpuMs": 43.056
+    },
+    {
+      "queryIndex": 1,
+      "scope": "global",
+      "mode": "linear",
+      "wallMs": 380.40943100000004,
+      "cpuMs": 412.137
+    },
+    {
+      "queryIndex": 2,
+      "scope": "project",
+      "mode": "hnsw",
+      "wallMs": 13.186977999999726,
+      "cpuMs": 46.532
+    },
+    {
+      "queryIndex": 2,
+      "scope": "project",
+      "mode": "linear",
+      "wallMs": 271.22677399999884,
+      "cpuMs": 302.226
+    },
+    {
+      "queryIndex": 2,
+      "scope": "global",
+      "mode": "hnsw",
+      "wallMs": 8.353943999998592,
+      "cpuMs": 48.073
+    },
+    {
+      "queryIndex": 2,
+      "scope": "global",
+      "mode": "linear",
+      "wallMs": 377.1370420000003,
+      "cpuMs": 408.229
+    },
+    {
+      "queryIndex": 3,
+      "scope": "project",
+      "mode": "hnsw",
+      "wallMs": 10.382466000000932,
+      "cpuMs": 33.551
+    },
+    {
+      "queryIndex": 3,
+      "scope": "project",
+      "mode": "linear",
+      "wallMs": 258.92385600000125,
+      "cpuMs": 288.913
+    },
+    {
+      "queryIndex": 3,
+      "scope": "global",
+      "mode": "hnsw",
+      "wallMs": 8.412702999999965,
+      "cpuMs": 41.869
+    },
+    {
+      "queryIndex": 3,
+      "scope": "global",
+      "mode": "linear",
+      "wallMs": 374.3704909999997,
+      "cpuMs": 403.902
+    },
+    {
+      "queryIndex": 4,
+      "scope": "project",
+      "mode": "hnsw",
+      "wallMs": 12.17417899999964,
+      "cpuMs": 48.291
+    },
+    {
+      "queryIndex": 4,
+      "scope": "project",
+      "mode": "linear",
+      "wallMs": 250.82598700000017,
+      "cpuMs": 280.508
+    },
+    {
+      "queryIndex": 4,
+      "scope": "global",
+      "mode": "hnsw",
+      "wallMs": 7.821296000000075,
+      "cpuMs": 36.651
+    },
+    {
+      "queryIndex": 4,
+      "scope": "global",
+      "mode": "linear",
+      "wallMs": 384.2966299999989,
+      "cpuMs": 416.083
+    },
+    {
+      "queryIndex": 0,
+      "scope": "global",
+      "mode": "linear",
+      "wallMs": 372.72547999999915,
+      "cpuMs": 402.367
+    },
+    {
+      "queryIndex": 0,
+      "scope": "global",
+      "mode": "hnsw",
+      "wallMs": 7.885834999999133,
+      "cpuMs": 35.951
+    },
+    {
+      "queryIndex": 0,
+      "scope": "project",
+      "mode": "linear",
+      "wallMs": 255.52842899999996,
+      "cpuMs": 283.621
+    },
+    {
+      "queryIndex": 0,
+      "scope": "project",
+      "mode": "hnsw",
+      "wallMs": 9.558799000000363,
+      "cpuMs": 35.101
+    },
+    {
+      "queryIndex": 1,
+      "scope": "global",
+      "mode": "linear",
+      "wallMs": 379.9179089999998,
+      "cpuMs": 412.097
+    },
+    {
+      "queryIndex": 1,
+      "scope": "global",
+      "mode": "hnsw",
+      "wallMs": 9.601937999999791,
+      "cpuMs": 43.546
+    },
+    {
+      "queryIndex": 1,
+      "scope": "project",
+      "mode": "linear",
+      "wallMs": 259.2705900000001,
+      "cpuMs": 288.442
+    },
+    {
+      "queryIndex": 1,
+      "scope": "project",
+      "mode": "hnsw",
+      "wallMs": 19.167359000000943,
+      "cpuMs": 44.834
+    },
+    {
+      "queryIndex": 2,
+      "scope": "global",
+      "mode": "linear",
+      "wallMs": 381.15151700000024,
+      "cpuMs": 411.09
+    },
+    {
+      "queryIndex": 2,
+      "scope": "global",
+      "mode": "hnsw",
+      "wallMs": 8.21064800000022,
+      "cpuMs": 39.987
+    },
+    {
+      "queryIndex": 2,
+      "scope": "project",
+      "mode": "linear",
+      "wallMs": 264.12761800000044,
+      "cpuMs": 292.076
+    },
+    {
+      "queryIndex": 2,
+      "scope": "project",
+      "mode": "hnsw",
+      "wallMs": 13.260483999998542,
+      "cpuMs": 52.791
+    },
+    {
+      "queryIndex": 3,
+      "scope": "global",
+      "mode": "linear",
+      "wallMs": 380.88973199999964,
+      "cpuMs": 407.229
+    },
+    {
+      "queryIndex": 3,
+      "scope": "global",
+      "mode": "hnsw",
+      "wallMs": 6.930974000000788,
+      "cpuMs": 36.892
+    },
+    {
+      "queryIndex": 3,
+      "scope": "project",
+      "mode": "linear",
+      "wallMs": 270.7168789999996,
+      "cpuMs": 301.23
+    },
+    {
+      "queryIndex": 3,
+      "scope": "project",
+      "mode": "hnsw",
+      "wallMs": 10.738816999999472,
+      "cpuMs": 39.665
+    },
+    {
+      "queryIndex": 4,
+      "scope": "global",
+      "mode": "linear",
+      "wallMs": 383.0616000000009,
+      "cpuMs": 416.042
+    },
+    {
+      "queryIndex": 4,
+      "scope": "global",
+      "mode": "hnsw",
+      "wallMs": 7.7269410000008065,
+      "cpuMs": 40.162
+    },
+    {
+      "queryIndex": 4,
+      "scope": "project",
+      "mode": "linear",
+      "wallMs": 255.24294999999984,
+      "cpuMs": 288.47
+    },
+    {
+      "queryIndex": 4,
+      "scope": "project",
+      "mode": "hnsw",
+      "wallMs": 12.428341000000728,
+      "cpuMs": 39.988
+    },
+    {
+      "queryIndex": 0,
+      "scope": "project",
+      "mode": "hnsw",
+      "wallMs": 9.697706000000835,
+      "cpuMs": 43.272
+    },
+    {
+      "queryIndex": 0,
+      "scope": "project",
+      "mode": "linear",
+      "wallMs": 250.6275689999984,
+      "cpuMs": 277.804
+    },
+    {
+      "queryIndex": 0,
+      "scope": "global",
+      "mode": "hnsw",
+      "wallMs": 9.28469000000041,
+      "cpuMs": 59.468
+    },
+    {
+      "queryIndex": 0,
+      "scope": "global",
+      "mode": "linear",
+      "wallMs": 388.36947500000133,
+      "cpuMs": 417.041
+    },
+    {
+      "queryIndex": 1,
+      "scope": "project",
+      "mode": "hnsw",
+      "wallMs": 21.544699000000037,
+      "cpuMs": 57.704
+    },
+    {
+      "queryIndex": 1,
+      "scope": "project",
+      "mode": "linear",
+      "wallMs": 255.82548999999926,
+      "cpuMs": 282.77
+    },
+    {
+      "queryIndex": 1,
+      "scope": "global",
+      "mode": "hnsw",
+      "wallMs": 10.075827000000572,
+      "cpuMs": 41.811
+    },
+    {
+      "queryIndex": 1,
+      "scope": "global",
+      "mode": "linear",
+      "wallMs": 377.8577089999999,
+      "cpuMs": 409.086
+    },
+    {
+      "queryIndex": 2,
+      "scope": "project",
+      "mode": "hnsw",
+      "wallMs": 9.647503000000142,
+      "cpuMs": 41.751
+    },
+    {
+      "queryIndex": 2,
+      "scope": "project",
+      "mode": "linear",
+      "wallMs": 264.75458100000105,
+      "cpuMs": 293.574
+    },
+    {
+      "queryIndex": 2,
+      "scope": "global",
+      "mode": "hnsw",
+      "wallMs": 7.516891999999643,
+      "cpuMs": 38.432
+    },
+    {
+      "queryIndex": 2,
+      "scope": "global",
+      "mode": "linear",
+      "wallMs": 381.78719699999965,
+      "cpuMs": 409.308
+    },
+    {
+      "queryIndex": 3,
+      "scope": "project",
+      "mode": "hnsw",
+      "wallMs": 11.065953999999692,
+      "cpuMs": 41.214
+    },
+    {
+      "queryIndex": 3,
+      "scope": "project",
+      "mode": "linear",
+      "wallMs": 262.6852920000001,
+      "cpuMs": 288.863
+    },
+    {
+      "queryIndex": 3,
+      "scope": "global",
+      "mode": "hnsw",
+      "wallMs": 9.52871199999936,
+      "cpuMs": 40.219
+    },
+    {
+      "queryIndex": 3,
+      "scope": "global",
+      "mode": "linear",
+      "wallMs": 377.48152200000004,
+      "cpuMs": 406.32
+    },
+    {
+      "queryIndex": 4,
+      "scope": "project",
+      "mode": "hnsw",
+      "wallMs": 11.241909999997006,
+      "cpuMs": 44.923
+    },
+    {
+      "queryIndex": 4,
+      "scope": "project",
+      "mode": "linear",
+      "wallMs": 265.47701999999845,
+      "cpuMs": 291.347
+    },
+    {
+      "queryIndex": 4,
+      "scope": "global",
+      "mode": "hnsw",
+      "wallMs": 8.300766000000294,
+      "cpuMs": 40.205
+    },
+    {
+      "queryIndex": 4,
+      "scope": "global",
+      "mode": "linear",
+      "wallMs": 386.421241,
+      "cpuMs": 414.974
+    },
+    {
+      "queryIndex": 0,
+      "scope": "global",
+      "mode": "linear",
+      "wallMs": 380.86413600000014,
+      "cpuMs": 415.824
+    },
+    {
+      "queryIndex": 0,
+      "scope": "global",
+      "mode": "hnsw",
+      "wallMs": 6.478896000000532,
+      "cpuMs": 37.735
+    },
+    {
+      "queryIndex": 0,
+      "scope": "project",
+      "mode": "linear",
+      "wallMs": 276.56749000000127,
+      "cpuMs": 308.171
+    },
+    {
+      "queryIndex": 0,
+      "scope": "project",
+      "mode": "hnsw",
+      "wallMs": 9.008668000002217,
+      "cpuMs": 37.866
+    },
+    {
+      "queryIndex": 1,
+      "scope": "global",
+      "mode": "linear",
+      "wallMs": 379.99169699999766,
+      "cpuMs": 409.57
+    },
+    {
+      "queryIndex": 1,
+      "scope": "global",
+      "mode": "hnsw",
+      "wallMs": 9.981243000001996,
+      "cpuMs": 45.139
+    },
+    {
+      "queryIndex": 1,
+      "scope": "project",
+      "mode": "linear",
+      "wallMs": 251.2369609999987,
+      "cpuMs": 281.468
+    },
+    {
+      "queryIndex": 1,
+      "scope": "project",
+      "mode": "hnsw",
+      "wallMs": 18.960925999999745,
+      "cpuMs": 52.497
+    },
+    {
+      "queryIndex": 2,
+      "scope": "global",
+      "mode": "linear",
+      "wallMs": 395.7118530000007,
+      "cpuMs": 421.544
+    },
+    {
+      "queryIndex": 2,
+      "scope": "global",
+      "mode": "hnsw",
+      "wallMs": 7.621736000000965,
+      "cpuMs": 36.576
+    },
+    {
+      "queryIndex": 2,
+      "scope": "project",
+      "mode": "linear",
+      "wallMs": 255.28334499999983,
+      "cpuMs": 281.29
+    },
+    {
+      "queryIndex": 2,
+      "scope": "project",
+      "mode": "hnsw",
+      "wallMs": 11.197979000000487,
+      "cpuMs": 44.153
+    },
+    {
+      "queryIndex": 3,
+      "scope": "global",
+      "mode": "linear",
+      "wallMs": 378.8225390000007,
+      "cpuMs": 409.279
+    },
+    {
+      "queryIndex": 3,
+      "scope": "global",
+      "mode": "hnsw",
+      "wallMs": 14.296426000000793,
+      "cpuMs": 45.588
+    },
+    {
+      "queryIndex": 3,
+      "scope": "project",
+      "mode": "linear",
+      "wallMs": 263.5672290000002,
+      "cpuMs": 287.882
+    },
+    {
+      "queryIndex": 3,
+      "scope": "project",
+      "mode": "hnsw",
+      "wallMs": 9.779827999998815,
+      "cpuMs": 36.084
+    },
+    {
+      "queryIndex": 4,
+      "scope": "global",
+      "mode": "linear",
+      "wallMs": 386.66607600000134,
+      "cpuMs": 415.789
+    },
+    {
+      "queryIndex": 4,
+      "scope": "global",
+      "mode": "hnsw",
+      "wallMs": 8.315252000000328,
+      "cpuMs": 38.183
+    },
+    {
+      "queryIndex": 4,
+      "scope": "project",
+      "mode": "linear",
+      "wallMs": 260.28889900000286,
+      "cpuMs": 287.098
+    },
+    {
+      "queryIndex": 4,
+      "scope": "project",
+      "mode": "hnsw",
+      "wallMs": 10.534979000000021,
+      "cpuMs": 39.627
+    },
+    {
+      "queryIndex": 0,
+      "scope": "project",
+      "mode": "hnsw",
+      "wallMs": 9.851932000001398,
+      "cpuMs": 38.903
+    },
+    {
+      "queryIndex": 0,
+      "scope": "project",
+      "mode": "linear",
+      "wallMs": 265.8730749999995,
+      "cpuMs": 294.725
+    },
+    {
+      "queryIndex": 0,
+      "scope": "global",
+      "mode": "hnsw",
+      "wallMs": 7.725608000000648,
+      "cpuMs": 41.865
+    },
+    {
+      "queryIndex": 0,
+      "scope": "global",
+      "mode": "linear",
+      "wallMs": 376.11567000000286,
+      "cpuMs": 405.868
+    },
+    {
+      "queryIndex": 1,
+      "scope": "project",
+      "mode": "hnsw",
+      "wallMs": 19.398528000001534,
+      "cpuMs": 51.693
+    },
+    {
+      "queryIndex": 1,
+      "scope": "project",
+      "mode": "linear",
+      "wallMs": 273.28779700000086,
+      "cpuMs": 309.61
+    },
+    {
+      "queryIndex": 1,
+      "scope": "global",
+      "mode": "hnsw",
+      "wallMs": 10.397793999996793,
+      "cpuMs": 42.662
+    },
+    {
+      "queryIndex": 1,
+      "scope": "global",
+      "mode": "linear",
+      "wallMs": 376.3847679999999,
+      "cpuMs": 404.916
+    },
+    {
+      "queryIndex": 2,
+      "scope": "project",
+      "mode": "hnsw",
+      "wallMs": 9.518854000001738,
+      "cpuMs": 44.123
+    },
+    {
+      "queryIndex": 2,
+      "scope": "project",
+      "mode": "linear",
+      "wallMs": 263.46367699999973,
+      "cpuMs": 293.717
+    },
+    {
+      "queryIndex": 2,
+      "scope": "global",
+      "mode": "hnsw",
+      "wallMs": 9.416965999997046,
+      "cpuMs": 64.471
+    },
+    {
+      "queryIndex": 2,
+      "scope": "global",
+      "mode": "linear",
+      "wallMs": 376.90363100000104,
+      "cpuMs": 408.378
+    },
+    {
+      "queryIndex": 3,
+      "scope": "project",
+      "mode": "hnsw",
+      "wallMs": 10.874698999999964,
+      "cpuMs": 45.428
+    },
+    {
+      "queryIndex": 3,
+      "scope": "project",
+      "mode": "linear",
+      "wallMs": 253.38656800000172,
+      "cpuMs": 272.912
+    },
+    {
+      "queryIndex": 3,
+      "scope": "global",
+      "mode": "hnsw",
+      "wallMs": 9.363285999999789,
+      "cpuMs": 53.392
+    },
+    {
+      "queryIndex": 3,
+      "scope": "global",
+      "mode": "linear",
+      "wallMs": 375.7011999999995,
+      "cpuMs": 405.264
+    },
+    {
+      "queryIndex": 4,
+      "scope": "project",
+      "mode": "hnsw",
+      "wallMs": 12.37369899999976,
+      "cpuMs": 41.478
+    },
+    {
+      "queryIndex": 4,
+      "scope": "project",
+      "mode": "linear",
+      "wallMs": 262.8009180000008,
+      "cpuMs": 287.673
+    },
+    {
+      "queryIndex": 4,
+      "scope": "global",
+      "mode": "hnsw",
+      "wallMs": 7.018045999997412,
+      "cpuMs": 37.845
+    },
+    {
+      "queryIndex": 4,
+      "scope": "global",
+      "mode": "linear",
+      "wallMs": 377.53755699999965,
+      "cpuMs": 407.85
+    }
+  ]
+}

@@ -56,6 +56,9 @@ function createAutoIndexSchedulerFixture(options: AutoIndexSchedulerFixtureOptio
 
 void test('installs a default hourly systemd user timer with direct absolute invocation', async () => {
   const fixture = createAutoIndexSchedulerFixture();
+  const userUnitDirectory = '/home/recall-user/.config-test/systemd/user';
+  fixture.files.set(`${userUnitDirectory}/pi-session-recall-optimize.service`, 'legacy service');
+  fixture.files.set(`${userUnitDirectory}/pi-session-recall-optimize.timer`, 'legacy timer');
 
   const result = await installAutoIndexSchedule({ value: 1n, unit: 'h' }, fixture.system);
 
@@ -71,7 +74,7 @@ void test('installs a default hourly systemd user timer with direct absolute inv
       '[Service]',
       'Type=oneshot',
       'WorkingDirectory=/opt/pi session recall',
-      'ExecStart="/opt/node/bin/node" --import tsx "/opt/pi session recall/bin/psr" index --no-optimize',
+      'ExecStart="/opt/node/bin/node" --import tsx "/opt/pi session recall/bin/psr" index',
       'StandardOutput=journal',
       'StandardError=journal',
       '',
@@ -100,25 +103,29 @@ void test('installs a default hourly systemd user timer with direct absolute inv
   )?.[1];
   assert.doesNotMatch(systemdService ?? '', /Restart|RemainAfterExit/iu);
   assert.doesNotMatch(systemdTimer ?? '', /Persistent|OnCalendar/iu);
+  assert.equal(fixture.files.size, 2);
+  assert.ok(
+    !fixture.files.has(
+      '/home/recall-user/.config-test/systemd/user/pi-session-recall-optimize.timer',
+    ),
+  );
   assert.deepEqual(fixture.processCalls, [
-    { executable: 'systemctl', argumentsList: ['--user', 'daemon-reload'] },
     {
       executable: 'systemctl',
-      argumentsList: [
-        '--user',
-        'enable',
-        'pi-session-recall-index.timer',
-        'pi-session-recall-optimize.timer',
-      ],
+      argumentsList: ['--user', 'disable', '--now', 'pi-session-recall-optimize.timer'],
     },
     {
       executable: 'systemctl',
-      argumentsList: [
-        '--user',
-        'restart',
-        'pi-session-recall-index.timer',
-        'pi-session-recall-optimize.timer',
-      ],
+      argumentsList: ['--user', 'stop', 'pi-session-recall-optimize.service'],
+    },
+    { executable: 'systemctl', argumentsList: ['--user', 'daemon-reload'] },
+    {
+      executable: 'systemctl',
+      argumentsList: ['--user', 'enable', 'pi-session-recall-index.timer'],
+    },
+    {
+      executable: 'systemctl',
+      argumentsList: ['--user', 'restart', 'pi-session-recall-index.timer'],
     },
     {
       executable: 'systemctl',
@@ -127,15 +134,15 @@ void test('installs a default hourly systemd user timer with direct absolute inv
   ]);
 });
 
-void test('systemd schedules non-optimizing updates hourly and standalone optimization daily at 23:00', async () => {
+void test('systemd adds daily optimization at 23:00 only when explicitly enabled', async () => {
   const fixture = createAutoIndexSchedulerFixture();
 
-  await installAutoIndexSchedule({ value: 1n, unit: 'h' }, fixture.system);
+  await installAutoIndexSchedule({ value: 1n, unit: 'h' }, fixture.system, { optimizeDaily: true });
 
   const userUnitDirectory = '/home/recall-user/.config-test/systemd/user';
   assert.match(
     fixture.files.get(`${userUnitDirectory}/pi-session-recall-index.service`) ?? '',
-    /bin\/psr" index --no-optimize/u,
+    /bin\/psr" index$/mu,
   );
   assert.equal(
     fixture.files.get(`${userUnitDirectory}/pi-session-recall-optimize.timer`),
@@ -174,19 +181,23 @@ void test('reinstall replaces the systemd definition and refreshes its interval'
   await installAutoIndexSchedule({ value: 5n, unit: 'm' }, fixture.system);
   await installAutoIndexSchedule({ value: 2n, unit: 'h' }, fixture.system);
 
-  assert.equal(fixture.files.size, 4);
+  assert.equal(fixture.files.size, 2);
   const timer =
     fixture.files.get(
       '/home/recall-user/.config-test/systemd/user/pi-session-recall-index.timer',
     ) ?? '';
   assert.match(timer, /OnActiveSec=2h\nOnUnitActiveSec=2h/u);
   assert.doesNotMatch(timer, /5min/u);
-  assert.equal(fixture.processCalls.length, 8);
+  assert.equal(fixture.processCalls.length, 12);
 });
 
 void test('fails installation when durable Linux timer setup fails', async () => {
   const fixture = createAutoIndexSchedulerFixture({
-    processResults: [{ exitCode: 1, stderr: 'Failed to connect to user bus' }],
+    processResults: [
+      { exitCode: 0, stderr: '' },
+      { exitCode: 0, stderr: '' },
+      { exitCode: 1, stderr: 'Failed to connect to user bus' },
+    ],
   });
 
   await assert.rejects(
@@ -194,12 +205,14 @@ void test('fails installation when durable Linux timer setup fails', async () =>
     /Auto-index scheduler command failed: systemctl --user daemon-reload: Failed to connect to user bus/u,
   );
 
-  assert.equal(fixture.processCalls.length, 1);
+  assert.equal(fixture.processCalls.length, 3);
 });
 
 void test('keeps the Linux timer installed when immediate indexing fails', async () => {
   const fixture = createAutoIndexSchedulerFixture({
     processResults: [
+      { exitCode: 0, stderr: '' },
+      { exitCode: 0, stderr: '' },
       { exitCode: 0, stderr: '' },
       { exitCode: 0, stderr: '' },
       { exitCode: 0, stderr: '' },
@@ -209,7 +222,7 @@ void test('keeps the Linux timer installed when immediate indexing fails', async
 
   const result = await installAutoIndexSchedule({ value: 1n, unit: 'h' }, fixture.system);
 
-  assert.equal(fixture.files.size, 4);
+  assert.equal(fixture.files.size, 2);
   assert.equal(
     result.immediateRunWarning,
     'the immediate psr index attempt failed: psr index exited with status 1',
@@ -235,7 +248,7 @@ void test('escapes systemd paths and renders explicit minutes', async () => {
   assert.match(service, /WorkingDirectory=\/opt\/pi\$session %%42/u);
   assert.match(
     service,
-    /ExecStart="\/opt\/node%%build\/bin\/node" --import tsx "\/opt\/pi\$\$session %%42\/bin\/psr" index --no-optimize/u,
+    /ExecStart="\/opt\/node%%build\/bin\/node" --import tsx "\/opt\/pi\$\$session %%42\/bin\/psr" index$/mu,
   );
   assert.match(timer, /OnActiveSec=30min\nOnUnitActiveSec=30min/u);
 });
@@ -256,12 +269,14 @@ void test('installs a per-user macOS LaunchAgent with escaped paths and mode 060
   const optimizePlistPath =
     '/Users/recall-user/Library/LaunchAgents/dev.pi-session-recall.auto-optimize.plist';
 
-  await installAutoIndexSchedule({ value: 15n, unit: 'm' }, fixture.system);
+  await installAutoIndexSchedule({ value: 15n, unit: 'm' }, fixture.system, {
+    optimizeDaily: true,
+  });
 
   const plist = fixture.files.get(plistPath) ?? '';
   assert.match(plist, /<string>\/Applications\/Node &amp; Tools\/bin\/node<\/string>/u);
   assert.match(plist, /<string>\/Applications\/Pi &amp; Recall<\/string>/u);
-  assert.match(plist, /<string>--no-optimize<\/string>/u);
+  assert.doesNotMatch(plist, /<string>--no-optimize<\/string>/u);
   assert.match(plist, /<integer>900<\/integer>/u);
   assert.match(plist, /<key>RunAtLoad<\/key>\n  <true\/>/u);
   assert.match(plist, /pi-session-recall-auto-index\.out\.log/u);
@@ -319,7 +334,7 @@ void test('fails macOS installation when launchctl cannot load the durable plist
     /Auto-index scheduler command failed: launchctl load .*: Load failed: invalid property list/u,
   );
 
-  assert.equal(fixture.files.size, 2);
+  assert.equal(fixture.files.size, 1);
 });
 
 void test('tolerates an already-unloaded macOS LaunchAgent during uninstall', async () => {

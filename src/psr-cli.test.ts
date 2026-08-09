@@ -236,7 +236,7 @@ void test('psr ignore rejects invalid subcommands and arity with the complete us
   const usage = [
     'psr usage: psr index [--rebuild] [--compact] [--no-optimize]',
     '           psr optimize',
-    '           psr auto-index install [--interval <N>m|<N>h]',
+    '           psr auto-index install [--interval <N>m|<N>h] [--optimize-daily]',
     '           psr auto-index uninstall',
     '           psr ignore add <session-path>',
     '           psr ignore list',
@@ -284,7 +284,7 @@ void test('psr index keeps progress on stderr and the completed summary on stdou
   assert.equal(fixture.calls.length, 1);
   assert.deepEqual(
     { ...fixture.calls[0], onProgress: typeof fixture.calls[0]?.onProgress },
-    { rebuild: false, optimize: true, onProgress: 'function' },
+    { rebuild: false, optimize: false, onProgress: 'function' },
   );
   assert.equal(fixture.executionLog[0], 'write progress');
   assert.equal(fixture.executionLog[1], 'load config');
@@ -296,7 +296,7 @@ void test('psr index keeps progress on stderr and the completed summary on stdou
   assert.doesNotMatch(fixture.progressOutput.join(''), /7 searchable documents/iu);
 });
 
-void test('psr index --no-optimize updates changed sessions without optimizing zvec', async () => {
+void test('psr index --no-optimize remains an update-only compatibility flag', async () => {
   const fixture = createPsrCliFixture();
 
   const exitCode = await runPsrCli(['index', '--no-optimize'], fixture.dependencies);
@@ -665,11 +665,11 @@ void test('psr index --rebuild explicitly replaces the index', async () => {
   assert.equal(fixture.calls.length, 1);
   assert.deepEqual(
     { ...fixture.calls[0], onProgress: typeof fixture.calls[0]?.onProgress },
-    { rebuild: true, optimize: true, onProgress: 'function' },
+    { rebuild: true, optimize: false, onProgress: 'function' },
   );
 });
 
-void test('psr auto-index install routes the default interval and reports success', async () => {
+void test('psr auto-index install defaults to update-only indexing', async () => {
   const fixture = createPsrCliFixture();
 
   const exitCode = await runPsrCli(['auto-index', 'install'], fixture.dependencies);
@@ -677,17 +677,17 @@ void test('psr auto-index install routes the default interval and reports succes
   assert.equal(exitCode, 0);
   assert.equal(
     fixture.output.join(''),
-    'Automatic recall indexing installed every 1h; optimization scheduled daily at 23:00.\n',
+    'Automatic recall indexing installed every 1h; optimization remains manual.\n',
   );
-  assert.equal(fixture.schedulerProcessCalls.length, 4);
+  assert.equal(fixture.schedulerProcessCalls.length, 6);
   assert.deepEqual(fixture.calls, []);
 });
 
-void test('psr auto-index install accepts and reports an explicit interval', async () => {
+void test('psr auto-index install accepts an interval and explicit daily optimization', async () => {
   const fixture = createPsrCliFixture();
 
   const exitCode = await runPsrCli(
-    ['auto-index', 'install', '--interval', '30m'],
+    ['auto-index', 'install', '--optimize-daily', '--interval', '30m'],
     fixture.dependencies,
   );
 
@@ -696,11 +696,14 @@ void test('psr auto-index install accepts and reports an explicit interval', asy
     fixture.output.join(''),
     'Automatic recall indexing installed every 30m; optimization scheduled daily at 23:00.\n',
   );
+  assert.equal(fixture.schedulerProcessCalls.length, 4);
 });
 
 void test('psr auto-index install reports a nonfatal immediate indexing warning', async () => {
   const fixture = createPsrCliFixture([], {
     schedulerProcessResults: [
+      { exitCode: 0, stderr: '' },
+      { exitCode: 0, stderr: '' },
       { exitCode: 0, stderr: '' },
       { exitCode: 0, stderr: '' },
       { exitCode: 0, stderr: '' },
@@ -713,7 +716,7 @@ void test('psr auto-index install reports a nonfatal immediate indexing warning'
   assert.equal(exitCode, 0);
   assert.equal(
     fixture.output.join(''),
-    'Automatic recall indexing installed every 1h; optimization scheduled daily at 23:00.\n',
+    'Automatic recall indexing installed every 1h; optimization remains manual.\n',
   );
   assert.match(
     fixture.progressOutput.join(''),
@@ -744,6 +747,20 @@ void test('psr auto-index rejects invalid intervals before touching index mainte
 
   assert.deepEqual(fixture.calls, []);
   assert.deepEqual(fixture.executionLog, []);
+});
+
+void test('psr auto-index rejects duplicate optimization flags', async () => {
+  const fixture = createPsrCliFixture();
+
+  await assert.rejects(
+    runPsrCli(
+      ['auto-index', 'install', '--optimize-daily', '--optimize-daily'],
+      fixture.dependencies,
+    ),
+    /psr usage: psr index/u,
+  );
+
+  assert.deepEqual(fixture.schedulerProcessCalls, []);
 });
 
 void test('psr auto-index rejects unsupported platforms with one clear error', async () => {

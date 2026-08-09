@@ -26,7 +26,7 @@ import {
 const PSR_USAGE = [
   'psr usage: psr index [--rebuild] [--compact] [--no-optimize]',
   '           psr optimize',
-  '           psr auto-index install [--interval <N>m|<N>h]',
+  '           psr auto-index install [--interval <N>m|<N>h] [--optimize-daily]',
   '           psr auto-index uninstall',
   '           psr ignore add <session-path>',
   '           psr ignore list',
@@ -67,22 +67,42 @@ interface RecallIndexProgressTiming {
   indexingElapsedMs?: number;
 }
 
-function readAutoIndexInstallInterval(argumentsList: readonly string[]): AutoIndexInterval {
-  if (argumentsList.length === 2) {
-    return { value: 1n, unit: 'h' };
+interface AutoIndexInstallArguments {
+  interval: AutoIndexInterval;
+  optimizeDaily: boolean;
+}
+
+function readAutoIndexInstallArguments(
+  argumentsList: readonly string[],
+): AutoIndexInstallArguments {
+  let interval: AutoIndexInterval = { value: 1n, unit: 'h' };
+  let intervalSeen = false;
+  let optimizeDaily = false;
+  for (let index = 2; index < argumentsList.length; index += 1) {
+    const flag = argumentsList[index];
+    if (flag === '--optimize-daily') {
+      if (optimizeDaily) {
+        throw new Error(PSR_USAGE);
+      }
+      optimizeDaily = true;
+      continue;
+    }
+    if (flag !== '--interval' || intervalSeen) {
+      throw new Error(PSR_USAGE);
+    }
+    const intervalText = argumentsList[index + 1] ?? '';
+    if (!AUTO_INDEX_INTERVAL_PATTERN.test(intervalText)) {
+      throw new Error(AUTO_INDEX_INTERVAL_ERROR);
+    }
+    const unit = intervalText.slice(-1);
+    if (unit !== 'm' && unit !== 'h') {
+      throw new Error(AUTO_INDEX_INTERVAL_ERROR);
+    }
+    interval = { value: BigInt(intervalText.slice(0, -1)), unit };
+    intervalSeen = true;
+    index += 1;
   }
-  if (argumentsList[2] !== '--interval' || argumentsList.length !== 4) {
-    throw new Error(PSR_USAGE);
-  }
-  const intervalText = argumentsList[3] ?? '';
-  if (!AUTO_INDEX_INTERVAL_PATTERN.test(intervalText)) {
-    throw new Error(AUTO_INDEX_INTERVAL_ERROR);
-  }
-  const unit = intervalText.slice(-1);
-  if (unit !== 'm' && unit !== 'h') {
-    throw new Error(AUTO_INDEX_INTERVAL_ERROR);
-  }
-  return { value: BigInt(intervalText.slice(0, -1)), unit };
+  return { interval, optimizeDaily };
 }
 
 function formatCountedNoun(count: number, singularNoun: string): string {
@@ -272,15 +292,19 @@ export async function runPsrCli(
     if (argumentsList[1] !== 'install') {
       throw new Error(PSR_USAGE);
     }
-    const interval = readAutoIndexInstallInterval(argumentsList);
-    const installation = await installAutoIndexSchedule(interval, dependencies.schedulerSystem);
+    const { interval, optimizeDaily } = readAutoIndexInstallArguments(argumentsList);
+    const installation = await installAutoIndexSchedule(interval, dependencies.schedulerSystem, {
+      optimizeDaily,
+    });
     if (installation.immediateRunWarning !== undefined) {
       dependencies.writeProgress(
         `Warning: Automatic recall indexing was installed, but ${installation.immediateRunWarning}.\n`,
       );
     }
     dependencies.writeOutput(
-      `Automatic recall indexing installed every ${interval.value}${interval.unit}; optimization scheduled daily at 23:00.\n`,
+      optimizeDaily
+        ? `Automatic recall indexing installed every ${interval.value}${interval.unit}; optimization scheduled daily at 23:00.\n`
+        : `Automatic recall indexing installed every ${interval.value}${interval.unit}; optimization remains manual.\n`,
     );
     return 0;
   }
@@ -315,7 +339,6 @@ export async function runPsrCli(
   }
   const rebuild = distinctFlags.has('--rebuild');
   const compact = distinctFlags.has('--compact');
-  const optimize = !distinctFlags.has('--no-optimize');
 
   let commandStartedAtMs: number | undefined;
   let indexingStartedAtMs: number | undefined;
@@ -355,7 +378,7 @@ export async function runPsrCli(
   const config = await dependencies.loadConfig();
   const result = await dependencies.createService(config).index({
     rebuild,
-    optimize,
+    optimize: false,
     onProgress: reportProgress,
   });
   const summary = result.indexSummary;

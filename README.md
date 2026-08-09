@@ -4,6 +4,12 @@ Pi Session Recall searches past Pi conversations by meaning or exact text. It re
 
 The standalone `psr index` command is the only index writer. Run it directly or opt into a native per-user schedule. `psr ignore` writes PSR policy state but never opens the index. Pi lifecycle and the `pi-session-recall` tool remain read-only.
 
+## Why index session history?
+
+Raw session JSONL remains the source of truth, but asking a fresh agent to search it spends time and model context on file discovery, format parsing, branch structure, compaction, and evidence location. Pi Session Recall does that work ahead of time, limits search to the invoking project by default, combines meaning, ordinary text, and identifier retrieval, and returns exact JSONL line citations.
+
+A measured production comparison gave the same question to the recall tool and to a fresh agent restricted to raw JSONL. The full hybrid tool took 1.48 seconds at the median. The raw agent took 94.43 seconds, examined 54 project files, and used 141,682 tokens plus 852,480 cached tokens. The agent found the answer reliably; the tool required its maximum ten results to include the answer at rank ten. Indexed recall was about 64 times faster and far cheaper in this case, while the ranking result exposed work still needed. This is one measured query, not a universal quality or capacity claim. See [Production recall index value benchmark](docs/research/production-recall-index-value-benchmark.md).
+
 ## Install
 
 ```bash
@@ -24,11 +30,11 @@ psr index --rebuild
 psr index                                      # add, update, and remove changed session evidence
 psr index --rebuild                            # replace incompatible or damaged index state
 psr index --compact                            # keep the former one-line stdout summary
-psr index --no-optimize                        # update evidence without optimizing zvec
-psr optimize                                  # optimize existing zvec data without indexing sessions
-psr auto-index install                         # update hourly; optimize daily at 23:00
-psr auto-index install --interval 30m          # replace the schedule with another interval
-psr auto-index uninstall                       # remove the schedule
+psr optimize                                   # explicitly optimize existing zvec data
+psr auto-index install                         # update hourly without optimization
+psr auto-index install --interval 30m           # replace the update interval
+psr auto-index install --optimize-daily         # also optimize daily at 23:00
+psr auto-index uninstall                        # remove every installed schedule
 psr ignore add path/to/session.jsonl            # exclude one exact physical session path
 psr ignore list                                 # print sorted excluded paths
 psr ignore remove path/to/session.jsonl         # make one exact path eligible again
@@ -44,9 +50,9 @@ psr ignore remove path/to/session.jsonl         # make one exact path eligible a
 - skips ignored files before parsing or embedding them;
 - reports malformed eligible session files and continues with healthy files;
 - shows elapsed time and estimates time remaining after a healthy file completes;
-- optimizes zvec after a changed pass.
+- leaves collection optimization to the explicit `psr optimize` command.
 
-The estimate uses the observed rate of healthy files in the current run. Until enough work completes, the command says that it is calculating the estimate rather than inventing an initial duration. `--compact` preserves the former one-line completed summary and `Failed: ...` lines on stdout; progress remains on stderr. `--no-optimize` skips zvec optimization after changed evidence. `psr optimize` does not scan or index sessions; it optimizes the existing collection under the same writer lock.
+The estimate uses the observed rate of healthy files in the current run. Until enough work completes, the command says that it is calculating the estimate rather than inventing an initial duration. `--compact` preserves the former one-line completed summary and `Failed: ...` lines on stdout; progress remains on stderr. The legacy `--no-optimize` flag remains accepted as a compatibility alias for ordinary update-only indexing. `psr optimize` does not scan or index sessions; it optimizes the existing collection under the same writer lock.
 
 No startup hook, completed-turn hook, shutdown hook, watcher, package daemon, or search request updates the index.
 
@@ -62,30 +68,28 @@ Path identity is exact and lexical. Relative command arguments resolve from the 
 
 ### Automatic index maintenance
 
-`psr auto-index install` creates two per-user native schedules:
+`psr auto-index install` creates one per-user native schedule that updates changed evidence without optimizing zvec. The interval accepts a positive whole number followed by lowercase `m` or `h`; the default is `1h`. Installation never uses `sudo`. Reinstalling replaces the definition and captures absolute paths to the current Node executable and installed package.
 
-- update changed evidence at the configured interval without optimizing zvec;
-- force zvec optimization every day at 23:00 local time.
-
-The update interval accepts a positive whole number followed by lowercase `m` or `h`; the default is `1h`. The daily optimization time is fixed. Installation never uses `sudo`. Reinstalling replaces both definitions and captures absolute paths to the current Node executable and installed package.
+Optimization is optional. Add `--optimize-daily` to install a second schedule that runs `psr optimize` every day at 23:00 local time. Reinstalling without that flag disables and removes any older optimization schedule. Enable it only when measured query latency or workload justifies collection-wide compaction.
 
 The generated definitions run the equivalent of:
 
 ```text
-<absolute-node> --import tsx <absolute-package-root>/bin/psr index --no-optimize
+<absolute-node> --import tsx <absolute-package-root>/bin/psr index
+# Only with --optimize-daily:
 <absolute-node> --import tsx <absolute-package-root>/bin/psr optimize
 ```
 
-Both commands use the same writer lock, so an hourly update and daily optimization cannot write concurrently. Generated definitions do not copy `PI_RECALL_*` overrides from the installation shell. Scheduled runs use the durable recall configuration file and normal defaults.
+Both commands use the same writer lock, so an update and optional optimization cannot write concurrently. Generated definitions do not copy `PI_RECALL_*` overrides from the installation shell. Scheduled runs use the durable recall configuration file and normal defaults.
 
-On Linux, installation writes two systemd user services and two timers under `${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/`. It starts both timers, then attempts one immediate non-optimizing index run. If that run fails, installation warns but leaves both timers active. Read logs with:
+On Linux, default installation writes one systemd user service and timer under `${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/`. `--optimize-daily` adds a second service and timer. Installation starts the selected timers, then attempts one immediate index run. If that run fails, installation warns but leaves the timers active. Read logs with:
 
 ```bash
 journalctl --user-unit=pi-session-recall-index.service
-journalctl --user-unit=pi-session-recall-optimize.service
+journalctl --user-unit=pi-session-recall-optimize.service # opt-in schedule only
 ```
 
-On macOS, installation writes two mode-`0600` LaunchAgents under `~/Library/LaunchAgents/`. The hourly agent uses `RunAtLoad`; the daily agent uses `StartCalendarInterval` for 23:00. They write separate logs:
+On macOS, default installation writes one mode-`0600` LaunchAgent under `~/Library/LaunchAgents/`; it uses `RunAtLoad`. `--optimize-daily` adds a calendar LaunchAgent for 23:00. They write separate logs:
 
 ```text
 ~/.pi/agent/logs/pi-session-recall-auto-index.out.log

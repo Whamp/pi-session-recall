@@ -133,6 +133,32 @@ void test('standalone optimization compacts the existing collection without inde
   assert.deepEqual(progressKinds, ['optimizing-collection', 'completed']);
 });
 
+void test('standalone optimization remains repeatable after later indexed writes', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-repeatable-optimize-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const config = createTestConfig(root);
+  await writeConversationSession(
+    join(config.sessionsDirectory, 'first.jsonl'),
+    'Initial repeatable optimization evidence.',
+  );
+  const service = createRecallConversationService(config, {
+    embeddingProvider: TEST_EMBEDDING_PROVIDER,
+    loadTokenizer: async () => tokenizer,
+  });
+  await service.index({ rebuild: true });
+  const firstOptimization = await service.optimize();
+
+  await writeConversationSession(
+    join(config.sessionsDirectory, 'second.jsonl'),
+    'Later repeatable optimization evidence.',
+  );
+  const laterIndex = await service.index();
+  const secondOptimization = await service.optimize();
+
+  assert.equal(laterIndex.indexSummary.indexedSessions, 1);
+  assert.ok(secondOptimization.totalChunks > firstOptimization.totalChunks);
+});
+
 void test('service builds one zvec collection and performs read-only hybrid search', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'recall-service-'));
   t.after(() => rm(root, { recursive: true, force: true }));

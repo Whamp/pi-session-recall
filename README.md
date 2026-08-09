@@ -52,7 +52,9 @@ psr ignore remove path/to/session.jsonl         # make one exact path eligible a
 - shows elapsed time and estimates time remaining after a healthy file completes;
 - leaves collection optimization to the explicit `psr optimize` command.
 
-The estimate uses the observed rate of healthy files in the current run. Until enough work completes, the command says that it is calculating the estimate rather than inventing an initial duration. `--compact` preserves the former one-line completed summary and `Failed: ...` lines on stdout; progress remains on stderr. The legacy `--no-optimize` flag remains accepted as a compatibility alias for ordinary update-only indexing. `psr optimize` does not scan or index sessions; it optimizes the existing collection under the same writer lock.
+The estimate uses the observed rate of healthy files in the current run. Until enough work completes, the command says that it is calculating the estimate rather than inventing an initial duration. `--compact` preserves the former one-line completed summary and `Failed: ...` lines on stdout; progress remains on stderr. The legacy `--no-optimize` flag remains accepted as a compatibility alias for ordinary update-only indexing.
+
+`psr optimize` does not scan or index sessions. It compacts the existing collection under the same writer lock. Compaction merges FTS segments as well as vector data, so BM25 scores and ranking can change even though the indexed evidence does not. The operation may write near-collection-sized temporary output.
 
 No startup hook, completed-turn hook, shutdown hook, watcher, package daemon, or search request updates the index.
 
@@ -70,7 +72,7 @@ Path identity is exact and lexical. Relative command arguments resolve from the 
 
 `psr auto-index install` creates one per-user native schedule that updates changed evidence without optimizing zvec. The interval accepts a positive whole number followed by lowercase `m` or `h`; the default is `1h`. Installation never uses `sudo`. Reinstalling replaces the definition and captures absolute paths to the current Node executable and installed package.
 
-Optimization is optional. Add `--optimize-daily` to install a second schedule that runs `psr optimize` every day at 23:00 local time. Reinstalling without that flag disables and removes any older optimization schedule. Enable it only when measured query latency or workload justifies collection-wide compaction.
+Optimization is optional. Add `--optimize-daily` to install a second schedule that runs `psr optimize` every day at 23:00 local time. Reinstalling without that flag disables and removes any older optimization schedule. Enable it only when measured query latency, ranking, or workload evidence justifies collection-wide compaction.
 
 The generated definitions run the equivalent of:
 

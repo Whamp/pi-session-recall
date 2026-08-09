@@ -117,7 +117,7 @@ The eligible new or changed physical session files, missing previously indexed f
 _Avoid_: Sessions to embed, embedding total
 
 **Index optimization**:
-One explicit `psr optimize` operation that compacts the existing zvec collection without scanning Physical session files or changing searchable evidence. It runs manually or through an opt-in optimization schedule, never as a default part of Index maintenance. It uses the same writer lock as Index maintenance.
+One explicit `psr optimize` operation that compacts the existing zvec collection without scanning Physical session files or changing which evidence is searchable. It merges FTS segments and may change BM25 scores or ranking. It runs manually or through an opt-in optimization schedule, never as a default part of Index maintenance. It uses the same writer lock as Index maintenance.
 _Avoid_: Index maintenance, rebuild
 
 **Index maintenance status**:

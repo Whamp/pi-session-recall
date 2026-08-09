@@ -119,9 +119,20 @@ export interface RecallConversationIndexOptions {
   optimize?: boolean;
 }
 
+/** Options accepted only by standalone `psr optimize` maintenance. */
+export interface RecallConversationOptimizeOptions {
+  signal?: AbortSignal;
+  onProgress?: (event: RecallIndexProgressEvent) => void;
+}
+
 /** Counts from one completed standalone index update. */
 export interface RecallConversationIndexResult {
   indexSummary: ConversationIndexSummary;
+  totalChunks: number;
+}
+
+/** Counts from one standalone zvec optimization. */
+export interface RecallConversationOptimizeResult {
   totalChunks: number;
 }
 
@@ -133,6 +144,11 @@ export interface RecallConversationService {
     options?: RecallConversationSearchOptions,
   ): Promise<RecallConversationSearch>;
   index(options?: RecallConversationIndexOptions): Promise<RecallConversationIndexResult>;
+}
+
+/** Standalone collection optimization capability used only by `psr`. */
+export interface RecallConversationMaintenanceService extends RecallConversationService {
+  optimize(options?: RecallConversationOptimizeOptions): Promise<RecallConversationOptimizeResult>;
 }
 
 /** Injectable boundaries for public-seam tests and bounded evaluation. */
@@ -255,7 +271,7 @@ function createEmbeddingModelIdentity(
 export function createRecallConversationService(
   config: RecallConversationConfig,
   dependencies: RecallConversationDependencies = {},
-): RecallConversationService {
+): RecallConversationMaintenanceService {
   const embeddingProvider =
     dependencies.embeddingProvider ??
     createOctenHttpEmbeddingProvider({
@@ -410,6 +426,37 @@ export function createRecallConversationService(
         };
       } finally {
         store.close();
+      }
+    },
+
+    async optimize(options = {}) {
+      const releaseLock = await acquireRecallConversationLock(
+        config.lockPath,
+        options.signal,
+        options.onProgress
+          ? () => options.onProgress?.({ kind: 'waiting-for-write-lock' })
+          : undefined,
+      );
+      let store: ZvecConversationStore | undefined;
+      try {
+        await readCompatibleManifest();
+        if (!existsSync(config.databasePath)) {
+          throw new Error(`Recall index database missing at ${config.databasePath}`);
+        }
+        store = openStore('write');
+        options.onProgress?.({ kind: 'optimizing-collection' });
+        await store.optimize();
+        if (options.signal?.aborted) {
+          throw new Error('Recall conversation operation cancelled', {
+            cause: options.signal.reason,
+          });
+        }
+        const totalChunks = store.count();
+        options.onProgress?.({ kind: 'completed' });
+        return { totalChunks };
+      } finally {
+        store?.close();
+        await releaseLock();
       }
     },
 

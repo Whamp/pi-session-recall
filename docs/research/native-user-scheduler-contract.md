@@ -1,5 +1,7 @@
 # Native user-scheduler contract
 
+> The single-job cadence in this investigation is superseded by [Split scheduled indexing from zvec optimization](../adr/0008-split-scheduled-indexing-from-zvec-optimization.md). Its interval validation, native lifecycle, path capture, and platform constraints still apply.
+
 ## Decision
 
 Conversation Recall will expose only:

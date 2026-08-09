@@ -20,11 +20,12 @@ import {
   createRecallConversationService,
   type RecallConversationConfig,
   type RecallConversationIndexResult,
-  type RecallConversationService,
+  type RecallConversationMaintenanceService,
 } from './recall-conversation-service.js';
 
 const PSR_USAGE = [
-  'psr usage: psr index [--rebuild] [--compact]',
+  'psr usage: psr index [--rebuild] [--compact] [--no-optimize]',
+  '           psr optimize',
   '           psr auto-index install [--interval <N>m|<N>h]',
   '           psr auto-index uninstall',
   '           psr ignore add <session-path>',
@@ -39,7 +40,7 @@ const ENGLISH_INTEGER_FORMAT = new Intl.NumberFormat('en-US');
 /** Replaceable process boundaries for the standalone `psr` command. */
 export interface PsrCliDependencies {
   loadConfig: () => Promise<RecallConversationConfig>;
-  createService: (config: RecallConversationConfig) => RecallConversationService;
+  createService: (config: RecallConversationConfig) => RecallConversationMaintenanceService;
   writeOutput: (text: string) => void;
   writeProgress: (text: string) => void;
   getMonotonicTimeMs: () => number;
@@ -279,19 +280,42 @@ export async function runPsrCli(
       );
     }
     dependencies.writeOutput(
-      `Automatic recall indexing installed every ${interval.value}${interval.unit}.\n`,
+      `Automatic recall indexing installed every ${interval.value}${interval.unit}; optimization scheduled daily at 23:00.\n`,
+    );
+    return 0;
+  }
+
+  if (argumentsList[0] === 'optimize') {
+    if (argumentsList.length !== 1) {
+      throw new Error(PSR_USAGE);
+    }
+    const config = await dependencies.loadConfig();
+    const result = await dependencies.createService(config).optimize({
+      onProgress(event) {
+        if (event.kind === 'waiting-for-write-lock') {
+          dependencies.writeProgress('Waiting for another recall index operation...\n');
+        } else if (event.kind === 'optimizing-collection') {
+          dependencies.writeProgress('Optimizing searchable collection...\n');
+        }
+      },
+    });
+    dependencies.writeOutput(
+      `Optimized ${ENGLISH_INTEGER_FORMAT.format(result.totalChunks)} searchable documents.\n`,
     );
     return 0;
   }
 
   const flags = argumentsList.slice(1);
   const distinctFlags = new Set(flags);
-  const validFlags = flags.every((flag) => flag === '--rebuild' || flag === '--compact');
+  const validFlags = flags.every(
+    (flag) => flag === '--rebuild' || flag === '--compact' || flag === '--no-optimize',
+  );
   if (argumentsList[0] !== 'index' || !validFlags || distinctFlags.size !== flags.length) {
     throw new Error(PSR_USAGE);
   }
   const rebuild = distinctFlags.has('--rebuild');
   const compact = distinctFlags.has('--compact');
+  const optimize = !distinctFlags.has('--no-optimize');
 
   let commandStartedAtMs: number | undefined;
   let indexingStartedAtMs: number | undefined;
@@ -331,7 +355,7 @@ export async function runPsrCli(
   const config = await dependencies.loadConfig();
   const result = await dependencies.createService(config).index({
     rebuild,
-    optimize: true,
+    optimize,
     onProgress: reportProgress,
   });
   const summary = result.indexSummary;

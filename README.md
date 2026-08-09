@@ -24,7 +24,9 @@ psr index --rebuild
 psr index                                      # add, update, and remove changed session evidence
 psr index --rebuild                            # replace incompatible or damaged index state
 psr index --compact                            # keep the former one-line stdout summary
-psr auto-index install                         # schedule psr index every hour
+psr index --no-optimize                        # update evidence without optimizing zvec
+psr optimize                                  # optimize existing zvec data without indexing sessions
+psr auto-index install                         # update hourly; optimize daily at 23:00
 psr auto-index install --interval 30m          # replace the schedule with another interval
 psr auto-index uninstall                       # remove the schedule
 psr ignore add path/to/session.jsonl            # exclude one exact physical session path
@@ -44,7 +46,7 @@ psr ignore remove path/to/session.jsonl         # make one exact path eligible a
 - shows elapsed time and estimates time remaining after a healthy file completes;
 - optimizes zvec after a changed pass.
 
-The estimate uses the observed rate of healthy files in the current run. Until enough work completes, the command says that it is calculating the estimate rather than inventing an initial duration. `--compact` preserves the former one-line completed summary and `Failed: ...` lines on stdout; progress remains on stderr.
+The estimate uses the observed rate of healthy files in the current run. Until enough work completes, the command says that it is calculating the estimate rather than inventing an initial duration. `--compact` preserves the former one-line completed summary and `Failed: ...` lines on stdout; progress remains on stderr. `--no-optimize` skips zvec optimization after changed evidence. `psr optimize` does not scan or index sessions; it optimizes the existing collection under the same writer lock.
 
 No startup hook, completed-turn hook, shutdown hook, watcher, package daemon, or search request updates the index.
 
@@ -60,30 +62,39 @@ Path identity is exact and lexical. Relative command arguments resolve from the 
 
 ### Automatic index maintenance
 
-`psr auto-index install` creates a per-user native schedule. It accepts a positive whole number followed by lowercase `m` or `h`; the default is `1h`. Installation never uses `sudo`. Reinstalling replaces the existing definition and captures absolute paths to the current Node executable and installed package.
+`psr auto-index install` creates two per-user native schedules:
 
-The generated definition runs the equivalent of:
+- update changed evidence at the configured interval without optimizing zvec;
+- force zvec optimization every day at 23:00 local time.
+
+The update interval accepts a positive whole number followed by lowercase `m` or `h`; the default is `1h`. The daily optimization time is fixed. Installation never uses `sudo`. Reinstalling replaces both definitions and captures absolute paths to the current Node executable and installed package.
+
+The generated definitions run the equivalent of:
 
 ```text
-<absolute-node> --import tsx <absolute-package-root>/bin/psr index
+<absolute-node> --import tsx <absolute-package-root>/bin/psr index --no-optimize
+<absolute-node> --import tsx <absolute-package-root>/bin/psr optimize
 ```
 
-It does not copy `PI_RECALL_*` overrides from the installation shell. Scheduled runs use the durable recall configuration file and normal defaults.
+Both commands use the same writer lock, so an hourly update and daily optimization cannot write concurrently. Generated definitions do not copy `PI_RECALL_*` overrides from the installation shell. Scheduled runs use the durable recall configuration file and normal defaults.
 
-On Linux, installation writes a systemd user service and timer under `${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/`. It starts the timer, then attempts one immediate index run. If that run fails, installation warns but leaves the timer active; the next interval retries through the ordinary `psr index` behavior. Read logs with:
+On Linux, installation writes two systemd user services and two timers under `${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/`. It starts both timers, then attempts one immediate non-optimizing index run. If that run fails, installation warns but leaves both timers active. Read logs with:
 
 ```bash
 journalctl --user-unit=pi-session-recall-index.service
+journalctl --user-unit=pi-session-recall-optimize.service
 ```
 
-On macOS, installation writes `~/Library/LaunchAgents/dev.pi-session-recall.auto-index.plist` with mode `0600`. `RunAtLoad` requests the immediate run. The plist directs standard output and error to:
+On macOS, installation writes two mode-`0600` LaunchAgents under `~/Library/LaunchAgents/`. The hourly agent uses `RunAtLoad`; the daily agent uses `StartCalendarInterval` for 23:00. They write separate logs:
 
 ```text
 ~/.pi/agent/logs/pi-session-recall-auto-index.out.log
 ~/.pi/agent/logs/pi-session-recall-auto-index.err.log
+~/.pi/agent/logs/pi-session-recall-auto-optimize.out.log
+~/.pi/agent/logs/pi-session-recall-auto-optimize.err.log
 ```
 
-The macOS path is runtime-untested. No Mac was available to verify plist acceptance; `RunAtLoad` and recurring `StartInterval` execution; retry after an exit-status-1 run; overlap suppression; absolute Node plus `--import tsx`; log appends; or access to the durable recall configuration and embedding endpoint from the LaunchAgent environment. Other platforms fail with an unsupported-platform error.
+The macOS path is runtime-untested. No Mac was available to verify plist acceptance; `RunAtLoad`, `StartInterval`, or `StartCalendarInterval` execution; retry after an exit-status-1 run; overlap suppression across both jobs; absolute Node plus `--import tsx`; log appends; or access to the durable recall configuration and embedding endpoint from the LaunchAgent environment. Other platforms fail with an unsupported-platform error.
 
 The indexer checkpoints `index-state.json` after every 100 changed sessions and after the final partial batch. If indexing stops between checkpoints, rerun `psr index`; it safely revisits the uncheckpointed sessions and reuses matching vectors already stored in zvec.
 

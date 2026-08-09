@@ -108,6 +108,31 @@ async function writeConversationSession(
   );
 }
 
+void test('standalone optimization compacts the existing collection without indexing sessions', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-standalone-optimize-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const config = createTestConfig(root);
+  await writeConversationSession(
+    join(config.sessionsDirectory, 'one.jsonl'),
+    'Force optimization fixture evidence.',
+  );
+  const service = createRecallConversationService(config, {
+    embeddingProvider: TEST_EMBEDDING_PROVIDER,
+    loadTokenizer: async () => tokenizer,
+  });
+  await service.index({ rebuild: true });
+  const progressKinds: string[] = [];
+
+  const result = await service.optimize({
+    onProgress(event) {
+      progressKinds.push(event.kind);
+    },
+  });
+
+  assert.ok(result.totalChunks > 0);
+  assert.deepEqual(progressKinds, ['optimizing-collection', 'completed']);
+});
+
 void test('service builds one zvec collection and performs read-only hybrid search', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'recall-service-'));
   t.after(() => rm(root, { recursive: true, force: true }));

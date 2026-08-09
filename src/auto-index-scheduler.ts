@@ -6,8 +6,12 @@ import { fileURLToPath } from 'node:url';
 
 const SYSTEMD_SERVICE_NAME = 'pi-session-recall-index.service';
 const SYSTEMD_TIMER_NAME = 'pi-session-recall-index.timer';
+const SYSTEMD_OPTIMIZE_SERVICE_NAME = 'pi-session-recall-optimize.service';
+const SYSTEMD_OPTIMIZE_TIMER_NAME = 'pi-session-recall-optimize.timer';
 const LAUNCH_AGENT_LABEL = 'dev.pi-session-recall.auto-index';
 const LAUNCH_AGENT_FILE_NAME = `${LAUNCH_AGENT_LABEL}.plist`;
+const LAUNCH_AGENT_OPTIMIZE_LABEL = 'dev.pi-session-recall.auto-optimize';
+const LAUNCH_AGENT_OPTIMIZE_FILE_NAME = `${LAUNCH_AGENT_OPTIMIZE_LABEL}.plist`;
 
 /** A positive whole-number interval expressed in minutes or hours. */
 export interface AutoIndexInterval {
@@ -122,18 +126,25 @@ function escapePlistXml(value: string): string {
     .replaceAll("'", '&apos;');
 }
 
+interface LaunchAgentSchedule {
+  label: string;
+  psrArguments: readonly string[];
+  timingLines: readonly string[];
+  runAtLoad: boolean;
+  logName: string;
+}
+
 function renderLaunchAgentPlist(
-  interval: AutoIndexInterval,
+  schedule: LaunchAgentSchedule,
   system: AutoIndexSchedulerSystem,
 ): string {
-  const intervalSeconds = interval.value * (interval.unit === 'm' ? 60n : 3_600n);
   const logsDirectory = join(system.homeDirectory, '.pi', 'agent', 'logs');
   const argumentsList = [
     system.nodeExecutablePath,
     '--import',
     'tsx',
     join(system.packageRoot, 'bin', 'psr'),
-    'index',
+    ...schedule.psrArguments,
   ];
   return [
     '<?xml version="1.0" encoding="UTF-8"?>',
@@ -141,39 +152,79 @@ function renderLaunchAgentPlist(
     '<plist version="1.0">',
     '<dict>',
     '  <key>Label</key>',
-    `  <string>${LAUNCH_AGENT_LABEL}</string>`,
+    `  <string>${schedule.label}</string>`,
     '  <key>ProgramArguments</key>',
     '  <array>',
     ...argumentsList.map((argument) => `    <string>${escapePlistXml(argument)}</string>`),
     '  </array>',
     '  <key>WorkingDirectory</key>',
     `  <string>${escapePlistXml(system.packageRoot)}</string>`,
-    '  <key>StartInterval</key>',
-    `  <integer>${intervalSeconds}</integer>`,
-    '  <key>RunAtLoad</key>',
-    '  <true/>',
+    ...schedule.timingLines,
+    ...(schedule.runAtLoad ? ['  <key>RunAtLoad</key>', '  <true/>'] : []),
     '  <key>StandardOutPath</key>',
-    `  <string>${escapePlistXml(join(logsDirectory, 'pi-session-recall-auto-index.out.log'))}</string>`,
+    `  <string>${escapePlistXml(join(logsDirectory, `${schedule.logName}.out.log`))}</string>`,
     '  <key>StandardErrorPath</key>',
-    `  <string>${escapePlistXml(join(logsDirectory, 'pi-session-recall-auto-index.err.log'))}</string>`,
+    `  <string>${escapePlistXml(join(logsDirectory, `${schedule.logName}.err.log`))}</string>`,
     '</dict>',
     '</plist>',
     '',
   ].join('\n');
 }
 
-function renderSystemdService(system: AutoIndexSchedulerSystem): string {
+function renderLaunchAgentIndexPlist(
+  interval: AutoIndexInterval,
+  system: AutoIndexSchedulerSystem,
+): string {
+  const intervalSeconds = interval.value * (interval.unit === 'm' ? 60n : 3_600n);
+  return renderLaunchAgentPlist(
+    {
+      label: LAUNCH_AGENT_LABEL,
+      psrArguments: ['index', '--no-optimize'],
+      timingLines: ['  <key>StartInterval</key>', `  <integer>${intervalSeconds}</integer>`],
+      runAtLoad: true,
+      logName: 'pi-session-recall-auto-index',
+    },
+    system,
+  );
+}
+
+function renderLaunchAgentOptimizePlist(system: AutoIndexSchedulerSystem): string {
+  return renderLaunchAgentPlist(
+    {
+      label: LAUNCH_AGENT_OPTIMIZE_LABEL,
+      psrArguments: ['optimize'],
+      timingLines: [
+        '  <key>StartCalendarInterval</key>',
+        '  <dict>',
+        '    <key>Hour</key>',
+        '    <integer>23</integer>',
+        '    <key>Minute</key>',
+        '    <integer>0</integer>',
+        '  </dict>',
+      ],
+      runAtLoad: false,
+      logName: 'pi-session-recall-auto-optimize',
+    },
+    system,
+  );
+}
+
+function renderSystemdService(
+  system: AutoIndexSchedulerSystem,
+  description: string,
+  psrArguments: readonly string[],
+): string {
   const executablePath = quoteSystemdValue(system.nodeExecutablePath);
   const packageRoot = escapeSystemdWorkingDirectory(system.packageRoot);
   const psrExecutablePath = quoteSystemdValue(join(system.packageRoot, 'bin', 'psr'));
   return [
     '[Unit]',
-    'Description=Maintain the pi-session-recall index',
+    `Description=${description}`,
     '',
     '[Service]',
     'Type=oneshot',
     `WorkingDirectory=${packageRoot}`,
-    `ExecStart=${executablePath} --import tsx ${psrExecutablePath} index`,
+    `ExecStart=${executablePath} --import tsx ${psrExecutablePath} ${psrArguments.join(' ')}`,
     'StandardOutput=journal',
     'StandardError=journal',
     '',
@@ -189,6 +240,21 @@ function renderSystemdTimer(interval: AutoIndexInterval): string {
     '[Timer]',
     `OnActiveSec=${renderedInterval}`,
     `OnUnitActiveSec=${renderedInterval}`,
+    '',
+    '[Install]',
+    'WantedBy=timers.target',
+    '',
+  ].join('\n');
+}
+
+function renderSystemdOptimizeTimer(): string {
+  return [
+    '[Unit]',
+    'Description=Schedule daily pi-session-recall optimization',
+    '',
+    '[Timer]',
+    'OnCalendar=*-*-* 23:00:00',
+    'Persistent=true',
     '',
     '[Install]',
     'WantedBy=timers.target',
@@ -267,12 +333,35 @@ async function installSystemdAutoIndexSchedule(
   const userUnitDirectory = join(readSystemdConfigHome(system), 'systemd', 'user');
   const servicePath = join(userUnitDirectory, SYSTEMD_SERVICE_NAME);
   const timerPath = join(userUnitDirectory, SYSTEMD_TIMER_NAME);
+  const optimizeServicePath = join(userUnitDirectory, SYSTEMD_OPTIMIZE_SERVICE_NAME);
+  const optimizeTimerPath = join(userUnitDirectory, SYSTEMD_OPTIMIZE_TIMER_NAME);
   await system.makeDirectory(userUnitDirectory);
-  await system.writeFile(servicePath, renderSystemdService(system));
+  await system.writeFile(
+    servicePath,
+    renderSystemdService(system, 'Maintain the pi-session-recall index', [
+      'index',
+      '--no-optimize',
+    ]),
+  );
   await system.writeFile(timerPath, renderSystemdTimer(interval));
+  await system.writeFile(
+    optimizeServicePath,
+    renderSystemdService(system, 'Optimize the pi-session-recall index', ['optimize']),
+  );
+  await system.writeFile(optimizeTimerPath, renderSystemdOptimizeTimer());
   await runRequiredSchedulerProcess(system, 'systemctl', ['--user', 'daemon-reload']);
-  await runRequiredSchedulerProcess(system, 'systemctl', ['--user', 'enable', SYSTEMD_TIMER_NAME]);
-  await runRequiredSchedulerProcess(system, 'systemctl', ['--user', 'restart', SYSTEMD_TIMER_NAME]);
+  await runRequiredSchedulerProcess(system, 'systemctl', [
+    '--user',
+    'enable',
+    SYSTEMD_TIMER_NAME,
+    SYSTEMD_OPTIMIZE_TIMER_NAME,
+  ]);
+  await runRequiredSchedulerProcess(system, 'systemctl', [
+    '--user',
+    'restart',
+    SYSTEMD_TIMER_NAME,
+    SYSTEMD_OPTIMIZE_TIMER_NAME,
+  ]);
 
   const immediateResult = await system.runProcess('systemctl', [
     '--user',
@@ -299,38 +388,45 @@ async function installLaunchAgentAutoIndexSchedule(
 ): Promise<AutoIndexInstallationResult> {
   const launchAgentsDirectory = join(system.homeDirectory, 'Library', 'LaunchAgents');
   const plistPath = join(launchAgentsDirectory, LAUNCH_AGENT_FILE_NAME);
+  const optimizePlistPath = join(launchAgentsDirectory, LAUNCH_AGENT_OPTIMIZE_FILE_NAME);
   const logsDirectory = join(system.homeDirectory, '.pi', 'agent', 'logs');
   await unloadLaunchAgent(system, plistPath);
+  await unloadLaunchAgent(system, optimizePlistPath);
   await system.makeDirectory(launchAgentsDirectory);
   await system.makeDirectory(logsDirectory);
-  await system.writeFile(plistPath, renderLaunchAgentPlist(interval, system));
+  await system.writeFile(plistPath, renderLaunchAgentIndexPlist(interval, system));
+  await system.writeFile(optimizePlistPath, renderLaunchAgentOptimizePlist(system));
   await system.setFileMode(plistPath, 0o600);
+  await system.setFileMode(optimizePlistPath, 0o600);
   await runRequiredSchedulerProcess(system, 'launchctl', ['load', plistPath]);
+  await runRequiredSchedulerProcess(system, 'launchctl', ['load', optimizePlistPath]);
   return {};
 }
 
 async function uninstallLaunchAgentAutoIndexSchedule(
   system: AutoIndexSchedulerSystem,
 ): Promise<void> {
-  const plistPath = join(system.homeDirectory, 'Library', 'LaunchAgents', LAUNCH_AGENT_FILE_NAME);
+  const launchAgentsDirectory = join(system.homeDirectory, 'Library', 'LaunchAgents');
+  const plistPath = join(launchAgentsDirectory, LAUNCH_AGENT_FILE_NAME);
+  const optimizePlistPath = join(launchAgentsDirectory, LAUNCH_AGENT_OPTIMIZE_FILE_NAME);
   await unloadLaunchAgent(system, plistPath);
+  await unloadLaunchAgent(system, optimizePlistPath);
   await system.removeFile(plistPath);
+  await system.removeFile(optimizePlistPath);
 }
 
 async function uninstallSystemdAutoIndexSchedule(system: AutoIndexSchedulerSystem): Promise<void> {
   const userUnitDirectory = join(readSystemdConfigHome(system), 'systemd', 'user');
-  await runSystemdUninstallProcess(
-    system,
-    ['--user', 'disable', '--now', SYSTEMD_TIMER_NAME],
-    SYSTEMD_TIMER_NAME,
-  );
-  await runSystemdUninstallProcess(
-    system,
-    ['--user', 'stop', SYSTEMD_SERVICE_NAME],
-    SYSTEMD_SERVICE_NAME,
-  );
+  for (const timerName of [SYSTEMD_TIMER_NAME, SYSTEMD_OPTIMIZE_TIMER_NAME]) {
+    await runSystemdUninstallProcess(system, ['--user', 'disable', '--now', timerName], timerName);
+  }
+  for (const serviceName of [SYSTEMD_SERVICE_NAME, SYSTEMD_OPTIMIZE_SERVICE_NAME]) {
+    await runSystemdUninstallProcess(system, ['--user', 'stop', serviceName], serviceName);
+  }
   await system.removeFile(join(userUnitDirectory, SYSTEMD_SERVICE_NAME));
   await system.removeFile(join(userUnitDirectory, SYSTEMD_TIMER_NAME));
+  await system.removeFile(join(userUnitDirectory, SYSTEMD_OPTIMIZE_SERVICE_NAME));
+  await system.removeFile(join(userUnitDirectory, SYSTEMD_OPTIMIZE_TIMER_NAME));
   await runRequiredSchedulerProcess(system, 'systemctl', ['--user', 'daemon-reload']);
 }
 

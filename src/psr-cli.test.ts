@@ -7,7 +7,7 @@ import test from 'node:test';
 import type {
   RecallConversationConfig,
   RecallConversationIndexOptions,
-  RecallConversationService,
+  RecallConversationMaintenanceService,
 } from './recall-conversation-service.js';
 import type { RecallIndexProgressEvent } from './recall-index-progress.js';
 import { runPsrCli } from './psr-cli.js';
@@ -26,6 +26,7 @@ function createPsrCliFixture(
   } = {},
 ) {
   const calls: RecallConversationIndexOptions[] = [];
+  const optimizeCalls: RecallConversationIndexOptions[] = [];
   const output: string[] = [];
   const progressOutput: string[] = [];
   const executionLog: string[] = [];
@@ -76,9 +77,16 @@ function createPsrCliFixture(
         },
       };
     },
-  } satisfies RecallConversationService;
+    async optimize(optimizeOptions) {
+      optimizeCalls.push(optimizeOptions ?? {});
+      optimizeOptions?.onProgress?.({ kind: 'optimizing-collection' });
+      optimizeOptions?.onProgress?.({ kind: 'completed' });
+      return { totalChunks: 7 };
+    },
+  } satisfies RecallConversationMaintenanceService;
   return {
     calls,
+    optimizeCalls,
     output,
     progressOutput,
     executionLog,
@@ -226,7 +234,8 @@ void test('psr ignore rejects malformed or noncanonical persisted policy state',
 void test('psr ignore rejects invalid subcommands and arity with the complete usage', async () => {
   const fixture = createPsrCliFixture();
   const usage = [
-    'psr usage: psr index [--rebuild] [--compact]',
+    'psr usage: psr index [--rebuild] [--compact] [--no-optimize]',
+    '           psr optimize',
     '           psr auto-index install [--interval <N>m|<N>h]',
     '           psr auto-index uninstall',
     '           psr ignore add <session-path>',
@@ -285,6 +294,31 @@ void test('psr index keeps progress on stderr and the completed summary on stdou
   assert.match(fixture.output.join(''), /Sessions: 2 indexed of 3 scanned/iu);
   assert.match(fixture.output.join(''), /Searchable documents: 7/iu);
   assert.doesNotMatch(fixture.progressOutput.join(''), /7 searchable documents/iu);
+});
+
+void test('psr index --no-optimize updates changed sessions without optimizing zvec', async () => {
+  const fixture = createPsrCliFixture();
+
+  const exitCode = await runPsrCli(['index', '--no-optimize'], fixture.dependencies);
+
+  assert.equal(exitCode, 0);
+  assert.equal(fixture.calls.length, 1);
+  assert.deepEqual(
+    { ...fixture.calls[0], onProgress: typeof fixture.calls[0]?.onProgress },
+    { rebuild: false, optimize: false, onProgress: 'function' },
+  );
+});
+
+void test('psr optimize compacts the existing collection without indexing sessions', async () => {
+  const fixture = createPsrCliFixture();
+
+  const exitCode = await runPsrCli(['optimize'], fixture.dependencies);
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(fixture.calls, []);
+  assert.equal(fixture.optimizeCalls.length, 1);
+  assert.equal(fixture.output.join(''), 'Optimized 7 searchable documents.\n');
+  assert.match(fixture.progressOutput.join(''), /Optimizing searchable collection/iu);
 });
 
 void test('psr index writes a readable multiline summary with elapsed time', async () => {
@@ -641,7 +675,10 @@ void test('psr auto-index install routes the default interval and reports succes
   const exitCode = await runPsrCli(['auto-index', 'install'], fixture.dependencies);
 
   assert.equal(exitCode, 0);
-  assert.equal(fixture.output.join(''), 'Automatic recall indexing installed every 1h.\n');
+  assert.equal(
+    fixture.output.join(''),
+    'Automatic recall indexing installed every 1h; optimization scheduled daily at 23:00.\n',
+  );
   assert.equal(fixture.schedulerProcessCalls.length, 4);
   assert.deepEqual(fixture.calls, []);
 });
@@ -655,7 +692,10 @@ void test('psr auto-index install accepts and reports an explicit interval', asy
   );
 
   assert.equal(exitCode, 0);
-  assert.equal(fixture.output.join(''), 'Automatic recall indexing installed every 30m.\n');
+  assert.equal(
+    fixture.output.join(''),
+    'Automatic recall indexing installed every 30m; optimization scheduled daily at 23:00.\n',
+  );
 });
 
 void test('psr auto-index install reports a nonfatal immediate indexing warning', async () => {
@@ -671,7 +711,10 @@ void test('psr auto-index install reports a nonfatal immediate indexing warning'
   const exitCode = await runPsrCli(['auto-index', 'install'], fixture.dependencies);
 
   assert.equal(exitCode, 0);
-  assert.equal(fixture.output.join(''), 'Automatic recall indexing installed every 1h.\n');
+  assert.equal(
+    fixture.output.join(''),
+    'Automatic recall indexing installed every 1h; optimization scheduled daily at 23:00.\n',
+  );
   assert.match(
     fixture.progressOutput.join(''),
     /Warning: Automatic recall indexing was installed, but the immediate psr index attempt failed: psr index exited with status 1/iu,
@@ -685,7 +728,7 @@ void test('psr auto-index uninstall routes scheduler removal and reports success
 
   assert.equal(exitCode, 0);
   assert.equal(fixture.output.join(''), 'Automatic recall indexing uninstalled.\n');
-  assert.equal(fixture.schedulerProcessCalls.length, 3);
+  assert.equal(fixture.schedulerProcessCalls.length, 5);
   assert.deepEqual(fixture.calls, []);
 });
 

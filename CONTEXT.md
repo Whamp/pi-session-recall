@@ -116,6 +116,10 @@ _Avoid_: Live ingestion, lifecycle reconciliation
 The eligible new or changed physical session files, missing previously indexed files, and ignored indexed files scheduled for removal during one index maintenance operation. It forecasts file-level work; the number of documents requiring embeddings emerges as changed files are processed.
 _Avoid_: Sessions to embed, embedding total
 
+**Index optimization**:
+One standalone `psr optimize` operation that compacts the existing zvec collection without scanning Physical session files or changing searchable evidence. It uses the same writer lock as Index maintenance.
+_Avoid_: Index maintenance, rebuild
+
 **Index maintenance status**:
 The durable completion record for the latest normally completed Index maintenance operation. It records when the operation completed and how many Physical session files it scanned or failed. Its absence means freshness is unavailable, not that a live backlog was measured.
 _Avoid_: Index state, live backlog

@@ -409,6 +409,71 @@ void test('standalone optimization remains repeatable after later indexed writes
   assert.ok(secondOptimization.totalChunks > firstOptimization.totalChunks);
 });
 
+void test('service source search reads raw output without opening the index or embedding', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-service-source-search-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const config = createTestConfig(root);
+  const sessionPath = join(config.sessionsDirectory, 'source.jsonl');
+  await mkdir(config.sessionsDirectory, { recursive: true });
+  await writeFile(
+    sessionPath,
+    sessionLines([
+      {
+        type: 'session',
+        version: 3,
+        id: 'source-session',
+        timestamp: '2026-08-10T10:00:00Z',
+        cwd: '/project',
+      },
+      {
+        type: 'message',
+        id: 'source-result',
+        parentId: null,
+        timestamp: '2026-08-10T10:01:00Z',
+        message: {
+          role: 'toolResult',
+          toolCallId: 'source-call',
+          toolName: 'bash',
+          isError: true,
+          content: [{ type: 'text', text: 'RAW_RESULT_ONLY hardware MODEL-9000' }],
+        },
+      },
+    ]),
+  );
+  const projectIdentity = parseProjectIdentity('non-git-session-origin:/project');
+  const service = createRecallConversationService(config, {
+    embeddingProvider: {
+      embedQuery() {
+        throw new Error('source search must not embed');
+      },
+      embedDocuments() {
+        throw new Error('source search must not embed');
+      },
+    },
+    loadTokenizer: async () => {
+      throw new Error('source search must not load the tokenizer');
+    },
+    openStore() {
+      throw new Error('source search must not open the index');
+    },
+    resolveProjectIdentity: async () => ({
+      projectIdentity,
+      identitySource: RecallProjectIdentitySource.NON_GIT_SESSION_ORIGIN,
+    }),
+  });
+
+  const search = await service.searchSource('MODEL-9000', 5, {
+    scope: RecallSearchScope.PROJECT,
+    invocationDirectory: '/trusted/project',
+  });
+
+  assert.equal(search.results[0]?.sessionPath, sessionPath);
+  assert.equal(search.results[0]?.entryId, 'source-result');
+  assert.equal(search.results[0]?.sourceLineStart, 2);
+  assert.match(search.results[0]?.text ?? '', /RAW_RESULT_ONLY hardware MODEL-9000/u);
+  await assert.rejects(readFile(config.statePath, 'utf8'), { code: 'ENOENT' });
+});
+
 void test('service builds one zvec collection and performs read-only hybrid search', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'recall-service-'));
   t.after(() => rm(root, { recursive: true, force: true }));

@@ -1,5 +1,5 @@
-import { mkdir, readdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
+import { dirname, resolve } from 'node:path';
 
 import { Type } from 'typebox';
 import { Value } from 'typebox/value';
@@ -9,6 +9,7 @@ import type { RecallIndexProgressEvent } from './recall-index-progress.js';
 import type { RecallEmbeddingProvider } from './recall-inference-capabilities.js';
 import { SESSION_IMPORT_POLICY_VERSION } from './import-session-jsonl.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
+import { listRecallSessionFiles } from './recall-session-files.js';
 import type { ResolvedProjectIdentity } from './resolve-project-identity.js';
 import {
   readSessionConversationChunks,
@@ -84,31 +85,6 @@ interface MaintenanceWorksetPlan {
   filesToIndex: PlannedPhysicalSessionFile[];
   missingFiles: string[];
   ignoredIndexedFiles: string[];
-}
-
-async function listRecallSessionFiles(directory: string): Promise<string[]> {
-  const files: string[] = [];
-  async function visit(current: string): Promise<void> {
-    let entries;
-    try {
-      entries = await readdir(current, { withFileTypes: true });
-    } catch (error) {
-      if (readNodeErrorCode(error) === 'ENOENT') {
-        return;
-      }
-      throw error;
-    }
-    for (const entry of entries) {
-      const path = join(current, entry.name);
-      if (entry.isDirectory()) {
-        await visit(path);
-      } else if (entry.isFile() && entry.name.endsWith('.jsonl')) {
-        files.push(path);
-      }
-    }
-  }
-  await visit(directory);
-  return files.sort();
 }
 
 async function readConversationIndexState(statePath: string): Promise<ConversationIndexState> {

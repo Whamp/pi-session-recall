@@ -24,8 +24,13 @@ import {
   createRecallConversationService,
   type RecallConversationSearch,
   type RecallConversationService,
+  type RecallConversationToolService,
 } from './recall-conversation-service.js';
 import type { RecallIndexMaintenanceStatus } from './recall-index-maintenance-status.js';
+import {
+  formatSessionSourceSearchResults,
+  type SessionSourceSearch,
+} from './session-source-search.js';
 
 const DEFAULT_RECALL_FINAL_RESULT_COUNT = 5;
 const MAX_RECALL_FINAL_RESULT_COUNT = 10;
@@ -46,7 +51,13 @@ const PI_RECALL_PARAMETERS = Type.Object({
   scope: Type.Optional(
     StringEnum(['project', 'global'] as const, {
       description:
-        'Corpus boundary: project is the default from Pi trusted cwd; global searches every indexed session',
+        'Corpus boundary: project is the default from Pi trusted cwd; global searches every eligible session',
+    }),
+  ),
+  source: Type.Optional(
+    Type.Boolean({
+      description:
+        'Slowly scan original session JSONL for complete raw tool results and bash output; never runs unless true',
     }),
   ),
 });
@@ -56,13 +67,14 @@ export interface PiRecallParameters {
   query: string;
   limit?: number;
   scope?: 'project' | 'global';
+  source?: boolean;
 }
 
 interface PiRecallInvocationContext {
   cwd: ExtensionContext['cwd'];
 }
 
-/** Applies trusted Pi invocation context and project-default scope to one search. */
+/** Applies trusted Pi invocation context and project-default scope to one indexed search. */
 export async function searchPiRecall(
   service: RecallConversationService,
   parameters: PiRecallParameters,
@@ -80,7 +92,7 @@ export async function searchPiRecall(
   );
 }
 
-/** Creates complete source geometry details for every displayed recall result. */
+/** Creates complete source geometry details for every displayed indexed recall result. */
 export function createPiRecallToolDetails(search: RecallConversationSearch) {
   return {
     totalChunks: search.totalChunks,
@@ -138,11 +150,31 @@ export function createPiRecallToolDetails(search: RecallConversationSearch) {
   };
 }
 
+/** Creates physical source locators and read failures for one explicit source scan. */
+export function createPiRecallSourceToolDetails(search: SessionSourceSearch) {
+  return {
+    filesScanned: search.filesScanned,
+    searchPolicy: {
+      scope: search.scope,
+      invocationProjectIdentity: search.invocationProjectIdentity,
+      rankingMode: 'source' as const,
+    },
+    sources: search.results.map((result) => ({
+      sessionPath: result.sessionPath,
+      entryId: result.entryId,
+      sourceLineStart: result.sourceLineStart,
+      sourceLineEnd: result.sourceLineEnd,
+      sessionOrigin: result.sessionOrigin,
+    })),
+    sourceFailures: search.failures,
+  };
+}
+
 interface PiRecallIndexMaintenanceDetails extends Omit<RecallIndexMaintenanceStatus, 'version'> {
   ageMinutesAtExecution: number;
 }
 
-/** Search policy and source geometry retained with one Pi recall tool result. */
+/** Search policy and source geometry retained with one indexed Pi recall tool result. */
 export interface PiRecallToolDetails {
   totalChunks: number;
   searchPolicy: RecallConversationSearch['searchPolicy'];
@@ -152,6 +184,17 @@ export interface PiRecallToolDetails {
   /** UTF-8 bytes in the bounded evidence body returned for nonzero results. */
   returnedBytes?: number;
   /** Lines in the bounded evidence body returned for nonzero results. */
+  returnedLines?: number;
+  truncation?: TruncationResult;
+}
+
+/** Source-scan policy, physical locators, and per-file failures retained with tool output. */
+export interface PiRecallSourceToolDetails extends ReturnType<
+  typeof createPiRecallSourceToolDetails
+> {
+  /** UTF-8 bytes in the bounded source evidence body returned for nonzero results. */
+  returnedBytes?: number;
+  /** Lines in the bounded source evidence body returned for nonzero results. */
   returnedLines?: number;
   truncation?: TruncationResult;
 }
@@ -190,18 +233,19 @@ function formatPiRecallIndexMaintenanceAge(ageMinutes: number): string {
 
 /** Creates the complete Pi recall tool definition around one conversation service. */
 export function createPiRecallToolDefinition(
-  service: RecallConversationService,
+  service: RecallConversationToolService,
   getCurrentTime: () => Date = () => new Date(),
 ) {
   return {
     name: 'pi-session-recall',
     label: 'Pi Session Recall',
     description:
-      'Search the explicitly maintained Pi session index with dense, lexical, and case-preserving identifier retrieval. It defaults to project scope; choose global explicitly for cross-project evidence. Results cite the source JSONL path and line range so the surrounding records can be read directly. Search never updates the index; only standalone `psr index` maintenance does. Output is truncated to 2000 lines or 50KB.',
+      'Search the explicitly maintained Pi session index with dense, lexical, and case-preserving identifier retrieval. It defaults to project scope; choose global explicitly for cross-project evidence. Set source true only for a slower scan of original session JSONL when complete raw tool results or bash output are required. Source scanning never runs automatically. Every result cites the physical JSONL path and line range. Search never updates the index or writes cache data; only standalone `psr index` maintenance does. Output is truncated to 2000 lines or 50KB.',
     promptSnippet:
-      'Search past Pi conversations by meaning or exact text and recover source-backed details',
+      'Search past Pi conversations, or explicitly scan complete raw output when indexed evidence is insufficient',
     promptGuidelines: [
       'Use pi-session-recall when a task depends on a past conversation or detail absent from the current context.',
+      'Use source true only for complete raw tool results or bash output because it slowly scans original session files.',
       'Treat results as search leads and read the cited JSONL lines when surrounding source context matters.',
     ],
     parameters: PI_RECALL_PARAMETERS,
@@ -216,7 +260,8 @@ export function createPiRecallToolDefinition(
       }
 
       const displayQuery = truncateToWidth(parameters.query.trim().replace(/\s+/gu, ' '), 60, '…');
-      text.setText(`${title} ${theme.fg('muted', `“${displayQuery}”`)}`);
+      const sourceLabel = parameters.source ? 'source ' : '';
+      text.setText(`${title} ${theme.fg('muted', `${sourceLabel}“${displayQuery}”`)}`);
       return text;
     },
 
@@ -227,8 +272,18 @@ export function createPiRecallToolDefinition(
       if (!query) {
         throw new Error('Recall query must not be blank');
       }
-      const search = await searchPiRecall(service, { ...parameters, query }, context, signal);
-      const formatted = formatRecallSearchResults(search);
+      const search = parameters.source
+        ? await service.searchSource(query, parameters.limit ?? DEFAULT_RECALL_FINAL_RESULT_COUNT, {
+            scope:
+              parameters.scope === 'global' ? RecallSearchScope.GLOBAL : RecallSearchScope.PROJECT,
+            invocationDirectory: context.cwd,
+            ...(signal ? { signal } : {}),
+          })
+        : await searchPiRecall(service, { ...parameters, query }, context, signal);
+      const sourceSearch = 'filesScanned' in search;
+      const formatted = sourceSearch
+        ? formatSessionSourceSearchResults(search)
+        : formatRecallSearchResults(search);
       const truncation = truncateHead(formatted, {
         maxLines: DEFAULT_MAX_LINES,
         maxBytes: DEFAULT_MAX_BYTES,
@@ -239,8 +294,10 @@ export function createPiRecallToolDefinition(
       return {
         content: [{ type: 'text', text }],
         details: {
-          ...createPiRecallToolDetails(search),
-          ...(search.indexMaintenanceStatus
+          ...(sourceSearch
+            ? createPiRecallSourceToolDetails(search)
+            : createPiRecallToolDetails(search)),
+          ...(!sourceSearch && search.indexMaintenanceStatus
             ? {
                 indexMaintenanceStatus: createPiRecallIndexMaintenanceDetails(
                   search.indexMaintenanceStatus,
@@ -281,7 +338,8 @@ export function createPiRecallToolDefinition(
       const resultCount = details.sources.length;
       const scope =
         details.searchPolicy.scope === RecallSearchScope.PROJECT ? 'project scope' : 'global scope';
-      const indexMaintenanceStatus = details.indexMaintenanceStatus;
+      const sourceSearch = 'sourceFailures' in details;
+      const indexMaintenanceStatus = sourceSearch ? undefined : details.indexMaintenanceStatus;
       const freshnessParts = indexMaintenanceStatus
         ? [
             `index checked ${formatPiRecallIndexMaintenanceAge(indexMaintenanceStatus.ageMinutesAtExecution)} ago`,
@@ -294,7 +352,9 @@ export function createPiRecallToolDefinition(
         : [];
       if (resultCount === 0) {
         const zeroMatchSummary = [
-          'No matching past conversations found',
+          sourceSearch
+            ? 'No matching source-backed evidence found'
+            : 'No matching past conversations found',
           scope,
           ...freshnessParts,
         ].join(' · ');
@@ -306,7 +366,13 @@ export function createPiRecallToolDefinition(
         return text;
       }
 
-      const resultLabel = resultCount === 1 ? 'recall result' : 'recall results';
+      const resultLabel = sourceSearch
+        ? resultCount === 1
+          ? 'source result'
+          : 'source results'
+        : resultCount === 1
+          ? 'recall result'
+          : 'recall results';
       const summaryParts = [`${resultCount} ${resultLabel}`, scope];
       if (details.returnedBytes !== undefined && details.returnedLines !== undefined) {
         const lineLabel = details.returnedLines === 1 ? 'line' : 'lines';
@@ -323,7 +389,10 @@ export function createPiRecallToolDefinition(
       text.setText(rendered);
       return text;
     },
-  } satisfies ToolDefinition<typeof PI_RECALL_PARAMETERS, PiRecallToolDetails | undefined>;
+  } satisfies ToolDefinition<
+    typeof PI_RECALL_PARAMETERS,
+    PiRecallToolDetails | PiRecallSourceToolDetails | undefined
+  >;
 }
 
 /** Registers read-only hybrid recall; all index writes belong to the standalone `psr` CLI. */

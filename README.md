@@ -117,6 +117,7 @@ Pi calls:
 pi-session-recall({ query: "What did we decide about the job queue?" })
 pi-session-recall({ query: "readNodeErrorCode", limit: 5 })
 pi-session-recall({ query: "cross-project decision", scope: "global" })
+pi-session-recall({ query: "CT1000P3PSSD8", source: true, scope: "global" })
 ```
 
 Parameters:
@@ -126,10 +127,13 @@ Parameters:
   query: string;
   limit?: number;                 // default 5, maximum 10
   scope?: "project" | "global";  // default project
+  source?: boolean;               // default false
 }
 ```
 
-Project scope filters each retrieval channel before its eight-candidate limit. Global scope searches the complete collection.
+Normal recall uses the maintained index and never scans all session files. Project scope filters each retrieval channel before its eight-candidate limit. Global scope searches the complete collection.
+
+Set `source: true` only when you need complete raw tool results, bash output, or omitted invocation payloads. Source search performs a slower, case-insensitive literal scan of the original session JSONL and writes no index or cache data. Project scope scans only logical sessions whose exact project identity matches the trusted Pi working directory. Global scope scans every eligible physical session file. Exact ignored paths remain excluded. Results include the physical path, source line range, entry ID when present, and a bounded matching excerpt. A file that disappears or becomes unreadable during the scan is reported without hiding matches from other files.
 
 Each search uses three bounded channels:
 
@@ -157,7 +161,7 @@ Tool details also include:
 - duplicate occurrence locations;
 - every chunk used for neighbor context.
 
-The agent can read those JSONL lines directly when it needs surrounding source context. Recall does not reopen session files during search and has no separate source-neighborhood database.
+The agent can read those JSONL lines directly when it needs surrounding source context. Normal recall does not reopen session files and has no separate source-neighborhood database. Explicit `source: true` search reads canonical JSONL on demand and persists nothing.
 
 ## Indexed evidence
 

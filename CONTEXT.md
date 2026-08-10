@@ -68,6 +68,10 @@ _Avoid_: Tool evidence document, tool result
 Evidence retained only in canonical session JSONL. Complete tool results, bash output, and omitted invocation payloads are Source-backed evidence.
 _Avoid_: Invocation record, copied tool output
 
+**Source search**:
+An explicit, slow, read-only scan of eligible Physical session files for complete Source-backed evidence. It never runs during normal recall and writes no index or cache data.
+_Avoid_: Normal recall, source neighborhood index
+
 **Evidence part**:
 The source component represented by one document: conversation or summary content, tool name, tool arguments, tool result, bash command, or bash output.
 _Avoid_: Chunk type

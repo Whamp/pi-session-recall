@@ -55,6 +55,7 @@ import {
   type RankedRecallSearchResult,
 } from './rank-recall-search-results.js';
 import type { ConversationTextTokenizer } from './session-conversation-index.js';
+import { searchSessionSourceFiles, type SessionSourceSearch } from './session-source-search.js';
 import {
   openZvecConversationStore,
   type ZvecConversationStore,
@@ -157,7 +158,7 @@ export interface RecallConversationOptimizeResult {
   totalChunks: number;
 }
 
-/** Read-only search and standalone indexing for one zvec recall collection. */
+/** Read-only indexed search and standalone indexing for one recall collection. */
 export interface RecallConversationService {
   search(
     query: string,
@@ -166,6 +167,19 @@ export interface RecallConversationService {
   ): Promise<RecallConversationSearch>;
   index(options?: RecallConversationIndexOptions): Promise<RecallConversationIndexResult>;
 }
+
+/** Explicit slow source-search capability used only when the Pi tool requests it. */
+export interface RecallSourceSearchService {
+  searchSource(
+    query: string,
+    limit: number,
+    options?: RecallConversationSearchOptions,
+  ): Promise<SessionSourceSearch>;
+}
+
+/** Complete read-only search surface exposed through the Pi recall tool. */
+export interface RecallConversationToolService
+  extends RecallConversationService, RecallSourceSearchService {}
 
 /** Standalone collection maintenance capabilities used only by `psr`. */
 export interface RecallConversationMaintenanceService extends RecallConversationService {
@@ -293,7 +307,7 @@ function createEmbeddingModelIdentity(
 export function createRecallConversationService(
   config: RecallConversationConfig,
   dependencies: RecallConversationDependencies = {},
-): RecallConversationMaintenanceService {
+): RecallConversationMaintenanceService & RecallSourceSearchService {
   const embeddingProvider =
     dependencies.embeddingProvider ??
     createOctenHttpEmbeddingProvider({
@@ -321,6 +335,22 @@ export function createRecallConversationService(
         readOnly: mode === 'read',
       }));
   let tokenizer: ConversationTextTokenizer | undefined;
+
+  async function resolveSearchInvocation(options: RecallConversationSearchOptions) {
+    const scope = options.scope ?? RecallSearchScope.PROJECT;
+    if (scope === RecallSearchScope.PROJECT && !options.invocationDirectory) {
+      throw new Error('Project-scoped recall requires Pi trusted invocation directory context');
+    }
+    const invocationProject = options.invocationDirectory
+      ? await resolveSearchProjectIdentity(options.invocationDirectory)
+      : null;
+    if (scope === RecallSearchScope.PROJECT && !invocationProject) {
+      throw new Error(
+        `Project-scoped recall could not resolve a project identity from Pi invocation directory ${options.invocationDirectory}`,
+      );
+    }
+    return { scope, invocationProject };
+  }
 
   function createExpectedManifest(): RecallIndexManifest {
     return createRecallIndexManifest({
@@ -367,24 +397,13 @@ export function createRecallConversationService(
       if (!searchQuery) {
         throw new Error('Recall query must not be blank');
       }
-      const scope = options.scope ?? RecallSearchScope.PROJECT;
       const activePaths = await resolveActiveRecallDatabasePaths(config);
       await readCompatibleManifest(activePaths);
       const indexMaintenanceStatus = await readRecallIndexMaintenanceStatus(
         activePaths.indexMaintenanceStatusPath,
       );
       await assertRecallIndexUnlockedForSearch(config.lockPath);
-      if (scope === RecallSearchScope.PROJECT && !options.invocationDirectory) {
-        throw new Error('Project-scoped recall requires Pi trusted invocation directory context');
-      }
-      const invocationProject = options.invocationDirectory
-        ? await resolveSearchProjectIdentity(options.invocationDirectory)
-        : null;
-      if (scope === RecallSearchScope.PROJECT && !invocationProject) {
-        throw new Error(
-          `Project-scoped recall could not resolve a project identity from Pi invocation directory ${options.invocationDirectory}`,
-        );
-      }
+      const { scope, invocationProject } = await resolveSearchInvocation(options);
       const projectIdentity =
         scope === RecallSearchScope.PROJECT ? invocationProject?.projectIdentity : undefined;
       const queryEmbedding = await embeddingProvider.embedQuery(searchQuery, options.signal);
@@ -450,6 +469,27 @@ export function createRecallConversationService(
       } finally {
         store.close();
       }
+    },
+
+    async searchSource(query, limit, options = {}) {
+      const searchQuery = query.trim();
+      if (!searchQuery) {
+        throw new Error('Recall query must not be blank');
+      }
+      const { scope, invocationProject } = await resolveSearchInvocation(options);
+      const ignoredPhysicalSessionPaths = new Set(
+        await listIgnoredPhysicalSessionPaths(config.physicalSessionIgnoreStatePath),
+      );
+      return searchSessionSourceFiles({
+        sessionsDirectory: config.sessionsDirectory,
+        ignoredPhysicalSessionPaths,
+        query: searchQuery,
+        limit,
+        scope,
+        invocationProjectIdentity: invocationProject?.projectIdentity ?? null,
+        resolveProjectIdentity: resolveSearchProjectIdentity,
+        ...(options.signal ? { signal: options.signal } : {}),
+      });
     },
 
     async optimize(options = {}) {

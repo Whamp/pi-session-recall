@@ -284,7 +284,7 @@ npm run certify:unified-sqlite-recall -- \
   --project-identity git-origin:github.com/Whamp/pi-session-recall
 ```
 
-The read-only phase checks the strict version 8 manifest, sqlite-vec 0.1.9 identity and Linux load, SQLite and projection integrity, counts, allocated database/WAL/SHM storage, fixed Dense and Invocation probes, exact Source provenance, and macOS package metadata and tarball contents. It exits 2 while clone gates remain pending. macOS package checks prove package availability only. macOS x64 and arm64 execution remain pending until the extension loads on those platforms.
+The read-only phase checks the strict version 8 manifest, sqlite-vec 0.1.9 identity and Linux load, SQLite and projection integrity, counts, allocated database/WAL/SHM storage, fixed Dense and Invocation probes, exact Source provenance, and macOS package metadata and tarball contents. It exits 2 while clone gates remain pending. macOS metadata and tarball inspection proves package availability only, never runtime loading. Local reports keep explicit macOS x64 and arm64 runtime-load gates pending and cannot claim release readiness.
 
 CAUTION: The next command deletes its per-run clone directory. Supply a dedicated scratch root that is disjoint from the recall data root. The command refuses to copy when scratch allocation would exceed 6 GiB or free space is below 240 GiB. It never mutates the candidate, the Active database, or canonical session JSONL.
 
@@ -302,7 +302,9 @@ npm run certify:unified-sqlite-recall -- \
   --output docs/research/unified-sqlite-production-recall-certification.json
 ```
 
-The clone phase checks concurrent-reader isolation, explicit rollback, SIGKILL recovery, one representative replacement, 100 replacements, device writes when Linux exposes them, file and free-page growth, and post-churn integrity and latency. `--output` writes sanitized JSON and Markdown only to `docs/research/unified-sqlite-production-recall-certification.*`. Do not commit a report until the real staged candidate has run.
+The async clone phase makes only the representative clone session stale, then calls the production `indexChangedConversationSessions` path over the real sessions directory with the production tokenizer, exact ignored-path policy, project resolver, and embedding provider. It requires exactly one indexed session, zero failures, expected checksum-vector reuse, available device-write counters, unchanged counts, and an unchanged unrelated Physical session. It separately labels and retains the 100-cycle direct-database churn probe for long-term page and file behavior, plus concurrent-reader isolation, explicit rollback, SIGKILL recovery, post-churn integrity, and latency. `--output` writes sanitized JSON and Markdown only to `docs/research/unified-sqlite-production-recall-certification.*`. Do not commit a report until the real staged candidate has run.
+
+`candidatePreActivationPassed` means the local candidate and clone gates passed. `releaseReady` additionally requires both macOS runtime-load gates and remains false while their external evidence is pending. This certification benchmark is an explicit release operation, not a requirement for ordinary user rebuilds; the version-6-to-version-8 staged rebuild guard is the activation safeguard.
 
 After this branch is merged and deployed, the following checks remain pending:
 
@@ -312,7 +314,7 @@ After this branch is merged and deployed, the following checks remain pending:
 4. Run project, global, normal, and Source recall against the Active database.
 5. Confirm the hourly timer is active.
 6. Verify the retained version 6 rollback target and procedure without deleting it.
-7. Execute sqlite-vec loading on macOS x64 and arm64.
+7. Obtain a successful `.github/workflows/sqlite-vec-platform-smoke.yml` PR run. Its stable `SQLite-vec macOS x64 runtime load` job runs on `macos-26-intel` and asserts `process.arch === 'x64'`; its stable `SQLite-vec macOS arm64 runtime load` job runs on `macos-26` and asserts `process.arch === 'arm64'`. Both jobs load pinned sqlite-vec 0.1.9 through `node:sqlite`, call `vec_version()`, query FTS5, and insert/query vec0. Record the real successful workflow URL as release evidence only after it exists.
 
 ## Development validation
 

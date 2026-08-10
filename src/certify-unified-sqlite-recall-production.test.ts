@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, symlinkSync } from 'node:fs';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -27,13 +27,15 @@ import {
   snapshotUnifiedSqliteActivePointer,
   SOURCE_CERTIFICATION_PROBES,
 } from './certify-unified-sqlite-recall-production.js';
-import type { InvocationRecord } from './createSessionInvocationRecords.js';
 import { RecallProjectIdentitySource } from './enums.js';
-import { createTestSessionConversationChunk } from './recall-test-utils.js';
-import { parseRepositoryIdentity } from './resolve-project-identity.js';
+import { indexChangedConversationSessions } from './incremental-session-indexer.js';
+import type { RecallEmbeddingProvider } from './recall-inference-capabilities.js';
+import type { RecallIndexProgressEvent } from './recall-index-progress.js';
+import { parseProjectIdentity } from './resolve-project-identity.js';
+import type { ConversationTextTokenizer } from './session-conversation-index.js';
 import {
-  openSqliteRecallDatabase,
   SQLITE_RECALL_EMBEDDING_DIMENSIONS,
+  type SqliteRecallDatabase,
 } from './sqlite-recall-database.js';
 import { readZvecConversationDenseIndexType } from './zvec-conversation-store.js';
 
@@ -60,10 +62,18 @@ void test('certification gate calculations enforce all production thresholds', (
     integrityHealthy: true,
     linuxX64LoadPassed: true,
     macOsPackagesAvailable: true,
+    macOsX64RuntimeLoadPassed: null,
+    macOsArm64RuntimeLoadPassed: null,
     candidateInactive: true,
     clonePassed: true,
   });
-  assert.ok(Object.values(passing).every((value) => value === true));
+  assert.equal(passing.macOsX64RuntimeLoad, null);
+  assert.equal(passing.macOsArm64RuntimeLoad, null);
+  assert.ok(
+    Object.entries(passing)
+      .filter(([gate]) => !gate.startsWith('macOs') || gate === 'macOsPackageAvailability')
+      .every(([, value]) => value === true),
+  );
 
   const failing = evaluateUnifiedSqliteCertificationGates({
     storageBytes: MAXIMUM_CERTIFIED_STORAGE_BYTES + 1,
@@ -77,6 +87,8 @@ void test('certification gate calculations enforce all production thresholds', (
     integrityHealthy: false,
     linuxX64LoadPassed: false,
     macOsPackagesAvailable: false,
+    macOsX64RuntimeLoadPassed: null,
+    macOsArm64RuntimeLoadPassed: null,
     candidateInactive: false,
     clonePassed: null,
   });
@@ -92,6 +104,8 @@ void test('certification gate calculations enforce all production thresholds', (
     integrity: false,
     linuxX64Load: false,
     macOsPackageAvailability: false,
+    macOsX64RuntimeLoad: null,
+    macOsArm64RuntimeLoad: null,
     candidateInactive: false,
     clone: null,
   });
@@ -154,16 +168,70 @@ void test('candidate and scratch path guards reject traversal and overlap', () =
   );
 });
 
-void test('tiny candidate and flat-Zvec control preserve active pointer while clone probes mutate only scratch', async (t) => {
+const certificationTokenizer: ConversationTextTokenizer = {
+  encodeConversationText(text) {
+    return { ids: Array.from(text.split(/\s+/u).filter(Boolean).keys()) };
+  },
+};
+
+const resolveCertificationProjectIdentity = async () => ({
+  projectIdentity: parseProjectIdentity('non-git-session-origin:/fixture'),
+  identitySource: RecallProjectIdentitySource.NON_GIT_SESSION_ORIGIN as const,
+});
+
+const certificationEmbeddingProvider: RecallEmbeddingProvider = {
+  embedQuery(query) {
+    assert.notEqual(query.trim(), '');
+    return Promise.resolve(unitEmbedding());
+  },
+  embedDocuments(documents) {
+    assert.ok(documents.length > 0);
+    return Promise.resolve(documents.map(() => unitEmbedding()));
+  },
+};
+
+async function writeCertificationSession(
+  sessionPath: string,
+  sessionId: string,
+  content: string,
+): Promise<void> {
+  await writeFile(
+    sessionPath,
+    `${[
+      { type: 'session', version: 3, id: sessionId, timestamp: '2026-08-10', cwd: '/fixture' },
+      {
+        type: 'message',
+        id: `user-${sessionId}`,
+        parentId: null,
+        timestamp: '2026-08-10',
+        message: { role: 'user', content },
+      },
+    ]
+      .map((entry) => JSON.stringify(entry))
+      .join('\n')}\n`,
+  );
+}
+
+void test('clone certification runs one real changed-session index and rejects dishonest fixture evidence', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'unified-certification-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const dataRoot = join(root, 'data');
   const candidateDirectory = join(dataRoot, 'generations', 'generation-fixture');
   const candidateDatabasePath = join(candidateDirectory, 'recall.sqlite');
+  const sessionsDirectory = join(root, 'sessions');
   const scratchRoot = join(root, 'scratch');
   const controlPath = join(root, 'flat-control');
+  const representativeSessionPath = join(sessionsDirectory, 'representative.jsonl');
+  const unrelatedSessionPath = join(sessionsDirectory, 'unrelated.jsonl');
+  await mkdir(sessionsDirectory, { recursive: true });
   mkdirSync(candidateDirectory, { recursive: true });
   mkdirSync(scratchRoot, { recursive: true });
+  await writeCertificationSession(
+    representativeSessionPath,
+    'representative',
+    'representative certification evidence',
+  );
+  await writeCertificationSession(unrelatedSessionPath, 'unrelated', 'unrelated stable evidence');
 
   const control = ZVecCreateAndOpen(
     controlPath,
@@ -181,72 +249,112 @@ void test('tiny candidate and flat-Zvec control preserve active pointer while cl
   control.closeSync();
   assert.equal(readZvecConversationDenseIndexType(controlPath), ZVecIndexType.FLAT);
 
-  const sessionPath = '/fixture/sessions/representative.jsonl';
-  const projectIdentity = parseRepositoryIdentity('git-origin:github.com/Whamp/pi-session-recall');
-  const document = createTestSessionConversationChunk({
-    id: 'fixture-document',
-    sessionPath,
-    projectAttribution: {
-      projectIdentity,
-      identitySource: RecallProjectIdentitySource.GIT_ORIGIN,
-    },
+  await indexChangedConversationSessions({
+    sessionsDirectory,
+    databasePath: candidateDatabasePath,
+    embeddingProvider: certificationEmbeddingProvider,
+    tokenizer: certificationTokenizer,
+    chunkPolicy: { maxTokens: 512, overlapTokens: 64 },
+    ignoredPhysicalSessionPaths: new Set(),
+    resolveProjectIdentity: resolveCertificationProjectIdentity,
   });
-  const invocation: InvocationRecord = {
-    kind: 'tool_call',
-    toolName: 'brain_query',
-    toolCallId: 'call-fixture',
-    sessionPath,
-    sessionId: 'session-fixture',
-    entryId: 'entry-fixture',
-    sourceLineStart: 2,
-    sourceLineEnd: 2,
-    sourceBlockIndex: 0,
-    timestamp: '2026-08-10T12:00:00Z',
-    sessionOrigin: '/fixture',
-    projectAttribution: {
-      projectIdentity,
-      identitySource: RecallProjectIdentitySource.GIT_ORIGIN,
-    },
-    isError: false,
-    searchableText: 'tool="brain_query" query="fixture"',
-  };
-  const database = openSqliteRecallDatabase(candidateDatabasePath);
-  database.replacePhysicalSession({
-    sessionPath,
-    size: 123,
-    mtimeMs: 456,
-    documentIds: [document.id],
-    denseDocuments: [document],
-    denseEmbeddings: new Map([[document.id, unitEmbedding()]]),
-    invocations: [invocation],
-  });
-  database.close();
-
   symlinkSync('generations/generation-active', join(dataRoot, 'active'));
   const pointerBefore = snapshotUnifiedSqliteActivePointer(dataRoot);
-  assert.equal(pointerBefore.exists, true);
-  assert.equal(pointerBefore.target, 'generations/generation-active');
   const candidateHashBefore = hashFile(candidateDatabasePath);
-  const deviceWriteSamples = [0, 1 * 1024 ** 2, 1 * 1024 ** 2, 101 * 1024 ** 2];
-  const result = certifyDisposableUnifiedSqliteClone({
-    candidateDirectory,
-    candidateDatabasePath,
-    scratchRoot,
-    dataRoot,
-    representativeSessionPath: sessionPath,
-    blockDevice: 'fixture-device',
-    minimumFreeBytes: 0,
-    readDeviceWrittenBytes: () => deviceWriteSamples.shift() ?? null,
-  });
+
+  const runRealChangedSessionIndex = (
+    database: SqliteRecallDatabase,
+    onProgress: (event: RecallIndexProgressEvent) => void,
+  ) =>
+    indexChangedConversationSessions({
+      sessionsDirectory,
+      database,
+      embeddingProvider: certificationEmbeddingProvider,
+      tokenizer: certificationTokenizer,
+      chunkPolicy: { maxTokens: 512, overlapTokens: 64 },
+      ignoredPhysicalSessionPaths: new Set(),
+      resolveProjectIdentity: resolveCertificationProjectIdentity,
+      onProgress,
+    });
+  const certify = (
+    overrides: Partial<Parameters<typeof certifyDisposableUnifiedSqliteClone>[0]> = {},
+  ) => {
+    const deviceWriteSamples = [0, 1 * 1024 ** 2, 1 * 1024 ** 2, 101 * 1024 ** 2];
+    return certifyDisposableUnifiedSqliteClone({
+      candidateDirectory,
+      candidateDatabasePath,
+      scratchRoot,
+      dataRoot,
+      representativeSessionPath,
+      blockDevice: 'fixture-device',
+      minimumFreeBytes: 0,
+      readDeviceWrittenBytes: () => deviceWriteSamples.shift() ?? null,
+      runChangedSessionIndex: runRealChangedSessionIndex,
+      ...overrides,
+    });
+  };
+
+  const result = await certify();
   assert.equal(result.passed, true, JSON.stringify(result));
+  assert.deepEqual(result.changedSessionIndexedPhysicalSessionPaths, [representativeSessionPath]);
+  assert.deepEqual(result.changedSessionIndexSummary, {
+    scannedSessions: 2,
+    indexedSessions: 1,
+    removedSessions: 0,
+    reusedVectors: 1,
+    newlyEmbeddedChunks: 0,
+    embeddingRequestCount: 0,
+    deletedChunks: 0,
+    failedSessions: [],
+  });
+  assert.equal(result.changedSessionIndexReusedExpectedVectors, true);
+  assert.equal(result.unrelatedPhysicalSessionUnchanged, true);
+  assert.equal(result.databaseCountsUnchanged, true);
   assert.equal(result.concurrentReaderSawCommittedState, true);
   assert.equal(result.explicitRollbackRestoredState, true);
   assert.equal(result.forcedTerminationRestoredState, true);
-  assert.equal(result.churnCycles, 100);
+  assert.equal(result.directDatabaseChurnCycles, 100);
   assert.equal(result.allocatedGrowthBytes, 0);
   assert.equal(result.freePageGrowth, 0);
   assert.equal(hashFile(candidateDatabasePath), candidateHashBefore);
   assert.deepEqual(snapshotUnifiedSqliteActivePointer(dataRoot), pointerBefore);
+
+  await assert.rejects(
+    certifyDisposableUnifiedSqliteClone({
+      candidateDirectory,
+      candidateDatabasePath,
+      scratchRoot,
+      dataRoot,
+      representativeSessionPath,
+      blockDevice: 'fixture-device',
+      minimumFreeBytes: 0,
+      readDeviceWrittenBytes: () => 0,
+    }),
+    /real changed-session index callback is required/u,
+  );
+  const wrongCount = await certify({
+    async runChangedSessionIndex(database, onProgress) {
+      const summary = await runRealChangedSessionIndex(database, onProgress);
+      return { ...summary, indexedSessions: 2 };
+    },
+  });
+  assert.equal(wrongCount.passed, false);
+
+  const changedUnrelated = await certify({
+    async runChangedSessionIndex(database, onProgress) {
+      const summary = await runRealChangedSessionIndex(database, onProgress);
+      const unrelated = database.readPhysicalSessionReplacement(unrelatedSessionPath);
+      assert.ok(unrelated);
+      database.replacePhysicalSession({ ...unrelated, size: unrelated.size + 1 });
+      return summary;
+    },
+  });
+  assert.equal(changedUnrelated.passed, false);
+  assert.equal(changedUnrelated.unrelatedPhysicalSessionUnchanged, false);
+
+  const unavailableWrites = await certify({ readDeviceWrittenBytes: () => null });
+  assert.equal(unavailableWrites.passed, false);
+  assert.equal(unavailableWrites.deviceWriteMeasurement, 'unavailable');
 });
 
 void test('durable report sanitization removes machine roots and raw evidence fields', () => {

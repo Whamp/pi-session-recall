@@ -1,0 +1,93 @@
+name: SQLite-vec platform smoke
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sqlite-vec-macos-arm64-runtime-load:
+    name: SQLite-vec macOS arm64 runtime load
+    runs-on: macos-26
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+      - name: Install pinned Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install pinned dependencies
+        run: npm ci
+      - name: Load sqlite-vec and exercise SQLite features
+        env:
+          EXPECTED_PROCESS_ARCH: arm64
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { DatabaseSync } from 'node:sqlite';
+          import * as sqliteVec from 'sqlite-vec';
+
+          assert.equal(process.arch, process.env.EXPECTED_PROCESS_ARCH);
+          const database = new DatabaseSync(':memory:', { allowExtension: true });
+          try {
+            sqliteVec.load(database);
+            database.enableLoadExtension(false);
+            assert.equal(database.prepare('SELECT vec_version() AS version').get().version, 'v0.1.9');
+
+            database.exec("CREATE VIRTUAL TABLE smoke_fts USING fts5(content); INSERT INTO smoke_fts(content) VALUES ('sqlite vec smoke evidence');");
+            assert.equal(database.prepare("SELECT count(*) AS count FROM smoke_fts WHERE smoke_fts MATCH 'evidence'").get().count, 1);
+
+            database.exec('CREATE VIRTUAL TABLE smoke_vectors USING vec0(embedding FLOAT[2] DISTANCE_METRIC=cosine)');
+            database.prepare('INSERT INTO smoke_vectors(rowid, embedding) VALUES (?, ?)').run(1n, '[1, 0]');
+            database.prepare('INSERT INTO smoke_vectors(rowid, embedding) VALUES (?, ?)').run(2n, '[0, 1]');
+            const nearest = database.prepare('SELECT rowid, distance FROM smoke_vectors WHERE embedding MATCH ? AND k = 1').get('[1, 0]');
+            assert.equal(nearest.rowid, 1);
+          } finally {
+            database.close();
+          }
+          NODE
+
+  sqlite-vec-macos-x64-runtime-load:
+    name: SQLite-vec macOS x64 runtime load
+    runs-on: macos-26-intel
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+      - name: Install pinned Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install pinned dependencies
+        run: npm ci
+      - name: Load sqlite-vec and exercise SQLite features
+        env:
+          EXPECTED_PROCESS_ARCH: x64
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { DatabaseSync } from 'node:sqlite';
+          import * as sqliteVec from 'sqlite-vec';
+
+          assert.equal(process.arch, process.env.EXPECTED_PROCESS_ARCH);
+          const database = new DatabaseSync(':memory:', { allowExtension: true });
+          try {
+            sqliteVec.load(database);
+            database.enableLoadExtension(false);
+            assert.equal(database.prepare('SELECT vec_version() AS version').get().version, 'v0.1.9');
+
+            database.exec("CREATE VIRTUAL TABLE smoke_fts USING fts5(content); INSERT INTO smoke_fts(content) VALUES ('sqlite vec smoke evidence');");
+            assert.equal(database.prepare("SELECT count(*) AS count FROM smoke_fts WHERE smoke_fts MATCH 'evidence'").get().count, 1);
+
+            database.exec('CREATE VIRTUAL TABLE smoke_vectors USING vec0(embedding FLOAT[2] DISTANCE_METRIC=cosine)');
+            database.prepare('INSERT INTO smoke_vectors(rowid, embedding) VALUES (?, ?)').run(1n, '[1, 0]');
+            database.prepare('INSERT INTO smoke_vectors(rowid, embedding) VALUES (?, ?)').run(2n, '[0, 1]');
+            const nearest = database.prepare('SELECT rowid, distance FROM smoke_vectors WHERE embedding MATCH ? AND k = 1').get('[1, 0]');
+            assert.equal(nearest.rowid, 1);
+          } finally {
+            database.close();
+          }
+          NODE

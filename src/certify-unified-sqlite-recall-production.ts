@@ -22,15 +22,27 @@ import { ZVecIndexType } from '@zvec/zvec';
 
 import { RecallSearchScope } from './enums.js';
 import { isUnknownRecord } from './is-unknown-record.js';
+import {
+  indexChangedConversationSessions,
+  type ConversationIndexSummary,
+} from './incremental-session-indexer.js';
+import { loadOctenConversationTokenizer } from './octen-conversation-tokenizer.js';
 import { createOctenHttpEmbeddingProvider } from './octen-http-embedding-provider.js';
+import { listIgnoredPhysicalSessionPaths } from './physical-session-ignore.js';
 import { loadRecallConversationConfig } from './recall-conversation-config.js';
 import { createRecallConversationService } from './recall-conversation-service.js';
 import { readRecallIndexManifest } from './recall-index-manifest.js';
+import type { RecallIndexProgressEvent } from './recall-index-progress.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
-import { parseProjectIdentity } from './resolve-project-identity.js';
+import {
+  createLineageResolver,
+  parseProjectIdentity,
+  resolveProjectIdentity,
+} from './resolve-project-identity.js';
 import {
   openSqliteRecallDatabase,
   SQLITE_RECALL_VEC_PACKAGE_VERSION,
+  type SqliteRecallDatabase,
   type SqliteRecallDatabaseCounts,
   type SqliteRecallIntegrityDiagnostics,
 } from './sqlite-recall-database.js';
@@ -121,6 +133,8 @@ export interface UnifiedSqliteCertificationGateInputs {
   integrityHealthy: boolean;
   linuxX64LoadPassed: boolean;
   macOsPackagesAvailable: boolean;
+  macOsX64RuntimeLoadPassed: boolean | null;
+  macOsArm64RuntimeLoadPassed: boolean | null;
   candidateInactive: boolean;
   clonePassed: boolean | null;
 }
@@ -149,6 +163,8 @@ export function evaluateUnifiedSqliteCertificationGates(
     integrity: inputs.integrityHealthy,
     linuxX64Load: inputs.linuxX64LoadPassed,
     macOsPackageAvailability: inputs.macOsPackagesAvailable,
+    macOsX64RuntimeLoad: inputs.macOsX64RuntimeLoadPassed,
+    macOsArm64RuntimeLoad: inputs.macOsArm64RuntimeLoadPassed,
     candidateInactive: inputs.candidateInactive,
     clone: inputs.clonePassed,
   };
@@ -420,8 +436,9 @@ async function inspectPublishedSqliteVecPackage(
     packageAvailable:
       metadata.version === SQLITE_RECALL_VEC_PACKAGE_VERSION &&
       files.some((file) => file.endsWith('vec0.dylib')),
+    inspectionPurpose: 'package-availability-only',
     executedLoad: false,
-    executionStatus: 'pending-macOS-execution',
+    executionStatus: 'not-executed; runtime load requires the matching macOS GitHub runner',
   };
 }
 
@@ -483,22 +500,44 @@ function runCloneChildMode(argumentsList: readonly string[]): boolean {
   throw new Error('Unified SQLite recall forced-termination child survived SIGKILL');
 }
 
+function snapshotPhysicalSessionProjection(
+  replacement: ReturnType<SqliteRecallDatabase['readPhysicalSessionReplacement']>,
+): string {
+  if (!replacement) {
+    return 'null';
+  }
+  return JSON.stringify({
+    ...replacement,
+    denseEmbeddings: [...replacement.denseEmbeddings.entries()].sort(([left], [right]) =>
+      left.localeCompare(right),
+    ),
+  });
+}
+
 /** Runs every mutation probe against a disposable candidate clone and removes it afterward. */
-export function certifyDisposableUnifiedSqliteClone(options: {
+export async function certifyDisposableUnifiedSqliteClone(options: {
   candidateDirectory: string;
   candidateDatabasePath: string;
   scratchRoot: string;
   dataRoot: string;
   representativeSessionPath: string;
   blockDevice: string;
+  runChangedSessionIndex?: (
+    database: SqliteRecallDatabase,
+    onProgress: (event: RecallIndexProgressEvent) => void,
+  ) => Promise<ConversationIndexSummary>;
   /** Test seam; production callers must use the 240 GiB default. */
   minimumFreeBytes?: number;
   /** Test seam; production callers must read the named block device. */
   readDeviceWrittenBytes?: () => number | null;
-}): Record<string, unknown> {
+}): Promise<Record<string, unknown>> {
+  if (typeof options.runChangedSessionIndex !== 'function') {
+    throw new Error('Unified SQLite recall real changed-session index callback is required');
+  }
   assertCertificationScratchRoot(options.scratchRoot, options.dataRoot, options.candidateDirectory);
   mkdirSync(options.scratchRoot, { recursive: true });
-  const freeBytes = statfsSync(options.scratchRoot).bavail * statfsSync(options.scratchRoot).bsize;
+  const scratchStats = statfsSync(options.scratchRoot);
+  const freeBytes = scratchStats.bavail * scratchStats.bsize;
   if (freeBytes < (options.minimumFreeBytes ?? MINIMUM_SCRATCH_FREE_BYTES)) {
     throw new Error('Unified SQLite recall scratch free space is below the 240 GiB floor');
   }
@@ -554,42 +593,101 @@ export function certifyDisposableUnifiedSqliteClone(options: {
     if (!replacement) {
       throw new Error('Unified SQLite recall clone lost its representative session');
     }
+    const unrelatedSessionPath = database
+      .listPhysicalSessionPaths()
+      .find((sessionPath) => sessionPath !== options.representativeSessionPath);
+    if (!unrelatedSessionPath) {
+      throw new Error('Unified SQLite recall clone requires an unrelated indexed physical session');
+    }
     const beforeState = database.readPhysicalSessionState(options.representativeSessionPath);
     const afterRollbackState = database.readPhysicalSessionState(options.representativeSessionPath);
     database.close();
     const crash = runCloneChild(databasePath, options.representativeSessionPath, 'sigkill');
     database = openSqliteRecallDatabase(databasePath);
     const afterCrashState = database.readPhysicalSessionState(options.representativeSessionPath);
+
+    // Stale only clone-owned state. Canonical JSONL, candidate storage, and active storage stay read-only.
+    const canonicalSessionSize = statSync(options.representativeSessionPath).size;
+    database.replacePhysicalSession({ ...replacement, size: canonicalSessionSize + 1 });
+    const expectedVectorReuseCount = replacement.denseDocuments.length;
+    const unrelatedProjectionBefore = snapshotPhysicalSessionProjection(
+      database.readPhysicalSessionReplacement(unrelatedSessionPath),
+    );
+    const countsBeforeChangedSessionIndex = database.readCounts();
+    database.checkpointDisposableClone();
+    const readDeviceWrittenBytes =
+      options.readDeviceWrittenBytes ?? (() => readBlockDeviceWrittenBytes(options.blockDevice));
+    const changedSessionIndexWritesBefore = readDeviceWrittenBytes();
+    const changedSessionIndexedPhysicalSessionPaths = new Set<string>();
+    const changedSessionIndexStarted = performance.now();
+    const changedSessionIndexSummary = await options.runChangedSessionIndex(database, (event) => {
+      if (event.kind === 'indexing-maintenance-workset') {
+        changedSessionIndexedPhysicalSessionPaths.add(event.sessionPath);
+      }
+    });
+    const changedSessionIndexElapsedMilliseconds = performance.now() - changedSessionIndexStarted;
+    const changedSessionIndexWritesAfter = readDeviceWrittenBytes();
+    const changedSessionIndexDeviceWrittenBytes =
+      changedSessionIndexWritesBefore === null || changedSessionIndexWritesAfter === null
+        ? null
+        : changedSessionIndexWritesAfter - changedSessionIndexWritesBefore;
+    const unrelatedProjectionAfter = snapshotPhysicalSessionProjection(
+      database.readPhysicalSessionReplacement(unrelatedSessionPath),
+    );
+    const countsAfterChangedSessionIndex = database.readCounts();
+    const unrelatedPhysicalSessionUnchanged =
+      unrelatedProjectionBefore === unrelatedProjectionAfter;
+    const databaseCountsUnchanged =
+      JSON.stringify(countsBeforeChangedSessionIndex) ===
+      JSON.stringify(countsAfterChangedSessionIndex);
+    const indexedPhysicalSessionPaths = [...changedSessionIndexedPhysicalSessionPaths].sort();
+    const changedSessionIndexSummaryValid =
+      changedSessionIndexSummary.indexedSessions === 1 &&
+      changedSessionIndexSummary.removedSessions === 0 &&
+      changedSessionIndexSummary.failedSessions.length === 0 &&
+      indexedPhysicalSessionPaths.length === 1 &&
+      indexedPhysicalSessionPaths[0] === options.representativeSessionPath;
+    const changedSessionIndexReusedExpectedVectors =
+      expectedVectorReuseCount > 0 &&
+      changedSessionIndexSummary.reusedVectors === expectedVectorReuseCount &&
+      changedSessionIndexSummary.newlyEmbeddedChunks === 0 &&
+      changedSessionIndexSummary.embeddingRequestCount === 0;
+
+    const churnReplacement = database.readPhysicalSessionReplacement(
+      options.representativeSessionPath,
+    );
+    if (!churnReplacement) {
+      throw new Error(
+        'Unified SQLite recall changed-session index removed its representative session',
+      );
+    }
     database.checkpointDisposableClone();
     const beforeMetrics = {
       allocatedBytes: readDatabaseAllocatedBytes(databasePath),
       storage: database.readStorageMetrics(),
     };
-    const readDeviceWrittenBytes =
-      options.readDeviceWrittenBytes ?? (() => readBlockDeviceWrittenBytes(options.blockDevice));
-    const representativeWritesBefore = readDeviceWrittenBytes();
-    const representativeStarted = performance.now();
-    database.replacePhysicalSession(replacement);
-    const representativeElapsedMilliseconds = performance.now() - representativeStarted;
-    const representativeWritesAfter = readDeviceWrittenBytes();
-    const churnWritesBefore = readDeviceWrittenBytes();
-    const churnStarted = performance.now();
+    const directDatabaseChurnWritesBefore = readDeviceWrittenBytes();
+    const directDatabaseChurnStarted = performance.now();
     for (let cycle = 0; cycle < 100; cycle += 1) {
-      database.replacePhysicalSession(replacement);
+      database.replacePhysicalSession(churnReplacement);
     }
-    const churnElapsedMilliseconds = performance.now() - churnStarted;
+    const directDatabaseChurnElapsedMilliseconds = performance.now() - directDatabaseChurnStarted;
     database.checkpointDisposableClone();
-    const churnWritesAfter = readDeviceWrittenBytes();
+    const directDatabaseChurnWritesAfter = readDeviceWrittenBytes();
     const afterMetrics = {
       allocatedBytes: readDatabaseAllocatedBytes(databasePath),
       storage: database.readStorageMetrics(),
     };
+    const directDatabaseChurnDeviceWrittenBytes =
+      directDatabaseChurnWritesBefore === null || directDatabaseChurnWritesAfter === null
+        ? null
+        : directDatabaseChurnWritesAfter - directDatabaseChurnWritesBefore;
     const integrity = database.checkIntegrity();
     const globalLatencySamples: number[] = [];
     const projectLatencySamples: number[] = [];
     const invocationLatencySamples: number[] = [];
-    const embedding = [...replacement.denseEmbeddings.values()][0];
-    const projectIdentity = replacement.denseDocuments[0]?.projectAttribution?.projectIdentity;
+    const embedding = [...churnReplacement.denseEmbeddings.values()][0];
+    const projectIdentity = churnReplacement.denseDocuments[0]?.projectAttribution?.projectIdentity;
     if (embedding) {
       for (let index = 0; index < BENCHMARK_REPETITIONS; index += 1) {
         let sampleStarted = performance.now();
@@ -609,14 +707,6 @@ export function certifyDisposableUnifiedSqliteClone(options: {
       }
     }
     database.close();
-    const representativeWrites =
-      representativeWritesBefore === null || representativeWritesAfter === null
-        ? null
-        : representativeWritesAfter - representativeWritesBefore;
-    const churnWrites =
-      churnWritesBefore === null || churnWritesAfter === null
-        ? null
-        : churnWritesAfter - churnWritesBefore;
     const allocatedGrowthBytes = afterMetrics.allocatedBytes - beforeMetrics.allocatedBytes;
     const freePageGrowth = afterMetrics.storage.freePageCount - beforeMetrics.storage.freePageCount;
     const readerSawCommittedState =
@@ -626,6 +716,10 @@ export function certifyDisposableUnifiedSqliteClone(options: {
       JSON.stringify(beforeState) === JSON.stringify(afterRollbackState) &&
       JSON.stringify(beforeState) === JSON.stringify(afterCrashState) &&
       crash.signal === 'SIGKILL' &&
+      changedSessionIndexSummaryValid &&
+      changedSessionIndexReusedExpectedVectors &&
+      unrelatedPhysicalSessionUnchanged &&
+      databaseCountsUnchanged &&
       integrity.healthy &&
       integrity.invocationFtsIntegrityChecked &&
       embedding !== undefined &&
@@ -638,34 +732,49 @@ export function certifyDisposableUnifiedSqliteClone(options: {
       readPercentile(invocationLatencySamples, 0.95) < MAXIMUM_INVOCATION_P95_MILLISECONDS &&
       allocatedGrowthBytes === 0 &&
       freePageGrowth <= 0 &&
-      representativeWrites !== null &&
-      representativeWrites < MAXIMUM_AVERAGE_DEVICE_WRITES_BYTES &&
-      churnWrites !== null &&
-      churnWrites / 100 < MAXIMUM_AVERAGE_DEVICE_WRITES_BYTES;
+      changedSessionIndexDeviceWrittenBytes !== null &&
+      changedSessionIndexDeviceWrittenBytes < MAXIMUM_AVERAGE_DEVICE_WRITES_BYTES &&
+      directDatabaseChurnDeviceWrittenBytes !== null &&
+      directDatabaseChurnDeviceWrittenBytes / 100 < MAXIMUM_AVERAGE_DEVICE_WRITES_BYTES;
     return {
       cloneDirectory,
       representativeSession: basename(options.representativeSessionPath),
+      unrelatedPhysicalSession: basename(unrelatedSessionPath),
       concurrentReaderSawCommittedState: readerSawCommittedState,
       explicitRollbackRestoredState:
         JSON.stringify(beforeState) === JSON.stringify(afterRollbackState),
       forcedTerminationSignal: crash.signal,
       forcedTerminationRestoredState:
         JSON.stringify(beforeState) === JSON.stringify(afterCrashState),
-      representativeReplacementCompleted: true,
-      representativeElapsedMilliseconds,
-      representativeDeviceWrittenBytes: representativeWrites,
-      churnCycles: 100,
-      churnElapsedMilliseconds,
-      churnDeviceWrittenBytes: churnWrites,
-      averageDeviceWrittenBytesPerCycle: churnWrites === null ? null : churnWrites / 100,
+      changedSessionIndexer: 'indexChangedConversationSessions',
+      changedSessionIndexedPhysicalSessionPaths: indexedPhysicalSessionPaths,
+      changedSessionIndexSummary,
+      changedSessionIndexSummaryValid,
+      changedSessionIndexExpectedVectorReuseCount: expectedVectorReuseCount,
+      changedSessionIndexReusedExpectedVectors,
+      changedSessionIndexElapsedMilliseconds,
+      changedSessionIndexDeviceWrittenBytes,
+      unrelatedPhysicalSessionUnchanged,
+      databaseCountsUnchanged,
+      countsBeforeChangedSessionIndex,
+      countsAfterChangedSessionIndex,
+      directDatabaseChurnProbe: true,
+      directDatabaseChurnCycles: 100,
+      directDatabaseChurnElapsedMilliseconds,
+      directDatabaseChurnDeviceWrittenBytes,
+      directDatabaseChurnAverageDeviceWrittenBytesPerCycle:
+        directDatabaseChurnDeviceWrittenBytes === null
+          ? null
+          : directDatabaseChurnDeviceWrittenBytes / 100,
       deviceWriteMeasurement:
-        representativeWrites === null || churnWrites === null
+        changedSessionIndexDeviceWrittenBytes === null ||
+        directDatabaseChurnDeviceWrittenBytes === null
           ? 'unavailable'
           : 'gross-block-device-writes',
       allocatedGrowthBytes,
       freePageGrowth,
-      beforeStorage: beforeMetrics,
-      afterStorage: afterMetrics,
+      beforeDirectDatabaseChurnStorage: beforeMetrics,
+      afterDirectDatabaseChurnStorage: afterMetrics,
       postChurnIntegrity: integrity,
       postChurnGlobalP95Milliseconds: globalLatencySamples.length
         ? readPercentile(globalLatencySamples, 0.95)
@@ -731,7 +840,10 @@ function formatCertificationMarkdown(report: Record<string, unknown>): string {
       ([gate, passed]) => `| ${gate} | ${passed === null ? 'PENDING' : passed ? 'PASS' : 'FAIL'} |`,
     )
     .join('\n');
-  return `# Unified SQLite production recall certification\n\nThis report records pre-activation checks only. The harness did not activate the candidate.\n\n## Verdict\n\n${report.passed ? 'All executed gates passed.' : 'One or more executed gates failed or remain pending.'}\n\n## Gates\n\n| Gate | Result |\n| --- | --- |\n${rows}\n\n## Activation status\n\nActivation, immediate post-activation indexing, live project/global/Source recall, timer verification, and rollback remain pending until this branch is merged and deployed. macOS x64 and arm64 package availability is recorded separately from execution; macOS execution remains pending.\n`;
+  const candidateVerdict = report.candidatePreActivationPassed
+    ? 'The candidate passed every local pre-activation gate.'
+    : 'One or more local pre-activation gates failed or remain pending.';
+  return `# Unified SQLite production recall certification\n\nThis report records pre-activation checks only. The harness did not activate the candidate.\n\n## Verdict\n\n${candidateVerdict} Release readiness is **${report.releaseReady ? 'ready' : 'not ready'}**.\n\n## Gates\n\n| Gate | Result |\n| --- | --- |\n${rows}\n\nTarball inspection records package availability only; it does not prove runtime loading. The stable \`SQLite-vec macOS x64 runtime load\` and \`SQLite-vec macOS arm64 runtime load\` jobs in \`.github/workflows/sqlite-vec-platform-smoke.yml\` supply that external evidence when a PR workflow run succeeds. Record the real run URL after it exists; this report does not fabricate one.\n\n## Activation status\n\nActivation, immediate post-activation indexing, live project/global/Source recall, timer verification, and rollback remain pending until this branch is merged and deployed. macOS x64 and arm64 runtime-load gates remain pending external evidence in this local report.\n`;
 }
 
 async function runCertification(
@@ -917,14 +1029,38 @@ async function runCertification(
     argumentsValue.scratchRoot &&
     argumentsValue.representativeSessionPath &&
     argumentsValue.blockDevice
-      ? certifyDisposableUnifiedSqliteClone({
-          candidateDirectory,
-          candidateDatabasePath,
-          scratchRoot: argumentsValue.scratchRoot,
-          dataRoot: argumentsValue.dataRoot,
-          representativeSessionPath: argumentsValue.representativeSessionPath,
-          blockDevice: argumentsValue.blockDevice,
-        })
+      ? await (async () => {
+          const [tokenizer, ignoredPhysicalSessionPathList] = await Promise.all([
+            loadOctenConversationTokenizer({ cacheDirectory: config.tokenizerCacheDirectory }),
+            listIgnoredPhysicalSessionPaths(config.physicalSessionIgnoreStatePath),
+          ]);
+          const resolveSessionProjectIdentity = createLineageResolver(
+            config.projectLineages,
+            resolveProjectIdentity,
+          );
+          return certifyDisposableUnifiedSqliteClone({
+            candidateDirectory,
+            candidateDatabasePath,
+            scratchRoot: argumentsValue.scratchRoot!,
+            dataRoot: argumentsValue.dataRoot,
+            representativeSessionPath: argumentsValue.representativeSessionPath!,
+            blockDevice: argumentsValue.blockDevice!,
+            runChangedSessionIndex: (database, onProgress) =>
+              indexChangedConversationSessions({
+                sessionsDirectory: config.sessionsDirectory,
+                database,
+                embeddingProvider,
+                tokenizer,
+                ignoredPhysicalSessionPaths: new Set(ignoredPhysicalSessionPathList),
+                chunkPolicy: {
+                  maxTokens: manifest.chunkPolicy.maxTokens,
+                  overlapTokens: manifest.chunkPolicy.overlapTokens,
+                },
+                resolveProjectIdentity: resolveSessionProjectIdentity,
+                onProgress,
+              }),
+          });
+        })()
       : null;
   const packageAvailability = await Promise.all([
     inspectPublishedSqliteVecPackage('sqlite-vec-darwin-x64'),
@@ -960,10 +1096,20 @@ async function runCertification(
     macOsPackagesAvailable: packageAvailability.every(
       (packageCheck) => packageCheck.packageAvailable === true,
     ),
+    macOsX64RuntimeLoadPassed: null,
+    macOsArm64RuntimeLoadPassed: null,
     candidateInactive,
     clonePassed: clone ? Boolean(clone.passed) : null,
   });
-  const executedGates = Object.values(gates).filter((value): value is boolean => value !== null);
+  const localCandidateGateNames = Object.keys(gates).filter(
+    (gate) => gate !== 'macOsX64RuntimeLoad' && gate !== 'macOsArm64RuntimeLoad',
+  );
+  const candidatePreActivationPassed =
+    clone !== null && localCandidateGateNames.every((gate) => gates[gate] === true);
+  const releaseReady =
+    candidatePreActivationPassed &&
+    gates.macOsX64RuntimeLoad === true &&
+    gates.macOsArm64RuntimeLoad === true;
   return {
     reportVersion: 1,
     issue: 172,
@@ -989,6 +1135,20 @@ async function runCertification(
         identity.sqliteVecVersion === 'v0.1.9',
     },
     macOsPackageAvailability: packageAvailability,
+    macOsRuntimeLoadEvidence: {
+      x64: {
+        runner: 'macos-26-intel',
+        expectedProcessArch: 'x64',
+        status: 'pending external GitHub Actions evidence',
+      },
+      arm64: {
+        runner: 'macos-26',
+        expectedProcessArch: 'arm64',
+        status: 'pending external GitHub Actions evidence',
+      },
+      evidenceSource: '.github/workflows/sqlite-vec-platform-smoke.yml',
+      successfulRunUrl: null,
+    },
     counts,
     storage: { allocatedBytes: storageBytes, maximumBytes: MAXIMUM_CERTIFIED_STORAGE_BYTES },
     integrity,
@@ -1004,7 +1164,9 @@ async function runCertification(
     sourceSearch: { observations: sourceObservations },
     cloneCertification: clone ?? { status: 'pending; rerun with all clone flags' },
     gates,
-    passed: executedGates.every(Boolean) && clone !== null,
+    candidatePreActivationPassed,
+    releaseReady,
+    passed: candidatePreActivationPassed,
   };
 }
 

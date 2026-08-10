@@ -1,0 +1,197 @@
+{
+  "question": "Can dense-only flat Zvec plus source-backed exact retrieval eliminate routine compaction while preserving acceptable recall latency?",
+  "build": {
+    "elapsedSeconds": 100.068937567,
+    "userCpuSeconds": 88.593049,
+    "systemCpuSeconds": 10.637632,
+    "processReadBytes": 2000969728,
+    "processWriteBytes": 4676182016,
+    "deviceWrittenBytes": 3782791168,
+    "sourceDocuments": 1449781,
+    "denseDocuments": 340736,
+    "omittedDocuments": 1109045,
+    "prototypeAllocatedBytes": 2173345792,
+    "candidateStats": {
+      "docCount": 340736,
+      "indexCompleteness": {
+        "embedding": 1
+      }
+    },
+    "candidateFields": [
+      "schemaVersion",
+      "documentKind",
+      "summaryKind",
+      "evidenceKind",
+      "evidencePart",
+      "checksum",
+      "sessionId",
+      "sessionPath",
+      "parentSessionPath",
+      "cwd",
+      "projectPath",
+      "projectIdentity",
+      "projectIdentityDigest",
+      "projectIdentitySource",
+      "sessionName",
+      "entryId",
+      "parentEntryId",
+      "childEntryIds",
+      "contributingEntryIds",
+      "currentLeafId",
+      "branchPathLeafIds",
+      "isOnActiveBranch",
+      "isVisibleInActiveContext",
+      "compactedByEntryIds",
+      "compactionFirstKeptEntryId",
+      "branchSummaryFromEntryId",
+      "role",
+      "timestamp",
+      "sourceLineStart",
+      "sourceLineEnd",
+      "sourceBlockStart",
+      "sourceBlockEnd",
+      "characterStart",
+      "characterEnd",
+      "tokenStart",
+      "tokenEnd",
+      "tokenCount",
+      "overlapTokenCount",
+      "textRunId",
+      "textRunIndex",
+      "chunkIndex",
+      "chunkCount",
+      "siblingIds",
+      "previousSiblingId",
+      "nextSiblingId",
+      "content"
+    ]
+  },
+  "denseBenchmark": {
+    "productionHnswMedianMilliseconds": 5.6190820000000485,
+    "productionHnswP95Milliseconds": 6.428733999999963,
+    "candidateFlatMedianMilliseconds": 44.47457999999983,
+    "candidateFlatP95Milliseconds": 48.23256099999992,
+    "matchingTopResults": 5,
+    "queryCount": 5
+  },
+  "denseObservations": [
+    {
+      "query": "Why have recent pi-session-recall optimization attempts failed?",
+      "productionHnswMedianMilliseconds": 5.781773999999928,
+      "candidateFlatMedianMilliseconds": 47.27917200000002,
+      "topResultMatches": true,
+      "topEightOverlap": 7
+    },
+    {
+      "query": "How is automatic recall indexing scheduled?",
+      "productionHnswMedianMilliseconds": 5.178976000000034,
+      "candidateFlatMedianMilliseconds": 45.40387399999997,
+      "topResultMatches": true,
+      "topEightOverlap": 7
+    },
+    {
+      "query": "Which corrupted February session files are ignored?",
+      "productionHnswMedianMilliseconds": 5.490533000000141,
+      "candidateFlatMedianMilliseconds": 44.07472900000016,
+      "topResultMatches": true,
+      "topEightOverlap": 8
+    },
+    {
+      "query": "How large is the recall database?",
+      "productionHnswMedianMilliseconds": 5.225050999999894,
+      "candidateFlatMedianMilliseconds": 43.50278800000001,
+      "topResultMatches": true,
+      "topEightOverlap": 8
+    },
+    {
+      "query": "Why would an agent use pi-session-recall instead of searching raw JSONL?",
+      "productionHnswMedianMilliseconds": 5.743012000000135,
+      "candidateFlatMedianMilliseconds": 44.47457999999983,
+      "topResultMatches": true,
+      "topEightOverlap": 8
+    }
+  ],
+  "invocationBuild": {
+    "elapsedSeconds": 11.879440957,
+    "userCpuSeconds": 9.133212,
+    "systemCpuSeconds": 3.387718,
+    "processReadBytes": 0,
+    "processWriteBytes": 248946688,
+    "deviceWrittenBytes": 88064000,
+    "filesScanned": 3721,
+    "invocationCount": 218764,
+    "databaseAllocatedBytes": 2297040896,
+    "changedSessionSimulation": {
+      "sessionPath": "/home/will/.pi/agent/sessions/--home-will-projects-pi-session-recall--/2026-08-08T20-43-57-969Z_019fe31e-3e91-7df4-969a-8c8b1f1ec757.jsonl",
+      "invocationCount": 772,
+      "userCpuSeconds": 0.037045,
+      "systemCpuSeconds": 0.028959,
+      "processReadBytes": 0,
+      "processWriteBytes": 3854336,
+      "deviceWrittenBytes": 2170880
+    }
+  },
+  "invocationBenchmark": {
+    "medianMilliseconds": 0.0928119999999808,
+    "p95Milliseconds": 0.12219699999999989,
+    "observations": [
+      {
+        "query": "psr optimize",
+        "resultCount": 4,
+        "milliseconds": [
+          0.054811999999998307, 0.04048499999998967, 0.0378599999999949, 0.03840199999999072,
+          0.0378599999999949
+        ]
+      },
+      {
+        "query": "capture-psr-fts-baseline",
+        "resultCount": 11,
+        "milliseconds": [
+          0.11033499999999208, 0.10443300000000022, 0.09714999999999918, 0.09638900000001627,
+          0.1011970000000133
+        ]
+      },
+      {
+        "query": "gh issue view 144",
+        "resultCount": 3,
+        "milliseconds": [
+          0.1283679999999947, 0.12219699999999989, 0.11714799999998604, 0.121846000000005,
+          0.11761799999999312
+        ]
+      },
+      {
+        "query": "--optimize-daily",
+        "resultCount": 2,
+        "milliseconds": [
+          0.029976000000004888, 0.02756099999999151, 0.027601000000004206, 0.026618999999982407,
+          0.0266990000000078
+        ]
+      },
+      {
+        "query": "recall-storage-layout",
+        "resultCount": 20,
+        "milliseconds": [
+          0.10052699999999959, 0.09351400000002741, 0.09234199999997372, 0.0928119999999808,
+          0.09209999999998786
+        ]
+      }
+    ]
+  },
+  "sourceBenchmark": {
+    "elapsedSeconds": 21.726019016000002,
+    "userCpuSeconds": 14.623458,
+    "systemCpuSeconds": 4.495252,
+    "processReadBytes": 1497223168,
+    "processWriteBytes": 0,
+    "filesScanned": 3721,
+    "linesScanned": 573300,
+    "bytesScanned": 2945077630
+  },
+  "sourceQueryMatchCounts": {
+    "FtsRocksdbReducer": 20,
+    "psr optimize": 20,
+    "CT1000P3PSSD8": 20,
+    "2026-02-02T18-31-25": 20,
+    "--optimize-daily": 20
+  }
+}

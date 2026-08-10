@@ -18,6 +18,7 @@ void test('recall config defaults to one Octen profile and the frozen search pol
     assert.equal(config.embeddingStoredDimensions, 1_024);
     assert.deepEqual(config.chunkPolicy, { maxTokens: 512, overlapTokens: 64 });
     assert.deepEqual(config.searchCandidateLimits, { dense: 8, invocation: 8 });
+    assert.equal(config.sqliteDatabasePath, join(home, '.pi', 'agent', 'recall', 'recall.sqlite'));
     assert.equal(config.databasePath, join(home, '.pi', 'agent', 'recall', 'zvec'));
     assert.equal(config.catalogPath, join(home, '.pi', 'agent', 'recall', 'recall-catalog.sqlite'));
     assert.equal(config.statePath, join(home, '.pi', 'agent', 'recall', 'index-state.json'));

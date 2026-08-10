@@ -13,7 +13,6 @@ import {
   type CompactRecallSearchResult,
 } from './combine-compact-recall-results.js';
 import {
-  DENSE_RECALL_CONVERSATION_STORE_IDENTITY,
   openDenseRecallConversationStore,
   type DenseRecallConversationStore,
 } from './dense-recall-conversation-store.js';
@@ -76,8 +75,13 @@ import {
 /** Paths, one Octen profile, and bounded compact-layout retrieval settings. */
 export interface RecallConversationConfig {
   sessionsDirectory: string;
+  /** Unified version 8 SQLite Recall database path. */
+  sqliteDatabasePath: string;
+  /** @deprecated Version 6/7 Zvec database path retained for the compatibility adapter. */
   databasePath: string;
+  /** @deprecated Version 7 Recall catalog path retained until service cutover. */
   catalogPath: string;
+  /** @deprecated Version 6 index state path retained for the compatibility adapter. */
   statePath: string;
   manifestPath: string;
   indexMaintenanceStatusPath: string;
@@ -395,7 +399,6 @@ export function createRecallConversationService(
         : {}),
       chunkPolicy: config.chunkPolicy,
       projectLineages: config.projectLineages,
-      denseConversationStoreIdentity: DENSE_RECALL_CONVERSATION_STORE_IDENTITY,
     });
   }
 

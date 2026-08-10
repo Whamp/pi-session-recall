@@ -111,6 +111,7 @@ void test('recall quality runner indexes and searches only the bounded declared 
   const corpus = await loadRecallQualityCorpus(specificationPath);
   const baseConfig: RecallConversationConfig = {
     sessionsDirectory: join(directory, 'must-not-scan-production-sessions'),
+    sqliteDatabasePath: join(directory, 'unused-recall.sqlite'),
     databasePath: join(directory, 'unused-zvec'),
     catalogPath: join(directory, 'unused-catalog.sqlite'),
     statePath: join(directory, 'unused-state.json'),

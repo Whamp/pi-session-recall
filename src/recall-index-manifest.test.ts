@@ -4,14 +4,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { DENSE_RECALL_CONVERSATION_STORE_IDENTITY } from './dense-recall-conversation-store.js';
 import {
   assertRecallIndexManifestCompatible,
   createRecallIndexManifest,
+  detectRecallIndexManifestLayout,
   readRecallIndexManifest,
   writeRecallIndexManifest,
   type RecallEmbeddingModelIdentity,
 } from './recall-index-manifest.js';
+import { SQLITE_RECALL_DATABASE_MANIFEST_IDENTITY } from './sqlite-recall-database.js';
 import { normalizeRecallProjectLineages } from './resolve-project-identity.js';
 
 const OCTEN_IDENTITY: RecallEmbeddingModelIdentity = {
@@ -29,9 +30,10 @@ function createManifest(overrides: Partial<RecallEmbeddingModelIdentity> = {}) {
   });
 }
 
-void test('compact index manifest binds Octen, tokenizer, chunking, and dense-only flat storage', () => {
+void test('version 8 manifest binds Octen, chunking, and the static unified SQLite identity', () => {
   const manifest = createManifest();
 
+  assert.equal(manifest.manifestVersion, 8);
   assert.deepEqual(manifest.embedding, OCTEN_IDENTITY);
   assert.deepEqual(manifest.chunkPolicy, {
     version: 3,
@@ -40,28 +42,49 @@ void test('compact index manifest binds Octen, tokenizer, chunking, and dense-on
     boundaryAlgorithm: 'markdown-structure-v1',
   });
   assert.equal(manifest.tokenizer.model, 'Octen/Octen-Embedding-4B');
-  assert.deepEqual(manifest.denseConversationStore, DENSE_RECALL_CONVERSATION_STORE_IDENTITY);
+  assert.deepEqual(manifest.sqliteRecallDatabase, SQLITE_RECALL_DATABASE_MANIFEST_IDENTITY);
+  assert.equal('queryOnly' in manifest.sqliteRecallDatabase, false);
+  assert.equal('sqliteVersion' in manifest.sqliteRecallDatabase, false);
   assert.equal('embeddingCacheVersion' in manifest, false);
   assert.equal('canaryVector' in manifest.embedding, false);
 });
 
-void test('index manifest requires the dense-only flat conversation schema', () => {
-  const actual = createRecallIndexManifest({
-    embeddingIdentity: OCTEN_IDENTITY,
-    denseConversationStoreIdentity: DENSE_RECALL_CONVERSATION_STORE_IDENTITY,
-  });
-  assert.deepEqual(actual.denseConversationStore, DENSE_RECALL_CONVERSATION_STORE_IDENTITY);
-
-  const expected = createRecallIndexManifest({
-    embeddingIdentity: OCTEN_IDENTITY,
-    denseConversationStoreIdentity: {
-      ...DENSE_RECALL_CONVERSATION_STORE_IDENTITY,
-      schemaVersion: DENSE_RECALL_CONVERSATION_STORE_IDENTITY.schemaVersion + 1,
+void test('index manifest requires the unified SQLite Recall database schema', () => {
+  const expected = createRecallIndexManifest({ embeddingIdentity: OCTEN_IDENTITY });
+  const actualWithNewerSchema: unknown = {
+    ...expected,
+    sqliteRecallDatabase: {
+      ...expected.sqliteRecallDatabase,
+      schemaVersion: 3,
     },
-  });
+  };
+
   assert.throws(
-    () => assertRecallIndexManifestCompatible(actual, expected, '/recall/index-manifest.json'),
-    /denseConversationStore\.schemaVersion[\s\S]*psr index --rebuild/,
+    () =>
+      assertRecallIndexManifestCompatible(
+        actualWithNewerSchema,
+        expected,
+        '/recall/index-manifest.json',
+      ),
+    /sqliteRecallDatabase\.schemaVersion[\s\S]*psr index --rebuild/,
+  );
+});
+
+void test('manifest layout detector accepts production v6 and unified v8 but rejects staged v7', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-manifest-layout-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const path = join(root, 'index-manifest.json');
+
+  await writeFile(path, '{"manifestVersion":6}\n', 'utf8');
+  assert.equal(await detectRecallIndexManifestLayout(path), 'legacy-v6');
+
+  await writeRecallIndexManifest(path, createManifest());
+  assert.equal(await detectRecallIndexManifestLayout(path), 'unified-sqlite-v8');
+
+  await writeFile(path, '{"manifestVersion":7}\n', 'utf8');
+  await assert.rejects(
+    detectRecallIndexManifestLayout(path),
+    /version 7[\s\S]*incompatible[\s\S]*psr index --rebuild/u,
   );
 });
 
@@ -71,7 +94,6 @@ void test('index manifest round-trips atomically', async () => {
   try {
     const expected = createRecallIndexManifest({
       embeddingIdentity: OCTEN_IDENTITY,
-      denseConversationStoreIdentity: DENSE_RECALL_CONVERSATION_STORE_IDENTITY,
     });
     await writeRecallIndexManifest(path, expected);
 

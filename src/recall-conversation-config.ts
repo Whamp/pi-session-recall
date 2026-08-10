@@ -107,6 +107,7 @@ export async function loadRecallConversationConfig(
       environment.PI_RECALL_SESSIONS_DIRECTORY ??
       file.sessionsDirectory ??
       join(homeDirectory, '.pi', 'agent', 'sessions'),
+    sqliteDatabasePath: join(dataDirectory, 'recall.sqlite'),
     databasePath: join(dataDirectory, 'zvec'),
     catalogPath: join(dataDirectory, 'recall-catalog.sqlite'),
     statePath: join(dataDirectory, 'index-state.json'),

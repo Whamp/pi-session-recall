@@ -13,6 +13,7 @@ import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
 import { isUnknownRecord } from './is-unknown-record.js';
+import { detectRecallIndexManifestLayout } from './recall-index-manifest.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
 
 const ACTIVE_DATABASE_LINK_NAME = 'active';
@@ -22,8 +23,13 @@ const PREVIOUS_DATABASE_FILE_NAME = '.previous-database.json';
 
 /** Generation-owned paths that move together when a recall database is activated. */
 export interface RecallDatabasePaths {
+  /** Unified version 8 SQLite Recall database path. */
+  sqliteDatabasePath: string;
+  /** @deprecated Version 6/7 Zvec database path retained for compatibility detection. */
   databasePath: string;
+  /** @deprecated Version 7 Recall catalog path retained for compatibility detection. */
   catalogPath: string;
+  /** @deprecated Version 6 index state path retained for compatibility detection. */
   statePath: string;
   manifestPath: string;
   indexMaintenanceStatusPath: string;
@@ -62,6 +68,7 @@ function getRecallDatabaseDataDirectory(config: RecallDatabaseGenerationConfig):
 
 function getLegacyRecallDatabasePaths(config: RecallDatabaseGenerationConfig): RecallDatabasePaths {
   return {
+    sqliteDatabasePath: config.sqliteDatabasePath,
     databasePath: config.databasePath,
     catalogPath: config.catalogPath,
     statePath: config.statePath,
@@ -75,6 +82,7 @@ function createRecallDatabasePaths(
   directoryPath: string,
 ): RecallDatabasePaths {
   return {
+    sqliteDatabasePath: join(directoryPath, basename(config.sqliteDatabasePath)),
     databasePath: join(directoryPath, basename(config.databasePath)),
     catalogPath: join(directoryPath, basename(config.catalogPath)),
     statePath: join(directoryPath, basename(config.statePath)),
@@ -116,12 +124,17 @@ function resolveDatabaseTargetDirectory(
   return targetDirectory;
 }
 
-function hasLegacyRecallDatabase(config: RecallDatabaseGenerationConfig): boolean {
-  return (
-    existsSync(config.databasePath) &&
-    (existsSync(config.catalogPath) || existsSync(config.statePath)) &&
-    existsSync(config.manifestPath)
-  );
+async function hasLegacyVersion6RecallDatabase(
+  config: RecallDatabaseGenerationConfig,
+): Promise<boolean> {
+  if (
+    !existsSync(config.databasePath) ||
+    !existsSync(config.statePath) ||
+    !existsSync(config.manifestPath)
+  ) {
+    return false;
+  }
+  return (await detectRecallIndexManifestLayout(config.manifestPath)) === 'legacy-v6';
 }
 
 async function replaceActiveDatabaseTarget(
@@ -153,30 +166,64 @@ function readPreviousDatabaseTarget(value: string, path: string): string {
   return parsed.target;
 }
 
-async function assertDatabaseTargetExists(
+function assertRequiredRecallDatabaseFiles(
+  requiredPaths: readonly string[],
+  directoryPath: string,
+  databaseKind: 'candidate' | 'staged' | 'Previous',
+): void {
+  const missingFileNames = requiredPaths
+    .filter((requiredPath) => !existsSync(requiredPath))
+    .map((requiredPath) => basename(requiredPath));
+  if (missingFileNames.length > 0) {
+    const databaseLabel =
+      databaseKind === 'Previous' ? 'Previous recall database' : `Recall ${databaseKind} database`;
+    throw new Error(
+      `${databaseLabel} incomplete at ${directoryPath}: missing ${missingFileNames.join(', ')}; rebuild with psr index --rebuild.`,
+    );
+  }
+}
+
+async function assertCompleteVersion8RecallDatabase(
+  paths: RecallDatabasePaths,
+  directoryPath: string,
+  databaseKind: 'candidate' | 'staged',
+): Promise<void> {
+  assertRequiredRecallDatabaseFiles(
+    [paths.sqliteDatabasePath, paths.manifestPath, paths.indexMaintenanceStatusPath],
+    directoryPath,
+    databaseKind,
+  );
+  const layout = await detectRecallIndexManifestLayout(paths.manifestPath);
+  if (layout !== 'unified-sqlite-v8') {
+    throw new Error(
+      `Recall ${databaseKind} database layout ${layout} at ${directoryPath} is incompatible; rebuild with psr index --rebuild.`,
+    );
+  }
+}
+
+async function assertPreviousDatabaseTargetComplete(
   config: RecallDatabaseGenerationConfig,
   target: string,
 ): Promise<void> {
   const targetDirectory = resolveDatabaseTargetDirectory(config, target);
   const paths = createRecallDatabasePaths(config, targetDirectory);
-  if (!existsSync(paths.databasePath) || !existsSync(paths.manifestPath)) {
-    throw new Error('Previous recall database is missing and cannot be restored');
+  if (!existsSync(paths.manifestPath)) {
+    assertRequiredRecallDatabaseFiles([paths.manifestPath], targetDirectory, 'Previous');
   }
-}
-
-function assertCompleteRecallDatabase(
-  paths: RecallDatabasePaths,
-  directoryPath: string,
-  databaseKind: 'candidate' | 'staged',
-): void {
-  if (
-    !existsSync(paths.databasePath) ||
-    !existsSync(paths.catalogPath) ||
-    !existsSync(paths.manifestPath) ||
-    !existsSync(paths.indexMaintenanceStatusPath)
-  ) {
-    throw new Error(`Recall ${databaseKind} database incomplete at ${directoryPath}`);
+  const layout = await detectRecallIndexManifestLayout(paths.manifestPath);
+  if (layout === 'legacy-v6') {
+    assertRequiredRecallDatabaseFiles(
+      [paths.databasePath, paths.statePath, paths.manifestPath],
+      targetDirectory,
+      'Previous',
+    );
+    return;
   }
+  assertRequiredRecallDatabaseFiles(
+    [paths.sqliteDatabasePath, paths.manifestPath, paths.indexMaintenanceStatusPath],
+    targetDirectory,
+    'Previous',
+  );
 }
 
 function resolveStagedRecallDatabase(
@@ -274,7 +321,7 @@ export async function stageRecallDatabaseCandidate(
   config: RecallDatabaseGenerationConfig,
   candidate: RecallDatabaseCandidate,
 ): Promise<StagedRecallDatabase> {
-  assertCompleteRecallDatabase(candidate.paths, candidate.directoryPath, 'candidate');
+  await assertCompleteVersion8RecallDatabase(candidate.paths, candidate.directoryPath, 'candidate');
   const directoryPath = join(
     config.databaseGenerationRootPath ?? '',
     `${DATABASE_GENERATION_PREFIX}${basename(candidate.directoryPath).slice(CANDIDATE_DATABASE_PREFIX.length)}`,
@@ -294,12 +341,13 @@ export async function activateStagedRecallDatabase(
   databaseTarget: string,
 ): Promise<RecallDatabaseActivation> {
   const staged = resolveStagedRecallDatabase(config, databaseTarget);
-  assertCompleteRecallDatabase(staged.paths, staged.directoryPath, 'staged');
+  await assertCompleteVersion8RecallDatabase(staged.paths, staged.directoryPath, 'staged');
   const activeTarget = await readActiveDatabaseTarget(config);
   if (activeTarget === staged.databaseTarget) {
     throw new Error(`Recall staged database is already active: ${staged.databaseTarget}`);
   }
-  const previousTarget = activeTarget ?? (hasLegacyRecallDatabase(config) ? '.' : null);
+  const previousTarget =
+    activeTarget ?? ((await hasLegacyVersion6RecallDatabase(config)) ? '.' : null);
   if (previousTarget !== null) {
     await writeFile(
       join(staged.directoryPath, PREVIOUS_DATABASE_FILE_NAME),
@@ -345,6 +393,6 @@ export async function restorePreviousRecallDatabase(
     }
     throw error;
   }
-  await assertDatabaseTargetExists(config, previousTarget);
+  await assertPreviousDatabaseTargetComplete(config, previousTarget);
   await replaceActiveDatabaseTarget(config, previousTarget);
 }

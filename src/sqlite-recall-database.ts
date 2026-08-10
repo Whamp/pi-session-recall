@@ -27,8 +27,33 @@ export const SQLITE_RECALL_EMBEDDING_DIMENSIONS = 1_024;
 const SQLITE_RECALL_VECTOR_ENCODING = 'float32';
 const SQLITE_RECALL_DISTANCE_METRIC = 'cosine';
 const SQLITE_RECALL_PROJECT_BUCKET_COUNT = 16;
-const SQLITE_RECALL_VEC_VERSION = 'v0.1.9';
+const SQLITE_RECALL_VEC_PACKAGE_VERSION = '0.1.9';
+const SQLITE_RECALL_VEC_RUNTIME_VERSION = `v${SQLITE_RECALL_VEC_PACKAGE_VERSION}`;
 const SQLITE_RECALL_BUSY_TIMEOUT_MILLISECONDS = 5_000;
+
+/** Static schema identity stored in a version 8 index manifest, excluding connection runtime state. */
+export const SQLITE_RECALL_DATABASE_MANIFEST_IDENTITY = Object.freeze({
+  schemaVersion: SQLITE_RECALL_SCHEMA_VERSION,
+  storageLayout: SQLITE_RECALL_STORAGE_LAYOUT,
+  sqliteVecVersion: SQLITE_RECALL_VEC_PACKAGE_VERSION,
+  embedding: Object.freeze({
+    dimensions: SQLITE_RECALL_EMBEDDING_DIMENSIONS,
+    encoding: 'fp32' as const,
+    distanceMetric: SQLITE_RECALL_DISTANCE_METRIC,
+  }),
+  routing: Object.freeze({
+    global: 'unpartitioned' as const,
+    project: Object.freeze({
+      bucketCount: SQLITE_RECALL_PROJECT_BUCKET_COUNT,
+      bucketFunction: 'project-key-modulo-16' as const,
+      exactProjectKey: true as const,
+    }),
+  }),
+  fullTextSearch: Object.freeze({ engine: 'fts5' as const, tokenizer: 'unicode61' as const }),
+});
+
+/** Compatibility-bearing SQLite Recall database identity written to the index manifest. */
+export type SqliteRecallDatabaseManifestIdentity = typeof SQLITE_RECALL_DATABASE_MANIFEST_IDENTITY;
 
 type SqliteRow = Record<string, SQLOutputValue>;
 
@@ -319,9 +344,9 @@ function loadPinnedSqliteVec(database: DatabaseSync): void {
     database.prepare('SELECT vec_version() AS sqlite_vec_version').get(),
     'sqlite_vec_version',
   );
-  if (runtimeVersion !== SQLITE_RECALL_VEC_VERSION) {
+  if (runtimeVersion !== SQLITE_RECALL_VEC_RUNTIME_VERSION) {
     throw new Error(
-      `SQLite Recall database sqlite-vec runtime incompatible: found ${runtimeVersion}, expected ${SQLITE_RECALL_VEC_VERSION}`,
+      `SQLite Recall database sqlite-vec runtime incompatible: found ${runtimeVersion}, expected ${SQLITE_RECALL_VEC_RUNTIME_VERSION}`,
     );
   }
 }
@@ -591,8 +616,8 @@ function readSqliteRecallIdentity(
     identity.vectorEncoding === SQLITE_RECALL_VECTOR_ENCODING &&
     identity.distanceMetric === SQLITE_RECALL_DISTANCE_METRIC &&
     identity.projectBucketCount === SQLITE_RECALL_PROJECT_BUCKET_COUNT &&
-    readRequiredString(stored, 'sqlite_vec_version') === SQLITE_RECALL_VEC_VERSION &&
-    identity.sqliteVecVersion === SQLITE_RECALL_VEC_VERSION;
+    readRequiredString(stored, 'sqlite_vec_version') === SQLITE_RECALL_VEC_RUNTIME_VERSION &&
+    identity.sqliteVecVersion === SQLITE_RECALL_VEC_RUNTIME_VERSION;
   if (!compatible) {
     throw new Error(
       `SQLite Recall database identity incompatible at ${databasePath}; rebuild with psr index --rebuild`,

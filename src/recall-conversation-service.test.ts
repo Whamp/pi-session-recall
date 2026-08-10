@@ -56,6 +56,7 @@ function createTestConfig(
   const data = join(root, 'recall');
   return {
     sessionsDirectory: join(root, 'sessions'),
+    sqliteDatabasePath: join(data, 'recall.sqlite'),
     databasePath: join(data, 'zvec'),
     catalogPath: join(data, 'recall-catalog.sqlite'),
     statePath: join(data, 'index-state.json'),

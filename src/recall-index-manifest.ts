@@ -7,9 +7,9 @@ import { Value } from 'typebox/value';
 
 import { assertRecallChunkPolicy, type RecallChunkPolicy } from './recall-chunk-policy.js';
 import {
-  DENSE_RECALL_CONVERSATION_STORE_IDENTITY,
-  type DenseRecallConversationStoreIdentity,
-} from './dense-recall-conversation-store.js';
+  SQLITE_RECALL_DATABASE_MANIFEST_IDENTITY,
+  type SqliteRecallDatabaseManifestIdentity,
+} from './sqlite-recall-database.js';
 import { isUnknownRecord } from './is-unknown-record.js';
 import { SESSION_IMPORT_POLICY_VERSION } from './import-session-jsonl.js';
 import {
@@ -26,8 +26,11 @@ import {
   type RecallProjectLineages,
 } from './resolve-project-identity.js';
 import { SESSION_CONVERSATION_SCHEMA_VERSION } from './session-conversation-index.js';
-/** Version of the dense-conversation plus compact-Invocation manifest. */
-export const RECALL_INDEX_MANIFEST_VERSION = 7;
+/** Version of the unified SQLite Recall database manifest. */
+export const RECALL_INDEX_MANIFEST_VERSION = 8;
+
+/** Storage layouts that can be identified without adopting an incompatible manifest. */
+export type RecallIndexManifestLayout = 'legacy-v6' | 'unified-sqlite-v8';
 
 /** Frozen chunk geometry selected by the accepted recall-quality evaluation. */
 export const DEFAULT_RECALL_CHUNK_POLICY: Readonly<RecallChunkPolicy> = Object.freeze({
@@ -53,9 +56,9 @@ export interface RecallTokenizerManifestIdentity {
   assets: Array<{ fileName: string; sha256: string }>;
 }
 
-/** Complete compatibility identity for one explicitly maintained compact recall database. */
+/** Complete compatibility identity for one explicitly maintained Recall database. */
 export interface RecallIndexManifest {
-  manifestVersion: 7;
+  manifestVersion: 8;
   importPolicy: { version: number };
   embedding: RecallEmbeddingModelIdentity;
   tokenizer: RecallTokenizerManifestIdentity;
@@ -73,7 +76,7 @@ export interface RecallIndexManifest {
     lineagePolicyVersion: number;
     lineageDigest: string;
   };
-  denseConversationStore: DenseRecallConversationStoreIdentity;
+  sqliteRecallDatabase: SqliteRecallDatabaseManifestIdentity;
 }
 
 const manifestAssetSchema = Type.Object(
@@ -86,7 +89,7 @@ const manifestAssetSchema = Type.Object(
 
 const recallIndexManifestSchema = Type.Object(
   {
-    manifestVersion: Type.Literal(7),
+    manifestVersion: Type.Literal(8),
     importPolicy: Type.Object(
       { version: Type.Literal(SESSION_IMPORT_POLICY_VERSION) },
       { additionalProperties: false },
@@ -143,15 +146,40 @@ const recallIndexManifestSchema = Type.Object(
       },
       { additionalProperties: false },
     ),
-    denseConversationStore: Type.Object(
+    sqliteRecallDatabase: Type.Object(
       {
-        schemaVersion: Type.Integer({ minimum: 1 }),
-        layout: Type.Literal('dense-only'),
-        embeddingDimensions: Type.Literal(1_024),
-        vectorQuantization: Type.Literal('fp32'),
-        metric: Type.Literal('inner-product'),
-        vectorIndex: Type.Literal('flat'),
-        fullTextIndexes: Type.Literal(false),
+        schemaVersion: Type.Literal(2),
+        storageLayout: Type.Literal('unified-sqlite-vec'),
+        sqliteVecVersion: Type.Literal('0.1.9'),
+        embedding: Type.Object(
+          {
+            dimensions: Type.Literal(1_024),
+            encoding: Type.Literal('fp32'),
+            distanceMetric: Type.Literal('cosine'),
+          },
+          { additionalProperties: false },
+        ),
+        routing: Type.Object(
+          {
+            global: Type.Literal('unpartitioned'),
+            project: Type.Object(
+              {
+                bucketCount: Type.Literal(16),
+                bucketFunction: Type.Literal('project-key-modulo-16'),
+                exactProjectKey: Type.Literal(true),
+              },
+              { additionalProperties: false },
+            ),
+          },
+          { additionalProperties: false },
+        ),
+        fullTextSearch: Type.Object(
+          {
+            engine: Type.Literal('fts5'),
+            tokenizer: Type.Literal('unicode61'),
+          },
+          { additionalProperties: false },
+        ),
       },
       { additionalProperties: false },
     ),
@@ -183,7 +211,6 @@ export function createRecallIndexManifest(options: {
   tokenizerIdentity?: RecallTokenizerManifestIdentity;
   chunkPolicy?: RecallChunkPolicy;
   projectLineages?: RecallProjectLineages;
-  denseConversationStoreIdentity?: DenseRecallConversationStoreIdentity;
 }): RecallIndexManifest {
   if (options.embeddingIdentity.storedDimensions > options.embeddingIdentity.nativeDimensions) {
     throw new Error(
@@ -215,9 +242,7 @@ export function createRecallIndexManifest(options: {
         options.projectLineages ?? normalizeRecallProjectLineages({}),
       ),
     },
-    denseConversationStore: {
-      ...(options.denseConversationStoreIdentity ?? DENSE_RECALL_CONVERSATION_STORE_IDENTITY),
-    },
+    sqliteRecallDatabase: structuredClone(SQLITE_RECALL_DATABASE_MANIFEST_IDENTITY),
   };
 }
 
@@ -269,7 +294,7 @@ function collectManifestMismatches(
 
 /** Rejects any stored identity that requires an explicit `psr index --rebuild`. */
 export function assertRecallIndexManifestCompatible(
-  actual: RecallIndexManifest | null,
+  actual: unknown,
   expected: RecallIndexManifest,
   manifestPath: string,
 ): asserts actual is RecallIndexManifest {
@@ -287,7 +312,38 @@ export function assertRecallIndexManifestCompatible(
   }
 }
 
-/** Reads and strictly validates the simple index manifest. */
+/** Detects supported production v6 and unified v8 layouts without adopting staged version 7. */
+export async function detectRecallIndexManifestLayout(
+  manifestPath: string,
+): Promise<RecallIndexManifestLayout> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(await readFile(manifestPath, 'utf8'));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `Recall index manifest invalid at ${manifestPath}: ${message}. Rebuild with psr index --rebuild.`,
+      { cause: error },
+    );
+  }
+  if (!isUnknownRecord(parsed) || typeof parsed.manifestVersion !== 'number') {
+    throw new Error(
+      `Recall index manifest invalid at ${manifestPath}: manifestVersion is missing. Rebuild with psr index --rebuild.`,
+    );
+  }
+  if (parsed.manifestVersion === 6) {
+    return 'legacy-v6';
+  }
+  if (parsed.manifestVersion === RECALL_INDEX_MANIFEST_VERSION) {
+    await readRecallIndexManifest(manifestPath);
+    return 'unified-sqlite-v8';
+  }
+  throw new Error(
+    `Recall index manifest version ${parsed.manifestVersion} at ${manifestPath} is incompatible; rebuild with psr index --rebuild.`,
+  );
+}
+
+/** Reads and strictly validates the version 8 index manifest. */
 export async function readRecallIndexManifest(
   manifestPath: string,
 ): Promise<RecallIndexManifest | null> {

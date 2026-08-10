@@ -38,6 +38,7 @@ function createPsrCliFixture(
   const schedulerProcessCalls: Array<{ executable: string; argumentsList: readonly string[] }> = [];
   const config: RecallConversationConfig = {
     sessionsDirectory: '/sessions',
+    sqliteDatabasePath: '/recall/recall.sqlite',
     databasePath: '/recall/zvec',
     catalogPath: '/recall/recall-catalog.sqlite',
     statePath: '/recall/index-state.json',

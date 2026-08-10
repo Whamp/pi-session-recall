@@ -4,7 +4,7 @@
 
 ## Question
 
-Can a dense-only flat Zvec collection plus source-backed exact retrieval eliminate routine compaction while preserving acceptable recall latency, and should compact Invocation search use SQLite FTS5 or a second vectorless Zvec FTS collection?
+Can compact recall eliminate routine compaction while preserving acceptable latency, which store should own Invocation search, and can one SQLite database with FTS5 plus sqlite-vec supersede the draft flat-Zvec-plus-SQLite architecture?
 
 ## Candidate
 
@@ -17,15 +17,19 @@ The prototype:
 - compares flat dense results with the production HNSW results;
 - scans canonical session JSONL for exact tool/result evidence;
 - builds a compact SQLite FTS index containing tool names, bounded locator arguments, and direct bash commands, but no tool results or bash output;
-- compares that SQLite index with a second Zvec collection containing the same Invocation records, one FTS field, and no vector fields.
+- compares that SQLite index with a second Zvec collection containing the same Invocation records, one FTS field, and no vector fields;
+- builds one SQLite 3.53 database with session state, Invocation FTS5, all dense metadata, and released sqlite-vec 0.1.9 FP32 vectors;
+- tests unpartitioned, per-project-partitioned, and 16-project-bucket vector layouts;
+- exercises explicit rollback, concurrent-reader visibility, SIGKILL recovery, representative updates, and 100 replacement cycles.
 
 It never writes to the production collection. Scratch data lives at:
 
 ```text
 ~/.pi/agent/recall-debug/prototype-dense-only
+~/.pi/agent/recall-debug/prototype-sqlite-vec
 ```
 
-The builder stops if scratch allocation exceeds 6 GiB or free space falls below 240 GiB.
+Each builder stops if scratch allocation exceeds 6 GiB or free space falls below 240 GiB.
 
 ## Run
 
@@ -42,12 +46,24 @@ npm run prototype:recall-storage-layout -- build-invocations
 npm run prototype:recall-storage-layout -- benchmark-invocations
 npm run prototype:recall-storage-layout -- compare-invocation-stores --reset
 npm run prototype:recall-storage-layout -- benchmark-source
+
+npm run prototype:sqlite-vec -- build --reset
+npm run prototype:sqlite-vec -- benchmark-before-churn
+npm run prototype:sqlite-vec -- atomicity
+npm run prototype:sqlite-vec -- update
+npm run prototype:sqlite-vec -- churn --cycles=100
+npm run prototype:sqlite-vec -- benchmark-after-churn
+npm run prototype:sqlite-vec -- build-partitioned
+npm run prototype:sqlite-vec -- benchmark-partitioned
+npm run prototype:sqlite-vec -- build-bucketed
+npm run prototype:sqlite-vec -- benchmark-bucketed
 ```
 
 Results are written to:
 
 ```text
 ~/.pi/agent/recall-debug/prototype-dense-only/prototype-report.json
+~/.pi/agent/recall-debug/prototype-sqlite-vec/sqlite-vec-report.json
 ```
 
 ## Decision gate
@@ -90,6 +106,30 @@ A follow-up comparison fed the same 219,734 Invocation records to SQLite FTS5 an
 | Search p95                         |     3.18 ms |                  4.90 ms |                  1.57 ms |
 | One Zvec optimization              |           — |                        — | 1.55 s; 104.9 MiB writes |
 
-Both stores pass the functional, write, and latency gates. Zvec is a viable single-engine Invocation store and does not require fake vectors. SQLite remains smaller, builds about ten times faster, and writes less. The original prototype did not prove SQLite was necessary, so PR #174 is paused while the storage decision is reconsidered together with the separate per-session state requirement.
+Both stores pass the functional, write, and latency gates. Zvec is a viable Invocation-only store and does not require fake vectors. SQLite remains smaller and also owns transactional per-session state. That comparison reopened the storage decision but did not settle the dense store.
 
-The stable parts of the design remain supported: flat dense Zvec for semantic conversation search; canonical JSONL for complete tool results and bash output; no HNSW, zero-vector tool rows, or routine optimization. Sanitized measurements are in [`results.json`](results.json).
+### Unified SQLite plus sqlite-vec
+
+The final prototype copied the certified v7 generation into one SQLite database containing 3,719 session states, 218,139 Invocations with FTS5, 341,036 dense documents with all 46 metadata fields, and 1,024-dimensional FP32 sqlite-vec vectors.
+
+| Measurement                                       |    Unified SQLite result |   Draft flat Zvec + SQLite |
+| ------------------------------------------------- | -----------------------: | -------------------------: |
+| Projected storage, recommended routing            |                 3.87 GiB |                   2.28 GiB |
+| Warm global dense p95                             |                   388 ms |                      69 ms |
+| Warm project dense p95                            |                    34 ms |                      21 ms |
+| Best-effort cold global                           |                   1.63 s |                     1.37 s |
+| Best-effort cold project                          |                   1.75 s |                     1.16 s |
+| Matching top results                              |       5/5 in both scopes |                          — |
+| Top-eight overlap                                 |  global 7–8; project 5–8 |                          — |
+| Invocation FTS p95 after churn                    |                  2.31 ms |                          — |
+| Representative dual-vector update                 |  333 ms; 2.61 MiB writes |    5.73 MiB measured in PR |
+| 100 replacement cycles                            | 3.06 MiB/cycle; 0 growth |                          — |
+| Reader visibility, rollback, and SIGKILL recovery |                    exact | cross-store retry protocol |
+
+One unpartitioned vec0 table gave the best global search but project p95 of about 160 ms. Exact per-project partitioning reduced project p95 to 28 ms but raised global p95 to 650 ms. The recommended production shape keeps two vector copies in the same SQLite transaction: global search uses the unpartitioned table, while default project search uses a 16-bucket table plus exact project metadata. This projects to 3.87 GiB, below the 5 GiB gate.
+
+The unified candidate passed explicit rollback and SIGKILL tests on the full database. A concurrent reader saw the complete old session while the writer had deleted its state, FTS rows, dense metadata, and both vector copies. Recovery restored the exact prior hash, `integrity_check` remained `ok`, and foreign-key checks found no violations. One hundred committed replacement cycles caused no file growth or free-page backlog.
+
+**Verdict:** unified SQLite plus sqlite-vec should supersede the draft flat-Zvec-plus-SQLite storage architecture. Default project latency remains near flat Zvec, explicit global latency stays near the original 500 ms warm gate, incremental writes remain small, and one transaction removes the cross-store recovery problem. Production work must pin pre-1.0 sqlite-vec 0.1.9, route by scope as measured, retain staged activation and canonical JSONL, and verify the published macOS x64 and arm64 packages before release.
+
+The stable design is now one derived SQLite database, canonical JSONL for complete payloads, no HNSW, no zero-vector tool rows, and no routine whole-database optimization. Sanitized measurements are in [`results.json`](results.json).

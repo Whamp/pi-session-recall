@@ -118,12 +118,35 @@ The search-result differences were ranking and tokenization differences rather t
 
 A zero-write scan of 2.95 GB of canonical JSONL found exact result evidence for all five probes in 21.7 seconds. That path is suitable for rare full-result recovery, not routine invocation search.
 
-The stable evidence supports:
+### Unified SQLite plus sqlite-vec follow-up
 
-- flat dense Zvec for conversation, summaries, and turn context;
-- canonical JSONL for complete tool results, bash output, and omitted argument payloads;
-- no HNSW, zero-vector tool rows, or routine optimization.
+The final follow-up tested whether SQLite could own the whole derived recall projection rather than only Invocation search and state. It copied the certified v7 candidate into SQLite 3.53 with sqlite-vec 0.1.9:
 
-The Invocation store decision is reopened. Vectorless Zvec passes the measured storage, update-write, and search-latency gates and avoids a second database engine. SQLite remains materially smaller, builds about ten times faster, writes less, and also provides transactional per-session index state. The benchmark does not by itself decide whether eliminating SQLite is worth replacing that state transaction with another mechanism.
+- 3,719 physical-session states;
+- 218,139 compact Invocations with FTS5;
+- 341,036 dense documents with all 46 metadata fields;
+- 1,024-dimensional FP32 cosine vectors.
+
+The first unpartitioned candidate occupied 2.52 GiB. Warm global dense p95 was 389 ms versus 76 ms for flat Zvec; project p95 was 178 ms versus 22 ms. It preserved the top result for every query, with global top-eight overlap of seven or eight and project overlap of five to eight. Invocation FTS p95 remained below 3 ms. Best-effort cold queries took about 1.36 seconds globally and 1.20 seconds for the metadata-filtered project path.
+
+Project partitioning changed the tradeoff. Exact per-project partitions reduced project p95 to 28 ms but raised global p95 to 650 ms. Sixteen coarse project buckets produced project p95 around 34 ms and global p95 around 596 ms. The recommended shape therefore stores two vector copies in the same SQLite database and transaction: use an unpartitioned table for explicit global search and a 16-bucket table plus exact project metadata for the default project scope.
+
+| Final comparison                    | Unified SQLite |  Draft flat Zvec + SQLite |
+| ----------------------------------- | -------------: | ------------------------: |
+| Projected allocation                |       3.87 GiB |                  2.28 GiB |
+| Warm global dense p95               |         388 ms |                     69 ms |
+| Warm project dense p95              |          34 ms |                     21 ms |
+| Best-effort cold global             |         1.63 s |                    1.37 s |
+| Best-effort cold project            |         1.75 s |                    1.16 s |
+| Representative update device writes |       2.61 MiB |                  5.73 MiB |
+| 100 replacement cycles              | 3.06 MiB/cycle |                         — |
+| Growth after 100 cycles             |        0 bytes |                         — |
+| Cross-store commit gap              |           none | idempotent retry required |
+
+The full candidate passed the key transaction test. One transaction deleted session state, Invocation rows and FTS entries, dense metadata, and both vector copies. A concurrent reader still saw the prior complete session; explicit rollback and a SIGKILL both restored the exact prior hash. SQLite reported `integrity_check=ok` and no foreign-key violations. A hundred committed replacements produced no file or free-page growth and no post-churn latency regression.
+
+The unified candidate should supersede the draft flat-Zvec-plus-SQLite layout. Its common project-scoped path is only about 13 ms slower at p95, while one database transaction removes the recovery protocol between stores. Explicit global search is about 319 ms slower but remains near the original 500 ms warm gate. The 1.59 GiB storage premium remains below the 5 GiB prototype limit and far below the legacy database.
+
+Production conditions are to pin pre-1.0 sqlite-vec 0.1.9, keep both vector tables in one transaction, route searches by scope, preserve staged activation and canonical JSONL, and verify the published macOS x64 and arm64 packages before release. The resulting stable direction is one derived SQLite database, canonical source fallback, no HNSW, no zero-vector tool rows, and no routine whole-database optimization.
 
 The sanitized prototype measurements live on branch `prototype/recall-storage-layout` under `prototypes/recall-storage-layout/results.json`.

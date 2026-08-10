@@ -500,5 +500,372 @@
         "topTwentyOverlap": 2
       }
     ]
+  },
+  "sqliteVecUnifiedCandidate": {
+    "measuredAt": "2026-08-10T19:26:36.448Z",
+    "runtime": {
+      "node": "24.16.0",
+      "sqlite": "3.53.0",
+      "sqliteVec": "0.1.9",
+      "platform": "linux-x64"
+    },
+    "corpus": {
+      "sessions": 3719,
+      "denseDocuments": 341036,
+      "invocations": 218139,
+      "projects": 129,
+      "benchmarkProjectDocuments": 15462,
+      "embeddingDimensions": 1024
+    },
+    "singleVectorTableBuild": {
+      "elapsedSeconds": 256.034315362,
+      "allocatedBytes": 2713829376,
+      "processWriteBytes": 7618875392,
+      "deviceWrittenBytes": 11398778880,
+      "peakResidentBytes": 4657393664,
+      "integrity": "ok",
+      "foreignKeyViolations": 0
+    },
+    "recommendedDualVectorRouting": {
+      "description": "one unpartitioned vec0 table for global scope plus one 16-bucket vec0 table for project scope, in the same SQLite transaction",
+      "projectedAllocatedBytes": 4156276736,
+      "draftZvecPlusSqliteAllocatedBytes": 2446528512,
+      "global": {
+        "sourceZvecMedianMilliseconds": 62.81254799999988,
+        "sourceZvecP95Milliseconds": 68.79994400000032,
+        "metadataSqliteVecMedianMilliseconds": 373.52878299999975,
+        "metadataSqliteVecP95Milliseconds": 387.7507820000001,
+        "bucketedSqliteVecMedianMilliseconds": 571.6718410000003,
+        "bucketedSqliteVecP95Milliseconds": 595.5955280000003,
+        "matchingTopResults": 5,
+        "minimumTopEightOverlap": 7
+      },
+      "project": {
+        "sourceZvecMedianMilliseconds": 17.749533000001975,
+        "sourceZvecP95Milliseconds": 20.82474199999706,
+        "metadataSqliteVecMedianMilliseconds": 159.85534500000358,
+        "metadataSqliteVecP95Milliseconds": 166.8913790000006,
+        "bucketedSqliteVecMedianMilliseconds": 30.94559300000401,
+        "bucketedSqliteVecP95Milliseconds": 33.89358699999866,
+        "matchingTopResults": 5,
+        "minimumTopEightOverlap": 5
+      },
+      "bestEffortColdCacheMilliseconds": {
+        "global": 1627.913388,
+        "project": 1748.26142
+      },
+      "flatZvecBestEffortColdCacheMillisecondsIncludingOpen": {
+        "global": 1365.166004,
+        "project": 1158.316222
+      },
+      "observations": [
+        {
+          "scope": "global",
+          "query": "Why have recent pi-session-recall optimization attempts failed?",
+          "sourceZvecMilliseconds": [
+            55.72466899999995, 66.24879800000008, 55.69437199999993, 51.21022699999958,
+            68.79994400000032, 59.17664800000057
+          ],
+          "unpartitionedSqliteVecMilliseconds": [
+            387.7507820000001, 413.71246299999984, 373.2077110000005, 373.1376710000004,
+            376.1996250000002, 373.52878299999975
+          ],
+          "bucketedSqliteVecMilliseconds": [
+            599.5537380000003, 595.5955280000003, 574.0001439999996, 571.6718410000003,
+            569.3188410000002, 575.9239750000006
+          ],
+          "topResultMatches": true,
+          "topEightOverlap": 7
+        },
+        {
+          "scope": "global",
+          "query": "How is automatic recall indexing scheduled?",
+          "sourceZvecMilliseconds": [
+            60.543085000001156, 61.67371400000047, 60.05875600000036, 59.077493000000686,
+            62.81254799999988, 56.70617999999922
+          ],
+          "unpartitionedSqliteVecMilliseconds": [
+            383.2476289999995, 377.72804200000064, 370.4746560000003, 376.6034230000005,
+            369.1557759999996, 382.0767450000003
+          ],
+          "bucketedSqliteVecMilliseconds": [
+            577.7546920000004, 572.2036759999992, 570.8001810000005, 574.2685700000002,
+            572.3463900000006, 576.7694620000002
+          ],
+          "topResultMatches": true,
+          "topEightOverlap": 7
+        },
+        {
+          "scope": "global",
+          "query": "Which corrupted February session files are ignored?",
+          "sourceZvecMilliseconds": [
+            68.61699399999998, 68.98305400000027, 64.18355399999928, 66.0623110000015,
+            66.43278899999859, 66.85351000000082
+          ],
+          "unpartitionedSqliteVecMilliseconds": [
+            381.7640539999993, 378.9274669999977, 372.946351999999, 380.2922810000018,
+            372.7832589999998, 374.9207470000001
+          ],
+          "bucketedSqliteVecMilliseconds": [
+            575.5515099999993, 577.9913990000023, 571.000419, 570.5152280000002, 564.7253889999993,
+            569.6321279999975
+          ],
+          "topResultMatches": true,
+          "topEightOverlap": 8
+        },
+        {
+          "scope": "global",
+          "query": "How large is the recall database?",
+          "sourceZvecMilliseconds": [
+            62.583402000000206, 62.57637999999861, 63.89568800000052, 65.65705900000103,
+            65.7871699999996, 63.37953999999809
+          ],
+          "unpartitionedSqliteVecMilliseconds": [
+            372.41211900000053, 367.36455699999715, 365.9674039999991, 370.0120629999983,
+            369.06132699999944, 367.1511509999982
+          ],
+          "bucketedSqliteVecMilliseconds": [
+            567.9790780000003, 566.4111059999996, 566.8596590000016, 569.276966999998,
+            580.0877579999978, 566.7007619999968
+          ],
+          "topResultMatches": true,
+          "topEightOverlap": 8
+        },
+        {
+          "scope": "global",
+          "query": "Why would an agent use pi-session-recall instead of searching raw JSONL?",
+          "sourceZvecMilliseconds": [
+            51.50497300000279, 57.79368899999827, 64.75512400000298, 62.21469800000341,
+            64.42714500000147, 62.91470600000321
+          ],
+          "unpartitionedSqliteVecMilliseconds": [
+            370.4601040000016, 372.2604760000031, 385.0359349999999, 384.1741839999959,
+            378.61060500000167, 378.1066189999983
+          ],
+          "bucketedSqliteVecMilliseconds": [
+            560.8996719999996, 579.5849630000012, 578.0969000000041, 573.5311230000007,
+            566.2107820000019, 570.7529740000027
+          ],
+          "topResultMatches": true,
+          "topEightOverlap": 8
+        },
+        {
+          "scope": "project",
+          "query": "Why have recent pi-session-recall optimization attempts failed?",
+          "sourceZvecMilliseconds": [
+            16.86522100000002, 16.023739999996906, 18.556661999995413, 14.847114000003785,
+            17.420492999997805, 15.69675300000381
+          ],
+          "unpartitionedSqliteVecMilliseconds": [
+            156.98921499999415, 158.67103700000007, 155.80141900000308, 160.10507900000084,
+            163.51875700000528, 159.15908299999865
+          ],
+          "bucketedSqliteVecMilliseconds": [
+            30.77671900000132, 30.830058999999892, 32.856541000001016, 31.090142000000924,
+            33.81397899999865, 33.23816000000079
+          ],
+          "topResultMatches": true,
+          "topEightOverlap": 5
+        },
+        {
+          "scope": "project",
+          "query": "How is automatic recall indexing scheduled?",
+          "sourceZvecMilliseconds": [
+            17.17027799999778, 18.6561870000005, 17.983408000000054, 20.521328999995603,
+            18.694367999996757, 18.89261599999736
+          ],
+          "unpartitionedSqliteVecMilliseconds": [
+            164.7099290000042, 161.23166100000526, 166.8913790000006, 161.26668500000233,
+            162.19948699999804, 165.95859600000404
+          ],
+          "bucketedSqliteVecMilliseconds": [
+            29.79580900000292, 33.87869900000078, 29.766144000001077, 34.264004000004206,
+            32.750073000002885, 30.94559300000401
+          ],
+          "topResultMatches": true,
+          "topEightOverlap": 7
+        },
+        {
+          "scope": "project",
+          "query": "Which corrupted February session files are ignored?",
+          "sourceZvecMilliseconds": [
+            18.438844000003883, 19.061078999999154, 16.811452000001736, 18.66124700000364,
+            17.836254000001645, 17.505260000005364
+          ],
+          "unpartitionedSqliteVecMilliseconds": [
+            170.7849170000045, 161.25447300000087, 161.9562150000056, 159.85534500000358,
+            162.69347500000003, 164.3267860000051
+          ],
+          "bucketedSqliteVecMilliseconds": [
+            30.929783999999927, 33.89358699999866, 32.15748399999575, 29.343567999996594,
+            31.407359999997425, 30.014985000001616
+          ],
+          "topResultMatches": true,
+          "topEightOverlap": 8
+        },
+        {
+          "scope": "project",
+          "query": "How large is the recall database?",
+          "sourceZvecMilliseconds": [
+            17.749533000001975, 20.689040999997815, 16.951773000000685, 16.166293999995105,
+            16.317213999995147, 18.545490999997128
+          ],
+          "unpartitionedSqliteVecMilliseconds": [
+            155.7461770000009, 155.65486699999747, 161.52188900000328, 156.39130399999704,
+            155.0908100000015, 156.92021599999862
+          ],
+          "bucketedSqliteVecMilliseconds": [
+            29.64089100000274, 28.918338999996195, 30.879199999995762, 30.90967599999567,
+            31.47744000000239, 30.537766000001284
+          ],
+          "topResultMatches": true,
+          "topEightOverlap": 8
+        },
+        {
+          "scope": "project",
+          "query": "Why would an agent use pi-session-recall instead of searching raw JSONL?",
+          "sourceZvecMilliseconds": [
+            21.29337300000043, 19.06471600000077, 20.82474199999706, 16.698703000001842,
+            16.762942000001203, 17.48607400000037
+          ],
+          "unpartitionedSqliteVecMilliseconds": [
+            153.2079939999967, 157.38082099999883, 155.11800999999832, 156.8614069999967,
+            164.27320699999837, 155.08257400000002
+          ],
+          "bucketedSqliteVecMilliseconds": [
+            31.91665600000124, 30.306305999998585, 29.14110300000175, 32.732740999999805,
+            32.6451689999958, 33.42280200000096
+          ],
+          "topResultMatches": true,
+          "topEightOverlap": 8
+        }
+      ]
+    },
+    "singleUnpartitionedSearchBeforeChurn": {
+      "global": {
+        "sourceZvecMedianMilliseconds": 61.26398800000243,
+        "sourceZvecP95Milliseconds": 75.8386900000005,
+        "sqliteVecMedianMilliseconds": 363.41653600000063,
+        "sqliteVecP95Milliseconds": 389.127708,
+        "matchingTopResults": 5,
+        "minimumTopEightOverlap": 7,
+        "queryCount": 5
+      },
+      "project": {
+        "sourceZvecMedianMilliseconds": 17.56855799999903,
+        "sourceZvecP95Milliseconds": 21.636037000000215,
+        "sqliteVecMedianMilliseconds": 153.78929000000062,
+        "sqliteVecP95Milliseconds": 177.83159199999864,
+        "matchingTopResults": 5,
+        "minimumTopEightOverlap": 5,
+        "queryCount": 5
+      },
+      "coldCache": [
+        {
+          "scope": "global",
+          "evictionRequested": true,
+          "milliseconds": 1362.563286,
+          "resultCount": 8
+        },
+        {
+          "scope": "project",
+          "evictionRequested": true,
+          "milliseconds": 1202.849611,
+          "resultCount": 8
+        }
+      ]
+    },
+    "singleUnpartitionedSearchAfter100Cycles": {
+      "global": {
+        "sourceZvecMedianMilliseconds": 58.694407999999385,
+        "sourceZvecP95Milliseconds": 65.43042100000002,
+        "sqliteVecMedianMilliseconds": 366.088330999999,
+        "sqliteVecP95Milliseconds": 379.05460700000003,
+        "matchingTopResults": 5,
+        "minimumTopEightOverlap": 7,
+        "queryCount": 5
+      },
+      "project": {
+        "sourceZvecMedianMilliseconds": 17.550003000000288,
+        "sourceZvecP95Milliseconds": 19.54412500000035,
+        "sqliteVecMedianMilliseconds": 154.438774000002,
+        "sqliteVecP95Milliseconds": 171.05224799999996,
+        "matchingTopResults": 5,
+        "minimumTopEightOverlap": 5,
+        "queryCount": 5
+      }
+    },
+    "fullyPartitionedAlternative": {
+      "global": {
+        "sourceZvecMedianMilliseconds": 62.49644899999839,
+        "sourceZvecP95Milliseconds": 75.58310400000028,
+        "metadataSqliteVecMedianMilliseconds": 368.1214550000004,
+        "metadataSqliteVecP95Milliseconds": 382.79524799999854,
+        "partitionedSqliteVecMedianMilliseconds": 628.363875,
+        "partitionedSqliteVecP95Milliseconds": 650.4378510000024,
+        "matchingTopResults": 5,
+        "minimumTopEightOverlap": 7
+      },
+      "project": {
+        "sourceZvecMedianMilliseconds": 18.89334499999677,
+        "sourceZvecP95Milliseconds": 21.40876600000047,
+        "metadataSqliteVecMedianMilliseconds": 164.75565600000118,
+        "metadataSqliteVecP95Milliseconds": 181.99706400000287,
+        "partitionedSqliteVecMedianMilliseconds": 25.80504099999962,
+        "partitionedSqliteVecP95Milliseconds": 27.531957999999577,
+        "matchingTopResults": 5,
+        "minimumTopEightOverlap": 5
+      }
+    },
+    "invocationSearchAfterChurn": {
+      "medianMilliseconds": 0.4543230000017502,
+      "p95Milliseconds": 2.308234000000084
+    },
+    "atomicity": {
+      "readerSawCommittedState": true,
+      "explicitRollbackRestoredState": true,
+      "sigkillRecoveryRestoredState": true,
+      "vectorTables": ["dense_embeddings", "dense_embeddings_bucketed"],
+      "integrity": "ok",
+      "foreignKeyViolations": 0
+    },
+    "changedSessionUpdate": {
+      "sessionDocuments": 829,
+      "invocations": 814,
+      "denseVectorsPerTable": 6,
+      "vectorTableCount": 2,
+      "elapsedSeconds": 0.3333683130000001,
+      "processWriteBytes": 3358720,
+      "deviceWrittenBytes": 2732032
+    },
+    "churn100Cycles": {
+      "averageMillisecondsPerCycle": 133.14641543,
+      "averageDeviceWrittenBytesPerCycle": 3207454.72,
+      "allocatedGrowthBytes": 0,
+      "freePageGrowth": -29,
+      "integrity": "ok",
+      "foreignKeyViolations": 0
+    },
+    "singleVectorTableUpdateControl": {
+      "elapsedSeconds": 0.23509740899999998,
+      "processWriteBytes": 3424256,
+      "deviceWrittenBytes": 4485120
+    },
+    "verdict": {
+      "supersedesDraftArchitecture": true,
+      "reason": "default project search remains near flat Zvec while one transactional SQLite database removes cross-store recovery and routine Zvec maintenance; explicit global search is slower but stays near the original warm latency gate",
+      "conditions": [
+        "keep two vec0 tables in one transaction",
+        "route project scope to 16 buckets and global scope to the unpartitioned table",
+        "pin sqlite-vec 0.1.9 and rebuild on incompatible upgrades",
+        "retain canonical JSONL and staged activation",
+        "verify macOS x64 and arm64 loading before release"
+      ]
+    },
+    "limitations": [
+      "Linux x64 runtime measured; npm publishes macOS x64 and arm64 binaries, but this run did not execute them.",
+      "Best-effort cold-cache measurements use POSIX_FADV_DONTNEED rather than privileged system-wide cache dropping.",
+      "The candidate uses released sqlite-vec 0.1.9 exact cosine search and does not test unreleased ANN indexes."
+    ]
   }
 }

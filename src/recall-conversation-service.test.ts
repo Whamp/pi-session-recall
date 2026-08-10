@@ -6,6 +6,7 @@ import test from 'node:test';
 
 import { RecallProjectIdentitySource, RecallSearchScope } from './enums.js';
 import { SESSION_IMPORT_POLICY_VERSION } from './import-session-jsonl.js';
+import { searchLegacyV6RecallDatabase } from './legacy-v6-recall-adapter.js';
 import {
   createLegacyV6RecallIndexManifest,
   writeLegacyV6RecallIndexManifest,
@@ -159,6 +160,82 @@ async function writeConversationSession(
         parentId: null,
         timestamp: '2026-07-24T10:01:00Z',
         message: { role: 'user', content },
+      },
+    ]),
+  );
+}
+
+async function writeLegacyV6ToolEvidenceSession(
+  path: string,
+  changedEvidence: string,
+): Promise<void> {
+  await mkdir(join(path, '..'), { recursive: true });
+  await writeFile(
+    path,
+    sessionLines([
+      {
+        type: 'session',
+        version: 3,
+        id: 'legacy-v6-tool-session',
+        timestamp: '2026-07-24T10:00:00Z',
+        cwd: '/project',
+      },
+      {
+        type: 'message',
+        id: 'legacy-v6-tool-call-entry',
+        parentId: null,
+        timestamp: '2026-07-24T10:01:00Z',
+        message: {
+          role: 'assistant',
+          content: [
+            {
+              type: 'toolCall',
+              id: 'legacy-v6-tool-call',
+              name: 'read',
+              arguments: { path: '/project/LegacyV6ToolLocatorABC.txt' },
+            },
+          ],
+        },
+      },
+      {
+        type: 'message',
+        id: 'legacy-v6-tool-result-entry',
+        parentId: 'legacy-v6-tool-call-entry',
+        timestamp: '2026-07-24T10:02:00Z',
+        message: {
+          role: 'toolResult',
+          toolCallId: 'legacy-v6-tool-call',
+          toolName: 'read',
+          content: [
+            {
+              type: 'text',
+              text: 'Complete legacy tool result preserves lunar archive wording.',
+            },
+          ],
+          isError: false,
+        },
+      },
+      {
+        type: 'message',
+        id: 'legacy-v6-bash-entry',
+        parentId: 'legacy-v6-tool-result-entry',
+        timestamp: '2026-07-24T10:03:00Z',
+        message: {
+          role: 'bashExecution',
+          command: 'cat /project/LegacyV6BashLocatorXYZ.log',
+          output: 'Complete legacy bash output preserves cobalt harbor wording.',
+          exitCode: 0,
+          cancelled: false,
+          truncated: false,
+          excludeFromContext: true,
+        },
+      },
+      {
+        type: 'message',
+        id: 'legacy-v6-changed-entry',
+        parentId: 'legacy-v6-bash-entry',
+        timestamp: '2026-07-24T10:04:00Z',
+        message: { role: 'user', content: changedEvidence },
       },
     ]),
   );
@@ -487,6 +564,66 @@ void test('rollback rejects missing previous databases without changing the acti
 
   await assert.rejects(service.rollback(), /Previous recall database incomplete/u);
   assert.equal(await readlink(join(root, 'recall', 'active')), secondTarget);
+});
+
+void test('changed legacy-v6 sessions retain full lexical tool evidence and tracked rows', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-legacy-v6-tool-update-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const config = createTestConfig(root);
+  const sessionPath = join(config.sessionsDirectory, 'tool-session.jsonl');
+  await createActualLegacyV6Fixture(config);
+  await writeLegacyV6ToolEvidenceSession(sessionPath, 'INITIAL LEGACY V6 SESSION STATE');
+  const service = createRecallConversationService(config, {
+    embeddingProvider: TEST_EMBEDDING_PROVIDER,
+    loadTokenizer: async () => tokenizer,
+  });
+  await service.index();
+
+  await writeLegacyV6ToolEvidenceSession(
+    sessionPath,
+    'CHANGED LEGACY V6 SESSION STATE WITH A DIFFERENT LENGTH',
+  );
+  const changed = await service.index();
+  assert.equal(changed.indexSummary.indexedSessions, 1);
+
+  const searches = [
+    'path project LegacyV6ToolLocatorABC txt',
+    'lunar archive wording',
+    'cat project LegacyV6BashLocatorXYZ log',
+    'cobalt harbor wording',
+  ].map((query) =>
+    searchLegacyV6RecallDatabase({
+      paths: {
+        databasePath: config.databasePath,
+        statePath: config.statePath,
+        manifestPath: config.manifestPath,
+      },
+      dimensions: config.embeddingStoredDimensions,
+      query,
+      queryEmbedding: createTestEmbeddingVector(query),
+      resultLimit: 20,
+      candidateLimit: 20,
+    }),
+  );
+  const expectedEvidence = [
+    '{"path":"/project/LegacyV6ToolLocatorABC.txt"}',
+    'Complete legacy tool result preserves lunar archive wording.',
+    'cat /project/LegacyV6BashLocatorXYZ.log',
+    'Complete legacy bash output preserves cobalt harbor wording.',
+  ];
+  const trackedState = await readFile(config.statePath, 'utf8');
+  const evidenceResults = searches.map((search, index) =>
+    search.results.find((candidate) => candidate.content === expectedEvidence[index]),
+  );
+  assert.ok(
+    evidenceResults.every((result) => result !== undefined),
+    `missing legacy evidence: ${JSON.stringify(searches.map((search) => search.results))}`,
+  );
+  for (const result of evidenceResults) {
+    assert.ok(result);
+    assert.match(trackedState, new RegExp(`"id":"${result.id}"`, 'u'));
+  }
+  assert.equal(trackedState.match(/"id":/gu)?.length, changed.totalChunks);
 });
 
 void test('actual legacy-v6 stays searchable and updateable before activation and after rollback', async (t) => {

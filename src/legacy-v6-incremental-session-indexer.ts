@@ -11,10 +11,10 @@ import { SESSION_IMPORT_POLICY_VERSION } from './import-session-jsonl.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
 import type { ResolvedProjectIdentity } from './resolve-project-identity.js';
 import {
-  readSessionConversationChunks,
-  type ConversationTextTokenizer,
-  type SessionConversationChunk,
-} from './session-conversation-index.js';
+  readLegacyV6SessionConversationChunks,
+  type LegacyV6SessionConversationChunk,
+} from './legacy-v6-session-conversation-projection.js';
+import type { ConversationTextTokenizer } from './session-conversation-index.js';
 import type {
   ConversationChunkStore,
   IndexedSessionConversationChunk,
@@ -213,9 +213,9 @@ function createSessionProjectIdentityResolver(
 }
 
 async function attributeRecallChunksToProjects(
-  chunks: readonly SessionConversationChunk[],
+  chunks: readonly LegacyV6SessionConversationChunk[],
   resolveSessionProjectIdentity: (sessionOrigin: string) => Promise<ResolvedProjectIdentity | null>,
-): Promise<SessionConversationChunk[]> {
+): Promise<LegacyV6SessionConversationChunk[]> {
   const sessionOrigins = Array.from(new Set(chunks.map((chunk) => chunk.cwd).filter(Boolean)));
   const projectIdentityEntries = await Promise.all(
     sessionOrigins.map(
@@ -233,7 +233,7 @@ async function attributeRecallChunksToProjects(
 }
 
 async function prepareChangedRecallRows(
-  chunks: readonly SessionConversationChunk[],
+  chunks: readonly LegacyV6SessionConversationChunk[],
   store: ConversationChunkStore,
   embeddingProvider: RecallEmbeddingProvider,
   summary: LegacyV6ConversationIndexSummary,
@@ -304,9 +304,9 @@ async function indexChangedRecallSessionFile(
   const { sessionPath } = plannedFile;
   const previous = state.sessions[sessionPath];
 
-  let chunks: SessionConversationChunk[];
+  let chunks: LegacyV6SessionConversationChunk[];
   try {
-    chunks = await readSessionConversationChunks(sessionPath, {
+    chunks = await readLegacyV6SessionConversationChunks(sessionPath, {
       tokenizer: options.tokenizer,
       ...options.chunkPolicy,
     });

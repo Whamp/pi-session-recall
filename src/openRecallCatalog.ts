@@ -429,7 +429,7 @@ export function openRecallCatalog(
   const deleteSession = database.prepare('DELETE FROM physical_sessions WHERE session_path = ?');
   const countInvocationRows = database.prepare('SELECT count(*) AS count FROM invocations');
 
-  const readCatalogSessionState = (sessionPath: string): RecallCatalogSessionState | null => {
+  const readPhysicalSessionState = (sessionPath: string): RecallCatalogSessionState | null => {
     const row = readSession.get(sessionPath);
     if (!row) {
       return null;
@@ -458,9 +458,7 @@ export function openRecallCatalog(
   };
 
   return {
-    readPhysicalSessionState(sessionPath) {
-      return readCatalogSessionState(sessionPath);
-    },
+    readPhysicalSessionState,
 
     listPhysicalSessionPaths() {
       return listSessions.all().map((row) => {
@@ -487,7 +485,7 @@ export function openRecallCatalog(
           `Recall catalog dense document identity missing from session ${replacement.sessionPath}`,
         );
       }
-      const previous = readCatalogSessionState(replacement.sessionPath);
+      const previous = readPhysicalSessionState(replacement.sessionPath);
       const previousInvocations = previous
         ? listInvocations.all(replacement.sessionPath).map(decodeInvocationSearchResult)
         : [];

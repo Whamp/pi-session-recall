@@ -626,6 +626,7 @@ export async function certifyDisposableUnifiedSqliteClone(options: {
       }
     });
     const changedSessionIndexElapsedMilliseconds = performance.now() - changedSessionIndexStarted;
+    database.checkpointDisposableClone();
     const changedSessionIndexWritesAfter = readDeviceWrittenBytes();
     const changedSessionIndexDeviceWrittenBytes =
       changedSessionIndexWritesBefore === null || changedSessionIndexWritesAfter === null
@@ -1030,6 +1031,7 @@ async function runCertification(
     argumentsValue.representativeSessionPath &&
     argumentsValue.blockDevice
       ? await (async () => {
+          // Argument parsing requires all three clone values together; this branch proves presence.
           const [tokenizer, ignoredPhysicalSessionPathList] = await Promise.all([
             loadOctenConversationTokenizer({ cacheDirectory: config.tokenizerCacheDirectory }),
             listIgnoredPhysicalSessionPaths(config.physicalSessionIgnoreStatePath),
@@ -1166,7 +1168,7 @@ async function runCertification(
     gates,
     candidatePreActivationPassed,
     releaseReady,
-    passed: candidatePreActivationPassed,
+    passed: releaseReady,
   };
 }
 

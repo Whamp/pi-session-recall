@@ -32,6 +32,7 @@ const PROTOTYPE_ROOT = '/home/will/.pi/agent/recall-debug/prototype-dense-only';
 const PROTOTYPE_COLLECTION_PATH = join(PROTOTYPE_ROOT, 'zvec');
 const REPORT_PATH = join(PROTOTYPE_ROOT, 'prototype-report.json');
 const INVOCATION_DATABASE_PATH = join(PROTOTYPE_ROOT, 'invocations.sqlite');
+const INVOCATION_ZVEC_PATH = join(PROTOTYPE_ROOT, 'invocations-zvec');
 const MAX_PROTOTYPE_BYTES = 6 * 1024 ** 3;
 const FREE_SPACE_FLOOR_BYTES = 240 * 1024 ** 3;
 const FETCH_BATCH_SIZE = 256;
@@ -64,11 +65,12 @@ const EXACT_SOURCE_QUERIES = [
 ];
 
 const INVOCATION_QUERIES = [
+  'brain_query',
+  '/home/will/.pi/agent/TAILNET.md',
+  'http://192.168.0.67:8090/v1',
   'psr optimize',
-  'capture-psr-fts-baseline',
-  'gh issue view 144',
+  'gh issue view 165',
   '--optimize-daily',
-  'recall-storage-layout',
 ];
 
 const OMITTED_ARGUMENT_PAYLOAD_KEYS = new Set([
@@ -90,6 +92,7 @@ interface PrototypeReport {
   sourceBenchmark?: Record<string, unknown>;
   invocationBuild?: Record<string, unknown>;
   invocationBenchmark?: Record<string, unknown>;
+  invocationStoreComparison?: Record<string, unknown>;
 }
 
 interface InvocationRecord {
@@ -98,6 +101,16 @@ interface InvocationRecord {
   kind: 'tool_call' | 'bash_command';
   toolName: string;
   content: string;
+}
+
+interface ComparableInvocationRecord extends InvocationRecord {
+  id: string;
+}
+
+interface InvocationSearchObservation {
+  query: string;
+  milliseconds: number[];
+  resultIds: string[];
 }
 
 interface IndexState {
@@ -121,6 +134,8 @@ async function writeReport(report: PrototypeReport): Promise<void> {
 
 function allocatedBytes(root: string): number {
   if (!existsSync(root)) return 0;
+  const rootStats = statSync(root);
+  if (rootStats.isFile()) return rootStats.blocks * 512;
   let total = 0;
   const stack = [root];
   while (stack.length > 0) {
@@ -522,11 +537,50 @@ async function readSessionInvocationRecords(path: string): Promise<InvocationRec
     }
     try {
       records.push(...extractInvocationRecords(JSON.parse(line) as Record<string, unknown>, path));
-    } catch {
-      // The production index already owns malformed-session policy; this prototype skips bad lines.
+    } catch (error) {
+      if (!(error instanceof SyntaxError)) throw error;
+      // The production index already owns malformed-session policy; this prototype skips bad JSON.
     }
   }
   return records;
+}
+
+async function collectComparableInvocationRecords(): Promise<{
+  records: ComparableInvocationRecord[];
+  filesScanned: number;
+  elapsedSeconds: number;
+  currentSessionPath: string | null;
+}> {
+  const config = await loadRecallConversationConfig();
+  const files = await listJsonlFiles(config.sessionsDirectory);
+  const currentSessionPath =
+    Object.keys(
+      (JSON.parse(readFileSync(PRODUCTION_STATE_PATH, 'utf8')) as IndexState).sessions,
+    ).find((path) => path.includes('019fe31e-3e91-7df4-969a-8c8b1f1ec757')) ?? null;
+  const started = performance.now();
+  const records: ComparableInvocationRecord[] = [];
+  for (const path of files) {
+    const sessionRecords = await readSessionInvocationRecords(path);
+    for (const record of sessionRecords) {
+      records.push({
+        ...record,
+        id: `invocation-${String(records.length + 1).padStart(9, '0')}`,
+      });
+    }
+  }
+  return {
+    records,
+    filesScanned: files.length,
+    elapsedSeconds: (performance.now() - started) / 1_000,
+    currentSessionPath,
+  };
+}
+
+function invocationSqliteAllocatedBytes(): number {
+  return ['', '-wal', '-shm'].reduce(
+    (total, suffix) => total + allocatedBytes(`${INVOCATION_DATABASE_PATH}${suffix}`),
+    0,
+  );
 }
 
 function openInvocationDatabase(): DatabaseSync {
@@ -659,6 +713,353 @@ async function benchmarkInvocationSearch(): Promise<void> {
   console.log(JSON.stringify(report.invocationBenchmark, null, 2));
 }
 
+function createInvocationZvecSchema(): ZVecCollectionSchema {
+  return new ZVecCollectionSchema({
+    name: 'pi_session_recall_invocation_only_prototype',
+    fields: [
+      {
+        name: 'content',
+        dataType: ZVecDataType.STRING,
+        indexParams: {
+          indexType: ZVecIndexType.FTS,
+          tokenizerName: 'standard',
+          filters: ['lowercase'],
+        },
+      },
+      { name: 'toolName', dataType: ZVecDataType.STRING },
+      { name: 'sessionPath', dataType: ZVecDataType.STRING },
+      { name: 'entryId', dataType: ZVecDataType.STRING },
+      { name: 'kind', dataType: ZVecDataType.STRING },
+    ],
+  });
+}
+
+function invocationRecordToZvecDocument(record: ComparableInvocationRecord) {
+  return {
+    id: record.id,
+    vectors: {},
+    fields: {
+      content: record.content,
+      toolName: record.toolName,
+      sessionPath: record.sessionPath,
+      entryId: record.entryId,
+      kind: record.kind,
+    },
+  };
+}
+
+function benchmarkSqliteInvocationQueries(): InvocationSearchObservation[] {
+  const database = openInvocationDatabase();
+  const statement = database.prepare(`
+    SELECT record_id
+    FROM invocations
+    WHERE invocations MATCH ?
+    ORDER BY bm25(invocations), rowid
+    LIMIT 20
+  `);
+  const observations = INVOCATION_QUERIES.map((query) => {
+    const milliseconds: number[] = [];
+    let resultIds: string[] = [];
+    for (let repetition = 0; repetition < 6; repetition += 1) {
+      const started = performance.now();
+      resultIds = statement
+        .all(quoteFtsPhrase(query))
+        .map((row) => String((row as { record_id: unknown }).record_id));
+      if (repetition > 0) milliseconds.push(performance.now() - started);
+    }
+    return { query, milliseconds, resultIds };
+  });
+  database.close();
+  return observations;
+}
+
+function benchmarkZvecInvocationQueries(): InvocationSearchObservation[] {
+  const collection = ZVecOpen(INVOCATION_ZVEC_PATH, { readOnly: true });
+  const observations = INVOCATION_QUERIES.map((query) => {
+    const milliseconds: number[] = [];
+    let resultIds: string[] = [];
+    for (let repetition = 0; repetition < 6; repetition += 1) {
+      const started = performance.now();
+      resultIds = collection
+        .querySync({
+          fieldName: 'content',
+          fts: { queryString: quoteFtsPhrase(query) },
+          topk: 20,
+          outputFields: [],
+          includeVector: false,
+          params: { indexType: ZVecIndexType.FTS, defaultOperator: 'AND' },
+        })
+        .map((result) => result.id);
+      if (repetition > 0) milliseconds.push(performance.now() - started);
+    }
+    return { query, milliseconds, resultIds };
+  });
+  collection.closeSync();
+  return observations;
+}
+
+function summarizeInvocationQueryBenchmark(observations: InvocationSearchObservation[]) {
+  const milliseconds = observations.flatMap((observation) => observation.milliseconds);
+  return {
+    medianMilliseconds: percentile(milliseconds, 0.5),
+    p95Milliseconds: percentile(milliseconds, 0.95),
+    observations: observations.map((observation) => ({
+      query: observation.query,
+      resultCount: observation.resultIds.length,
+      milliseconds: observation.milliseconds,
+    })),
+  };
+}
+
+function compareInvocationSearchResults(
+  sqlite: InvocationSearchObservation[],
+  zvec: InvocationSearchObservation[],
+) {
+  return sqlite.map((sqliteObservation) => {
+    const zvecObservation = zvec.find((candidate) => candidate.query === sqliteObservation.query);
+    if (!zvecObservation) {
+      throw new Error(`Zvec Invocation benchmark missing query ${sqliteObservation.query}`);
+    }
+    return {
+      query: sqliteObservation.query,
+      sqliteResultCount: sqliteObservation.resultIds.length,
+      zvecResultCount: zvecObservation.resultIds.length,
+      matchingTopResult: sqliteObservation.resultIds[0] === zvecObservation.resultIds[0],
+      topTwentyOverlap: sqliteObservation.resultIds.filter((id) =>
+        zvecObservation.resultIds.includes(id),
+      ).length,
+    };
+  });
+}
+
+async function compareInvocationStores(reset: boolean): Promise<void> {
+  if (existsSync(PROTOTYPE_ROOT) && reset) {
+    if (!PROTOTYPE_ROOT.endsWith('/prototype-dense-only')) {
+      throw new Error(`Refusing to remove unexpected prototype path ${PROTOTYPE_ROOT}`);
+    }
+    rmSync(PROTOTYPE_ROOT, { recursive: true, force: true });
+  }
+  await mkdir(PROTOTYPE_ROOT, { recursive: true });
+  for (const suffix of ['', '-wal', '-shm']) {
+    rmSync(`${INVOCATION_DATABASE_PATH}${suffix}`, { force: true });
+  }
+  rmSync(INVOCATION_ZVEC_PATH, { recursive: true, force: true });
+  assertPrototypeStorageGuard();
+
+  console.error('Extracting one shared Invocation corpus for both stores...');
+  const corpus = await collectComparableInvocationRecords();
+  const currentSessionRecords = corpus.currentSessionPath
+    ? corpus.records.filter((record) => record.sessionPath === corpus.currentSessionPath)
+    : [];
+
+  const sqliteBuildStart = performance.now();
+  const sqliteBuildCpuStart = process.cpuUsage();
+  const sqliteBuildIoStart = processIo();
+  const sqliteBuildDeviceStart = deviceWrittenBytes();
+  let database = openInvocationDatabase();
+  database.exec(`
+    CREATE VIRTUAL TABLE invocations USING fts5(
+      record_id UNINDEXED,
+      tool_name,
+      content,
+      session_path UNINDEXED,
+      entry_id UNINDEXED,
+      kind UNINDEXED,
+      tokenize = 'unicode61'
+    );
+    BEGIN IMMEDIATE;
+  `);
+  let insert = database.prepare(
+    'INSERT INTO invocations(record_id, tool_name, content, session_path, entry_id, kind) VALUES (?, ?, ?, ?, ?, ?)',
+  );
+  for (const record of corpus.records) {
+    insert.run(
+      record.id,
+      record.toolName,
+      record.content,
+      record.sessionPath,
+      record.entryId,
+      record.kind,
+    );
+  }
+  database.exec('COMMIT; PRAGMA wal_checkpoint(TRUNCATE);');
+  database.close();
+  const sqliteBuildCpu = process.cpuUsage(sqliteBuildCpuStart);
+  const sqliteBuildIo = processIo();
+  const sqliteBuild = {
+    elapsedSeconds: (performance.now() - sqliteBuildStart) / 1_000,
+    userCpuSeconds: sqliteBuildCpu.user / 1_000_000,
+    systemCpuSeconds: sqliteBuildCpu.system / 1_000_000,
+    processWriteBytes: sqliteBuildIo.writeBytes - sqliteBuildIoStart.writeBytes,
+    deviceWrittenBytes: deviceWrittenBytes() - sqliteBuildDeviceStart,
+    allocatedBytes: invocationSqliteAllocatedBytes(),
+  };
+
+  const sqliteUpdateStart = performance.now();
+  const sqliteUpdateCpuStart = process.cpuUsage();
+  const sqliteUpdateIoStart = processIo();
+  const sqliteUpdateDeviceStart = deviceWrittenBytes();
+  database = openInvocationDatabase();
+  database.exec('BEGIN IMMEDIATE;');
+  if (corpus.currentSessionPath) {
+    database
+      .prepare('DELETE FROM invocations WHERE session_path = ?')
+      .run(corpus.currentSessionPath);
+  }
+  insert = database.prepare(
+    'INSERT INTO invocations(record_id, tool_name, content, session_path, entry_id, kind) VALUES (?, ?, ?, ?, ?, ?)',
+  );
+  for (const record of currentSessionRecords) {
+    insert.run(
+      record.id,
+      record.toolName,
+      record.content,
+      record.sessionPath,
+      record.entryId,
+      record.kind,
+    );
+  }
+  database.exec('COMMIT; PRAGMA wal_checkpoint(TRUNCATE);');
+  database.close();
+  const sqliteUpdateCpu = process.cpuUsage(sqliteUpdateCpuStart);
+  const sqliteUpdateIo = processIo();
+  const sqliteUpdate = {
+    elapsedSeconds: (performance.now() - sqliteUpdateStart) / 1_000,
+    userCpuSeconds: sqliteUpdateCpu.user / 1_000_000,
+    systemCpuSeconds: sqliteUpdateCpu.system / 1_000_000,
+    processWriteBytes: sqliteUpdateIo.writeBytes - sqliteUpdateIoStart.writeBytes,
+    deviceWrittenBytes: deviceWrittenBytes() - sqliteUpdateDeviceStart,
+    allocatedBytes: invocationSqliteAllocatedBytes(),
+  };
+  const sqliteSearch = benchmarkSqliteInvocationQueries();
+
+  const zvecBuildStart = performance.now();
+  const zvecBuildCpuStart = process.cpuUsage();
+  const zvecBuildIoStart = processIo();
+  const zvecBuildDeviceStart = deviceWrittenBytes();
+  let zvec = ZVecCreateAndOpen(INVOCATION_ZVEC_PATH, createInvocationZvecSchema());
+  for (let startIndex = 0; startIndex < corpus.records.length; startIndex += UPSERT_BATCH_SIZE) {
+    zvec.upsertSync(
+      corpus.records
+        .slice(startIndex, startIndex + UPSERT_BATCH_SIZE)
+        .map(invocationRecordToZvecDocument),
+    );
+    if (startIndex > 0 && startIndex % 20_000 === 0) {
+      assertPrototypeStorageGuard();
+      console.error(`  Zvec inserted ${startIndex.toLocaleString()} Invocation records`);
+    }
+  }
+  const zvecDocCount = zvec.stats.docCount;
+  zvec.closeSync();
+  const zvecBuildCpu = process.cpuUsage(zvecBuildCpuStart);
+  const zvecBuildIo = processIo();
+  const zvecBuild = {
+    elapsedSeconds: (performance.now() - zvecBuildStart) / 1_000,
+    userCpuSeconds: zvecBuildCpu.user / 1_000_000,
+    systemCpuSeconds: zvecBuildCpu.system / 1_000_000,
+    processWriteBytes: zvecBuildIo.writeBytes - zvecBuildIoStart.writeBytes,
+    deviceWrittenBytes: deviceWrittenBytes() - zvecBuildDeviceStart,
+    allocatedBytes: allocatedBytes(INVOCATION_ZVEC_PATH),
+    docCount: zvecDocCount,
+  };
+
+  const zvecUpdateStart = performance.now();
+  const zvecUpdateCpuStart = process.cpuUsage();
+  const zvecUpdateIoStart = processIo();
+  const zvecUpdateDeviceStart = deviceWrittenBytes();
+  zvec = ZVecOpen(INVOCATION_ZVEC_PATH);
+  if (currentSessionRecords.length > 0) {
+    zvec.deleteSync(currentSessionRecords.map((record) => record.id));
+    for (
+      let startIndex = 0;
+      startIndex < currentSessionRecords.length;
+      startIndex += UPSERT_BATCH_SIZE
+    ) {
+      zvec.upsertSync(
+        currentSessionRecords
+          .slice(startIndex, startIndex + UPSERT_BATCH_SIZE)
+          .map(invocationRecordToZvecDocument),
+      );
+    }
+  }
+  zvec.closeSync();
+  const zvecUpdateCpu = process.cpuUsage(zvecUpdateCpuStart);
+  const zvecUpdateIo = processIo();
+  const zvecUpdate = {
+    elapsedSeconds: (performance.now() - zvecUpdateStart) / 1_000,
+    userCpuSeconds: zvecUpdateCpu.user / 1_000_000,
+    systemCpuSeconds: zvecUpdateCpu.system / 1_000_000,
+    processWriteBytes: zvecUpdateIo.writeBytes - zvecUpdateIoStart.writeBytes,
+    deviceWrittenBytes: deviceWrittenBytes() - zvecUpdateDeviceStart,
+    allocatedBytes: allocatedBytes(INVOCATION_ZVEC_PATH),
+  };
+  const zvecSearchBeforeOptimize = benchmarkZvecInvocationQueries();
+
+  const zvecOptimizeStart = performance.now();
+  const zvecOptimizeCpuStart = process.cpuUsage();
+  const zvecOptimizeIoStart = processIo();
+  const zvecOptimizeDeviceStart = deviceWrittenBytes();
+  let zvecPeakAllocatedBytes = allocatedBytes(INVOCATION_ZVEC_PATH);
+  zvec = ZVecOpen(INVOCATION_ZVEC_PATH);
+  const allocationMonitor = setInterval(() => {
+    zvecPeakAllocatedBytes = Math.max(zvecPeakAllocatedBytes, allocatedBytes(INVOCATION_ZVEC_PATH));
+  }, 250);
+  try {
+    await zvec.optimize();
+  } finally {
+    clearInterval(allocationMonitor);
+    zvec.closeSync();
+  }
+  const zvecOptimizeCpu = process.cpuUsage(zvecOptimizeCpuStart);
+  const zvecOptimizeIo = processIo();
+  const zvecOptimize = {
+    elapsedSeconds: (performance.now() - zvecOptimizeStart) / 1_000,
+    userCpuSeconds: zvecOptimizeCpu.user / 1_000_000,
+    systemCpuSeconds: zvecOptimizeCpu.system / 1_000_000,
+    processWriteBytes: zvecOptimizeIo.writeBytes - zvecOptimizeIoStart.writeBytes,
+    deviceWrittenBytes: deviceWrittenBytes() - zvecOptimizeDeviceStart,
+    allocatedBytes: allocatedBytes(INVOCATION_ZVEC_PATH),
+    peakAllocatedBytes: zvecPeakAllocatedBytes,
+  };
+  const zvecSearchAfterOptimize = benchmarkZvecInvocationQueries();
+  assertPrototypeStorageGuard();
+
+  const report = readReport();
+  report.invocationStoreComparison = {
+    measuredAt: new Date().toISOString(),
+    corpus: {
+      filesScanned: corpus.filesScanned,
+      invocationCount: corpus.records.length,
+      extractionElapsedSeconds: corpus.elapsedSeconds,
+      changedSessionPath: corpus.currentSessionPath,
+      changedSessionInvocationCount: currentSessionRecords.length,
+    },
+    sqlite: {
+      build: sqliteBuild,
+      changedSessionReplacement: sqliteUpdate,
+      search: summarizeInvocationQueryBenchmark(sqliteSearch),
+    },
+    zvec: {
+      vectorFields: 0,
+      build: zvecBuild,
+      changedSessionReplacement: zvecUpdate,
+      searchBeforeOptimize: summarizeInvocationQueryBenchmark(zvecSearchBeforeOptimize),
+      optimize: zvecOptimize,
+      searchAfterOptimize: summarizeInvocationQueryBenchmark(zvecSearchAfterOptimize),
+    },
+    resultComparisonBeforeOptimize: compareInvocationSearchResults(
+      sqliteSearch,
+      zvecSearchBeforeOptimize,
+    ),
+    zvecResultComparisonAfterOptimize: compareInvocationSearchResults(
+      zvecSearchBeforeOptimize,
+      zvecSearchAfterOptimize,
+    ),
+  };
+  await writeReport(report);
+  console.log(JSON.stringify(report.invocationStoreComparison, null, 2));
+}
+
 async function benchmarkExactSourceSearch(): Promise<void> {
   const config = await loadRecallConversationConfig();
   const files = await listJsonlFiles(config.sessionsDirectory);
@@ -724,10 +1125,10 @@ async function benchmarkExactSourceSearch(): Promise<void> {
 async function main(): Promise<void> {
   const command = process.argv[2];
   const reset = process.argv.includes('--reset');
+  const usage =
+    'Usage: npm run prototype:recall-storage-layout -- <build|benchmark-dense|build-invocations|benchmark-invocations|compare-invocation-stores|benchmark-source|run> [--reset]';
   if (command === '--help') {
-    console.log(
-      'Usage: npm run prototype:recall-storage-layout -- <build|benchmark-dense|build-invocations|benchmark-invocations|benchmark-source|run> [--reset]',
-    );
+    console.log(usage);
     return;
   }
   if (command === 'build') {
@@ -750,6 +1151,10 @@ async function main(): Promise<void> {
     await benchmarkInvocationSearch();
     return;
   }
+  if (command === 'compare-invocation-stores') {
+    await compareInvocationStores(reset);
+    return;
+  }
   if (command === 'run') {
     await buildDenseOnlyPrototype(reset);
     await benchmarkDenseSearch();
@@ -758,9 +1163,7 @@ async function main(): Promise<void> {
     await benchmarkExactSourceSearch();
     return;
   }
-  throw new Error(
-    'Usage: npm run prototype:recall-storage-layout -- <build|benchmark-dense|build-invocations|benchmark-invocations|benchmark-source|run> [--reset]',
-  );
+  throw new Error(usage);
 }
 
 await main();

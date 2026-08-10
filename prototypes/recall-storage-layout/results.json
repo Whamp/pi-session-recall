@@ -122,7 +122,7 @@
     "invocationCount": 218764,
     "databaseAllocatedBytes": 2297040896,
     "changedSessionSimulation": {
-      "sessionPath": "/home/will/.pi/agent/sessions/--home-will-projects-pi-session-recall--/2026-08-08T20-43-57-969Z_019fe31e-3e91-7df4-969a-8c8b1f1ec757.jsonl",
+      "sessionPath": "representative-changed-session",
       "invocationCount": 772,
       "userCpuSeconds": 0.037045,
       "systemCpuSeconds": 0.028959,
@@ -193,5 +193,312 @@
     "CT1000P3PSSD8": 20,
     "2026-02-02T18-31-25": 20,
     "--optimize-daily": 20
+  },
+  "invocationStoreComparison": {
+    "measuredAt": "2026-08-10T18:25:36.856Z",
+    "corpus": {
+      "filesScanned": 3725,
+      "invocationCount": 219734,
+      "extractionElapsedSeconds": 11.133319087,
+      "changedSessionPath": "representative-changed-session",
+      "changedSessionInvocationCount": 886
+    },
+    "sqlite": {
+      "build": {
+        "elapsedSeconds": 1.9452021650000006,
+        "userCpuSeconds": 1.175431,
+        "systemCpuSeconds": 0.638232,
+        "processWriteBytes": 262184960,
+        "deviceWrittenBytes": 70119424,
+        "allocatedBytes": 130232320
+      },
+      "changedSessionReplacement": {
+        "elapsedSeconds": 0.09581951699999991,
+        "userCpuSeconds": 0.047461,
+        "systemCpuSeconds": 0.032515,
+        "processWriteBytes": 4268032,
+        "deviceWrittenBytes": 2605056,
+        "allocatedBytes": 130232320
+      },
+      "search": {
+        "medianMilliseconds": 0.34322700000120676,
+        "p95Milliseconds": 3.183288000000175,
+        "observations": [
+          {
+            "query": "brain_query",
+            "resultCount": 20,
+            "milliseconds": [
+              0.4424810000000434, 0.42610100000092643, 0.4176150000002963, 0.36569799999961106,
+              0.38178899999911664
+            ]
+          },
+          {
+            "query": "/home/will/.pi/agent/TAILNET.md",
+            "resultCount": 20,
+            "milliseconds": [
+              3.183288000000175, 3.1208820000010746, 3.1327240000009624, 3.263666999999259,
+              2.8489170000011654
+            ]
+          },
+          {
+            "query": "http://192.168.0.67:8090/v1",
+            "resultCount": 20,
+            "milliseconds": [
+              0.526055999998789, 0.4601540000003297, 0.45348200000080396, 0.4488729999993666,
+              0.4423510000015085
+            ]
+          },
+          {
+            "query": "psr optimize",
+            "resultCount": 5,
+            "milliseconds": [
+              0.07688199999938661, 0.07217300000047544, 0.0707509999992908, 0.0710319999998319,
+              0.0716630000006262
+            ]
+          },
+          {
+            "query": "gh issue view 165",
+            "resultCount": 3,
+            "milliseconds": [
+              0.3426159999999072, 0.33381999999983236, 0.34322700000120676, 0.33142599999882805,
+              0.33307800000147836
+            ]
+          },
+          {
+            "query": "--optimize-daily",
+            "resultCount": 2,
+            "milliseconds": [
+              0.05037400000037451, 0.048990999999659834, 0.05420100000083039, 0.04889100000036706,
+              0.0485499999995227
+            ]
+          }
+        ]
+      }
+    },
+    "zvec": {
+      "vectorFields": 0,
+      "build": {
+        "elapsedSeconds": 20.379354102999997,
+        "userCpuSeconds": 32.351112,
+        "systemCpuSeconds": 2.635588,
+        "processWriteBytes": 663371776,
+        "deviceWrittenBytes": 409272320,
+        "allocatedBytes": 283017216,
+        "docCount": 219734
+      },
+      "changedSessionReplacement": {
+        "elapsedSeconds": 0.285166072,
+        "userCpuSeconds": 0.302349,
+        "systemCpuSeconds": 0.049933,
+        "processWriteBytes": 24293376,
+        "deviceWrittenBytes": 4096000,
+        "allocatedBytes": 284581888
+      },
+      "searchBeforeOptimize": {
+        "medianMilliseconds": 0.17742900000303052,
+        "p95Milliseconds": 4.8980200000005425,
+        "observations": [
+          {
+            "query": "brain_query",
+            "resultCount": 14,
+            "milliseconds": [
+              0.30001700000138953, 0.21427799999946728, 0.16141000000061467, 0.1579829999973299,
+              0.15054899999813642
+            ]
+          },
+          {
+            "query": "/home/will/.pi/agent/TAILNET.md",
+            "resultCount": 20,
+            "milliseconds": [
+              4.8980200000005425, 4.802875000001222, 5.11877000000095, 3.8273630000039702,
+              3.392986999999266
+            ]
+          },
+          {
+            "query": "http://192.168.0.67:8090/v1",
+            "resultCount": 20,
+            "milliseconds": [
+              0.5068010000031791, 0.4979739999980666, 0.48726499999611406, 0.4826649999959045,
+              0.5017519999964861
+            ]
+          },
+          {
+            "query": "psr optimize",
+            "resultCount": 5,
+            "milliseconds": [
+              0.1645250000001397, 0.15851399999519344, 0.15745199999946635, 0.17730899999878602,
+              0.17742900000303052
+            ]
+          },
+          {
+            "query": "gh issue view 165",
+            "resultCount": 3,
+            "milliseconds": [
+              0.19311799999559298, 0.18131700000230921, 0.18614499999966938, 0.17657799999869894,
+              0.17191900000034366
+            ]
+          },
+          {
+            "query": "--optimize-daily",
+            "resultCount": 2,
+            "milliseconds": [
+              0.10736900000483729, 0.10574600000109058, 0.11290000000008149, 0.11204799999541137,
+              0.10210999999981141
+            ]
+          }
+        ]
+      },
+      "optimize": {
+        "elapsedSeconds": 1.5529774770000004,
+        "userCpuSeconds": 1.809755,
+        "systemCpuSeconds": 0.281389,
+        "processWriteBytes": 110399488,
+        "deviceWrittenBytes": 110026752,
+        "allocatedBytes": 207069184,
+        "peakAllocatedBytes": 358993920
+      },
+      "searchAfterOptimize": {
+        "medianMilliseconds": 0.1301820000007865,
+        "p95Milliseconds": 1.5723489999945741,
+        "observations": [
+          {
+            "query": "brain_query",
+            "resultCount": 14,
+            "milliseconds": [
+              0.13952900000003865, 0.1301820000007865, 0.10641699999541743, 0.10991400000057183,
+              0.10322099999757484
+            ]
+          },
+          {
+            "query": "/home/will/.pi/agent/TAILNET.md",
+            "resultCount": 20,
+            "milliseconds": [
+              1.7361420000015642, 1.5723489999945741, 1.4291529999973136, 1.4040460000032908,
+              1.4536480000024312
+            ]
+          },
+          {
+            "query": "http://192.168.0.67:8090/v1",
+            "resultCount": 20,
+            "milliseconds": [
+              0.2655229999945732, 0.24620700000377838, 0.2341939999969327, 0.24086700000043493,
+              0.2325219999984256
+            ]
+          },
+          {
+            "query": "psr optimize",
+            "resultCount": 5,
+            "milliseconds": [
+              0.13401900000462774, 0.12875900000653928, 0.14139199999772245, 0.15980699999636272,
+              0.13718399999925168
+            ]
+          },
+          {
+            "query": "gh issue view 165",
+            "resultCount": 3,
+            "milliseconds": [
+              0.11555499999667518, 0.11062600000150269, 0.10710800000379095, 0.10493500000302447,
+              0.1043229999995674
+            ]
+          },
+          {
+            "query": "--optimize-daily",
+            "resultCount": 2,
+            "milliseconds": [
+              0.09338299999944866, 0.0775839999987511, 0.07626100000197766, 0.07356699999945704,
+              0.07571099999768194
+            ]
+          }
+        ]
+      }
+    },
+    "resultComparisonBeforeOptimize": [
+      {
+        "query": "brain_query",
+        "sqliteResultCount": 20,
+        "zvecResultCount": 14,
+        "matchingTopResult": false,
+        "topTwentyOverlap": 7
+      },
+      {
+        "query": "/home/will/.pi/agent/TAILNET.md",
+        "sqliteResultCount": 20,
+        "zvecResultCount": 20,
+        "matchingTopResult": false,
+        "topTwentyOverlap": 20
+      },
+      {
+        "query": "http://192.168.0.67:8090/v1",
+        "sqliteResultCount": 20,
+        "zvecResultCount": 20,
+        "matchingTopResult": true,
+        "topTwentyOverlap": 19
+      },
+      {
+        "query": "psr optimize",
+        "sqliteResultCount": 5,
+        "zvecResultCount": 5,
+        "matchingTopResult": true,
+        "topTwentyOverlap": 5
+      },
+      {
+        "query": "gh issue view 165",
+        "sqliteResultCount": 3,
+        "zvecResultCount": 3,
+        "matchingTopResult": false,
+        "topTwentyOverlap": 3
+      },
+      {
+        "query": "--optimize-daily",
+        "sqliteResultCount": 2,
+        "zvecResultCount": 2,
+        "matchingTopResult": true,
+        "topTwentyOverlap": 2
+      }
+    ],
+    "zvecResultComparisonAfterOptimize": [
+      {
+        "query": "brain_query",
+        "sqliteResultCount": 14,
+        "zvecResultCount": 14,
+        "matchingTopResult": true,
+        "topTwentyOverlap": 14
+      },
+      {
+        "query": "/home/will/.pi/agent/TAILNET.md",
+        "sqliteResultCount": 20,
+        "zvecResultCount": 20,
+        "matchingTopResult": true,
+        "topTwentyOverlap": 20
+      },
+      {
+        "query": "http://192.168.0.67:8090/v1",
+        "sqliteResultCount": 20,
+        "zvecResultCount": 20,
+        "matchingTopResult": true,
+        "topTwentyOverlap": 20
+      },
+      {
+        "query": "psr optimize",
+        "sqliteResultCount": 5,
+        "zvecResultCount": 5,
+        "matchingTopResult": true,
+        "topTwentyOverlap": 5
+      },
+      {
+        "query": "gh issue view 165",
+        "sqliteResultCount": 3,
+        "zvecResultCount": 3,
+        "matchingTopResult": true,
+        "topTwentyOverlap": 3
+      },
+      {
+        "query": "--optimize-daily",
+        "sqliteResultCount": 2,
+        "zvecResultCount": 2,
+        "matchingTopResult": true,
+        "topTwentyOverlap": 2
+      }
+    ]
   }
 }

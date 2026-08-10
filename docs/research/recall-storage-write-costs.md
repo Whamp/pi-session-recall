@@ -10,7 +10,7 @@ Measurements came from the production collection on 2026-08-09. The hourly index
 
 The collection held about 1.45 million documents. Only about 23.5% were dense-searchable conversation, summary, or turn-context documents. Tool names, arguments, results, direct bash commands, and bash output made up the remaining 76.5%.
 
-Zvec 0.6 requires every row to carry its vector field. Lexical-only tool rows therefore store a 1,024-float zero vector even though dense queries filter them out. Every tool row also carries scalar provenance and participates in two FTS indexes.
+The production Zvec collection schema requires every row in that collection to carry its vector field. Lexical-only tool rows therefore store a 1,024-float zero vector even though dense queries filter them out. Zvec 0.6 also supports a separate collection with no vector fields; the zero vectors were a consequence of combining dense and lexical records in one collection, not a Zvec-wide requirement. Every production tool row also carries scalar provenance and participates in two FTS indexes.
 
 This unified layout makes lexical tool evidence contribute to scalar, vector, and FTS maintenance costs.
 
@@ -99,15 +99,31 @@ The prototype compares storage, write volume, flat dense latency, top-result ove
 
 The dense-only candidate stored 340,736 real-vector documents in 2.02 GiB after filesystem writeback. Flat dense search measured 44.5 ms median and 48.2 ms p95. It returned the same top result as production HNSW for all five queries, with seven or eight shared results in each top eight.
 
-A compact SQLite FTS index stored 218,764 tool calls and direct bash commands in 118 MiB. It retained tool names, bounded locator arguments, commands, and source locators while excluding tool results, bash output, and large payload arguments. Query latency measured 0.093 ms median and 0.122 ms p95. Replacing the current session's 772 invocation rows wrote 2.07 MiB to the NVMe device.
+The first compact SQLite FTS prototype stored 218,764 tool calls and direct bash commands in 118 MiB. It retained tool names, bounded locator arguments, commands, and source locators while excluding tool results, bash output, and large payload arguments. Query latency measured 0.093 ms median and 0.122 ms p95. Replacing the current session's 772 invocation rows wrote 2.07 MiB to the NVMe device.
+
+A follow-up on 2026-08-10 compared SQLite FTS5 with a second, vectorless Zvec FTS collection. Both stores received the same 219,734 Invocation records extracted once from 3,725 session files.
+
+| Invocation measurement             | SQLite FTS5 | Zvec before optimize |      Zvec after optimize |
+| ---------------------------------- | ----------: | -------------------: | -----------------------: |
+| Allocated storage                  |     124 MiB |              270 MiB |                  197 MiB |
+| Build time                         |      1.95 s |              20.38 s |                        — |
+| Build device writes                |    66.9 MiB |            390.3 MiB |                        — |
+| Replace 886 records: elapsed       |     0.096 s |              0.285 s |                        — |
+| Replace 886 records: device writes |    2.48 MiB |             3.91 MiB |                        — |
+| Search median                      |    0.343 ms |             0.177 ms |                 0.130 ms |
+| Search p95                         |     3.18 ms |              4.90 ms |                  1.57 ms |
+| One Zvec optimization              |           — |                    — | 1.55 s, 104.9 MiB writes |
+
+The search-result differences were ranking and tokenization differences rather than demonstrated locator loss. Most exact probes returned the same set. SQLite's `unicode61` tokenizer interpreted `brain_query` broadly enough to include `brain-query` paths, while Zvec returned the actual `brain_query` calls plus literal occurrences. Zvec optimization preserved the Zvec result sets while changing tied order.
 
 A zero-write scan of 2.95 GB of canonical JSONL found exact result evidence for all five probes in 21.7 seconds. That path is suitable for rare full-result recovery, not routine invocation search.
 
-The evidence supports this production direction:
+The stable evidence supports:
 
 - flat dense Zvec for conversation, summaries, and turn context;
-- SQLite FTS for compact invocation evidence and per-session index state;
 - canonical JSONL for complete tool results, bash output, and omitted argument payloads;
-- no HNSW, Zvec FTS, zero-vector tool rows, or scheduled optimization.
+- no HNSW, zero-vector tool rows, or routine optimization.
+
+The Invocation store decision is reopened. Vectorless Zvec passes the measured storage, update-write, and search-latency gates and avoids a second database engine. SQLite remains materially smaller, builds about ten times faster, writes less, and also provides transactional per-session index state. The benchmark does not by itself decide whether eliminating SQLite is worth replacing that state transaction with another mechanism.
 
 The sanitized prototype measurements live on branch `prototype/recall-storage-layout` under `prototypes/recall-storage-layout/results.json`.

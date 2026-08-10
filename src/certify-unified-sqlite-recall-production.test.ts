@@ -117,6 +117,19 @@ void test('certification arguments require exact output and complete clone flags
     () => readUnifiedSqliteCertificationArguments([...base, '--output', '/tmp/result.json']),
     /output must be docs\/research\/unified-sqlite-production-recall-certification\.json/u,
   );
+  assert.throws(
+    () =>
+      readUnifiedSqliteCertificationArguments([
+        ...base,
+        '--scratch-root',
+        '/safe/scratch',
+        '--representative-session',
+        '/safe/session.jsonl',
+        '--block-device',
+        '../../unexpected',
+      ]),
+    /block device name is invalid/u,
+  );
 });
 
 void test('candidate and scratch path guards reject traversal and overlap', () => {
@@ -214,14 +227,16 @@ void test('tiny candidate and flat-Zvec control preserve active pointer while cl
   assert.equal(pointerBefore.exists, true);
   assert.equal(pointerBefore.target, 'generations/generation-active');
   const candidateHashBefore = hashFile(candidateDatabasePath);
+  const deviceWriteSamples = [0, 1 * 1024 ** 2, 1 * 1024 ** 2, 101 * 1024 ** 2];
   const result = certifyDisposableUnifiedSqliteClone({
     candidateDirectory,
     candidateDatabasePath,
     scratchRoot,
     dataRoot,
     representativeSessionPath: sessionPath,
-    blockDevice: 'nonexistent-test-device',
+    blockDevice: 'fixture-device',
     minimumFreeBytes: 0,
+    readDeviceWrittenBytes: () => deviceWriteSamples.shift() ?? null,
   });
   assert.equal(result.passed, true, JSON.stringify(result));
   assert.equal(result.concurrentReaderSawCommittedState, true);
@@ -254,16 +269,19 @@ void test('durable report sanitization removes machine roots and raw evidence fi
 });
 
 void test('command reports safe usage before reading any default production path', () => {
-  const result = spawnSync(
-    process.execPath,
-    [
-      '--import',
-      'tsx',
-      new URL('./certify-unified-sqlite-recall-production.ts', import.meta.url).pathname,
-    ],
-    { encoding: 'utf8' },
-  );
+  const scriptPath = new URL('./certify-unified-sqlite-recall-production.ts', import.meta.url)
+    .pathname;
+  const result = spawnSync(process.execPath, ['--import', 'tsx', scriptPath], {
+    encoding: 'utf8',
+  });
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /Unified SQLite recall certification usage/u);
   assert.doesNotMatch(result.stderr, /\.pi\/agent\/recall|\.pi\/agent\/sessions/u);
+
+  const help = spawnSync(process.execPath, ['--import', 'tsx', scriptPath, '--help'], {
+    encoding: 'utf8',
+  });
+  assert.equal(help.status, 0, help.stderr);
+  assert.match(help.stdout, /Unified SQLite recall certification usage/u);
+  assert.equal(help.stderr, '');
 });

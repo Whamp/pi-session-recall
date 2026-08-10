@@ -194,6 +194,12 @@ export function readUnifiedSqliteCertificationArguments(
       );
     }
   }
+  const blockDevice = values.get('--block-device') ?? null;
+  if (blockDevice && !/^[A-Za-z0-9._-]+$/u.test(blockDevice)) {
+    throw new Error(
+      `Unified SQLite recall certification block device name is invalid: ${blockDevice}`,
+    );
+  }
   const outputPath = values.get('--output') ? resolve(values.get('--output') ?? '') : null;
   if (outputPath && outputPath !== REPORT_JSON_PATH) {
     throw new Error(
@@ -209,7 +215,7 @@ export function readUnifiedSqliteCertificationArguments(
     representativeSessionPath: values.get('--representative-session')
       ? resolve(values.get('--representative-session') ?? '')
       : null,
-    blockDevice: values.get('--block-device') ?? null,
+    blockDevice,
     outputPath,
   };
 }
@@ -477,6 +483,8 @@ export function certifyDisposableUnifiedSqliteClone(options: {
   blockDevice: string;
   /** Test seam; production callers must use the 240 GiB default. */
   minimumFreeBytes?: number;
+  /** Test seam; production callers must read the named block device. */
+  readDeviceWrittenBytes?: () => number | null;
 }): Record<string, unknown> {
   assertCertificationScratchRoot(options.scratchRoot, options.dataRoot, options.candidateDirectory);
   mkdirSync(options.scratchRoot, { recursive: true });
@@ -547,19 +555,21 @@ export function certifyDisposableUnifiedSqliteClone(options: {
       allocatedBytes: readDatabaseAllocatedBytes(databasePath),
       storage: database.readStorageMetrics(),
     };
-    const representativeWritesBefore = readBlockDeviceWrittenBytes(options.blockDevice);
+    const readDeviceWrittenBytes =
+      options.readDeviceWrittenBytes ?? (() => readBlockDeviceWrittenBytes(options.blockDevice));
+    const representativeWritesBefore = readDeviceWrittenBytes();
     const representativeStarted = performance.now();
     database.replacePhysicalSession(replacement);
     const representativeElapsedMilliseconds = performance.now() - representativeStarted;
-    const representativeWritesAfter = readBlockDeviceWrittenBytes(options.blockDevice);
-    const churnWritesBefore = readBlockDeviceWrittenBytes(options.blockDevice);
+    const representativeWritesAfter = readDeviceWrittenBytes();
+    const churnWritesBefore = readDeviceWrittenBytes();
     const churnStarted = performance.now();
     for (let cycle = 0; cycle < 100; cycle += 1) {
       database.replacePhysicalSession(replacement);
     }
     const churnElapsedMilliseconds = performance.now() - churnStarted;
     database.checkpointDisposableClone();
-    const churnWritesAfter = readBlockDeviceWrittenBytes(options.blockDevice);
+    const churnWritesAfter = readDeviceWrittenBytes();
     const afterMetrics = {
       allocatedBytes: readDatabaseAllocatedBytes(databasePath),
       storage: database.readStorageMetrics(),
@@ -617,10 +627,11 @@ export function certifyDisposableUnifiedSqliteClone(options: {
       invocationLatencySamples.length > 0 &&
       readPercentile(invocationLatencySamples, 0.95) < MAXIMUM_INVOCATION_P95_MILLISECONDS &&
       allocatedGrowthBytes === 0 &&
-      freePageGrowth === 0 &&
-      (representativeWrites === null ||
-        representativeWrites < MAXIMUM_AVERAGE_DEVICE_WRITES_BYTES) &&
-      (churnWrites === null || churnWrites / 100 < MAXIMUM_AVERAGE_DEVICE_WRITES_BYTES);
+      freePageGrowth <= 0 &&
+      representativeWrites !== null &&
+      representativeWrites < MAXIMUM_AVERAGE_DEVICE_WRITES_BYTES &&
+      churnWrites !== null &&
+      churnWrites / 100 < MAXIMUM_AVERAGE_DEVICE_WRITES_BYTES;
     return {
       cloneDirectory,
       representativeSession: basename(options.representativeSessionPath),
@@ -988,10 +999,15 @@ async function runCertification(
 }
 
 async function main(): Promise<void> {
-  if (runCloneChildMode(process.argv.slice(2))) {
+  const argumentsList = process.argv.slice(2);
+  if (runCloneChildMode(argumentsList)) {
     return;
   }
-  const argumentsValue = readUnifiedSqliteCertificationArguments(process.argv.slice(2));
+  if (argumentsList.length === 1 && argumentsList[0] === '--help') {
+    process.stdout.write(`${USAGE}\n`);
+    return;
+  }
+  const argumentsValue = readUnifiedSqliteCertificationArguments(argumentsList);
   const report = await runCertification(argumentsValue);
   const sanitized = sanitizeUnifiedSqliteCertificationReport(report, {
     [argumentsValue.dataRoot]: '$DATA_ROOT',

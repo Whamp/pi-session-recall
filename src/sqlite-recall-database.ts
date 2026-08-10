@@ -24,7 +24,8 @@ export const SQLITE_RECALL_EMBEDDING_DIMENSIONS = 1_024;
 const SQLITE_RECALL_VECTOR_ENCODING = 'float32';
 const SQLITE_RECALL_DISTANCE_METRIC = 'cosine';
 const SQLITE_RECALL_PROJECT_BUCKET_COUNT = 16;
-const SQLITE_RECALL_VEC_PACKAGE_VERSION = '0.1.9';
+/** Exact sqlite-vec npm package version accepted by manifest version 8. */
+export const SQLITE_RECALL_VEC_PACKAGE_VERSION = '0.1.9';
 const SQLITE_RECALL_VEC_RUNTIME_VERSION = `v${SQLITE_RECALL_VEC_PACKAGE_VERSION}`;
 const SQLITE_RECALL_BUSY_TIMEOUT_MILLISECONDS = 5_000;
 
@@ -217,6 +218,13 @@ export interface SqliteRecallDatabaseCounts {
   denseProjects: number;
 }
 
+/** SQLite page allocation used to detect material churn growth on a disposable clone. */
+export interface SqliteRecallStorageMetrics {
+  pageSizeBytes: number;
+  pageCount: number;
+  freePageCount: number;
+}
+
 /** Parity diagnostics for dense metadata and its two required vec0 copies. */
 export interface SqliteRecallVectorParityDiagnostics {
   denseDocuments: number;
@@ -254,6 +262,11 @@ export interface SqliteRecallPhysicalSessionReplacement {
   invocations: readonly InvocationRecord[];
 }
 
+/** Clone-certification coordination at the transaction boundary; never use against active storage. */
+export interface SqliteRecallReplacementProbe {
+  beforeCommit?: () => void;
+}
+
 /** Deep persistence interface for one unified SQLite Recall database. */
 export interface SqliteRecallDatabase {
   readonly identity: Readonly<SqliteRecallDatabaseIdentity>;
@@ -274,8 +287,17 @@ export interface SqliteRecallDatabase {
   ): SqliteRecallInvocationSearchResult[];
   searchRecallSnapshot(request: SqliteRecallSearchRequest): Promise<SqliteRecallSearchSnapshot>;
   readCounts(): SqliteRecallDatabaseCounts;
+  readStorageMetrics(): SqliteRecallStorageMetrics;
+  /** Truncates clone WAL for certification measurements; unavailable on read-only connections. */
+  checkpointDisposableClone(): void;
   checkIntegrity(): SqliteRecallIntegrityDiagnostics;
-  replacePhysicalSession(replacement: SqliteRecallPhysicalSessionReplacement): void;
+  readPhysicalSessionReplacement(
+    sessionPath: string,
+  ): SqliteRecallPhysicalSessionReplacement | null;
+  replacePhysicalSession(
+    replacement: SqliteRecallPhysicalSessionReplacement,
+    probe?: SqliteRecallReplacementProbe,
+  ): void;
   deletePhysicalSession(sessionPath: string): boolean;
   close(): void;
 }
@@ -947,6 +969,14 @@ export function openSqliteRecallDatabase(
       JOIN dense_documents AS document ON document.rowid = nearest.rowid
       ORDER BY nearest.distance, document.document_id
     `);
+    const readSessionInvocations = database.prepare(`
+      SELECT kind, tool_name, tool_call_id, session_path, session_id, entry_id,
+             source_line_start, source_line_end, source_block_index, timestamp, session_origin,
+             project_identity, project_identity_source, is_error, searchable_text, 0.0 AS rank
+      FROM invocations
+      WHERE session_path = ?
+      ORDER BY entry_id, source_block_index
+    `);
     const searchInvocationCandidates = database.prepare(`
       SELECT invocation.*, bm25(invocations_fts) AS rank
       FROM invocations_fts
@@ -1315,6 +1345,20 @@ export function openSqliteRecallDatabase(
           denseProjects: readRequiredInteger(row, 'dense_projects'),
         };
       },
+      readStorageMetrics() {
+        const pageSize = database.prepare('PRAGMA page_size').get();
+        const pageCount = database.prepare('PRAGMA page_count').get();
+        const freePageCount = database.prepare('PRAGMA freelist_count').get();
+        return {
+          pageSizeBytes: readRequiredInteger(pageSize, 'page_size'),
+          pageCount: readRequiredInteger(pageCount, 'page_count'),
+          freePageCount: readRequiredInteger(freePageCount, 'freelist_count'),
+        };
+      },
+      checkpointDisposableClone() {
+        assertWritable('checkpointDisposableClone');
+        database.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+      },
       checkIntegrity() {
         return runSqliteRecallRead(database, () => {
           if (!readOnly) {
@@ -1386,7 +1430,33 @@ export function openSqliteRecallDatabase(
           };
         });
       },
-      replacePhysicalSession(replacement) {
+      readPhysicalSessionReplacement(sessionPath) {
+        const state = readPhysicalSessionState(sessionPath);
+        if (!state) {
+          return null;
+        }
+        return {
+          sessionPath,
+          size: state.size,
+          mtimeMs: state.mtimeMs,
+          documentIds: state.documentIds,
+          denseDocuments: state.denseDocumentIds.map((documentId) => {
+            const row = readDenseDocument.get(documentId);
+            return parseDenseDocumentMetadata(readRequiredString(row, 'metadata_json'), documentId);
+          }),
+          denseEmbeddings: new Map(
+            state.denseDocumentIds.map((documentId) => {
+              const row = readDenseVector.get(documentId);
+              if (!row || row.embedding === undefined) {
+                throw new Error(`SQLite Recall dense vector missing for ${documentId}`);
+              }
+              return [documentId, decodeDenseEmbedding(row.embedding, documentId)] as const;
+            }),
+          ),
+          invocations: readSessionInvocations.all(sessionPath).map(decodeInvocationSearchResult),
+        };
+      },
+      replacePhysicalSession(replacement, probe = {}) {
         assertWritable('replacePhysicalSession');
         const denseDocuments = prepareDenseDocuments(replacement);
         const currentDenseIds = new Set(denseDocuments.map(({ document }) => document.id));
@@ -1454,6 +1524,7 @@ export function openSqliteRecallDatabase(
             insertInvocation.run(...createInvocationPersistenceValues(invocation));
           }
           deleteOrphanProjects.run();
+          probe.beforeCommit?.();
         });
       },
       deletePhysicalSession(sessionPath) {

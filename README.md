@@ -270,6 +270,50 @@ An existing root `zvec/`, `index-state.json`, and version 6 manifest remain in p
 
 The tokenizer loader also keeps checksum-verified tokenizer assets under `tokenizers/`; these are replaceable inference inputs, not recall state. `operation.lock` exists only while `psr` owns the writer lock and is removed when the command exits. There is no embedding cache, generation registry, replay log, marker spool, or model-artifact cache.
 
+## Certify a staged version 8 database
+
+The certification command accepts one exact `generations/generation-...` target under an explicitly supplied data root. It opens that candidate and the flat-Zvec version 7 control read-only. It never activates the candidate or opens the Active recall database for writes.
+
+Run the read-only phase first. Omit `--output` until the measurements are ready to commit:
+
+```bash
+npm run certify:unified-sqlite-recall -- \
+  --data-root /exact/path/to/recall \
+  --candidate-target generations/generation-... \
+  --control-zvec /exact/path/to/flat-v7-zvec \
+  --project-identity git-origin:github.com/Whamp/pi-session-recall
+```
+
+The read-only phase checks the strict version 8 manifest, sqlite-vec 0.1.9 identity and Linux load, SQLite and projection integrity, counts, allocated database/WAL/SHM storage, fixed Dense and Invocation probes, exact Source provenance, and macOS package metadata and tarball contents. It exits 2 while clone gates remain pending. macOS package checks prove package availability only. macOS x64 and arm64 execution remain pending until the extension loads on those platforms.
+
+CAUTION: The next command deletes its per-run clone directory. Supply a dedicated scratch root that is disjoint from the recall data root. The command refuses to copy when scratch allocation would exceed 6 GiB or free space is below 240 GiB. It never mutates the candidate, the Active database, or canonical session JSONL.
+
+Run clone certification with one exact indexed Physical session and the Linux block device used for write measurement:
+
+```bash
+npm run certify:unified-sqlite-recall -- \
+  --data-root /exact/path/to/recall \
+  --candidate-target generations/generation-... \
+  --control-zvec /exact/path/to/flat-v7-zvec \
+  --project-identity git-origin:github.com/Whamp/pi-session-recall \
+  --scratch-root /exact/path/to/dedicated-certification-scratch \
+  --representative-session /exact/path/to/session.jsonl \
+  --block-device nvme0n1 \
+  --output docs/research/unified-sqlite-production-recall-certification.json
+```
+
+The clone phase checks concurrent-reader isolation, explicit rollback, SIGKILL recovery, one representative replacement, 100 replacements, device writes when Linux exposes them, file and free-page growth, and post-churn integrity and latency. `--output` writes sanitized JSON and Markdown only to `docs/research/unified-sqlite-production-recall-certification.*`. Do not commit a report until the real staged candidate has run.
+
+After this branch is merged and deployed, the following checks remain pending:
+
+1. Pause automatic indexing for the bounded activation window.
+2. Run `psr activate generations/generation-...` with the exact certified target.
+3. Run one immediate changed-session index.
+4. Run project, global, normal, and Source recall against the Active database.
+5. Confirm the hourly timer is active.
+6. Verify the retained version 6 rollback target and procedure without deleting it.
+7. Execute sqlite-vec loading on macOS x64 and arm64.
+
 ## Development validation
 
 ```bash

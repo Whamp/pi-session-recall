@@ -512,6 +512,20 @@ function createRecallFullTextQuery(query: string): ZVecFtsQuery {
   return { matchString: query };
 }
 
+/** Reads the persisted dense index type without exposing the underlying Zvec collection. */
+export function readZvecConversationDenseIndexType(databasePath: string): ZVecIndexType {
+  const collection = ZVecOpen(databasePath, { readOnly: true });
+  try {
+    const indexType = collection.schema.vector('embedding').indexParams?.indexType;
+    if (indexType === undefined) {
+      throw new Error(`Recall zvec dense index identity missing at ${databasePath}`);
+    }
+    return indexType;
+  } finally {
+    collection.closeSync();
+  }
+}
+
 /** Opens the durable zvec collection for dense-and-lexical and lexical-only recall evidence. */
 export function openZvecConversationStore(config: {
   databasePath: string;

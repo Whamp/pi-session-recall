@@ -26,6 +26,7 @@ import {
 const PSR_USAGE = [
   'psr usage: psr index [--rebuild] [--compact] [--no-optimize]',
   '           psr optimize',
+  '           psr rollback',
   '           psr auto-index install [--interval <N>m|<N>h] [--optimize-daily]',
   '           psr auto-index uninstall',
   '           psr ignore add <session-path>',
@@ -140,8 +141,34 @@ function formatRemainingTime(
   return `about ${formatDuration(remainingMs)} remaining`;
 }
 
+function formatRecallDatabaseTransition(result: RecallConversationIndexResult): string | null {
+  switch (result.databaseTransition.kind) {
+    case 'active-updated':
+      return null;
+    case 'candidate-activated':
+      return result.databaseTransition.previousAvailable
+        ? 'Database: activated; previous database available for rollback.'
+        : 'Database: activated; no previous database is available.';
+    case 'candidate-failed':
+      return 'Database: candidate failed; active database unchanged.';
+  }
+}
+
+function formatRecallSearchableDocumentLabel(result: RecallConversationIndexResult): string {
+  switch (result.databaseTransition.kind) {
+    case 'active-updated':
+      return 'Searchable documents';
+    case 'candidate-activated':
+      return 'Active searchable documents';
+    case 'candidate-failed':
+      return 'Candidate searchable documents';
+  }
+}
+
 function formatCompactRecallIndexSummary(result: RecallConversationIndexResult): string {
   const summary = result.indexSummary;
+  const databaseTransition = formatRecallDatabaseTransition(result);
+  const searchableDocumentLabel = formatRecallSearchableDocumentLabel(result).toLowerCase();
   const lines = [
     [
       `Indexed ${summary.indexedSessions} of ${summary.scannedSessions} sessions`,
@@ -149,9 +176,10 @@ function formatCompactRecallIndexSummary(result: RecallConversationIndexResult):
       `embedded ${summary.newlyEmbeddedChunks}`,
       `reused ${summary.reusedVectors} vectors`,
       `deleted ${summary.deletedChunks} documents`,
-      `${result.totalChunks} searchable documents`,
+      `${result.totalChunks} ${searchableDocumentLabel}`,
       `${summary.failedSessions.length} failed sessions`,
     ].join(' · '),
+    ...(databaseTransition ? [databaseTransition] : []),
     ...summary.failedSessions.map((failure) => `Failed: ${failure.sessionPath}: ${failure.error}`),
   ];
   return `${lines.join('\n')}\n`;
@@ -162,13 +190,16 @@ function formatReadableRecallIndexSummary(
   elapsedMs: number,
 ): string {
   const summary = result.indexSummary;
+  const databaseTransition = formatRecallDatabaseTransition(result);
+  const searchableDocumentLabel = formatRecallSearchableDocumentLabel(result);
   const lines = [
     'Summary',
     `  Elapsed: ${formatDuration(elapsedMs)}`,
     `  Sessions: ${ENGLISH_INTEGER_FORMAT.format(summary.indexedSessions)} indexed of ${ENGLISH_INTEGER_FORMAT.format(summary.scannedSessions)} scanned; ${ENGLISH_INTEGER_FORMAT.format(summary.removedSessions)} removed`,
     `  Documents: ${ENGLISH_INTEGER_FORMAT.format(summary.newlyEmbeddedChunks)} embedded; ${ENGLISH_INTEGER_FORMAT.format(summary.reusedVectors)} vectors reused; ${ENGLISH_INTEGER_FORMAT.format(summary.deletedChunks)} deleted`,
-    `  Searchable documents: ${ENGLISH_INTEGER_FORMAT.format(result.totalChunks)}`,
+    `  ${searchableDocumentLabel}: ${ENGLISH_INTEGER_FORMAT.format(result.totalChunks)}`,
     `  Failed sessions: ${ENGLISH_INTEGER_FORMAT.format(summary.failedSessions.length)}`,
+    ...(databaseTransition ? [`  ${databaseTransition}`] : []),
   ];
   if (summary.failedSessions.length > 0) {
     lines.push('', 'Failures');
@@ -192,6 +223,16 @@ function formatRecallIndexProgress(
       return 'Discovering physical session files...';
     case 'planning-maintenance-workset':
       return 'Planning maintenance workset...';
+    case 'preparing-rebuild-candidate':
+      return event.staleCandidatesRemoved === 0
+        ? 'Building candidate recall database beside the active database...'
+        : `Building candidate recall database beside the active database; ${formatCountedNoun(event.staleCandidatesRemoved, 'stale candidate database')} removed...`;
+    case 'rebuild-candidate-failed':
+      return 'Candidate recall database failed; active database remains unchanged.';
+    case 'rebuild-candidate-activated':
+      return event.previousAvailable
+        ? 'Candidate recall database activated; previous database remains available for rollback.'
+        : 'Candidate recall database activated; no previous database is available.';
     case 'maintenance-workset-planned': {
       const plannedFiles =
         event.newFiles + event.changedFiles + event.missingFiles + event.ignoredRemovals;
@@ -306,6 +347,22 @@ export async function runPsrCli(
         ? `Automatic recall indexing installed every ${interval.value}${interval.unit}; optimization scheduled daily at 23:00.\n`
         : `Automatic recall indexing installed every ${interval.value}${interval.unit}; optimization remains manual.\n`,
     );
+    return 0;
+  }
+
+  if (argumentsList[0] === 'rollback') {
+    if (argumentsList.length !== 1) {
+      throw new Error(PSR_USAGE);
+    }
+    const config = await dependencies.loadConfig();
+    await dependencies.createService(config).rollback({
+      onProgress(event) {
+        if (event.kind === 'waiting-for-write-lock') {
+          dependencies.writeProgress('Waiting for another recall index operation...\n');
+        }
+      },
+    });
+    dependencies.writeOutput('Previous recall database restored and now active.\n');
     return 0;
   }
 

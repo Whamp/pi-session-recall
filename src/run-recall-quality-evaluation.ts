@@ -146,6 +146,12 @@ function assertSafeRecallQualityPaths(
     baseConfig.statePath,
     baseConfig.manifestPath,
     baseConfig.lockPath,
+    ...(baseConfig.databaseGenerationRootPath
+      ? [
+          baseConfig.databaseGenerationRootPath,
+          join(dirname(baseConfig.databaseGenerationRootPath), 'active'),
+        ]
+      : []),
   ].map((path) => resolve(path));
   for (const protectedPath of protectedPaths) {
     if (
@@ -193,6 +199,7 @@ function createChunkPolicyConfig(
     indexMaintenanceStatusPath: join(policyDirectory, 'index-maintenance-status.json'),
     physicalSessionIgnoreStatePath: join(policyDirectory, 'physical-session-ignore.json'),
     lockPath: join(policyDirectory, 'operation.lock'),
+    databaseGenerationRootPath: join(policyDirectory, 'generations'),
     projectLineages: normalizeRecallProjectLineages(corpus.specification.projectLineages),
     chunkPolicy: {
       maxTokens: chunkPolicy.maxTokens,

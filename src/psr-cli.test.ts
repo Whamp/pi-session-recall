@@ -8,6 +8,7 @@ import type {
   RecallConversationConfig,
   RecallConversationIndexOptions,
   RecallConversationMaintenanceService,
+  RecallDatabaseTransition,
 } from './recall-conversation-service.js';
 import type { RecallIndexProgressEvent } from './recall-index-progress.js';
 import { runPsrCli } from './psr-cli.js';
@@ -23,10 +24,12 @@ function createPsrCliFixture(
     schedulerProcessResults?: Array<{ exitCode: number; stderr: string }>;
     physicalSessionIgnoreStatePath?: string;
     currentDirectory?: string;
+    databaseTransition?: RecallDatabaseTransition;
   } = {},
 ) {
   const calls: RecallConversationIndexOptions[] = [];
   const optimizeCalls: RecallConversationIndexOptions[] = [];
+  const rollbackCalls: RecallConversationIndexOptions[] = [];
   const output: string[] = [];
   const progressOutput: string[] = [];
   const executionLog: string[] = [];
@@ -65,6 +68,7 @@ function createPsrCliFixture(
       }
       return {
         totalChunks: 7,
+        databaseTransition: options.databaseTransition ?? { kind: 'active-updated' },
         indexSummary: {
           scannedSessions: 3,
           indexedSessions: 2,
@@ -83,10 +87,15 @@ function createPsrCliFixture(
       optimizeOptions?.onProgress?.({ kind: 'completed' });
       return { totalChunks: 7 };
     },
+    async rollback(rollbackOptions) {
+      rollbackCalls.push(rollbackOptions ?? {});
+      return { kind: 'previous-restored' as const };
+    },
   } satisfies RecallConversationMaintenanceService;
   return {
     calls,
     optimizeCalls,
+    rollbackCalls,
     output,
     progressOutput,
     executionLog,
@@ -236,6 +245,7 @@ void test('psr ignore rejects invalid subcommands and arity with the complete us
   const usage = [
     'psr usage: psr index [--rebuild] [--compact] [--no-optimize]',
     '           psr optimize',
+    '           psr rollback',
     '           psr auto-index install [--interval <N>m|<N>h] [--optimize-daily]',
     '           psr auto-index uninstall',
     '           psr ignore add <session-path>',
@@ -667,6 +677,47 @@ void test('psr index --rebuild explicitly replaces the index', async () => {
     { ...fixture.calls[0], onProgress: typeof fixture.calls[0]?.onProgress },
     { rebuild: true, optimize: false, onProgress: 'function' },
   );
+});
+
+void test('psr rebuild output distinguishes activated, previous, stale, and failed databases', async () => {
+  const activated = createPsrCliFixture(
+    [
+      { kind: 'preparing-rebuild-candidate', staleCandidatesRemoved: 2 },
+      { kind: 'rebuild-candidate-activated', previousAvailable: true },
+    ],
+    {
+      databaseTransition: {
+        kind: 'candidate-activated',
+        previousAvailable: true,
+        staleCandidatesRemoved: 2,
+      },
+    },
+  );
+  assert.equal(await runPsrCli(['index', '--rebuild'], activated.dependencies), 0);
+  assert.match(activated.progressOutput.join(''), /candidate recall database/iu);
+  assert.match(activated.progressOutput.join(''), /2 stale candidate databases removed/iu);
+  assert.match(activated.progressOutput.join(''), /candidate recall database activated/iu);
+  assert.match(activated.output.join(''), /Active searchable documents: 7/iu);
+  assert.match(activated.output.join(''), /Database: activated; previous database available/iu);
+
+  const failed = createPsrCliFixture([{ kind: 'rebuild-candidate-failed' }], {
+    failedSessions: [{ sessionPath: '/sessions/damaged.jsonl', error: 'damaged' }],
+    databaseTransition: { kind: 'candidate-failed', staleCandidatesRemoved: 0 },
+  });
+  assert.equal(await runPsrCli(['index', '--rebuild'], failed.dependencies), 1);
+  assert.match(failed.progressOutput.join(''), /candidate recall database failed/iu);
+  assert.match(failed.output.join(''), /Candidate searchable documents: 7/iu);
+  assert.match(failed.output.join(''), /Database: candidate failed; active database unchanged/iu);
+});
+
+void test('psr rollback restores the previous database under the maintenance service', async () => {
+  const fixture = createPsrCliFixture();
+
+  assert.equal(await runPsrCli(['rollback'], fixture.dependencies), 0);
+
+  assert.equal(fixture.rollbackCalls.length, 1);
+  assert.equal(fixture.output.join(''), 'Previous recall database restored and now active.\n');
+  assert.deepEqual(fixture.calls, []);
 });
 
 void test('psr auto-index install defaults to update-only indexing', async () => {

@@ -28,7 +28,8 @@ psr index --rebuild
 
 ```bash
 psr index                                      # add, update, and remove changed session evidence
-psr index --rebuild                            # replace incompatible or damaged index state
+psr index --rebuild                            # build and atomically activate a replacement database
+psr rollback                                   # restore the immediately previous database
 psr index --compact                            # keep the former one-line stdout summary
 psr optimize                                   # explicitly optimize existing zvec data
 psr auto-index install                         # update hourly without optimization
@@ -51,6 +52,10 @@ psr ignore remove path/to/session.jsonl         # make one exact path eligible a
 - reports malformed eligible session files and continues with healthy files;
 - shows elapsed time and estimates time remaining after a healthy file completes;
 - leaves collection optimization to the explicit `psr optimize` command.
+
+`psr index --rebuild` builds a candidate recall database beside the active database. A fatal error, cancellation, or failed session leaves normal recall on the active database. A successful rebuild closes and verifies the candidate, then atomically makes it active. The replaced database remains available to `psr rollback`. The next rebuild removes failed or interrupted candidates but never removes the previous database.
+
+The first rebuild after upgrading safely adopts the current unversioned layout. It remains active while the candidate builds and becomes the previous database after activation. Run `psr rollback` to restore it without rebuilding. Existing installations can keep using the unversioned database until they run `psr index --rebuild`.
 
 The estimate uses the observed rate of healthy files in the current run. Until enough work completes, the command says that it is calculating the estimate rather than inventing an initial duration. `--compact` preserves the former one-line completed summary and `Failed: ...` lines on stdout; progress remains on stderr. The legacy `--no-optimize` flag remains accepted as a compatibility alias for ordinary update-only indexing.
 
@@ -82,7 +87,7 @@ The generated definitions run the equivalent of:
 <absolute-node> --import tsx <absolute-package-root>/bin/psr optimize
 ```
 
-Both commands use the same writer lock, so an update and optional optimization cannot write concurrently. Generated definitions do not copy `PI_RECALL_*` overrides from the installation shell. Scheduled runs use the durable recall configuration file and normal defaults.
+Indexing, candidate activation, rollback, optimization, and search use the same writer lock. A writer cannot switch databases while another writer is active, and search never opens a database while the lock is held. Generated definitions do not copy `PI_RECALL_*` overrides from the installation shell. Scheduled runs use the durable recall configuration file and normal defaults.
 
 On Linux, default installation writes one systemd user service and timer under `${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/`. `--optimize-daily` adds a second service and timer. Installation starts the selected timers, then attempts one immediate index run. If that run fails, installation warns but leaves the timers active. Read logs with:
 
@@ -255,19 +260,22 @@ Environment overrides:
 
 ## Local state
 
-Durable recall state contains only:
+After the first generation rebuild, durable recall state has this shape:
 
 ```text
 ~/.pi/agent/recall/
-├── zvec/
-├── index-state.json
-├── index-manifest.json
+├── active -> generations/generation-.../
+├── generations/
+│   ├── generation-.../              # active recall database
+│   └── generation-.../              # retained previous recall database
 └── physical-session-ignore.json
 ```
 
-The tokenizer loader also keeps checksum-verified tokenizer assets under `tokenizers/`; these are replaceable inference inputs, not recall state. `operation.lock` exists only while `psr` owns the writer lock and is removed when the command exits.
+Each generation contains `zvec/`, `index-state.json`, `index-manifest.json`, and `index-maintenance-status.json`. Failed or interrupted rebuilds can leave a `candidate-.../` directory. The next rebuild removes stale candidates. It does not remove completed generations.
 
-There is no embedding cache, projection database, generation registry, active pointer, activation protocol, replay log, rollback state, marker spool, or model-artifact cache.
+An existing unversioned `zvec/`, `index-state.json`, and `index-manifest.json` remain in place during the first rebuild. The activated generation records that layout as its previous database, so `psr rollback` can atomically point `active` back to it.
+
+The tokenizer loader also keeps checksum-verified tokenizer assets under `tokenizers/`; these are replaceable inference inputs, not recall state. `operation.lock` exists only while `psr` owns the writer lock and is removed when the command exits. There is no embedding cache, projection database, generation registry, replay log, marker spool, or model-artifact cache.
 
 ## Development validation
 

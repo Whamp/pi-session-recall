@@ -4,6 +4,9 @@ export type RecallIndexProgressEvent =
   | { kind: 'waiting-for-write-lock' }
   | { kind: 'discovering-physical-session-files' }
   | { kind: 'planning-maintenance-workset' }
+  | { kind: 'preparing-rebuild-candidate'; staleCandidatesRemoved: number }
+  | { kind: 'rebuild-candidate-failed' }
+  | { kind: 'rebuild-candidate-activated'; previousAvailable: boolean }
   | {
       kind: 'maintenance-workset-planned';
       discoveredFiles: number;

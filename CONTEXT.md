@@ -116,8 +116,24 @@ _Avoid_: Index state, configuration
 The first configured dimensions of one native Octen vector, L2-normalized and stored as FP32 for inner-product search.
 _Avoid_: Raw embedding, independently verified MRL vector
 
+**Recall database**:
+One complete, searchable set of index data, incremental state, manifest, and maintenance status.
+_Avoid_: Zvec collection, index file
+
+**Candidate recall database**:
+A Recall database that `psr index --rebuild` builds beside the Active recall database. It cannot serve normal search until a successful rebuild activates it.
+_Avoid_: Temporary index, partial active database
+
+**Active recall database**:
+The Recall database used by normal indexing, optimization, and search. Activation replaces its pointer atomically after a Candidate recall database completes successfully.
+_Avoid_: Latest database, production directory
+
+**Previous recall database**:
+The Recall database that immediately preceded the Active recall database. `psr rollback` can restore it without rebuilding it, and maintenance never removes it automatically.
+_Avoid_: Backup, stale candidate
+
 **Index maintenance**:
-One standalone `psr index` operation that scans physical session files and updates one zvec collection. An operator or opt-in user schedule may start it. `psr index --rebuild` replaces incompatible index state.
+One standalone `psr index` operation that scans physical session files and updates the Active recall database. An operator or opt-in user schedule may start it. `psr index --rebuild` builds and activates a Candidate recall database without modifying the Active recall database.
 _Avoid_: Live ingestion, lifecycle reconciliation
 
 **Maintenance workset**:

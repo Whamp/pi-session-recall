@@ -18,6 +18,14 @@ import { listIgnoredPhysicalSessionPaths } from './physical-session-ignore.js';
 import type { RecallIndexProgressEvent } from './recall-index-progress.js';
 import { createOctenHttpEmbeddingProvider } from './octen-http-embedding-provider.js';
 import type { RecallChunkPolicy } from './recall-chunk-policy.js';
+import {
+  activateRecallDatabaseCandidate,
+  createRecallDatabaseCandidate,
+  resolveActiveRecallDatabasePaths,
+  restorePreviousRecallDatabase,
+  type RecallDatabaseCandidate,
+  type RecallDatabasePaths,
+} from './recall-database-generation.js';
 import type { RecallEmbeddingProvider } from './recall-inference-capabilities.js';
 import {
   assertRecallIndexManifestCompatible,
@@ -62,6 +70,7 @@ export interface RecallConversationConfig {
   physicalSessionIgnoreStatePath: string;
   tokenizerCacheDirectory: string;
   lockPath: string;
+  databaseGenerationRootPath?: string;
   embeddingBaseUrl: string;
   embeddingModel: string;
   embeddingServedModelId: string;
@@ -125,10 +134,22 @@ export interface RecallConversationOptimizeOptions {
   onProgress?: (event: RecallIndexProgressEvent) => void;
 }
 
-/** Counts from one completed standalone index update. */
+/** Database state after one completed standalone index update. */
+export type RecallDatabaseTransition =
+  | { kind: 'active-updated' }
+  | { kind: 'candidate-activated'; previousAvailable: boolean; staleCandidatesRemoved: number }
+  | { kind: 'candidate-failed'; staleCandidatesRemoved: number };
+
+/** Counts and database activation state from one completed standalone index update. */
 export interface RecallConversationIndexResult {
   indexSummary: ConversationIndexSummary;
   totalChunks: number;
+  databaseTransition: RecallDatabaseTransition;
+}
+
+/** Result of restoring the database immediately preceding the active generation. */
+export interface RecallConversationRollbackResult {
+  kind: 'previous-restored';
 }
 
 /** Counts from one standalone zvec optimization. */
@@ -146,9 +167,10 @@ export interface RecallConversationService {
   index(options?: RecallConversationIndexOptions): Promise<RecallConversationIndexResult>;
 }
 
-/** Standalone collection optimization capability used only by `psr`. */
+/** Standalone collection maintenance capabilities used only by `psr`. */
 export interface RecallConversationMaintenanceService extends RecallConversationService {
   optimize(options?: RecallConversationOptimizeOptions): Promise<RecallConversationOptimizeResult>;
+  rollback(options?: RecallConversationOptimizeOptions): Promise<RecallConversationRollbackResult>;
 }
 
 /** Injectable boundaries for public-seam tests and bounded evaluation. */
@@ -156,7 +178,7 @@ export interface RecallConversationDependencies {
   embeddingProvider?: RecallEmbeddingProvider;
   tokenizerIdentity?: RecallTokenizerManifestIdentity;
   loadTokenizer?: () => Promise<ConversationTextTokenizer>;
-  openStore?: (mode: 'read' | 'write') => ZvecConversationStore;
+  openStore?: (mode: 'read' | 'write', databasePath: string) => ZvecConversationStore;
   resolveProjectIdentity?: (workingDirectory: string) => Promise<ResolvedProjectIdentity | null>;
   getCurrentTime?: () => Date;
 }
@@ -291,9 +313,9 @@ export function createRecallConversationService(
   const getCurrentTime = dependencies.getCurrentTime ?? (() => new Date());
   const openStore =
     dependencies.openStore ??
-    ((mode) =>
+    ((mode, databasePath) =>
       openZvecConversationStore({
-        databasePath: config.databasePath,
+        databasePath,
         dimensions: config.embeddingStoredDimensions,
         createIfMissing: mode === 'write',
         readOnly: mode === 'read',
@@ -316,26 +338,26 @@ export function createRecallConversationService(
     return tokenizer;
   }
 
-  async function readCompatibleManifest(): Promise<RecallIndexManifest> {
-    const actual = await readRecallIndexManifest(config.manifestPath);
+  async function readCompatibleManifest(paths: RecallDatabasePaths): Promise<RecallIndexManifest> {
+    const actual = await readRecallIndexManifest(paths.manifestPath);
     const expected = createExpectedManifest();
-    assertRecallIndexManifestCompatible(actual, expected, config.manifestPath);
+    assertRecallIndexManifestCompatible(actual, expected, paths.manifestPath);
     return actual;
   }
 
-  async function prepareIndexManifest(): Promise<RecallIndexManifest> {
-    const actual = await readRecallIndexManifest(config.manifestPath);
+  async function prepareIndexManifest(paths: RecallDatabasePaths): Promise<RecallIndexManifest> {
+    const actual = await readRecallIndexManifest(paths.manifestPath);
     const expected = createExpectedManifest();
-    if (!actual && (existsSync(config.databasePath) || existsSync(config.statePath))) {
+    if (!actual && (existsSync(paths.databasePath) || existsSync(paths.statePath))) {
       throw new Error(
-        `Recall index manifest missing at ${config.manifestPath} for existing index data; rebuild with psr index --rebuild`,
+        `Recall index manifest missing at ${paths.manifestPath} for existing index data; rebuild with psr index --rebuild`,
       );
     }
     if (actual) {
-      assertRecallIndexManifestCompatible(actual, expected, config.manifestPath);
+      assertRecallIndexManifestCompatible(actual, expected, paths.manifestPath);
       return actual;
     }
-    await writeRecallIndexManifest(config.manifestPath, expected);
+    await writeRecallIndexManifest(paths.manifestPath, expected);
     return expected;
   }
 
@@ -346,9 +368,10 @@ export function createRecallConversationService(
         throw new Error('Recall query must not be blank');
       }
       const scope = options.scope ?? RecallSearchScope.PROJECT;
-      await readCompatibleManifest();
+      const activePaths = await resolveActiveRecallDatabasePaths(config);
+      await readCompatibleManifest(activePaths);
       const indexMaintenanceStatus = await readRecallIndexMaintenanceStatus(
-        config.indexMaintenanceStatusPath,
+        activePaths.indexMaintenanceStatusPath,
       );
       await assertRecallIndexUnlockedForSearch(config.lockPath);
       if (scope === RecallSearchScope.PROJECT && !options.invocationDirectory) {
@@ -366,7 +389,7 @@ export function createRecallConversationService(
         scope === RecallSearchScope.PROJECT ? invocationProject?.projectIdentity : undefined;
       const queryEmbedding = await embeddingProvider.embedQuery(searchQuery, options.signal);
       await assertRecallIndexUnlockedForSearch(config.lockPath);
-      const store = openStore('read');
+      const store = openStore('read', activePaths.databasePath);
       try {
         const fusedCandidates = fuseRecallSearchCandidates(
           {
@@ -439,11 +462,12 @@ export function createRecallConversationService(
       );
       let store: ZvecConversationStore | undefined;
       try {
-        await readCompatibleManifest();
-        if (!existsSync(config.databasePath)) {
-          throw new Error(`Recall index database missing at ${config.databasePath}`);
+        const activePaths = await resolveActiveRecallDatabasePaths(config);
+        await readCompatibleManifest(activePaths);
+        if (!existsSync(activePaths.databasePath)) {
+          throw new Error(`Recall index database missing at ${activePaths.databasePath}`);
         }
-        store = openStore('write');
+        store = openStore('write', activePaths.databasePath);
         options.onProgress?.({ kind: 'optimizing-collection' });
         await store.optimize();
         if (options.signal?.aborted) {
@@ -469,24 +493,38 @@ export function createRecallConversationService(
           : undefined,
       );
       let store: ZvecConversationStore | undefined;
+      let candidate: RecallDatabaseCandidate | undefined;
       try {
         const ignoredPhysicalSessionPaths: ReadonlySet<string> = new Set(
           await listIgnoredPhysicalSessionPaths(config.physicalSessionIgnoreStatePath),
         );
-        if (options.rebuild) {
-          await rm(config.indexMaintenanceStatusPath, { force: true });
-          await rm(config.databasePath, { recursive: true, force: true });
-          await rm(config.statePath, { force: true });
-          await rm(config.manifestPath, { force: true });
+        candidate =
+          options.rebuild && config.databaseGenerationRootPath
+            ? await createRecallDatabaseCandidate(config)
+            : undefined;
+        if (candidate) {
+          options.onProgress?.({
+            kind: 'preparing-rebuild-candidate',
+            staleCandidatesRemoved: candidate.staleCandidatesRemoved,
+          });
+        }
+        const activePaths = candidate
+          ? candidate.paths
+          : await resolveActiveRecallDatabasePaths(config);
+        if (options.rebuild && !candidate) {
+          await rm(activePaths.indexMaintenanceStatusPath, { force: true });
+          await rm(activePaths.databasePath, { recursive: true, force: true });
+          await rm(activePaths.statePath, { force: true });
+          await rm(activePaths.manifestPath, { force: true });
         }
         const [manifest, conversationTokenizer] = await Promise.all([
-          prepareIndexManifest(),
+          prepareIndexManifest(activePaths),
           getTokenizer(),
         ]);
-        store = openStore('write');
+        store = openStore('write', activePaths.databasePath);
         const indexSummary = await indexChangedConversationSessions({
           sessionsDirectory: config.sessionsDirectory,
-          statePath: config.statePath,
+          statePath: activePaths.statePath,
           store,
           embeddingProvider,
           tokenizer: conversationTokenizer,
@@ -515,16 +553,60 @@ export function createRecallConversationService(
             cause: options.signal.reason,
           });
         }
-        await writeRecallIndexMaintenanceStatus(config.indexMaintenanceStatusPath, {
+        await writeRecallIndexMaintenanceStatus(activePaths.indexMaintenanceStatusPath, {
           version: 1,
           completedAt: getCurrentTime().toISOString(),
           scannedSessions: indexSummary.scannedSessions,
           failedSessions: indexSummary.failedSessions.length,
         });
+        store.close();
+        store = undefined;
+        let databaseTransition: RecallDatabaseTransition = { kind: 'active-updated' };
+        if (candidate) {
+          if (indexSummary.failedSessions.length > 0) {
+            options.onProgress?.({ kind: 'rebuild-candidate-failed' });
+            databaseTransition = {
+              kind: 'candidate-failed',
+              staleCandidatesRemoved: candidate.staleCandidatesRemoved,
+            };
+          } else {
+            const activation = await activateRecallDatabaseCandidate(config, candidate);
+            options.onProgress?.({
+              kind: 'rebuild-candidate-activated',
+              previousAvailable: activation.previousAvailable,
+            });
+            databaseTransition = {
+              kind: 'candidate-activated',
+              previousAvailable: activation.previousAvailable,
+              staleCandidatesRemoved: candidate.staleCandidatesRemoved,
+            };
+          }
+        }
         options.onProgress?.({ kind: 'completed' });
-        return { indexSummary, totalChunks };
+        return { indexSummary, totalChunks, databaseTransition };
+      } catch (error) {
+        if (candidate) {
+          options.onProgress?.({ kind: 'rebuild-candidate-failed' });
+        }
+        throw error;
       } finally {
         store?.close();
+        await releaseLock();
+      }
+    },
+
+    async rollback(options = {}) {
+      const releaseLock = await acquireRecallConversationLock(
+        config.lockPath,
+        options.signal,
+        options.onProgress
+          ? () => options.onProgress?.({ kind: 'waiting-for-write-lock' })
+          : undefined,
+      );
+      try {
+        await restorePreviousRecallDatabase(config);
+        return { kind: 'previous-restored' };
+      } finally {
         await releaseLock();
       }
     },

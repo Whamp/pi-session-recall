@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readlink, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -118,6 +118,7 @@ void test('recall quality runner indexes and searches only the bounded declared 
     physicalSessionIgnoreStatePath: join(directory, 'unused-physical-session-ignore.json'),
     tokenizerCacheDirectory: join(directory, 'unused-tokenizers'),
     lockPath: join(directory, 'unused.lock'),
+    databaseGenerationRootPath: join(directory, 'unused-generations'),
     embeddingBaseUrl: 'http://unused.test/v1',
     embeddingModel: 'test-embedding',
     embeddingServedModelId: 'test-embedding-served',
@@ -128,6 +129,10 @@ void test('recall quality runner indexes and searches only the bounded declared 
     searchCandidateLimits: { dense: 8, lexical: 8, identifier: 8 },
     chunkPolicy: { maxTokens: 512, overlapTokens: 64 },
   };
+  const baseGenerationTarget = 'unused-generations/existing-generation';
+  await mkdir(join(directory, baseGenerationTarget), { recursive: true });
+  await symlink(baseGenerationTarget, join(directory, 'active'), 'dir');
+
   const embeddingProvider: RecallEmbeddingProvider = {
     async embedQuery() {
       return [1, 0, 0];
@@ -183,6 +188,8 @@ void test('recall quality runner indexes and searches only the bounded declared 
   assert.deepEqual(result.configurations[0]?.measurement.policyFailureCaseIds, []);
   assert.deepEqual(result.configurations[0]?.measurement.queryLatencyByScope.global, null);
   assert.ok(result.configurations[0]?.measurement.queryLatencyByScope.project);
+  assert.equal(await readlink(join(directory, 'active')), baseGenerationTarget);
+  assert.deepEqual(await readdir(join(directory, baseGenerationTarget)), []);
 
   await assert.rejects(
     () =>

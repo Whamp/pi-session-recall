@@ -109,6 +109,7 @@ export async function loadRecallConversationConfig(
     physicalSessionIgnoreStatePath: join(dataDirectory, 'physical-session-ignore.json'),
     tokenizerCacheDirectory: join(dataDirectory, 'tokenizers'),
     lockPath: join(dataDirectory, 'operation.lock'),
+    databaseGenerationRootPath: join(dataDirectory, 'generations'),
     embeddingBaseUrl:
       environment.PI_RECALL_EMBEDDING_BASE_URL ??
       file.embeddingBaseUrl ??

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, readlink, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import test from 'node:test';
 
 import { RecallProjectIdentitySource, RecallSearchScope } from './enums.js';
@@ -46,7 +46,10 @@ const TEST_EMBEDDING_PROVIDER: RecallEmbeddingProvider = {
   },
 };
 
-function createTestConfig(root: string): RecallConversationConfig {
+function createTestConfig(
+  root: string,
+  options: { databaseGenerations?: boolean } = {},
+): RecallConversationConfig {
   const data = join(root, 'recall');
   return {
     sessionsDirectory: join(root, 'sessions'),
@@ -57,6 +60,9 @@ function createTestConfig(root: string): RecallConversationConfig {
     physicalSessionIgnoreStatePath: join(data, 'physical-session-ignore.json'),
     tokenizerCacheDirectory: join(data, 'tokenizers'),
     lockPath: join(data, 'operation.lock'),
+    ...(options.databaseGenerations
+      ? { databaseGenerationRootPath: join(data, 'generations') }
+      : {}),
     embeddingBaseUrl: 'http://127.0.0.1:8090/v1',
     embeddingModel: 'octen-test',
     embeddingServedModelId: 'Octen/Octen-Embedding-4B',
@@ -107,6 +113,250 @@ async function writeConversationSession(
     ]),
   );
 }
+
+void test('successful rebuild atomically activates a candidate and rollback restores the previous database', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-generation-activation-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const config = createTestConfig(root, { databaseGenerations: true });
+  const sessionPath = join(config.sessionsDirectory, 'one.jsonl');
+  await writeConversationSession(sessionPath, 'ORIGINAL_GENERATION_EVIDENCE');
+  const service = createRecallConversationService(config, {
+    embeddingProvider: TEST_EMBEDDING_PROVIDER,
+    loadTokenizer: async () => tokenizer,
+  });
+
+  const first = await service.index({ rebuild: true });
+  const firstActiveTarget = await readlink(join(root, 'recall', 'active'));
+  assert.equal(first.databaseTransition.kind, 'candidate-activated');
+  assert.equal(first.databaseTransition.previousAvailable, false);
+
+  await writeConversationSession(sessionPath, 'REPLACEMENT_GENERATION_EVIDENCE');
+  const second = await service.index({ rebuild: true });
+  const secondActiveTarget = await readlink(join(root, 'recall', 'active'));
+  assert.equal(second.databaseTransition.kind, 'candidate-activated');
+  assert.equal(second.databaseTransition.previousAvailable, true);
+  assert.notEqual(secondActiveTarget, firstActiveTarget);
+  const replacementSearch = await service.search('REPLACEMENT_GENERATION_EVIDENCE', 5, {
+    scope: RecallSearchScope.GLOBAL,
+  });
+  assert.match(replacementSearch.results[0]?.content ?? '', /REPLACEMENT_GENERATION_EVIDENCE/u);
+
+  const rollback = await service.rollback();
+  assert.equal(rollback.kind, 'previous-restored');
+  assert.equal(await readlink(join(root, 'recall', 'active')), firstActiveTarget);
+  const restoredSearch = await service.search('ORIGINAL_GENERATION_EVIDENCE', 5, {
+    scope: RecallSearchScope.GLOBAL,
+  });
+  assert.match(restoredSearch.results[0]?.content ?? '', /ORIGINAL_GENERATION_EVIDENCE/u);
+});
+
+void test('fatal and interrupted rebuilds leave the active database unchanged', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-generation-failure-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const config = createTestConfig(root, { databaseGenerations: true });
+  const sessionPath = join(config.sessionsDirectory, 'one.jsonl');
+  await writeConversationSession(sessionPath, 'STABLE_ACTIVE_EVIDENCE');
+  const stableService = createRecallConversationService(config, {
+    embeddingProvider: TEST_EMBEDDING_PROVIDER,
+    loadTokenizer: async () => tokenizer,
+  });
+  await stableService.index({ rebuild: true });
+  const stableTarget = await readlink(join(root, 'recall', 'active'));
+
+  await writeConversationSession(sessionPath, 'FAILED_CANDIDATE_EVIDENCE');
+  const failingService = createRecallConversationService(config, {
+    embeddingProvider: {
+      ...TEST_EMBEDDING_PROVIDER,
+      async embedDocuments() {
+        throw new Error('Candidate embedding failed');
+      },
+    },
+    loadTokenizer: async () => tokenizer,
+  });
+  await assert.rejects(failingService.index({ rebuild: true }), /Candidate embedding failed/u);
+  assert.equal(await readlink(join(root, 'recall', 'active')), stableTarget);
+
+  const abortController = new AbortController();
+  const interruptedService = createRecallConversationService(config, {
+    embeddingProvider: {
+      ...TEST_EMBEDDING_PROVIDER,
+      async embedDocuments(documents, signal) {
+        void documents;
+        abortController.abort(new Error('Candidate rebuild interrupted'));
+        signal?.throwIfAborted();
+        return [];
+      },
+    },
+    loadTokenizer: async () => tokenizer,
+  });
+  await assert.rejects(
+    interruptedService.index({ rebuild: true, signal: abortController.signal }),
+    /Candidate rebuild interrupted/u,
+  );
+  assert.equal(await readlink(join(root, 'recall', 'active')), stableTarget);
+  const search = await stableService.search('STABLE_ACTIVE_EVIDENCE', 5, {
+    scope: RecallSearchScope.GLOBAL,
+  });
+  assert.match(search.results[0]?.content ?? '', /STABLE_ACTIVE_EVIDENCE/u);
+});
+
+void test('failed candidate stays inactive and the next rebuild removes stale candidates', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-generation-stale-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const config = createTestConfig(root, { databaseGenerations: true });
+  const sessionPath = join(config.sessionsDirectory, 'one.jsonl');
+  await writeConversationSession(sessionPath, 'ACTIVE_BEFORE_FAILED_CANDIDATE');
+  const service = createRecallConversationService(config, {
+    embeddingProvider: TEST_EMBEDDING_PROVIDER,
+    loadTokenizer: async () => tokenizer,
+  });
+  await service.index({ rebuild: true });
+  const activeBeforeFailure = await readlink(join(root, 'recall', 'active'));
+  await writeFile(join(config.sessionsDirectory, 'damaged.jsonl'), 'not JSON\n', 'utf8');
+
+  const failed = await service.index({ rebuild: true });
+  assert.equal(failed.databaseTransition.kind, 'candidate-failed');
+  assert.equal(await readlink(join(root, 'recall', 'active')), activeBeforeFailure);
+  assert.equal(
+    (await readdir(config.databaseGenerationRootPath ?? '')).filter((name) =>
+      name.startsWith('candidate-'),
+    ).length,
+    1,
+  );
+
+  await rm(join(config.sessionsDirectory, 'damaged.jsonl'));
+  await writeConversationSession(sessionPath, 'ACTIVE_AFTER_STALE_CLEANUP');
+  const recovered = await service.index({ rebuild: true });
+  assert.deepEqual(recovered.databaseTransition, {
+    kind: 'candidate-activated',
+    previousAvailable: true,
+    staleCandidatesRemoved: 1,
+  });
+  assert.equal(
+    (await readdir(config.databaseGenerationRootPath ?? '')).filter((name) =>
+      name.startsWith('candidate-'),
+    ).length,
+    0,
+  );
+});
+
+void test('rollback rejects missing previous databases without changing the active pointer', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-generation-missing-previous-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const config = createTestConfig(root, { databaseGenerations: true });
+  const sessionPath = join(config.sessionsDirectory, 'one.jsonl');
+  await writeConversationSession(sessionPath, 'FIRST_GENERATION');
+  const service = createRecallConversationService(config, {
+    embeddingProvider: TEST_EMBEDDING_PROVIDER,
+    loadTokenizer: async () => tokenizer,
+  });
+  await service.index({ rebuild: true });
+  await assert.rejects(service.rollback(), /No previous recall database/u);
+
+  const firstTarget = await readlink(join(root, 'recall', 'active'));
+  await writeConversationSession(sessionPath, 'SECOND_GENERATION');
+  await service.index({ rebuild: true });
+  const secondTarget = await readlink(join(root, 'recall', 'active'));
+  await rm(resolve(join(root, 'recall'), firstTarget), { recursive: true, force: true });
+
+  await assert.rejects(service.rollback(), /Previous recall database is missing/u);
+  assert.equal(await readlink(join(root, 'recall', 'active')), secondTarget);
+});
+
+void test('first generation rebuild adopts a legacy database as rollback state', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-generation-legacy-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const legacyConfig = createTestConfig(root);
+  const sessionPath = join(legacyConfig.sessionsDirectory, 'one.jsonl');
+  await writeConversationSession(sessionPath, 'LEGACY_DATABASE_EVIDENCE');
+  const legacyService = createRecallConversationService(legacyConfig, {
+    embeddingProvider: TEST_EMBEDDING_PROVIDER,
+    loadTokenizer: async () => tokenizer,
+  });
+  await legacyService.index({ rebuild: true });
+
+  await writeConversationSession(sessionPath, 'GENERATION_DATABASE_EVIDENCE');
+  const generationConfig = createTestConfig(root, { databaseGenerations: true });
+  const generationService = createRecallConversationService(generationConfig, {
+    embeddingProvider: TEST_EMBEDDING_PROVIDER,
+    loadTokenizer: async () => tokenizer,
+  });
+  const rebuilt = await generationService.index({ rebuild: true });
+  assert.equal(rebuilt.databaseTransition.kind, 'candidate-activated');
+  assert.equal(rebuilt.databaseTransition.previousAvailable, true);
+
+  await generationService.rollback();
+  assert.equal(await readlink(join(root, 'recall', 'active')), '.');
+  const search = await generationService.search('LEGACY_DATABASE_EVIDENCE', 5, {
+    scope: RecallSearchScope.GLOBAL,
+  });
+  assert.match(search.results[0]?.content ?? '', /LEGACY_DATABASE_EVIDENCE/u);
+});
+
+void test('rebuild activation, rollback, and search respect the shared writer lock', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-generation-lock-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const config = createTestConfig(root, { databaseGenerations: true });
+  const sessionPath = join(config.sessionsDirectory, 'one.jsonl');
+  await writeConversationSession(sessionPath, 'LOCKED_ACTIVE_EVIDENCE');
+  const stableService = createRecallConversationService(config, {
+    embeddingProvider: TEST_EMBEDDING_PROVIDER,
+    loadTokenizer: async () => tokenizer,
+  });
+  await stableService.index({ rebuild: true });
+  const stableTarget = await readlink(join(root, 'recall', 'active'));
+
+  await writeConversationSession(sessionPath, 'LOCKED_CANDIDATE_EVIDENCE');
+  let releaseEmbedding: (() => void) | undefined;
+  const embeddingReleased = new Promise<void>((resolveEmbedding) => {
+    releaseEmbedding = resolveEmbedding;
+  });
+  let reportEmbeddingStarted: (() => void) | undefined;
+  const embeddingStarted = new Promise<void>((resolveStarted) => {
+    reportEmbeddingStarted = resolveStarted;
+  });
+  const rebuildingService = createRecallConversationService(config, {
+    embeddingProvider: {
+      ...TEST_EMBEDDING_PROVIDER,
+      async embedDocuments(documents) {
+        reportEmbeddingStarted?.();
+        await embeddingReleased;
+        return documents.map(createTestEmbeddingVector);
+      },
+    },
+    loadTokenizer: async () => tokenizer,
+  });
+  const rebuild = rebuildingService.index({ rebuild: true });
+  await embeddingStarted;
+  await assert.rejects(
+    stableService.search('LOCKED_ACTIVE_EVIDENCE', 5, { scope: RecallSearchScope.GLOBAL }),
+    /Recall index write lock/u,
+  );
+  assert.equal(await readlink(join(root, 'recall', 'active')), stableTarget);
+  releaseEmbedding?.();
+  await rebuild;
+
+  const activatedTarget = await readlink(join(root, 'recall', 'active'));
+  const abortController = new AbortController();
+  await mkdir(config.lockPath);
+  await writeFile(
+    join(config.lockPath, 'owner.json'),
+    `${JSON.stringify({ pid: process.pid })}\n`,
+    'utf8',
+  );
+  await assert.rejects(
+    stableService.rollback({
+      signal: abortController.signal,
+      onProgress(event) {
+        if (event.kind === 'waiting-for-write-lock') {
+          abortController.abort(new Error('Rollback lock wait cancelled'));
+        }
+      },
+    }),
+    /Rollback lock wait cancelled|AbortError/u,
+  );
+  assert.equal(await readlink(join(root, 'recall', 'active')), activatedTarget);
+});
 
 void test('standalone optimization compacts the existing collection without indexing sessions', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'recall-standalone-optimize-'));

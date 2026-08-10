@@ -16,6 +16,7 @@ void test('missing candidate database cannot replace the active legacy database'
   t.after(() => rm(dataDirectory, { recursive: true, force: true }));
   const config: RecallDatabaseGenerationConfig = {
     databasePath: join(dataDirectory, 'zvec'),
+    catalogPath: join(dataDirectory, 'recall-catalog.sqlite'),
     statePath: join(dataDirectory, 'index-state.json'),
     manifestPath: join(dataDirectory, 'index-manifest.json'),
     indexMaintenanceStatusPath: join(dataDirectory, 'index-maintenance-status.json'),
@@ -30,6 +31,7 @@ void test('missing candidate database cannot replace the active legacy database'
   );
   assert.deepEqual(await resolveActiveRecallDatabasePaths(config), {
     databasePath: config.databasePath,
+    catalogPath: config.catalogPath,
     statePath: config.statePath,
     manifestPath: config.manifestPath,
     indexMaintenanceStatusPath: config.indexMaintenanceStatusPath,

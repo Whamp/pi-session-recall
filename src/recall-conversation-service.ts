@@ -65,6 +65,7 @@ import {
 export interface RecallConversationConfig {
   sessionsDirectory: string;
   databasePath: string;
+  catalogPath: string;
   statePath: string;
   manifestPath: string;
   indexMaintenanceStatusPath: string;
@@ -378,7 +379,12 @@ export function createRecallConversationService(
   async function prepareIndexManifest(paths: RecallDatabasePaths): Promise<RecallIndexManifest> {
     const actual = await readRecallIndexManifest(paths.manifestPath);
     const expected = createExpectedManifest();
-    if (!actual && (existsSync(paths.databasePath) || existsSync(paths.statePath))) {
+    if (
+      !actual &&
+      (existsSync(paths.databasePath) ||
+        existsSync(paths.catalogPath) ||
+        existsSync(paths.statePath))
+    ) {
       throw new Error(
         `Recall index manifest missing at ${paths.manifestPath} for existing index data; rebuild with psr index --rebuild`,
       );
@@ -554,6 +560,7 @@ export function createRecallConversationService(
         if (options.rebuild && !candidate) {
           await rm(activePaths.indexMaintenanceStatusPath, { force: true });
           await rm(activePaths.databasePath, { recursive: true, force: true });
+          await rm(activePaths.catalogPath, { force: true });
           await rm(activePaths.statePath, { force: true });
           await rm(activePaths.manifestPath, { force: true });
         }
@@ -564,7 +571,8 @@ export function createRecallConversationService(
         store = openStore('write', activePaths.databasePath);
         const indexSummary = await indexChangedConversationSessions({
           sessionsDirectory: config.sessionsDirectory,
-          statePath: activePaths.statePath,
+          catalogPath: activePaths.catalogPath,
+          legacyStatePath: activePaths.statePath,
           store,
           embeddingProvider,
           tokenizer: conversationTokenizer,

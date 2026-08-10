@@ -65,7 +65,7 @@ No startup hook, completed-turn hook, shutdown hook, watcher, package daemon, or
 
 ### Ignoring exact physical session paths
 
-Ignore state persists in `~/.pi/agent/recall/physical-session-ignore.json`. Both manual and scheduled `psr index` runs read one snapshot after acquiring the index lock. An ignored new file is not parsed, embedded, stored, or added to `index-state.json`. If the file is already indexed, the next maintenance pass removes its documents and state. Removing the ignore makes the unchanged source eligible as a new file on the next pass.
+Ignore state persists in `~/.pi/agent/recall/physical-session-ignore.json`. Both manual and scheduled `psr index` runs read one snapshot after acquiring the index lock. An ignored new file is not parsed, embedded, stored, or added to `recall-catalog.sqlite`. If the file is already indexed, the next maintenance pass removes its documents, compact Invocation records, and catalog state. Removing the ignore makes the unchanged source eligible as a new file on the next pass.
 
 `add` and `remove` are idempotent. They report `Already ignored` or `Not ignored` and exit successfully when no state changes. `list` prints normalized paths in ordinary string order, one per line, and prints nothing when the list is empty.
 
@@ -107,7 +107,9 @@ On macOS, default installation writes one mode-`0600` LaunchAgent under `~/Libra
 
 The macOS path is runtime-untested. No Mac was available to verify plist acceptance; `RunAtLoad`, `StartInterval`, or `StartCalendarInterval` execution; retry after an exit-status-1 run; overlap suppression across both jobs; absolute Node plus `--import tsx`; log appends; or access to the durable recall configuration and embedding endpoint from the LaunchAgent environment. Other platforms fail with an unsupported-platform error.
 
-The indexer checkpoints `index-state.json` after every 100 changed sessions and after the final partial batch. If indexing stops between checkpoints, rerun `psr index`; it safely revisits the uncheckpointed sessions and reuses matching vectors already stored in zvec.
+The WAL-mode `recall-catalog.sqlite` stores each physical session's size, modification time, document identities, and compact Invocation records. Each completed physical session replaces only its own catalog rows in one transaction. If indexing stops, rerun `psr index`; completed sessions remain committed, unfinished sessions are revisited, and matching vectors already stored in zvec are reused.
+
+On the first index after upgrading an unversioned database, PSR imports valid `index-state.json` session knowledge into the catalog and performs one Invocation backfill pass. The legacy JSON file is not rewritten. Later unchanged sessions are skipped from size and modification time without parsing.
 
 ## Search
 
@@ -275,11 +277,11 @@ After the first generation rebuild, durable recall state has this shape:
 └── physical-session-ignore.json
 ```
 
-Each generation contains `zvec/`, `index-state.json`, `index-manifest.json`, and `index-maintenance-status.json`. Failed or interrupted rebuilds can leave a `candidate-.../` directory. The next rebuild removes stale candidates. It does not remove completed generations.
+Each new generation contains `zvec/`, `recall-catalog.sqlite`, `index-manifest.json`, and `index-maintenance-status.json`. Failed or interrupted rebuilds can leave a `candidate-.../` directory. The next rebuild removes stale candidates. It does not remove completed generations.
 
-An existing unversioned `zvec/`, `index-state.json`, and `index-manifest.json` remain in place during the first rebuild. The activated generation records that layout as its previous database, so `psr rollback` can atomically point `active` back to it.
+An existing unversioned `zvec/`, `index-state.json`, and `index-manifest.json` remain in place during the first rebuild. Normal indexing can migrate that JSON state once into an unversioned `recall-catalog.sqlite`; rebuild candidates create a fresh catalog. The activated generation records the prior layout as its previous database, so `psr rollback` can atomically point `active` back to it.
 
-The tokenizer loader also keeps checksum-verified tokenizer assets under `tokenizers/`; these are replaceable inference inputs, not recall state. `operation.lock` exists only while `psr` owns the writer lock and is removed when the command exits. There is no embedding cache, projection database, generation registry, replay log, marker spool, or model-artifact cache.
+The tokenizer loader also keeps checksum-verified tokenizer assets under `tokenizers/`; these are replaceable inference inputs, not recall state. `operation.lock` exists only while `psr` owns the writer lock and is removed when the command exits. There is no embedding cache, generation registry, replay log, marker spool, or model-artifact cache.
 
 ## Development validation
 

@@ -124,8 +124,12 @@ _Avoid_: Index state, configuration
 The first configured dimensions of one native Octen vector, L2-normalized and stored as FP32 for inner-product search.
 _Avoid_: Raw embedding, independently verified MRL vector
 
+**Recall catalog**:
+The WAL-mode SQLite database that owns per-Physical-session incremental state, document identities, and compact Invocation search. One changed Physical session replaces only its own catalog rows in one transaction.
+_Avoid_: Index state file, Invocation cache
+
 **Recall database**:
-One complete, searchable set of index data, incremental state, manifest, and maintenance status.
+One complete, searchable set of index data, Recall catalog, manifest, and maintenance status.
 _Avoid_: Zvec collection, index file
 
 **Candidate recall database**:

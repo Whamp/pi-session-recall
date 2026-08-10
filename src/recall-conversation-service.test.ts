@@ -9,6 +9,7 @@ import {
   createRecallConversationService,
   type RecallConversationConfig,
 } from './recall-conversation-service.js';
+import { openRecallCatalog } from './recall-catalog.js';
 import type { RecallEmbeddingProvider } from './recall-inference-capabilities.js';
 import {
   normalizeRecallProjectLineages,
@@ -54,6 +55,7 @@ function createTestConfig(
   return {
     sessionsDirectory: join(root, 'sessions'),
     databasePath: join(data, 'zvec'),
+    catalogPath: join(data, 'recall-catalog.sqlite'),
     statePath: join(data, 'index-state.json'),
     manifestPath: join(data, 'index-manifest.json'),
     indexMaintenanceStatusPath: join(data, 'index-maintenance-status.json'),
@@ -73,6 +75,15 @@ function createTestConfig(
     searchCandidateLimits: { dense: 8, lexical: 8, identifier: 8 },
     chunkPolicy: { maxTokens: 512, overlapTokens: 64 },
   };
+}
+
+function readCatalogSessionPaths(catalogPath: string): string[] {
+  const catalog = openRecallCatalog(catalogPath);
+  try {
+    return catalog.listPhysicalSessionPaths();
+  } finally {
+    catalog.close();
+  }
 }
 
 async function writePhysicalSessionIgnoreState(
@@ -497,10 +508,10 @@ void test('service builds one zvec collection and performs read-only hybrid sear
   });
 
   const indexed = await service.index({ rebuild: true, optimize: true });
-  const stateBeforeSearch = await readFile(config.statePath, 'utf8');
+  const catalogBeforeSearch = await readFile(config.catalogPath);
   const statusBeforeSearch = await readFile(config.indexMaintenanceStatusPath, 'utf8');
   const search = await service.search('manual zvec', 5, { scope: RecallSearchScope.GLOBAL });
-  const stateAfterSearch = await readFile(config.statePath, 'utf8');
+  const catalogAfterSearch = await readFile(config.catalogPath);
   const statusAfterSearch = await readFile(config.indexMaintenanceStatusPath, 'utf8');
 
   assert.equal(indexed.indexSummary.indexedSessions, 1);
@@ -516,7 +527,7 @@ void test('service builds one zvec collection and performs read-only hybrid sear
     failedSessions: 0,
   });
   assert.equal(statusBeforeSearch, `${JSON.stringify(search.indexMaintenanceStatus, null, 2)}\n`);
-  assert.equal(stateAfterSearch, stateBeforeSearch);
+  assert.deepEqual(catalogAfterSearch, catalogBeforeSearch);
   assert.equal(statusAfterSearch, statusBeforeSearch);
   assert.deepEqual(
     (await readdir(join(root, 'recall'))).filter((name) =>
@@ -726,11 +737,8 @@ void test('service maintenance reads persisted ignores and rebuild preserves the
     await readFile(config.physicalSessionIgnoreStatePath, 'utf8'),
     ignoreStateBeforeRebuild,
   );
-  const stateText = await readFile(config.statePath, 'utf8');
   const manifestText = await readFile(config.manifestPath, 'utf8');
-  assert.ok(stateText.includes(JSON.stringify(eligiblePath)));
-  assert.ok(!stateText.includes(JSON.stringify(ignoredPath)));
-  assert.ok(!stateText.includes('ignoredPhysicalSessionPaths'));
+  assert.deepEqual(readCatalogSessionPaths(config.catalogPath), [eligiblePath]);
   assert.ok(!manifestText.includes('ignoredPhysicalSessionPaths'));
   assert.ok(!manifestText.includes('physical-session-ignore.json'));
 });
@@ -746,13 +754,13 @@ void test('malformed ignore state aborts rebuild before deleting a working index
     loadTokenizer: async () => tokenizer,
   });
   await service.index({ rebuild: true });
-  const stateBefore = await readFile(config.statePath, 'utf8');
+  const catalogBefore = await readFile(config.catalogPath);
   const manifestBefore = await readFile(config.manifestPath, 'utf8');
   await writeFile(config.physicalSessionIgnoreStatePath, '{"version":1}\n', 'utf8');
 
   await assert.rejects(service.index({ rebuild: true }), /Physical session ignore state invalid/u);
 
-  assert.equal(await readFile(config.statePath, 'utf8'), stateBefore);
+  assert.deepEqual(await readFile(config.catalogPath), catalogBefore);
   assert.equal(await readFile(config.manifestPath, 'utf8'), manifestBefore);
   const search = await service.search('WORKING_GENERATION_EVIDENCE', 5, {
     scope: RecallSearchScope.GLOBAL,
@@ -799,7 +807,7 @@ void test('search tolerates unavailable status without catching up changed sessi
     loadTokenizer: async () => tokenizer,
   });
   await service.index({ rebuild: true });
-  const stateBeforeSearch = await readFile(config.statePath, 'utf8');
+  const catalogBeforeSearch = await readFile(config.catalogPath);
   await writeConversationSession(sessionPath, 'NEW_UNINDEXED_SOURCE_MARKER');
   const unavailableStatuses: Array<{ name: string; content: string | null }> = [
     { name: 'missing', content: null },
@@ -833,7 +841,7 @@ void test('search tolerates unavailable status without catching up changed sessi
     });
 
     assert.equal(search.indexMaintenanceStatus, null, unavailableStatus.name);
-    assert.equal(await readFile(config.statePath, 'utf8'), stateBeforeSearch);
+    assert.deepEqual(await readFile(config.catalogPath), catalogBeforeSearch);
     assert.ok(
       search.results.every((result) => !result.content.includes('NEW_UNINDEXED_SOURCE_MARKER')),
       unavailableStatus.name,

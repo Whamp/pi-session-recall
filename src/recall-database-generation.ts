@@ -23,6 +23,7 @@ const PREVIOUS_DATABASE_FILE_NAME = '.previous-database.json';
 /** Generation-owned paths that move together when a recall database is activated. */
 export interface RecallDatabasePaths {
   databasePath: string;
+  catalogPath: string;
   statePath: string;
   manifestPath: string;
   indexMaintenanceStatusPath: string;
@@ -55,6 +56,7 @@ function getRecallDatabaseDataDirectory(config: RecallDatabaseGenerationConfig):
 function getLegacyRecallDatabasePaths(config: RecallDatabaseGenerationConfig): RecallDatabasePaths {
   return {
     databasePath: config.databasePath,
+    catalogPath: config.catalogPath,
     statePath: config.statePath,
     manifestPath: config.manifestPath,
     indexMaintenanceStatusPath: config.indexMaintenanceStatusPath,
@@ -67,6 +69,7 @@ function createRecallDatabasePaths(
 ): RecallDatabasePaths {
   return {
     databasePath: join(directoryPath, basename(config.databasePath)),
+    catalogPath: join(directoryPath, basename(config.catalogPath)),
     statePath: join(directoryPath, basename(config.statePath)),
     manifestPath: join(directoryPath, basename(config.manifestPath)),
     indexMaintenanceStatusPath: join(directoryPath, basename(config.indexMaintenanceStatusPath)),
@@ -109,7 +112,7 @@ function resolveDatabaseTargetDirectory(
 function hasLegacyRecallDatabase(config: RecallDatabaseGenerationConfig): boolean {
   return (
     existsSync(config.databasePath) &&
-    existsSync(config.statePath) &&
+    (existsSync(config.catalogPath) || existsSync(config.statePath)) &&
     existsSync(config.manifestPath)
   );
 }
@@ -209,7 +212,7 @@ export async function activateRecallDatabaseCandidate(
   const previousTarget = activeTarget ?? (hasLegacyRecallDatabase(config) ? '.' : null);
   if (
     !existsSync(candidate.paths.databasePath) ||
-    !existsSync(candidate.paths.statePath) ||
+    !existsSync(candidate.paths.catalogPath) ||
     !existsSync(candidate.paths.manifestPath) ||
     !existsSync(candidate.paths.indexMaintenanceStatusPath)
   ) {

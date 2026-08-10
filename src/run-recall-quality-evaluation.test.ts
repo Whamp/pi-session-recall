@@ -112,6 +112,7 @@ void test('recall quality runner indexes and searches only the bounded declared 
   const baseConfig: RecallConversationConfig = {
     sessionsDirectory: join(directory, 'must-not-scan-production-sessions'),
     databasePath: join(directory, 'unused-zvec'),
+    catalogPath: join(directory, 'unused-catalog.sqlite'),
     statePath: join(directory, 'unused-state.json'),
     manifestPath: join(directory, 'unused-manifest.json'),
     indexMaintenanceStatusPath: join(directory, 'unused-maintenance-status.json'),

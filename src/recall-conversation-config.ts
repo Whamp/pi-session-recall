@@ -103,6 +103,7 @@ export async function loadRecallConversationConfig(
       file.sessionsDirectory ??
       join(homeDirectory, '.pi', 'agent', 'sessions'),
     databasePath: join(dataDirectory, 'zvec'),
+    catalogPath: join(dataDirectory, 'recall-catalog.sqlite'),
     statePath: join(dataDirectory, 'index-state.json'),
     manifestPath: join(dataDirectory, 'index-manifest.json'),
     indexMaintenanceStatusPath: join(dataDirectory, 'index-maintenance-status.json'),

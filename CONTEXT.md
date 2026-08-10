@@ -76,6 +76,10 @@ _Avoid_: Normal recall, source neighborhood index
 The source component represented by one document: conversation or summary content, tool name, tool arguments, tool result, bash command, or bash output.
 _Avoid_: Chunk type
 
+**Dense recall document**:
+A conversation chunk, compaction summary, branch summary, or turn-context document with a real 1,024-dimension FP32 embedding. Dense recall documents contain no tool calls, tool results, or bash output.
+_Avoid_: Invocation record, Tool evidence document
+
 **Dense candidate**:
 An atomic conversation chunk surfaced because its meaning is close to the search query.
 _Avoid_: Semantic result

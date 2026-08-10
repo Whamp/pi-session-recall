@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
+import { DENSE_RECALL_CONVERSATION_STORE_IDENTITY } from './dense-recall-conversation-store.js';
 import {
   assertRecallIndexManifestCompatible,
   createRecallIndexManifest,
@@ -44,11 +45,34 @@ void test('index manifest binds Octen native and stored widths, tokenizer, chunk
   assert.equal('canaryVector' in manifest.embedding, false);
 });
 
+void test('index manifest optionally binds the dense-only flat conversation schema', () => {
+  const actual = createRecallIndexManifest({
+    embeddingIdentity: OCTEN_IDENTITY,
+    denseConversationStoreIdentity: DENSE_RECALL_CONVERSATION_STORE_IDENTITY,
+  });
+  assert.deepEqual(actual.denseConversationStore, DENSE_RECALL_CONVERSATION_STORE_IDENTITY);
+
+  const expected = createRecallIndexManifest({
+    embeddingIdentity: OCTEN_IDENTITY,
+    denseConversationStoreIdentity: {
+      ...DENSE_RECALL_CONVERSATION_STORE_IDENTITY,
+      schemaVersion: DENSE_RECALL_CONVERSATION_STORE_IDENTITY.schemaVersion + 1,
+    },
+  });
+  assert.throws(
+    () => assertRecallIndexManifestCompatible(actual, expected, '/recall/index-manifest.json'),
+    /denseConversationStore\.schemaVersion[\s\S]*psr index --rebuild/,
+  );
+});
+
 void test('index manifest round-trips atomically', async () => {
   const root = await mkdtemp(join(tmpdir(), 'recall-manifest-'));
   const path = join(root, 'index-manifest.json');
   try {
-    const expected = createManifest();
+    const expected = createRecallIndexManifest({
+      embeddingIdentity: OCTEN_IDENTITY,
+      denseConversationStoreIdentity: DENSE_RECALL_CONVERSATION_STORE_IDENTITY,
+    });
     await writeRecallIndexManifest(path, expected);
 
     assert.deepEqual(await readRecallIndexManifest(path), expected);

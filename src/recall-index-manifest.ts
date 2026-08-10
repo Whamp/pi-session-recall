@@ -6,6 +6,7 @@ import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 
 import { assertRecallChunkPolicy, type RecallChunkPolicy } from './recall-chunk-policy.js';
+import type { DenseRecallConversationStoreIdentity } from './dense-recall-conversation-store.js';
 import { isUnknownRecord } from './is-unknown-record.js';
 import { SESSION_IMPORT_POLICY_VERSION } from './import-session-jsonl.js';
 import {
@@ -77,6 +78,7 @@ export interface RecallIndexManifest {
     lineagePolicyVersion: number;
     lineageDigest: string;
   };
+  denseConversationStore?: DenseRecallConversationStoreIdentity;
   zvec: {
     schemaVersion: number;
     ftsConfigurationVersion: number;
@@ -155,6 +157,20 @@ const recallIndexManifestSchema = Type.Object(
       },
       { additionalProperties: false },
     ),
+    denseConversationStore: Type.Optional(
+      Type.Object(
+        {
+          schemaVersion: Type.Integer({ minimum: 1 }),
+          layout: Type.Literal('dense-only'),
+          embeddingDimensions: Type.Literal(1_024),
+          vectorQuantization: Type.Literal('fp32'),
+          metric: Type.Literal('inner-product'),
+          vectorIndex: Type.Literal('flat'),
+          fullTextIndexes: Type.Literal(false),
+        },
+        { additionalProperties: false },
+      ),
+    ),
     zvec: Type.Object(
       {
         schemaVersion: Type.Integer({ minimum: 1 }),
@@ -195,6 +211,7 @@ export function createRecallIndexManifest(options: {
   tokenizerIdentity?: RecallTokenizerManifestIdentity;
   chunkPolicy?: RecallChunkPolicy;
   projectLineages?: RecallProjectLineages;
+  denseConversationStoreIdentity?: DenseRecallConversationStoreIdentity;
 }): RecallIndexManifest {
   if (options.embeddingIdentity.storedDimensions > options.embeddingIdentity.nativeDimensions) {
     throw new Error(
@@ -226,6 +243,9 @@ export function createRecallIndexManifest(options: {
         options.projectLineages ?? normalizeRecallProjectLineages({}),
       ),
     },
+    ...(options.denseConversationStoreIdentity
+      ? { denseConversationStore: { ...options.denseConversationStoreIdentity } }
+      : {}),
     zvec: {
       schemaVersion: ZVEC_CONVERSATION_SCHEMA_VERSION,
       ftsConfigurationVersion: ZVEC_FTS_CONFIGURATION_VERSION,

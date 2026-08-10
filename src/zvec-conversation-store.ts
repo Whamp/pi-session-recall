@@ -98,7 +98,8 @@ export interface ZvecConversationStore extends ConversationChunkStore {
   count(): number;
 }
 
-const RECALL_FIELD_SCHEMAS: ZVecFieldSchema[] = [
+/** zvec scalar fields for combined conversation and tool evidence. */
+export const ZVEC_CONVERSATION_FIELD_SCHEMAS: readonly ZVecFieldSchema[] = Object.freeze([
   { name: 'schemaVersion', dataType: ZVecDataType.INT32 },
   { name: 'documentKind', dataType: ZVecDataType.STRING },
   { name: 'summaryKind', dataType: ZVecDataType.STRING },
@@ -168,9 +169,9 @@ const RECALL_FIELD_SCHEMAS: ZVecFieldSchema[] = [
       filters: [],
     },
   },
-];
+]);
 
-const RECALL_OUTPUT_FIELDS = RECALL_FIELD_SCHEMAS.map((field) => field.name).filter(
+const RECALL_OUTPUT_FIELDS = ZVEC_CONVERSATION_FIELD_SCHEMAS.map((field) => field.name).filter(
   (name) => name !== 'identifierContent',
 );
 
@@ -178,7 +179,10 @@ function serializeNullableEntryId(value: PiSessionEntryId | null): string {
   return value?.value ?? '';
 }
 
-function serializeConversationChunk(chunk: SessionConversationChunk): Record<string, unknown> {
+/** Serializes recall document provenance for zvec persistence. */
+export function serializeConversationChunk(
+  chunk: SessionConversationChunk,
+): Record<string, unknown> {
   return {
     schemaVersion: chunk.schemaVersion,
     documentKind: chunk.documentKind,
@@ -401,7 +405,8 @@ function parseProjectAttribution(
   return { projectIdentity: parsedIdentity, identitySource: parsedSource };
 }
 
-function deserializeConversationChunk(doc: ZVecDoc): SessionConversationChunk {
+/** Deserializes zvec scalar fields into one source-backed recall document. */
+export function deserializeConversationChunk(doc: ZVecDoc): SessionConversationChunk {
   const fields: Record<string, unknown> = doc.fields;
   return {
     schemaVersion: readNumberField(fields, 'schemaVersion'),
@@ -542,7 +547,7 @@ export function openZvecConversationStore(config: {
               efConstruction: ZVEC_HNSW_EF_CONSTRUCTION,
             },
           },
-          fields: RECALL_FIELD_SCHEMAS,
+          fields: [...ZVEC_CONVERSATION_FIELD_SCHEMAS],
         }),
       );
   const storedDimensions = collection.schema.vector('embedding').dimension;

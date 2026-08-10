@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync, type SQLOutputValue } from 'node:sqlite';
 
@@ -9,9 +9,6 @@ import { Value } from 'typebox/value';
 import { RecallProjectIdentitySource } from './enums.js';
 import type { InvocationRecord } from './createSessionInvocationRecords.js';
 import type { RecallDenseCandidate } from './fuse-recall-search-candidates.js';
-import { SESSION_IMPORT_POLICY_VERSION } from './import-session-jsonl.js';
-import { isUnknownRecord } from './is-unknown-record.js';
-import { readNodeErrorCode } from './read-node-error-code.js';
 import {
   isCanonicalRepositoryIdentity,
   parseProjectIdentity,
@@ -158,9 +155,8 @@ const DENSE_DOCUMENT_METADATA_SCHEMA = Type.Object(
   { additionalProperties: false },
 );
 
-/** Options controlling write access and optional first-open legacy state import. */
+/** Options controlling read-only access to one SQLite Recall database. */
 export interface OpenSqliteRecallDatabaseOptions {
-  legacyStatePath?: string;
   readOnly?: boolean;
 }
 
@@ -291,10 +287,6 @@ interface PreparedDenseDocument {
   vectorBlob: Uint8Array;
 }
 
-interface LegacyPhysicalSessionState extends SqliteRecallPhysicalSessionState {
-  sessionPath: string;
-}
-
 function readRequiredString(row: SqliteRow | undefined, column: string): string {
   const value = row?.[column];
   if (typeof value !== 'string') {
@@ -384,83 +376,6 @@ function configureSqliteRecallConnection(database: DatabaseSync, readOnly: boole
     return;
   }
   database.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL');
-}
-
-function readLegacyPhysicalSessionStates(legacyStatePath: string): LegacyPhysicalSessionState[] {
-  let decoded: unknown;
-  try {
-    decoded = JSON.parse(readFileSync(legacyStatePath, 'utf8'));
-  } catch (error) {
-    if (readNodeErrorCode(error) === 'ENOENT') {
-      return [];
-    }
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`SQLite Recall legacy state invalid at ${legacyStatePath}: ${message}`, {
-      cause: error,
-    });
-  }
-  if (
-    !isUnknownRecord(decoded) ||
-    decoded.version !== 3 ||
-    decoded.importPolicyVersion !== SESSION_IMPORT_POLICY_VERSION ||
-    !isUnknownRecord(decoded.sessions)
-  ) {
-    throw new Error(
-      `SQLite Recall legacy state invalid at ${legacyStatePath}: incompatible state schema`,
-    );
-  }
-  return Object.entries(decoded.sessions).map(([sessionPath, value]) => {
-    if (
-      !isUnknownRecord(value) ||
-      typeof value.size !== 'number' ||
-      !Number.isSafeInteger(value.size) ||
-      value.size < 0 ||
-      typeof value.mtimeMs !== 'number' ||
-      !Number.isFinite(value.mtimeMs) ||
-      value.mtimeMs < 0 ||
-      !Array.isArray(value.chunks)
-    ) {
-      throw new Error(
-        `SQLite Recall legacy state invalid at ${legacyStatePath}: invalid physical session ${sessionPath}`,
-      );
-    }
-    const documentIds: string[] = [];
-    for (const chunk of value.chunks) {
-      if (!isUnknownRecord(chunk) || typeof chunk.id !== 'string' || !chunk.id) {
-        throw new Error(
-          `SQLite Recall legacy state invalid at ${legacyStatePath}: invalid document identity for ${sessionPath}`,
-        );
-      }
-      documentIds.push(chunk.id);
-    }
-    return {
-      sessionPath,
-      size: value.size,
-      mtimeMs: value.mtimeMs,
-      documentIds,
-      denseDocumentIds: [],
-    };
-  });
-}
-
-function importLegacyPhysicalSessionStates(
-  database: DatabaseSync,
-  states: readonly LegacyPhysicalSessionState[],
-): void {
-  const insertSession = database.prepare(`
-    INSERT INTO physical_sessions(session_path, size, mtime_ms, invocations_indexed)
-    VALUES (?, ?, ?, 0)
-  `);
-  const insertDocument = database.prepare(`
-    INSERT INTO session_documents(session_path, document_id, is_dense)
-    VALUES (?, ?, 0)
-  `);
-  for (const state of states) {
-    insertSession.run(state.sessionPath, state.size, state.mtimeMs);
-    for (const documentId of state.documentIds) {
-      insertDocument.run(state.sessionPath, documentId);
-    }
-  }
 }
 
 function createSqliteRecallSchema(database: DatabaseSync): void {
@@ -966,10 +881,6 @@ export function openSqliteRecallDatabase(
       `SQLite Recall database missing at ${databasePath}; rebuild with psr index --rebuild`,
     );
   }
-  const legacyStates =
-    !readOnly && !databaseExists && options.legacyStatePath
-      ? readLegacyPhysicalSessionStates(options.legacyStatePath)
-      : [];
   if (!readOnly) {
     mkdirSync(dirname(databasePath), { recursive: true });
   }
@@ -984,10 +895,7 @@ export function openSqliteRecallDatabase(
     configureSqliteRecallConnection(database, readOnly);
     const schemaVersion = readSqliteRecallSchemaVersion(database);
     if (schemaVersion === 0 && !readOnly) {
-      runSqliteRecallTransaction(database, () => {
-        createSqliteRecallSchema(database);
-        importLegacyPhysicalSessionStates(database, legacyStates);
-      });
+      runSqliteRecallTransaction(database, () => createSqliteRecallSchema(database));
     } else if (schemaVersion !== SQLITE_RECALL_SCHEMA_VERSION) {
       throw new Error(
         `SQLite Recall database schema incompatible at ${databasePath}: found version ${schemaVersion}, expected ${SQLITE_RECALL_SCHEMA_VERSION}; rebuild with psr index --rebuild`,

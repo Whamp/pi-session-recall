@@ -1,5 +1,5 @@
 import type { RecallEvidenceRelation } from './enums.js';
-import type { RecallCatalogInvocationSearchResult } from './openRecallCatalog.js';
+import type { SqliteRecallInvocationSearchResult } from './sqlite-recall-database.js';
 import type { RankedRecallSearchResult } from './rank-recall-search-results.js';
 
 /** One dense conversation result labeled for the compact normal-recall result union. */
@@ -9,7 +9,7 @@ export interface CompactRecallConversationResult extends RankedRecallSearchResul
 }
 
 /** One compact Invocation result with exact source provenance and SQLite rank. */
-export interface CompactRecallInvocationResult extends RecallCatalogInvocationSearchResult {
+export interface CompactRecallInvocationResult extends SqliteRecallInvocationSearchResult {
   resultKind: 'invocation';
   content: string;
   evidenceRelation: RecallEvidenceRelation;

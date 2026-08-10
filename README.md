@@ -1,6 +1,6 @@
 # Pi Session Recall
 
-Pi Session Recall searches past Pi conversations and compact tool Invocations. It stores dense conversation documents in a flat local Zvec collection, stores bounded tool-call and command locators in SQLite, and returns the original JSONL file and line range for every result.
+Pi Session Recall searches past Pi conversations and compact tool Invocations. Manifest version 8 stores the complete derived projection in one WAL-mode `recall.sqlite` database with FTS5 and pinned sqlite-vec 0.1.9. Canonical session JSONL owns complete payloads, and every result identifies its original JSONL file and line range.
 
 The standalone `psr index` command is the only index writer. Run it directly or opt into a native per-user schedule. `psr ignore` writes PSR policy state but never opens the index. Pi lifecycle and the `pi-session-recall` tool remain read-only.
 
@@ -10,11 +10,11 @@ Raw session JSONL remains the source of truth, but asking a fresh agent to searc
 
 A measured production comparison gave the same question to the recall tool and to a fresh agent restricted to raw JSONL. The full hybrid tool took 1.48 seconds at the median. The raw agent took 94.43 seconds, examined 54 project files, and used 141,682 tokens plus 852,480 cached tokens. The agent found the answer reliably; the tool required its maximum ten results to include the answer at rank ten. Indexed recall was about 64 times faster and far cheaper in this case, while the ranking result exposed work still needed. This is one measured query, not a universal quality or capacity claim. See [Production recall index value benchmark](docs/research/production-recall-index-value-benchmark.md).
 
-The compact replacement passed its pre-activation storage, retrieval, Source, and incremental-write gates. See [Compact production recall certification](docs/research/compact-production-recall-certification.md).
+The [unified SQLite prototype](docs/research/unified-sqlite-recall-storage-prototype.md) passed its storage, latency, retrieval-overlap, update-write, churn, and atomicity gates. The old [v7 certification](docs/research/superseded-v7-compact-production-recall-certification.md) is superseded and does not certify v8. Real v8 production certification and activation still remain. The production gates are at most 5 GiB allocated storage, project Dense search below 100 ms p95, and global Dense search below 500 ms p95 on the measured corpus.
 
 ## Install
 
-The runtime's built-in `node:sqlite` must include FTS5. `psr index` cannot create the Recall catalog without it.
+The runtime's built-in `node:sqlite` must include FTS5 and load pinned sqlite-vec 0.1.9. `psr index` cannot create `recall.sqlite` without both.
 
 ```bash
 npm install
@@ -51,9 +51,9 @@ psr ignore remove path/to/session.jsonl         # make one exact path eligible a
 
 - recursively scans configured `.jsonl` session files;
 - skips files whose size and modification time have not changed;
-- reuses matching vectors already stored in the dense Zvec collection;
+- reuses checksum-matched vectors already stored in the Recall database, or from the verified legacy-v6 rollback database during a staged rebuild;
 - calls Octen only for changed conversation, summary, and turn-context documents;
-- replaces each changed session's compact Invocation rows in SQLite;
+- replaces each changed session's state, compact Invocations, Dense recall metadata, and both vector copies in one SQLite transaction;
 - removes evidence for deleted or newly ignored indexed session files;
 - skips ignored files before parsing or embedding them;
 - reports malformed eligible session files and continues with healthy files;
@@ -62,11 +62,11 @@ psr ignore remove path/to/session.jsonl         # make one exact path eligible a
 
 `psr index --rebuild` builds a candidate recall database beside the active database. A fatal error, cancellation, or failed session leaves normal recall on the active database. A successful rebuild closes and verifies the candidate, then atomically makes it active. The replaced database remains available to `psr rollback`. The next rebuild removes failed or interrupted candidates but never removes the previous database.
 
-Add `--stage` when the candidate must pass checks before activation. A staged rebuild uses a separate construction lock, so normal search and scheduled updates keep using the active database. The command prints the exact `generations/generation-...` target and leaves the active pointer unchanged. If a fatal dependency outage interrupts the build, rerun it once with `--rebuild --stage --resume`. Resume requires exactly one interrupted candidate and preserves every completed Physical session. Add `--reuse-active-vectors` during the compact-layout cutover to avoid re-embedding unchanged Dense recall documents. Reuse requires the Active recall database to have the same embedding profile. The indexer also requires each canonical document ID and checksum to match before it copies that vector; changed documents still go to the embedding provider.
+Add `--stage` when the candidate must pass checks before activation. A staged rebuild uses a separate construction lock, so normal search and scheduled updates keep using the active database. The command prints the exact `generations/generation-...` target and leaves the active pointer unchanged. If a fatal dependency outage interrupts the build, rerun it once with `--rebuild --stage --resume`. Resume requires exactly one interrupted candidate and preserves every completed Physical session. Add `--reuse-active-vectors` during the version 8 cutover to avoid re-embedding unchanged Dense recall documents. Reuse requires the Active recall database to have the same embedding profile. The indexer also requires each canonical document ID and checksum to match before it copies that vector; changed documents still go to the embedding provider.
 
 Run `psr activate <database-target>` only after that target passes its checks. Activation takes the shared writer lock, verifies the staged database is complete, records the current database for rollback, and replaces the active pointer atomically.
 
-The first rebuild after upgrading safely adopts the current unversioned layout. It remains active while the candidate builds and becomes the previous database after activation. Run `psr rollback` to restore it without rebuilding. Existing installations can keep using the unversioned database until they activate a compact generation.
+The first rebuild after upgrading safely adopts the current unversioned layout. It remains active while the candidate builds and becomes the previous database after activation. Run `psr rollback` to restore it without rebuilding. Existing installations can keep using the version 6 database through the temporary legacy-v6 adapter until they activate a version 8 generation. Keep that database and its `index-state.json` for the rollback window; remove them only after explicit cleanup approval.
 
 The estimate uses the observed rate of healthy files in the current run. Until enough work completes, the command says that it is calculating the estimate rather than inventing an initial duration. `--compact` preserves the former one-line completed summary and `Failed: ...` lines on stdout; progress remains on stderr.
 
@@ -74,7 +74,7 @@ No startup hook, completed-turn hook, shutdown hook, watcher, package daemon, or
 
 ### Ignoring exact physical session paths
 
-Ignore state persists in `~/.pi/agent/recall/physical-session-ignore.json`. Both manual and scheduled `psr index` runs read one snapshot after acquiring the index lock. An ignored new file is not parsed, embedded, stored, or added to `recall-catalog.sqlite`. If the file is already indexed, the next maintenance pass removes its documents, compact Invocation records, and catalog state. Removing the ignore makes the unchanged source eligible as a new file on the next pass.
+Ignore state persists in `~/.pi/agent/recall/physical-session-ignore.json`. Both manual and scheduled `psr index` runs read one snapshot after acquiring the index lock. An ignored new file is not parsed, embedded, stored, or added to `recall.sqlite`. If the file is already indexed, the next maintenance pass removes its complete Recall database projection. Removing the ignore makes the unchanged source eligible as a new file on the next pass.
 
 `add` and `remove` are idempotent. They report `Already ignored` or `Not ignored` and exit successfully when no state changes. `list` prints normalized paths in ordinary string order, one per line, and prints nothing when the list is empty.
 
@@ -109,9 +109,9 @@ On macOS, installation removes the stale `dev.pi-session-recall.auto-optimize.pl
 
 The macOS path is runtime-untested. No Mac was available to verify plist acceptance; `RunAtLoad` or `StartInterval` execution; retry after an exit-status-1 run; absolute Node plus `--import tsx`; log appends; or access to the durable recall configuration and embedding endpoint from the LaunchAgent environment. Other platforms fail with an unsupported-platform error.
 
-The WAL-mode `recall-catalog.sqlite` stores each physical session's size, modification time, dense document identities, and compact Invocation records. Each completed physical session replaces only its own catalog rows in one transaction. If indexing stops, rerun `psr index`; completed sessions remain committed, unfinished sessions are revisited, and matching dense vectors are reused.
+The WAL-mode `recall.sqlite` database stores each Physical session's size and modification time, compact Invocation rows with FTS5, Dense recall metadata, an unpartitioned global vec0 copy, and a 16-bucket project vec0 copy. Each completed Physical session replaces only its own rows across all projections in one transaction. If indexing stops, rerun `psr index`; completed sessions remain committed and unfinished sessions are revisited.
 
-The compact layout requires a version 7 manifest. Existing installations must run `psr index --rebuild`; ordinary indexing rejects the old layout instead of mixing schemas. After activation, unchanged sessions are skipped from size and modification time without parsing.
+Manifest version 8 identifies this unified layout. Existing staged version 7 flat-Zvec-plus-SQLite generations are incompatible and cannot activate; rebuild them from canonical JSONL. After activation, unchanged sessions are skipped by size and modification time without parsing.
 
 ## Search
 
@@ -135,7 +135,7 @@ Parameters:
 }
 ```
 
-Normal recall searches both fast stores automatically: flat dense search over conversations, summaries, and turn context, plus SQLite full-text search over compact Invocations. It combines both candidate lists before applying `limit`; callers do not select a fast store. The mixed-result policy keeps an Invocation visible when both kinds match without displacing more than one of the first five strong conversation results. Project scope filters both stores before their eight-candidate limits. Global scope searches both complete stores.
+Normal recall searches both projections in `recall.sqlite`: sqlite-vec Dense recall and FTS5 compact Invocations. It combines both candidate lists before applying `limit`; callers choose scope, not a storage engine or vector table. Project scope routes Dense search to the 16-bucket vec0 table and applies the exact project key before its eight-candidate limit. Global scope routes Dense search to the unpartitioned vec0 table. FTS5 applies the same project or global scope. The mixed-result policy keeps an Invocation visible when both kinds match without displacing more than one of the first five strong conversation results.
 
 Set `source: true` only when you need complete raw tool results, bash output, or omitted invocation payloads. Source search performs a slower, case-insensitive literal scan of the original session JSONL and writes no index or cache data. Project scope scans only logical sessions whose exact project identity matches the trusted Pi working directory. Global scope scans every eligible physical session file. Exact ignored paths remain excluded. Results include the physical path, source line range, entry ID when present, and a bounded matching excerpt. A file that disappears or becomes unreadable during the scan is reported without hiding matches from other files.
 
@@ -163,16 +163,16 @@ The agent can read those JSONL lines directly when it needs surrounding source c
 
 ## Indexed evidence
 
-The flat dense store contains only:
+Dense metadata and vectors in `recall.sqlite` contain only:
 
 - visible user and assistant text;
 - user/assistant turn-context documents;
 - visible custom messages;
 - compaction and branch summaries.
 
-The SQLite catalog contains one compact Invocation for each eligible assistant tool call and direct bash execution. It stores tool names, bounded locator arguments or commands, call identity, error status when known, project attribution, and source locators.
+The FTS5 projection contains one compact Invocation for each eligible assistant tool call and direct bash execution. It stores tool names, bounded locator arguments or commands, call identity, error status when known, project attribution, and source locators.
 
-Neither store contains thinking, images, complete tool results, bash output, omitted payload arguments, empty tool placeholders, or derived `pi-session-recall` calls and results. Complete output and omitted payloads remain available only through explicit `source: true` search.
+The Recall database contains no thinking, images, complete tool results, bash output, omitted payload arguments, empty tool placeholders, or derived `pi-session-recall` calls and results. Complete output and omitted payloads remain available only through explicit `source: true` search.
 
 ## Session import
 
@@ -211,13 +211,13 @@ The default profile uses:
 | Native dimensions | 2,560                                |
 | Stored dimensions | 1,024                                |
 | Transformation    | first N, then local L2 normalization |
-| Zvec metric       | inner product                        |
+| sqlite-vec metric | cosine                               |
 
-The same transformation applies to document and query vectors. Inner product preserves cosine ordering because both sides are normalized. The feature is vendor-supported prefix storage; this repository does not claim independently verified MRL quality at every cutoff.
+The same transformation applies to document and query vectors. sqlite-vec compares the stored FP32 vectors with cosine distance. The feature is vendor-supported prefix storage; this repository does not claim independently verified MRL quality at every cutoff.
 
 Both `psr index` and `pi-session-recall` require the configured Octen HTTP endpoint. This package has no local embedding fallback.
 
-The version 7 manifest binds request model, served model, fixed 1,024-dimension stored width, transformation, tokenizer assets, 512/64 chunking, import policy, project identity policy, and dense-only FLAT store schema. Any change requires:
+The version 8 manifest binds request model, served model, fixed 1,024-dimension FP32 width, cosine distance, sqlite-vec 0.1.9, FTS5, unpartitioned global routing, 16-bucket project routing, tokenizer assets, 512/64 chunking, import policy, and project identity policy. Any change requires:
 
 ```bash
 psr index --rebuild
@@ -248,7 +248,7 @@ Environment overrides:
 - `PI_RECALL_EMBEDDING_MODEL`
 - `PI_RECALL_EMBEDDING_SERVED_MODEL_ID`
 - `PI_RECALL_EMBEDDING_NATIVE_DIMENSIONS`
-- `PI_RECALL_EMBEDDING_STORED_DIMENSIONS` (must remain `1024` for the compact layout)
+- `PI_RECALL_EMBEDDING_STORED_DIMENSIONS` (must remain `1024` for manifest version 8)
 - `PI_RECALL_EMBEDDING_BATCH_SIZE`
 
 ## Local state
@@ -264,9 +264,9 @@ After the first generation rebuild, durable recall state has this shape:
 └── physical-session-ignore.json
 ```
 
-Each new generation contains `zvec/`, `recall-catalog.sqlite`, `index-manifest.json`, and `index-maintenance-status.json`. Failed or interrupted rebuilds can leave a `candidate-.../` directory. The next rebuild removes stale candidates. A successful `--stage` rebuild leaves a complete `generation-.../` directory that remains inactive until its exact target is passed to `psr activate`. Rebuilds do not remove completed generations.
+Each version 8 generation contains `recall.sqlite`, `index-manifest.json`, and `index-maintenance-status.json`. SQLite may create `recall.sqlite-wal` and `recall.sqlite-shm` while the database is open; they are part of the same transactional database, not separate stores. Failed or interrupted rebuilds can leave a `candidate-.../` directory. The next fresh rebuild removes stale candidates. A successful `--stage` rebuild leaves a complete `generation-.../` directory inactive until its exact target is passed to `psr activate`. Rebuilds do not remove completed generations.
 
-An existing unversioned `zvec/`, `index-state.json`, and old `index-manifest.json` remain in place during the first compact rebuild. The version 7 compact layout rejects that manifest for normal indexing and directs the operator to `psr index --rebuild`. Rebuild candidates create a fresh catalog from canonical session JSONL. The activated generation records the prior layout as its previous database, so `psr rollback` can atomically point `active` back to it.
+An existing root `zvec/`, `index-state.json`, and version 6 manifest remain in place during the first version 8 rebuild. Only the temporary legacy-v6 adapter reads or updates them. Rebuild candidates create `recall.sqlite` from canonical session JSONL. Activation records version 6 as the previous database, so `psr rollback` can atomically restore it during the bounded rollback window. Staged version 7 generations are incompatible and must be rebuilt rather than activated.
 
 The tokenizer loader also keeps checksum-verified tokenizer assets under `tokenizers/`; these are replaceable inference inputs, not recall state. `operation.lock` exists only while `psr` owns the writer lock and is removed when the command exits. There is no embedding cache, generation registry, replay log, marker spool, or model-artifact cache.
 
@@ -285,4 +285,4 @@ The bounded quality evaluator remains a development command:
 npm run evaluate:recall
 ```
 
-It reads only the checksum-fixed evaluation corpus, builds disposable compact databases, and measures the frozen 512/64, eight-candidates-per-fast-store, five-final-results policy. `evaluation/compact-recall-cases.json` separately fixes normal Invocation, explicit Source search, and mixed-result cases. Production indexing does not read or gate on generated evaluation files.
+It reads only the checksum-fixed evaluation corpus, builds disposable Recall databases, and measures the frozen 512/64, eight-candidates-per-projection, five-final-results policy. `evaluation/compact-recall-cases.json` separately fixes normal Invocation, explicit Source search, and mixed-result cases. Production indexing does not read or gate on generated evaluation files.

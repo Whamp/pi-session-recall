@@ -10,8 +10,8 @@ For every response vector, the provider:
 4. L2-normalizes the prefix;
 5. rounds stored components to FP32.
 
-The default profile receives 2,560 dimensions and stores 1,024. Zvec indexes normalized vectors with inner product. Search converts inner-product similarity back to the existing bounded cosine-distance field used by ranking and evidence output.
+The default profile receives 2,560 dimensions and stores 1,024. The Recall database stores normalized FP32 vectors in sqlite-vec 0.1.9 and searches them with cosine distance.
 
 The manifest binds request model, served model, native width, stored width, transformation, tokenizer, and chunk policy. The endpoint URL and batch size affect execution but not semantic compatibility. Any bound identity change requires `psr index --rebuild`.
 
-Tests cover HTTP request ordering and dimensions, query/document transformation, finite-value rejection, timeout and cancellation, normalized inner-product ranking, and manifest incompatibility.
+Tests cover HTTP request ordering and dimensions, query/document transformation, finite-value rejection, timeout and cancellation, normalized FP32 cosine search, and manifest incompatibility.

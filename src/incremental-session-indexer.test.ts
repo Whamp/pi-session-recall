@@ -5,11 +5,7 @@ import { join, relative } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 
-import {
-  indexChangedConversationSessions,
-  type DenseRecallIndexStore,
-} from './incremental-session-indexer.js';
-import { SESSION_IMPORT_POLICY_VERSION } from './import-session-jsonl.js';
+import { indexChangedConversationSessions } from './incremental-session-indexer.js';
 import type { RecallIndexProgressEvent } from './recall-index-progress.js';
 import { RecallProjectIdentitySource } from './enums.js';
 import { parseProjectIdentity, type ResolvedProjectIdentity } from './resolve-project-identity.js';
@@ -22,41 +18,6 @@ import type {
   ConversationTextTokenizer,
   SessionConversationChunk,
 } from './session-conversation-index.js';
-import type { DenseRecallDocument } from './dense-recall-conversation-store.js';
-
-class MemoryConversationStore implements DenseRecallIndexStore {
-  readonly chunks = new Map<string, DenseRecallDocument>();
-
-  upsertDocuments(chunks: DenseRecallDocument[]): void {
-    for (const chunk of chunks) {
-      this.chunks.set(chunk.id, structuredClone(chunk));
-    }
-  }
-
-  deleteDocuments(ids: string[]): void {
-    for (const id of ids) {
-      this.chunks.delete(id);
-    }
-  }
-
-  fetchDocuments(ids: string[]) {
-    return new Map(
-      ids.flatMap((id) => {
-        const chunk = this.chunks.get(id);
-        return chunk ? [[id, structuredClone(chunk)]] : [];
-      }),
-    );
-  }
-
-  fetchVectors(ids: string[]) {
-    return new Map(
-      ids.flatMap((id) => {
-        const chunk = this.chunks.get(id);
-        return chunk?.isDenseSearchable ? [[id, [...chunk.embedding]]] : [];
-      }),
-    );
-  }
-}
 
 type IndexingMaintenanceWorksetEvent = Extract<
   RecallIndexProgressEvent,
@@ -73,7 +34,7 @@ function sessionLines(entries: object[]): string {
   return `${entries.map((entry) => JSON.stringify(entry)).join('\n')}\n`;
 }
 
-function readCatalogSessionPaths(databasePath: string): string[] {
+function readRecallDatabaseSessionPaths(databasePath: string): string[] {
   const database = openSqliteRecallDatabase(databasePath, { readOnly: true });
   try {
     return database.listPhysicalSessionPaths();
@@ -82,7 +43,7 @@ function readCatalogSessionPaths(databasePath: string): string[] {
   }
 }
 
-function readCatalogSessionState(databasePath: string, sessionPath: string) {
+function readRecallDatabaseSessionState(databasePath: string, sessionPath: string) {
   const database = openSqliteRecallDatabase(databasePath, { readOnly: true });
   try {
     return database.readPhysicalSessionState(sessionPath);
@@ -149,8 +110,7 @@ async function writeSimplePhysicalSessionFile(
 
 function createIndexerOptions(options: {
   sessionsDirectory: string;
-  catalogPath: string;
-  store: DenseRecallIndexStore;
+  databasePath: string;
   embeddingProvider: RecallEmbeddingProvider;
 }) {
   return {
@@ -252,7 +212,7 @@ void test('manual index maintenance announces planning and indexing before their
   const root = await mkdtemp(join(tmpdir(), 'recall-indexer-phase-order-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const sessionsDirectory = join(root, 'sessions');
-  const catalogPath = join(root, 'recall-catalog.sqlite');
+  const databasePath = join(root, 'recall.sqlite');
   const sessionPath = join(sessionsDirectory, 'one.jsonl');
   await mkdir(sessionsDirectory, { recursive: true });
   await writeSimplePhysicalSessionFile(sessionPath, 'one', 'phase order evidence');
@@ -262,8 +222,7 @@ void test('manual index maintenance announces planning and indexing before their
   await indexChangedConversationSessions({
     ...createIndexerOptions({
       sessionsDirectory,
-      catalogPath,
-      store: new MemoryConversationStore(),
+      databasePath,
       embeddingProvider: {
         ...embeddingProvider,
         async embedDocuments(documents, signal) {
@@ -290,7 +249,7 @@ void test('manual index maintenance plans exact new, changed, unchanged, and mis
   const root = await mkdtemp(join(tmpdir(), 'recall-indexer-workset-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const sessionsDirectory = join(root, 'sessions');
-  const catalogPath = join(root, 'recall-catalog.sqlite');
+  const databasePath = join(root, 'recall.sqlite');
   await mkdir(sessionsDirectory, { recursive: true });
   const changedPath = join(sessionsDirectory, 'changed.jsonl');
   const missingPath = join(sessionsDirectory, 'missing.jsonl');
@@ -298,11 +257,9 @@ void test('manual index maintenance plans exact new, changed, unchanged, and mis
   await writeSimplePhysicalSessionFile(changedPath, 'changed', 'original changed evidence');
   await writeSimplePhysicalSessionFile(missingPath, 'missing', 'soon missing evidence');
   await writeSimplePhysicalSessionFile(unchangedPath, 'unchanged', 'stable evidence');
-  const store = new MemoryConversationStore();
   const options = createIndexerOptions({
     sessionsDirectory,
-    catalogPath,
-    store,
+    databasePath,
     embeddingProvider: createRecordingEmbeddingProvider([]),
   });
   await indexChangedConversationSessions(options);
@@ -362,19 +319,17 @@ void test('manual index maintenance skips ignored new files before strict parsin
   const root = await mkdtemp(join(tmpdir(), 'recall-indexer-ignore-new-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const sessionsDirectory = join(root, 'sessions');
-  const catalogPath = join(root, 'recall-catalog.sqlite');
+  const databasePath = join(root, 'recall.sqlite');
   const ignoredPath = join(sessionsDirectory, 'ignored-malformed.jsonl');
   const eligiblePath = join(sessionsDirectory, 'eligible.jsonl');
   await mkdir(sessionsDirectory, { recursive: true });
   await writeFile(ignoredPath, '{"type":"session"}\n');
   await writeSimplePhysicalSessionFile(eligiblePath, 'eligible', 'eligible exact path evidence');
-  const store = new MemoryConversationStore();
   const embeddedBatches: string[][] = [];
   const events: RecallIndexProgressEvent[] = [];
   const options = createIndexerOptions({
     sessionsDirectory,
-    catalogPath,
-    store,
+    databasePath,
     embeddingProvider: createRecordingEmbeddingProvider(embeddedBatches),
   });
 
@@ -390,8 +345,7 @@ void test('manual index maintenance skips ignored new files before strict parsin
   assert.equal(ignored.indexedSessions, 1);
   assert.equal(ignored.failedSessions.length, 0);
   assert.deepEqual(embeddedBatches, [['eligible exact path evidence']]);
-  assert.ok([...store.chunks.values()].every((chunk) => chunk.sessionPath === eligiblePath));
-  assert.deepEqual(readCatalogSessionPaths(catalogPath), [eligiblePath]);
+  assert.deepEqual(readRecallDatabaseSessionPaths(databasePath), [eligiblePath]);
   assert.deepEqual(
     events.find((event) => event.kind === 'maintenance-workset-planned'),
     {
@@ -419,22 +373,20 @@ void test('manual index maintenance removes ignored indexed files and reindexes 
   const root = await mkdtemp(join(tmpdir(), 'recall-indexer-ignore-indexed-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const sessionsDirectory = join(root, 'sessions');
-  const catalogPath = join(root, 'recall-catalog.sqlite');
+  const databasePath = join(root, 'recall.sqlite');
   const sessionPath = join(sessionsDirectory, 'one.jsonl');
   await mkdir(sessionsDirectory, { recursive: true });
   await writeSimplePhysicalSessionFile(sessionPath, 'one', 'indexed then ignored evidence');
-  const store = new MemoryConversationStore();
   const options = createIndexerOptions({
     sessionsDirectory,
-    catalogPath,
-    store,
+    databasePath,
     embeddingProvider: createRecordingEmbeddingProvider([]),
   });
   await indexChangedConversationSessions({
     ...options,
     ignoredPhysicalSessionPaths: new Set(),
   });
-  assert.ok(readSessionDenseDocuments(catalogPath, sessionPath).size > 0);
+  assert.ok(readSessionDenseDocuments(databasePath, sessionPath).size > 0);
   const events: RecallIndexProgressEvent[] = [];
 
   const removed = await indexChangedConversationSessions({
@@ -447,8 +399,8 @@ void test('manual index maintenance removes ignored indexed files and reindexes 
 
   assert.equal(removed.removedSessions, 1);
   assert.ok(removed.deletedChunks > 0);
-  assert.equal(readSessionDenseDocuments(catalogPath, sessionPath).size, 0);
-  assert.deepEqual(readCatalogSessionPaths(catalogPath), []);
+  assert.equal(readSessionDenseDocuments(databasePath, sessionPath).size, 0);
+  assert.deepEqual(readRecallDatabaseSessionPaths(databasePath), []);
   assert.deepEqual(
     events.find((event) => event.kind === 'maintenance-workset-planned'),
     {
@@ -470,23 +422,21 @@ void test('manual index maintenance removes ignored indexed files and reindexes 
     ignoredPhysicalSessionPaths: new Set(),
   });
   assert.equal(reindexed.indexedSessions, 1);
-  assert.ok(readSessionDenseDocuments(catalogPath, sessionPath).size > 0);
-  assert.deepEqual(readCatalogSessionPaths(catalogPath), [sessionPath]);
+  assert.ok(readSessionDenseDocuments(databasePath, sessionPath).size > 0);
+  assert.deepEqual(readRecallDatabaseSessionPaths(databasePath), [sessionPath]);
 });
 
 void test('manual index maintenance classifies an ignored missing indexed path only once', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'recall-indexer-ignore-missing-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const sessionsDirectory = join(root, 'sessions');
-  const catalogPath = join(root, 'recall-catalog.sqlite');
+  const databasePath = join(root, 'recall.sqlite');
   const sessionPath = join(sessionsDirectory, 'one.jsonl');
   await mkdir(sessionsDirectory, { recursive: true });
   await writeSimplePhysicalSessionFile(sessionPath, 'one', 'ignored missing evidence');
-  const store = new MemoryConversationStore();
   const options = createIndexerOptions({
     sessionsDirectory,
-    catalogPath,
-    store,
+    databasePath,
     embeddingProvider: createRecordingEmbeddingProvider([]),
   });
   await indexChangedConversationSessions({
@@ -519,12 +469,12 @@ void test('manual index maintenance classifies an ignored missing indexed path o
   );
 });
 
-void test('manual index maintenance resolves a relative sessions directory to absolute catalog paths', async (t) => {
+void test('manual index maintenance resolves a relative sessions directory to absolute Recall database paths', async (t) => {
   const root = await mkdtemp(join(process.cwd(), 'recall-indexer-relative-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const sessionsDirectory = join(root, 'sessions');
   const relativeSessionsDirectory = relative(process.cwd(), sessionsDirectory);
-  const catalogPath = join(root, 'recall-catalog.sqlite');
+  const databasePath = join(root, 'recall.sqlite');
   const sessionPath = join(sessionsDirectory, 'one.jsonl');
   await mkdir(sessionsDirectory, { recursive: true });
   await writeSimplePhysicalSessionFile(sessionPath, 'one', 'absolute state identity evidence');
@@ -532,42 +482,38 @@ void test('manual index maintenance resolves a relative sessions directory to ab
   await indexChangedConversationSessions({
     ...createIndexerOptions({
       sessionsDirectory: relativeSessionsDirectory,
-      catalogPath,
-      store: new MemoryConversationStore(),
+      databasePath,
       embeddingProvider: createRecordingEmbeddingProvider([]),
     }),
     ignoredPhysicalSessionPaths: new Set(),
   });
 
-  assert.deepEqual(readCatalogSessionPaths(catalogPath), [sessionPath]);
+  assert.deepEqual(readRecallDatabaseSessionPaths(databasePath), [sessionPath]);
 });
 
 void test('manual index maintenance reuses an active vector only for the same canonical checksum', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'recall-indexer-active-vector-reuse-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const sessionsDirectory = join(root, 'sessions');
-  const sourceCatalogPath = join(root, 'source-catalog.sqlite');
-  const targetCatalogPath = join(root, 'target-catalog.sqlite');
+  const sourceDatabasePath = join(root, 'source-recall.sqlite');
+  const targetDatabasePath = join(root, 'target-recall.sqlite');
   const sessionPath = join(sessionsDirectory, 'one.jsonl');
   await mkdir(sessionsDirectory, { recursive: true });
   await writeSimplePhysicalSessionFile(sessionPath, 'one', 'safe vector reuse evidence');
-  const activeStore = new MemoryConversationStore();
   await indexChangedConversationSessions(
     createIndexerOptions({
       sessionsDirectory,
-      catalogPath: sourceCatalogPath,
-      store: activeStore,
+      databasePath: sourceDatabasePath,
       embeddingProvider: createRecordingEmbeddingProvider([]),
     }),
   );
-  const activeDatabase = openSqliteRecallDatabase(sourceCatalogPath, { readOnly: true });
+  const activeDatabase = openSqliteRecallDatabase(sourceDatabasePath, { readOnly: true });
   t.after(() => activeDatabase.close());
 
   const summary = await indexChangedConversationSessions({
     ...createIndexerOptions({
       sessionsDirectory,
-      catalogPath: targetCatalogPath,
-      store: new MemoryConversationStore(),
+      databasePath: targetDatabasePath,
       embeddingProvider: {
         embedQuery: async () => [],
         embedDocuments: async () => {
@@ -592,7 +538,7 @@ void test('manual index maintenance reuses an active vector only for the same ca
   assert.equal(summary.newlyEmbeddedChunks, 0);
   assert.equal(summary.reusedVectors, 1);
   assert.deepEqual(
-    readSessionDenseDocuments(targetCatalogPath, sessionPath),
+    readSessionDenseDocuments(targetDatabasePath, sessionPath),
     activeDatabase.fetchDenseDocuments(
       activeDatabase.readPhysicalSessionState(sessionPath)?.denseDocumentIds ?? [],
     ),
@@ -616,8 +562,7 @@ void test('reused SQLite vectors refresh current branch, sibling, project, and s
   const commonOptions = {
     ...createIndexerOptions({
       sessionsDirectory,
-      catalogPath: sourceDatabasePath,
-      store: new MemoryConversationStore(),
+      databasePath: sourceDatabasePath,
       embeddingProvider: createRecordingEmbeddingProvider([]),
     }),
     chunkPolicy: { maxTokens: 3, overlapTokens: 0 },
@@ -706,12 +651,10 @@ void test('manual index maintenance rejects active-vector reuse after canonical 
   const sessionPath = join(sessionsDirectory, 'one.jsonl');
   await mkdir(sessionsDirectory, { recursive: true });
   await writeSimplePhysicalSessionFile(sessionPath, 'one', 'alpha');
-  const activeStore = new MemoryConversationStore();
   await indexChangedConversationSessions(
     createIndexerOptions({
       sessionsDirectory,
-      catalogPath: join(root, 'source-catalog.sqlite'),
-      store: activeStore,
+      databasePath: join(root, 'source-database.sqlite'),
       embeddingProvider: createRecordingEmbeddingProvider([]),
     }),
   );
@@ -721,11 +664,19 @@ void test('manual index maintenance rejects active-vector reuse after canonical 
   const summary = await indexChangedConversationSessions({
     ...createIndexerOptions({
       sessionsDirectory,
-      catalogPath: join(root, 'target-catalog.sqlite'),
-      store: new MemoryConversationStore(),
+      databasePath: join(root, 'target-recall.sqlite'),
       embeddingProvider: createRecordingEmbeddingProvider(embeddedBatches),
     }),
-    vectorReuseStore: activeStore,
+    vectorReuseReader: (() => {
+      const sourceDatabase = openSqliteRecallDatabase(join(root, 'source-database.sqlite'), {
+        readOnly: true,
+      });
+      t.after(() => sourceDatabase.close());
+      return {
+        fetchDocuments: (ids: string[]) => sourceDatabase.fetchDenseDocuments(ids),
+        fetchVectors: (ids: string[]) => sourceDatabase.fetchDenseVectors(ids),
+      };
+    })(),
   });
 
   assert.equal(summary.newlyEmbeddedChunks, 1);
@@ -737,7 +688,7 @@ void test('manual incremental indexing adds, reuses, changes, and deletes SQLite
   const root = await mkdtemp(join(tmpdir(), 'recall-indexer-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const sessionsDirectory = join(root, 'sessions');
-  const catalogPath = join(root, 'recall-catalog.sqlite');
+  const databasePath = join(root, 'recall.sqlite');
   const sessionPath = join(sessionsDirectory, 'one.jsonl');
   await mkdir(sessionsDirectory, { recursive: true });
   const entries: object[] = [
@@ -757,12 +708,10 @@ void test('manual incremental indexing adds, reuses, changes, and deletes SQLite
     },
   ];
   await writeFile(sessionPath, sessionLines(entries));
-  const store = new MemoryConversationStore();
   const embeddedBatches: string[][] = [];
   const options = createIndexerOptions({
     sessionsDirectory,
-    catalogPath,
-    store,
+    databasePath,
     embeddingProvider: createRecordingEmbeddingProvider(embeddedBatches),
   });
 
@@ -770,7 +719,7 @@ void test('manual incremental indexing adds, reuses, changes, and deletes SQLite
   assert.equal(first.indexedSessions, 1);
   assert.equal(first.newlyEmbeddedChunks, 1);
   assert.equal(first.reusedVectors, 0);
-  assert.equal(readSessionDenseDocuments(catalogPath, sessionPath).size, 1);
+  assert.equal(readSessionDenseDocuments(databasePath, sessionPath).size, 1);
 
   const unchanged = await indexChangedConversationSessions(options);
   assert.equal(unchanged.indexedSessions, 0);
@@ -794,24 +743,22 @@ void test('manual incremental indexing adds, reuses, changes, and deletes SQLite
   await rm(sessionPath);
   const deleted = await indexChangedConversationSessions(options);
   assert.equal(deleted.removedSessions, 1);
-  assert.equal(store.chunks.size, 0);
+  assert.deepEqual(readRecallDatabaseSessionPaths(databasePath), []);
 });
 
 void test('manual index maintenance reports cumulative progress and continues after a damaged file', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'recall-indexer-invalid-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const sessionsDirectory = join(root, 'sessions');
-  const catalogPath = join(root, 'recall-catalog.sqlite');
+  const databasePath = join(root, 'recall.sqlite');
   const damagedPath = join(sessionsDirectory, 'a-damaged.jsonl');
   const healthyPath = join(sessionsDirectory, 'z-healthy.jsonl');
   await mkdir(sessionsDirectory, { recursive: true });
   await writeSimplePhysicalSessionFile(damagedPath, 'damaged', 'initial damaged evidence');
   await writeSimplePhysicalSessionFile(healthyPath, 'healthy', 'initial healthy evidence');
-  const store = new MemoryConversationStore();
   const options = createIndexerOptions({
     sessionsDirectory,
-    catalogPath,
-    store,
+    databasePath,
     embeddingProvider: createRecordingEmbeddingProvider([]),
   });
   await indexChangedConversationSessions(options);
@@ -845,8 +792,8 @@ void test('manual index maintenance reports cumulative progress and continues af
   });
   assert.equal(result.failedSessions.length, 1);
   assert.match(result.failedSessions[0]?.error ?? '', /session/iu);
-  assert.equal(readSessionDenseDocuments(catalogPath, damagedPath).size, 0);
-  assert.ok(readSessionDenseDocuments(catalogPath, healthyPath).size > 0);
+  assert.equal(readSessionDenseDocuments(databasePath, damagedPath).size, 0);
+  assert.ok(readSessionDenseDocuments(databasePath, healthyPath).size > 0);
 
   const progressEvents = events.filter(isIndexingMaintenanceWorksetEvent);
   for (let index = 1; index < progressEvents.length; index += 1) {
@@ -875,7 +822,7 @@ void test('manual index maintenance reports multiple batches within one large ph
   const root = await mkdtemp(join(tmpdir(), 'recall-indexer-batches-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const sessionsDirectory = join(root, 'sessions');
-  const catalogPath = join(root, 'recall-catalog.sqlite');
+  const databasePath = join(root, 'recall.sqlite');
   const sessionPath = join(sessionsDirectory, 'large.jsonl');
   await mkdir(sessionsDirectory, { recursive: true });
   const messages = Array.from({ length: 140 }, (_, index) => ({
@@ -900,8 +847,7 @@ void test('manual index maintenance reports multiple batches within one large ph
   const result = await indexChangedConversationSessions({
     ...createIndexerOptions({
       sessionsDirectory,
-      catalogPath,
-      store: new MemoryConversationStore(),
+      databasePath,
       embeddingProvider: createRecordingEmbeddingProvider([]),
     }),
     onProgress(event) {
@@ -934,15 +880,14 @@ void test('manual index maintenance skips an unchanged physical session without 
   t.after(() => rm(root, { recursive: true, force: true }));
   const sessionsDirectory = join(root, 'sessions');
   const sessionPath = join(sessionsDirectory, 'unchanged.jsonl');
-  const catalogPath = join(root, 'recall-catalog.sqlite');
+  const databasePath = join(root, 'recall.sqlite');
   await mkdir(sessionsDirectory, { recursive: true });
   await writeSimplePhysicalSessionFile(sessionPath, 'unchanged', 'metadata skip evidence');
   const stableTimestamp = new Date('2026-08-09T12:00:00.000Z');
   await utimes(sessionPath, stableTimestamp, stableTimestamp);
   const options = createIndexerOptions({
     sessionsDirectory,
-    catalogPath,
-    store: new MemoryConversationStore(),
+    databasePath,
     embeddingProvider: createRecordingEmbeddingProvider([]),
   });
   await indexChangedConversationSessions(options);
@@ -960,51 +905,6 @@ void test('manual index maintenance skips an unchanged physical session without 
   assert.equal(skipped.failedSessions.length, 0);
 });
 
-void test('legacy state migrates once without rewriting the corpus-wide JSON file', async (t) => {
-  const root = await mkdtemp(join(tmpdir(), 'recall-indexer-migration-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
-  const sessionsDirectory = join(root, 'sessions');
-  const sessionPath = join(sessionsDirectory, 'legacy.jsonl');
-  const catalogPath = join(root, 'recall-catalog.sqlite');
-  const legacyStatePath = join(root, 'index-state.json');
-  await mkdir(sessionsDirectory, { recursive: true });
-  await writeSimplePhysicalSessionFile(sessionPath, 'legacy', 'legacy migration evidence');
-  const sourceStats = await stat(sessionPath);
-  const legacyState = `${JSON.stringify({
-    version: 3,
-    importPolicyVersion: SESSION_IMPORT_POLICY_VERSION,
-    sessions: {
-      [sessionPath]: {
-        size: sourceStats.size,
-        mtimeMs: sourceStats.mtimeMs,
-        chunks: [],
-      },
-    },
-  })}\n`;
-  await writeFile(legacyStatePath, legacyState);
-  const legacyStateInode = (await stat(legacyStatePath)).ino;
-  const options = {
-    ...createIndexerOptions({
-      sessionsDirectory,
-      catalogPath,
-      store: new MemoryConversationStore(),
-      embeddingProvider: createRecordingEmbeddingProvider([]),
-    }),
-    legacyStatePath,
-  };
-
-  const migrated = await indexChangedConversationSessions(options);
-  const unchanged = await indexChangedConversationSessions(options);
-
-  assert.equal(migrated.indexedSessions, 1);
-  assert.equal(unchanged.indexedSessions, 0);
-  assert.equal(await readFile(legacyStatePath, 'utf8'), legacyState);
-  assert.equal((await stat(legacyStatePath)).ino, legacyStateInode);
-  const database = openSqliteRecallDatabase(catalogPath, { readOnly: true });
-  assert.equal(database.requiresInvocationBackfill(sessionPath), false);
-  database.close();
-});
-
 void test('a late SQLite replacement failure leaves the previous physical session intact', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'recall-indexer-replacement-failure-'));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -1015,12 +915,11 @@ void test('a late SQLite replacement failure leaves the previous physical sessio
   await writeSimplePhysicalSessionFile(sessionPath, 'one', 'previous committed evidence');
   const options = createIndexerOptions({
     sessionsDirectory,
-    catalogPath: databasePath,
-    store: new MemoryConversationStore(),
+    databasePath: databasePath,
     embeddingProvider: createRecordingEmbeddingProvider([]),
   });
   await indexChangedConversationSessions(options);
-  const previousState = readCatalogSessionState(databasePath, sessionPath);
+  const previousState = readRecallDatabaseSessionState(databasePath, sessionPath);
   const previousDocuments = readSessionDenseDocuments(databasePath, sessionPath);
 
   await writeSimplePhysicalSessionFile(sessionPath, 'one', 'replacement evidence is different');
@@ -1035,7 +934,7 @@ void test('a late SQLite replacement failure leaves the previous physical sessio
     /dense embedding invalid/u,
   );
 
-  assert.deepEqual(readCatalogSessionState(databasePath, sessionPath), previousState);
+  assert.deepEqual(readRecallDatabaseSessionState(databasePath, sessionPath), previousState);
   assert.deepEqual(readSessionDenseDocuments(databasePath, sessionPath), previousDocuments);
   const database = openSqliteRecallDatabase(databasePath, { readOnly: true });
   assert.equal(database.checkIntegrity().healthy, true);
@@ -1058,8 +957,7 @@ void test('completed earlier physical sessions survive a later SQLite replacemen
     indexChangedConversationSessions({
       ...createIndexerOptions({
         sessionsDirectory,
-        catalogPath: databasePath,
-        store: new MemoryConversationStore(),
+        databasePath: databasePath,
         embeddingProvider: {
           embedQuery: async () => [],
           async embedDocuments(documents) {
@@ -1074,7 +972,7 @@ void test('completed earlier physical sessions survive a later SQLite replacemen
     /dense embedding invalid/u,
   );
 
-  assert.deepEqual(readCatalogSessionPaths(databasePath), [firstPath]);
+  assert.deepEqual(readRecallDatabaseSessionPaths(databasePath), [firstPath]);
   assert.ok(readSessionDenseDocuments(databasePath, firstPath).size > 0);
   assert.equal(readSessionDenseDocuments(databasePath, secondPath).size, 0);
 });
@@ -1085,15 +983,14 @@ void test('interrupted index maintenance commits completed sessions and resumes 
   const sessionsDirectory = join(root, 'sessions');
   const firstPath = join(sessionsDirectory, 'a-first.jsonl');
   const secondPath = join(sessionsDirectory, 'b-second.jsonl');
-  const catalogPath = join(root, 'recall-catalog.sqlite');
+  const databasePath = join(root, 'recall.sqlite');
   await mkdir(sessionsDirectory, { recursive: true });
   await writeSimplePhysicalSessionFile(firstPath, 'first', 'first interruption evidence');
   await writeSimplePhysicalSessionFile(secondPath, 'second', 'second interruption evidence');
   const embeddedBatches: string[][] = [];
   const options = createIndexerOptions({
     sessionsDirectory,
-    catalogPath,
-    store: new MemoryConversationStore(),
+    databasePath,
     embeddingProvider: createRecordingEmbeddingProvider(embeddedBatches),
   });
   const abortController = new AbortController();
@@ -1110,33 +1007,32 @@ void test('interrupted index maintenance commits completed sessions and resumes 
     }),
     /Recall conversation indexing cancelled/u,
   );
-  assert.deepEqual(readCatalogSessionPaths(catalogPath), [firstPath]);
+  assert.deepEqual(readRecallDatabaseSessionPaths(databasePath), [firstPath]);
   assert.equal(embeddedBatches.length, 1);
 
   const resumed = await indexChangedConversationSessions(options);
   assert.equal(resumed.indexedSessions, 1);
-  assert.deepEqual(readCatalogSessionPaths(catalogPath), [firstPath, secondPath]);
+  assert.deepEqual(readRecallDatabaseSessionPaths(databasePath), [firstPath, secondPath]);
   assert.equal(embeddedBatches.length, 2);
 });
 
-void test('updating one physical session leaves unrelated catalog state unchanged', async (t) => {
+void test('updating one physical session leaves unrelated Recall database state unchanged', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'recall-indexer-unrelated-state-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const sessionsDirectory = join(root, 'sessions');
   const changedPath = join(sessionsDirectory, 'changed.jsonl');
   const unrelatedPath = join(sessionsDirectory, 'unrelated.jsonl');
-  const catalogPath = join(root, 'recall-catalog.sqlite');
+  const databasePath = join(root, 'recall.sqlite');
   await mkdir(sessionsDirectory, { recursive: true });
   await writeSimplePhysicalSessionFile(changedPath, 'changed', 'original changed state');
   await writeSimplePhysicalSessionFile(unrelatedPath, 'unrelated', 'stable unrelated state');
   const options = createIndexerOptions({
     sessionsDirectory,
-    catalogPath,
-    store: new MemoryConversationStore(),
+    databasePath,
     embeddingProvider: createRecordingEmbeddingProvider([]),
   });
   await indexChangedConversationSessions(options);
-  const unrelatedBefore = readCatalogSessionState(catalogPath, unrelatedPath);
+  const unrelatedBefore = readRecallDatabaseSessionState(databasePath, unrelatedPath);
 
   await writeSimplePhysicalSessionFile(
     changedPath,
@@ -1146,7 +1042,7 @@ void test('updating one physical session leaves unrelated catalog state unchange
   const updated = await indexChangedConversationSessions(options);
 
   assert.equal(updated.indexedSessions, 1);
-  assert.deepEqual(readCatalogSessionState(catalogPath, unrelatedPath), unrelatedBefore);
+  assert.deepEqual(readRecallDatabaseSessionState(databasePath, unrelatedPath), unrelatedBefore);
 });
 
 void test('compact indexing keeps tool results and bash output away from tokenizer, embeddings, and dense storage', async (t) => {
@@ -1207,15 +1103,13 @@ void test('compact indexing keeps tool results and bash output away from tokeniz
       },
     ]),
   );
-  const store = new MemoryConversationStore();
   const embeddedBatches: string[][] = [];
-  const catalogPath = join(root, 'recall-catalog.sqlite');
+  const databasePath = join(root, 'recall.sqlite');
 
   await indexChangedConversationSessions({
     ...createIndexerOptions({
       sessionsDirectory,
-      catalogPath,
-      store,
+      databasePath,
       embeddingProvider: createRecordingEmbeddingProvider(embeddedBatches),
     }),
     tokenizer: {
@@ -1226,12 +1120,12 @@ void test('compact indexing keeps tool results and bash output away from tokeniz
   });
 
   assert.equal(embeddedBatches.length, 0);
-  assert.equal(readSessionDenseDocuments(catalogPath, sessionPath).size, 0);
-  const database = openSqliteRecallDatabase(catalogPath, { readOnly: true });
+  assert.equal(readSessionDenseDocuments(databasePath, sessionPath).size, 0);
+  const database = openSqliteRecallDatabase(databasePath, { readOnly: true });
   assert.equal(database.searchInvocations('/tmp/a', 5).length, 1);
   assert.equal(database.searchInvocations('compact catalog', 5).length, 1);
   database.close();
-  const catalogBytes = await readFile(catalogPath);
+  const catalogBytes = await readFile(databasePath);
   assert.ok(!catalogBytes.includes('TOOL_RESULT_MUST_NOT_ENTER_SQLITE'));
   assert.ok(!catalogBytes.includes('BASH_OUTPUT_MUST_NOT_ENTER_SQLITE'));
   assert.ok(!catalogBytes.includes('OMITTED_ARGUMENT_PAYLOAD_MUST_NOT_ENTER_SQLITE'));

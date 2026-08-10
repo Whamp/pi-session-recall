@@ -1,8 +1,10 @@
 ---
-status: accepted
+status: superseded
 ---
 
 # Store incremental recall state in SQLite
+
+> Superseded by ADR-0014. This document preserves the historical version 7 catalog decision.
 
 One WAL-mode Recall catalog stores each Physical session file's size, modification time, document identities, and compact Invocation records. Replacing a changed session deletes and inserts only that session's catalog rows in one transaction. Missing, ignored, or malformed indexed sessions are removed from the active recall store and the catalog together during explicit Index maintenance.
 

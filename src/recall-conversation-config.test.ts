@@ -19,9 +19,12 @@ void test('recall config defaults to one Octen profile and the frozen search pol
     assert.deepEqual(config.chunkPolicy, { maxTokens: 512, overlapTokens: 64 });
     assert.deepEqual(config.searchCandidateLimits, { dense: 8, invocation: 8 });
     assert.equal(config.sqliteDatabasePath, join(home, '.pi', 'agent', 'recall', 'recall.sqlite'));
-    assert.equal(config.databasePath, join(home, '.pi', 'agent', 'recall', 'zvec'));
-    assert.equal(config.catalogPath, join(home, '.pi', 'agent', 'recall', 'recall-catalog.sqlite'));
-    assert.equal(config.statePath, join(home, '.pi', 'agent', 'recall', 'index-state.json'));
+    assert.equal(config.legacyV6ZvecDatabasePath, join(home, '.pi', 'agent', 'recall', 'zvec'));
+    assert.equal('catalogPath' in config, false);
+    assert.equal(
+      config.legacyV6StatePath,
+      join(home, '.pi', 'agent', 'recall', 'index-state.json'),
+    );
     assert.equal(config.manifestPath, join(home, '.pi', 'agent', 'recall', 'index-manifest.json'));
     assert.equal(
       config.databaseGenerationRootPath,
@@ -65,7 +68,7 @@ void test('recall config accepts direct Octen HTTP and fixed-width profile overr
   }
 });
 
-void test('recall config rejects widths that cannot back the fixed compact dense store', async () => {
+void test('recall config rejects widths that cannot back the manifest version 8 FP32 vector', async () => {
   await assert.rejects(
     loadRecallConversationConfig({
       homeDirectory: '/tmp/recall-config-wrong-width',
@@ -74,7 +77,7 @@ void test('recall config rejects widths that cannot back the fixed compact dense
         PI_RECALL_EMBEDDING_STORED_DIMENSIONS: '768',
       },
     }),
-    /stored dimensions 768 do not match the compact dense store width 1024/,
+    /stored dimensions 768 do not match the manifest version 8 FP32 vector width 1024/,
   );
 
   await assert.rejects(

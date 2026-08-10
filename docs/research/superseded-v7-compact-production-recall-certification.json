@@ -1,4 +1,7 @@
 {
+  "status": "superseded",
+  "supersededBy": "ADR-0014 unified SQLite v8",
+  "warning": "Historical v7 flat-Zvec-plus-SQLite evidence; not current certification.",
   "reportVersion": 1,
   "issue": 172,
   "measuredAt": "2026-08-10T12:24:28.559Z",

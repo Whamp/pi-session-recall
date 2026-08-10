@@ -98,7 +98,7 @@ export async function loadRecallConversationConfig(
   }
   if (embeddingStoredDimensions !== DEFAULT_OCTEN_STORED_DIMENSIONS) {
     throw new Error(
-      `Recall configuration stored dimensions ${embeddingStoredDimensions} do not match the compact dense store width ${DEFAULT_OCTEN_STORED_DIMENSIONS}`,
+      `Recall configuration stored dimensions ${embeddingStoredDimensions} do not match the manifest version 8 FP32 vector width ${DEFAULT_OCTEN_STORED_DIMENSIONS}`,
     );
   }
 
@@ -108,9 +108,8 @@ export async function loadRecallConversationConfig(
       file.sessionsDirectory ??
       join(homeDirectory, '.pi', 'agent', 'sessions'),
     sqliteDatabasePath: join(dataDirectory, 'recall.sqlite'),
-    databasePath: join(dataDirectory, 'zvec'),
-    catalogPath: join(dataDirectory, 'recall-catalog.sqlite'),
-    statePath: join(dataDirectory, 'index-state.json'),
+    legacyV6ZvecDatabasePath: join(dataDirectory, 'zvec'),
+    legacyV6StatePath: join(dataDirectory, 'index-state.json'),
     manifestPath: join(dataDirectory, 'index-manifest.json'),
     indexMaintenanceStatusPath: join(dataDirectory, 'index-maintenance-status.json'),
     physicalSessionIgnoreStatePath: join(dataDirectory, 'physical-session-ignore.json'),

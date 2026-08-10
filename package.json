@@ -2,11 +2,11 @@
   "name": "pi-session-recall",
   "version": "0.1.0",
   "private": true,
-  "description": "Pi extension that indexes conversation history in zvec and recalls past session details.",
+  "description": "Pi extension that indexes conversation history in one SQLite Recall database.",
   "keywords": [
     "conversation-memory",
     "pi-package",
-    "zvec"
+    "sqlite"
   ],
   "bin": {
     "psr": "./bin/psr"

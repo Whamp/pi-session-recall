@@ -11,25 +11,13 @@ import {
   type ConversationTextTokenizer,
   type SessionConversationChunk,
 } from './session-conversation-index.js';
-import type { DenseRecallDocument } from './dense-recall-conversation-store.js';
 import { openSqliteRecallDatabase, type SqliteRecallDatabase } from './sqlite-recall-database.js';
 
-/** @deprecated Legacy split-store shape retained only for current branch callers. */
-export interface DenseRecallIndexStore {
-  upsertDocuments(documents: DenseRecallDocument[]): void;
-  deleteDocuments(ids: string[]): void;
-  fetchDocuments(this: void, ids: string[]): Map<string, SessionConversationChunk>;
-  fetchVectors(ids: string[]): Map<string, number[]>;
-}
-
-/** Read-only active legacy v6 vectors whose embedding profile the caller already verified. */
+/** Read-only active-database vectors whose embedding profile the caller already verified. */
 export interface RecallVectorReuseReader {
   fetchDocuments(ids: string[]): Map<string, SessionConversationChunk>;
   fetchVectors(ids: string[]): Map<string, number[]>;
 }
-
-/** @deprecated Use RecallVectorReuseReader. */
-export type DenseRecallVectorReuseStore = RecallVectorReuseReader;
 
 /** Counts and source failures from one explicit incremental indexing pass. */
 export interface ConversationIndexSummary {
@@ -50,15 +38,8 @@ export interface IncrementalSessionIndexerOptions {
   database?: SqliteRecallDatabase;
   /** Path used only when the indexer itself owns the database handle. */
   databasePath?: string;
-  /** @deprecated Current branch alias for databasePath. */
-  catalogPath?: string;
-  legacyStatePath?: string;
-  /** @deprecated Ignored split-store dependency retained until current callers migrate. */
-  store?: DenseRecallIndexStore;
-  /** Read-only active legacy v6 store used only during staged embedding reuse. */
+  /** Read-only active database used only during staged embedding reuse. */
   vectorReuseReader?: RecallVectorReuseReader;
-  /** @deprecated Current branch alias for vectorReuseReader. */
-  vectorReuseStore?: DenseRecallVectorReuseStore;
   embeddingProvider: RecallEmbeddingProvider;
   tokenizer: ConversationTextTokenizer;
   chunkPolicy: RecallChunkPolicy;
@@ -281,7 +262,7 @@ async function indexChangedRecallSessionFile(
     denseChunks,
     database,
     options.embeddingProvider,
-    options.vectorReuseReader ?? options.vectorReuseStore,
+    options.vectorReuseReader,
     summary,
     onBatchPrepared,
     options.signal,
@@ -354,15 +335,11 @@ async function planMaintenanceWorkset(
 export async function indexChangedConversationSessions(
   options: IncrementalSessionIndexerOptions,
 ): Promise<ConversationIndexSummary> {
-  const databasePath = options.databasePath ?? options.catalogPath;
+  const { databasePath } = options;
   if (!options.database && !databasePath) {
     throw new Error('Recall indexing database path missing');
   }
-  const database =
-    options.database ??
-    (options.legacyStatePath
-      ? openSqliteRecallDatabase(databasePath ?? '', { legacyStatePath: options.legacyStatePath })
-      : openSqliteRecallDatabase(databasePath ?? ''));
+  const database = options.database ?? openSqliteRecallDatabase(databasePath ?? '');
   const ownsDatabase = options.database === undefined;
   try {
     options.onProgress?.({ kind: 'discovering-physical-session-files' });

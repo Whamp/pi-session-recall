@@ -27,8 +27,8 @@ import {
 
 /** Paths owned by the temporary legacy-v6 rollback adapter. */
 export interface LegacyV6RecallDatabasePaths {
-  databasePath: string;
-  statePath: string;
+  legacyV6ZvecDatabasePath: string;
+  legacyV6StatePath: string;
   manifestPath: string;
 }
 
@@ -60,7 +60,7 @@ function openLegacyV6ZvecStore(
   readOnly: boolean,
 ): ZvecConversationStore {
   return openZvecConversationStore({
-    databasePath: paths.databasePath,
+    databasePath: paths.legacyV6ZvecDatabasePath,
     dimensions,
     createIfMissing: false,
     readOnly,
@@ -129,7 +129,7 @@ export async function indexLegacyV6RecallDatabase(options: {
   try {
     const indexSummary = await indexChangedLegacyV6ConversationSessions({
       sessionsDirectory: options.sessionsDirectory,
-      statePath: options.paths.statePath,
+      statePath: options.paths.legacyV6StatePath,
       store,
       embeddingProvider: options.embeddingProvider,
       tokenizer: options.tokenizer,

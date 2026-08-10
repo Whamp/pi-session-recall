@@ -63,9 +63,8 @@ function createTestConfig(
   return {
     sessionsDirectory: join(root, 'sessions'),
     sqliteDatabasePath: join(data, 'recall.sqlite'),
-    databasePath: join(data, 'zvec'),
-    catalogPath: join(data, 'recall-catalog.sqlite'),
-    statePath: join(data, 'index-state.json'),
+    legacyV6ZvecDatabasePath: join(data, 'zvec'),
+    legacyV6StatePath: join(data, 'index-state.json'),
     manifestPath: join(data, 'index-manifest.json'),
     indexMaintenanceStatusPath: join(data, 'index-maintenance-status.json'),
     physicalSessionIgnoreStatePath: join(data, 'physical-session-ignore.json'),
@@ -86,8 +85,8 @@ function createTestConfig(
   };
 }
 
-function readSqliteSessionPaths(databasePath: string): string[] {
-  const database = openSqliteRecallDatabase(databasePath);
+function readSqliteSessionPaths(sqliteDatabasePath: string): string[] {
+  const database = openSqliteRecallDatabase(sqliteDatabasePath);
   try {
     return database.listPhysicalSessionPaths();
   } finally {
@@ -96,14 +95,14 @@ function readSqliteSessionPaths(databasePath: string): string[] {
 }
 
 async function createActualLegacyV6Fixture(config: RecallConversationConfig): Promise<void> {
-  await mkdir(join(config.databasePath, '..'), { recursive: true });
+  await mkdir(join(config.legacyV6ZvecDatabasePath, '..'), { recursive: true });
   const store = openZvecConversationStore({
-    databasePath: config.databasePath,
+    databasePath: config.legacyV6ZvecDatabasePath,
     dimensions: config.embeddingStoredDimensions,
   });
   store.close();
   await writeFile(
-    config.statePath,
+    config.legacyV6StatePath,
     `${JSON.stringify({
       version: 3,
       importPolicyVersion: SESSION_IMPORT_POLICY_VERSION,
@@ -594,8 +593,8 @@ void test('changed legacy-v6 sessions retain full lexical tool evidence and trac
   ].map((query) =>
     searchLegacyV6RecallDatabase({
       paths: {
-        databasePath: config.databasePath,
-        statePath: config.statePath,
+        legacyV6ZvecDatabasePath: config.legacyV6ZvecDatabasePath,
+        legacyV6StatePath: config.legacyV6StatePath,
         manifestPath: config.manifestPath,
       },
       dimensions: config.embeddingStoredDimensions,
@@ -611,7 +610,7 @@ void test('changed legacy-v6 sessions retain full lexical tool evidence and trac
     'cat /project/LegacyV6BashLocatorXYZ.log',
     'Complete legacy bash output preserves cobalt harbor wording.',
   ];
-  const trackedState = await readFile(config.statePath, 'utf8');
+  const trackedState = await readFile(config.legacyV6StatePath, 'utf8');
   const evidenceResults = searches.map((search, index) =>
     search.results.find((candidate) => candidate.content === expectedEvidence[index]),
   );
@@ -868,7 +867,7 @@ void test('service source search reads raw output without opening the index or e
   assert.equal(search.results[0]?.entryId, 'source-result');
   assert.equal(search.results[0]?.sourceLineStart, 2);
   assert.match(search.results[0]?.text ?? '', /RAW_RESULT_ONLY hardware MODEL-9000/u);
-  await assert.rejects(readFile(config.statePath, 'utf8'), { code: 'ENOENT' });
+  await assert.rejects(readFile(config.legacyV6StatePath, 'utf8'), { code: 'ENOENT' });
 });
 
 void test('rebuild activates dense conversations and compact Invocations for combined normal recall', async (t) => {
@@ -953,7 +952,7 @@ void test('rebuild activates dense conversations and compact Invocations for com
   );
 });
 
-void test('service builds one compact database and performs read-only combined search', async (t) => {
+void test('service builds one unified SQLite database and performs read-only combined search', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'recall-service-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const config = createTestConfig(root);
@@ -964,9 +963,9 @@ void test('service builds one compact database and performs read-only combined s
     embeddingProvider: TEST_EMBEDDING_PROVIDER,
     loadTokenizer: async () => tokenizer,
     getCurrentTime: () => new Date('2026-07-25T12:00:00.000Z'),
-    openDatabase(databasePath, options) {
+    openDatabase(sqliteDatabasePath, options) {
       openedModes.push(options?.readOnly ? 'read' : 'write');
-      return openSqliteRecallDatabase(databasePath, options);
+      return openSqliteRecallDatabase(sqliteDatabasePath, options);
     },
   });
 
@@ -1380,7 +1379,7 @@ void test('ordinary indexing preserves the existing generation when its manifest
   assert.equal(await readFile(config.manifestPath, 'utf8'), manifestBefore);
 });
 
-void test('project scope filters both compact fast stores before mixed-result selection', async (t) => {
+void test('project scope filters both SQLite projections before mixed-result selection', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'recall-project-scope-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const config = createTestConfig(root);

@@ -85,7 +85,7 @@ An Invocation record surfaced by SQLite full-text search over tool names, bounde
 _Avoid_: Tool result, Source-backed evidence
 
 **Normal recall result**:
-One Dense recall document or Invocation record selected from both fast stores before the requested result limit is applied.
+One Dense recall document or Invocation record selected from the Recall database before the requested result limit is applied.
 _Avoid_: Source search result, Hybrid recall result
 
 **Recall result presentation**:
@@ -113,16 +113,12 @@ The versioned identity of the Octen model, fixed 1,024-dimension stored prefix, 
 _Avoid_: Index state, configuration
 
 **Stored recall embedding**:
-The first configured dimensions of one native Octen vector, L2-normalized and stored as FP32 for inner-product search.
+The first configured dimensions of one native Octen vector, L2-normalized and stored as FP32 for cosine search.
 _Avoid_: Raw embedding, independently verified MRL vector
 
-**Recall catalog**:
-The WAL-mode SQLite database that owns per-Physical-session incremental state, document identities, and compact Invocation search. One changed Physical session replaces only its own catalog rows in one transaction.
-_Avoid_: Index state file, Invocation cache
-
 **Recall database**:
-One complete, searchable set of index data, Recall catalog, manifest, and maintenance status.
-_Avoid_: Zvec collection, index file
+One disposable WAL-mode SQLite projection containing Physical session state, compact Invocation records with FTS5, Dense recall metadata, one unpartitioned global vec0 table, and one 16-bucket project vec0 table. One changed Physical session replaces its complete projection in one transaction. Canonical session JSONL owns full payloads and explicit Source search.
+_Avoid_: Recall catalog, Zvec collection, index state file
 
 **Candidate recall database**:
 A Recall database that `psr index --rebuild` builds beside the Active recall database. It cannot serve normal search until a successful rebuild completes.

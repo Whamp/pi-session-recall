@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, readlink, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, readlink, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -32,9 +32,8 @@ const OCTEN_IDENTITY: RecallEmbeddingModelIdentity = {
 function createGenerationConfig(dataDirectory: string): RecallDatabaseGenerationConfig {
   return {
     sqliteDatabasePath: join(dataDirectory, 'recall.sqlite'),
-    databasePath: join(dataDirectory, 'zvec'),
-    catalogPath: join(dataDirectory, 'recall-catalog.sqlite'),
-    statePath: join(dataDirectory, 'index-state.json'),
+    legacyV6ZvecDatabasePath: join(dataDirectory, 'zvec'),
+    legacyV6StatePath: join(dataDirectory, 'index-state.json'),
     manifestPath: join(dataDirectory, 'index-manifest.json'),
     indexMaintenanceStatusPath: join(dataDirectory, 'index-maintenance-status.json'),
     databaseGenerationRootPath: join(dataDirectory, 'generations'),
@@ -57,9 +56,9 @@ async function completeRecallDatabaseCandidate(candidate: RecallDatabaseCandidat
 }
 
 async function createLegacyVersion6Database(config: RecallDatabaseGenerationConfig): Promise<void> {
-  await mkdir(config.databasePath);
+  await mkdir(config.legacyV6ZvecDatabasePath);
   await Promise.all([
-    writeFile(config.statePath, 'legacy state'),
+    writeFile(config.legacyV6StatePath, 'legacy state'),
     writeFile(config.manifestPath, '{"manifestVersion":6}\n'),
   ]);
 }
@@ -74,8 +73,19 @@ void test('version 8 candidate stages and activates with one recall.sqlite datab
   const staged = await stageRecallDatabaseCandidate(config, candidate);
 
   assert.equal(await readFile(staged.paths.sqliteDatabasePath, 'utf8'), 'sqlite database');
-  await assert.rejects(readFile(staged.paths.databasePath), { code: 'ENOENT' });
-  await assert.rejects(readFile(staged.paths.catalogPath), { code: 'ENOENT' });
+  assert.deepEqual(Object.keys(staged.paths).sort(), [
+    'indexMaintenanceStatusPath',
+    'legacyV6StatePath',
+    'legacyV6ZvecDatabasePath',
+    'manifestPath',
+    'sqliteDatabasePath',
+  ]);
+  await assert.rejects(readFile(staged.paths.legacyV6ZvecDatabasePath), { code: 'ENOENT' });
+  assert.deepEqual((await readdir(staged.directoryPath)).sort(), [
+    'index-maintenance-status.json',
+    'index-manifest.json',
+    'recall.sqlite',
+  ]);
   await assert.rejects(readlink(join(dataDirectory, 'active')), { code: 'ENOENT' });
 
   assert.deepEqual(await activateStagedRecallDatabase(config, staged.databaseTarget), {
@@ -102,7 +112,10 @@ void test('activation records root version 6 and rollback restores it atomically
   assert.deepEqual(activation, { previousAvailable: true });
   await restorePreviousRecallDatabase(config);
   assert.equal(await readlink(join(dataDirectory, 'active')), '.');
-  assert.equal((await resolveActiveRecallDatabasePaths(config)).databasePath, config.databasePath);
+  assert.equal(
+    (await resolveActiveRecallDatabasePaths(config)).legacyV6ZvecDatabasePath,
+    config.legacyV6ZvecDatabasePath,
+  );
   assert.notEqual(activeTarget, '.');
 });
 
@@ -151,7 +164,7 @@ void test('rollback rejects an incomplete root version 6 target without changing
   await completeRecallDatabaseCandidate(candidate);
   await activateRecallDatabaseCandidate(config, candidate);
   const activeTarget = await readlink(join(dataDirectory, 'active'));
-  await rm(config.statePath);
+  await rm(config.legacyV6StatePath);
 
   await assert.rejects(
     restorePreviousRecallDatabase(config),

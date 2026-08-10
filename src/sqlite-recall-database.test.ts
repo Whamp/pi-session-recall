@@ -9,7 +9,6 @@ import { DatabaseSync } from 'node:sqlite';
 
 import { RecallProjectIdentitySource } from './enums.js';
 import type { InvocationRecord } from './createSessionInvocationRecords.js';
-import { SESSION_IMPORT_POLICY_VERSION } from './import-session-jsonl.js';
 import { isUnknownRecord } from './is-unknown-record.js';
 import { createTestSessionConversationChunk } from './recall-test-utils.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
@@ -776,50 +775,6 @@ void test('physical-session deletion atomically removes only its complete projec
     denseProjects: 1,
   });
   assert.equal(database.checkIntegrity().healthy, true);
-});
-
-void test('SQLite Recall database imports legacy session knowledge once for Invocation backfill', async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), 'sqlite-recall-legacy-state-'));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const databasePath = join(directory, 'recall.sqlite');
-  const legacyStatePath = join(directory, 'index-state.json');
-  await writeFile(
-    legacyStatePath,
-    `${JSON.stringify({
-      version: 3,
-      importPolicyVersion: SESSION_IMPORT_POLICY_VERSION,
-      sessions: {
-        '/sessions/legacy.jsonl': {
-          size: 321,
-          mtimeMs: 654,
-          chunks: [{ id: 'legacy-document-a' }, { id: 'legacy-document-b' }],
-        },
-      },
-    })}\n`,
-  );
-
-  const imported = openSqliteRecallDatabase(databasePath, { legacyStatePath });
-  assert.deepEqual(imported.readPhysicalSessionState('/sessions/legacy.jsonl'), {
-    size: 321,
-    mtimeMs: 654,
-    documentIds: ['legacy-document-a', 'legacy-document-b'],
-    denseDocumentIds: [],
-  });
-  assert.equal(imported.requiresInvocationBackfill('/sessions/legacy.jsonl'), true);
-  imported.close();
-
-  await writeFile(
-    legacyStatePath,
-    `${JSON.stringify({
-      version: 3,
-      importPolicyVersion: SESSION_IMPORT_POLICY_VERSION,
-      sessions: {},
-    })}\n`,
-  );
-  const reopened = openSqliteRecallDatabase(databasePath, { legacyStatePath });
-  t.after(() => reopened.close());
-  assert.deepEqual(reopened.listPhysicalSessionPaths(), ['/sessions/legacy.jsonl']);
-  assert.equal(reopened.requiresInvocationBackfill('/sessions/legacy.jsonl'), true);
 });
 
 void test(

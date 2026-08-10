@@ -1,8 +1,10 @@
 ---
-status: accepted
+status: superseded
 ---
 
 # Search dense conversations and compact Invocations together
+
+> Superseded by ADR-0014. This document preserves the historical version 7 flat-Zvec-plus-SQLite decision.
 
 Normal recall searches both parts of the Active recall database automatically. Flat Zvec search returns Dense recall documents. SQLite full-text search returns compact Invocation records. The service combines both candidate lists before it applies the caller's result limit; callers cannot select one fast store.
 

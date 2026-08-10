@@ -39,9 +39,8 @@ function createPsrCliFixture(
   const config: RecallConversationConfig = {
     sessionsDirectory: '/sessions',
     sqliteDatabasePath: '/recall/recall.sqlite',
-    databasePath: '/recall/zvec',
-    catalogPath: '/recall/recall-catalog.sqlite',
-    statePath: '/recall/index-state.json',
+    legacyV6ZvecDatabasePath: '/recall/zvec',
+    legacyV6StatePath: '/recall/index-state.json',
     manifestPath: '/recall/index-manifest.json',
     indexMaintenanceStatusPath: '/recall/index-maintenance-status.json',
     physicalSessionIgnoreStatePath:

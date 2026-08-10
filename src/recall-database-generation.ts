@@ -25,12 +25,10 @@ const PREVIOUS_DATABASE_FILE_NAME = '.previous-database.json';
 export interface RecallDatabasePaths {
   /** Unified version 8 SQLite Recall database path. */
   sqliteDatabasePath: string;
-  /** @deprecated Version 6/7 Zvec database path retained for compatibility detection. */
-  databasePath: string;
-  /** @deprecated Version 7 Recall catalog path retained for compatibility detection. */
-  catalogPath: string;
-  /** @deprecated Version 6 index state path retained for compatibility detection. */
-  statePath: string;
+  /** Temporary version 6 Zvec path retained for rollback detection. */
+  legacyV6ZvecDatabasePath: string;
+  /** Temporary version 6 index-state path retained for rollback detection. */
+  legacyV6StatePath: string;
   manifestPath: string;
   indexMaintenanceStatusPath: string;
 }
@@ -69,9 +67,8 @@ function getRecallDatabaseDataDirectory(config: RecallDatabaseGenerationConfig):
 function getLegacyRecallDatabasePaths(config: RecallDatabaseGenerationConfig): RecallDatabasePaths {
   return {
     sqliteDatabasePath: config.sqliteDatabasePath,
-    databasePath: config.databasePath,
-    catalogPath: config.catalogPath,
-    statePath: config.statePath,
+    legacyV6ZvecDatabasePath: config.legacyV6ZvecDatabasePath,
+    legacyV6StatePath: config.legacyV6StatePath,
     manifestPath: config.manifestPath,
     indexMaintenanceStatusPath: config.indexMaintenanceStatusPath,
   };
@@ -83,9 +80,8 @@ function createRecallDatabasePaths(
 ): RecallDatabasePaths {
   return {
     sqliteDatabasePath: join(directoryPath, basename(config.sqliteDatabasePath)),
-    databasePath: join(directoryPath, basename(config.databasePath)),
-    catalogPath: join(directoryPath, basename(config.catalogPath)),
-    statePath: join(directoryPath, basename(config.statePath)),
+    legacyV6ZvecDatabasePath: join(directoryPath, basename(config.legacyV6ZvecDatabasePath)),
+    legacyV6StatePath: join(directoryPath, basename(config.legacyV6StatePath)),
     manifestPath: join(directoryPath, basename(config.manifestPath)),
     indexMaintenanceStatusPath: join(directoryPath, basename(config.indexMaintenanceStatusPath)),
   };
@@ -128,8 +124,8 @@ async function hasLegacyVersion6RecallDatabase(
   config: RecallDatabaseGenerationConfig,
 ): Promise<boolean> {
   if (
-    !existsSync(config.databasePath) ||
-    !existsSync(config.statePath) ||
+    !existsSync(config.legacyV6ZvecDatabasePath) ||
+    !existsSync(config.legacyV6StatePath) ||
     !existsSync(config.manifestPath)
   ) {
     return false;
@@ -213,7 +209,7 @@ async function assertPreviousDatabaseTargetComplete(
   const layout = await detectRecallIndexManifestLayout(paths.manifestPath);
   if (layout === 'legacy-v6') {
     assertRequiredRecallDatabaseFiles(
-      [paths.databasePath, paths.statePath, paths.manifestPath],
+      [paths.legacyV6ZvecDatabasePath, paths.legacyV6StatePath, paths.manifestPath],
       targetDirectory,
       'Previous',
     );

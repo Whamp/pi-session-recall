@@ -1,8 +1,10 @@
-# Compact production recall certification
+# Superseded v7 compact production recall certification
+
+> **Superseded historical evidence.** This report certified the incompatible v7 flat-Zvec-plus-SQLite candidate. ADR-0014 supersedes that architecture. These PASS results do not certify the v8 unified SQLite Recall database, and the recorded generation must not be activated.
 
 Measured on `desktop` on 2026-08-10 for issue #172.
 
-## Verdict
+## Historical verdict
 
 The staged compact database passes every pre-activation production gate. It remains inactive because the installed production package is still at `8402107` on `master`, which cannot read the version 7 compact layout. Activating before this branch is merged and deployed would break the hourly service and live Pi recall.
 
@@ -14,7 +16,7 @@ generations/generation-f71da5f6-7ea1-43a8-8412-d0c746c6068d
 
 The active pointer remained absent before and after construction and certification, so production still resolves the complete version 6 database at `~/.pi/agent/recall/`. The staged generation and the version 6 database both remain available. No production database was deleted.
 
-The complete machine-readable measurements are in [compact-production-recall-certification.json](compact-production-recall-certification.json).
+The complete machine-readable measurements are in [superseded-v7-compact-production-recall-certification.json](superseded-v7-compact-production-recall-certification.json).
 
 ## Results
 
@@ -103,9 +105,9 @@ node --import tsx bin/psr index --rebuild --stage --resume --reuse-active-vector
 
 That pass completed 2,513 remaining sessions in 35 minutes 7 seconds, reused 230,630 vectors, embedded no documents, and reported zero failed sessions. No active-only row was seeded into the candidate; reuse occurred at the canonical document seam during indexing.
 
-## Reproduction
+## Historical reproduction record
 
-Run from the reviewed branch or deployed package root:
+The v7 certification executable and its tests were removed when ADR-0014 superseded the layout. The following command identifies how this historical report was produced; it is not runnable on the current branch:
 
 ```bash
 node --import tsx src/certify-compact-recall-production.ts \
@@ -115,25 +117,4 @@ node --import tsx src/certify-compact-recall-production.ts \
   --output docs/research/compact-production-recall-certification.json
 ```
 
-The command exits 0 only when every pre-activation gate passes. It leaves the active pointer unchanged.
-
-## Post-merge activation gate
-
-Do not run these steps until the reviewed branch is merged and the installed Pi package and hourly service both use code that reads manifest version 7.
-
-1. Verify the deployed package commit contains this ticket and issue #171.
-2. Stop `pi-session-recall-index.timer` and confirm `pi-session-recall-index.service` is inactive.
-3. Activate the exact certified target:
-
-   ```bash
-   psr activate generations/generation-f71da5f6-7ea1-43a8-8412-d0c746c6068d
-   ```
-
-4. Run `psr index` immediately. Require zero failed sessions.
-5. Run one normal live Pi recall and one explicit Source search. Require results with exact Source locators.
-6. Start `pi-session-recall-index.timer` and verify that it is active.
-7. Verify `psr rollback` is available. Do not run it unless activation verification fails.
-
-Automated service tests verified staged activation, rollback to the immediately previous pointer, incomplete-target rejection, and already-active-target rejection without changing production. The production version 6 files and certified staged generation remain present for the operational rollback check.
-
-If activation verification fails, stop the timer, run `psr rollback`, verify live recall against the restored version 6 database, and restart the timer. Keep both database generations until a later cleanup ticket explicitly approves deletion.
+The removed command exited 0 only when every v7 pre-activation gate passed and left the active pointer unchanged.

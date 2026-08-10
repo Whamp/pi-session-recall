@@ -78,17 +78,15 @@ import type {
 import { searchSessionSourceFiles, type SessionSourceSearch } from './session-source-search.js';
 import { openSqliteRecallDatabase, type SqliteRecallDatabase } from './sqlite-recall-database.js';
 
-/** Paths, one Octen profile, and bounded compact-layout retrieval settings. */
+/** Unified SQLite paths, temporary legacy-v6 rollback paths, and bounded retrieval settings. */
 export interface RecallConversationConfig {
   sessionsDirectory: string;
   /** Unified version 8 SQLite Recall database path. */
   sqliteDatabasePath: string;
-  /** @deprecated Version 6/7 Zvec database path retained for the compatibility adapter. */
-  databasePath: string;
-  /** @deprecated Version 7 Recall catalog path retained until service cutover. */
-  catalogPath: string;
-  /** @deprecated Version 6 index state path retained for the compatibility adapter. */
-  statePath: string;
+  /** Temporary version 6 Zvec path retained for the rollback adapter. */
+  legacyV6ZvecDatabasePath: string;
+  /** Temporary version 6 index-state path retained for the rollback adapter. */
+  legacyV6StatePath: string;
   manifestPath: string;
   indexMaintenanceStatusPath: string;
   physicalSessionIgnoreStatePath: string;
@@ -240,7 +238,10 @@ export interface RecallConversationDependencies {
   embeddingProvider?: RecallEmbeddingProvider;
   tokenizerIdentity?: RecallTokenizerManifestIdentity;
   loadTokenizer?: () => Promise<ConversationTextTokenizer>;
-  openDatabase?: (databasePath: string, options?: { readOnly?: boolean }) => SqliteRecallDatabase;
+  openDatabase?: (
+    sqliteDatabasePath: string,
+    options?: { readOnly?: boolean },
+  ) => SqliteRecallDatabase;
   resolveProjectIdentity?: (workingDirectory: string) => Promise<ResolvedProjectIdentity | null>;
   getCurrentTime?: () => Date;
 }

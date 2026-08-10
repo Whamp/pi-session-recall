@@ -52,7 +52,7 @@ void test('mixed compact recall keeps an exact Invocation visible without displa
   );
 });
 
-void test('compact recall fills the requested limit from either store when the other has no matches', () => {
+void test('compact recall fills the requested limit from either projection when the other has no matches', () => {
   const conversations = [
     createTestRankedRecallSearchResult({ id: 'conversation-0' }),
     createTestRankedRecallSearchResult({ id: 'conversation-1' }),

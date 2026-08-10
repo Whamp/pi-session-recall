@@ -4,6 +4,8 @@ status: accepted
 
 # Retire public recall optimization
 
+> ADR-0014 supersedes this ADR's version 7 storage wording. The decision to retire public and scheduled optimization remains accepted.
+
 The compact version 7 layout makes ordinary maintenance update only new, changed, missing, or newly ignored Physical session files. Corpus-wide optimization is not part of that maintenance contract.
 
 `psr optimize` and `psr auto-index install --optimize-daily` are removed. Automatic installation always creates one update-only index job. Installation and uninstallation continue to disable and remove stale systemd optimization units or the stale macOS optimization LaunchAgent left by older releases.

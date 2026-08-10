@@ -12,6 +12,7 @@ import {
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
+import { RecallIndexManifestLayout } from './enums.js';
 import { isUnknownRecord } from './is-unknown-record.js';
 import { detectRecallIndexManifestLayout } from './recall-index-manifest.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
@@ -130,7 +131,10 @@ async function hasLegacyVersion6RecallDatabase(
   ) {
     return false;
   }
-  return (await detectRecallIndexManifestLayout(config.manifestPath)) === 'legacy-v6';
+  return (
+    (await detectRecallIndexManifestLayout(config.manifestPath)) ===
+    RecallIndexManifestLayout.LEGACY_V6
+  );
 }
 
 async function replaceActiveDatabaseTarget(
@@ -190,7 +194,7 @@ async function assertCompleteVersion8RecallDatabase(
     databaseKind,
   );
   const layout = await detectRecallIndexManifestLayout(paths.manifestPath);
-  if (layout !== 'unified-sqlite-v8') {
+  if (layout !== RecallIndexManifestLayout.UNIFIED_SQLITE_V8) {
     throw new Error(
       `Recall ${databaseKind} database layout ${layout} at ${directoryPath} is incompatible; rebuild with psr index --rebuild.`,
     );
@@ -207,7 +211,7 @@ async function assertPreviousDatabaseTargetComplete(
     assertRequiredRecallDatabaseFiles([paths.manifestPath], targetDirectory, 'Previous');
   }
   const layout = await detectRecallIndexManifestLayout(paths.manifestPath);
-  if (layout === 'legacy-v6') {
+  if (layout === RecallIndexManifestLayout.LEGACY_V6) {
     assertRequiredRecallDatabaseFiles(
       [paths.legacyV6ZvecDatabasePath, paths.legacyV6StatePath, paths.manifestPath],
       targetDirectory,

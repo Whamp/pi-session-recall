@@ -3,7 +3,12 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 
-import { RecallEvidenceRelation, RecallProjectIdentitySource, RecallSearchScope } from './enums.js';
+import {
+  RecallEvidenceRelation,
+  RecallIndexManifestLayout,
+  RecallProjectIdentitySource,
+  RecallSearchScope,
+} from './enums.js';
 import {
   fuseRecallSearchCandidates,
   RECALL_RANK_FUSION_VERSION,
@@ -473,7 +478,7 @@ export function createRecallConversationService(
       }
       const activePaths = await resolveActiveRecallDatabasePaths(config);
       const layout = await detectRecallIndexManifestLayout(activePaths.manifestPath);
-      if (layout === 'legacy-v6') {
+      if (layout === RecallIndexManifestLayout.LEGACY_V6) {
         await assertLegacyV6RecallDatabaseCompatible(activePaths, createExpectedLegacyV6Manifest());
       } else {
         await readCompatibleManifest(activePaths);
@@ -488,7 +493,7 @@ export function createRecallConversationService(
       const queryEmbedding = await embeddingProvider.embedQuery(searchQuery, options.signal);
       await assertRecallIndexUnlockedForSearch(config.lockPath);
 
-      if (layout === 'legacy-v6') {
+      if (layout === RecallIndexManifestLayout.LEGACY_V6) {
         const legacySearch = searchLegacyV6RecallDatabase({
           paths: activePaths,
           dimensions: config.embeddingStoredDimensions,
@@ -651,6 +656,18 @@ export function createRecallConversationService(
         const ignoredPhysicalSessionPaths: ReadonlySet<string> = new Set(
           await listIgnoredPhysicalSessionPaths(config.physicalSessionIgnoreStatePath),
         );
+        if (options.rebuild && !options.deferActivation) {
+          const currentPaths = await resolveActiveRecallDatabasePaths(config);
+          if (
+            existsSync(currentPaths.manifestPath) &&
+            (await detectRecallIndexManifestLayout(currentPaths.manifestPath)) ===
+              RecallIndexManifestLayout.LEGACY_V6
+          ) {
+            throw new Error(
+              'Recall legacy-v6 migration must remain staged for certification; run psr index --rebuild --stage before psr activate',
+            );
+          }
+        }
         candidate =
           options.rebuild && config.databaseGenerationRootPath
             ? options.resumeCandidate
@@ -675,7 +692,7 @@ export function createRecallConversationService(
           const reusePaths = await resolveActiveRecallDatabasePaths(config);
           const reuseLayout = await detectRecallIndexManifestLayout(reusePaths.manifestPath);
           const expectedEmbedding = createEmbeddingModelIdentity(config);
-          if (reuseLayout === 'legacy-v6') {
+          if (reuseLayout === RecallIndexManifestLayout.LEGACY_V6) {
             const manifest = await assertLegacyV6RecallDatabaseCompatible(
               reusePaths,
               createExpectedLegacyV6Manifest(),
@@ -709,7 +726,7 @@ export function createRecallConversationService(
           candidate !== undefined || options.rebuild || !existsSync(activePaths.manifestPath);
         if (!targetIsVersion8) {
           const layout = await detectRecallIndexManifestLayout(activePaths.manifestPath);
-          if (layout !== 'legacy-v6') {
+          if (layout !== RecallIndexManifestLayout.LEGACY_V6) {
             await readCompatibleManifest(activePaths);
           } else {
             const manifest = await assertLegacyV6RecallDatabaseCompatible(
@@ -751,7 +768,8 @@ export function createRecallConversationService(
         if (options.rebuild && !candidate) {
           if (
             existsSync(activePaths.manifestPath) &&
-            (await detectRecallIndexManifestLayout(activePaths.manifestPath)) === 'legacy-v6'
+            (await detectRecallIndexManifestLayout(activePaths.manifestPath)) ===
+              RecallIndexManifestLayout.LEGACY_V6
           ) {
             throw new Error(
               'Recall version 8 rebuild cannot replace an unversioned legacy-v6 rollback database; configure staged database generations',

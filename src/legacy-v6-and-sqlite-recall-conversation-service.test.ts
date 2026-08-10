@@ -662,6 +662,10 @@ void test('actual legacy-v6 stays searchable and updateable before activation an
     },
     loadTokenizer: async () => tokenizer,
   });
+  await assert.rejects(
+    generationService.index({ rebuild: true }),
+    /legacy-v6 migration must remain staged for certification[\s\S]*--rebuild --stage/u,
+  );
   const rebuilt = await generationService.index({
     rebuild: true,
     deferActivation: true,

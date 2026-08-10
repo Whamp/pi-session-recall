@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
+import { RecallIndexManifestLayout } from './enums.js';
 import {
   assertRecallIndexManifestCompatible,
   createRecallIndexManifest,
@@ -76,10 +77,13 @@ void test('manifest layout detector accepts production v6 and unified v8 but rej
   const path = join(root, 'index-manifest.json');
 
   await writeFile(path, '{"manifestVersion":6}\n', 'utf8');
-  assert.equal(await detectRecallIndexManifestLayout(path), 'legacy-v6');
+  assert.equal(await detectRecallIndexManifestLayout(path), RecallIndexManifestLayout.LEGACY_V6);
 
   await writeRecallIndexManifest(path, createManifest());
-  assert.equal(await detectRecallIndexManifestLayout(path), 'unified-sqlite-v8');
+  assert.equal(
+    await detectRecallIndexManifestLayout(path),
+    RecallIndexManifestLayout.UNIFIED_SQLITE_V8,
+  );
 
   await writeFile(path, '{"manifestVersion":7}\n', 'utf8');
   await assert.rejects(

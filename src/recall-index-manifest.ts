@@ -5,6 +5,7 @@ import { dirname } from 'node:path';
 import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 
+import { RecallIndexManifestLayout } from './enums.js';
 import { assertRecallChunkPolicy, type RecallChunkPolicy } from './recall-chunk-policy.js';
 import {
   SQLITE_RECALL_DATABASE_MANIFEST_IDENTITY,
@@ -28,9 +29,6 @@ import {
 import { SESSION_CONVERSATION_SCHEMA_VERSION } from './session-conversation-index.js';
 /** Version of the unified SQLite Recall database manifest. */
 export const RECALL_INDEX_MANIFEST_VERSION = 8;
-
-/** Storage layouts that can be identified without adopting an incompatible manifest. */
-export type RecallIndexManifestLayout = 'legacy-v6' | 'unified-sqlite-v8';
 
 /** Frozen chunk geometry selected by the accepted recall-quality evaluation. */
 export const DEFAULT_RECALL_CHUNK_POLICY: Readonly<RecallChunkPolicy> = Object.freeze({
@@ -332,11 +330,11 @@ export async function detectRecallIndexManifestLayout(
     );
   }
   if (parsed.manifestVersion === 6) {
-    return 'legacy-v6';
+    return RecallIndexManifestLayout.LEGACY_V6;
   }
   if (parsed.manifestVersion === RECALL_INDEX_MANIFEST_VERSION) {
     await readRecallIndexManifest(manifestPath);
-    return 'unified-sqlite-v8';
+    return RecallIndexManifestLayout.UNIFIED_SQLITE_V8;
   }
   throw new Error(
     `Recall index manifest version ${parsed.manifestVersion} at ${manifestPath} is incompatible; rebuild with psr index --rebuild.`,

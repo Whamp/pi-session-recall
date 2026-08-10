@@ -41,12 +41,19 @@ import {
 
 const GIBIBYTE = 1_024 ** 3;
 const MEBIBYTE = 1_024 ** 2;
+/** Maximum allocated bytes accepted for one complete production Recall database. */
 export const MAXIMUM_CERTIFIED_STORAGE_BYTES = 5 * GIBIBYTE;
+/** Maximum allocation permitted for one disposable certification clone. */
 export const MAXIMUM_SCRATCH_ALLOCATION_BYTES = 6 * GIBIBYTE;
+/** Minimum free bytes required before creating a disposable certification clone. */
 export const MINIMUM_SCRATCH_FREE_BYTES = 240 * GIBIBYTE;
+/** Maximum accepted warm project-scoped dense-search p95 in milliseconds. */
 export const MAXIMUM_PROJECT_P95_MILLISECONDS = 100;
+/** Maximum accepted warm global dense-search p95 in milliseconds. */
 export const MAXIMUM_GLOBAL_P95_MILLISECONDS = 500;
+/** Maximum accepted warm Invocation-search p95 in milliseconds. */
 export const MAXIMUM_INVOCATION_P95_MILLISECONDS = 5;
+/** Maximum device bytes written by one representative changed-session replacement. */
 export const MAXIMUM_AVERAGE_DEVICE_WRITES_BYTES = 10 * MEBIBYTE;
 const BENCHMARK_REPETITIONS = 6;
 const REPORT_JSON_PATH = resolve(
@@ -58,6 +65,7 @@ const REPORT_MARKDOWN_PATH = resolve(
 const USAGE =
   'Unified SQLite recall certification usage: --data-root <exact-path> --candidate-target generations/generation-... --control-zvec <exact-v7-flat-zvec-path> --project-identity <identity> [--scratch-root <exact-path> --representative-session <indexed-path> --block-device <name>] [--output docs/research/unified-sqlite-production-recall-certification.json]';
 
+/** Fixed production-derived questions used for dense latency and overlap certification. */
 export const DENSE_CERTIFICATION_QUERIES = [
   'Why have recent pi-session-recall optimization attempts failed?',
   'How is automatic recall indexing scheduled?',
@@ -66,6 +74,7 @@ export const DENSE_CERTIFICATION_QUERIES = [
   'Why would an agent use pi-session-recall instead of searching raw JSONL?',
 ] as const;
 
+/** Fixed locator classes that every production Invocation FTS projection must retrieve. */
 export const INVOCATION_CERTIFICATION_PROBES = [
   { kind: 'tool-name', query: 'brain_query', expectedToolName: 'brain_query' },
   { kind: 'path', query: '/home/will/.pi/agent/TAILNET.md' },
@@ -75,6 +84,7 @@ export const INVOCATION_CERTIFICATION_PROBES = [
   { kind: 'flag', query: '--optimize-daily' },
 ] as const;
 
+/** Fixed raw-payload evidence that explicit Source search must locate with provenance. */
 export const SOURCE_CERTIFICATION_PROBES = [
   { kind: 'result-only-error', query: 'FtsRocksdbReducer', requiredRole: 'toolResult' },
   { kind: 'hardware-identifier', query: 'CT1000P3PSSD8', requiredRole: 'toolResult' },

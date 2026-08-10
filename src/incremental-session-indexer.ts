@@ -2,7 +2,6 @@ import { stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
 import type { RecallChunkPolicy } from './recall-chunk-policy.js';
-import { openRecallCatalog, type RecallCatalog } from './openRecallCatalog.js';
 import type { RecallIndexProgressEvent } from './recall-index-progress.js';
 import type { RecallEmbeddingProvider } from './recall-inference-capabilities.js';
 import { listRecallSessionFiles } from './listRecallSessionFiles.js';
@@ -13,8 +12,9 @@ import {
   type SessionConversationChunk,
 } from './session-conversation-index.js';
 import type { DenseRecallDocument } from './dense-recall-conversation-store.js';
+import { openSqliteRecallDatabase, type SqliteRecallDatabase } from './sqlite-recall-database.js';
 
-/** Dense-document persistence required by incremental compact-layout indexing. */
+/** @deprecated Legacy split-store shape retained only for current branch callers. */
 export interface DenseRecallIndexStore {
   upsertDocuments(documents: DenseRecallDocument[]): void;
   deleteDocuments(ids: string[]): void;
@@ -22,11 +22,14 @@ export interface DenseRecallIndexStore {
   fetchVectors(ids: string[]): Map<string, number[]>;
 }
 
-/** Read-only source for checksum-verified dense vector reuse during a staged rebuild. */
-export type DenseRecallVectorReuseStore = Pick<
-  DenseRecallIndexStore,
-  'fetchDocuments' | 'fetchVectors'
->;
+/** Read-only active legacy v6 vectors whose embedding profile the caller already verified. */
+export interface RecallVectorReuseReader {
+  fetchDocuments(ids: string[]): Map<string, SessionConversationChunk>;
+  fetchVectors(ids: string[]): Map<string, number[]>;
+}
+
+/** @deprecated Use RecallVectorReuseReader. */
+export type DenseRecallVectorReuseStore = RecallVectorReuseReader;
 
 /** Counts and source failures from one explicit incremental indexing pass. */
 export interface ConversationIndexSummary {
@@ -43,9 +46,16 @@ export interface ConversationIndexSummary {
 /** Dependencies required to update recall storage from Pi session JSONL files. */
 export interface IncrementalSessionIndexerOptions {
   sessionsDirectory: string;
-  catalogPath: string;
+  /** Path to the one SQLite Recall database receiving every derived projection. */
+  databasePath?: string;
+  /** @deprecated Current branch alias for databasePath. */
+  catalogPath?: string;
   legacyStatePath?: string;
-  store: DenseRecallIndexStore;
+  /** @deprecated Ignored split-store dependency retained until current callers migrate. */
+  store?: DenseRecallIndexStore;
+  /** Read-only active legacy v6 store used only during staged embedding reuse. */
+  vectorReuseReader?: RecallVectorReuseReader;
+  /** @deprecated Current branch alias for vectorReuseReader. */
   vectorReuseStore?: DenseRecallVectorReuseStore;
   embeddingProvider: RecallEmbeddingProvider;
   tokenizer: ConversationTextTokenizer;
@@ -111,17 +121,14 @@ function emitMaintenanceWorksetProgress(
 }
 
 function removeIndexedSession(
-  catalog: RecallCatalog,
+  database: SqliteRecallDatabase,
   sessionPath: string,
-  store: DenseRecallIndexStore,
   summary: ConversationIndexSummary,
 ): boolean {
-  const previous = catalog.readPhysicalSessionState(sessionPath);
-  if (!previous) {
+  const previous = database.readPhysicalSessionState(sessionPath);
+  if (!previous || !database.deletePhysicalSession(sessionPath)) {
     return false;
   }
-  store.deleteDocuments(previous.denseDocumentIds);
-  catalog.deletePhysicalSession(sessionPath);
   summary.deletedChunks += previous.documentIds.length;
   summary.removedSessions += 1;
   return true;
@@ -164,81 +171,79 @@ async function attributeRecallChunksToProjects(
   }));
 }
 
-async function prepareChangedRecallRows(
+async function prepareChangedRecallEmbeddingMap(
   chunks: readonly (SessionConversationChunk & { isDenseSearchable: true })[],
-  store: DenseRecallIndexStore,
+  database: SqliteRecallDatabase,
   embeddingProvider: RecallEmbeddingProvider,
-  vectorReuseStore: DenseRecallVectorReuseStore | undefined,
+  vectorReuseReader: RecallVectorReuseReader | undefined,
   summary: ConversationIndexSummary,
   onBatchPrepared: () => void,
   signal?: AbortSignal,
-): Promise<DenseRecallDocument[]> {
-  const changedRows: DenseRecallDocument[] = [];
+): Promise<Map<string, readonly number[]>> {
+  const embeddingByDocumentId = new Map<string, readonly number[]>();
   for (let start = 0; start < chunks.length; start += 128) {
     throwIfIndexingAborted(signal);
     const batch = chunks.slice(start, start + 128);
     const ids = batch.map((chunk) => chunk.id);
-    const existingChunks = store.fetchDocuments(ids);
-    const existingVectors = store.fetchVectors(ids);
-    const rowsNeedingWrite = batch.filter((chunk) => {
-      const existing = existingChunks.get(chunk.id);
-      return !existing || existing.checksum !== chunk.checksum || !existingVectors.has(chunk.id);
-    });
-    summary.reusedVectors += batch.length - rowsNeedingWrite.length;
-    const reusableDocuments = vectorReuseStore?.fetchDocuments(
-      rowsNeedingWrite.map((chunk) => chunk.id),
-    );
-    const reusableVectors = vectorReuseStore?.fetchVectors(
-      rowsNeedingWrite.map((chunk) => chunk.id),
-    );
-    const rowsReusingVectors = rowsNeedingWrite.filter(
-      (chunk) =>
-        reusableDocuments?.get(chunk.id)?.checksum === chunk.checksum &&
-        reusableVectors?.has(chunk.id),
-    );
-    const reusedIds = new Set(rowsReusingVectors.map((chunk) => chunk.id));
-    const rowsNeedingEmbedding = rowsNeedingWrite.filter((chunk) => !reusedIds.has(chunk.id));
-    summary.reusedVectors += rowsReusingVectors.length;
-    for (const chunk of rowsReusingVectors) {
-      const embedding = reusableVectors?.get(chunk.id);
-      if (!embedding) {
-        throw new Error(`Recall reusable embedding missing for conversation chunk ${chunk.id}`);
+    const currentDocuments = database.fetchDenseDocuments(ids);
+    const currentVectors = database.fetchDenseVectors(ids);
+    const chunksMissingCurrentVector = batch.filter((chunk) => {
+      const currentDocument = currentDocuments.get(chunk.id);
+      const currentVector = currentVectors.get(chunk.id);
+      if (currentDocument?.checksum !== chunk.checksum || !currentVector) {
+        return true;
       }
-      changedRows.push({ ...chunk, isDenseSearchable: true, embedding });
-    }
+      embeddingByDocumentId.set(chunk.id, currentVector);
+      summary.reusedVectors += 1;
+      return false;
+    });
+
+    const legacyIds = chunksMissingCurrentVector.map((chunk) => chunk.id);
+    const legacyDocuments = vectorReuseReader?.fetchDocuments(legacyIds);
+    const legacyVectors = vectorReuseReader?.fetchVectors(legacyIds);
+    const chunksNeedingEmbedding = chunksMissingCurrentVector.filter((chunk) => {
+      const legacyVector = legacyVectors?.get(chunk.id);
+      if (legacyDocuments?.get(chunk.id)?.checksum !== chunk.checksum || !legacyVector) {
+        return true;
+      }
+      embeddingByDocumentId.set(chunk.id, legacyVector);
+      summary.reusedVectors += 1;
+      return false;
+    });
+
     const embeddings =
-      rowsNeedingEmbedding.length === 0
+      chunksNeedingEmbedding.length === 0
         ? []
         : await embeddingProvider.embedDocuments(
-            rowsNeedingEmbedding.map((chunk) => chunk.content),
+            chunksNeedingEmbedding.map((chunk) => chunk.content),
             signal,
           );
-    if (rowsNeedingEmbedding.length > 0) {
+    if (chunksNeedingEmbedding.length > 0) {
       summary.embeddingRequestCount += 1;
-      summary.newlyEmbeddedChunks += rowsNeedingEmbedding.length;
+      summary.newlyEmbeddedChunks += chunksNeedingEmbedding.length;
     }
-    for (const [index, chunk] of rowsNeedingEmbedding.entries()) {
+    for (const [index, chunk] of chunksNeedingEmbedding.entries()) {
       const embedding = embeddings[index];
       if (!embedding) {
         throw new Error(`Recall embedding missing for conversation chunk ${chunk.id}`);
       }
-      changedRows.push({ ...chunk, isDenseSearchable: true, embedding });
+      embeddingByDocumentId.set(chunk.id, embedding);
     }
     onBatchPrepared();
   }
-  return changedRows;
+  return embeddingByDocumentId;
 }
 
 async function indexChangedRecallSessionFile(
   options: IncrementalSessionIndexerOptions,
-  catalog: RecallCatalog,
+  database: SqliteRecallDatabase,
   plannedFile: PlannedPhysicalSessionFile,
   summary: ConversationIndexSummary,
   resolveSessionProjectIdentity: (sessionOrigin: string) => Promise<ResolvedProjectIdentity | null>,
   onBatchPrepared: () => void,
 ): Promise<void> {
   const { sessionPath } = plannedFile;
-  const previous = catalog.readPhysicalSessionState(sessionPath);
+  const previous = database.readPhysicalSessionState(sessionPath);
 
   let imported: Awaited<ReturnType<typeof readSessionConversationImport>>;
   try {
@@ -254,7 +259,7 @@ async function indexChangedRecallSessionFile(
     });
     options.onProgress?.({ kind: 'physical-session-file-failed', sessionPath });
     if (previous) {
-      removeIndexedSession(catalog, sessionPath, options.store, summary);
+      removeIndexedSession(database, sessionPath, summary);
     }
     return;
   }
@@ -270,26 +275,24 @@ async function indexChangedRecallSessionFile(
   const currentIds = new Set(denseChunks.map((chunk) => chunk.id));
   const removedIds =
     previous?.denseDocumentIds.filter((documentId) => !currentIds.has(documentId)) ?? [];
-  const changedRows = await prepareChangedRecallRows(
+  const denseEmbeddings = await prepareChangedRecallEmbeddingMap(
     denseChunks,
-    options.store,
+    database,
     options.embeddingProvider,
-    options.vectorReuseStore,
+    options.vectorReuseReader ?? options.vectorReuseStore,
     summary,
     onBatchPrepared,
     options.signal,
   );
 
-  options.store.deleteDocuments(removedIds);
-  for (let start = 0; start < changedRows.length; start += 128) {
-    options.store.upsertDocuments(changedRows.slice(start, start + 128));
-  }
-  catalog.replacePhysicalSession({
+  throwIfIndexingAborted(options.signal);
+  database.replacePhysicalSession({
     sessionPath,
     size: plannedFile.size,
     mtimeMs: plannedFile.mtimeMs,
     documentIds: denseChunks.map((chunk) => chunk.id),
-    denseDocumentIds: denseChunks.map((chunk) => chunk.id),
+    denseDocuments: denseChunks,
+    denseEmbeddings,
     invocations: imported.invocations,
   });
   summary.deletedChunks += removedIds.length;
@@ -298,7 +301,7 @@ async function indexChangedRecallSessionFile(
 
 async function planMaintenanceWorkset(
   sessionFiles: readonly string[],
-  catalog: RecallCatalog,
+  database: SqliteRecallDatabase,
   ignoredPhysicalSessionPaths: ReadonlySet<string>,
 ): Promise<MaintenanceWorksetPlan> {
   const filesToIndex: PlannedPhysicalSessionFile[] = [];
@@ -307,7 +310,7 @@ async function planMaintenanceWorkset(
       continue;
     }
     const fileStats = await stat(sessionPath);
-    const previous = catalog.readPhysicalSessionState(sessionPath);
+    const previous = database.readPhysicalSessionState(sessionPath);
     if (!previous) {
       filesToIndex.push({
         sessionPath,
@@ -318,7 +321,7 @@ async function planMaintenanceWorkset(
     } else if (
       previous.size !== fileStats.size ||
       previous.mtimeMs !== fileStats.mtimeMs ||
-      catalog.requiresInvocationBackfill(sessionPath)
+      database.requiresInvocationBackfill(sessionPath)
     ) {
       filesToIndex.push({
         sessionPath,
@@ -329,7 +332,7 @@ async function planMaintenanceWorkset(
     }
   }
   const liveSessionPaths = new Set(sessionFiles);
-  const indexedSessionPaths = catalog.listPhysicalSessionPaths();
+  const indexedSessionPaths = database.listPhysicalSessionPaths();
   return {
     discoveredFiles: sessionFiles.length,
     filesToIndex,
@@ -349,9 +352,13 @@ async function planMaintenanceWorkset(
 export async function indexChangedConversationSessions(
   options: IncrementalSessionIndexerOptions,
 ): Promise<ConversationIndexSummary> {
-  const catalog = options.legacyStatePath
-    ? openRecallCatalog(options.catalogPath, { legacyStatePath: options.legacyStatePath })
-    : openRecallCatalog(options.catalogPath);
+  const databasePath = options.databasePath ?? options.catalogPath;
+  if (!databasePath) {
+    throw new Error('Recall indexing database path missing');
+  }
+  const database = options.legacyStatePath
+    ? openSqliteRecallDatabase(databasePath, { legacyStatePath: options.legacyStatePath })
+    : openSqliteRecallDatabase(databasePath);
   try {
     options.onProgress?.({ kind: 'discovering-physical-session-files' });
     const sessionsDirectory = resolve(options.sessionsDirectory);
@@ -359,7 +366,7 @@ export async function indexChangedConversationSessions(
     options.onProgress?.({ kind: 'planning-maintenance-workset' });
     const workset = await planMaintenanceWorkset(
       sessionFiles,
-      catalog,
+      database,
       options.ignoredPhysicalSessionPaths,
     );
     const summary = createConversationIndexSummary();
@@ -379,7 +386,7 @@ export async function indexChangedConversationSessions(
     let completedWorksetFiles = 0;
     for (const sessionPath of indexedPathsToRemove) {
       throwIfIndexingAborted(options.signal);
-      removeIndexedSession(catalog, sessionPath, options.store, summary);
+      removeIndexedSession(database, sessionPath, summary);
       completedWorksetFiles += 1;
       emitMaintenanceWorksetProgress(
         options,
@@ -400,7 +407,7 @@ export async function indexChangedConversationSessions(
       throwIfIndexingAborted(options.signal);
       await indexChangedRecallSessionFile(
         options,
-        catalog,
+        database,
         plannedFile,
         summary,
         resolveSessionProjectIdentity,
@@ -425,6 +432,6 @@ export async function indexChangedConversationSessions(
     }
     return summary;
   } finally {
-    catalog.close();
+    database.close();
   }
 }

@@ -2,10 +2,10 @@ import { stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
 import type { RecallChunkPolicy } from './recall-chunk-policy.js';
-import { openRecallCatalog, type RecallCatalog } from './recall-catalog.js';
+import { openRecallCatalog, type RecallCatalog } from './openRecallCatalog.js';
 import type { RecallIndexProgressEvent } from './recall-index-progress.js';
 import type { RecallEmbeddingProvider } from './recall-inference-capabilities.js';
-import { listRecallSessionFiles } from './recall-session-files.js';
+import { listRecallSessionFiles } from './listRecallSessionFiles.js';
 import type { ResolvedProjectIdentity } from './resolve-project-identity.js';
 import {
   readSessionConversationImport,
@@ -21,6 +21,12 @@ export interface DenseRecallIndexStore {
   fetchDocuments(this: void, ids: string[]): Map<string, SessionConversationChunk>;
   fetchVectors(ids: string[]): Map<string, number[]>;
 }
+
+/** Read-only source for checksum-verified dense vector reuse during a staged rebuild. */
+export type DenseRecallVectorReuseStore = Pick<
+  DenseRecallIndexStore,
+  'fetchDocuments' | 'fetchVectors'
+>;
 
 /** Counts and source failures from one explicit incremental indexing pass. */
 export interface ConversationIndexSummary {
@@ -38,7 +44,9 @@ export interface ConversationIndexSummary {
 export interface IncrementalSessionIndexerOptions {
   sessionsDirectory: string;
   catalogPath: string;
+  legacyStatePath?: string;
   store: DenseRecallIndexStore;
+  vectorReuseStore?: DenseRecallVectorReuseStore;
   embeddingProvider: RecallEmbeddingProvider;
   tokenizer: ConversationTextTokenizer;
   chunkPolicy: RecallChunkPolicy;
@@ -157,9 +165,10 @@ async function attributeRecallChunksToProjects(
 }
 
 async function prepareChangedRecallRows(
-  chunks: readonly SessionConversationChunk[],
+  chunks: readonly (SessionConversationChunk & { isDenseSearchable: true })[],
   store: DenseRecallIndexStore,
   embeddingProvider: RecallEmbeddingProvider,
+  vectorReuseStore: DenseRecallVectorReuseStore | undefined,
   summary: ConversationIndexSummary,
   onBatchPrepared: () => void,
   signal?: AbortSignal,
@@ -176,7 +185,27 @@ async function prepareChangedRecallRows(
       return !existing || existing.checksum !== chunk.checksum || !existingVectors.has(chunk.id);
     });
     summary.reusedVectors += batch.length - rowsNeedingWrite.length;
-    const rowsNeedingEmbedding = rowsNeedingWrite;
+    const reusableDocuments = vectorReuseStore?.fetchDocuments(
+      rowsNeedingWrite.map((chunk) => chunk.id),
+    );
+    const reusableVectors = vectorReuseStore?.fetchVectors(
+      rowsNeedingWrite.map((chunk) => chunk.id),
+    );
+    const rowsReusingVectors = rowsNeedingWrite.filter(
+      (chunk) =>
+        reusableDocuments?.get(chunk.id)?.checksum === chunk.checksum &&
+        reusableVectors?.has(chunk.id),
+    );
+    const reusedIds = new Set(rowsReusingVectors.map((chunk) => chunk.id));
+    const rowsNeedingEmbedding = rowsNeedingWrite.filter((chunk) => !reusedIds.has(chunk.id));
+    summary.reusedVectors += rowsReusingVectors.length;
+    for (const chunk of rowsReusingVectors) {
+      const embedding = reusableVectors?.get(chunk.id);
+      if (!embedding) {
+        throw new Error(`Recall reusable embedding missing for conversation chunk ${chunk.id}`);
+      }
+      changedRows.push({ ...chunk, isDenseSearchable: true, embedding });
+    }
     const embeddings =
       rowsNeedingEmbedding.length === 0
         ? []
@@ -193,7 +222,7 @@ async function prepareChangedRecallRows(
       if (!embedding) {
         throw new Error(`Recall embedding missing for conversation chunk ${chunk.id}`);
       }
-      changedRows.push({ ...chunk, embedding });
+      changedRows.push({ ...chunk, isDenseSearchable: true, embedding });
     }
     onBatchPrepared();
   }
@@ -234,7 +263,10 @@ async function indexChangedRecallSessionFile(
     imported.chunks,
     resolveSessionProjectIdentity,
   );
-  const denseChunks = attributedChunks;
+  const denseChunks = attributedChunks.filter(
+    (chunk): chunk is SessionConversationChunk & { isDenseSearchable: true } =>
+      chunk.isDenseSearchable,
+  );
   const currentIds = new Set(denseChunks.map((chunk) => chunk.id));
   const removedIds =
     previous?.denseDocumentIds.filter((documentId) => !currentIds.has(documentId)) ?? [];
@@ -242,6 +274,7 @@ async function indexChangedRecallSessionFile(
     denseChunks,
     options.store,
     options.embeddingProvider,
+    options.vectorReuseStore,
     summary,
     onBatchPrepared,
     options.signal,
@@ -316,7 +349,9 @@ async function planMaintenanceWorkset(
 export async function indexChangedConversationSessions(
   options: IncrementalSessionIndexerOptions,
 ): Promise<ConversationIndexSummary> {
-  const catalog = openRecallCatalog(options.catalogPath);
+  const catalog = options.legacyStatePath
+    ? openRecallCatalog(options.catalogPath, { legacyStatePath: options.legacyStatePath })
+    : openRecallCatalog(options.catalogPath);
   try {
     options.onProgress?.({ kind: 'discovering-physical-session-files' });
     const sessionsDirectory = resolve(options.sessionsDirectory);

@@ -27,6 +27,7 @@ const OMITTED_PAYLOAD_KEYS = new Set([
   'scripts',
   'stderr',
   'stdout',
+  'task',
   'text',
 ]);
 
@@ -101,10 +102,11 @@ function projectInvocationArgument(
   value: unknown,
   path: string,
   key: string,
-  lines: string[],
+  locatorLines: string[],
+  omissionLines: string[],
 ): void {
   if (isOmittedInvocationPayloadKey(key)) {
-    appendInvocationSearchLine(lines, `${path}=${INVOCATION_OMISSION_MARKER}`);
+    appendInvocationSearchLine(omissionLines, `${path}=${INVOCATION_OMISSION_MARKER}`);
     return;
   }
   if (
@@ -113,12 +115,12 @@ function projectInvocationArgument(
     typeof value === 'number' ||
     typeof value === 'boolean'
   ) {
-    appendInvocationSearchLine(lines, `${path}=${renderInvocationScalar(value)}`);
+    appendInvocationSearchLine(locatorLines, `${path}=${renderInvocationScalar(value)}`);
     return;
   }
   if (Array.isArray(value)) {
     for (const [index, nestedValue] of value.entries()) {
-      projectInvocationArgument(nestedValue, `${path}[${index}]`, key, lines);
+      projectInvocationArgument(nestedValue, `${path}[${index}]`, key, locatorLines, omissionLines);
     }
     return;
   }
@@ -127,22 +129,27 @@ function projectInvocationArgument(
   }
   for (const nestedKey of Object.keys(value).toSorted()) {
     const nestedPath = path ? `${path}.${nestedKey}` : nestedKey;
-    projectInvocationArgument(value[nestedKey], nestedPath, nestedKey, lines);
+    projectInvocationArgument(value[nestedKey], nestedPath, nestedKey, locatorLines, omissionLines);
   }
 }
 
 function projectInvocationSearchableText(toolName: string, argumentsValue: unknown): string {
-  const lines = [
-    `tool=${JSON.stringify(sliceUnicodeCharacters(toolName, INVOCATION_SCALAR_CHARACTER_LIMIT))}`,
-  ];
+  const locatorLines: string[] = [];
+  const omissionLines: string[] = [];
   if (isUnknownRecord(argumentsValue)) {
     for (const key of Object.keys(argumentsValue).toSorted()) {
-      projectInvocationArgument(argumentsValue[key], key, key, lines);
+      projectInvocationArgument(argumentsValue[key], key, key, locatorLines, omissionLines);
     }
   } else if (Array.isArray(argumentsValue)) {
     for (const [index, value] of argumentsValue.entries()) {
-      projectInvocationArgument(value, `[${index}]`, String(index), lines);
+      projectInvocationArgument(value, `[${index}]`, String(index), locatorLines, omissionLines);
     }
+  }
+  const lines = [
+    `tool=${JSON.stringify(sliceUnicodeCharacters(toolName, INVOCATION_SCALAR_CHARACTER_LIMIT))}`,
+  ];
+  for (const line of [...omissionLines, ...locatorLines]) {
+    appendInvocationSearchLine(lines, line);
   }
   return lines.join('\n');
 }

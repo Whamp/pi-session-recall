@@ -76,7 +76,7 @@ export interface RecallProjectFixture {
 /** Evidence that every retrieval channel exhausted its limit on unrelated candidates globally. */
 export interface RecallChannelLimitProof {
   pollutingSessionFiles: string[];
-  requiredChannels: ['dense'];
+  requiredChannels: Array<'dense' | 'lexical' | 'identifier'>;
   minimumPollutingCandidatesPerChannel: number;
 }
 
@@ -86,6 +86,7 @@ export interface RecallQualityEvaluationCase {
   category:
     | 'semantic_paraphrase'
     | 'exact_identifier'
+    | 'tool_evidence'
     | 'context_dependent_reply'
     | 'branch'
     | 'summary'
@@ -107,7 +108,7 @@ export interface RecallQualityChunkPolicy extends RecallChunkPolicy {
   id: string;
 }
 
-/** Fixed dense quality and interactive-latency thresholds applied without post-run changes. */
+/** Fixed hybrid quality and interactive-latency thresholds applied without post-run changes. */
 export interface RecallQualityGate {
   minimumCandidatePoolRecall: number;
   minimumFinalRecall: number;
@@ -173,6 +174,9 @@ const EXPECTED_SOURCE_SCHEMA = Type.Object(
       Type.Union([
         Type.Literal('conversation'),
         Type.Literal('turn_context'),
+        Type.Literal('tool_call'),
+        Type.Literal('tool_result'),
+        Type.Literal('bash_execution'),
         Type.Literal('compaction_summary'),
         Type.Literal('branch_summary'),
       ]),
@@ -191,6 +195,7 @@ const EVALUATION_CASE_SCHEMA = Type.Object(
     category: Type.Union([
       Type.Literal('semantic_paraphrase'),
       Type.Literal('exact_identifier'),
+      Type.Literal('tool_evidence'),
       Type.Literal('context_dependent_reply'),
       Type.Literal('branch'),
       Type.Literal('summary'),
@@ -210,7 +215,14 @@ const EVALUATION_CASE_SCHEMA = Type.Object(
             Type.String({ pattern: '^[a-z0-9][a-z0-9-]*\\.jsonl$' }),
             { minItems: 1 },
           ),
-          requiredChannels: Type.Tuple([Type.Literal('dense')]),
+          requiredChannels: Type.Array(
+            Type.Union([
+              Type.Literal('dense'),
+              Type.Literal('lexical'),
+              Type.Literal('identifier'),
+            ]),
+            { minItems: 1 },
+          ),
           minimumPollutingCandidatesPerChannel: POSITIVE_INTEGER_SCHEMA,
         },
         { additionalProperties: false },
@@ -482,7 +494,11 @@ function readSourceEvidenceKinds(
     if (isUnknownRecord(message)) {
       const role = Reflect.get(message, 'role');
       const messageContent = Reflect.get(message, 'content');
-      if (role === 'user') {
+      if (role === 'toolResult') {
+        evidenceKinds.add('tool_result');
+      } else if (role === 'bashExecution') {
+        evidenceKinds.add('bash_execution');
+      } else if (role === 'user') {
         evidenceKinds.add('conversation');
       } else if (role === 'assistant') {
         if (typeof messageContent === 'string' && messageContent.trim()) {
@@ -498,6 +514,9 @@ function readSourceEvidenceKinds(
               if (typeof text === 'string' && text.trim()) {
                 evidenceKinds.add('conversation');
               }
+            }
+            if (Reflect.get(block, 'type') === 'toolCall') {
+              evidenceKinds.add('tool_call');
             }
           }
         }

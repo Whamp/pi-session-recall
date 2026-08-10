@@ -31,4 +31,5 @@ export type RecallIndexProgressEvent =
       failedSessions: number;
     }
   | { kind: 'physical-session-file-failed'; sessionPath: string }
+  | { kind: 'optimizing-collection' }
   | { kind: 'completed' };

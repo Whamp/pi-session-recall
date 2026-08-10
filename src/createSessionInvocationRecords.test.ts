@@ -128,6 +128,7 @@ void test('session import creates source-located Invocation records without payl
     output: 'output payload must remain only in source',
     prompt: 'prompt payload must remain only in source',
     script: 'script payload must remain only in source',
+    task: 'subagent task prompt must remain only in source',
   };
   await writeInvocationSession(sessionPath, directory, argumentsValue);
 
@@ -175,6 +176,7 @@ void test('session import creates source-located Invocation records without payl
     'output=<omitted>',
     'prompt=<omitted>',
     'script=<omitted>',
+    'task=<omitted>',
   ]) {
     assert.match(
       toolCall?.searchableText ?? '',
@@ -194,6 +196,7 @@ void test('session import creates source-located Invocation records without payl
     'output payload must remain only in source',
     'prompt payload must remain only in source',
     'script payload must remain only in source',
+    'subagent task prompt must remain only in source',
     'bulky tool result',
     'image bytes',
     'derived recall',
@@ -246,6 +249,25 @@ void test('Invocation argument projection is deterministic and bounded', async (
   const pathLine = firstText.split('\n').find((line) => line.startsWith('path='));
   assert.ok(pathLine);
   assert.equal(pathLine.slice('path='.length), JSON.stringify('x'.repeat(1_024)));
+});
+
+void test('Invocation argument projection reserves capacity for omitted payload markers', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'recall-invocation-omission-capacity-'));
+  const sessionPath = join(directory, 'session.jsonl');
+  await writeInvocationSession(sessionPath, directory, {
+    aLocator: 'a'.repeat(1_024),
+    bLocator: 'b'.repeat(1_024),
+    cLocator: 'c'.repeat(1_024),
+    dLocator: 'd'.repeat(950),
+    zContent: 'payload must remain only in source',
+  });
+
+  const imported = await readSessionConversationImport(sessionPath, { tokenizer: TOKENIZER });
+  const searchableText = imported.invocations[0]?.searchableText ?? '';
+
+  assert.ok(Array.from(searchableText).length <= 4_096);
+  assert.match(searchableText, /zContent=<omitted>/u);
+  assert.ok(!searchableText.includes('payload must remain only in source'));
 });
 
 void test('session import rejects malformed tool calls before producing Invocation records', async () => {

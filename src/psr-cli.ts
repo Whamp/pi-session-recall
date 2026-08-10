@@ -24,10 +24,11 @@ import {
 } from './recall-conversation-service.js';
 
 const PSR_USAGE = [
-  'psr usage: psr index [--rebuild] [--stage] [--resume] [--compact]',
+  'psr usage: psr index [--rebuild] [--stage] [--resume] [--reuse-active-vectors] [--compact] [--no-optimize]',
   '           psr activate <database-target>',
+  '           psr optimize',
   '           psr rollback',
-  '           psr auto-index install [--interval <N>m|<N>h]',
+  '           psr auto-index install [--interval <N>m|<N>h] [--optimize-daily]',
   '           psr auto-index uninstall',
   '           psr ignore add <session-path>',
   '           psr ignore list',
@@ -68,11 +69,26 @@ interface RecallIndexProgressTiming {
   indexingElapsedMs?: number;
 }
 
-function readAutoIndexInterval(argumentsList: readonly string[]): AutoIndexInterval {
+interface AutoIndexInstallArguments {
+  interval: AutoIndexInterval;
+  optimizeDaily: boolean;
+}
+
+function readAutoIndexInstallArguments(
+  argumentsList: readonly string[],
+): AutoIndexInstallArguments {
   let interval: AutoIndexInterval = { value: 1n, unit: 'h' };
   let intervalSeen = false;
+  let optimizeDaily = false;
   for (let index = 2; index < argumentsList.length; index += 1) {
     const flag = argumentsList[index];
+    if (flag === '--optimize-daily') {
+      if (optimizeDaily) {
+        throw new Error(PSR_USAGE);
+      }
+      optimizeDaily = true;
+      continue;
+    }
     if (flag !== '--interval' || intervalSeen) {
       throw new Error(PSR_USAGE);
     }
@@ -88,7 +104,7 @@ function readAutoIndexInterval(argumentsList: readonly string[]): AutoIndexInter
     intervalSeen = true;
     index += 1;
   }
-  return interval;
+  return { interval, optimizeDaily };
 }
 
 function formatCountedNoun(count: number, singularNoun: string): string {
@@ -138,6 +154,8 @@ function formatRecallDatabaseTransition(result: RecallConversationIndexResult): 
       return `Database: staged at ${result.databaseTransition.databaseTarget}; active database unchanged.`;
     case 'candidate-failed':
       return 'Database: candidate failed; active database unchanged.';
+    default:
+      throw new Error('Recall database transition kind is unsupported');
   }
 }
 
@@ -241,8 +259,12 @@ function formatRecallIndexProgress(
       return `  ${event.completedFiles}/${event.totalFiles} files · ${formatDuration(timing.elapsedMs)} elapsed · ${formatRemainingTime(event, timing.indexingElapsedMs)} · ${ENGLISH_INTEGER_FORMAT.format(event.newlyEmbeddedDocuments)} embedded · ${ENGLISH_INTEGER_FORMAT.format(event.reusedVectors)} reused · ${ENGLISH_INTEGER_FORMAT.format(event.deletedDocuments)} deleted · ${ENGLISH_INTEGER_FORMAT.format(event.failedSessions)} failed`;
     case 'physical-session-file-failed':
       return `  Warning: physical session file failed: ${event.sessionPath}`;
+    case 'optimizing-collection':
+      return '\nOptimizing searchable collection...';
     case 'completed':
       return `\nCompleted in ${formatDuration(timing.elapsedMs)}.`;
+    default:
+      throw new Error('Recall index progress event kind is unsupported');
   }
 }
 
@@ -310,15 +332,19 @@ export async function runPsrCli(
     if (argumentsList[1] !== 'install') {
       throw new Error(PSR_USAGE);
     }
-    const interval = readAutoIndexInterval(argumentsList);
-    const installation = await installAutoIndexSchedule(interval, dependencies.schedulerSystem);
+    const { interval, optimizeDaily } = readAutoIndexInstallArguments(argumentsList);
+    const installation = await installAutoIndexSchedule(interval, dependencies.schedulerSystem, {
+      optimizeDaily,
+    });
     if (installation.immediateRunWarning !== undefined) {
       dependencies.writeProgress(
         `Warning: Automatic recall indexing was installed, but ${installation.immediateRunWarning}.\n`,
       );
     }
     dependencies.writeOutput(
-      `Automatic recall indexing installed every ${interval.value}${interval.unit}.\n`,
+      optimizeDaily
+        ? `Automatic recall indexing installed every ${interval.value}${interval.unit}; optimization scheduled daily at 23:00.\n`
+        : `Automatic recall indexing installed every ${interval.value}${interval.unit}; optimization remains manual.\n`,
     );
     return 0;
   }
@@ -349,17 +375,33 @@ export async function runPsrCli(
       throw new Error(PSR_USAGE);
     }
     const config = await dependencies.loadConfig();
-    const rollback = await dependencies.createService(config).rollback({
+    await dependencies.createService(config).rollback({
       onProgress(event) {
         if (event.kind === 'waiting-for-write-lock') {
           dependencies.writeProgress('Waiting for another recall index operation...\n');
         }
       },
     });
+    dependencies.writeOutput('Previous recall database restored and now active.\n');
+    return 0;
+  }
+
+  if (argumentsList[0] === 'optimize') {
+    if (argumentsList.length !== 1) {
+      throw new Error(PSR_USAGE);
+    }
+    const config = await dependencies.loadConfig();
+    const result = await dependencies.createService(config).optimize({
+      onProgress(event) {
+        if (event.kind === 'waiting-for-write-lock') {
+          dependencies.writeProgress('Waiting for another recall index operation...\n');
+        } else if (event.kind === 'optimizing-collection') {
+          dependencies.writeProgress('Optimizing searchable collection...\n');
+        }
+      },
+    });
     dependencies.writeOutput(
-      rollback.requiresLegacyRelease
-        ? 'Previous version 6 recall database restored. Redeploy release 8402107 before search or indexing.\n'
-        : 'Previous recall database restored and now active.\n',
+      `Optimized ${ENGLISH_INTEGER_FORMAT.format(result.totalChunks)} searchable documents.\n`,
     );
     return 0;
   }
@@ -368,7 +410,12 @@ export async function runPsrCli(
   const distinctFlags = new Set(flags);
   const validFlags = flags.every(
     (flag) =>
-      flag === '--rebuild' || flag === '--stage' || flag === '--resume' || flag === '--compact',
+      flag === '--rebuild' ||
+      flag === '--stage' ||
+      flag === '--resume' ||
+      flag === '--reuse-active-vectors' ||
+      flag === '--compact' ||
+      flag === '--no-optimize',
   );
   if (argumentsList[0] !== 'index' || !validFlags || distinctFlags.size !== flags.length) {
     throw new Error(PSR_USAGE);
@@ -376,9 +423,13 @@ export async function runPsrCli(
   const rebuild = distinctFlags.has('--rebuild');
   const stage = distinctFlags.has('--stage');
   const resume = distinctFlags.has('--resume');
+  const reuseActiveVectors = distinctFlags.has('--reuse-active-vectors');
   const compact = distinctFlags.has('--compact');
   if (resume && (!rebuild || !stage)) {
     throw new Error('psr index --resume requires --rebuild --stage');
+  }
+  if (reuseActiveVectors && (!rebuild || !stage)) {
+    throw new Error('psr index --reuse-active-vectors requires --rebuild --stage');
   }
   if (stage && !rebuild) {
     throw new Error('psr index --stage requires --rebuild');
@@ -424,6 +475,8 @@ export async function runPsrCli(
     rebuild,
     ...(stage ? { deferActivation: true } : {}),
     ...(resume ? { resumeCandidate: true } : {}),
+    ...(reuseActiveVectors ? { reuseActiveVectors: true } : {}),
+    optimize: false,
     onProgress: reportProgress,
   });
   const summary = result.indexSummary;

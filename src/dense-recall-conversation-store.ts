@@ -10,19 +10,21 @@ import {
   ZVecMetricType,
   ZVecOpen,
   type ZVecCollection,
+  type ZVecDoc,
+  type ZVecFieldSchema,
   type ZVecVector,
   type ZVecVectorSchema,
 } from '@zvec/zvec';
 
-import type { RecallDenseCandidate } from './rank-recall-search-results.js';
+import type { RecallDenseCandidate } from './fuse-recall-search-candidates.js';
 import { convertNormalizedRecallInnerProductToCosineDistance } from './recall-stored-embedding.js';
 import type { ProjectIdentity } from './resolve-project-identity.js';
 import type { SessionConversationChunk } from './session-conversation-index.js';
 import {
-  DENSE_RECALL_DOCUMENT_FIELD_SCHEMAS,
-  deserializeDenseRecallDocumentFields,
-  serializeDenseRecallDocumentFields,
-} from './dense-recall-document-codec.js';
+  deserializeConversationChunk,
+  serializeConversationChunk,
+  ZVEC_CONVERSATION_FIELD_SCHEMAS,
+} from './zvec-conversation-store.js';
 
 /** Fixed FP32 vector width established by the production dense recall prototype. */
 export const DENSE_RECALL_EMBEDDING_DIMENSIONS = 1_024;
@@ -55,6 +57,7 @@ export const DENSE_RECALL_CONVERSATION_STORE_IDENTITY: Readonly<DenseRecallConve
 
 /** One conversation, summary, branch-summary, or turn-context document with a real embedding. */
 export interface DenseRecallDocument extends SessionConversationChunk {
+  isDenseSearchable: true;
   embedding: number[];
 }
 
@@ -70,10 +73,51 @@ export interface DenseRecallConversationStore {
     projectIdentity?: ProjectIdentity,
   ): RecallDenseCandidate[];
   countDocuments(): number;
+  optimize(): Promise<void>;
   close(): void;
 }
 
-const DENSE_RECALL_OUTPUT_FIELDS = DENSE_RECALL_DOCUMENT_FIELD_SCHEMAS.map((field) => field.name);
+const OMITTED_DENSE_RECALL_FIELD_NAMES = new Set([
+  'identifierContent',
+  'isDenseSearchable',
+  'toolCallId',
+  'toolName',
+  'toolCallEntryId',
+  'toolResultEntryId',
+  'toolError',
+]);
+
+const DENSE_RECALL_FIELD_SCHEMAS: ZVecFieldSchema[] = ZVEC_CONVERSATION_FIELD_SCHEMAS.filter(
+  (field) => !OMITTED_DENSE_RECALL_FIELD_NAMES.has(field.name),
+).map((field) => ({
+  name: field.name,
+  dataType: field.dataType,
+  ...(field.nullable === undefined ? {} : { nullable: field.nullable }),
+}));
+
+const DENSE_RECALL_OUTPUT_FIELDS = DENSE_RECALL_FIELD_SCHEMAS.map((field) => field.name);
+
+function serializeDenseRecallDocument(document: SessionConversationChunk): Record<string, unknown> {
+  const legacyFields = serializeConversationChunk(document);
+  return Object.fromEntries(
+    DENSE_RECALL_OUTPUT_FIELDS.map((fieldName) => [fieldName, legacyFields[fieldName]]),
+  );
+}
+
+function deserializeDenseRecallDocument(document: ZVecDoc): SessionConversationChunk {
+  return deserializeConversationChunk({
+    ...document,
+    fields: {
+      ...document.fields,
+      isDenseSearchable: true,
+      toolCallId: '',
+      toolName: '',
+      toolCallEntryId: '',
+      toolResultEntryId: '',
+      toolError: -1,
+    },
+  });
+}
 
 function convertDenseRecallVector(id: string, vector?: ZVecVector): number[] {
   if (Array.isArray(vector) || vector instanceof Float32Array || vector instanceof Int8Array) {
@@ -103,9 +147,17 @@ function assertDenseRecallEmbedding(embedding: readonly number[], subject: strin
 
 function assertDenseRecallDocument(document: DenseRecallDocument): void {
   if (
-    document.documentKind !== 'conversation' &&
-    document.documentKind !== 'turn_context' &&
-    document.documentKind !== 'summary'
+    document.isDenseSearchable !== true ||
+    document.documentKind === 'tool' ||
+    document.evidenceKind === 'tool_call' ||
+    document.evidenceKind === 'tool_result' ||
+    document.evidenceKind === 'bash_execution' ||
+    document.role === 'tool' ||
+    document.toolCallId !== null ||
+    document.toolName !== null ||
+    document.toolCallEntryId !== null ||
+    document.toolResultEntryId !== null ||
+    document.toolError !== null
   ) {
     throw new Error(
       `Dense recall document invalid for ${document.id}: only conversation, summary, branch-summary, and turn-context documents are allowed`,
@@ -141,9 +193,9 @@ function assertDenseRecallCollectionSchema(collection: ZVecCollection, databaseP
   }
   const fields = collection.schema.fields();
   const fieldSchemasMatch =
-    fields.length === DENSE_RECALL_DOCUMENT_FIELD_SCHEMAS.length &&
+    fields.length === DENSE_RECALL_FIELD_SCHEMAS.length &&
     fields.every((field, index) => {
-      const expected = DENSE_RECALL_DOCUMENT_FIELD_SCHEMAS[index];
+      const expected = DENSE_RECALL_FIELD_SCHEMAS[index];
       return (
         expected !== undefined &&
         field.name === expected.name &&
@@ -199,7 +251,7 @@ export function openDenseRecallConversationStore(config: {
               metricType: ZVecMetricType.IP,
             },
           },
-          fields: [...DENSE_RECALL_DOCUMENT_FIELD_SCHEMAS],
+          fields: DENSE_RECALL_FIELD_SCHEMAS,
         }),
       );
   assertDenseRecallCollectionSchema(collection, config.databasePath);
@@ -216,7 +268,7 @@ export function openDenseRecallConversationStore(config: {
         documents.map(({ embedding, ...document }) => ({
           id: document.id,
           vectors: { embedding: embedding.map(Math.fround) },
-          fields: serializeDenseRecallDocumentFields(document),
+          fields: serializeDenseRecallDocument(document),
         })),
       );
     },
@@ -237,7 +289,7 @@ export function openDenseRecallConversationStore(config: {
       return new Map(
         Object.values(documents).map((document) => [
           document.id,
-          deserializeDenseRecallDocumentFields(document),
+          deserializeDenseRecallDocument(document),
         ]),
       );
     },
@@ -267,12 +319,17 @@ export function openDenseRecallConversationStore(config: {
           ...(projectFilter ? { filter: projectFilter } : {}),
         })
         .map((document) => ({
-          ...deserializeDenseRecallDocumentFields(document),
+          ...deserializeDenseRecallDocument(document),
           cosineDistance: convertNormalizedRecallInnerProductToCosineDistance(document.score),
         }));
     },
     countDocuments() {
       return collection.stats.docCount;
+    },
+    async optimize() {
+      if (collection.stats.docCount > 0) {
+        await collection.optimize();
+      }
     },
     close() {
       collection.closeSync();

@@ -1,7 +1,7 @@
 import { basename } from 'node:path';
 
 import { RecallSearchScope } from './enums.js';
-import type { RecallDenseSearchResult } from './rank-recall-search-results.js';
+import type { RecallSearchResult } from './fuse-recall-search-candidates.js';
 import type {
   RecallQualityCaseId,
   RecallQualityEvaluationCase,
@@ -9,7 +9,7 @@ import type {
 } from './recall-quality-corpus.js';
 import type { RecallConversationSearchResult } from './recall-conversation-service.js';
 
-/** One ordered dense conversation search plus its measured total-query latency. */
+/** One ordered hybrid search plus its measured total-query latency. */
 export interface RecallQualitySearchObservation {
   evaluationCase: RecallQualityEvaluationCase;
   results: readonly RecallConversationSearchResult[];
@@ -44,7 +44,7 @@ export interface RecallQualityCaseFinalMeasurement {
 
 /** One channel's proof that global pollution displaced project evidence before its limit. */
 export interface RecallChannelLimitMeasurement {
-  channel: 'dense';
+  channel: 'dense' | 'lexical' | 'identifier';
   projectSourceAdmitted: boolean;
   globalSourceDisplaced: boolean;
   pollutingCandidateCount: number;
@@ -69,7 +69,7 @@ export interface RecallQualityCaseMeasurement {
   finalCounts: RecallQualityCaseFinalMeasurement[];
 }
 
-/** Aggregate ordered dense quality at one final-result count. */
+/** Aggregate ordered hybrid quality at one final-result count. */
 export interface RecallQualityFinalCountMeasurement {
   finalCount: number;
   finalRecall: number;
@@ -107,14 +107,12 @@ export interface RecallQualityMeasurement {
   finalCounts: RecallQualityFinalCountMeasurement[];
 }
 
-function getRecallResultGroupMembers(
-  result: RecallConversationSearchResult,
-): RecallDenseSearchResult[] {
+function getRecallResultGroupMembers(result: RecallConversationSearchResult): RecallSearchResult[] {
   return [result, ...result.duplicateOccurrences];
 }
 
 function hasExpectedEntryId(
-  candidate: RecallDenseSearchResult,
+  candidate: RecallSearchResult,
   expectedSource: RecallQualityExpectedSource,
 ): boolean {
   return (
@@ -124,7 +122,7 @@ function hasExpectedEntryId(
 }
 
 function matchesExpectedRecallSource(
-  candidate: RecallDenseSearchResult,
+  candidate: RecallSearchResult,
   expectedSource: RecallQualityExpectedSource,
 ): boolean {
   if (
@@ -147,7 +145,7 @@ function matchesExpectedRecallSource(
 }
 
 function matchesExpectedRecallBranch(
-  candidate: RecallDenseSearchResult,
+  candidate: RecallSearchResult,
   expectedSource: RecallQualityExpectedSource,
 ): boolean {
   return !(
@@ -161,7 +159,7 @@ function verifiesEveryExpectedSource(
   evaluationCase: RecallQualityEvaluationCase,
   verify: (
     result: RecallConversationSearchResult,
-    candidate: RecallDenseSearchResult,
+    candidate: RecallSearchResult,
     expectedSource: RecallQualityExpectedSource,
   ) => boolean,
 ): boolean {
@@ -214,8 +212,8 @@ function hasUsefulRecallContext(
 }
 
 function haveMatchingContributingEntryIds(
-  left: RecallDenseSearchResult,
-  right: RecallDenseSearchResult,
+  left: RecallSearchResult,
+  right: RecallSearchResult,
 ): boolean {
   return (
     left.contributingEntryIds.length === right.contributingEntryIds.length &&
@@ -228,8 +226,8 @@ function haveMatchingContributingEntryIds(
 // Keep this evaluation oracle independent from production grouping so one shared bug cannot
 // make duplicate suppression and the duplicate-rate metric agree incorrectly.
 function areExactCrossSessionCopiesForEvaluation(
-  left: RecallDenseSearchResult,
-  right: RecallDenseSearchResult,
+  left: RecallSearchResult,
+  right: RecallSearchResult,
 ): boolean {
   return (
     left.sessionPath !== right.sessionPath &&
@@ -243,10 +241,7 @@ function areExactCrossSessionCopiesForEvaluation(
   );
 }
 
-function areOverlappingSourceSpans(
-  left: RecallDenseSearchResult,
-  right: RecallDenseSearchResult,
-): boolean {
+function areOverlappingSourceSpans(left: RecallSearchResult, right: RecallSearchResult): boolean {
   return (
     left.sessionPath === right.sessionPath &&
     left.entryId.value === right.entryId.value &&
@@ -262,7 +257,7 @@ function areOverlappingSourceSpans(
   );
 }
 
-function countDuplicateRecallSlots(candidates: readonly RecallDenseSearchResult[]): number {
+function countDuplicateRecallSlots(candidates: readonly RecallSearchResult[]): number {
   let duplicateSlots = 0;
   for (const [index, candidate] of candidates.entries()) {
     const earlierCandidates = candidates.slice(0, index);
@@ -347,10 +342,10 @@ function assertRecallQualityInputs(
 }
 
 function hasRecallCandidateChannel(
-  candidate: RecallDenseSearchResult,
+  candidate: RecallSearchResult,
   channel: RecallChannelLimitMeasurement['channel'],
 ): boolean {
-  return channel === 'dense' && Number.isFinite(candidate.cosineDistance);
+  return candidate[channel] !== null;
 }
 
 function measurePreLimitChannels(

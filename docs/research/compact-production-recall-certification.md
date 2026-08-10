@@ -105,7 +105,7 @@ That pass completed 2,513 remaining sessions in 35 minutes 7 seconds, reused 230
 
 ## Reproduction
 
-The one-time certification runner was removed with the legacy store. To reproduce the historical measurement, check out commit `49ce356` in an isolated worktree and run:
+Run from the reviewed branch or deployed package root:
 
 ```bash
 node --import tsx src/certify-compact-recall-production.ts \
@@ -136,4 +136,4 @@ Do not run these steps until the reviewed branch is merged and the installed Pi 
 
 Automated service tests verified staged activation, rollback to the immediately previous pointer, incomplete-target rejection, and already-active-target rejection without changing production. The production version 6 files and certified staged generation remain present for the operational rollback check.
 
-If activation verification fails, stop the timer and run `psr rollback` while the compact release is still deployed. The command warns when it restores the unversioned version 6 database. Redeploy release `8402107`, verify live recall against version 6, and restart the timer. Keep both databases until Will explicitly approves ending the rollback window.
+If activation verification fails, stop the timer, run `psr rollback`, verify live recall against the restored version 6 database, and restart the timer. Keep both database generations until a later cleanup ticket explicitly approves deletion.

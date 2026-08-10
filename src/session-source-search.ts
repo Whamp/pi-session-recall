@@ -4,7 +4,7 @@ import { createInterface } from 'node:readline';
 import { RecallSearchScope } from './enums.js';
 import { isUnknownRecord } from './is-unknown-record.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
-import { listRecallSessionFiles } from './recall-session-files.js';
+import { listRecallSessionFiles } from './listRecallSessionFiles.js';
 import type { ProjectIdentity, ResolvedProjectIdentity } from './resolve-project-identity.js';
 
 const SOURCE_SEARCH_EXCERPT_CHARACTER_LIMIT = 2_000;

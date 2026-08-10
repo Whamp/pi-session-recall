@@ -1,5 +1,5 @@
 ---
-status: superseded by ADR-0013
+status: accepted
 ---
 
 # Keep index optimization explicit

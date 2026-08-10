@@ -6,7 +6,7 @@ import {
   type CompactRecallInvocationResult,
 } from './combine-compact-recall-results.js';
 import { RecallEvidenceRelation } from './enums.js';
-import { createTestRankedRecallDenseSearchResult } from './recall-test-utils.js';
+import { createTestRankedRecallSearchResult } from './recall-test-utils.js';
 
 function createInvocationResult(index: number): CompactRecallInvocationResult {
   return {
@@ -33,7 +33,7 @@ function createInvocationResult(index: number): CompactRecallInvocationResult {
 
 void test('mixed compact recall keeps an exact Invocation visible without displacing strong conversations', () => {
   const conversations = Array.from({ length: 5 }, (_, index) =>
-    createTestRankedRecallDenseSearchResult({
+    createTestRankedRecallSearchResult({
       id: `conversation-${index}`,
       rankingScore: 1 - index / 10,
     }),
@@ -54,8 +54,8 @@ void test('mixed compact recall keeps an exact Invocation visible without displa
 
 void test('compact recall fills the requested limit from either store when the other has no matches', () => {
   const conversations = [
-    createTestRankedRecallDenseSearchResult({ id: 'conversation-0' }),
-    createTestRankedRecallDenseSearchResult({ id: 'conversation-1' }),
+    createTestRankedRecallSearchResult({ id: 'conversation-0' }),
+    createTestRankedRecallSearchResult({ id: 'conversation-1' }),
   ];
   const invocations = [createInvocationResult(0), createInvocationResult(1)];
 

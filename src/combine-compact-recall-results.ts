@@ -1,5 +1,5 @@
 import type { RecallEvidenceRelation } from './enums.js';
-import type { RecallCatalogInvocationSearchResult } from './recall-catalog.js';
+import type { RecallCatalogInvocationSearchResult } from './openRecallCatalog.js';
 import type { RankedRecallSearchResult } from './rank-recall-search-results.js';
 
 /** One dense conversation result labeled for the compact normal-recall result union. */

@@ -67,7 +67,7 @@ function findRecallQualityGateFailures(
   }
   if (finalCount.finalRecall < gate.minimumFinalRecall) {
     failures.push(
-      `final top-N recall ${formatQualityRate(finalCount.finalRecall)} is below ${formatQualityRate(gate.minimumFinalRecall)}`,
+      `fused top-N recall ${formatQualityRate(finalCount.finalRecall)} is below ${formatQualityRate(gate.minimumFinalRecall)}`,
     );
   }
   if (finalCount.contextUsefulness < gate.minimumContextUsefulness) {
@@ -204,7 +204,7 @@ export function selectRecallQualityPolicy(
       combinations,
     };
   }
-  const configurationLabel = `${closest.chunkPolicy.id}, ${closest.candidateCount} candidates/fast store, ${closest.finalCount} final`;
+  const configurationLabel = `${closest.chunkPolicy.id}, ${closest.candidateCount} candidates/channel, ${closest.finalCount} final`;
   return {
     passed: false,
     selected: null,

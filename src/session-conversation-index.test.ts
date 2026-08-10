@@ -353,6 +353,7 @@ void test('turn-context documents follow parent paths across tool activity', asy
   );
   assert.ok(turnContexts.every((chunk) => chunk.tokenCount <= 16));
   assert.ok(turnContexts.every((chunk) => chunk.overlapTokenCount <= 2));
+  assert.ok(turnContexts.every((chunk) => chunk.isDenseSearchable));
   assert.ok(turnContexts.every((chunk) => !chunk.content.includes('RAW_TOOL_OUTPUT')));
   assert.ok(turnContexts.every((chunk) => !chunk.content.includes('private release reasoning')));
   assert.deepEqual(
@@ -1523,7 +1524,9 @@ void test('session import ignores exact blank tool placeholders without losing c
   );
   assert.ok(
     imported.chunks.every(
-      (chunk) => !chunk.content.includes('blank tool placeholder result must not be searchable'),
+      (chunk) =>
+        chunk.documentKind !== 'tool' &&
+        !chunk.content.includes('blank tool placeholder result must not be searchable'),
     ),
   );
 });

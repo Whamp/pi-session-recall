@@ -58,7 +58,7 @@ function formatGateThresholds(gate: RecallQualityGate): string[] {
     '| Metric | Frozen threshold |',
     '| --- | ---: |',
     `| Candidate-pool recall | ≥ ${formatRate(gate.minimumCandidatePoolRecall)} |`,
-    `| Final top-N recall | ≥ ${formatRate(gate.minimumFinalRecall)} |`,
+    `| Fused top-N recall | ≥ ${formatRate(gate.minimumFinalRecall)} |`,
     `| Context usefulness | ≥ ${formatRate(gate.minimumContextUsefulness)} |`,
     `| Source-occurrence preservation | ≥ ${formatRate(gate.minimumSourceOccurrencePreservation)} |`,
     `| Final duplicate-result rate | ≤ ${formatRate(gate.maximumFinalDuplicateRate)} |`,
@@ -68,7 +68,7 @@ function formatGateThresholds(gate: RecallQualityGate): string[] {
 
 function formatQualityMatrix(combinations: readonly RecallQualityGateCombination[]): string[] {
   const lines = [
-    '| Chunk | Candidates/fast store | Final | Pool recall | Final recall | Pool duplicates | Final duplicates | Context | Sources | Provenance | Project p95 | Global p95 | Gate |',
+    '| Chunk | Candidates/channel | Final | Pool recall | Final recall | Pool duplicates | Final duplicates | Context | Sources | Provenance | Project p95 | Global p95 | Gate |',
     '| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |',
   ];
   for (const combination of combinations) {
@@ -143,7 +143,7 @@ function formatCaseOutcomes(
     return ['No measured configuration was available for per-case outcomes.'];
   }
   const lines = [
-    `Shown for ${formatChunkPolicy(decision.chunkPolicy)}, ${decision.candidateCount} candidates/fast store, and ${decision.finalCount} final results.`,
+    `Shown for ${formatChunkPolicy(decision.chunkPolicy)}, ${decision.candidateCount} candidates/channel, and ${decision.finalCount} final results.`,
     '',
     '| Case | Scope | Boundary | Pool | Final | Context | Sources | Origin | Relation | Contributors | Branch | Raw/grouped | Query |',
     '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | ---: | ---: |',
@@ -180,7 +180,7 @@ function formatPreLimitChannelProofs(
       })),
     ) ?? [];
   if (proofs.length === 0) {
-    return ['No pre-limit dense proof was declared.'];
+    return ['No pre-limit channel proof was declared.'];
   }
   return [
     '| Case | Channel | Project source admitted | Global source displaced | Polluters inside limit | Proof |',
@@ -201,7 +201,7 @@ export function formatRecallQualityReport(
   const { specification } = corpus;
   const decision = findDecisionCombination(result);
   const lines: string[] = [
-    '# Project-scoped compact recall quality evaluation',
+    '# Project-scoped recall quality evaluation before backfill',
     '',
     `Generated ${result.completedAt} from corpus \`${result.corpusId}\`.`,
     '',
@@ -213,7 +213,7 @@ export function formatRecallQualityReport(
   if (result.selection.selected) {
     const selected = result.selection.selected;
     lines.push(
-      `Selected **${formatChunkPolicy(selected.chunkPolicy)} tokens/overlap**, **${selected.candidateCount} candidates/fast store**, and **${selected.finalCount} final results**. This is the smallest measured candidate count, then the smallest final count, that passes every frozen dense-search gate; p95 query latency breaks ties.`,
+      `Selected **${formatChunkPolicy(selected.chunkPolicy)} tokens/overlap**, **${selected.candidateCount} candidates/channel**, and **${selected.finalCount} final results**. This is the smallest measured candidate count, then the smallest final count, that passes every frozen hybrid-search gate; p95 query latency breaks ties.`,
     );
   } else {
     lines.push('No candidate or final-result count passed every frozen gate.');
@@ -223,7 +223,7 @@ export function formatRecallQualityReport(
   }
   lines.push(
     '',
-    'This bounded regression command evaluated only the committed corpus and did not read the configured production sessions directory. Production certification is a separate measured gate.',
+    '**Full corpus backfill remains blocked pending human approval.** The command evaluated only the committed bounded corpus and did not read the configured production sessions directory.',
     '',
     '## Evaluation identity',
     '',
@@ -260,12 +260,12 @@ export function formatRecallQualityReport(
     '',
     '## Metric definitions',
     '',
-    '- **Candidate-pool recall:** fraction of cases whose declared source appears anywhere in the complete bounded dense pool before duplicate grouping.',
-    '- **Final top-N recall:** fraction of cases whose declared source appears in the first _N_ deterministic dense result groups.',
+    '- **Candidate-pool recall:** fraction of cases whose declared source appears anywhere in the complete bounded fused pool before duplicate grouping.',
+    '- **Fused top-N recall:** fraction of cases whose declared source appears in the first _N_ deterministic hybrid result groups.',
     '- **Duplicate-result rate:** slots duplicating an earlier exact cross-session copy or overlapping source span, divided by all slots. Candidate-pool measurement reconstructs raw candidates; final measurement uses visible result groups.',
     '- **Context usefulness:** fraction of cases whose first _N_ matching displayed results contain every independently declared context fragment. Neighbor-expanded text is used when present.',
     '- **Source-occurrence preservation:** fraction of cases retaining the required count of distinct declared source locations, including suppressed duplicate occurrences.',
-    `- **Query latency:** wall time for the full read-only compact service search, measured and gated independently for project and global scope. Tables report nearest-rank p95 across ${specification.cases.length} fixed cases after ${specification.warmupQueriesPerCombination} warmup request per represented scope and configuration.`,
+    `- **Query latency:** wall time for the full read-only hybrid service search, measured and gated independently for project and global scope. Tables report nearest-rank p95 across ${specification.cases.length} fixed cases after ${specification.warmupQueriesPerCombination} warmup request per represented scope and configuration.`,
     '',
     '## Chunk-policy index comparison',
     '',
@@ -283,7 +283,7 @@ export function formatRecallQualityReport(
     '',
     ...formatQualityMatrix(result.selection.combinations),
     '',
-    '## Pre-limit dense proof',
+    '## Pre-limit channel proof',
     '',
     ...formatPreLimitChannelProofs(result, decision),
     '',
@@ -344,7 +344,7 @@ export function formatRecallQualityReport(
         ]
       : []),
     '- Latency uses one measured request per case after one warmup, so it compares configurations on this host rather than establishing a capacity benchmark.',
-    '- A passing automated gate confirms the committed regression policy. It does not replace measured production certification.',
+    '- A passing automated gate supports a candidate policy; it does not authorize the full corpus backfill. Human review of this report remains the approval boundary.',
     '',
   );
   return `${lines.join('\n')}\n`;

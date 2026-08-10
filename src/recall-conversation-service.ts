@@ -4,6 +4,7 @@ import { dirname } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 import { RecallEvidenceRelation, RecallProjectIdentitySource, RecallSearchScope } from './enums.js';
+import { fuseRecallSearchCandidates } from './fuse-recall-search-candidates.js';
 import {
   combineCompactRecallResults,
   COMPACT_RECALL_MIXED_RESULT_POLICY_VERSION,
@@ -51,7 +52,8 @@ import {
   writeRecallIndexMaintenanceStatus,
   type RecallIndexMaintenanceStatus,
 } from './recall-index-maintenance-status.js';
-import { openRecallCatalog } from './recall-catalog.js';
+import { openRecallCatalog } from './openRecallCatalog.js';
+import { isUnknownRecord } from './is-unknown-record.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
 import {
   createLineageResolver,
@@ -61,11 +63,15 @@ import {
   type ResolvedProjectIdentity,
 } from './resolve-project-identity.js';
 import {
-  rankDenseRecallSearchResults,
+  rankFusedRecallSearchResults,
   RECALL_ACTIVE_BRANCH_PRIOR,
 } from './rank-recall-search-results.js';
 import type { ConversationTextTokenizer } from './session-conversation-index.js';
 import { searchSessionSourceFiles, type SessionSourceSearch } from './session-source-search.js';
+import {
+  openZvecConversationStore,
+  type ZvecConversationStore,
+} from './zvec-conversation-store.js';
 
 /** Paths, one Octen profile, and bounded compact-layout retrieval settings. */
 export interface RecallConversationConfig {
@@ -133,12 +139,14 @@ export interface RecallConversationIndexOptions {
   rebuild?: boolean;
   deferActivation?: boolean;
   resumeCandidate?: boolean;
+  reuseActiveVectors?: boolean;
   signal?: AbortSignal;
   onProgress?: (event: RecallIndexProgressEvent) => void;
+  optimize?: boolean;
 }
 
-/** Cancellation and progress options for one recall database pointer operation. */
-export interface RecallDatabasePointerOperationOptions {
+/** Options accepted only by standalone `psr optimize` maintenance. */
+export interface RecallConversationOptimizeOptions {
   signal?: AbortSignal;
   onProgress?: (event: RecallIndexProgressEvent) => void;
 }
@@ -167,7 +175,11 @@ export interface RecallConversationActivationResult {
 /** Result of restoring the database immediately preceding the active generation. */
 export interface RecallConversationRollbackResult {
   kind: 'previous-restored';
-  requiresLegacyRelease: boolean;
+}
+
+/** Dense document count from one standalone flat-store optimization. */
+export interface RecallConversationOptimizeResult {
+  totalChunks: number;
 }
 
 /** Read-only indexed search and standalone indexing for one recall collection. */
@@ -197,11 +209,10 @@ export interface RecallConversationToolService
 export interface RecallConversationMaintenanceService extends RecallConversationService {
   activate(
     databaseTarget: string,
-    options?: RecallDatabasePointerOperationOptions,
+    options?: RecallConversationOptimizeOptions,
   ): Promise<RecallConversationActivationResult>;
-  rollback(
-    options?: RecallDatabasePointerOperationOptions,
-  ): Promise<RecallConversationRollbackResult>;
+  optimize(options?: RecallConversationOptimizeOptions): Promise<RecallConversationOptimizeResult>;
+  rollback(options?: RecallConversationOptimizeOptions): Promise<RecallConversationRollbackResult>;
 }
 
 /** Injectable boundaries for public-seam tests and bounded evaluation. */
@@ -212,6 +223,14 @@ export interface RecallConversationDependencies {
   openStore?: (mode: 'read' | 'write', databasePath: string) => DenseRecallConversationStore;
   resolveProjectIdentity?: (workingDirectory: string) => Promise<ResolvedProjectIdentity | null>;
   getCurrentTime?: () => Date;
+}
+
+async function readVectorReuseEmbeddingIdentity(manifestPath: string): Promise<unknown> {
+  const manifest: unknown = JSON.parse(await readFile(manifestPath, 'utf8'));
+  if (!isUnknownRecord(manifest) || !isUnknownRecord(manifest.embedding)) {
+    throw new Error(`Recall active vector reuse manifest invalid at ${manifestPath}`);
+  }
+  return manifest.embedding;
 }
 
 function readLockOwnerProcessId(value: string): number | undefined {
@@ -456,13 +475,20 @@ export function createRecallConversationService(
       try {
         const store = openStore('read', activePaths.databasePath);
         try {
-          const denseCandidates = store.searchDenseCandidates(
-            queryEmbedding,
+          const fusedCandidates = fuseRecallSearchCandidates(
+            {
+              denseCandidates: store.searchDenseCandidates(
+                queryEmbedding,
+                config.searchCandidateLimits.dense,
+                projectIdentity,
+              ),
+              lexicalCandidates: [],
+              identifierCandidates: [],
+            },
             config.searchCandidateLimits.dense,
-            projectIdentity,
           );
-          const conversations: RecallConversationSearchResult[] = rankDenseRecallSearchResults(
-            denseCandidates,
+          const conversations: RecallConversationSearchResult[] = rankFusedRecallSearchResults(
+            fusedCandidates,
             config.searchCandidateLimits.dense,
             store.fetchDocuments,
           ).map((result) => ({
@@ -535,12 +561,47 @@ export function createRecallConversationService(
       });
     },
 
+    async optimize(options = {}) {
+      const releaseLock = await acquireRecallConversationLock(
+        config.lockPath,
+        options.signal,
+        options.onProgress
+          ? () => options.onProgress?.({ kind: 'waiting-for-write-lock' })
+          : undefined,
+      );
+      let store: DenseRecallConversationStore | undefined;
+      try {
+        const activePaths = await resolveActiveRecallDatabasePaths(config);
+        await readCompatibleManifest(activePaths);
+        if (!existsSync(activePaths.databasePath)) {
+          throw new Error(`Recall index database missing at ${activePaths.databasePath}`);
+        }
+        store = openStore('write', activePaths.databasePath);
+        options.onProgress?.({ kind: 'optimizing-collection' });
+        await store.optimize();
+        if (options.signal?.aborted) {
+          throw new Error('Recall conversation operation cancelled', {
+            cause: options.signal.reason,
+          });
+        }
+        const totalChunks = store.countDocuments();
+        options.onProgress?.({ kind: 'completed' });
+        return { totalChunks };
+      } finally {
+        store?.close();
+        await releaseLock();
+      }
+    },
+
     async index(options = {}) {
       if (options.deferActivation && !options.rebuild) {
         throw new Error('Recall deferred activation requires a rebuild');
       }
       if (options.resumeCandidate && (!options.rebuild || !options.deferActivation)) {
         throw new Error('Recall candidate resume requires a staged rebuild');
+      }
+      if (options.reuseActiveVectors && (!options.rebuild || !options.deferActivation)) {
+        throw new Error('Recall active vector reuse requires a staged rebuild');
       }
       const maintenanceLockPath =
         options.rebuild && options.deferActivation
@@ -554,6 +615,7 @@ export function createRecallConversationService(
           : undefined,
       );
       let store: DenseRecallConversationStore | undefined;
+      let vectorReuseStore: ZvecConversationStore | undefined;
       let candidate: RecallDatabaseCandidate | undefined;
       try {
         const ignoredPhysicalSessionPaths: ReadonlySet<string> = new Set(
@@ -578,6 +640,24 @@ export function createRecallConversationService(
         const activePaths = candidate
           ? candidate.paths
           : await resolveActiveRecallDatabasePaths(config);
+        if (options.reuseActiveVectors) {
+          const vectorReusePaths = await resolveActiveRecallDatabasePaths(config);
+          const vectorReuseEmbedding = await readVectorReuseEmbeddingIdentity(
+            vectorReusePaths.manifestPath,
+          );
+          const expectedEmbedding = createExpectedManifest().embedding;
+          if (JSON.stringify(vectorReuseEmbedding) !== JSON.stringify(expectedEmbedding)) {
+            throw new Error(
+              `Recall active vector reuse profile incompatible at ${vectorReusePaths.manifestPath}`,
+            );
+          }
+          vectorReuseStore = openZvecConversationStore({
+            databasePath: vectorReusePaths.databasePath,
+            dimensions: config.embeddingStoredDimensions,
+            createIfMissing: false,
+            readOnly: true,
+          });
+        }
         if (options.rebuild && !candidate) {
           await rm(activePaths.indexMaintenanceStatusPath, { force: true });
           await rm(activePaths.databasePath, { recursive: true, force: true });
@@ -593,7 +673,20 @@ export function createRecallConversationService(
         const indexSummary = await indexChangedConversationSessions({
           sessionsDirectory: config.sessionsDirectory,
           catalogPath: activePaths.catalogPath,
+          legacyStatePath: activePaths.statePath,
           store,
+          ...(vectorReuseStore
+            ? {
+                vectorReuseStore: {
+                  fetchDocuments(ids) {
+                    return vectorReuseStore?.fetchConversationChunks(ids) ?? new Map();
+                  },
+                  fetchVectors(ids) {
+                    return vectorReuseStore?.fetchVectors(ids) ?? new Map();
+                  },
+                },
+              }
+            : {}),
           embeddingProvider,
           tokenizer: conversationTokenizer,
           ignoredPhysicalSessionPaths,
@@ -606,6 +699,15 @@ export function createRecallConversationService(
           ...(options.signal ? { signal: options.signal } : {}),
           ...(options.onProgress ? { onProgress: options.onProgress } : {}),
         });
+        if (
+          options.optimize &&
+          (indexSummary.newlyEmbeddedChunks > 0 ||
+            indexSummary.deletedChunks > 0 ||
+            indexSummary.indexedSessions > 0)
+        ) {
+          options.onProgress?.({ kind: 'optimizing-collection' });
+          await store.optimize();
+        }
         const documentCounts = {
           dense: store.countDocuments(),
           invocations: 0,
@@ -670,6 +772,7 @@ export function createRecallConversationService(
         }
         throw error;
       } finally {
+        vectorReuseStore?.close();
         store?.close();
         await releaseLock();
       }
@@ -700,8 +803,8 @@ export function createRecallConversationService(
           : undefined,
       );
       try {
-        const restoration = await restorePreviousRecallDatabase(config);
-        return { kind: 'previous-restored', ...restoration };
+        await restorePreviousRecallDatabase(config);
+        return { kind: 'previous-restored' };
       } finally {
         await releaseLock();
       }

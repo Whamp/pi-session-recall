@@ -42,6 +42,11 @@ export interface AutoIndexSchedulerProcessResult {
   stderr: string;
 }
 
+/** Optional native schedules installed beside automatic index maintenance. */
+export interface AutoIndexScheduleOptions {
+  optimizeDaily?: boolean;
+}
+
 /** Reports a nonfatal immediate indexing failure after durable scheduler installation. */
 export interface AutoIndexInstallationResult {
   immediateRunWarning?: string;
@@ -188,6 +193,27 @@ function renderLaunchAgentIndexPlist(
   );
 }
 
+function renderLaunchAgentOptimizePlist(system: AutoIndexSchedulerSystem): string {
+  return renderLaunchAgentPlist(
+    {
+      label: LAUNCH_AGENT_OPTIMIZE_LABEL,
+      psrArguments: ['optimize'],
+      timingLines: [
+        '  <key>StartCalendarInterval</key>',
+        '  <dict>',
+        '    <key>Hour</key>',
+        '    <integer>23</integer>',
+        '    <key>Minute</key>',
+        '    <integer>0</integer>',
+        '  </dict>',
+      ],
+      runAtLoad: false,
+      logName: 'pi-session-recall-auto-optimize',
+    },
+    system,
+  );
+}
+
 function renderSystemdService(
   system: AutoIndexSchedulerSystem,
   description: string,
@@ -219,6 +245,21 @@ function renderSystemdTimer(interval: AutoIndexInterval): string {
     '[Timer]',
     `OnActiveSec=${renderedInterval}`,
     `OnUnitActiveSec=${renderedInterval}`,
+    '',
+    '[Install]',
+    'WantedBy=timers.target',
+    '',
+  ].join('\n');
+}
+
+function renderSystemdOptimizeTimer(): string {
+  return [
+    '[Unit]',
+    'Description=Schedule daily pi-session-recall optimization',
+    '',
+    '[Timer]',
+    'OnCalendar=*-*-* 23:00:00',
+    'Persistent=true',
     '',
     '[Install]',
     'WantedBy=timers.target',
@@ -311,19 +352,34 @@ async function removeSystemdOptimizeSchedule(
 async function installSystemdAutoIndexSchedule(
   interval: AutoIndexInterval,
   system: AutoIndexSchedulerSystem,
+  options: AutoIndexScheduleOptions,
 ): Promise<AutoIndexInstallationResult> {
   const userUnitDirectory = join(readSystemdConfigHome(system), 'systemd', 'user');
   const servicePath = join(userUnitDirectory, SYSTEMD_SERVICE_NAME);
   const timerPath = join(userUnitDirectory, SYSTEMD_TIMER_NAME);
+  const optimizeServicePath = join(userUnitDirectory, SYSTEMD_OPTIMIZE_SERVICE_NAME);
+  const optimizeTimerPath = join(userUnitDirectory, SYSTEMD_OPTIMIZE_TIMER_NAME);
   await system.makeDirectory(userUnitDirectory);
-  await removeSystemdOptimizeSchedule(system, userUnitDirectory);
+  if (!options.optimizeDaily) {
+    await removeSystemdOptimizeSchedule(system, userUnitDirectory);
+  }
   await system.writeFile(
     servicePath,
     renderSystemdService(system, 'Maintain the pi-session-recall index', ['index']),
   );
   await system.writeFile(timerPath, renderSystemdTimer(interval));
+  if (options.optimizeDaily) {
+    await system.writeFile(
+      optimizeServicePath,
+      renderSystemdService(system, 'Optimize the pi-session-recall index', ['optimize']),
+    );
+    await system.writeFile(optimizeTimerPath, renderSystemdOptimizeTimer());
+  }
   await runRequiredSchedulerProcess(system, 'systemctl', ['--user', 'daemon-reload']);
-  const timerNames = [SYSTEMD_TIMER_NAME];
+  const timerNames = [
+    SYSTEMD_TIMER_NAME,
+    ...(options.optimizeDaily ? [SYSTEMD_OPTIMIZE_TIMER_NAME] : []),
+  ];
   await runRequiredSchedulerProcess(system, 'systemctl', ['--user', 'enable', ...timerNames]);
   await runRequiredSchedulerProcess(system, 'systemctl', ['--user', 'restart', ...timerNames]);
 
@@ -349,6 +405,7 @@ async function installSystemdAutoIndexSchedule(
 async function installLaunchAgentAutoIndexSchedule(
   interval: AutoIndexInterval,
   system: AutoIndexSchedulerSystem,
+  options: AutoIndexScheduleOptions,
 ): Promise<AutoIndexInstallationResult> {
   const launchAgentsDirectory = join(system.homeDirectory, 'Library', 'LaunchAgents');
   const plistPath = join(launchAgentsDirectory, LAUNCH_AGENT_FILE_NAME);
@@ -356,12 +413,23 @@ async function installLaunchAgentAutoIndexSchedule(
   const logsDirectory = join(system.homeDirectory, '.pi', 'agent', 'logs');
   await unloadLaunchAgent(system, plistPath);
   await unloadLaunchAgent(system, optimizePlistPath);
-  await system.removeFile(optimizePlistPath);
+  if (!options.optimizeDaily) {
+    await system.removeFile(optimizePlistPath);
+  }
   await system.makeDirectory(launchAgentsDirectory);
   await system.makeDirectory(logsDirectory);
   await system.writeFile(plistPath, renderLaunchAgentIndexPlist(interval, system));
+  if (options.optimizeDaily) {
+    await system.writeFile(optimizePlistPath, renderLaunchAgentOptimizePlist(system));
+  }
   await system.setFileMode(plistPath, 0o600);
+  if (options.optimizeDaily) {
+    await system.setFileMode(optimizePlistPath, 0o600);
+  }
   await runRequiredSchedulerProcess(system, 'launchctl', ['load', plistPath]);
+  if (options.optimizeDaily) {
+    await runRequiredSchedulerProcess(system, 'launchctl', ['load', optimizePlistPath]);
+  }
   return {};
 }
 
@@ -396,15 +464,16 @@ async function uninstallSystemdAutoIndexSchedule(system: AutoIndexSchedulerSyste
 export async function installAutoIndexSchedule(
   interval: AutoIndexInterval,
   system: AutoIndexSchedulerSystem,
+  options: AutoIndexScheduleOptions = {},
 ): Promise<AutoIndexInstallationResult> {
   if (!isAbsolute(system.nodeExecutablePath) || !isAbsolute(system.packageRoot)) {
     throw new Error('Auto-index scheduler requires absolute Node and package paths');
   }
   if (system.platform === 'linux') {
-    return await installSystemdAutoIndexSchedule(interval, system);
+    return await installSystemdAutoIndexSchedule(interval, system, options);
   }
   if (system.platform === 'darwin') {
-    return await installLaunchAgentAutoIndexSchedule(interval, system);
+    return await installLaunchAgentAutoIndexSchedule(interval, system, options);
   }
   throw new Error(`Auto-index scheduler is not supported on platform ${system.platform}`);
 }

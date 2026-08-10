@@ -9,7 +9,7 @@ import {
   createRecallConversationService,
   type RecallConversationConfig,
 } from './recall-conversation-service.js';
-import { openRecallCatalog } from './recall-catalog.js';
+import { openRecallCatalog } from './openRecallCatalog.js';
 import { openDenseRecallConversationStore } from './dense-recall-conversation-store.js';
 import type { RecallEmbeddingProvider } from './recall-inference-capabilities.js';
 import {
@@ -513,6 +513,57 @@ void test('rebuild activation, rollback, and search respect the shared writer lo
   assert.equal(await readlink(join(root, 'recall', 'active')), activatedTarget);
 });
 
+void test('standalone optimization compacts the existing collection without indexing sessions', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-standalone-optimize-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const config = createTestConfig(root);
+  await writeConversationSession(
+    join(config.sessionsDirectory, 'one.jsonl'),
+    'Force optimization fixture evidence.',
+  );
+  const service = createRecallConversationService(config, {
+    embeddingProvider: TEST_EMBEDDING_PROVIDER,
+    loadTokenizer: async () => tokenizer,
+  });
+  await service.index({ rebuild: true });
+  const progressKinds: string[] = [];
+
+  const result = await service.optimize({
+    onProgress(event) {
+      progressKinds.push(event.kind);
+    },
+  });
+
+  assert.ok(result.totalChunks > 0);
+  assert.deepEqual(progressKinds, ['optimizing-collection', 'completed']);
+});
+
+void test('standalone optimization remains repeatable after later indexed writes', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-repeatable-optimize-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const config = createTestConfig(root);
+  await writeConversationSession(
+    join(config.sessionsDirectory, 'first.jsonl'),
+    'Initial repeatable optimization evidence.',
+  );
+  const service = createRecallConversationService(config, {
+    embeddingProvider: TEST_EMBEDDING_PROVIDER,
+    loadTokenizer: async () => tokenizer,
+  });
+  await service.index({ rebuild: true });
+  const firstOptimization = await service.optimize();
+
+  await writeConversationSession(
+    join(config.sessionsDirectory, 'second.jsonl'),
+    'Later repeatable optimization evidence.',
+  );
+  const laterIndex = await service.index();
+  const secondOptimization = await service.optimize();
+
+  assert.equal(laterIndex.indexSummary.indexedSessions, 1);
+  assert.ok(secondOptimization.totalChunks > firstOptimization.totalChunks);
+});
+
 void test('service source search reads raw output without opening the index or embedding', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'recall-service-source-search-'));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -681,7 +732,7 @@ void test('service builds one compact database and performs read-only combined s
     },
   });
 
-  const indexed = await service.index({ rebuild: true });
+  const indexed = await service.index({ rebuild: true, optimize: true });
   const catalogBeforeSearch = await readFile(config.catalogPath);
   const statusBeforeSearch = await readFile(config.indexMaintenanceStatusPath, 'utf8');
   const search = await service.search('manual zvec', 5, { scope: RecallSearchScope.GLOBAL });

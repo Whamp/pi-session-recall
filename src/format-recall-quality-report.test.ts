@@ -222,9 +222,9 @@ void test('recall quality report records verdict, measured counts, sources, and 
 
   assert.match(report, /Automated gate: PASS/);
   assert.match(report, /512\/64/);
-  assert.match(report, /8 candidates\/fast store/);
+  assert.match(report, /8 candidates\/channel/);
   assert.match(report, /semantic-context\.jsonl#queue-answer/);
   assert.match(report, /npm run evaluate:recall/);
-  assert.match(report, /Production certification is a separate measured gate\./);
+  assert.match(report, /Full corpus backfill remains blocked pending human approval\./);
   assert.match(report, /no discriminating quality variance/);
 });

@@ -140,12 +140,8 @@ function assertSafeRecallQualityPaths(
     corpus.sessionDirectory,
     baseConfig.sessionsDirectory,
     baseConfig.databasePath,
-    baseConfig.catalogPath,
     baseConfig.statePath,
     baseConfig.manifestPath,
-    baseConfig.indexMaintenanceStatusPath,
-    baseConfig.physicalSessionIgnoreStatePath,
-    baseConfig.tokenizerCacheDirectory,
     baseConfig.lockPath,
     ...(baseConfig.databaseGenerationRootPath
       ? [
@@ -195,7 +191,6 @@ function createChunkPolicyConfig(
     ...baseConfig,
     sessionsDirectory: corpus.sessionDirectory,
     databasePath: join(policyDirectory, 'zvec'),
-    catalogPath: join(policyDirectory, 'recall-catalog.sqlite'),
     statePath: join(policyDirectory, 'index-state.json'),
     manifestPath: join(policyDirectory, 'index-manifest.json'),
     indexMaintenanceStatusPath: join(policyDirectory, 'index-maintenance-status.json'),
@@ -383,7 +378,7 @@ export async function runRecallQualityEvaluation(
       ),
     );
     const indexStarted = performance.now();
-    const indexed = await indexService.index();
+    const indexed = await indexService.index({ optimize: true });
     const indexLatencyMilliseconds = performance.now() - indexStarted;
     if (indexed.indexSummary.failedSessions.length > 0) {
       const failures = indexed.indexSummary.failedSessions

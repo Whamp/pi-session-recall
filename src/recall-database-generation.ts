@@ -53,11 +53,6 @@ export interface RecallDatabaseActivation {
   previousAvailable: boolean;
 }
 
-/** Compatibility action required after restoring the previous database pointer. */
-export interface RecallDatabaseRestoration {
-  requiresLegacyRelease: boolean;
-}
-
 function getRecallDatabaseDataDirectory(config: RecallDatabaseGenerationConfig): string {
   if (!config.databaseGenerationRootPath) {
     throw new Error('Recall database generations are not configured');
@@ -328,7 +323,7 @@ export async function activateRecallDatabaseCandidate(
 /** Atomically restores the database recorded as previous by the active generation. */
 export async function restorePreviousRecallDatabase(
   config: RecallDatabaseGenerationConfig,
-): Promise<RecallDatabaseRestoration> {
+): Promise<void> {
   if (!config.databaseGenerationRootPath) {
     throw new Error('No previous recall database is available to restore');
   }
@@ -352,5 +347,4 @@ export async function restorePreviousRecallDatabase(
   }
   await assertDatabaseTargetExists(config, previousTarget);
   await replaceActiveDatabaseTarget(config, previousTarget);
-  return { requiresLegacyRelease: previousTarget === '.' };
 }

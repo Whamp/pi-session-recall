@@ -1,9 +1,12 @@
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync, type StatementSync } from 'node:sqlite';
 
 import { RecallProjectIdentitySource } from './enums.js';
-import type { InvocationRecord } from './invocation-record.js';
+import { SESSION_IMPORT_POLICY_VERSION } from './import-session-jsonl.js';
+import type { InvocationRecord } from './createSessionInvocationRecords.js';
+import { isUnknownRecord } from './is-unknown-record.js';
+import { readNodeErrorCode } from './read-node-error-code.js';
 import {
   parseProjectIdentity,
   parseRepositoryIdentity,
@@ -13,8 +16,13 @@ import {
 
 const RECALL_CATALOG_SCHEMA_VERSION = 1;
 
-/** Options for one catalog open. */
+interface LegacyRecallSessionState extends RecallCatalogSessionState {
+  sessionPath: string;
+}
+
+/** Options for one catalog open and optional first-open legacy state migration. */
 export interface OpenRecallCatalogOptions {
+  legacyStatePath?: string;
   readOnly?: boolean;
 }
 
@@ -51,6 +59,61 @@ export interface RecallCatalog {
   ): RecallCatalogInvocationSearchResult[];
   countInvocations(): number;
   close(): void;
+}
+
+function readLegacyRecallSessionStates(legacyStatePath: string): LegacyRecallSessionState[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(legacyStatePath, 'utf8'));
+  } catch (error) {
+    if (readNodeErrorCode(error) === 'ENOENT') {
+      return [];
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Recall index state invalid at ${legacyStatePath}: ${message}`, {
+      cause: error,
+    });
+  }
+  if (
+    !isUnknownRecord(parsed) ||
+    parsed.version !== 3 ||
+    parsed.importPolicyVersion !== SESSION_IMPORT_POLICY_VERSION ||
+    !isUnknownRecord(parsed.sessions)
+  ) {
+    throw new Error(`Recall index state invalid at ${legacyStatePath}: incompatible state schema`);
+  }
+  return Object.entries(parsed.sessions).map(([sessionPath, value]) => {
+    if (
+      !isUnknownRecord(value) ||
+      typeof value.size !== 'number' ||
+      !Number.isFinite(value.size) ||
+      value.size < 0 ||
+      typeof value.mtimeMs !== 'number' ||
+      !Number.isFinite(value.mtimeMs) ||
+      value.mtimeMs < 0 ||
+      !Array.isArray(value.chunks)
+    ) {
+      throw new Error(
+        `Recall index state invalid at ${legacyStatePath}: invalid session state for ${sessionPath}`,
+      );
+    }
+    const documentIds: string[] = [];
+    for (const chunk of value.chunks) {
+      if (!isUnknownRecord(chunk) || typeof chunk.id !== 'string' || chunk.id.length === 0) {
+        throw new Error(
+          `Recall index state invalid at ${legacyStatePath}: invalid document identity for ${sessionPath}`,
+        );
+      }
+      documentIds.push(chunk.id);
+    }
+    return {
+      sessionPath,
+      size: value.size,
+      mtimeMs: value.mtimeMs,
+      documentIds,
+      denseDocumentIds: [],
+    };
+  });
 }
 
 function createRecallCatalogSchema(database: DatabaseSync): void {
@@ -119,6 +182,24 @@ function createRecallCatalogSchema(database: DatabaseSync): void {
 
   `);
   database.exec('PRAGMA user_version = 1');
+}
+
+function importLegacyRecallSessionStates(
+  database: DatabaseSync,
+  states: readonly LegacyRecallSessionState[],
+): void {
+  const insertSession = database.prepare(
+    'INSERT INTO physical_sessions(session_path, size, mtime_ms, invocations_indexed) VALUES (?, ?, ?, 0)',
+  );
+  const insertDocument = database.prepare(
+    'INSERT INTO session_documents(session_path, document_id, is_dense) VALUES (?, ?, 0)',
+  );
+  for (const state of states) {
+    insertSession.run(state.sessionPath, state.size, state.mtimeMs);
+    for (const documentId of state.documentIds) {
+      insertDocument.run(state.sessionPath, documentId);
+    }
+  }
 }
 
 function readRecallCatalogSchemaVersion(database: DatabaseSync): number {
@@ -276,6 +357,10 @@ export function openRecallCatalog(
   if (options.readOnly && !existsSync(catalogPath)) {
     throw new Error(`Recall catalog missing at ${catalogPath}; rebuild with psr index --rebuild`);
   }
+  const legacyStates =
+    !options.readOnly && !existsSync(catalogPath) && options.legacyStatePath
+      ? readLegacyRecallSessionStates(options.legacyStatePath)
+      : [];
   if (!options.readOnly) {
     mkdirSync(dirname(catalogPath), { recursive: true });
   }
@@ -290,7 +375,10 @@ export function openRecallCatalog(
   );
   const schemaVersion = readRecallCatalogSchemaVersion(database);
   if (schemaVersion === 0 && !options.readOnly) {
-    createRecallCatalogSchema(database);
+    runRecallCatalogTransaction(database, () => {
+      createRecallCatalogSchema(database);
+      importLegacyRecallSessionStates(database, legacyStates);
+    });
   } else if (schemaVersion !== RECALL_CATALOG_SCHEMA_VERSION) {
     database.close();
     throw new Error(
@@ -341,7 +429,7 @@ export function openRecallCatalog(
   const deleteSession = database.prepare('DELETE FROM physical_sessions WHERE session_path = ?');
   const countInvocationRows = database.prepare('SELECT count(*) AS count FROM invocations');
 
-  const readPhysicalSessionState = (sessionPath: string): RecallCatalogSessionState | null => {
+  const readCatalogSessionState = (sessionPath: string): RecallCatalogSessionState | null => {
     const row = readSession.get(sessionPath);
     if (!row) {
       return null;
@@ -370,7 +458,9 @@ export function openRecallCatalog(
   };
 
   return {
-    readPhysicalSessionState,
+    readPhysicalSessionState(sessionPath) {
+      return readCatalogSessionState(sessionPath);
+    },
 
     listPhysicalSessionPaths() {
       return listSessions.all().map((row) => {
@@ -397,7 +487,7 @@ export function openRecallCatalog(
           `Recall catalog dense document identity missing from session ${replacement.sessionPath}`,
         );
       }
-      const previous = readPhysicalSessionState(replacement.sessionPath);
+      const previous = readCatalogSessionState(replacement.sessionPath);
       const previousInvocations = previous
         ? listInvocations.all(replacement.sessionPath).map(decodeInvocationSearchResult)
         : [];

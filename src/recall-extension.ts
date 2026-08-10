@@ -137,9 +137,10 @@ export function createPiRecallToolDetails(search: RecallConversationSearch) {
             isOnActiveBranch: result.isOnActiveBranch,
             rankingScore: result.rankingScore,
             activeBranchPrior: result.activeBranchPrior,
-            denseRank: result.denseRank,
-            denseReciprocalRankScore: result.denseReciprocalRankScore,
-            cosineDistance: result.cosineDistance,
+            fusedScore: result.fusedScore,
+            dense: result.dense,
+            lexical: result.lexical,
+            identifier: result.identifier,
             duplicateOccurrences: result.duplicateOccurrences.map((occurrence) => ({
               documentId: occurrence.id,
               sessionPath: occurrence.sessionPath,
@@ -415,7 +416,7 @@ export function createPiRecallToolDefinition(
   >;
 }
 
-/** Registers read-only compact recall; all index writes belong to the standalone `psr` CLI. */
+/** Registers read-only hybrid recall; all index writes belong to the standalone `psr` CLI. */
 export default async function recallExtension(
   pi: Pick<ExtensionAPI, 'registerTool'>,
 ): Promise<void> {

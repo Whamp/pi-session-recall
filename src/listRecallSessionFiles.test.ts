@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { listRecallSessionFiles } from './recall-session-files.js';
+import { listRecallSessionFiles } from './listRecallSessionFiles.js';
 
 void test('recall session discovery returns sorted nested JSONL files and tolerates a missing root', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'recall-session-files-'));

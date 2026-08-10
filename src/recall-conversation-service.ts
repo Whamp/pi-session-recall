@@ -4,11 +4,19 @@ import { dirname } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 import { RecallEvidenceRelation, RecallProjectIdentitySource, RecallSearchScope } from './enums.js';
+import { fuseRecallSearchCandidates } from './fuse-recall-search-candidates.js';
 import {
-  fuseRecallSearchCandidates,
-  RECALL_RANK_FUSION_VERSION,
-  RECALL_RRF_RANK_CONSTANT,
-} from './fuse-recall-search-candidates.js';
+  combineCompactRecallResults,
+  COMPACT_RECALL_MIXED_RESULT_POLICY_VERSION,
+  type CompactRecallConversationResult,
+  type CompactRecallInvocationResult,
+  type CompactRecallSearchResult,
+} from './combine-compact-recall-results.js';
+import {
+  DENSE_RECALL_CONVERSATION_STORE_IDENTITY,
+  openDenseRecallConversationStore,
+  type DenseRecallConversationStore,
+} from './dense-recall-conversation-store.js';
 import {
   indexChangedConversationSessions,
   type ConversationIndexSummary,
@@ -41,6 +49,7 @@ import {
   writeRecallIndexMaintenanceStatus,
   type RecallIndexMaintenanceStatus,
 } from './recall-index-maintenance-status.js';
+import { openRecallCatalog } from './recall-catalog.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
 import {
   createLineageResolver,
@@ -52,16 +61,11 @@ import {
 import {
   rankFusedRecallSearchResults,
   RECALL_ACTIVE_BRANCH_PRIOR,
-  type RankedRecallSearchResult,
 } from './rank-recall-search-results.js';
 import type { ConversationTextTokenizer } from './session-conversation-index.js';
 import { searchSessionSourceFiles, type SessionSourceSearch } from './session-source-search.js';
-import {
-  openZvecConversationStore,
-  type ZvecConversationStore,
-} from './zvec-conversation-store.js';
 
-/** Paths, one Octen profile, and bounded hybrid retrieval settings. */
+/** Paths, one Octen profile, and bounded compact-layout retrieval settings. */
 export interface RecallConversationConfig {
   sessionsDirectory: string;
   databasePath: string;
@@ -84,11 +88,10 @@ export interface RecallConversationConfig {
   chunkPolicy: RecallChunkPolicy;
 }
 
-/** Per-channel candidate caps applied before deterministic rank fusion. */
+/** Per-fast-store candidate caps applied before mixed-result selection. */
 export interface RecallSearchCandidateLimits {
   dense: number;
-  lexical: number;
-  identifier: number;
+  invocation: number;
 }
 
 /** Trusted invocation context and cancellation for one read-only recall search. */
@@ -98,26 +101,27 @@ export interface RecallConversationSearchOptions {
   signal?: AbortSignal;
 }
 
-/** Reports the fixed hybrid rank-fusion settings used by one search. */
+/** Reports the fixed compact mixed-result settings used by one search. */
 export interface RecallSearchPolicy {
   scope: RecallSearchScope;
   invocationProjectIdentity: ProjectIdentity | null;
-  rankingMode: 'hybrid';
-  rankFusionVersion: number;
-  reciprocalRankConstant: number;
+  rankingMode: 'compact';
+  mixedResultPolicyVersion: number;
   activeBranchPrior: number;
   candidateLimits: RecallSearchCandidateLimits;
 }
 
-/** One ranked result labeled by its relationship to the invoking project. */
-export interface RecallConversationSearchResult extends RankedRecallSearchResult {
-  evidenceRelation: RecallEvidenceRelation;
-}
+/** One ranked dense conversation result labeled by its relationship to the invoking project. */
+export type RecallConversationSearchResult = CompactRecallConversationResult;
 
-/** One read-only hybrid query against a compatible manually built index. */
+/** One normal recall result from the dense conversation store or compact Invocation catalog. */
+export type RecallNormalSearchResult = CompactRecallSearchResult;
+
+/** One read-only combined query against a compatible compact recall database. */
 export interface RecallConversationSearch {
-  results: RecallConversationSearchResult[];
+  results: RecallNormalSearchResult[];
   totalChunks: number;
+  documentCounts: { dense: number; invocations: number };
   searchPolicy: RecallSearchPolicy;
   indexMaintenanceStatus: RecallIndexMaintenanceStatus | null;
 }
@@ -146,6 +150,7 @@ export type RecallDatabaseTransition =
 export interface RecallConversationIndexResult {
   indexSummary: ConversationIndexSummary;
   totalChunks: number;
+  documentCounts: { dense: number; invocations: number };
   databaseTransition: RecallDatabaseTransition;
 }
 
@@ -154,7 +159,7 @@ export interface RecallConversationRollbackResult {
   kind: 'previous-restored';
 }
 
-/** Counts from one standalone zvec optimization. */
+/** Dense document count from one standalone flat-store optimization. */
 export interface RecallConversationOptimizeResult {
   totalChunks: number;
 }
@@ -193,7 +198,7 @@ export interface RecallConversationDependencies {
   embeddingProvider?: RecallEmbeddingProvider;
   tokenizerIdentity?: RecallTokenizerManifestIdentity;
   loadTokenizer?: () => Promise<ConversationTextTokenizer>;
-  openStore?: (mode: 'read' | 'write', databasePath: string) => ZvecConversationStore;
+  openStore?: (mode: 'read' | 'write', databasePath: string) => DenseRecallConversationStore;
   resolveProjectIdentity?: (workingDirectory: string) => Promise<ResolvedProjectIdentity | null>;
   getCurrentTime?: () => Date;
 }
@@ -329,9 +334,8 @@ export function createRecallConversationService(
   const openStore =
     dependencies.openStore ??
     ((mode, databasePath) =>
-      openZvecConversationStore({
+      openDenseRecallConversationStore({
         databasePath,
-        dimensions: config.embeddingStoredDimensions,
         createIfMissing: mode === 'write',
         readOnly: mode === 'read',
       }));
@@ -361,7 +365,30 @@ export function createRecallConversationService(
         : {}),
       chunkPolicy: config.chunkPolicy,
       projectLineages: config.projectLineages,
+      denseConversationStoreIdentity: DENSE_RECALL_CONVERSATION_STORE_IDENTITY,
     });
+  }
+
+  function classifyEvidenceRelation(
+    projectAttribution: ResolvedProjectIdentity | null,
+    invocationProject: ResolvedProjectIdentity | null,
+  ): RecallEvidenceRelation {
+    if (
+      !invocationProject ||
+      invocationProject.projectIdentity !== projectAttribution?.projectIdentity
+    ) {
+      return RecallEvidenceRelation.UNRESTRICTED_GLOBAL;
+    }
+    if (
+      projectAttribution.identitySource ===
+        RecallProjectIdentitySource.CONFIGURED_PROJECT_LINEAGE ||
+      invocationProject.identitySource === RecallProjectIdentitySource.CONFIGURED_PROJECT_LINEAGE
+    ) {
+      return RecallEvidenceRelation.CONFIGURED_PROJECT_LINEAGE;
+    }
+    return invocationProject.identitySource === RecallProjectIdentitySource.NON_GIT_SESSION_ORIGIN
+      ? RecallEvidenceRelation.SAME_SESSION_ORIGIN
+      : RecallEvidenceRelation.SAME_REPOSITORY;
   }
 
   async function getTokenizer(): Promise<ConversationTextTokenizer> {
@@ -414,66 +441,72 @@ export function createRecallConversationService(
         scope === RecallSearchScope.PROJECT ? invocationProject?.projectIdentity : undefined;
       const queryEmbedding = await embeddingProvider.embedQuery(searchQuery, options.signal);
       await assertRecallIndexUnlockedForSearch(config.lockPath);
-      const store = openStore('read', activePaths.databasePath);
+      const catalog = openRecallCatalog(activePaths.catalogPath, { readOnly: true });
       try {
-        const fusedCandidates = fuseRecallSearchCandidates(
-          {
-            denseCandidates: store.searchDenseCandidates(
-              queryEmbedding,
-              config.searchCandidateLimits.dense,
-              projectIdentity,
+        const store = openStore('read', activePaths.databasePath);
+        try {
+          const fusedCandidates = fuseRecallSearchCandidates(
+            {
+              denseCandidates: store.searchDenseCandidates(
+                queryEmbedding,
+                config.searchCandidateLimits.dense,
+                projectIdentity,
+              ),
+              lexicalCandidates: [],
+              identifierCandidates: [],
+            },
+            config.searchCandidateLimits.dense,
+          );
+          const conversations: RecallConversationSearchResult[] = rankFusedRecallSearchResults(
+            fusedCandidates,
+            config.searchCandidateLimits.dense,
+            store.fetchDocuments,
+          ).map((result) => ({
+            ...result,
+            resultKind: 'conversation',
+            evidenceRelation: classifyEvidenceRelation(
+              result.projectAttribution,
+              invocationProject,
             ),
-            lexicalCandidates: store.searchLexicalCandidates(
+          }));
+          const invocations: CompactRecallInvocationResult[] = catalog
+            .searchInvocations(
               searchQuery,
-              config.searchCandidateLimits.lexical,
+              config.searchCandidateLimits.invocation,
               projectIdentity,
-            ),
-            identifierCandidates: store.searchIdentifierCandidates(
-              searchQuery,
-              config.searchCandidateLimits.identifier,
-              projectIdentity,
-            ),
-          },
-          config.searchCandidateLimits.dense +
-            config.searchCandidateLimits.lexical +
-            config.searchCandidateLimits.identifier,
-        );
-        const results: RecallConversationSearchResult[] = rankFusedRecallSearchResults(
-          fusedCandidates,
-          limit,
-          store.fetchConversationChunks,
-        ).map((result) => ({
-          ...result,
-          evidenceRelation:
-            !invocationProject ||
-            invocationProject.projectIdentity !== result.projectAttribution?.projectIdentity
-              ? RecallEvidenceRelation.UNRESTRICTED_GLOBAL
-              : result.projectAttribution.identitySource ===
-                    RecallProjectIdentitySource.CONFIGURED_PROJECT_LINEAGE ||
-                  invocationProject.identitySource ===
-                    RecallProjectIdentitySource.CONFIGURED_PROJECT_LINEAGE
-                ? RecallEvidenceRelation.CONFIGURED_PROJECT_LINEAGE
-                : invocationProject.identitySource ===
-                    RecallProjectIdentitySource.NON_GIT_SESSION_ORIGIN
-                  ? RecallEvidenceRelation.SAME_SESSION_ORIGIN
-                  : RecallEvidenceRelation.SAME_REPOSITORY,
-        }));
-        return {
-          results,
-          totalChunks: store.count(),
-          searchPolicy: {
-            scope,
-            invocationProjectIdentity: invocationProject?.projectIdentity ?? null,
-            rankingMode: 'hybrid',
-            rankFusionVersion: RECALL_RANK_FUSION_VERSION,
-            reciprocalRankConstant: RECALL_RRF_RANK_CONSTANT,
-            activeBranchPrior: RECALL_ACTIVE_BRANCH_PRIOR,
-            candidateLimits: { ...config.searchCandidateLimits },
-          },
-          indexMaintenanceStatus,
-        };
+            )
+            .map((result) => ({
+              ...result,
+              resultKind: 'invocation',
+              content: result.searchableText,
+              evidenceRelation: classifyEvidenceRelation(
+                result.projectAttribution,
+                invocationProject,
+              ),
+            }));
+          const documentCounts = {
+            dense: store.countDocuments(),
+            invocations: catalog.countInvocations(),
+          };
+          return {
+            results: combineCompactRecallResults(conversations, invocations, limit),
+            totalChunks: documentCounts.dense,
+            documentCounts,
+            searchPolicy: {
+              scope,
+              invocationProjectIdentity: invocationProject?.projectIdentity ?? null,
+              rankingMode: 'compact',
+              mixedResultPolicyVersion: COMPACT_RECALL_MIXED_RESULT_POLICY_VERSION,
+              activeBranchPrior: RECALL_ACTIVE_BRANCH_PRIOR,
+              candidateLimits: { ...config.searchCandidateLimits },
+            },
+            indexMaintenanceStatus,
+          };
+        } finally {
+          store.close();
+        }
       } finally {
-        store.close();
+        catalog.close();
       }
     },
 
@@ -506,7 +539,7 @@ export function createRecallConversationService(
           ? () => options.onProgress?.({ kind: 'waiting-for-write-lock' })
           : undefined,
       );
-      let store: ZvecConversationStore | undefined;
+      let store: DenseRecallConversationStore | undefined;
       try {
         const activePaths = await resolveActiveRecallDatabasePaths(config);
         await readCompatibleManifest(activePaths);
@@ -521,7 +554,7 @@ export function createRecallConversationService(
             cause: options.signal.reason,
           });
         }
-        const totalChunks = store.count();
+        const totalChunks = store.countDocuments();
         options.onProgress?.({ kind: 'completed' });
         return { totalChunks };
       } finally {
@@ -538,7 +571,7 @@ export function createRecallConversationService(
           ? () => options.onProgress?.({ kind: 'waiting-for-write-lock' })
           : undefined,
       );
-      let store: ZvecConversationStore | undefined;
+      let store: DenseRecallConversationStore | undefined;
       let candidate: RecallDatabaseCandidate | undefined;
       try {
         const ignoredPhysicalSessionPaths: ReadonlySet<string> = new Set(
@@ -595,7 +628,17 @@ export function createRecallConversationService(
           options.onProgress?.({ kind: 'optimizing-collection' });
           await store.optimize();
         }
-        const totalChunks = store.count();
+        const documentCounts = {
+          dense: store.countDocuments(),
+          invocations: 0,
+        };
+        const catalog = openRecallCatalog(activePaths.catalogPath, { readOnly: true });
+        try {
+          documentCounts.invocations = catalog.countInvocations();
+        } finally {
+          catalog.close();
+        }
+        const totalChunks = documentCounts.dense;
         if (options.signal?.aborted) {
           throw new Error('Recall conversation operation cancelled', {
             cause: options.signal.reason,
@@ -631,7 +674,7 @@ export function createRecallConversationService(
           }
         }
         options.onProgress?.({ kind: 'completed' });
-        return { indexSummary, totalChunks, databaseTransition };
+        return { indexSummary, totalChunks, documentCounts, databaseTransition };
       } catch (error) {
         if (candidate) {
           options.onProgress?.({ kind: 'rebuild-candidate-failed' });

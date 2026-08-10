@@ -96,6 +96,11 @@ export async function loadRecallConversationConfig(
       `Recall configuration stored dimensions ${embeddingStoredDimensions} exceed native dimensions ${embeddingNativeDimensions}`,
     );
   }
+  if (embeddingStoredDimensions !== DEFAULT_OCTEN_STORED_DIMENSIONS) {
+    throw new Error(
+      `Recall configuration stored dimensions ${embeddingStoredDimensions} do not match the compact dense store width ${DEFAULT_OCTEN_STORED_DIMENSIONS}`,
+    );
+  }
 
   return {
     sessionsDirectory:
@@ -131,8 +136,7 @@ export async function loadRecallConversationConfig(
     projectLineages: normalizeRecallProjectLineages(file.projectLineages ?? {}),
     searchCandidateLimits: {
       dense: DEFAULT_RECALL_CHANNEL_CANDIDATE_LIMIT,
-      lexical: DEFAULT_RECALL_CHANNEL_CANDIDATE_LIMIT,
-      identifier: DEFAULT_RECALL_CHANNEL_CANDIDATE_LIMIT,
+      invocation: DEFAULT_RECALL_CHANNEL_CANDIDATE_LIMIT,
     },
     chunkPolicy: { ...DEFAULT_RECALL_CHUNK_POLICY },
   };

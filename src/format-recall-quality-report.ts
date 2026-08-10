@@ -230,8 +230,8 @@ export function formatRecallQualityReport(
     `- Default scope: \`${result.evaluationIdentity.defaultScope}\` (policy v${result.evaluationIdentity.projectScopePolicyVersion})`,
     `- Project identity policy: v${result.evaluationIdentity.projectIdentityPolicyVersion}; metadata schema v${result.evaluationIdentity.projectIdentityMetadataSchemaVersion}`,
     `- Project lineage policy: v${result.evaluationIdentity.lineagePolicyVersion}; digest \`${result.evaluationIdentity.lineageDigest}\``,
-    `- Hybrid ranking: fusion v${result.evaluationIdentity.rankFusionVersion}, RRF k=${result.evaluationIdentity.reciprocalRankConstant}, active prior +${result.evaluationIdentity.activeBranchPrior.toFixed(4)}`,
-    `- Candidate limits: dense ${result.evaluationIdentity.candidateLimits.dense}, lexical ${result.evaluationIdentity.candidateLimits.lexical}, identifier ${result.evaluationIdentity.candidateLimits.identifier}; final results ${result.evaluationIdentity.finalResultCount}`,
+    `- Compact mixed retrieval: policy v${result.evaluationIdentity.mixedResultPolicyVersion}, active prior +${result.evaluationIdentity.activeBranchPrior.toFixed(4)}`,
+    `- Candidate limits: dense ${result.evaluationIdentity.candidateLimits.dense}, Invocation ${result.evaluationIdentity.candidateLimits.invocation}; final results ${result.evaluationIdentity.finalResultCount}`,
     '',
     '## Frozen quality gate',
     '',
@@ -248,7 +248,7 @@ export function formatRecallQualityReport(
     `| Temporary index runs | ${result.boundedWork.indexRuns} | ${specification.bounds.maximumChunkPolicies} |`,
     `| Search requests, including warmups | ${result.boundedWork.executedSearchRequests} | ${specification.bounds.maximumSearchRequests} |`,
     `| Chunk-embedding HTTP batches | ${result.boundedWork.chunkEmbeddingRequests} | ${specification.bounds.maximumChunkEmbeddingRequests} |`,
-    `| Maximum fused candidates/search | ${result.boundedWork.maximumCandidatesPerSearch} | 200 |`,
+    `| Maximum fast-store candidates/search | ${result.boundedWork.maximumCandidatesPerSearch} | 200 |`,
     `| Production repository identity resolutions | ${result.boundedWork.repositoryIdentityResolutions} | ${
       specification.projectIdentityFixtures.filter(
         ({ identitySource }) =>
@@ -323,7 +323,7 @@ export function formatRecallQualityReport(
     `- Platform: \`${environment.platform}/${environment.architecture}\``,
     `- CPU: ${environment.cpuModel}`,
     `- Embedding: \`${environment.embeddingModel}\` → \`${environment.embeddingServedModelId}\`, native ${environment.embeddingNativeDimensions} dimensions stored as first-${environment.embeddingStoredDimensions} then L2-normalized at \`${environment.embeddingBaseUrl}\``,
-    `- Hybrid ranking identity: fusion v${result.evaluationIdentity.rankFusionVersion}, RRF k=${result.evaluationIdentity.reciprocalRankConstant}, active prior +${result.evaluationIdentity.activeBranchPrior.toFixed(4)}`,
+    `- Compact retrieval identity: mixed-result policy v${result.evaluationIdentity.mixedResultPolicyVersion}, active prior +${result.evaluationIdentity.activeBranchPrior.toFixed(4)}`,
     `- Specification: \`${corpus.specificationPath}\``,
     `- Specification SHA-256: \`${corpus.specificationSha256}\``,
     '',

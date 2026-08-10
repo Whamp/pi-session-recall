@@ -81,15 +81,15 @@ function createEmptySearch(scope: RecallSearchScope, invocationProjectIdentity: 
   return {
     results: [],
     totalChunks: 0,
+    documentCounts: { dense: 0, invocations: 0 },
     indexMaintenanceStatus: null,
     searchPolicy: {
       scope,
       invocationProjectIdentity,
-      rankingMode: 'hybrid' as const,
-      rankFusionVersion: 2,
-      reciprocalRankConstant: 60,
+      rankingMode: 'compact' as const,
+      mixedResultPolicyVersion: 1,
       activeBranchPrior: 0.01,
-      candidateLimits: { dense: 8, lexical: 8, identifier: 8 },
+      candidateLimits: { dense: 8, invocation: 8 },
     },
   };
 }
@@ -283,6 +283,7 @@ void test('service-injected Pi recall tool definition executes complete recall e
   const search = {
     results: [result],
     totalChunks: 42_318,
+    documentCounts: { dense: 42_318, invocations: 0 },
     indexMaintenanceStatus: null,
     searchPolicy: createEmptySearch(RecallSearchScope.PROJECT).searchPolicy,
   };
@@ -372,6 +373,7 @@ void test('untruncated Pi recall results show exact UTF-8 payload metrics and ex
         return {
           results: [firstResult, secondResult],
           totalChunks: 42_318,
+          documentCounts: { dense: 42_318, invocations: 0 },
           indexMaintenanceStatus: {
             version: 1,
             completedAt: '2026-07-25T12:00:00.000Z',
@@ -407,7 +409,7 @@ void test('untruncated Pi recall results show exact UTF-8 payload metrics and ex
     );
     const rendered = stripVTControlCharacters(component.render(1_000).join('\n')).trimEnd();
 
-    assert.equal(execution.details.returnedBytes, 850);
+    assert.equal(execution.details.returnedBytes, 857);
     assert.equal(execution.details.returnedLines, 11);
     assert.deepEqual(execution.details.indexMaintenanceStatus, {
       completedAt: '2026-07-25T12:00:00.000Z',
@@ -418,7 +420,7 @@ void test('untruncated Pi recall results show exact UTF-8 payload metrics and ex
     assert.equal('truncation' in execution.details, false);
     assert.equal(
       rendered,
-      '2 recall results · project scope · 850B / 11 lines · index checked 30m ago · 1 failed session (alt+x to expand)',
+      '2 recall results · project scope · 857B / 11 lines · index checked 30m ago · 1 failed session (alt+x to expand)',
     );
   } finally {
     restoreKeybindings();
@@ -461,6 +463,7 @@ void test('Pi recall freshness uses fixed execution-time minute, hour, and day a
           return {
             results: [result],
             totalChunks: 1,
+            documentCounts: { dense: 1, invocations: 0 },
             indexMaintenanceStatus: {
               version: 1 as const,
               completedAt: freshnessCase.completedAt,
@@ -540,6 +543,7 @@ void test('collapsed Pi recall result uses singular wording', async () => {
         return {
           results: [result],
           totalChunks: 9,
+          documentCounts: { dense: 9, invocations: 0 },
           indexMaintenanceStatus: null,
           searchPolicy: createEmptySearch(RecallSearchScope.GLOBAL).searchPolicy,
         };
@@ -570,7 +574,7 @@ void test('collapsed Pi recall result uses singular wording', async () => {
     );
     const rendered = stripVTControlCharacters(component.render(1_000).join('\n')).trimEnd();
 
-    assert.equal(rendered, '1 recall result · global scope · 487B / 6 lines (alt+x to expand)');
+    assert.equal(rendered, '1 recall result · global scope · 494B / 6 lines (alt+x to expand)');
 
     const oneLineComponent = tool.renderResult(
       {
@@ -655,6 +659,7 @@ void test('expanded Pi recall rendering equals complete execution evidence exact
       return {
         results: [result],
         totalChunks: 12,
+        documentCounts: { dense: 12, invocations: 0 },
         indexMaintenanceStatus: null,
         searchPolicy: createEmptySearch(RecallSearchScope.GLOBAL).searchPolicy,
       };
@@ -676,7 +681,6 @@ void test('expanded Pi recall rendering equals complete execution evidence exact
   assert.match(executionText, /ranking 0\.0200/);
   assert.match(executionText, /Neighbor context before the winning evidence/);
   assert.match(executionText, /Contributing entries:/);
-  assert.match(executionText, /Call source:/);
   assert.match(executionText, /Expanded chunks:/);
   assert.match(executionText, /Duplicate occurrence:/);
   assert.match(executionText, /Source:/);
@@ -711,6 +715,7 @@ void test('zero-match Pi recall rendering stays concise without an expansion hin
         return {
           ...createEmptySearch(RecallSearchScope.PROJECT),
           totalChunks: 42_318,
+          documentCounts: { dense: 42_318, invocations: 0 },
           indexMaintenanceStatus: {
             version: 1,
             completedAt: '2026-07-25T12:00:00.000Z',
@@ -778,6 +783,7 @@ void test('truncated Pi recall execution stores full metadata and marks collapse
         return {
           results: [result],
           totalChunks: 42_318,
+          documentCounts: { dense: 42_318, invocations: 0 },
           indexMaintenanceStatus: null,
           searchPolicy: createEmptySearch(RecallSearchScope.PROJECT).searchPolicy,
         };
@@ -960,6 +966,7 @@ void test('Pi tool details retain line, block, character, and contributing-entry
   const details = createPiRecallToolDetails({
     results: [result],
     totalChunks: 1,
+    documentCounts: { dense: 1, invocations: 0 },
     indexMaintenanceStatus: null,
     searchPolicy: createEmptySearch(RecallSearchScope.GLOBAL).searchPolicy,
   });

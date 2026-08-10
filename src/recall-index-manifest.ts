@@ -6,7 +6,10 @@ import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 
 import { assertRecallChunkPolicy, type RecallChunkPolicy } from './recall-chunk-policy.js';
-import type { DenseRecallConversationStoreIdentity } from './dense-recall-conversation-store.js';
+import {
+  DENSE_RECALL_CONVERSATION_STORE_IDENTITY,
+  type DenseRecallConversationStoreIdentity,
+} from './dense-recall-conversation-store.js';
 import { isUnknownRecord } from './is-unknown-record.js';
 import { SESSION_IMPORT_POLICY_VERSION } from './import-session-jsonl.js';
 import {
@@ -23,16 +26,8 @@ import {
   type RecallProjectLineages,
 } from './resolve-project-identity.js';
 import { SESSION_CONVERSATION_SCHEMA_VERSION } from './session-conversation-index.js';
-import {
-  ZVEC_CONVERSATION_SCHEMA_VERSION,
-  ZVEC_FTS_CONFIGURATION_VERSION,
-  ZVEC_HNSW_EF_CONSTRUCTION,
-  ZVEC_HNSW_EF_SEARCH,
-  ZVEC_HNSW_M,
-} from './zvec-conversation-store.js';
-
-/** Version of the simple single-store index manifest. */
-export const RECALL_INDEX_MANIFEST_VERSION = 6;
+/** Version of the dense-conversation plus compact-Invocation manifest. */
+export const RECALL_INDEX_MANIFEST_VERSION = 7;
 
 /** Frozen chunk geometry selected by the accepted recall-quality evaluation. */
 export const DEFAULT_RECALL_CHUNK_POLICY: Readonly<RecallChunkPolicy> = Object.freeze({
@@ -58,9 +53,9 @@ export interface RecallTokenizerManifestIdentity {
   assets: Array<{ fileName: string; sha256: string }>;
 }
 
-/** Complete compatibility identity for one explicitly maintained zvec index. */
+/** Complete compatibility identity for one explicitly maintained compact recall database. */
 export interface RecallIndexManifest {
-  manifestVersion: 6;
+  manifestVersion: 7;
   importPolicy: { version: number };
   embedding: RecallEmbeddingModelIdentity;
   tokenizer: RecallTokenizerManifestIdentity;
@@ -78,16 +73,7 @@ export interface RecallIndexManifest {
     lineagePolicyVersion: number;
     lineageDigest: string;
   };
-  denseConversationStore?: DenseRecallConversationStoreIdentity;
-  zvec: {
-    schemaVersion: number;
-    ftsConfigurationVersion: number;
-    vectorQuantization: 'fp32';
-    metric: 'inner-product';
-    hnswM: number;
-    hnswEfConstruction: number;
-    hnswEfSearch: number;
-  };
+  denseConversationStore: DenseRecallConversationStoreIdentity;
 }
 
 const manifestAssetSchema = Type.Object(
@@ -100,7 +86,7 @@ const manifestAssetSchema = Type.Object(
 
 const recallIndexManifestSchema = Type.Object(
   {
-    manifestVersion: Type.Literal(6),
+    manifestVersion: Type.Literal(7),
     importPolicy: Type.Object(
       { version: Type.Literal(SESSION_IMPORT_POLICY_VERSION) },
       { additionalProperties: false },
@@ -157,29 +143,15 @@ const recallIndexManifestSchema = Type.Object(
       },
       { additionalProperties: false },
     ),
-    denseConversationStore: Type.Optional(
-      Type.Object(
-        {
-          schemaVersion: Type.Integer({ minimum: 1 }),
-          layout: Type.Literal('dense-only'),
-          embeddingDimensions: Type.Literal(1_024),
-          vectorQuantization: Type.Literal('fp32'),
-          metric: Type.Literal('inner-product'),
-          vectorIndex: Type.Literal('flat'),
-          fullTextIndexes: Type.Literal(false),
-        },
-        { additionalProperties: false },
-      ),
-    ),
-    zvec: Type.Object(
+    denseConversationStore: Type.Object(
       {
         schemaVersion: Type.Integer({ minimum: 1 }),
-        ftsConfigurationVersion: Type.Integer({ minimum: 1 }),
+        layout: Type.Literal('dense-only'),
+        embeddingDimensions: Type.Literal(1_024),
         vectorQuantization: Type.Literal('fp32'),
         metric: Type.Literal('inner-product'),
-        hnswM: Type.Integer({ minimum: 1 }),
-        hnswEfConstruction: Type.Integer({ minimum: 1 }),
-        hnswEfSearch: Type.Integer({ minimum: 1 }),
+        vectorIndex: Type.Literal('flat'),
+        fullTextIndexes: Type.Literal(false),
       },
       { additionalProperties: false },
     ),
@@ -243,17 +215,8 @@ export function createRecallIndexManifest(options: {
         options.projectLineages ?? normalizeRecallProjectLineages({}),
       ),
     },
-    ...(options.denseConversationStoreIdentity
-      ? { denseConversationStore: { ...options.denseConversationStoreIdentity } }
-      : {}),
-    zvec: {
-      schemaVersion: ZVEC_CONVERSATION_SCHEMA_VERSION,
-      ftsConfigurationVersion: ZVEC_FTS_CONFIGURATION_VERSION,
-      vectorQuantization: 'fp32',
-      metric: 'inner-product',
-      hnswM: ZVEC_HNSW_M,
-      hnswEfConstruction: ZVEC_HNSW_EF_CONSTRUCTION,
-      hnswEfSearch: ZVEC_HNSW_EF_SEARCH,
+    denseConversationStore: {
+      ...(options.denseConversationStoreIdentity ?? DENSE_RECALL_CONVERSATION_STORE_IDENTITY),
     },
   };
 }

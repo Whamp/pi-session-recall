@@ -1,5 +1,7 @@
 # Project-scoped recall quality evaluation before backfill
 
+> Historical evidence: this report measures the superseded three-channel hybrid layout. It does not certify the version 7 compact layout. Run `npm run evaluate:recall` to produce version 6 compact-layout evidence from the current `evaluation/recall-quality-cases.json`; Invocation, Source search, and mixed-result expectations live in `evaluation/compact-recall-cases.json`.
+
 Generated 2026-08-02T01:09:58.766Z from corpus `recall-quality-project-scoped-bounded-v3`.
 
 ## Decision

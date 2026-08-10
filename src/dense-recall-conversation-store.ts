@@ -73,6 +73,7 @@ export interface DenseRecallConversationStore {
     projectIdentity?: ProjectIdentity,
   ): RecallDenseCandidate[];
   countDocuments(): number;
+  optimize(): Promise<void>;
   close(): void;
 }
 
@@ -324,6 +325,11 @@ export function openDenseRecallConversationStore(config: {
     },
     countDocuments() {
       return collection.stats.docCount;
+    },
+    async optimize() {
+      if (collection.stats.docCount > 0) {
+        await collection.optimize();
+      }
     },
     close() {
       collection.closeSync();

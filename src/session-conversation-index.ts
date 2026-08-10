@@ -213,12 +213,11 @@ interface PendingConversationDocumentBase {
   toolCallEntryId: string | null;
   toolResultEntryId: string | null;
   toolError: boolean | null;
-  preserveVerbatim: boolean;
   textRun: VisibleConversationTextRun;
 }
 
 interface PendingEntryScopedDocument extends PendingConversationDocumentBase {
-  documentKind: 'conversation' | 'summary' | 'tool';
+  documentKind: 'conversation' | 'summary';
 }
 
 interface PendingTurnContextDocument extends PendingConversationDocumentBase {
@@ -1036,86 +1035,6 @@ function splitConversationTextByTokens(
   return spans;
 }
 
-function findTokenLimitedVerbatimEnd(
-  text: string,
-  start: number,
-  boundaries: number[],
-  tokenizer: ConversationTextTokenizer,
-  maxTokens: number,
-): number {
-  const startIndex = findBoundaryIndex(boundaries, start);
-  let low = startIndex + 1;
-  let high = boundaries.length - 1;
-  let acceptedIndex = startIndex;
-  while (low <= high) {
-    const middle = Math.floor((low + high) / 2);
-    const candidate = boundaries[middle];
-    if (candidate === undefined) {
-      high = middle - 1;
-      continue;
-    }
-    if (countConversationTokens(text.slice(start, candidate), tokenizer) <= maxTokens) {
-      acceptedIndex = middle;
-      low = middle + 1;
-    } else {
-      high = middle - 1;
-    }
-  }
-  const accepted = boundaries[acceptedIndex] ?? start;
-  if (accepted === start) {
-    throw new Error(
-      `Recall tool evidence cannot fit one Unicode character within maxTokens=${maxTokens}`,
-    );
-  }
-  return accepted;
-}
-
-function splitVerbatimToolEvidenceByTokens(
-  text: string,
-  tokenizer: ConversationTextTokenizer,
-  maxTokens: number,
-): ConversationChunkSpan[] {
-  if (!text || !text.trim()) {
-    return [];
-  }
-  const boundaries = createUnicodeCharacterBoundaries(text);
-  const spans: ConversationChunkSpan[] = [];
-  let characterStart = 0;
-  let tokenStart = 0;
-  while (characterStart < text.length) {
-    const hardEnd = findTokenLimitedVerbatimEnd(
-      text,
-      characterStart,
-      boundaries,
-      tokenizer,
-      maxTokens,
-    );
-    const characterEnd =
-      hardEnd < text.length
-        ? findNaturalConversationBoundary(text, characterStart, hardEnd)
-        : hardEnd;
-    const content = text.slice(characterStart, characterEnd);
-    const tokenCount = countConversationTokens(content, tokenizer);
-    if (tokenCount > maxTokens) {
-      throw new Error(
-        `Recall tool evidence emitted ${tokenCount} tokens, exceeding maxTokens=${maxTokens}`,
-      );
-    }
-    spans.push({
-      characterStart,
-      characterEnd,
-      tokenStart,
-      tokenEnd: tokenStart + tokenCount,
-      tokenCount,
-      overlapTokenCount: 0,
-      content,
-    });
-    characterStart = characterEnd;
-    tokenStart += tokenCount;
-  }
-  return spans;
-}
-
 function createConversationTextDocuments(
   entry: ParsedSessionEntry,
   role: 'user' | 'assistant' | 'custom',
@@ -1137,7 +1056,6 @@ function createConversationTextDocuments(
     toolCallEntryId: null,
     toolResultEntryId: null,
     toolError: null,
-    preserveVerbatim: false,
     textRun,
   }));
 }
@@ -1173,7 +1091,6 @@ function createSummaryTextDocument(
       toolCallEntryId: null,
       toolResultEntryId: null,
       toolError: null,
-      preserveVerbatim: false,
       textRun: {
         text,
         textRunIndex: 0,
@@ -1182,184 +1099,6 @@ function createSummaryTextDocument(
       },
     },
   ];
-}
-
-function isDerivedRecallToolEvidence(toolName: string): boolean {
-  return toolName === 'pi-session-recall';
-}
-
-function createToolCallDocuments(
-  graph: ParsedSessionGraph,
-  entry: ParsedSessionEntry,
-  content: unknown,
-): PendingConversationDocument[] {
-  if (!Array.isArray(content)) {
-    return [];
-  }
-  return content.flatMap((block, blockIndex) => {
-    if (
-      !isUnknownRecord(block) ||
-      block.type !== 'toolCall' ||
-      typeof block.id !== 'string' ||
-      !block.id ||
-      typeof block.name !== 'string' ||
-      !block.name
-    ) {
-      return [];
-    }
-    if (isDerivedRecallToolEvidence(block.name)) {
-      return [];
-    }
-    const serializedArguments = JSON.stringify(block.arguments);
-    const resultEntryId = graph.toolResultEntryIdsByCallId.get(block.id) ?? null;
-    const baseDocument = {
-      entry,
-      contributingEntries: [entry],
-      role: 'tool' as const,
-      documentKind: 'tool' as const,
-      summaryKind: null,
-      evidenceKind: 'tool_call' as const,
-      isDenseSearchable: false,
-      compactionFirstKeptEntryId: null,
-      branchSummaryFromEntryId: null,
-      toolCallId: block.id,
-      toolName: block.name,
-      toolCallEntryId: entry.id,
-      toolResultEntryId: resultEntryId,
-      toolError: null,
-      preserveVerbatim: true,
-    };
-    const documents: PendingConversationDocument[] = [
-      {
-        ...baseDocument,
-        evidencePart: 'name',
-        textRun: {
-          text: block.name,
-          textRunIndex: blockIndex * 2,
-          sourceBlockStart: blockIndex,
-          sourceBlockEnd: blockIndex,
-        },
-      },
-    ];
-    if (serializedArguments !== undefined) {
-      documents.push({
-        ...baseDocument,
-        evidencePart: 'arguments',
-        textRun: {
-          text: serializedArguments,
-          textRunIndex: blockIndex * 2 + 1,
-          sourceBlockStart: blockIndex,
-          sourceBlockEnd: blockIndex,
-        },
-      });
-    }
-    return documents;
-  });
-}
-
-function createToolResultDocuments(
-  graph: ParsedSessionGraph,
-  entry: ParsedSessionEntry,
-  message: Record<string, unknown>,
-): PendingConversationDocument[] {
-  if (
-    typeof message.toolCallId !== 'string' ||
-    !message.toolCallId ||
-    typeof message.toolName !== 'string' ||
-    !message.toolName ||
-    !Array.isArray(message.content)
-  ) {
-    return [];
-  }
-  const toolCallId = message.toolCallId;
-  const toolName = message.toolName;
-  if (isDerivedRecallToolEvidence(toolName)) {
-    return [];
-  }
-  const callEntryId = graph.toolCallEntryIdsByCallId.get(toolCallId) ?? null;
-  return message.content.flatMap((block, blockIndex) => {
-    if (
-      !isUnknownRecord(block) ||
-      block.type !== 'text' ||
-      typeof block.text !== 'string' ||
-      !block.text.trim()
-    ) {
-      return [];
-    }
-    return [
-      {
-        entry,
-        contributingEntries: [entry],
-        role: 'tool',
-        documentKind: 'tool',
-        summaryKind: null,
-        evidenceKind: 'tool_result',
-        evidencePart: 'result',
-        isDenseSearchable: false,
-        compactionFirstKeptEntryId: null,
-        branchSummaryFromEntryId: null,
-        toolCallId,
-        toolName,
-        toolCallEntryId: callEntryId,
-        toolResultEntryId: entry.id,
-        toolError: typeof message.isError === 'boolean' ? message.isError : null,
-        preserveVerbatim: true,
-        textRun: {
-          text: block.text,
-          textRunIndex: blockIndex,
-          sourceBlockStart: blockIndex,
-          sourceBlockEnd: blockIndex,
-        },
-      } satisfies PendingConversationDocument,
-    ];
-  });
-}
-
-function createBashExecutionDocuments(
-  entry: ParsedSessionEntry,
-  message: Record<string, unknown>,
-): PendingConversationDocument[] {
-  let isError: boolean | null = null;
-  if (message.cancelled === true) {
-    isError = true;
-  } else if (typeof message.exitCode === 'number') {
-    isError = message.exitCode !== 0;
-  }
-  const evidenceParts = [
-    { evidencePart: 'command' as const, text: message.command, textRunIndex: 0 },
-    { evidencePart: 'output' as const, text: message.output, textRunIndex: 1 },
-  ];
-  return evidenceParts.flatMap(({ evidencePart, text, textRunIndex }) => {
-    if (typeof text !== 'string' || !text.trim()) {
-      return [];
-    }
-    return [
-      {
-        entry,
-        contributingEntries: [entry],
-        role: 'tool',
-        documentKind: 'tool',
-        summaryKind: null,
-        evidenceKind: 'bash_execution',
-        evidencePart,
-        isDenseSearchable: false,
-        compactionFirstKeptEntryId: null,
-        branchSummaryFromEntryId: null,
-        toolCallId: null,
-        toolName: 'bash',
-        toolCallEntryId: null,
-        toolResultEntryId: null,
-        toolError: isError,
-        preserveVerbatim: true,
-        textRun: {
-          text,
-          textRunIndex,
-          sourceBlockStart: null,
-          sourceBlockEnd: null,
-        },
-      } satisfies PendingConversationDocument,
-    ];
-  });
 }
 
 function readSessionGraphEntry(graph: ParsedSessionGraph, entryId: string): ParsedSessionEntry {
@@ -1429,7 +1168,6 @@ function addTurnContextPathDocument(
     toolCallEntryId: null,
     toolResultEntryId: null,
     toolError: null,
-    preserveVerbatim: false,
     textRun: {
       text: formatTurnContextText(turnContextText),
       textRunIndex: 0,
@@ -1646,18 +1384,7 @@ function createPendingConversationDocuments(
     if (entry.type === 'message' && isUnknownRecord(entry.record.message)) {
       const message = entry.record.message;
       if (message.role === 'user' || message.role === 'assistant') {
-        return [
-          ...createConversationTextDocuments(entry, message.role, message.content),
-          ...(message.role === 'assistant'
-            ? createToolCallDocuments(graph, entry, message.content)
-            : []),
-        ];
-      }
-      if (message.role === 'toolResult') {
-        return createToolResultDocuments(graph, entry, message);
-      }
-      if (message.role === 'bashExecution') {
-        return createBashExecutionDocuments(entry, message);
+        return createConversationTextDocuments(entry, message.role, message.content);
       }
       return [];
     }
@@ -1722,14 +1449,12 @@ function createSessionConversationChunks(
   const textRunId = hashConversationValue(
     `${SESSION_CONVERSATION_SCHEMA_VERSION}\0${context.logicalSessionIdentity}\0${pending.entry.id}\0${contributingEntryIdentity}\0${pending.evidenceKind}\0${pending.evidencePart}\0${pending.textRun.textRunIndex}`,
   ).slice(0, 40);
-  const chunkSpans = pending.preserveVerbatim
-    ? splitVerbatimToolEvidenceByTokens(pending.textRun.text, context.tokenizer, context.maxTokens)
-    : splitConversationTextByTokens(
-        pending.textRun.text,
-        context.tokenizer,
-        context.maxTokens,
-        context.overlapTokens,
-      );
+  const chunkSpans = splitConversationTextByTokens(
+    pending.textRun.text,
+    context.tokenizer,
+    context.maxTokens,
+    context.overlapTokens,
+  );
   const chunkIds = chunkSpans.map((span) =>
     hashConversationValue(
       `${SESSION_CONVERSATION_SCHEMA_VERSION}\0${textRunId}\0${span.characterStart}\0${span.characterEnd}`,

@@ -23,6 +23,7 @@ interface LegacyRecallSessionState extends RecallCatalogSessionState {
 /** Options for one catalog open and optional first-open legacy state migration. */
 export interface OpenRecallCatalogOptions {
   legacyStatePath?: string;
+  readOnly?: boolean;
 }
 
 /** Incremental state retained for one physical session file. */
@@ -56,6 +57,7 @@ export interface RecallCatalog {
     limit: number,
     projectIdentity?: ProjectIdentity,
   ): RecallCatalogInvocationSearchResult[];
+  countInvocations(): number;
   close(): void;
 }
 
@@ -346,15 +348,27 @@ export function openRecallCatalog(
   catalogPath: string,
   options: OpenRecallCatalogOptions = {},
 ): RecallCatalog {
+  if (options.readOnly && !existsSync(catalogPath)) {
+    throw new Error(`Recall catalog missing at ${catalogPath}; rebuild with psr index --rebuild`);
+  }
   const legacyStates =
-    !existsSync(catalogPath) && options.legacyStatePath
+    !options.readOnly && !existsSync(catalogPath) && options.legacyStatePath
       ? readLegacyRecallSessionStates(options.legacyStatePath)
       : [];
-  mkdirSync(dirname(catalogPath), { recursive: true });
-  const database = new DatabaseSync(catalogPath, { timeout: 5_000 });
-  database.exec('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;');
+  if (!options.readOnly) {
+    mkdirSync(dirname(catalogPath), { recursive: true });
+  }
+  const database = new DatabaseSync(catalogPath, {
+    timeout: 5_000,
+    readOnly: options.readOnly ?? false,
+  });
+  database.exec(
+    options.readOnly
+      ? 'PRAGMA foreign_keys = ON;'
+      : 'PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;',
+  );
   const schemaVersion = readRecallCatalogSchemaVersion(database);
-  if (schemaVersion === 0) {
+  if (schemaVersion === 0 && !options.readOnly) {
     runRecallCatalogTransaction(database, () => {
       createRecallCatalogSchema(database);
       importLegacyRecallSessionStates(database, legacyStates);
@@ -401,6 +415,7 @@ export function openRecallCatalog(
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const deleteSession = database.prepare('DELETE FROM physical_sessions WHERE session_path = ?');
+  const countInvocationRows = database.prepare('SELECT count(*) AS count FROM invocations');
 
   return {
     readPhysicalSessionState(sessionPath) {
@@ -494,6 +509,14 @@ export function openRecallCatalog(
         ? [createFtsPhrase(query.trim()), projectIdentity, limit]
         : [createFtsPhrase(query.trim()), limit];
       return statement.all(...parameters).map(decodeInvocationSearchResult);
+    },
+
+    countInvocations() {
+      const count = countInvocationRows.get()?.count;
+      if (typeof count !== 'number') {
+        throw new Error('Recall catalog Invocation count invalid');
+      }
+      return count;
     },
 
     close() {

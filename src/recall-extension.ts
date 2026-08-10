@@ -96,57 +96,77 @@ export async function searchPiRecall(
 export function createPiRecallToolDetails(search: RecallConversationSearch) {
   return {
     totalChunks: search.totalChunks,
+    documentCounts: search.documentCounts,
     searchPolicy: search.searchPolicy,
-    sources: search.results.map((result) => ({
-      documentKind: result.documentKind,
-      summaryKind: result.summaryKind,
-      evidenceKind: result.evidenceKind,
-      evidencePart: result.evidencePart,
-      evidenceRelation: result.evidenceRelation,
-      sessionOrigin: result.cwd,
-      projectIdentity: result.projectAttribution?.projectIdentity ?? null,
-      projectIdentitySource: result.projectAttribution?.identitySource ?? null,
-      sessionPath: result.sessionPath,
-      entryId: result.entryId.value,
-      contributingEntryIds: result.contributingEntryIds.map((id) => id.value),
-      sourceLineStart: result.sourceLineStart,
-      sourceLineEnd: result.sourceLineEnd,
-      sourceBlockStart: result.sourceBlockStart,
-      sourceBlockEnd: result.sourceBlockEnd,
-      characterStart: result.characterStart,
-      characterEnd: result.characterEnd,
-      isOnActiveBranch: result.isOnActiveBranch,
-      rankingScore: result.rankingScore,
-      activeBranchPrior: result.activeBranchPrior,
-      fusedScore: result.fusedScore,
-      dense: result.dense,
-      lexical: result.lexical,
-      identifier: result.identifier,
-      duplicateOccurrences: result.duplicateOccurrences.map((occurrence) => ({
-        documentId: occurrence.id,
-        sessionPath: occurrence.sessionPath,
-        entryId: occurrence.entryId.value,
-        contributingEntryIds: occurrence.contributingEntryIds.map((id) => id.value),
-        sourceLineStart: occurrence.sourceLineStart,
-        sourceLineEnd: occurrence.sourceLineEnd,
-        sourceBlockStart: occurrence.sourceBlockStart,
-        sourceBlockEnd: occurrence.sourceBlockEnd,
-        characterStart: occurrence.characterStart,
-        characterEnd: occurrence.characterEnd,
-      })),
-      expandedChunks:
-        result.neighborContext?.chunks.map((chunk) => ({
-          documentId: chunk.id,
-          sessionPath: chunk.sessionPath,
-          entryId: chunk.entryId.value,
-          sourceLineStart: chunk.sourceLineStart,
-          sourceLineEnd: chunk.sourceLineEnd,
-          sourceBlockStart: chunk.sourceBlockStart,
-          sourceBlockEnd: chunk.sourceBlockEnd,
-          characterStart: chunk.characterStart,
-          characterEnd: chunk.characterEnd,
-        })) ?? [],
-    })),
+    sources: search.results.map((result) =>
+      result.resultKind === 'invocation'
+        ? {
+            resultKind: result.resultKind,
+            evidenceKind: 'invocation' as const,
+            evidenceRelation: result.evidenceRelation,
+            toolName: result.toolName,
+            toolCallId: result.toolCallId,
+            sessionOrigin: result.sessionOrigin,
+            projectIdentity: result.projectAttribution?.projectIdentity ?? null,
+            projectIdentitySource: result.projectAttribution?.identitySource ?? null,
+            sessionPath: result.sessionPath,
+            entryId: result.entryId,
+            sourceLineStart: result.sourceLineStart,
+            sourceLineEnd: result.sourceLineEnd,
+            sourceBlockIndex: result.sourceBlockIndex,
+            invocationRank: result.rank,
+          }
+        : {
+            documentKind: result.documentKind,
+            summaryKind: result.summaryKind,
+            evidenceKind: result.evidenceKind,
+            evidencePart: result.evidencePart,
+            evidenceRelation: result.evidenceRelation,
+            sessionOrigin: result.cwd,
+            projectIdentity: result.projectAttribution?.projectIdentity ?? null,
+            projectIdentitySource: result.projectAttribution?.identitySource ?? null,
+            sessionPath: result.sessionPath,
+            entryId: result.entryId.value,
+            contributingEntryIds: result.contributingEntryIds.map((id) => id.value),
+            sourceLineStart: result.sourceLineStart,
+            sourceLineEnd: result.sourceLineEnd,
+            sourceBlockStart: result.sourceBlockStart,
+            sourceBlockEnd: result.sourceBlockEnd,
+            characterStart: result.characterStart,
+            characterEnd: result.characterEnd,
+            isOnActiveBranch: result.isOnActiveBranch,
+            rankingScore: result.rankingScore,
+            activeBranchPrior: result.activeBranchPrior,
+            fusedScore: result.fusedScore,
+            dense: result.dense,
+            lexical: result.lexical,
+            identifier: result.identifier,
+            duplicateOccurrences: result.duplicateOccurrences.map((occurrence) => ({
+              documentId: occurrence.id,
+              sessionPath: occurrence.sessionPath,
+              entryId: occurrence.entryId.value,
+              contributingEntryIds: occurrence.contributingEntryIds.map((id) => id.value),
+              sourceLineStart: occurrence.sourceLineStart,
+              sourceLineEnd: occurrence.sourceLineEnd,
+              sourceBlockStart: occurrence.sourceBlockStart,
+              sourceBlockEnd: occurrence.sourceBlockEnd,
+              characterStart: occurrence.characterStart,
+              characterEnd: occurrence.characterEnd,
+            })),
+            expandedChunks:
+              result.neighborContext?.chunks.map((chunk) => ({
+                documentId: chunk.id,
+                sessionPath: chunk.sessionPath,
+                entryId: chunk.entryId.value,
+                sourceLineStart: chunk.sourceLineStart,
+                sourceLineEnd: chunk.sourceLineEnd,
+                sourceBlockStart: chunk.sourceBlockStart,
+                sourceBlockEnd: chunk.sourceBlockEnd,
+                characterStart: chunk.characterStart,
+                characterEnd: chunk.characterEnd,
+              })) ?? [],
+          },
+    ),
   };
 }
 
@@ -177,6 +197,7 @@ interface PiRecallIndexMaintenanceDetails extends Omit<RecallIndexMaintenanceSta
 /** Search policy and source geometry retained with one indexed Pi recall tool result. */
 export interface PiRecallToolDetails {
   totalChunks: number;
+  documentCounts: { dense: number; invocations: number };
   searchPolicy: RecallConversationSearch['searchPolicy'];
   sources: ReturnType<typeof createPiRecallToolDetails>['sources'];
   /** Index maintenance freshness fixed at tool execution time. */
@@ -240,7 +261,7 @@ export function createPiRecallToolDefinition(
     name: 'pi-session-recall',
     label: 'Pi Session Recall',
     description:
-      'Search the explicitly maintained Pi session index with dense, lexical, and case-preserving identifier retrieval. It defaults to project scope; choose global explicitly for cross-project evidence. Set source true only for a slower scan of original session JSONL when complete raw tool results or bash output are required. Source scanning never runs automatically. Every result cites the physical JSONL path and line range. Search never updates the index or writes cache data; only standalone `psr index` maintenance does. Output is truncated to 2000 lines or 50KB.',
+      'Search the explicitly maintained compact recall database across dense conversations and compact tool-call or command Invocations. It defaults to project scope; choose global explicitly for cross-project evidence. Set source true only for a slower scan of original session JSONL when complete raw tool results, bash output, or omitted payloads are required. Source scanning never runs automatically. Every result cites the physical JSONL path and line range. Search never updates the index or writes cache data; only standalone `psr index` maintenance does. Output is truncated to 2000 lines or 50KB.',
     promptSnippet:
       'Search past Pi conversations, or explicitly scan complete raw output when indexed evidence is insufficient',
     promptGuidelines: [

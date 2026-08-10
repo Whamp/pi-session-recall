@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "normalRecallCases": [
+    {
+      "id": "invocation-command-path",
+      "query": "ELOCKED src/lease-owner.ts",
+      "expectedResultKind": "invocation",
+      "sessionFile": "identifiers-tools.jsonl",
+      "entryId": "lease-tool-call",
+      "requiredText": ["bash", "ELOCKED", "src/lease-owner.ts"],
+      "excludedText": ["cobalt-7f31 is still active"]
+    }
+  ],
+  "sourceSearchCases": [
+    {
+      "id": "result-only-lease-token",
+      "query": "cobalt-7f31",
+      "sessionFile": "identifiers-tools.jsonl",
+      "entryId": "lease-tool-result",
+      "requiredText": ["ELOCKED", "cobalt-7f31", "src/lease-owner.ts"]
+    }
+  ],
+  "mixedResultPolicy": {
+    "version": 1,
+    "limit": 5,
+    "minimumConversationResultsWhenAvailable": 4,
+    "minimumInvocationResultsWhenAvailable": 1
+  }
+}

@@ -108,7 +108,7 @@ void test('recall quality report records verdict, measured counts, sources, and 
     },
   };
   const result: RecallQualityEvaluationResult = {
-    version: 5,
+    version: 6,
     evaluationIdentity: {
       defaultScope: RecallSearchScope.PROJECT,
       projectScopePolicyVersion: 1,
@@ -116,11 +116,10 @@ void test('recall quality report records verdict, measured counts, sources, and 
       projectIdentityMetadataSchemaVersion: 3,
       lineagePolicyVersion: 1,
       lineageDigest: 'a'.repeat(64),
-      rankingMode: 'hybrid',
-      rankFusionVersion: 1,
-      reciprocalRankConstant: 60,
+      rankingMode: 'compact',
+      mixedResultPolicyVersion: 1,
       activeBranchPrior: 0.01,
-      candidateLimits: { dense: 8, lexical: 8, identifier: 8 },
+      candidateLimits: { dense: 8, invocation: 8 },
       finalResultCount: 5,
     },
     startedAt: '2026-07-25T12:00:00.000Z',

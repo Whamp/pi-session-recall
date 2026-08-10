@@ -12,10 +12,15 @@ import {
   type ConversationTextTokenizer,
   type SessionConversationChunk,
 } from './session-conversation-index.js';
-import type {
-  ConversationChunkStore,
-  IndexedSessionConversationChunk,
-} from './zvec-conversation-store.js';
+import type { DenseRecallDocument } from './dense-recall-conversation-store.js';
+
+/** Dense-document persistence required by incremental compact-layout indexing. */
+export interface DenseRecallIndexStore {
+  upsertDocuments(documents: DenseRecallDocument[]): void;
+  deleteDocuments(ids: string[]): void;
+  fetchDocuments(this: void, ids: string[]): Map<string, SessionConversationChunk>;
+  fetchVectors(ids: string[]): Map<string, number[]>;
+}
 
 /** Counts and source failures from one explicit incremental indexing pass. */
 export interface ConversationIndexSummary {
@@ -34,7 +39,7 @@ export interface IncrementalSessionIndexerOptions {
   sessionsDirectory: string;
   catalogPath: string;
   legacyStatePath?: string;
-  store: ConversationChunkStore;
+  store: DenseRecallIndexStore;
   embeddingProvider: RecallEmbeddingProvider;
   tokenizer: ConversationTextTokenizer;
   chunkPolicy: RecallChunkPolicy;
@@ -101,14 +106,14 @@ function emitMaintenanceWorksetProgress(
 function removeIndexedSession(
   catalog: RecallCatalog,
   sessionPath: string,
-  store: ConversationChunkStore,
+  store: DenseRecallIndexStore,
   summary: ConversationIndexSummary,
 ): boolean {
   const previous = catalog.readPhysicalSessionState(sessionPath);
   if (!previous) {
     return false;
   }
-  store.deleteChunks(previous.documentIds);
+  store.deleteDocuments(previous.denseDocumentIds);
   catalog.deletePhysicalSession(sessionPath);
   summary.deletedChunks += previous.documentIds.length;
   summary.removedSessions += 1;
@@ -153,56 +158,41 @@ async function attributeRecallChunksToProjects(
 }
 
 async function prepareChangedRecallRows(
-  chunks: readonly SessionConversationChunk[],
-  store: ConversationChunkStore,
+  chunks: readonly (SessionConversationChunk & { isDenseSearchable: true })[],
+  store: DenseRecallIndexStore,
   embeddingProvider: RecallEmbeddingProvider,
   summary: ConversationIndexSummary,
   onBatchPrepared: () => void,
   signal?: AbortSignal,
-): Promise<IndexedSessionConversationChunk[]> {
-  const changedRows: IndexedSessionConversationChunk[] = [];
+): Promise<DenseRecallDocument[]> {
+  const changedRows: DenseRecallDocument[] = [];
   for (let start = 0; start < chunks.length; start += 128) {
     throwIfIndexingAborted(signal);
     const batch = chunks.slice(start, start + 128);
     const ids = batch.map((chunk) => chunk.id);
-    const existingChunks = store.fetchConversationChunks(ids);
-    const existingVectors = store.fetchVectors(
-      batch.filter((chunk) => chunk.isDenseSearchable).map((chunk) => chunk.id),
-    );
+    const existingChunks = store.fetchDocuments(ids);
+    const existingVectors = store.fetchVectors(ids);
     const rowsNeedingWrite = batch.filter((chunk) => {
       const existing = existingChunks.get(chunk.id);
-      return (
-        !existing ||
-        existing.checksum !== chunk.checksum ||
-        (chunk.isDenseSearchable && !existingVectors.has(chunk.id))
-      );
+      return !existing || existing.checksum !== chunk.checksum || !existingVectors.has(chunk.id);
     });
     summary.reusedVectors += batch.filter(
       (chunk) =>
-        chunk.isDenseSearchable &&
-        existingChunks.get(chunk.id)?.checksum === chunk.checksum &&
-        existingVectors.has(chunk.id),
+        existingChunks.get(chunk.id)?.checksum === chunk.checksum && existingVectors.has(chunk.id),
     ).length;
-    const denseRows = rowsNeedingWrite.filter((chunk) => chunk.isDenseSearchable);
     const embeddings =
-      denseRows.length === 0
+      rowsNeedingWrite.length === 0
         ? []
         : await embeddingProvider.embedDocuments(
-            denseRows.map((chunk) => chunk.content),
+            rowsNeedingWrite.map((chunk) => chunk.content),
             signal,
           );
-    if (denseRows.length > 0) {
+    if (rowsNeedingWrite.length > 0) {
       summary.embeddingRequestCount += 1;
-      summary.newlyEmbeddedChunks += denseRows.length;
+      summary.newlyEmbeddedChunks += rowsNeedingWrite.length;
     }
-    let denseIndex = 0;
-    for (const chunk of rowsNeedingWrite) {
-      if (!chunk.isDenseSearchable) {
-        changedRows.push({ ...chunk, isDenseSearchable: false });
-        continue;
-      }
-      const embedding = embeddings[denseIndex];
-      denseIndex += 1;
+    for (const [index, chunk] of rowsNeedingWrite.entries()) {
+      const embedding = embeddings[index];
       if (!embedding) {
         throw new Error(`Recall embedding missing for conversation chunk ${chunk.id}`);
       }
@@ -247,11 +237,15 @@ async function indexChangedRecallSessionFile(
     imported.chunks,
     resolveSessionProjectIdentity,
   );
-  const currentIds = new Set(attributedChunks.map((chunk) => chunk.id));
+  const denseChunks = attributedChunks.filter(
+    (chunk): chunk is SessionConversationChunk & { isDenseSearchable: true } =>
+      chunk.isDenseSearchable,
+  );
+  const currentIds = new Set(denseChunks.map((chunk) => chunk.id));
   const removedIds =
-    previous?.documentIds.filter((documentId) => !currentIds.has(documentId)) ?? [];
+    previous?.denseDocumentIds.filter((documentId) => !currentIds.has(documentId)) ?? [];
   const changedRows = await prepareChangedRecallRows(
-    attributedChunks,
+    denseChunks,
     options.store,
     options.embeddingProvider,
     summary,
@@ -259,18 +253,16 @@ async function indexChangedRecallSessionFile(
     options.signal,
   );
 
-  options.store.deleteChunks(removedIds);
+  options.store.deleteDocuments(removedIds);
   for (let start = 0; start < changedRows.length; start += 128) {
-    options.store.upsertChunks(changedRows.slice(start, start + 128));
+    options.store.upsertDocuments(changedRows.slice(start, start + 128));
   }
   catalog.replacePhysicalSession({
     sessionPath,
     size: plannedFile.size,
     mtimeMs: plannedFile.mtimeMs,
-    documentIds: attributedChunks.map((chunk) => chunk.id),
-    denseDocumentIds: attributedChunks
-      .filter((chunk) => chunk.isDenseSearchable)
-      .map((chunk) => chunk.id),
+    documentIds: denseChunks.map((chunk) => chunk.id),
+    denseDocumentIds: denseChunks.map((chunk) => chunk.id),
     invocations: imported.invocations,
   });
   summary.deletedChunks += removedIds.length;

@@ -56,10 +56,6 @@ _Avoid_: Character chunk, transcript chunk
 A token-bounded secondary document that joins visible user text with visible assistant text on one parent-linked path until the next user entry. It may cross intervening tool activity but excludes thinking and raw tool output. It cites every entry whose text contributes.
 _Avoid_: Flat turn, tool transcript
 
-**Tool evidence document**:
-A lexical-only, verbatim tool name, argument object, result text, or direct bash command/output part bounded within one source block or message field. Tool calls and results are linked by call ID. Tool evidence is never sent to the embedding model.
-_Avoid_: Tool transcript, conversation chunk
-
 **Invocation record**:
 A compact searchable record of one tool call or direct bash execution. It contains the tool name, bounded locator arguments or command, call identity, project attribution, and Source locator. It never contains complete tool results or bash output.
 _Avoid_: Tool evidence document, tool result
@@ -73,8 +69,8 @@ An explicit, slow, read-only scan of eligible Physical session files for complet
 _Avoid_: Normal recall, source neighborhood index
 
 **Evidence part**:
-The source component represented by one document: conversation or summary content, tool name, tool arguments, tool result, bash command, or bash output.
-_Avoid_: Chunk type
+The source component represented by one Dense recall document. Compact Invocation fields and Source-backed evidence are not Evidence parts.
+_Avoid_: Chunk type, Invocation field
 
 **Dense recall document**:
 A conversation chunk, compaction summary, branch summary, or turn-context document with a real 1,024-dimension FP32 embedding. Dense recall documents contain no tool calls, tool results, or bash output.
@@ -84,17 +80,13 @@ _Avoid_: Invocation record, Tool evidence document
 An atomic conversation chunk surfaced because its meaning is close to the search query.
 _Avoid_: Semantic result
 
-**Lexical candidate**:
-An atomic conversation chunk surfaced by case-insensitive ordinary-text retrieval.
-_Avoid_: Keyword result
+**Invocation candidate**:
+An Invocation record surfaced by SQLite full-text search over tool names, bounded locator arguments, or direct bash commands.
+_Avoid_: Tool result, Source-backed evidence
 
-**Identifier candidate**:
-An atomic conversation chunk surfaced by case-preserving retrieval of identifiers, filenames, hashes, or similar source tokens.
-_Avoid_: Exact result
-
-**Hybrid recall result**:
-One conversation, summary, or tool evidence document deduplicated across retrieval channels, with its document kind and each component rank and score retained.
-_Avoid_: Semantic match
+**Normal recall result**:
+One Dense recall document or Invocation record selected from both fast stores before the requested result limit is applied.
+_Avoid_: Source search result, Hybrid recall result
 
 **Recall result presentation**:
 The Pi TUI view of completed `pi-session-recall` output. It keeps model-visible recall evidence unchanged, shows a one-line summary while collapsed, and reveals the full output through Pi's configured tool-expansion action. It is a UI concept, not a Hybrid recall result or Tool evidence document.
@@ -108,16 +100,16 @@ _Avoid_: Duplicate result, source alias
 One representative recall candidate plus every overlapping-sibling or exact-copy occurrence suppressed from separate result slots. Raw evidence and synthetic summaries never share a group.
 _Avoid_: Duplicate result list
 
-**Ranked hybrid result**:
-One duplicate evidence group ordered by fused retrieval score plus a small active-branch preference. Abandoned-branch evidence remains eligible and labeled.
-_Avoid_: Reranked result, semantic match
+**Ranked conversation result**:
+One Duplicate evidence group ordered by dense similarity plus a small active-branch preference. Abandoned-branch evidence remains eligible and labeled.
+_Avoid_: Invocation candidate, semantic match
 
 **Neighbor context**:
 Readable context formed from a winning atomic conversation chunk and its valid contiguous siblings in the same visible text run. The contributing chunks remain individually identified.
 _Avoid_: Expanded transcript, joined messages
 
 **Index manifest**:
-The versioned identity of the Octen model, native and stored dimensions, prefix normalization, tokenizer, chunk policy, provenance schema, project identity, and zvec schema used by one explicitly maintained index.
+The versioned identity of the Octen model, fixed 1,024-dimension stored prefix, tokenizer, chunk policy, provenance schema, project identity, and Dense recall store schema used by one explicitly maintained Recall database.
 _Avoid_: Index state, configuration
 
 **Stored recall embedding**:

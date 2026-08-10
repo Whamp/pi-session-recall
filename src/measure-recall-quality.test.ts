@@ -81,9 +81,11 @@ void test('recall quality measures candidate-pool and fused final source preserv
   const representative = createSearchResult(first, 0.03);
   const duplicate = createSearchResult(second, 0.02);
   const rerankedResult: RankedRecallSearchResult & {
+    resultKind: 'conversation';
     evidenceRelation: RecallEvidenceRelation;
   } = {
     ...representative,
+    resultKind: 'conversation',
     evidenceRelation: RecallEvidenceRelation.UNRESTRICTED_GLOBAL,
     activeBranchPrior: 0.01,
     rankingScore: 1,
@@ -177,6 +179,7 @@ void test('recall quality measures candidate-pool and fused final source preserv
   );
 
   const unrelatedSameEntry: RankedRecallSearchResult & {
+    resultKind: 'conversation';
     evidenceRelation: RecallEvidenceRelation;
   } = {
     ...rerankedResult,

@@ -154,21 +154,9 @@ function formatRecallDatabaseTransition(result: RecallConversationIndexResult): 
   }
 }
 
-function formatRecallSearchableDocumentLabel(result: RecallConversationIndexResult): string {
-  switch (result.databaseTransition.kind) {
-    case 'active-updated':
-      return 'Searchable documents';
-    case 'candidate-activated':
-      return 'Active searchable documents';
-    case 'candidate-failed':
-      return 'Candidate searchable documents';
-  }
-}
-
 function formatCompactRecallIndexSummary(result: RecallConversationIndexResult): string {
   const summary = result.indexSummary;
   const databaseTransition = formatRecallDatabaseTransition(result);
-  const searchableDocumentLabel = formatRecallSearchableDocumentLabel(result).toLowerCase();
   const lines = [
     [
       `Indexed ${summary.indexedSessions} of ${summary.scannedSessions} sessions`,
@@ -176,7 +164,7 @@ function formatCompactRecallIndexSummary(result: RecallConversationIndexResult):
       `embedded ${summary.newlyEmbeddedChunks}`,
       `reused ${summary.reusedVectors} vectors`,
       `deleted ${summary.deletedChunks} documents`,
-      `${result.totalChunks} ${searchableDocumentLabel}`,
+      `${result.documentCounts.dense} dense documents · ${result.documentCounts.invocations} compact Invocations`,
       `${summary.failedSessions.length} failed sessions`,
     ].join(' · '),
     ...(databaseTransition ? [databaseTransition] : []),
@@ -191,13 +179,13 @@ function formatReadableRecallIndexSummary(
 ): string {
   const summary = result.indexSummary;
   const databaseTransition = formatRecallDatabaseTransition(result);
-  const searchableDocumentLabel = formatRecallSearchableDocumentLabel(result);
   const lines = [
     'Summary',
     `  Elapsed: ${formatDuration(elapsedMs)}`,
     `  Sessions: ${ENGLISH_INTEGER_FORMAT.format(summary.indexedSessions)} indexed of ${ENGLISH_INTEGER_FORMAT.format(summary.scannedSessions)} scanned; ${ENGLISH_INTEGER_FORMAT.format(summary.removedSessions)} removed`,
     `  Documents: ${ENGLISH_INTEGER_FORMAT.format(summary.newlyEmbeddedChunks)} embedded; ${ENGLISH_INTEGER_FORMAT.format(summary.reusedVectors)} vectors reused; ${ENGLISH_INTEGER_FORMAT.format(summary.deletedChunks)} deleted`,
-    `  ${searchableDocumentLabel}: ${ENGLISH_INTEGER_FORMAT.format(result.totalChunks)}`,
+    `  Dense documents: ${ENGLISH_INTEGER_FORMAT.format(result.documentCounts.dense)}`,
+    `  Compact Invocations: ${ENGLISH_INTEGER_FORMAT.format(result.documentCounts.invocations)}`,
     `  Failed sessions: ${ENGLISH_INTEGER_FORMAT.format(summary.failedSessions.length)}`,
     ...(databaseTransition ? [`  ${databaseTransition}`] : []),
   ];

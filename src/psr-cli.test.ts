@@ -52,7 +52,7 @@ function createPsrCliFixture(
     embeddingStoredDimensions: 1_024,
     embeddingBatchSize: 16,
     projectLineages: normalizeRecallProjectLineages({}),
-    searchCandidateLimits: { dense: 8, lexical: 8, identifier: 8 },
+    searchCandidateLimits: { dense: 8, invocation: 8 },
     chunkPolicy: { maxTokens: 512, overlapTokens: 64 },
   };
   const service = {
@@ -69,6 +69,7 @@ function createPsrCliFixture(
       }
       return {
         totalChunks: 7,
+        documentCounts: { dense: 7, invocations: 2 },
         databaseTransition: options.databaseTransition ?? { kind: 'active-updated' },
         indexSummary: {
           scannedSessions: 3,
@@ -303,8 +304,9 @@ void test('psr index keeps progress on stderr and the completed summary on stdou
   assert.match(fixture.progressOutput.join(''), /Discovering physical session files/i);
   assert.doesNotMatch(fixture.output.join(''), /Preparing|Discovering/iu);
   assert.match(fixture.output.join(''), /Sessions: 2 indexed of 3 scanned/iu);
-  assert.match(fixture.output.join(''), /Searchable documents: 7/iu);
-  assert.doesNotMatch(fixture.progressOutput.join(''), /7 searchable documents/iu);
+  assert.match(fixture.output.join(''), /Dense documents: 7/iu);
+  assert.match(fixture.output.join(''), /Compact Invocations: 2/iu);
+  assert.doesNotMatch(fixture.progressOutput.join(''), /7 dense documents/iu);
 });
 
 void test('psr index --no-optimize remains an update-only compatibility flag', async () => {
@@ -349,7 +351,8 @@ void test('psr index writes a readable multiline summary with elapsed time', asy
       '  Elapsed: 1m 05s',
       '  Sessions: 2 indexed of 3 scanned; 1 removed',
       '  Documents: 5 embedded; 4 vectors reused; 2 deleted',
-      '  Searchable documents: 7',
+      '  Dense documents: 7',
+      '  Compact Invocations: 2',
       '  Failed sessions: 1',
       '',
       'Failures',
@@ -660,7 +663,7 @@ void test('psr index --compact preserves the former one-line stdout summary', as
   assert.equal(
     fixture.output.join(''),
     [
-      'Indexed 2 of 3 sessions · removed 1 · embedded 5 · reused 4 vectors · deleted 2 documents · 7 searchable documents · 1 failed sessions',
+      'Indexed 2 of 3 sessions · removed 1 · embedded 5 · reused 4 vectors · deleted 2 documents · 7 dense documents · 2 compact Invocations · 1 failed sessions',
       `Failed: ${sessionPath}: ${error}`,
       '',
     ].join('\n'),
@@ -698,7 +701,8 @@ void test('psr rebuild output distinguishes activated, previous, stale, and fail
   assert.match(activated.progressOutput.join(''), /candidate recall database/iu);
   assert.match(activated.progressOutput.join(''), /2 stale candidate databases removed/iu);
   assert.match(activated.progressOutput.join(''), /candidate recall database activated/iu);
-  assert.match(activated.output.join(''), /Active searchable documents: 7/iu);
+  assert.match(activated.output.join(''), /Dense documents: 7/iu);
+  assert.match(activated.output.join(''), /Compact Invocations: 2/iu);
   assert.match(activated.output.join(''), /Database: activated; previous database available/iu);
 
   const failed = createPsrCliFixture([{ kind: 'rebuild-candidate-failed' }], {
@@ -707,7 +711,8 @@ void test('psr rebuild output distinguishes activated, previous, stale, and fail
   });
   assert.equal(await runPsrCli(['index', '--rebuild'], failed.dependencies), 1);
   assert.match(failed.progressOutput.join(''), /candidate recall database failed/iu);
-  assert.match(failed.output.join(''), /Candidate searchable documents: 7/iu);
+  assert.match(failed.output.join(''), /Dense documents: 7/iu);
+  assert.match(failed.output.join(''), /Compact Invocations: 2/iu);
   assert.match(failed.output.join(''), /Database: candidate failed; active database unchanged/iu);
 });
 

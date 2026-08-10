@@ -93,6 +93,7 @@ export function createTestRankedRecallSearchResult(
     rankingScore: 0.02,
     duplicateOccurrences: [],
     neighborContext: null,
+    resultKind: 'conversation',
     evidenceRelation: RecallEvidenceRelation.UNRESTRICTED_GLOBAL,
     ...options,
   };

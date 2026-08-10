@@ -1,12 +1,12 @@
 # Pi Session Recall
 
-Pi Session Recall searches past Pi conversations by meaning or exact text. It reads Pi session JSONL files, stores searchable evidence in one local zvec collection, and returns the original file and line range for every result.
+Pi Session Recall searches past Pi conversations and compact tool Invocations. It stores dense conversation documents in a flat local Zvec collection, stores bounded tool-call and command locators in SQLite, and returns the original JSONL file and line range for every result.
 
 The standalone `psr index` command is the only index writer. Run it directly or opt into a native per-user schedule. `psr ignore` writes PSR policy state but never opens the index. Pi lifecycle and the `pi-session-recall` tool remain read-only.
 
 ## Why index session history?
 
-Raw session JSONL remains the source of truth, but asking a fresh agent to search it spends time and model context on file discovery, format parsing, branch structure, compaction, and evidence location. Pi Session Recall does that work ahead of time, limits search to the invoking project by default, combines meaning, ordinary text, and identifier retrieval, and returns exact JSONL line citations.
+Raw session JSONL remains the source of truth, but asking a fresh agent to search it spends time and model context on file discovery, format parsing, branch structure, compaction, and evidence location. Pi Session Recall does that work ahead of time, limits search to the invoking project by default, searches dense conversations and compact Invocations together, and returns exact JSONL line citations.
 
 A measured production comparison gave the same question to the recall tool and to a fresh agent restricted to raw JSONL. The full hybrid tool took 1.48 seconds at the median. The raw agent took 94.43 seconds, examined 54 project files, and used 141,682 tokens plus 852,480 cached tokens. The agent found the answer reliably; the tool required its maximum ten results to include the answer at rank ten. Indexed recall was about 64 times faster and far cheaper in this case, while the ranking result exposed work still needed. This is one measured query, not a universal quality or capacity claim. See [Production recall index value benchmark](docs/research/production-recall-index-value-benchmark.md).
 
@@ -45,8 +45,9 @@ psr ignore remove path/to/session.jsonl         # make one exact path eligible a
 
 - recursively scans configured `.jsonl` session files;
 - skips files whose size and modification time have not changed;
-- reuses matching vectors already stored in zvec;
-- calls Octen only for changed dense-searchable evidence;
+- reuses matching vectors already stored in the dense Zvec collection;
+- calls Octen only for changed conversation, summary, and turn-context documents;
+- replaces each changed session's compact Invocation rows in SQLite;
 - removes evidence for deleted or newly ignored indexed session files;
 - skips ignored files before parsing or embedding them;
 - reports malformed eligible session files and continues with healthy files;
@@ -59,7 +60,7 @@ The first rebuild after upgrading safely adopts the current unversioned layout. 
 
 The estimate uses the observed rate of healthy files in the current run. Until enough work completes, the command says that it is calculating the estimate rather than inventing an initial duration. `--compact` preserves the former one-line completed summary and `Failed: ...` lines on stdout; progress remains on stderr. The legacy `--no-optimize` flag remains accepted as a compatibility alias for ordinary update-only indexing.
 
-`psr optimize` does not scan or index sessions. It compacts the existing collection under the same writer lock. Compaction merges FTS segments as well as vector data, so BM25 scores and ranking can change even though the indexed evidence does not. The operation may write near-collection-sized temporary output.
+`psr optimize` does not scan or index sessions. It compacts the existing flat dense collection under the same writer lock and may write near-collection-sized temporary output. Invocation search lives in SQLite and is not part of this operation.
 
 No startup hook, completed-turn hook, shutdown hook, watcher, package daemon, or search request updates the index.
 
@@ -107,9 +108,9 @@ On macOS, default installation writes one mode-`0600` LaunchAgent under `~/Libra
 
 The macOS path is runtime-untested. No Mac was available to verify plist acceptance; `RunAtLoad`, `StartInterval`, or `StartCalendarInterval` execution; retry after an exit-status-1 run; overlap suppression across both jobs; absolute Node plus `--import tsx`; log appends; or access to the durable recall configuration and embedding endpoint from the LaunchAgent environment. Other platforms fail with an unsupported-platform error.
 
-The WAL-mode `recall-catalog.sqlite` stores each physical session's size, modification time, document identities, and compact Invocation records. Each completed physical session replaces only its own catalog rows in one transaction. If indexing stops, rerun `psr index`; completed sessions remain committed, unfinished sessions are revisited, and matching vectors already stored in zvec are reused.
+The WAL-mode `recall-catalog.sqlite` stores each physical session's size, modification time, dense document identities, and compact Invocation records. Each completed physical session replaces only its own catalog rows in one transaction. If indexing stops, rerun `psr index`; completed sessions remain committed, unfinished sessions are revisited, and matching dense vectors are reused.
 
-On the first index after upgrading an unversioned database, PSR imports valid `index-state.json` session knowledge into the catalog and performs one Invocation backfill pass. The legacy JSON file is not rewritten. Later unchanged sessions are skipped from size and modification time without parsing.
+The compact layout requires a version 7 manifest. Existing installations must run `psr index --rebuild`; ordinary indexing rejects the old layout instead of mixing schemas. After activation, unchanged sessions are skipped from size and modification time without parsing.
 
 ## Search
 
@@ -133,17 +134,11 @@ Parameters:
 }
 ```
 
-Normal recall uses the maintained index and never scans all session files. Project scope filters each retrieval channel before its eight-candidate limit. Global scope searches the complete collection.
+Normal recall searches both fast stores automatically: flat dense search over conversations, summaries, and turn context, plus SQLite full-text search over compact Invocations. It combines both candidate lists before applying `limit`; callers do not select a fast store. The mixed-result policy keeps an Invocation visible when both kinds match without displacing more than one of the first five strong conversation results. Project scope filters both stores before their eight-candidate limits. Global scope searches both complete stores.
 
 Set `source: true` only when you need complete raw tool results, bash output, or omitted invocation payloads. Source search performs a slower, case-insensitive literal scan of the original session JSONL and writes no index or cache data. Project scope scans only logical sessions whose exact project identity matches the trusted Pi working directory. Global scope scans every eligible physical session file. Exact ignored paths remain excluded. Results include the physical path, source line range, entry ID when present, and a bounded matching excerpt. A file that disappears or becomes unreadable during the scan is reported without hiding matches from other files.
 
-Each search uses three bounded channels:
-
-1. normalized Octen inner-product search;
-2. case-insensitive full-text search;
-3. case-preserving identifier search.
-
-Application-side reciprocal-rank fusion retains every component rank and score. Ranking suppresses overlapping sibling chunks and exact copies across sessions, applies a `0.01` active-branch preference, and keeps abandoned-branch evidence eligible. A winning atomic conversation chunk can include one exact contiguous sibling on either side. Expansion requires matching session, entry, role, visible text run, source geometry, and reciprocal sibling links.
+Dense conversation ranking suppresses overlapping sibling chunks and exact copies across sessions, applies a `0.01` active-branch preference, and keeps abandoned-branch evidence eligible. A winning atomic conversation chunk can include one exact contiguous sibling on either side. Expansion requires matching session, entry, role, visible text run, source geometry, and reciprocal sibling links. Invocation results carry the tool name, bounded searchable locator fields, error status when known, and exact source locator.
 
 ## Source-backed results
 
@@ -167,24 +162,16 @@ The agent can read those JSONL lines directly when it needs surrounding source c
 
 ## Indexed evidence
 
-The index contains:
+The flat dense store contains only:
 
 - visible user and assistant text;
 - user/assistant turn-context documents;
 - visible custom messages;
-- compaction and branch summaries;
-- tool names and argument objects;
-- tool result text, including errors, paths, identifiers, and URLs;
-- direct bash commands and output.
+- compaction and branch summaries.
 
-The index excludes:
+The SQLite catalog contains one compact Invocation for each eligible assistant tool call and direct bash execution. It stores tool names, bounded locator arguments or commands, call identity, error status when known, project attribution, and source locators.
 
-- thinking;
-- images;
-- empty tool placeholders;
-- `pi-session-recall` calls and their results.
-
-Tool evidence is lexical-only and never reaches Octen. Zvec 0.6 requires every row to have a vector, so lexical-only rows receive a zero sentinel and dense queries filter them out.
+Neither store contains thinking, images, complete tool results, bash output, omitted payload arguments, empty tool placeholders, or derived `pi-session-recall` calls and results. Complete output and omitted payloads remain available only through explicit `source: true` search.
 
 ## Session import
 
@@ -208,8 +195,7 @@ The index uses the checksum-pinned `Octen/Octen-Embedding-4B` tokenizer with the
 
 - 512 tokens maximum;
 - 64 tokens overlap between adjacent atomic conversation chunks;
-- structural boundaries before hard token cuts;
-- no overlap for lexical-only tool evidence.
+- structural boundaries before hard token cuts.
 
 Atomic chunks never cross entries, roles, visible text runs, tools, thinking, images, results, or summaries. Turn-context documents retain both user and assistant text and cite every contributing entry.
 
@@ -230,7 +216,7 @@ The same transformation applies to document and query vectors. Inner product pre
 
 Both `psr index` and `pi-session-recall` require the configured Octen HTTP endpoint. This package has no local embedding fallback.
 
-The manifest binds request model, served model, native width, stored width, transformation, tokenizer assets, 512/64 chunking, import policy, project identity policy, and zvec schema. Any change requires:
+The version 7 manifest binds request model, served model, fixed 1,024-dimension stored width, transformation, tokenizer assets, 512/64 chunking, import policy, project identity policy, and dense-only FLAT store schema. Any change requires:
 
 ```bash
 psr index --rebuild
@@ -261,7 +247,7 @@ Environment overrides:
 - `PI_RECALL_EMBEDDING_MODEL`
 - `PI_RECALL_EMBEDDING_SERVED_MODEL_ID`
 - `PI_RECALL_EMBEDDING_NATIVE_DIMENSIONS`
-- `PI_RECALL_EMBEDDING_STORED_DIMENSIONS`
+- `PI_RECALL_EMBEDDING_STORED_DIMENSIONS` (must remain `1024` for the compact layout)
 - `PI_RECALL_EMBEDDING_BATCH_SIZE`
 
 ## Local state
@@ -279,7 +265,7 @@ After the first generation rebuild, durable recall state has this shape:
 
 Each new generation contains `zvec/`, `recall-catalog.sqlite`, `index-manifest.json`, and `index-maintenance-status.json`. Failed or interrupted rebuilds can leave a `candidate-.../` directory. The next rebuild removes stale candidates. It does not remove completed generations.
 
-An existing unversioned `zvec/`, `index-state.json`, and `index-manifest.json` remain in place during the first rebuild. Normal indexing can migrate that JSON state once into an unversioned `recall-catalog.sqlite`; rebuild candidates create a fresh catalog. The activated generation records the prior layout as its previous database, so `psr rollback` can atomically point `active` back to it.
+An existing unversioned `zvec/`, `index-state.json`, and old `index-manifest.json` remain in place during the first compact rebuild. The version 7 compact layout rejects that manifest for normal indexing and directs the operator to `psr index --rebuild`. Rebuild candidates create a fresh catalog from canonical session JSONL. The activated generation records the prior layout as its previous database, so `psr rollback` can atomically point `active` back to it.
 
 The tokenizer loader also keeps checksum-verified tokenizer assets under `tokenizers/`; these are replaceable inference inputs, not recall state. `operation.lock` exists only while `psr` owns the writer lock and is removed when the command exits. There is no embedding cache, generation registry, replay log, marker spool, or model-artifact cache.
 
@@ -298,4 +284,4 @@ The bounded quality evaluator remains a development command:
 npm run evaluate:recall
 ```
 
-It reads only the checksum-fixed evaluation corpus, builds disposable indexes, and measures the frozen 512/64, eight-candidates-per-channel, five-final-results policy. Production indexing does not read or gate on generated evaluation files.
+It reads only the checksum-fixed evaluation corpus, builds disposable compact databases, and measures the frozen 512/64, eight-candidates-per-fast-store, five-final-results policy. `evaluation/compact-recall-cases.json` separately fixes normal Invocation, explicit Source search, and mixed-result cases. Production indexing does not read or gate on generated evaluation files.

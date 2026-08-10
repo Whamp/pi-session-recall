@@ -11,28 +11,7 @@ function truncateRecallExcerpt(content: string, maxCharacters: number): string {
   return `${normalized.slice(0, Math.max(0, maxCharacters - 1)).trimEnd()}…`;
 }
 
-function formatRecallToolEvidenceMetadata(result: RankedRecallSearchResult): string | null {
-  if (result.documentKind !== 'tool') {
-    return null;
-  }
-  const parts = [
-    `${result.evidenceKind}/${result.evidencePart}`,
-    result.toolName ?? 'unknown tool',
-  ];
-  if (result.toolCallId) {
-    parts.push(`call ${result.toolCallId}`);
-  }
-  if (result.toolError === true) {
-    parts.push('error');
-  }
-  return parts.join(' · ');
-}
-
 function formatRecallDocumentMetadata(result: RankedRecallSearchResult): string {
-  const toolMetadata = formatRecallToolEvidenceMetadata(result);
-  if (toolMetadata) {
-    return toolMetadata;
-  }
   if (result.documentKind === 'conversation') {
     return 'atomic conversation';
   }
@@ -84,18 +63,19 @@ function formatRecallScoreComponents(result: RankedRecallSearchResult): string {
   return components.join(' · ');
 }
 
-/** Formats deterministic hybrid recall evidence with every source occurrence. */
+/** Formats combined dense conversation and compact Invocation results with source locators. */
 export function formatRecallSearchResults(
   search: RecallConversationSearch,
   maxExcerptCharacters = 2_000,
 ): string {
-  const rankingDescription = `deterministic fusion v${search.searchPolicy.rankFusionVersion} (RRF k=${search.searchPolicy.reciprocalRankConstant})`;
+  const rankingDescription = `compact mixed retrieval v${search.searchPolicy.mixedResultPolicyVersion}`;
   const scopeDescription =
     search.searchPolicy.scope === RecallSearchScope.PROJECT
       ? `project scope for ${search.searchPolicy.invocationProjectIdentity ?? 'an unresolved project'}`
       : 'global scope';
+  const countDescription = `${search.documentCounts.dense} dense documents and ${search.documentCounts.invocations} compact Invocations`;
   const lines = [
-    `Recall searched ${scopeDescription} across ${search.totalChunks} indexed evidence documents with ${rankingDescription} (active prior +${search.searchPolicy.activeBranchPrior.toFixed(4)}).`,
+    `Recall searched ${scopeDescription} across ${countDescription} with ${rankingDescription} (active prior +${search.searchPolicy.activeBranchPrior.toFixed(4)}).`,
   ];
   if (search.results.length === 0) {
     lines.push('No matching past conversations found.');
@@ -108,6 +88,17 @@ export function formatRecallSearchResults(
   }
 
   for (const [index, result] of search.results.entries()) {
+    if (result.resultKind === 'invocation') {
+      const errorLabel = result.isError === true ? ' · error' : '';
+      lines.push(
+        '',
+        `${index + 1}. ${result.toolName} Invocation (FTS rank ${result.rank.toFixed(4)})`,
+        `${result.timestamp || 'unknown time'} · ${result.kind.replaceAll('_', ' ')}${errorLabel} · session origin ${result.sessionOrigin || 'unknown'} · ${formatRecallEvidenceRelation(result)}`,
+        truncateRecallExcerpt(result.searchableText, maxExcerptCharacters),
+        `Source: ${result.sessionPath}:${result.sourceLineStart}-${result.sourceLineEnd}#${result.entryId}`,
+      );
+      continue;
+    }
     const title = result.sessionName || result.sessionId.value;
     lines.push(
       '',
@@ -121,11 +112,6 @@ export function formatRecallSearchResults(
     if (result.contributingEntryIds.length > 1) {
       lines.push(
         `Contributing entries: ${result.contributingEntryIds.map((id) => id.value).join(' → ')}`,
-      );
-    }
-    if (result.toolCallEntryId || result.toolResultEntryId) {
-      lines.push(
-        `Call source: ${result.toolCallEntryId?.value ?? 'unknown'} · Result source: ${result.toolResultEntryId?.value ?? 'unknown'}`,
       );
     }
     if (result.neighborContext) {

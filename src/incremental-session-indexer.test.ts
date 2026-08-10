@@ -4,33 +4,33 @@ import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import test from 'node:test';
 
-import { indexChangedConversationSessions } from './incremental-session-indexer.js';
+import {
+  indexChangedConversationSessions,
+  type DenseRecallIndexStore,
+} from './incremental-session-indexer.js';
 import { SESSION_IMPORT_POLICY_VERSION } from './import-session-jsonl.js';
 import { openRecallCatalog } from './recall-catalog.js';
 import type { RecallIndexProgressEvent } from './recall-index-progress.js';
 import type { RecallEmbeddingProvider } from './recall-inference-capabilities.js';
 import type { ConversationTextTokenizer } from './session-conversation-index.js';
-import type {
-  ConversationChunkStore,
-  IndexedSessionConversationChunk,
-} from './zvec-conversation-store.js';
+import type { DenseRecallDocument } from './dense-recall-conversation-store.js';
 
-class MemoryConversationStore implements ConversationChunkStore {
-  readonly chunks = new Map<string, IndexedSessionConversationChunk>();
+class MemoryConversationStore implements DenseRecallIndexStore {
+  readonly chunks = new Map<string, DenseRecallDocument>();
 
-  upsertChunks(chunks: IndexedSessionConversationChunk[]): void {
+  upsertDocuments(chunks: DenseRecallDocument[]): void {
     for (const chunk of chunks) {
       this.chunks.set(chunk.id, structuredClone(chunk));
     }
   }
 
-  deleteChunks(ids: string[]): void {
+  deleteDocuments(ids: string[]): void {
     for (const id of ids) {
       this.chunks.delete(id);
     }
   }
 
-  fetchConversationChunks(ids: string[]) {
+  fetchDocuments(ids: string[]) {
     return new Map(
       ids.flatMap((id) => {
         const chunk = this.chunks.get(id);
@@ -123,7 +123,7 @@ async function writeSimplePhysicalSessionFile(
 function createIndexerOptions(options: {
   sessionsDirectory: string;
   catalogPath: string;
-  store: ConversationChunkStore;
+  store: DenseRecallIndexStore;
   embeddingProvider: RecallEmbeddingProvider;
 }) {
   return {
@@ -770,7 +770,7 @@ void test('updating one physical session leaves unrelated catalog state unchange
   assert.deepEqual(readCatalogSessionState(catalogPath, unrelatedPath), unrelatedBefore);
 });
 
-void test('manual incremental indexing keeps lexical-only tool evidence away from Octen', async (t) => {
+void test('compact indexing keeps tool results and bash output away from tokenizer, embeddings, and dense storage', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'recall-indexer-tool-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const sessionsDirectory = join(root, 'sessions');
@@ -832,18 +832,22 @@ void test('manual incremental indexing keeps lexical-only tool evidence away fro
   const embeddedBatches: string[][] = [];
   const catalogPath = join(root, 'recall-catalog.sqlite');
 
-  await indexChangedConversationSessions(
-    createIndexerOptions({
+  await indexChangedConversationSessions({
+    ...createIndexerOptions({
       sessionsDirectory,
       catalogPath,
       store,
       embeddingProvider: createRecordingEmbeddingProvider(embeddedBatches),
     }),
-  );
+    tokenizer: {
+      encodeConversationText() {
+        throw new Error('Tool-only sessions must not reach the conversation tokenizer');
+      },
+    },
+  });
 
   assert.equal(embeddedBatches.length, 0);
-  assert.ok([...store.chunks.values()].every((chunk) => !chunk.isDenseSearchable));
-  assert.ok([...store.chunks.values()].some((chunk) => chunk.evidencePart === 'result'));
+  assert.equal(store.chunks.size, 0);
   const catalog = openRecallCatalog(catalogPath);
   assert.equal(catalog.searchInvocations('/tmp/a', 5).length, 1);
   assert.equal(catalog.searchInvocations('compact catalog', 5).length, 1);

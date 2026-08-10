@@ -29,7 +29,7 @@ function createManifest(overrides: Partial<RecallEmbeddingModelIdentity> = {}) {
   });
 }
 
-void test('index manifest binds Octen native and stored widths, tokenizer, chunking, and inner product', () => {
+void test('compact index manifest binds Octen, tokenizer, chunking, and dense-only flat storage', () => {
   const manifest = createManifest();
 
   assert.deepEqual(manifest.embedding, OCTEN_IDENTITY);
@@ -40,12 +40,12 @@ void test('index manifest binds Octen native and stored widths, tokenizer, chunk
     boundaryAlgorithm: 'markdown-structure-v1',
   });
   assert.equal(manifest.tokenizer.model, 'Octen/Octen-Embedding-4B');
-  assert.equal(manifest.zvec.metric, 'inner-product');
+  assert.deepEqual(manifest.denseConversationStore, DENSE_RECALL_CONVERSATION_STORE_IDENTITY);
   assert.equal('embeddingCacheVersion' in manifest, false);
   assert.equal('canaryVector' in manifest.embedding, false);
 });
 
-void test('index manifest optionally binds the dense-only flat conversation schema', () => {
+void test('index manifest requires the dense-only flat conversation schema', () => {
   const actual = createRecallIndexManifest({
     embeddingIdentity: OCTEN_IDENTITY,
     denseConversationStoreIdentity: DENSE_RECALL_CONVERSATION_STORE_IDENTITY,

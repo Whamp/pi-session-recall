@@ -10,13 +10,13 @@ import {
   type RecallConversationConfig,
 } from './recall-conversation-service.js';
 import { openRecallCatalog } from './recall-catalog.js';
+import { openDenseRecallConversationStore } from './dense-recall-conversation-store.js';
 import type { RecallEmbeddingProvider } from './recall-inference-capabilities.js';
 import {
   normalizeRecallProjectLineages,
   parseProjectIdentity,
 } from './resolve-project-identity.js';
 import type { ConversationTextTokenizer } from './session-conversation-index.js';
-import { openZvecConversationStore } from './zvec-conversation-store.js';
 
 function sessionLines(entries: object[]): string {
   return `${entries.map((entry) => JSON.stringify(entry)).join('\n')}\n`;
@@ -29,13 +29,15 @@ const tokenizer: ConversationTextTokenizer = {
 };
 
 function createTestEmbeddingVector(text: string): number[] {
-  if (/atlas|manual|zvec/iu.test(text)) {
-    return [1, 0, 0];
+  const vector = Array.from({ length: 1_024 }, () => 0);
+  if (/atlas|manual|zvec|compact/iu.test(text)) {
+    vector[0] = 1;
+  } else if (/queue/iu.test(text)) {
+    vector[1] = 1;
+  } else {
+    vector[2] = 1;
   }
-  if (/queue/iu.test(text)) {
-    return [0, 1, 0];
-  }
-  return [0, 0, 1];
+  return vector;
 }
 
 const TEST_EMBEDDING_PROVIDER: RecallEmbeddingProvider = {
@@ -68,11 +70,11 @@ function createTestConfig(
     embeddingBaseUrl: 'http://127.0.0.1:8090/v1',
     embeddingModel: 'octen-test',
     embeddingServedModelId: 'Octen/Octen-Embedding-4B',
-    embeddingNativeDimensions: 4,
-    embeddingStoredDimensions: 3,
+    embeddingNativeDimensions: 1_024,
+    embeddingStoredDimensions: 1_024,
     embeddingBatchSize: 8,
     projectLineages: normalizeRecallProjectLineages({}),
-    searchCandidateLimits: { dense: 8, lexical: 8, identifier: 8 },
+    searchCandidateLimits: { dense: 8, invocation: 8 },
     chunkPolicy: { maxTokens: 512, overlapTokens: 64 },
   };
 }
@@ -485,7 +487,89 @@ void test('service source search reads raw output without opening the index or e
   await assert.rejects(readFile(config.statePath, 'utf8'), { code: 'ENOENT' });
 });
 
-void test('service builds one zvec collection and performs read-only hybrid search', async (t) => {
+void test('rebuild activates dense conversations and compact Invocations for combined normal recall', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-service-compact-layout-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const config = createTestConfig(root, { databaseGenerations: true });
+  const sessionPath = join(config.sessionsDirectory, 'compact.jsonl');
+  await mkdir(config.sessionsDirectory, { recursive: true });
+  await writeFile(
+    sessionPath,
+    sessionLines([
+      {
+        type: 'session',
+        version: 3,
+        id: 'compact-session',
+        timestamp: '2026-08-10T10:00:00Z',
+        cwd: '/project',
+      },
+      {
+        type: 'message',
+        id: 'compact-conversation',
+        parentId: null,
+        timestamp: '2026-08-10T10:01:00Z',
+        message: {
+          role: 'user',
+          content: 'Keep the compact catalog migration source-backed and searchable.',
+        },
+      },
+      {
+        type: 'message',
+        id: 'compact-tool-call',
+        parentId: 'compact-conversation',
+        timestamp: '2026-08-10T10:02:00Z',
+        message: {
+          role: 'assistant',
+          content: [
+            {
+              type: 'toolCall',
+              id: 'compact-call',
+              name: 'read',
+              arguments: { path: '/project/src/compact-catalog.ts' },
+            },
+          ],
+        },
+      },
+      {
+        type: 'message',
+        id: 'compact-result',
+        parentId: 'compact-tool-call',
+        timestamp: '2026-08-10T10:03:00Z',
+        message: {
+          role: 'toolResult',
+          toolCallId: 'compact-call',
+          toolName: 'read',
+          content: [{ type: 'text', text: 'RAW_RESULT_MUST_STAY_SOURCE_BACKED' }],
+          isError: false,
+        },
+      },
+    ]),
+  );
+  const service = createRecallConversationService(config, {
+    embeddingProvider: TEST_EMBEDDING_PROVIDER,
+    loadTokenizer: async () => tokenizer,
+  });
+
+  const indexed = await service.index({ rebuild: true });
+  const search = await service.search('compact catalog', 2, {
+    scope: RecallSearchScope.GLOBAL,
+  });
+
+  assert.equal(indexed.databaseTransition.kind, 'candidate-activated');
+  assert.deepEqual(indexed.documentCounts, { dense: 1, invocations: 1 });
+  assert.deepEqual(search.documentCounts, { dense: 1, invocations: 1 });
+  assert.deepEqual(
+    search.results.map((result) => result.resultKind),
+    ['conversation', 'invocation'],
+  );
+  assert.ok(
+    search.results.every(
+      (result) => !JSON.stringify(result).includes('RAW_RESULT_MUST_STAY_SOURCE_BACKED'),
+    ),
+  );
+});
+
+void test('service builds one compact database and performs read-only combined search', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'recall-service-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const config = createTestConfig(root);
@@ -498,9 +582,8 @@ void test('service builds one zvec collection and performs read-only hybrid sear
     getCurrentTime: () => new Date('2026-07-25T12:00:00.000Z'),
     openStore(mode) {
       openedModes.push(mode);
-      return openZvecConversationStore({
+      return openDenseRecallConversationStore({
         databasePath: config.databasePath,
-        dimensions: config.embeddingStoredDimensions,
         createIfMissing: mode === 'write',
         readOnly: mode === 'read',
       });
@@ -518,8 +601,8 @@ void test('service builds one zvec collection and performs read-only hybrid sear
   assert.ok(indexed.totalChunks >= 1);
   assert.equal(search.results[0]?.sessionPath, sessionPath);
   assert.equal(search.results[0]?.sourceLineStart, 2);
-  assert.equal(search.searchPolicy.rankingMode, 'hybrid');
-  assert.deepEqual(search.searchPolicy.candidateLimits, { dense: 8, lexical: 8, identifier: 8 });
+  assert.equal(search.searchPolicy.rankingMode, 'compact');
+  assert.deepEqual(search.searchPolicy.candidateLimits, { dense: 8, invocation: 8 });
   assert.deepEqual(search.indexMaintenanceStatus, {
     version: 1,
     completedAt: '2026-07-25T12:00:00.000Z',
@@ -858,7 +941,7 @@ void test('search tolerates unavailable status without catching up changed sessi
   }
 });
 
-void test('manual rebuild replaces incompatible stored-dimension manifests', async (t) => {
+void test('manual rebuild replaces an incompatible embedding-model manifest', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'recall-rebuild-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const config = createTestConfig(root);
@@ -872,23 +955,15 @@ void test('manual rebuild replaces incompatible stored-dimension manifests', asy
   });
   await service.index({ rebuild: true });
 
-  const changedConfig = { ...config, embeddingNativeDimensions: 3, embeddingStoredDimensions: 2 };
-  const changedProvider: RecallEmbeddingProvider = {
-    async embedQuery() {
-      return [1, 0];
-    },
-    async embedDocuments(documents) {
-      return documents.map(() => [1, 0]);
-    },
-  };
+  const changedConfig = { ...config, embeddingServedModelId: 'Octen/Replacement-Embedding-4B' };
   const changedService = createRecallConversationService(changedConfig, {
-    embeddingProvider: changedProvider,
+    embeddingProvider: TEST_EMBEDDING_PROVIDER,
     loadTokenizer: async () => tokenizer,
   });
 
   await assert.rejects(
     changedService.search('Atlas', 5, { scope: RecallSearchScope.GLOBAL }),
-    /embedding\.nativeDimensions[\s\S]*psr index --rebuild/,
+    /embedding\.servedModelId[\s\S]*psr index --rebuild/,
   );
   const rebuilt = await changedService.index({ rebuild: true });
   assert.equal(rebuilt.indexSummary.indexedSessions, 1);
@@ -919,13 +994,47 @@ void test('ordinary indexing preserves the existing generation when its manifest
   assert.equal(await readFile(config.manifestPath, 'utf8'), manifestBefore);
 });
 
-void test('project scope filters every retrieval channel before final ranking', async (t) => {
+void test('project scope filters both compact fast stores before mixed-result selection', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'recall-project-scope-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const config = createTestConfig(root);
-  await writeConversationSession(
-    join(config.sessionsDirectory, 'one.jsonl'),
-    'Atlas evidence for this project.',
+  const sessionPath = join(config.sessionsDirectory, 'one.jsonl');
+  await mkdir(config.sessionsDirectory, { recursive: true });
+  await writeFile(
+    sessionPath,
+    sessionLines([
+      {
+        type: 'session',
+        version: 3,
+        id: 'project-scope-session',
+        timestamp: '2026-07-24T10:00:00Z',
+        cwd: '/project',
+      },
+      {
+        type: 'message',
+        id: 'project-conversation',
+        parentId: null,
+        timestamp: '2026-07-24T10:01:00Z',
+        message: { role: 'user', content: 'Atlas evidence for this project.' },
+      },
+      {
+        type: 'message',
+        id: 'project-invocation',
+        parentId: 'project-conversation',
+        timestamp: '2026-07-24T10:02:00Z',
+        message: {
+          role: 'assistant',
+          content: [
+            {
+              type: 'toolCall',
+              id: 'project-call',
+              name: 'read',
+              arguments: { path: '/project/Atlas.ts' },
+            },
+          ],
+        },
+      },
+    ]),
   );
   const projectIdentity = parseProjectIdentity('non-git-session-origin:/project');
   const service = createRecallConversationService(config, {
@@ -948,8 +1057,14 @@ void test('project scope filters every retrieval channel before final ranking', 
   });
   const global = await service.search('Atlas', 5, { scope: RecallSearchScope.GLOBAL });
 
-  assert.equal(included.results.length, 1);
-  assert.equal(global.results.length, 1);
+  assert.deepEqual(
+    included.results.map((result) => result.resultKind),
+    ['conversation', 'invocation'],
+  );
+  assert.deepEqual(
+    global.results.map((result) => result.resultKind),
+    ['conversation', 'invocation'],
+  );
   await assert.rejects(
     service.search('Atlas', 5, {
       scope: RecallSearchScope.PROJECT,

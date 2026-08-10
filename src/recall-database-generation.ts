@@ -41,6 +41,13 @@ export interface RecallDatabaseCandidate {
   staleCandidatesRemoved: number;
 }
 
+/** One completed recall database generation waiting for explicit activation. */
+export interface StagedRecallDatabase {
+  databaseTarget: string;
+  directoryPath: string;
+  paths: RecallDatabasePaths;
+}
+
 /** Result of atomically making a completed candidate the active recall database. */
 export interface RecallDatabaseActivation {
   previousAvailable: boolean;
@@ -157,6 +164,41 @@ async function assertDatabaseTargetExists(
   }
 }
 
+function assertCompleteRecallDatabase(
+  paths: RecallDatabasePaths,
+  directoryPath: string,
+  databaseKind: 'candidate' | 'staged',
+): void {
+  if (
+    !existsSync(paths.databasePath) ||
+    !existsSync(paths.catalogPath) ||
+    !existsSync(paths.manifestPath) ||
+    !existsSync(paths.indexMaintenanceStatusPath)
+  ) {
+    throw new Error(`Recall ${databaseKind} database incomplete at ${directoryPath}`);
+  }
+}
+
+function resolveStagedRecallDatabase(
+  config: RecallDatabaseGenerationConfig,
+  databaseTarget: string,
+): StagedRecallDatabase {
+  const directoryPath = resolveDatabaseTargetDirectory(config, databaseTarget);
+  const generationRootPath = resolve(config.databaseGenerationRootPath ?? '');
+  if (
+    dirname(directoryPath) !== generationRootPath ||
+    !basename(directoryPath).startsWith(DATABASE_GENERATION_PREFIX) ||
+    relative(getRecallDatabaseDataDirectory(config), directoryPath) !== databaseTarget
+  ) {
+    throw new Error(`Recall staged database target invalid: ${databaseTarget}`);
+  }
+  return {
+    databaseTarget,
+    directoryPath,
+    paths: createRecallDatabasePaths(config, directoryPath),
+  };
+}
+
 /** Resolves the database used by normal indexing and search, falling back to the legacy layout. */
 export async function resolveActiveRecallDatabasePaths(
   config: RecallDatabaseGenerationConfig,
@@ -203,36 +245,79 @@ export async function createRecallDatabaseCandidate(
   };
 }
 
-/** Atomically activates a completed candidate while recording its immediately previous database. */
-export async function activateRecallDatabaseCandidate(
+/** Reopens the sole interrupted candidate so a staged production rebuild can continue. */
+export async function resumeRecallDatabaseCandidate(
+  config: RecallDatabaseGenerationConfig,
+): Promise<RecallDatabaseCandidate> {
+  if (!config.databaseGenerationRootPath) {
+    throw new Error('Recall database generations are not configured');
+  }
+  await mkdir(config.databaseGenerationRootPath, { recursive: true });
+  const candidateNames = (await readdir(config.databaseGenerationRootPath, { withFileTypes: true }))
+    .filter((entry) => entry.isDirectory() && entry.name.startsWith(CANDIDATE_DATABASE_PREFIX))
+    .map((entry) => entry.name);
+  if (candidateNames.length !== 1) {
+    throw new Error(
+      `Recall candidate resume requires exactly one interrupted candidate; found ${candidateNames.length}`,
+    );
+  }
+  const directoryPath = join(config.databaseGenerationRootPath, candidateNames[0] ?? '');
+  return {
+    directoryPath,
+    paths: createRecallDatabasePaths(config, directoryPath),
+    staleCandidatesRemoved: 0,
+  };
+}
+
+/** Promotes a complete candidate to a durable generation without changing the active pointer. */
+export async function stageRecallDatabaseCandidate(
   config: RecallDatabaseGenerationConfig,
   candidate: RecallDatabaseCandidate,
+): Promise<StagedRecallDatabase> {
+  assertCompleteRecallDatabase(candidate.paths, candidate.directoryPath, 'candidate');
+  const directoryPath = join(
+    config.databaseGenerationRootPath ?? '',
+    `${DATABASE_GENERATION_PREFIX}${basename(candidate.directoryPath).slice(CANDIDATE_DATABASE_PREFIX.length)}`,
+  );
+  await rename(candidate.directoryPath, directoryPath);
+  const databaseTarget = relative(getRecallDatabaseDataDirectory(config), directoryPath);
+  return {
+    databaseTarget,
+    directoryPath,
+    paths: createRecallDatabasePaths(config, directoryPath),
+  };
+}
+
+/** Atomically activates one exact staged generation while recording the current database. */
+export async function activateStagedRecallDatabase(
+  config: RecallDatabaseGenerationConfig,
+  databaseTarget: string,
 ): Promise<RecallDatabaseActivation> {
+  const staged = resolveStagedRecallDatabase(config, databaseTarget);
+  assertCompleteRecallDatabase(staged.paths, staged.directoryPath, 'staged');
   const activeTarget = await readActiveDatabaseTarget(config);
-  const previousTarget = activeTarget ?? (hasLegacyRecallDatabase(config) ? '.' : null);
-  if (
-    !existsSync(candidate.paths.databasePath) ||
-    !existsSync(candidate.paths.catalogPath) ||
-    !existsSync(candidate.paths.manifestPath) ||
-    !existsSync(candidate.paths.indexMaintenanceStatusPath)
-  ) {
-    throw new Error(`Recall candidate database incomplete at ${candidate.directoryPath}`);
+  if (activeTarget === staged.databaseTarget) {
+    throw new Error(`Recall staged database is already active: ${staged.databaseTarget}`);
   }
+  const previousTarget = activeTarget ?? (hasLegacyRecallDatabase(config) ? '.' : null);
   if (previousTarget !== null) {
     await writeFile(
-      join(candidate.directoryPath, PREVIOUS_DATABASE_FILE_NAME),
+      join(staged.directoryPath, PREVIOUS_DATABASE_FILE_NAME),
       `${JSON.stringify({ version: 1, target: previousTarget }, null, 2)}\n`,
       'utf8',
     );
   }
-  const generationDirectory = join(
-    config.databaseGenerationRootPath ?? '',
-    `${DATABASE_GENERATION_PREFIX}${basename(candidate.directoryPath).slice(CANDIDATE_DATABASE_PREFIX.length)}`,
-  );
-  await rename(candidate.directoryPath, generationDirectory);
-  const generationTarget = relative(getRecallDatabaseDataDirectory(config), generationDirectory);
-  await replaceActiveDatabaseTarget(config, generationTarget);
+  await replaceActiveDatabaseTarget(config, staged.databaseTarget);
   return { previousAvailable: previousTarget !== null };
+}
+
+/** Stages and atomically activates a completed candidate for ordinary rebuilds. */
+export async function activateRecallDatabaseCandidate(
+  config: RecallDatabaseGenerationConfig,
+  candidate: RecallDatabaseCandidate,
+): Promise<RecallDatabaseActivation> {
+  const staged = await stageRecallDatabaseCandidate(config, candidate);
+  return activateStagedRecallDatabase(config, staged.databaseTarget);
 }
 
 /** Atomically restores the database recorded as previous by the active generation. */

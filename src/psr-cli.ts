@@ -24,7 +24,8 @@ import {
 } from './recall-conversation-service.js';
 
 const PSR_USAGE = [
-  'psr usage: psr index [--rebuild] [--compact] [--no-optimize]',
+  'psr usage: psr index [--rebuild] [--stage] [--resume] [--reuse-active-vectors] [--compact] [--no-optimize]',
+  '           psr activate <database-target>',
   '           psr optimize',
   '           psr rollback',
   '           psr auto-index install [--interval <N>m|<N>h] [--optimize-daily]',
@@ -149,6 +150,8 @@ function formatRecallDatabaseTransition(result: RecallConversationIndexResult): 
       return result.databaseTransition.previousAvailable
         ? 'Database: activated; previous database available for rollback.'
         : 'Database: activated; no previous database is available.';
+    case 'candidate-staged':
+      return `Database: staged at ${result.databaseTransition.databaseTarget}; active database unchanged.`;
     case 'candidate-failed':
       return 'Database: candidate failed; active database unchanged.';
   }
@@ -215,8 +218,12 @@ function formatRecallIndexProgress(
       return event.staleCandidatesRemoved === 0
         ? 'Building candidate recall database beside the active database...'
         : `Building candidate recall database beside the active database; ${formatCountedNoun(event.staleCandidatesRemoved, 'stale candidate database')} removed...`;
+    case 'resuming-rebuild-candidate':
+      return 'Resuming the interrupted candidate recall database...';
     case 'rebuild-candidate-failed':
       return 'Candidate recall database failed; active database remains unchanged.';
+    case 'rebuild-candidate-staged':
+      return `Candidate recall database staged at ${event.databaseTarget}; active database remains unchanged.`;
     case 'rebuild-candidate-activated':
       return event.previousAvailable
         ? 'Candidate recall database activated; previous database remains available for rollback.'
@@ -338,6 +345,27 @@ export async function runPsrCli(
     return 0;
   }
 
+  if (argumentsList[0] === 'activate') {
+    const databaseTarget = argumentsList[1];
+    if (!databaseTarget || argumentsList.length !== 2) {
+      throw new Error(PSR_USAGE);
+    }
+    const config = await dependencies.loadConfig();
+    const activation = await dependencies.createService(config).activate(databaseTarget, {
+      onProgress(event) {
+        if (event.kind === 'waiting-for-write-lock') {
+          dependencies.writeProgress('Waiting for another recall index operation...\n');
+        }
+      },
+    });
+    dependencies.writeOutput(
+      activation.previousAvailable
+        ? 'Staged recall database activated; previous database available for rollback.\n'
+        : 'Staged recall database activated; no previous database is available.\n',
+    );
+    return 0;
+  }
+
   if (argumentsList[0] === 'rollback') {
     if (argumentsList.length !== 1) {
       throw new Error(PSR_USAGE);
@@ -377,13 +405,31 @@ export async function runPsrCli(
   const flags = argumentsList.slice(1);
   const distinctFlags = new Set(flags);
   const validFlags = flags.every(
-    (flag) => flag === '--rebuild' || flag === '--compact' || flag === '--no-optimize',
+    (flag) =>
+      flag === '--rebuild' ||
+      flag === '--stage' ||
+      flag === '--resume' ||
+      flag === '--reuse-active-vectors' ||
+      flag === '--compact' ||
+      flag === '--no-optimize',
   );
   if (argumentsList[0] !== 'index' || !validFlags || distinctFlags.size !== flags.length) {
     throw new Error(PSR_USAGE);
   }
   const rebuild = distinctFlags.has('--rebuild');
+  const stage = distinctFlags.has('--stage');
+  const resume = distinctFlags.has('--resume');
+  const reuseActiveVectors = distinctFlags.has('--reuse-active-vectors');
   const compact = distinctFlags.has('--compact');
+  if (resume && (!rebuild || !stage)) {
+    throw new Error('psr index --resume requires --rebuild --stage');
+  }
+  if (reuseActiveVectors && (!rebuild || !stage)) {
+    throw new Error('psr index --reuse-active-vectors requires --rebuild --stage');
+  }
+  if (stage && !rebuild) {
+    throw new Error('psr index --stage requires --rebuild');
+  }
 
   let commandStartedAtMs: number | undefined;
   let indexingStartedAtMs: number | undefined;
@@ -423,6 +469,9 @@ export async function runPsrCli(
   const config = await dependencies.loadConfig();
   const result = await dependencies.createService(config).index({
     rebuild,
+    ...(stage ? { deferActivation: true } : {}),
+    ...(resume ? { resumeCandidate: true } : {}),
+    ...(reuseActiveVectors ? { reuseActiveVectors: true } : {}),
     optimize: false,
     onProgress: reportProgress,
   });

@@ -22,6 +22,12 @@ export interface DenseRecallIndexStore {
   fetchVectors(ids: string[]): Map<string, number[]>;
 }
 
+/** Read-only source for checksum-verified dense vector reuse during a staged rebuild. */
+export type DenseRecallVectorReuseStore = Pick<
+  DenseRecallIndexStore,
+  'fetchDocuments' | 'fetchVectors'
+>;
+
 /** Counts and source failures from one explicit incremental indexing pass. */
 export interface ConversationIndexSummary {
   scannedSessions: number;
@@ -40,6 +46,7 @@ export interface IncrementalSessionIndexerOptions {
   catalogPath: string;
   legacyStatePath?: string;
   store: DenseRecallIndexStore;
+  vectorReuseStore?: DenseRecallVectorReuseStore;
   embeddingProvider: RecallEmbeddingProvider;
   tokenizer: ConversationTextTokenizer;
   chunkPolicy: RecallChunkPolicy;
@@ -161,6 +168,7 @@ async function prepareChangedRecallRows(
   chunks: readonly (SessionConversationChunk & { isDenseSearchable: true })[],
   store: DenseRecallIndexStore,
   embeddingProvider: RecallEmbeddingProvider,
+  vectorReuseStore: DenseRecallVectorReuseStore | undefined,
   summary: ConversationIndexSummary,
   onBatchPrepared: () => void,
   signal?: AbortSignal,
@@ -176,22 +184,40 @@ async function prepareChangedRecallRows(
       const existing = existingChunks.get(chunk.id);
       return !existing || existing.checksum !== chunk.checksum || !existingVectors.has(chunk.id);
     });
-    summary.reusedVectors += batch.filter(
+    summary.reusedVectors += batch.length - rowsNeedingWrite.length;
+    const reusableDocuments = vectorReuseStore?.fetchDocuments(
+      rowsNeedingWrite.map((chunk) => chunk.id),
+    );
+    const reusableVectors = vectorReuseStore?.fetchVectors(
+      rowsNeedingWrite.map((chunk) => chunk.id),
+    );
+    const rowsReusingVectors = rowsNeedingWrite.filter(
       (chunk) =>
-        existingChunks.get(chunk.id)?.checksum === chunk.checksum && existingVectors.has(chunk.id),
-    ).length;
+        reusableDocuments?.get(chunk.id)?.checksum === chunk.checksum &&
+        reusableVectors?.has(chunk.id),
+    );
+    const reusedIds = new Set(rowsReusingVectors.map((chunk) => chunk.id));
+    const rowsNeedingEmbedding = rowsNeedingWrite.filter((chunk) => !reusedIds.has(chunk.id));
+    summary.reusedVectors += rowsReusingVectors.length;
+    for (const chunk of rowsReusingVectors) {
+      const embedding = reusableVectors?.get(chunk.id);
+      if (!embedding) {
+        throw new Error(`Recall reusable embedding missing for conversation chunk ${chunk.id}`);
+      }
+      changedRows.push({ ...chunk, isDenseSearchable: true, embedding });
+    }
     const embeddings =
-      rowsNeedingWrite.length === 0
+      rowsNeedingEmbedding.length === 0
         ? []
         : await embeddingProvider.embedDocuments(
-            rowsNeedingWrite.map((chunk) => chunk.content),
+            rowsNeedingEmbedding.map((chunk) => chunk.content),
             signal,
           );
-    if (rowsNeedingWrite.length > 0) {
+    if (rowsNeedingEmbedding.length > 0) {
       summary.embeddingRequestCount += 1;
-      summary.newlyEmbeddedChunks += rowsNeedingWrite.length;
+      summary.newlyEmbeddedChunks += rowsNeedingEmbedding.length;
     }
-    for (const [index, chunk] of rowsNeedingWrite.entries()) {
+    for (const [index, chunk] of rowsNeedingEmbedding.entries()) {
       const embedding = embeddings[index];
       if (!embedding) {
         throw new Error(`Recall embedding missing for conversation chunk ${chunk.id}`);
@@ -248,6 +274,7 @@ async function indexChangedRecallSessionFile(
     denseChunks,
     options.store,
     options.embeddingProvider,
+    options.vectorReuseStore,
     summary,
     onBatchPrepared,
     options.signal,

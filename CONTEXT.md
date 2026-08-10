@@ -125,8 +125,12 @@ One complete, searchable set of index data, Recall catalog, manifest, and mainte
 _Avoid_: Zvec collection, index file
 
 **Candidate recall database**:
-A Recall database that `psr index --rebuild` builds beside the Active recall database. It cannot serve normal search until a successful rebuild activates it.
+A Recall database that `psr index --rebuild` builds beside the Active recall database. It cannot serve normal search until a successful rebuild completes.
 _Avoid_: Temporary index, partial active database
+
+**Staged recall database**:
+A complete Candidate recall database promoted to a durable generation without changing the active pointer. It remains inactive until `psr activate` names its exact database target.
+_Avoid_: Active recall database, failed candidate
 
 **Active recall database**:
 The Recall database used by normal indexing, optimization, and search. Activation replaces its pointer atomically after a Candidate recall database completes successfully.
@@ -137,7 +141,7 @@ The Recall database that immediately preceded the Active recall database. `psr r
 _Avoid_: Backup, stale candidate
 
 **Index maintenance**:
-One standalone `psr index` operation that scans physical session files and updates the Active recall database. An operator or opt-in user schedule may start it. `psr index --rebuild` builds and activates a Candidate recall database without modifying the Active recall database.
+One standalone `psr index` operation that scans physical session files and updates the Active recall database. An operator or opt-in user schedule may start it. `psr index --rebuild` builds and activates a Candidate recall database without modifying the prior Active recall database. Adding `--stage` leaves the completed replacement inactive for certification.
 _Avoid_: Live ingestion, lifecycle reconciliation
 
 **Maintenance workset**:

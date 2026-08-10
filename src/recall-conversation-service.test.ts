@@ -163,6 +163,148 @@ void test('successful rebuild atomically activates a candidate and rollback rest
   assert.match(restoredSearch.results[0]?.content ?? '', /ORIGINAL_GENERATION_EVIDENCE/u);
 });
 
+void test('deferred rebuild stays inactive until the staged database target is explicitly activated', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-generation-staging-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const config = createTestConfig(root, { databaseGenerations: true });
+  const sessionPath = join(config.sessionsDirectory, 'one.jsonl');
+  await writeConversationSession(sessionPath, 'ACTIVE_BEFORE_CERTIFICATION');
+  const service = createRecallConversationService(config, {
+    embeddingProvider: TEST_EMBEDDING_PROVIDER,
+    loadTokenizer: async () => tokenizer,
+  });
+  await service.index({ rebuild: true });
+  const activeBeforeStaging = await readlink(join(root, 'recall', 'active'));
+  await writeConversationSession(sessionPath, 'STAGED_FOR_CERTIFICATION');
+
+  const staged = await service.index({ rebuild: true, deferActivation: true });
+
+  assert.equal(staged.databaseTransition.kind, 'candidate-staged');
+  assert.equal(await readlink(join(root, 'recall', 'active')), activeBeforeStaging);
+  const activeSearch = await service.search('ACTIVE_BEFORE_CERTIFICATION', 5, {
+    scope: RecallSearchScope.GLOBAL,
+  });
+  assert.match(activeSearch.results[0]?.content ?? '', /ACTIVE_BEFORE_CERTIFICATION/u);
+  if (staged.databaseTransition.kind !== 'candidate-staged') {
+    assert.fail('Expected the rebuilt database to remain staged');
+  }
+
+  const activation = await service.activate(staged.databaseTransition.databaseTarget);
+
+  assert.deepEqual(activation, { kind: 'staged-activated', previousAvailable: true });
+  assert.equal(
+    await readlink(join(root, 'recall', 'active')),
+    staged.databaseTransition.databaseTarget,
+  );
+  const activatedSearch = await service.search('STAGED_FOR_CERTIFICATION', 5, {
+    scope: RecallSearchScope.GLOBAL,
+  });
+  assert.match(activatedSearch.results[0]?.content ?? '', /STAGED_FOR_CERTIFICATION/u);
+});
+
+void test('staged rebuild uses a separate construction lock and leaves active search available', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-generation-construction-lock-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const config = createTestConfig(root, { databaseGenerations: true });
+  const sessionPath = join(config.sessionsDirectory, 'one.jsonl');
+  await writeConversationSession(sessionPath, 'READABLE_DURING_STAGED_CONSTRUCTION');
+  const stableService = createRecallConversationService(config, {
+    embeddingProvider: TEST_EMBEDDING_PROVIDER,
+    loadTokenizer: async () => tokenizer,
+  });
+  await stableService.index({ rebuild: true });
+
+  let releaseEmbedding: (() => void) | undefined;
+  const embeddingReleased = new Promise<void>((resolveEmbedding) => {
+    releaseEmbedding = resolveEmbedding;
+  });
+  let reportEmbeddingStarted: (() => void) | undefined;
+  const embeddingStarted = new Promise<void>((resolveStarted) => {
+    reportEmbeddingStarted = resolveStarted;
+  });
+  const stagingService = createRecallConversationService(config, {
+    embeddingProvider: {
+      ...TEST_EMBEDDING_PROVIDER,
+      async embedDocuments(documents) {
+        reportEmbeddingStarted?.();
+        await embeddingReleased;
+        return documents.map(createTestEmbeddingVector);
+      },
+    },
+    loadTokenizer: async () => tokenizer,
+  });
+  const staging = stagingService.index({ rebuild: true, deferActivation: true });
+  await embeddingStarted;
+
+  await assert.rejects(readFile(join(config.lockPath, 'owner.json')), { code: 'ENOENT' });
+  const activeSearch = await stableService.search('READABLE_DURING_STAGED_CONSTRUCTION', 5, {
+    scope: RecallSearchScope.GLOBAL,
+  });
+  assert.match(activeSearch.results[0]?.content ?? '', /READABLE_DURING_STAGED_CONSTRUCTION/u);
+
+  releaseEmbedding?.();
+  await staging;
+});
+
+void test('resumed staged rebuild preserves completed sessions after a fatal embedding outage', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-generation-resume-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const config = createTestConfig(root, { databaseGenerations: true });
+  await writeConversationSession(
+    join(config.sessionsDirectory, 'one.jsonl'),
+    'COMPLETED_BEFORE_OUTAGE',
+    'session-one',
+  );
+  await writeConversationSession(
+    join(config.sessionsDirectory, 'two.jsonl'),
+    'FAILED_DURING_OUTAGE',
+    'session-two',
+  );
+  const failingService = createRecallConversationService(config, {
+    embeddingProvider: {
+      ...TEST_EMBEDDING_PROVIDER,
+      embedDocuments(documents) {
+        if (documents.some((document) => document.includes('FAILED_DURING_OUTAGE'))) {
+          throw new Error('Embedding endpoint unavailable');
+        }
+        return Promise.resolve(documents.map(createTestEmbeddingVector));
+      },
+    },
+    loadTokenizer: async () => tokenizer,
+  });
+  await assert.rejects(
+    failingService.index({ rebuild: true, deferActivation: true }),
+    /Embedding endpoint unavailable/u,
+  );
+  const resumedService = createRecallConversationService(config, {
+    embeddingProvider: TEST_EMBEDDING_PROVIDER,
+    loadTokenizer: async () => tokenizer,
+  });
+
+  const resumed = await resumedService.index({
+    rebuild: true,
+    deferActivation: true,
+    resumeCandidate: true,
+  });
+
+  assert.equal(resumed.indexSummary.indexedSessions, 1);
+  assert.equal(resumed.databaseTransition.kind, 'candidate-staged');
+  if (resumed.databaseTransition.kind !== 'candidate-staged') {
+    assert.fail('Expected resumed candidate to remain staged');
+  }
+  await resumedService.activate(resumed.databaseTransition.databaseTarget);
+  const completedSearch = await resumedService.search('COMPLETED_BEFORE_OUTAGE', 5, {
+    scope: RecallSearchScope.GLOBAL,
+  });
+  const recoveredSearch = await resumedService.search('FAILED_DURING_OUTAGE', 5, {
+    scope: RecallSearchScope.GLOBAL,
+  });
+  assert.ok(
+    completedSearch.results.some((result) => /COMPLETED_BEFORE_OUTAGE/u.test(result.content)),
+  );
+  assert.ok(recoveredSearch.results.some((result) => /FAILED_DURING_OUTAGE/u.test(result.content)));
+});
+
 void test('fatal and interrupted rebuilds leave the active database unchanged', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'recall-generation-failure-'));
   t.after(() => rm(root, { recursive: true, force: true }));

@@ -428,6 +428,80 @@ void test('manual index maintenance resolves a relative sessions directory to ab
   assert.deepEqual(readCatalogSessionPaths(catalogPath), [sessionPath]);
 });
 
+void test('manual index maintenance reuses an active vector only for the same canonical checksum', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-indexer-active-vector-reuse-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const sessionsDirectory = join(root, 'sessions');
+  const sourceCatalogPath = join(root, 'source-catalog.sqlite');
+  const targetCatalogPath = join(root, 'target-catalog.sqlite');
+  const sessionPath = join(sessionsDirectory, 'one.jsonl');
+  await mkdir(sessionsDirectory, { recursive: true });
+  await writeSimplePhysicalSessionFile(sessionPath, 'one', 'safe vector reuse evidence');
+  const activeStore = new MemoryConversationStore();
+  await indexChangedConversationSessions(
+    createIndexerOptions({
+      sessionsDirectory,
+      catalogPath: sourceCatalogPath,
+      store: activeStore,
+      embeddingProvider: createRecordingEmbeddingProvider([]),
+    }),
+  );
+  const candidateStore = new MemoryConversationStore();
+
+  const summary = await indexChangedConversationSessions({
+    ...createIndexerOptions({
+      sessionsDirectory,
+      catalogPath: targetCatalogPath,
+      store: candidateStore,
+      embeddingProvider: {
+        embedQuery: async () => [],
+        embedDocuments: async () => {
+          throw new Error('Matching active vector should avoid embedding');
+        },
+      },
+    }),
+    vectorReuseStore: activeStore,
+  });
+
+  assert.equal(summary.newlyEmbeddedChunks, 0);
+  assert.equal(summary.reusedVectors, 1);
+  assert.deepEqual(candidateStore.chunks, activeStore.chunks);
+});
+
+void test('manual index maintenance rejects active-vector reuse after canonical content changes', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-indexer-active-vector-checksum-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const sessionsDirectory = join(root, 'sessions');
+  const sessionPath = join(sessionsDirectory, 'one.jsonl');
+  await mkdir(sessionsDirectory, { recursive: true });
+  await writeSimplePhysicalSessionFile(sessionPath, 'one', 'alpha');
+  const activeStore = new MemoryConversationStore();
+  await indexChangedConversationSessions(
+    createIndexerOptions({
+      sessionsDirectory,
+      catalogPath: join(root, 'source-catalog.sqlite'),
+      store: activeStore,
+      embeddingProvider: createRecordingEmbeddingProvider([]),
+    }),
+  );
+  await writeSimplePhysicalSessionFile(sessionPath, 'one', 'bravo');
+  const embeddedBatches: string[][] = [];
+
+  const summary = await indexChangedConversationSessions({
+    ...createIndexerOptions({
+      sessionsDirectory,
+      catalogPath: join(root, 'target-catalog.sqlite'),
+      store: new MemoryConversationStore(),
+      embeddingProvider: createRecordingEmbeddingProvider(embeddedBatches),
+    }),
+    vectorReuseStore: activeStore,
+  });
+
+  assert.equal(summary.newlyEmbeddedChunks, 1);
+  assert.equal(summary.reusedVectors, 0);
+  assert.deepEqual(embeddedBatches, [['bravo']]);
+});
+
 void test('manual incremental indexing adds, reuses, changes, and deletes zvec rows', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'recall-indexer-'));
   t.after(() => rm(root, { recursive: true, force: true }));

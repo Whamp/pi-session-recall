@@ -223,23 +223,7 @@ function runRecallCatalogTransaction(database: DatabaseSync, operation: () => vo
 }
 
 function insertInvocationRecord(statement: StatementSync, invocation: InvocationRecord): void {
-  statement.run(
-    invocation.sessionPath,
-    invocation.kind,
-    invocation.toolName,
-    invocation.toolCallId,
-    invocation.sessionId,
-    invocation.entryId,
-    invocation.sourceLineStart,
-    invocation.sourceLineEnd,
-    invocation.sourceBlockIndex,
-    invocation.timestamp,
-    invocation.sessionOrigin,
-    invocation.projectAttribution?.projectIdentity ?? null,
-    invocation.projectAttribution?.identitySource ?? null,
-    invocation.isError === null ? null : invocation.isError ? 1 : 0,
-    invocation.searchableText,
-  );
+  statement.run(...createInvocationPersistenceValues(invocation));
 }
 
 function createFtsPhrase(query: string): string {
@@ -343,6 +327,28 @@ function decodeInvocationSearchResult(
   };
 }
 
+function createInvocationPersistenceValues(
+  invocation: InvocationRecord,
+): Array<null | number | string> {
+  return [
+    invocation.sessionPath,
+    invocation.kind,
+    invocation.toolName,
+    invocation.toolCallId,
+    invocation.sessionId,
+    invocation.entryId,
+    invocation.sourceLineStart,
+    invocation.sourceLineEnd,
+    invocation.sourceBlockIndex,
+    invocation.timestamp,
+    invocation.sessionOrigin,
+    invocation.projectAttribution?.projectIdentity ?? null,
+    invocation.projectAttribution?.identitySource ?? null,
+    invocation.isError === null ? null : invocation.isError ? 1 : 0,
+    invocation.searchableText,
+  ];
+}
+
 /** Opens or creates the WAL-mode SQLite catalog used by incremental recall maintenance. */
 export function openRecallCatalog(
   catalogPath: string,
@@ -407,6 +413,12 @@ export function openRecallCatalog(
     'INSERT INTO session_documents(session_path, document_id, is_dense) VALUES (?, ?, ?)',
   );
   const deleteInvocations = database.prepare('DELETE FROM invocations WHERE session_path = ?');
+  const listInvocations = database.prepare(`
+    SELECT invocation.*, 0 AS rank
+    FROM invocations AS invocation
+    WHERE invocation.session_path = ?
+    ORDER BY invocation.invocation_id
+  `);
   const insertInvocation = database.prepare(`
     INSERT INTO invocations(
       session_path, kind, tool_name, tool_call_id, session_id, entry_id,
@@ -417,33 +429,37 @@ export function openRecallCatalog(
   const deleteSession = database.prepare('DELETE FROM physical_sessions WHERE session_path = ?');
   const countInvocationRows = database.prepare('SELECT count(*) AS count FROM invocations');
 
+  const readCatalogSessionState = (sessionPath: string): RecallCatalogSessionState | null => {
+    const row = readSession.get(sessionPath);
+    if (!row) {
+      return null;
+    }
+    const size = row.size;
+    const mtimeMs = row.mtime_ms;
+    if (typeof size !== 'number' || typeof mtimeMs !== 'number') {
+      throw new Error(`Recall catalog session state invalid for ${sessionPath}`);
+    }
+    const documentRows = listDocuments.all(sessionPath);
+    const documentIds: string[] = [];
+    const denseDocumentIds: string[] = [];
+    for (const document of documentRows) {
+      if (
+        typeof document.document_id !== 'string' ||
+        (document.is_dense !== 0 && document.is_dense !== 1)
+      ) {
+        throw new Error(`Recall catalog document identity invalid for ${sessionPath}`);
+      }
+      documentIds.push(document.document_id);
+      if (document.is_dense === 1) {
+        denseDocumentIds.push(document.document_id);
+      }
+    }
+    return { size, mtimeMs, documentIds, denseDocumentIds };
+  };
+
   return {
     readPhysicalSessionState(sessionPath) {
-      const row = readSession.get(sessionPath);
-      if (!row) {
-        return null;
-      }
-      const size = row.size;
-      const mtimeMs = row.mtime_ms;
-      if (typeof size !== 'number' || typeof mtimeMs !== 'number') {
-        throw new Error(`Recall catalog session state invalid for ${sessionPath}`);
-      }
-      const documentRows = listDocuments.all(sessionPath);
-      const documentIds: string[] = [];
-      const denseDocumentIds: string[] = [];
-      for (const document of documentRows) {
-        if (
-          typeof document.document_id !== 'string' ||
-          (document.is_dense !== 0 && document.is_dense !== 1)
-        ) {
-          throw new Error(`Recall catalog document identity invalid for ${sessionPath}`);
-        }
-        documentIds.push(document.document_id);
-        if (document.is_dense === 1) {
-          denseDocumentIds.push(document.document_id);
-        }
-      }
-      return { size, mtimeMs, documentIds, denseDocumentIds };
+      return readCatalogSessionState(sessionPath);
     },
 
     listPhysicalSessionPaths() {
@@ -461,19 +477,34 @@ export function openRecallCatalog(
     },
 
     replacePhysicalSession(replacement) {
+      const denseDocumentIds = new Set(replacement.denseDocumentIds);
+      if (
+        replacement.denseDocumentIds.some(
+          (documentId) => !replacement.documentIds.includes(documentId),
+        )
+      ) {
+        throw new Error(
+          `Recall catalog dense document identity missing from session ${replacement.sessionPath}`,
+        );
+      }
+      const previous = readCatalogSessionState(replacement.sessionPath);
+      const previousInvocations = previous
+        ? listInvocations.all(replacement.sessionPath).map(decodeInvocationSearchResult)
+        : [];
+      const sortedDocumentIds = [...replacement.documentIds].sort();
+      const sortedDenseDocumentIds = [...replacement.denseDocumentIds].sort();
+      const childRowsUnchanged =
+        previous !== null &&
+        JSON.stringify(previous.documentIds) === JSON.stringify(sortedDocumentIds) &&
+        JSON.stringify(previous.denseDocumentIds) === JSON.stringify(sortedDenseDocumentIds) &&
+        JSON.stringify(previousInvocations.map(createInvocationPersistenceValues)) ===
+          JSON.stringify(replacement.invocations.map(createInvocationPersistenceValues));
       runRecallCatalogTransaction(database, () => {
         upsertSession.run(replacement.sessionPath, replacement.size, replacement.mtimeMs);
-        deleteSessionDocuments.run(replacement.sessionPath);
-        const denseDocumentIds = new Set(replacement.denseDocumentIds);
-        if (
-          replacement.denseDocumentIds.some(
-            (documentId) => !replacement.documentIds.includes(documentId),
-          )
-        ) {
-          throw new Error(
-            `Recall catalog dense document identity missing from session ${replacement.sessionPath}`,
-          );
+        if (childRowsUnchanged) {
+          return;
         }
+        deleteSessionDocuments.run(replacement.sessionPath);
         for (const documentId of replacement.documentIds) {
           insertSessionDocument.run(
             replacement.sessionPath,

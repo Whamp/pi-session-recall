@@ -29,6 +29,8 @@ function createPsrCliFixture(
 ) {
   const calls: RecallConversationIndexOptions[] = [];
   const optimizeCalls: RecallConversationIndexOptions[] = [];
+  const activateCalls: Array<{ databaseTarget: string; options: RecallConversationIndexOptions }> =
+    [];
   const rollbackCalls: RecallConversationIndexOptions[] = [];
   const output: string[] = [];
   const progressOutput: string[] = [];
@@ -83,6 +85,10 @@ function createPsrCliFixture(
         },
       };
     },
+    async activate(databaseTarget, activateOptions) {
+      activateCalls.push({ databaseTarget, options: activateOptions ?? {} });
+      return { kind: 'staged-activated' as const, previousAvailable: true };
+    },
     async optimize(optimizeOptions) {
       optimizeCalls.push(optimizeOptions ?? {});
       optimizeOptions?.onProgress?.({ kind: 'optimizing-collection' });
@@ -97,6 +103,7 @@ function createPsrCliFixture(
   return {
     calls,
     optimizeCalls,
+    activateCalls,
     rollbackCalls,
     output,
     progressOutput,
@@ -245,7 +252,8 @@ void test('psr ignore rejects malformed or noncanonical persisted policy state',
 void test('psr ignore rejects invalid subcommands and arity with the complete usage', async () => {
   const fixture = createPsrCliFixture();
   const usage = [
-    'psr usage: psr index [--rebuild] [--compact] [--no-optimize]',
+    'psr usage: psr index [--rebuild] [--stage] [--resume] [--reuse-active-vectors] [--compact] [--no-optimize]',
+    '           psr activate <database-target>',
     '           psr optimize',
     '           psr rollback',
     '           psr auto-index install [--interval <N>m|<N>h] [--optimize-daily]',
@@ -681,6 +689,136 @@ void test('psr index --rebuild explicitly replaces the index', async () => {
     { ...fixture.calls[0], onProgress: typeof fixture.calls[0]?.onProgress },
     { rebuild: true, optimize: false, onProgress: 'function' },
   );
+});
+
+void test('psr index --rebuild --stage leaves the database target ready for certification', async () => {
+  const databaseTarget = 'generations/generation-certified';
+  const fixture = createPsrCliFixture([{ kind: 'rebuild-candidate-staged', databaseTarget }], {
+    databaseTransition: {
+      kind: 'candidate-staged',
+      databaseTarget,
+      staleCandidatesRemoved: 0,
+    },
+  });
+
+  const exitCode = await runPsrCli(['index', '--rebuild', '--stage'], fixture.dependencies);
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(
+    { ...fixture.calls[0], onProgress: typeof fixture.calls[0]?.onProgress },
+    { rebuild: true, deferActivation: true, optimize: false, onProgress: 'function' },
+  );
+  assert.match(fixture.output.join(''), new RegExp(`staged at ${databaseTarget}`, 'u'));
+  assert.match(fixture.output.join(''), /active database unchanged/iu);
+});
+
+void test('psr index resumes the interrupted staged rebuild without replacing its candidate', async () => {
+  const databaseTarget = 'generations/generation-resumed';
+  const fixture = createPsrCliFixture([{ kind: 'resuming-rebuild-candidate' }], {
+    databaseTransition: {
+      kind: 'candidate-staged',
+      databaseTarget,
+      staleCandidatesRemoved: 0,
+    },
+  });
+
+  const exitCode = await runPsrCli(
+    ['index', '--rebuild', '--stage', '--resume'],
+    fixture.dependencies,
+  );
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(
+    { ...fixture.calls[0], onProgress: typeof fixture.calls[0]?.onProgress },
+    {
+      rebuild: true,
+      deferActivation: true,
+      resumeCandidate: true,
+      optimize: false,
+      onProgress: 'function',
+    },
+  );
+  assert.match(fixture.progressOutput.join(''), /Resuming the interrupted candidate/iu);
+});
+
+void test('psr index opts into checksum-verified active vector reuse for a staged rebuild', async () => {
+  const fixture = createPsrCliFixture();
+
+  const exitCode = await runPsrCli(
+    ['index', '--rebuild', '--stage', '--resume', '--reuse-active-vectors'],
+    fixture.dependencies,
+  );
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(
+    { ...fixture.calls[0], onProgress: typeof fixture.calls[0]?.onProgress },
+    {
+      rebuild: true,
+      deferActivation: true,
+      resumeCandidate: true,
+      reuseActiveVectors: true,
+      optimize: false,
+      onProgress: 'function',
+    },
+  );
+});
+
+void test('psr activate switches only the named staged database target', async () => {
+  const fixture = createPsrCliFixture();
+  const databaseTarget = 'generations/generation-certified';
+
+  const exitCode = await runPsrCli(['activate', databaseTarget], fixture.dependencies);
+
+  assert.equal(exitCode, 0);
+  assert.equal(fixture.activateCalls.length, 1);
+  assert.equal(fixture.activateCalls[0]?.databaseTarget, databaseTarget);
+  assert.equal(
+    fixture.output.join(''),
+    'Staged recall database activated; previous database available for rollback.\n',
+  );
+  assert.deepEqual(fixture.calls, []);
+});
+
+void test('psr index --stage requires an explicit rebuild', async () => {
+  const fixture = createPsrCliFixture();
+
+  await assert.rejects(
+    runPsrCli(['index', '--stage'], fixture.dependencies),
+    /psr index --stage requires --rebuild/u,
+  );
+  assert.deepEqual(fixture.calls, []);
+});
+
+void test('psr index --resume requires a staged rebuild', async () => {
+  const fixture = createPsrCliFixture();
+
+  for (const argumentsList of [
+    ['index', '--resume'],
+    ['index', '--rebuild', '--resume'],
+    ['index', '--stage', '--resume'],
+  ]) {
+    await assert.rejects(
+      runPsrCli(argumentsList, fixture.dependencies),
+      /psr index --resume requires --rebuild --stage/u,
+    );
+  }
+  assert.deepEqual(fixture.calls, []);
+});
+
+void test('psr index --reuse-active-vectors requires a staged rebuild', async () => {
+  const fixture = createPsrCliFixture();
+
+  for (const argumentsList of [
+    ['index', '--reuse-active-vectors'],
+    ['index', '--rebuild', '--reuse-active-vectors'],
+    ['index', '--stage', '--reuse-active-vectors'],
+  ]) {
+    await assert.rejects(
+      runPsrCli(argumentsList, fixture.dependencies),
+      /psr index --reuse-active-vectors requires --rebuild --stage/u,
+    );
+  }
+  assert.deepEqual(fixture.calls, []);
 });
 
 void test('psr rebuild output distinguishes activated, previous, stale, and failed databases', async () => {

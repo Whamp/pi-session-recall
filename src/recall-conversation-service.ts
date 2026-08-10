@@ -28,9 +28,12 @@ import { createOctenHttpEmbeddingProvider } from './octen-http-embedding-provide
 import type { RecallChunkPolicy } from './recall-chunk-policy.js';
 import {
   activateRecallDatabaseCandidate,
+  activateStagedRecallDatabase,
   createRecallDatabaseCandidate,
   resolveActiveRecallDatabasePaths,
   restorePreviousRecallDatabase,
+  resumeRecallDatabaseCandidate,
+  stageRecallDatabaseCandidate,
   type RecallDatabaseCandidate,
   type RecallDatabasePaths,
 } from './recall-database-generation.js';
@@ -50,6 +53,7 @@ import {
   type RecallIndexMaintenanceStatus,
 } from './recall-index-maintenance-status.js';
 import { openRecallCatalog } from './recall-catalog.js';
+import { isUnknownRecord } from './is-unknown-record.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
 import {
   createLineageResolver,
@@ -64,6 +68,10 @@ import {
 } from './rank-recall-search-results.js';
 import type { ConversationTextTokenizer } from './session-conversation-index.js';
 import { searchSessionSourceFiles, type SessionSourceSearch } from './session-source-search.js';
+import {
+  openZvecConversationStore,
+  type ZvecConversationStore,
+} from './zvec-conversation-store.js';
 
 /** Paths, one Octen profile, and bounded compact-layout retrieval settings. */
 export interface RecallConversationConfig {
@@ -129,6 +137,9 @@ export interface RecallConversationSearch {
 /** Options accepted only by explicit `psr` index maintenance. */
 export interface RecallConversationIndexOptions {
   rebuild?: boolean;
+  deferActivation?: boolean;
+  resumeCandidate?: boolean;
+  reuseActiveVectors?: boolean;
   signal?: AbortSignal;
   onProgress?: (event: RecallIndexProgressEvent) => void;
   optimize?: boolean;
@@ -144,6 +155,7 @@ export interface RecallConversationOptimizeOptions {
 export type RecallDatabaseTransition =
   | { kind: 'active-updated' }
   | { kind: 'candidate-activated'; previousAvailable: boolean; staleCandidatesRemoved: number }
+  | { kind: 'candidate-staged'; databaseTarget: string; staleCandidatesRemoved: number }
   | { kind: 'candidate-failed'; staleCandidatesRemoved: number };
 
 /** Counts and database activation state from one completed standalone index update. */
@@ -152,6 +164,12 @@ export interface RecallConversationIndexResult {
   totalChunks: number;
   documentCounts: { dense: number; invocations: number };
   databaseTransition: RecallDatabaseTransition;
+}
+
+/** Result of explicitly activating one certified staged recall database. */
+export interface RecallConversationActivationResult {
+  kind: 'staged-activated';
+  previousAvailable: boolean;
 }
 
 /** Result of restoring the database immediately preceding the active generation. */
@@ -189,6 +207,10 @@ export interface RecallConversationToolService
 
 /** Standalone collection maintenance capabilities used only by `psr`. */
 export interface RecallConversationMaintenanceService extends RecallConversationService {
+  activate(
+    databaseTarget: string,
+    options?: RecallConversationOptimizeOptions,
+  ): Promise<RecallConversationActivationResult>;
   optimize(options?: RecallConversationOptimizeOptions): Promise<RecallConversationOptimizeResult>;
   rollback(options?: RecallConversationOptimizeOptions): Promise<RecallConversationRollbackResult>;
 }
@@ -201,6 +223,14 @@ export interface RecallConversationDependencies {
   openStore?: (mode: 'read' | 'write', databasePath: string) => DenseRecallConversationStore;
   resolveProjectIdentity?: (workingDirectory: string) => Promise<ResolvedProjectIdentity | null>;
   getCurrentTime?: () => Date;
+}
+
+async function readVectorReuseEmbeddingIdentity(manifestPath: string): Promise<unknown> {
+  const manifest: unknown = JSON.parse(await readFile(manifestPath, 'utf8'));
+  if (!isUnknownRecord(manifest) || !isUnknownRecord(manifest.embedding)) {
+    throw new Error(`Recall active vector reuse manifest invalid at ${manifestPath}`);
+  }
+  return manifest.embedding;
 }
 
 function readLockOwnerProcessId(value: string): number | undefined {
@@ -564,14 +594,28 @@ export function createRecallConversationService(
     },
 
     async index(options = {}) {
+      if (options.deferActivation && !options.rebuild) {
+        throw new Error('Recall deferred activation requires a rebuild');
+      }
+      if (options.resumeCandidate && (!options.rebuild || !options.deferActivation)) {
+        throw new Error('Recall candidate resume requires a staged rebuild');
+      }
+      if (options.reuseActiveVectors && (!options.rebuild || !options.deferActivation)) {
+        throw new Error('Recall active vector reuse requires a staged rebuild');
+      }
+      const maintenanceLockPath =
+        options.rebuild && options.deferActivation
+          ? `${config.lockPath}.candidate-construction`
+          : config.lockPath;
       const releaseLock = await acquireRecallConversationLock(
-        config.lockPath,
+        maintenanceLockPath,
         options.signal,
         options.onProgress
           ? () => options.onProgress?.({ kind: 'waiting-for-write-lock' })
           : undefined,
       );
       let store: DenseRecallConversationStore | undefined;
+      let vectorReuseStore: ZvecConversationStore | undefined;
       let candidate: RecallDatabaseCandidate | undefined;
       try {
         const ignoredPhysicalSessionPaths: ReadonlySet<string> = new Set(
@@ -579,17 +623,41 @@ export function createRecallConversationService(
         );
         candidate =
           options.rebuild && config.databaseGenerationRootPath
-            ? await createRecallDatabaseCandidate(config)
+            ? options.resumeCandidate
+              ? await resumeRecallDatabaseCandidate(config)
+              : await createRecallDatabaseCandidate(config)
             : undefined;
         if (candidate) {
-          options.onProgress?.({
-            kind: 'preparing-rebuild-candidate',
-            staleCandidatesRemoved: candidate.staleCandidatesRemoved,
-          });
+          options.onProgress?.(
+            options.resumeCandidate
+              ? { kind: 'resuming-rebuild-candidate' }
+              : {
+                  kind: 'preparing-rebuild-candidate',
+                  staleCandidatesRemoved: candidate.staleCandidatesRemoved,
+                },
+          );
         }
         const activePaths = candidate
           ? candidate.paths
           : await resolveActiveRecallDatabasePaths(config);
+        if (options.reuseActiveVectors) {
+          const vectorReusePaths = await resolveActiveRecallDatabasePaths(config);
+          const vectorReuseEmbedding = await readVectorReuseEmbeddingIdentity(
+            vectorReusePaths.manifestPath,
+          );
+          const expectedEmbedding = createExpectedManifest().embedding;
+          if (JSON.stringify(vectorReuseEmbedding) !== JSON.stringify(expectedEmbedding)) {
+            throw new Error(
+              `Recall active vector reuse profile incompatible at ${vectorReusePaths.manifestPath}`,
+            );
+          }
+          vectorReuseStore = openZvecConversationStore({
+            databasePath: vectorReusePaths.databasePath,
+            dimensions: config.embeddingStoredDimensions,
+            createIfMissing: false,
+            readOnly: true,
+          });
+        }
         if (options.rebuild && !candidate) {
           await rm(activePaths.indexMaintenanceStatusPath, { force: true });
           await rm(activePaths.databasePath, { recursive: true, force: true });
@@ -607,6 +675,18 @@ export function createRecallConversationService(
           catalogPath: activePaths.catalogPath,
           legacyStatePath: activePaths.statePath,
           store,
+          ...(vectorReuseStore
+            ? {
+                vectorReuseStore: {
+                  fetchDocuments(ids) {
+                    return vectorReuseStore?.fetchConversationChunks(ids) ?? new Map();
+                  },
+                  fetchVectors(ids) {
+                    return vectorReuseStore?.fetchVectors(ids) ?? new Map();
+                  },
+                },
+              }
+            : {}),
           embeddingProvider,
           tokenizer: conversationTokenizer,
           ignoredPhysicalSessionPaths,
@@ -660,6 +740,17 @@ export function createRecallConversationService(
               kind: 'candidate-failed',
               staleCandidatesRemoved: candidate.staleCandidatesRemoved,
             };
+          } else if (options.deferActivation) {
+            const staged = await stageRecallDatabaseCandidate(config, candidate);
+            options.onProgress?.({
+              kind: 'rebuild-candidate-staged',
+              databaseTarget: staged.databaseTarget,
+            });
+            databaseTransition = {
+              kind: 'candidate-staged',
+              databaseTarget: staged.databaseTarget,
+              staleCandidatesRemoved: candidate.staleCandidatesRemoved,
+            };
           } else {
             const activation = await activateRecallDatabaseCandidate(config, candidate);
             options.onProgress?.({
@@ -681,7 +772,24 @@ export function createRecallConversationService(
         }
         throw error;
       } finally {
+        vectorReuseStore?.close();
         store?.close();
+        await releaseLock();
+      }
+    },
+
+    async activate(databaseTarget, options = {}) {
+      const releaseLock = await acquireRecallConversationLock(
+        config.lockPath,
+        options.signal,
+        options.onProgress
+          ? () => options.onProgress?.({ kind: 'waiting-for-write-lock' })
+          : undefined,
+      );
+      try {
+        const activation = await activateStagedRecallDatabase(config, databaseTarget);
+        return { kind: 'staged-activated', previousAvailable: activation.previousAvailable };
+      } finally {
         await releaseLock();
       }
     },

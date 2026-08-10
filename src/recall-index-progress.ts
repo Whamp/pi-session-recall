@@ -5,7 +5,9 @@ export type RecallIndexProgressEvent =
   | { kind: 'discovering-physical-session-files' }
   | { kind: 'planning-maintenance-workset' }
   | { kind: 'preparing-rebuild-candidate'; staleCandidatesRemoved: number }
+  | { kind: 'resuming-rebuild-candidate' }
   | { kind: 'rebuild-candidate-failed' }
+  | { kind: 'rebuild-candidate-staged'; databaseTarget: string }
   | { kind: 'rebuild-candidate-activated'; previousAvailable: boolean }
   | {
       kind: 'maintenance-workset-planned';

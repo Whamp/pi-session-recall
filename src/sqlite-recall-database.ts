@@ -191,6 +191,25 @@ export interface SqliteRecallInvocationSearchResult extends InvocationRecord {
   rank: number;
 }
 
+/** One coherent normal-search read from a single committed SQLite snapshot. */
+export interface SqliteRecallSearchSnapshot {
+  denseCandidates: RecallDenseCandidate[];
+  invocationCandidates: SqliteRecallInvocationSearchResult[];
+  denseDocuments: Map<string, SessionConversationChunk>;
+  counts: SqliteRecallDatabaseCounts;
+}
+
+/** Inputs for one combined dense, Invocation, neighbor, and count snapshot read. */
+export interface SqliteRecallSearchRequest {
+  embedding: readonly number[];
+  query: string;
+  denseLimit: number;
+  invocationLimit: number;
+  projectIdentity?: ProjectIdentity;
+  /** Coordinates a concurrent-writer isolation test after the snapshot's first read. */
+  onSnapshotEstablished?: () => Promise<void>;
+}
+
 /** Row counts for every physical-session, dense, vector, and Invocation projection. */
 export interface SqliteRecallDatabaseCounts {
   physicalSessions: number;
@@ -257,6 +276,7 @@ export interface SqliteRecallDatabase {
     limit: number,
     projectIdentity?: ProjectIdentity,
   ): SqliteRecallInvocationSearchResult[];
+  searchRecallSnapshot(request: SqliteRecallSearchRequest): Promise<SqliteRecallSearchSnapshot>;
   readCounts(): SqliteRecallDatabaseCounts;
   checkIntegrity(): SqliteRecallIntegrityDiagnostics;
   replacePhysicalSession(replacement: SqliteRecallPhysicalSessionReplacement): void;
@@ -1290,6 +1310,90 @@ export function openSqliteRecallDatabase(
             ? searchInvocationCandidates.all(phrase, limit)
             : searchProjectInvocationCandidates.all(phrase, projectIdentity, limit);
         return rows.map(decodeInvocationSearchResult);
+      },
+      async searchRecallSnapshot(request) {
+        if (
+          !Number.isInteger(request.denseLimit) ||
+          request.denseLimit < 1 ||
+          request.denseLimit > 200
+        ) {
+          throw new Error(
+            'SQLite Recall dense candidate limit invalid: expected an integer from 1 to 200',
+          );
+        }
+        const queryVector = encodeDenseEmbedding(request.embedding, 'query');
+        database.exec('BEGIN');
+        try {
+          let denseRows: SqliteRow[];
+          if (request.projectIdentity === undefined) {
+            denseRows = searchGlobalDenseCandidates.all(queryVector, BigInt(request.denseLimit));
+          } else {
+            const projectRow = readProject.get(request.projectIdentity);
+            if (!projectRow) {
+              denseRows = [];
+            } else {
+              const projectKey = readRequiredInteger(projectRow, 'project_key');
+              denseRows = searchProjectDenseCandidates.all(
+                queryVector,
+                BigInt(request.denseLimit),
+                BigInt(projectKey % SQLITE_RECALL_PROJECT_BUCKET_COUNT),
+                BigInt(projectKey),
+              );
+            }
+          }
+          const denseCandidates = denseRows.map((row) => {
+            const documentId = readRequiredString(row, 'document_id');
+            return {
+              ...parseDenseDocumentMetadata(readRequiredString(row, 'metadata_json'), documentId),
+              cosineDistance: readRequiredNumber(row, 'distance'),
+            };
+          });
+          await request.onSnapshotEstablished?.();
+          const invocationCandidates =
+            !request.query.trim() || request.invocationLimit < 1
+              ? []
+              : (request.projectIdentity === undefined
+                  ? searchInvocationCandidates.all(
+                      createFtsPhrase(request.query.trim()),
+                      request.invocationLimit,
+                    )
+                  : searchProjectInvocationCandidates.all(
+                      createFtsPhrase(request.query.trim()),
+                      request.projectIdentity,
+                      request.invocationLimit,
+                    )
+                ).map(decodeInvocationSearchResult);
+          const denseDocumentIds = Array.from(
+            new Set(
+              denseCandidates.flatMap((candidate) => [candidate.id, ...candidate.siblingIds]),
+            ),
+          );
+          const denseDocuments = new Map<string, SessionConversationChunk>();
+          for (const id of denseDocumentIds) {
+            const row = readDenseDocument.get(id);
+            if (row) {
+              denseDocuments.set(
+                id,
+                parseDenseDocumentMetadata(readRequiredString(row, 'metadata_json'), id),
+              );
+            }
+          }
+          const countRow = readProjectionCounts.get();
+          const counts = {
+            physicalSessions: readRequiredInteger(countRow, 'physical_sessions'),
+            sessionDocuments: readRequiredInteger(countRow, 'session_documents'),
+            invocations: readRequiredInteger(countRow, 'invocations'),
+            denseDocuments: readRequiredInteger(countRow, 'dense_documents'),
+            denseGlobalVectors: readRequiredInteger(countRow, 'dense_global_vectors'),
+            denseProjectVectors: readRequiredInteger(countRow, 'dense_project_vectors'),
+            denseProjects: readRequiredInteger(countRow, 'dense_projects'),
+          };
+          database.exec('COMMIT');
+          return { denseCandidates, invocationCandidates, denseDocuments, counts };
+        } catch (error) {
+          database.exec('ROLLBACK');
+          throw error;
+        }
       },
       readCounts() {
         const row = readProjectionCounts.get();

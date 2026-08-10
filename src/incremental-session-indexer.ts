@@ -46,7 +46,9 @@ export interface ConversationIndexSummary {
 /** Dependencies required to update recall storage from Pi session JSONL files. */
 export interface IncrementalSessionIndexerOptions {
   sessionsDirectory: string;
-  /** Path to the one SQLite Recall database receiving every derived projection. */
+  /** Already-open unified database owned by the service for this maintenance pass. */
+  database?: SqliteRecallDatabase;
+  /** Path used only when the indexer itself owns the database handle. */
   databasePath?: string;
   /** @deprecated Current branch alias for databasePath. */
   catalogPath?: string;
@@ -353,12 +355,15 @@ export async function indexChangedConversationSessions(
   options: IncrementalSessionIndexerOptions,
 ): Promise<ConversationIndexSummary> {
   const databasePath = options.databasePath ?? options.catalogPath;
-  if (!databasePath) {
+  if (!options.database && !databasePath) {
     throw new Error('Recall indexing database path missing');
   }
-  const database = options.legacyStatePath
-    ? openSqliteRecallDatabase(databasePath, { legacyStatePath: options.legacyStatePath })
-    : openSqliteRecallDatabase(databasePath);
+  const database =
+    options.database ??
+    (options.legacyStatePath
+      ? openSqliteRecallDatabase(databasePath ?? '', { legacyStatePath: options.legacyStatePath })
+      : openSqliteRecallDatabase(databasePath ?? ''));
+  const ownsDatabase = options.database === undefined;
   try {
     options.onProgress?.({ kind: 'discovering-physical-session-files' });
     const sessionsDirectory = resolve(options.sessionsDirectory);
@@ -432,6 +437,8 @@ export async function indexChangedConversationSessions(
     }
     return summary;
   } finally {
-    database.close();
+    if (ownsDatabase) {
+      database.close();
+    }
   }
 }

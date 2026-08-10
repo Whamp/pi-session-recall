@@ -823,6 +823,116 @@ void test('SQLite Recall database imports legacy session knowledge once for Invo
 });
 
 void test(
+  'combined normal search reads dense, Invocation, neighbors, and counts from one committed snapshot',
+  { timeout: 30_000 },
+  async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), 'sqlite-recall-search-snapshot-'));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const databasePath = join(directory, 'recall.sqlite');
+    const payloadPath = join(directory, 'replacement.json');
+    const sessionPath = '/sessions/search-snapshot.jsonl';
+    const priorDocument = createTestSessionConversationChunk({
+      id: 'search-snapshot-prior',
+      sessionPath,
+      content: 'prior coherent snapshot',
+    });
+    const embedding = createUnitEmbedding(71);
+    const writer = openSqliteRecallDatabase(databasePath);
+    writer.replacePhysicalSession({
+      sessionPath,
+      size: 1,
+      mtimeMs: 1,
+      documentIds: [priorDocument.id],
+      denseDocuments: [priorDocument],
+      denseEmbeddings: new Map([[priorDocument.id, embedding]]),
+      invocations: [
+        createInvocationRecord(sessionPath, {
+          searchableText: 'tool="read"\npath="/project/prior-coherent.ts"',
+        }),
+      ],
+    });
+    writer.close();
+
+    const replacementDocuments = ['a', 'b'].map((suffix, index) =>
+      createTestSessionConversationChunk({
+        id: `search-snapshot-replacement-${suffix}`,
+        sessionPath,
+        content: `replacement committed snapshot ${index}`,
+      }),
+    );
+    await writeFile(
+      payloadPath,
+      JSON.stringify({
+        sessionPath,
+        size: 2,
+        mtimeMs: 2,
+        documentIds: replacementDocuments.map(({ id }) => id),
+        denseDocuments: replacementDocuments,
+        denseEmbeddings: replacementDocuments.map((document) => [document.id, embedding]),
+        invocations: replacementDocuments.map((_, index) =>
+          createInvocationRecord(sessionPath, {
+            entryId: `replacement-invocation-${index}`,
+            searchableText: `tool="read"\npath="/project/replacement-coherent-${index}.ts"`,
+          }),
+        ),
+      }),
+    );
+
+    const reader = openSqliteRecallDatabase(databasePath, { readOnly: true });
+    t.after(() => reader.close());
+    const snapshot = await reader.searchRecallSnapshot({
+      embedding,
+      query: 'coherent',
+      denseLimit: 8,
+      invocationLimit: 8,
+      async onSnapshotEstablished() {
+        const childScript = `
+          import { readFileSync } from 'node:fs';
+          const { openSqliteRecallDatabase } = await import(process.argv[1]);
+          const replacement = JSON.parse(readFileSync(process.argv[3], 'utf8'));
+          replacement.denseEmbeddings = new Map(replacement.denseEmbeddings);
+          const database = openSqliteRecallDatabase(process.argv[2]);
+          database.replacePhysicalSession(replacement);
+          database.close();
+        `;
+        const child = spawn(
+          process.execPath,
+          [
+            '--import',
+            'tsx',
+            '--input-type=module',
+            '--eval',
+            childScript,
+            new URL('./sqlite-recall-database.ts', import.meta.url).href,
+            databasePath,
+            payloadPath,
+          ],
+          { stdio: 'ignore' },
+        );
+        assert.deepEqual(await waitForChildProcess(child), { code: 0, signal: null });
+      },
+    });
+
+    assert.deepEqual(
+      snapshot.denseCandidates.map(({ id }) => id),
+      [priorDocument.id],
+    );
+    assert.deepEqual(
+      snapshot.invocationCandidates.map(({ entryId }) => entryId),
+      ['assistant-1'],
+    );
+    assert.deepEqual(snapshot.denseDocuments, new Map([[priorDocument.id, priorDocument]]));
+    assert.equal(snapshot.counts.denseDocuments, 1);
+    assert.equal(snapshot.counts.invocations, 1);
+
+    const committed = openSqliteRecallDatabase(databasePath, { readOnly: true });
+    t.after(() => committed.close());
+    assert.equal(committed.readCounts().denseDocuments, 2);
+    assert.equal(committed.readCounts().invocations, 2);
+  },
+);
+
+void test(
   'a concurrent reader sees the prior complete snapshot and SIGKILL restores it',
   { timeout: 30_000 },
   async (t) => {

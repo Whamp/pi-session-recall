@@ -4,7 +4,11 @@ import { dirname } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 import { RecallEvidenceRelation, RecallProjectIdentitySource, RecallSearchScope } from './enums.js';
-import { fuseRecallSearchCandidates } from './fuse-recall-search-candidates.js';
+import {
+  fuseRecallSearchCandidates,
+  RECALL_RANK_FUSION_VERSION,
+  RECALL_RRF_RANK_CONSTANT,
+} from './fuse-recall-search-candidates.js';
 import {
   combineCompactRecallResults,
   COMPACT_RECALL_MIXED_RESULT_POLICY_VERSION,
@@ -12,10 +16,6 @@ import {
   type CompactRecallInvocationResult,
   type CompactRecallSearchResult,
 } from './combine-compact-recall-results.js';
-import {
-  openDenseRecallConversationStore,
-  type DenseRecallConversationStore,
-} from './dense-recall-conversation-store.js';
 import {
   indexChangedConversationSessions,
   type ConversationIndexSummary,
@@ -40,6 +40,7 @@ import type { RecallEmbeddingProvider } from './recall-inference-capabilities.js
 import {
   assertRecallIndexManifestCompatible,
   createRecallIndexManifest,
+  detectRecallIndexManifestLayout,
   readRecallIndexManifest,
   writeRecallIndexManifest,
   type RecallEmbeddingModelIdentity,
@@ -51,8 +52,13 @@ import {
   writeRecallIndexMaintenanceStatus,
   type RecallIndexMaintenanceStatus,
 } from './recall-index-maintenance-status.js';
-import { openRecallCatalog } from './openRecallCatalog.js';
-import { isUnknownRecord } from './is-unknown-record.js';
+import {
+  assertLegacyV6RecallDatabaseCompatible,
+  indexLegacyV6RecallDatabase,
+  openLegacyV6VectorReuseReader,
+  searchLegacyV6RecallDatabase,
+} from './legacy-v6-recall-adapter.js';
+import { createLegacyV6RecallIndexManifest } from './legacy-v6-recall-index-manifest.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
 import {
   createLineageResolver,
@@ -65,12 +71,12 @@ import {
   rankFusedRecallSearchResults,
   RECALL_ACTIVE_BRANCH_PRIOR,
 } from './rank-recall-search-results.js';
-import type { ConversationTextTokenizer } from './session-conversation-index.js';
+import type {
+  ConversationTextTokenizer,
+  SessionConversationChunk,
+} from './session-conversation-index.js';
 import { searchSessionSourceFiles, type SessionSourceSearch } from './session-source-search.js';
-import {
-  openZvecConversationStore,
-  type ZvecConversationStore,
-} from './zvec-conversation-store.js';
+import { openSqliteRecallDatabase, type SqliteRecallDatabase } from './sqlite-recall-database.js';
 
 /** Paths, one Octen profile, and bounded compact-layout retrieval settings. */
 export interface RecallConversationConfig {
@@ -113,15 +119,25 @@ export interface RecallConversationSearchOptions {
   signal?: AbortSignal;
 }
 
-/** Reports the fixed compact mixed-result settings used by one search. */
-export interface RecallSearchPolicy {
-  scope: RecallSearchScope;
-  invocationProjectIdentity: ProjectIdentity | null;
-  rankingMode: 'compact';
-  mixedResultPolicyVersion: number;
-  activeBranchPrior: number;
-  candidateLimits: RecallSearchCandidateLimits;
-}
+/** Reports the manifest-selected retrieval policy used by one search. */
+export type RecallSearchPolicy =
+  | {
+      scope: RecallSearchScope;
+      invocationProjectIdentity: ProjectIdentity | null;
+      rankingMode: 'compact';
+      mixedResultPolicyVersion: number;
+      activeBranchPrior: number;
+      candidateLimits: RecallSearchCandidateLimits;
+    }
+  | {
+      scope: RecallSearchScope;
+      invocationProjectIdentity: ProjectIdentity | null;
+      rankingMode: 'legacy-v6-hybrid';
+      rankFusionVersion: number;
+      reciprocalRankConstant: number;
+      activeBranchPrior: number;
+      candidateLimits: { dense: number; lexical: number; identifier: number };
+    };
 
 /** One ranked dense conversation result labeled by its relationship to the invoking project. */
 export type RecallConversationSearchResult = CompactRecallConversationResult;
@@ -224,17 +240,9 @@ export interface RecallConversationDependencies {
   embeddingProvider?: RecallEmbeddingProvider;
   tokenizerIdentity?: RecallTokenizerManifestIdentity;
   loadTokenizer?: () => Promise<ConversationTextTokenizer>;
-  openStore?: (mode: 'read' | 'write', databasePath: string) => DenseRecallConversationStore;
+  openDatabase?: (databasePath: string, options?: { readOnly?: boolean }) => SqliteRecallDatabase;
   resolveProjectIdentity?: (workingDirectory: string) => Promise<ResolvedProjectIdentity | null>;
   getCurrentTime?: () => Date;
-}
-
-async function readVectorReuseEmbeddingIdentity(manifestPath: string): Promise<unknown> {
-  const manifest: unknown = JSON.parse(await readFile(manifestPath, 'utf8'));
-  if (!isUnknownRecord(manifest) || !isUnknownRecord(manifest.embedding)) {
-    throw new Error(`Recall active vector reuse manifest invalid at ${manifestPath}`);
-  }
-  return manifest.embedding;
 }
 
 function readLockOwnerProcessId(value: string): number | undefined {
@@ -365,14 +373,7 @@ export function createRecallConversationService(
     dependencies.resolveProjectIdentity ?? resolveProjectIdentity,
   );
   const getCurrentTime = dependencies.getCurrentTime ?? (() => new Date());
-  const openStore =
-    dependencies.openStore ??
-    ((mode, databasePath) =>
-      openDenseRecallConversationStore({
-        databasePath,
-        createIfMissing: mode === 'write',
-        readOnly: mode === 'read',
-      }));
+  const openDatabase = dependencies.openDatabase ?? openSqliteRecallDatabase;
   let tokenizer: ConversationTextTokenizer | undefined;
 
   async function resolveSearchInvocation(options: RecallConversationSearchOptions) {
@@ -393,6 +394,17 @@ export function createRecallConversationService(
 
   function createExpectedManifest(): RecallIndexManifest {
     return createRecallIndexManifest({
+      embeddingIdentity: createEmbeddingModelIdentity(config),
+      ...(dependencies.tokenizerIdentity
+        ? { tokenizerIdentity: dependencies.tokenizerIdentity }
+        : {}),
+      chunkPolicy: config.chunkPolicy,
+      projectLineages: config.projectLineages,
+    });
+  }
+
+  function createExpectedLegacyV6Manifest() {
+    return createLegacyV6RecallIndexManifest({
       embeddingIdentity: createEmbeddingModelIdentity(config),
       ...(dependencies.tokenizerIdentity
         ? { tokenizerIdentity: dependencies.tokenizerIdentity }
@@ -439,12 +451,7 @@ export function createRecallConversationService(
   async function prepareIndexManifest(paths: RecallDatabasePaths): Promise<RecallIndexManifest> {
     const actual = await readRecallIndexManifest(paths.manifestPath);
     const expected = createExpectedManifest();
-    if (
-      !actual &&
-      (existsSync(paths.databasePath) ||
-        existsSync(paths.catalogPath) ||
-        existsSync(paths.statePath))
-    ) {
+    if (!actual && existsSync(paths.sqliteDatabasePath)) {
       throw new Error(
         `Recall index manifest missing at ${paths.manifestPath} for existing index data; rebuild with psr index --rebuild`,
       );
@@ -464,7 +471,12 @@ export function createRecallConversationService(
         throw new Error('Recall query must not be blank');
       }
       const activePaths = await resolveActiveRecallDatabasePaths(config);
-      await readCompatibleManifest(activePaths);
+      const layout = await detectRecallIndexManifestLayout(activePaths.manifestPath);
+      if (layout === 'legacy-v6') {
+        await assertLegacyV6RecallDatabaseCompatible(activePaths, createExpectedLegacyV6Manifest());
+      } else {
+        await readCompatibleManifest(activePaths);
+      }
       const indexMaintenanceStatus = await readRecallIndexMaintenanceStatus(
         activePaths.indexMaintenanceStatusPath,
       );
@@ -474,72 +486,108 @@ export function createRecallConversationService(
         scope === RecallSearchScope.PROJECT ? invocationProject?.projectIdentity : undefined;
       const queryEmbedding = await embeddingProvider.embedQuery(searchQuery, options.signal);
       await assertRecallIndexUnlockedForSearch(config.lockPath);
-      const catalog = openRecallCatalog(activePaths.catalogPath, { readOnly: true });
-      try {
-        const store = openStore('read', activePaths.databasePath);
-        try {
-          const fusedCandidates = fuseRecallSearchCandidates(
-            {
-              denseCandidates: store.searchDenseCandidates(
-                queryEmbedding,
-                config.searchCandidateLimits.dense,
-                projectIdentity,
-              ),
-              lexicalCandidates: [],
-              identifierCandidates: [],
-            },
-            config.searchCandidateLimits.dense,
-          );
-          const conversations: RecallConversationSearchResult[] = rankFusedRecallSearchResults(
-            fusedCandidates,
-            config.searchCandidateLimits.dense,
-            store.fetchDocuments,
-          ).map((result) => ({
+
+      if (layout === 'legacy-v6') {
+        const legacySearch = searchLegacyV6RecallDatabase({
+          paths: activePaths,
+          dimensions: config.embeddingStoredDimensions,
+          query: searchQuery,
+          queryEmbedding,
+          resultLimit: limit,
+          candidateLimit: config.searchCandidateLimits.dense,
+          ...(projectIdentity ? { projectIdentity } : {}),
+        });
+        return {
+          results: legacySearch.results.map((result) => ({
             ...result,
-            resultKind: 'conversation',
+            resultKind: 'conversation' as const,
             evidenceRelation: classifyEvidenceRelation(
               result.projectAttribution,
               invocationProject,
             ),
-          }));
-          const invocations: CompactRecallInvocationResult[] = catalog
-            .searchInvocations(
-              searchQuery,
-              config.searchCandidateLimits.invocation,
-              projectIdentity,
-            )
-            .map((result) => ({
-              ...result,
-              resultKind: 'invocation',
-              content: result.searchableText,
-              evidenceRelation: classifyEvidenceRelation(
-                result.projectAttribution,
-                invocationProject,
-              ),
-            }));
-          const documentCounts = {
-            dense: store.countDocuments(),
-            invocations: catalog.countInvocations(),
-          };
-          return {
-            results: combineCompactRecallResults(conversations, invocations, limit),
-            totalChunks: documentCounts.dense,
-            documentCounts,
-            searchPolicy: {
-              scope,
-              invocationProjectIdentity: invocationProject?.projectIdentity ?? null,
-              rankingMode: 'compact',
-              mixedResultPolicyVersion: COMPACT_RECALL_MIXED_RESULT_POLICY_VERSION,
-              activeBranchPrior: RECALL_ACTIVE_BRANCH_PRIOR,
-              candidateLimits: { ...config.searchCandidateLimits },
+          })),
+          totalChunks: legacySearch.totalChunks,
+          documentCounts: { dense: legacySearch.totalChunks, invocations: 0 },
+          searchPolicy: {
+            scope,
+            invocationProjectIdentity: invocationProject?.projectIdentity ?? null,
+            rankingMode: 'legacy-v6-hybrid' as const,
+            rankFusionVersion: RECALL_RANK_FUSION_VERSION,
+            reciprocalRankConstant: RECALL_RRF_RANK_CONSTANT,
+            activeBranchPrior: RECALL_ACTIVE_BRANCH_PRIOR,
+            candidateLimits: {
+              dense: config.searchCandidateLimits.dense,
+              lexical: config.searchCandidateLimits.dense,
+              identifier: config.searchCandidateLimits.dense,
             },
-            indexMaintenanceStatus,
-          };
-        } finally {
-          store.close();
-        }
+          },
+          indexMaintenanceStatus,
+        };
+      }
+
+      const database = openDatabase(activePaths.sqliteDatabasePath, { readOnly: true });
+      try {
+        const snapshot = await database.searchRecallSnapshot({
+          embedding: queryEmbedding,
+          query: searchQuery,
+          denseLimit: config.searchCandidateLimits.dense,
+          invocationLimit: config.searchCandidateLimits.invocation,
+          ...(projectIdentity ? { projectIdentity } : {}),
+        });
+        const fusedCandidates = fuseRecallSearchCandidates(
+          {
+            denseCandidates: snapshot.denseCandidates,
+            lexicalCandidates: [],
+            identifierCandidates: [],
+          },
+          config.searchCandidateLimits.dense,
+        );
+        const conversations: RecallConversationSearchResult[] = rankFusedRecallSearchResults(
+          fusedCandidates,
+          config.searchCandidateLimits.dense,
+          (ids) =>
+            new Map(
+              ids.flatMap((id) => {
+                const document = snapshot.denseDocuments.get(id);
+                return document ? [[id, document] as const] : [];
+              }),
+            ),
+        ).map((result) => ({
+          ...result,
+          resultKind: 'conversation',
+          evidenceRelation: classifyEvidenceRelation(result.projectAttribution, invocationProject),
+        }));
+        const invocations: CompactRecallInvocationResult[] = snapshot.invocationCandidates.map(
+          (result) => ({
+            ...result,
+            resultKind: 'invocation',
+            content: result.searchableText,
+            evidenceRelation: classifyEvidenceRelation(
+              result.projectAttribution,
+              invocationProject,
+            ),
+          }),
+        );
+        const documentCounts = {
+          dense: snapshot.counts.denseDocuments,
+          invocations: snapshot.counts.invocations,
+        };
+        return {
+          results: combineCompactRecallResults(conversations, invocations, limit),
+          totalChunks: documentCounts.dense,
+          documentCounts,
+          searchPolicy: {
+            scope,
+            invocationProjectIdentity: invocationProject?.projectIdentity ?? null,
+            rankingMode: 'compact' as const,
+            mixedResultPolicyVersion: COMPACT_RECALL_MIXED_RESULT_POLICY_VERSION,
+            activeBranchPrior: RECALL_ACTIVE_BRANCH_PRIOR,
+            candidateLimits: { ...config.searchCandidateLimits },
+          },
+          indexMaintenanceStatus,
+        };
       } finally {
-        catalog.close();
+        database.close();
       }
     },
 
@@ -564,36 +612,8 @@ export function createRecallConversationService(
       });
     },
 
-    async optimize(options = {}) {
-      const releaseLock = await acquireRecallConversationLock(
-        config.lockPath,
-        options.signal,
-        options.onProgress
-          ? () => options.onProgress?.({ kind: 'waiting-for-write-lock' })
-          : undefined,
-      );
-      let store: DenseRecallConversationStore | undefined;
-      try {
-        const activePaths = await resolveActiveRecallDatabasePaths(config);
-        await readCompatibleManifest(activePaths);
-        if (!existsSync(activePaths.databasePath)) {
-          throw new Error(`Recall index database missing at ${activePaths.databasePath}`);
-        }
-        store = openStore('write', activePaths.databasePath);
-        options.onProgress?.({ kind: 'optimizing-collection' });
-        await store.optimize();
-        if (options.signal?.aborted) {
-          throw new Error('Recall conversation operation cancelled', {
-            cause: options.signal.reason,
-          });
-        }
-        const totalChunks = store.countDocuments();
-        options.onProgress?.({ kind: 'completed' });
-        return { totalChunks };
-      } finally {
-        store?.close();
-        await releaseLock();
-      }
+    async optimize() {
+      throw new Error('Recall optimization has been retired; normal indexing is update-only');
     },
 
     async index(options = {}) {
@@ -617,8 +637,14 @@ export function createRecallConversationService(
           ? () => options.onProgress?.({ kind: 'waiting-for-write-lock' })
           : undefined,
       );
-      let store: DenseRecallConversationStore | undefined;
-      let vectorReuseStore: ZvecConversationStore | undefined;
+      let database: SqliteRecallDatabase | undefined;
+      let vectorReuseReader:
+        | {
+            fetchDocuments(ids: string[]): Map<string, SessionConversationChunk>;
+            fetchVectors(ids: string[]): Map<string, number[]>;
+            close(): void;
+          }
+        | undefined;
       let candidate: RecallDatabaseCandidate | undefined;
       try {
         const ignoredPhysicalSessionPaths: ReadonlySet<string> = new Set(
@@ -643,53 +669,106 @@ export function createRecallConversationService(
         const activePaths = candidate
           ? candidate.paths
           : await resolveActiveRecallDatabasePaths(config);
+
         if (options.reuseActiveVectors) {
-          const vectorReusePaths = await resolveActiveRecallDatabasePaths(config);
-          const vectorReuseEmbedding = await readVectorReuseEmbeddingIdentity(
-            vectorReusePaths.manifestPath,
-          );
-          const expectedEmbedding = createExpectedManifest().embedding;
-          if (JSON.stringify(vectorReuseEmbedding) !== JSON.stringify(expectedEmbedding)) {
+          const reusePaths = await resolveActiveRecallDatabasePaths(config);
+          const reuseLayout = await detectRecallIndexManifestLayout(reusePaths.manifestPath);
+          const expectedEmbedding = createEmbeddingModelIdentity(config);
+          if (reuseLayout === 'legacy-v6') {
+            const manifest = await assertLegacyV6RecallDatabaseCompatible(
+              reusePaths,
+              createExpectedLegacyV6Manifest(),
+            );
+            if (JSON.stringify(manifest.embedding) !== JSON.stringify(expectedEmbedding)) {
+              throw new Error(
+                `Recall active vector reuse profile incompatible at ${reusePaths.manifestPath}`,
+              );
+            }
+            vectorReuseReader = openLegacyV6VectorReuseReader(
+              reusePaths,
+              config.embeddingStoredDimensions,
+            );
+          } else {
+            const manifest = await readCompatibleManifest(reusePaths);
+            if (JSON.stringify(manifest.embedding) !== JSON.stringify(expectedEmbedding)) {
+              throw new Error(
+                `Recall active vector reuse profile incompatible at ${reusePaths.manifestPath}`,
+              );
+            }
+            const reuseDatabase = openDatabase(reusePaths.sqliteDatabasePath, { readOnly: true });
+            vectorReuseReader = {
+              fetchDocuments: (ids) => reuseDatabase.fetchDenseDocuments(ids),
+              fetchVectors: (ids) => reuseDatabase.fetchDenseVectors(ids),
+              close: () => reuseDatabase.close(),
+            };
+          }
+        }
+
+        const targetIsVersion8 =
+          candidate !== undefined || options.rebuild || !existsSync(activePaths.manifestPath);
+        if (!targetIsVersion8) {
+          const layout = await detectRecallIndexManifestLayout(activePaths.manifestPath);
+          if (layout !== 'legacy-v6') {
+            await readCompatibleManifest(activePaths);
+          } else {
+            const manifest = await assertLegacyV6RecallDatabaseCompatible(
+              activePaths,
+              createExpectedLegacyV6Manifest(),
+            );
+            const conversationTokenizer = await getTokenizer();
+            const legacyResult = await indexLegacyV6RecallDatabase({
+              paths: activePaths,
+              dimensions: config.embeddingStoredDimensions,
+              sessionsDirectory: config.sessionsDirectory,
+              embeddingProvider,
+              tokenizer: conversationTokenizer,
+              chunkPolicy: {
+                maxTokens: manifest.chunkPolicy.maxTokens,
+                overlapTokens: manifest.chunkPolicy.overlapTokens,
+              },
+              ignoredPhysicalSessionPaths,
+              resolveProjectIdentity: resolveSearchProjectIdentity,
+              ...(options.signal ? { signal: options.signal } : {}),
+              ...(options.onProgress ? { onProgress: options.onProgress } : {}),
+            });
+            await writeRecallIndexMaintenanceStatus(activePaths.indexMaintenanceStatusPath, {
+              version: 1,
+              completedAt: getCurrentTime().toISOString(),
+              scannedSessions: legacyResult.indexSummary.scannedSessions,
+              failedSessions: legacyResult.indexSummary.failedSessions.length,
+            });
+            options.onProgress?.({ kind: 'completed' });
+            return {
+              indexSummary: legacyResult.indexSummary,
+              totalChunks: legacyResult.totalChunks,
+              documentCounts: { dense: legacyResult.totalChunks, invocations: 0 },
+              databaseTransition: { kind: 'active-updated' as const },
+            };
+          }
+        }
+
+        if (options.rebuild && !candidate) {
+          if (
+            existsSync(activePaths.manifestPath) &&
+            (await detectRecallIndexManifestLayout(activePaths.manifestPath)) === 'legacy-v6'
+          ) {
             throw new Error(
-              `Recall active vector reuse profile incompatible at ${vectorReusePaths.manifestPath}`,
+              'Recall version 8 rebuild cannot replace an unversioned legacy-v6 rollback database; configure staged database generations',
             );
           }
-          vectorReuseStore = openZvecConversationStore({
-            databasePath: vectorReusePaths.databasePath,
-            dimensions: config.embeddingStoredDimensions,
-            createIfMissing: false,
-            readOnly: true,
-          });
-        }
-        if (options.rebuild && !candidate) {
           await rm(activePaths.indexMaintenanceStatusPath, { force: true });
-          await rm(activePaths.databasePath, { recursive: true, force: true });
-          await rm(activePaths.catalogPath, { force: true });
-          await rm(activePaths.statePath, { force: true });
+          await rm(activePaths.sqliteDatabasePath, { force: true });
           await rm(activePaths.manifestPath, { force: true });
         }
         const [manifest, conversationTokenizer] = await Promise.all([
           prepareIndexManifest(activePaths),
           getTokenizer(),
         ]);
-        store = openStore('write', activePaths.databasePath);
+        database = openDatabase(activePaths.sqliteDatabasePath);
         const indexSummary = await indexChangedConversationSessions({
           sessionsDirectory: config.sessionsDirectory,
-          catalogPath: activePaths.catalogPath,
-          legacyStatePath: activePaths.statePath,
-          store,
-          ...(vectorReuseStore
-            ? {
-                vectorReuseStore: {
-                  fetchDocuments(ids) {
-                    return vectorReuseStore?.fetchConversationChunks(ids) ?? new Map();
-                  },
-                  fetchVectors(ids) {
-                    return vectorReuseStore?.fetchVectors(ids) ?? new Map();
-                  },
-                },
-              }
-            : {}),
+          database,
+          ...(vectorReuseReader ? { vectorReuseReader } : {}),
           embeddingProvider,
           tokenizer: conversationTokenizer,
           ignoredPhysicalSessionPaths,
@@ -702,26 +781,8 @@ export function createRecallConversationService(
           ...(options.signal ? { signal: options.signal } : {}),
           ...(options.onProgress ? { onProgress: options.onProgress } : {}),
         });
-        if (
-          options.optimize &&
-          (indexSummary.newlyEmbeddedChunks > 0 ||
-            indexSummary.deletedChunks > 0 ||
-            indexSummary.indexedSessions > 0)
-        ) {
-          options.onProgress?.({ kind: 'optimizing-collection' });
-          await store.optimize();
-        }
-        const documentCounts = {
-          dense: store.countDocuments(),
-          invocations: 0,
-        };
-        const catalog = openRecallCatalog(activePaths.catalogPath, { readOnly: true });
-        try {
-          documentCounts.invocations = catalog.countInvocations();
-        } finally {
-          catalog.close();
-        }
-        const totalChunks = documentCounts.dense;
+        const counts = database.readCounts();
+        const documentCounts = { dense: counts.denseDocuments, invocations: counts.invocations };
         if (options.signal?.aborted) {
           throw new Error('Recall conversation operation cancelled', {
             cause: options.signal.reason,
@@ -733,8 +794,8 @@ export function createRecallConversationService(
           scannedSessions: indexSummary.scannedSessions,
           failedSessions: indexSummary.failedSessions.length,
         });
-        store.close();
-        store = undefined;
+        database.close();
+        database = undefined;
         let databaseTransition: RecallDatabaseTransition = { kind: 'active-updated' };
         if (candidate) {
           if (indexSummary.failedSessions.length > 0) {
@@ -768,15 +829,20 @@ export function createRecallConversationService(
           }
         }
         options.onProgress?.({ kind: 'completed' });
-        return { indexSummary, totalChunks, documentCounts, databaseTransition };
+        return {
+          indexSummary,
+          totalChunks: documentCounts.dense,
+          documentCounts,
+          databaseTransition,
+        };
       } catch (error) {
         if (candidate) {
           options.onProgress?.({ kind: 'rebuild-candidate-failed' });
         }
         throw error;
       } finally {
-        vectorReuseStore?.close();
-        store?.close();
+        vectorReuseReader?.close();
+        database?.close();
         await releaseLock();
       }
     },

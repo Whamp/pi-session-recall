@@ -5,14 +5,16 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import { RecallEvidenceRelation, RecallSearchScope } from './enums.js';
-import type { RecallSearchResult } from './fuse-recall-search-candidates.js';
 import { measureRecallQuality } from './measure-recall-quality.js';
 import {
   parseQualityCaseId,
   parseQualityEntryId,
   type RecallQualityEvaluationCase,
 } from './recall-quality-corpus.js';
-import type { RankedRecallSearchResult } from './rank-recall-search-results.js';
+import type {
+  RankedRecallSearchResult,
+  RecallDenseSearchResult,
+} from './rank-recall-search-results.js';
 import {
   readSessionConversationChunks,
   type ConversationTextTokenizer,
@@ -29,18 +31,17 @@ const tokenizer: ConversationTextTokenizer = {
 
 function createSearchResult(
   chunk: SessionConversationChunk,
-  fusedScore: number,
-): RecallSearchResult {
+  cosineDistance: number,
+): RecallDenseSearchResult {
   return {
     ...chunk,
-    dense: { rank: 1, cosineDistance: 0.1 },
-    lexical: null,
-    identifier: null,
-    fusedScore,
+    cosineDistance,
+    denseRank: 1,
+    denseReciprocalRankScore: 1 - cosineDistance,
   };
 }
 
-void test('recall quality measures candidate-pool and fused final source preservation', async (t) => {
+void test('recall quality measures candidate-pool and final source preservation', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'measure-recall-quality-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const content = 'Release Meridian used sha256:4c91d7e2 and rollback tag meridian-safe-3.';

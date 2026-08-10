@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readdir, readlink, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readlink, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -191,6 +191,16 @@ void test('recall quality runner indexes and searches only the bounded declared 
   assert.ok(result.configurations[0]?.measurement.queryLatencyByScope.project);
   assert.equal(await readlink(join(directory, 'active')), baseGenerationTarget);
   assert.deepEqual(await readdir(join(directory, baseGenerationTarget)), []);
+  await assert.rejects(stat(baseConfig.catalogPath), { code: 'ENOENT' });
+  await stat(
+    join(
+      evaluationDirectory,
+      '.recall-data',
+      'recall-quality-evaluation',
+      '512-64',
+      'recall-catalog.sqlite',
+    ),
+  );
 
   await assert.rejects(
     () =>

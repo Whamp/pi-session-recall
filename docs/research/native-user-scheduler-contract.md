@@ -1,6 +1,6 @@
 # Native user-scheduler contract
 
-> The single-job cadence in this investigation was first superseded by [Split scheduled indexing from zvec optimization](../adr/0008-split-scheduled-indexing-from-zvec-optimization.md), then its default daily optimization was superseded by [Keep index optimization explicit](../adr/0009-keep-index-optimization-explicit.md). The interval validation, native lifecycle, path capture, and platform constraints below still apply.
+> The single-job cadence in this investigation was first superseded by [Split scheduled indexing from zvec optimization](../adr/0008-split-scheduled-indexing-from-zvec-optimization.md), then its default daily optimization was superseded by [Keep index optimization explicit](../adr/0009-keep-index-optimization-explicit.md), and optimization was removed by [Remove legacy recall optimization](../adr/0013-remove-legacy-recall-optimization.md). The interval validation, native lifecycle, path capture, and platform constraints below still apply.
 
 ## Decision
 

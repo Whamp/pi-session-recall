@@ -28,7 +28,6 @@ function createPsrCliFixture(
   } = {},
 ) {
   const calls: RecallConversationIndexOptions[] = [];
-  const optimizeCalls: RecallConversationIndexOptions[] = [];
   const activateCalls: Array<{ databaseTarget: string; options: RecallConversationIndexOptions }> =
     [];
   const rollbackCalls: RecallConversationIndexOptions[] = [];
@@ -89,20 +88,13 @@ function createPsrCliFixture(
       activateCalls.push({ databaseTarget, options: activateOptions ?? {} });
       return { kind: 'staged-activated' as const, previousAvailable: true };
     },
-    async optimize(optimizeOptions) {
-      optimizeCalls.push(optimizeOptions ?? {});
-      optimizeOptions?.onProgress?.({ kind: 'optimizing-collection' });
-      optimizeOptions?.onProgress?.({ kind: 'completed' });
-      return { totalChunks: 7 };
-    },
     async rollback(rollbackOptions) {
       rollbackCalls.push(rollbackOptions ?? {});
-      return { kind: 'previous-restored' as const };
+      return { kind: 'previous-restored' as const, requiresLegacyRelease: true };
     },
   } satisfies RecallConversationMaintenanceService;
   return {
     calls,
-    optimizeCalls,
     activateCalls,
     rollbackCalls,
     output,
@@ -252,11 +244,10 @@ void test('psr ignore rejects malformed or noncanonical persisted policy state',
 void test('psr ignore rejects invalid subcommands and arity with the complete usage', async () => {
   const fixture = createPsrCliFixture();
   const usage = [
-    'psr usage: psr index [--rebuild] [--stage] [--resume] [--reuse-active-vectors] [--compact] [--no-optimize]',
+    'psr usage: psr index [--rebuild] [--stage] [--resume] [--compact]',
     '           psr activate <database-target>',
-    '           psr optimize',
     '           psr rollback',
-    '           psr auto-index install [--interval <N>m|<N>h] [--optimize-daily]',
+    '           psr auto-index install [--interval <N>m|<N>h]',
     '           psr auto-index uninstall',
     '           psr ignore add <session-path>',
     '           psr ignore list',
@@ -294,7 +285,6 @@ void test('psr index keeps progress on stderr and the completed summary on stdou
       ignoredRemovals: 0,
       rebuild: false,
     },
-    { kind: 'optimizing-collection' },
     { kind: 'completed' },
   ]);
 
@@ -304,7 +294,7 @@ void test('psr index keeps progress on stderr and the completed summary on stdou
   assert.equal(fixture.calls.length, 1);
   assert.deepEqual(
     { ...fixture.calls[0], onProgress: typeof fixture.calls[0]?.onProgress },
-    { rebuild: false, optimize: false, onProgress: 'function' },
+    { rebuild: false, onProgress: 'function' },
   );
   assert.equal(fixture.executionLog[0], 'write progress');
   assert.equal(fixture.executionLog[1], 'load config');
@@ -317,29 +307,19 @@ void test('psr index keeps progress on stderr and the completed summary on stdou
   assert.doesNotMatch(fixture.progressOutput.join(''), /7 dense documents/iu);
 });
 
-void test('psr index --no-optimize remains an update-only compatibility flag', async () => {
+void test('psr rejects removed optimization maintenance commands and flags', async () => {
   const fixture = createPsrCliFixture();
 
-  const exitCode = await runPsrCli(['index', '--no-optimize'], fixture.dependencies);
+  for (const argumentsList of [
+    ['optimize'],
+    ['index', '--no-optimize'],
+    ['auto-index', 'install', '--optimize-daily'],
+  ]) {
+    await assert.rejects(runPsrCli(argumentsList, fixture.dependencies), /psr usage: psr index/u);
+  }
 
-  assert.equal(exitCode, 0);
-  assert.equal(fixture.calls.length, 1);
-  assert.deepEqual(
-    { ...fixture.calls[0], onProgress: typeof fixture.calls[0]?.onProgress },
-    { rebuild: false, optimize: false, onProgress: 'function' },
-  );
-});
-
-void test('psr optimize compacts the existing collection without indexing sessions', async () => {
-  const fixture = createPsrCliFixture();
-
-  const exitCode = await runPsrCli(['optimize'], fixture.dependencies);
-
-  assert.equal(exitCode, 0);
   assert.deepEqual(fixture.calls, []);
-  assert.equal(fixture.optimizeCalls.length, 1);
-  assert.equal(fixture.output.join(''), 'Optimized 7 searchable documents.\n');
-  assert.match(fixture.progressOutput.join(''), /Optimizing searchable collection/iu);
+  assert.deepEqual(fixture.schedulerProcessCalls, []);
 });
 
 void test('psr index writes a readable multiline summary with elapsed time', async () => {
@@ -582,7 +562,6 @@ void test('psr index throttles routine updates but emits phase changes and warni
         deletedDocuments: 1,
         failedSessions: 1,
       },
-      { kind: 'optimizing-collection' },
     ],
     { monotonicTimes: [0, 10, 500, 600, 700, 800, 1_700, 1_710] },
   );
@@ -591,7 +570,6 @@ void test('psr index throttles routine updates but emits phase changes and warni
 
   assert.equal(fixture.progressOutput.filter((line) => /^\s+\d+\/\d+ files/u.test(line)).length, 3);
   assert.match(fixture.progressOutput.join(''), new RegExp(failedPath, 'u'));
-  assert.match(fixture.progressOutput.join(''), /Optimizing searchable collection/iu);
 });
 
 void test('psr index prints terminal file progress before the throttle interval elapses', async () => {
@@ -687,7 +665,7 @@ void test('psr index --rebuild explicitly replaces the index', async () => {
   assert.equal(fixture.calls.length, 1);
   assert.deepEqual(
     { ...fixture.calls[0], onProgress: typeof fixture.calls[0]?.onProgress },
-    { rebuild: true, optimize: false, onProgress: 'function' },
+    { rebuild: true, onProgress: 'function' },
   );
 });
 
@@ -706,7 +684,7 @@ void test('psr index --rebuild --stage leaves the database target ready for cert
   assert.equal(exitCode, 0);
   assert.deepEqual(
     { ...fixture.calls[0], onProgress: typeof fixture.calls[0]?.onProgress },
-    { rebuild: true, deferActivation: true, optimize: false, onProgress: 'function' },
+    { rebuild: true, deferActivation: true, onProgress: 'function' },
   );
   assert.match(fixture.output.join(''), new RegExp(`staged at ${databaseTarget}`, 'u'));
   assert.match(fixture.output.join(''), /active database unchanged/iu);
@@ -734,33 +712,10 @@ void test('psr index resumes the interrupted staged rebuild without replacing it
       rebuild: true,
       deferActivation: true,
       resumeCandidate: true,
-      optimize: false,
       onProgress: 'function',
     },
   );
   assert.match(fixture.progressOutput.join(''), /Resuming the interrupted candidate/iu);
-});
-
-void test('psr index opts into checksum-verified active vector reuse for a staged rebuild', async () => {
-  const fixture = createPsrCliFixture();
-
-  const exitCode = await runPsrCli(
-    ['index', '--rebuild', '--stage', '--resume', '--reuse-active-vectors'],
-    fixture.dependencies,
-  );
-
-  assert.equal(exitCode, 0);
-  assert.deepEqual(
-    { ...fixture.calls[0], onProgress: typeof fixture.calls[0]?.onProgress },
-    {
-      rebuild: true,
-      deferActivation: true,
-      resumeCandidate: true,
-      reuseActiveVectors: true,
-      optimize: false,
-      onProgress: 'function',
-    },
-  );
 });
 
 void test('psr activate switches only the named staged database target', async () => {
@@ -805,22 +760,6 @@ void test('psr index --resume requires a staged rebuild', async () => {
   assert.deepEqual(fixture.calls, []);
 });
 
-void test('psr index --reuse-active-vectors requires a staged rebuild', async () => {
-  const fixture = createPsrCliFixture();
-
-  for (const argumentsList of [
-    ['index', '--reuse-active-vectors'],
-    ['index', '--rebuild', '--reuse-active-vectors'],
-    ['index', '--stage', '--reuse-active-vectors'],
-  ]) {
-    await assert.rejects(
-      runPsrCli(argumentsList, fixture.dependencies),
-      /psr index --reuse-active-vectors requires --rebuild --stage/u,
-    );
-  }
-  assert.deepEqual(fixture.calls, []);
-});
-
 void test('psr rebuild output distinguishes activated, previous, stale, and failed databases', async () => {
   const activated = createPsrCliFixture(
     [
@@ -860,7 +799,10 @@ void test('psr rollback restores the previous database under the maintenance ser
   assert.equal(await runPsrCli(['rollback'], fixture.dependencies), 0);
 
   assert.equal(fixture.rollbackCalls.length, 1);
-  assert.equal(fixture.output.join(''), 'Previous recall database restored and now active.\n');
+  assert.equal(
+    fixture.output.join(''),
+    'Previous version 6 recall database restored. Redeploy release 8402107 before search or indexing.\n',
+  );
   assert.deepEqual(fixture.calls, []);
 });
 
@@ -870,28 +812,22 @@ void test('psr auto-index install defaults to update-only indexing', async () =>
   const exitCode = await runPsrCli(['auto-index', 'install'], fixture.dependencies);
 
   assert.equal(exitCode, 0);
-  assert.equal(
-    fixture.output.join(''),
-    'Automatic recall indexing installed every 1h; optimization remains manual.\n',
-  );
+  assert.equal(fixture.output.join(''), 'Automatic recall indexing installed every 1h.\n');
   assert.equal(fixture.schedulerProcessCalls.length, 6);
   assert.deepEqual(fixture.calls, []);
 });
 
-void test('psr auto-index install accepts an interval and explicit daily optimization', async () => {
+void test('psr auto-index install accepts a custom update interval', async () => {
   const fixture = createPsrCliFixture();
 
   const exitCode = await runPsrCli(
-    ['auto-index', 'install', '--optimize-daily', '--interval', '30m'],
+    ['auto-index', 'install', '--interval', '30m'],
     fixture.dependencies,
   );
 
   assert.equal(exitCode, 0);
-  assert.equal(
-    fixture.output.join(''),
-    'Automatic recall indexing installed every 30m; optimization scheduled daily at 23:00.\n',
-  );
-  assert.equal(fixture.schedulerProcessCalls.length, 4);
+  assert.equal(fixture.output.join(''), 'Automatic recall indexing installed every 30m.\n');
+  assert.equal(fixture.schedulerProcessCalls.length, 6);
 });
 
 void test('psr auto-index install reports a nonfatal immediate indexing warning', async () => {
@@ -909,10 +845,7 @@ void test('psr auto-index install reports a nonfatal immediate indexing warning'
   const exitCode = await runPsrCli(['auto-index', 'install'], fixture.dependencies);
 
   assert.equal(exitCode, 0);
-  assert.equal(
-    fixture.output.join(''),
-    'Automatic recall indexing installed every 1h; optimization remains manual.\n',
-  );
+  assert.equal(fixture.output.join(''), 'Automatic recall indexing installed every 1h.\n');
   assert.match(
     fixture.progressOutput.join(''),
     /Warning: Automatic recall indexing was installed, but the immediate psr index attempt failed: psr index exited with status 1/iu,
@@ -942,20 +875,6 @@ void test('psr auto-index rejects invalid intervals before touching index mainte
 
   assert.deepEqual(fixture.calls, []);
   assert.deepEqual(fixture.executionLog, []);
-});
-
-void test('psr auto-index rejects duplicate optimization flags', async () => {
-  const fixture = createPsrCliFixture();
-
-  await assert.rejects(
-    runPsrCli(
-      ['auto-index', 'install', '--optimize-daily', '--optimize-daily'],
-      fixture.dependencies,
-    ),
-    /psr usage: psr index/u,
-  );
-
-  assert.deepEqual(fixture.schedulerProcessCalls, []);
 });
 
 void test('psr auto-index rejects unsupported platforms with one clear error', async () => {

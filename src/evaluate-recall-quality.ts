@@ -131,7 +131,7 @@ async function runRecallQualityCli(args: readonly string[]): Promise<void> {
   const result = await evaluateRecallQuality();
   const selected = result.selection.selected;
   const decision = selected
-    ? `${selected.chunkPolicy.id}, ${selected.candidateCount} candidates/channel, ${selected.finalCount} final`
+    ? `${selected.chunkPolicy.id}, ${selected.candidateCount} candidates/fast store, ${selected.finalCount} final`
     : result.selection.blockers.join('; ');
   process.stdout.write(
     `Recall quality automated gate ${result.selection.passed ? 'PASS' : 'FAIL'}: ${decision}\nReport: docs/evaluation/recall-quality-report.md\n`,

@@ -1,47 +1,35 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import type { RecallSearchResult } from './fuse-recall-search-candidates.js';
+import { createTestSessionConversationChunk } from './recall-test-utils.js';
 import {
-  createTestRecallSearchResult,
-  createTestSessionConversationChunk,
-} from './recall-test-utils.js';
-import { rankFusedRecallSearchResults } from './rank-recall-search-results.js';
+  rankDenseRecallSearchResults,
+  type RecallDenseCandidate,
+} from './rank-recall-search-results.js';
 
 function createRecallCandidate(
   id: string,
   content: string,
-  overrides: Partial<RecallSearchResult> = {},
-): RecallSearchResult {
-  return createTestRecallSearchResult({
-    id,
-    content,
-    isOnActiveBranch: false,
-    isVisibleInActiveContext: false,
-    timestamp: '2026-07-25T10:00:00Z',
-    ...overrides,
-  });
+  overrides: Partial<RecallDenseCandidate> = {},
+): RecallDenseCandidate {
+  return {
+    ...createTestSessionConversationChunk({
+      id,
+      content,
+      isOnActiveBranch: false,
+      isVisibleInActiveContext: false,
+      timestamp: '2026-07-25T10:00:00Z',
+      ...overrides,
+    }),
+    cosineDistance: overrides.cosineDistance ?? 0.1,
+  };
 }
 
-void test('hybrid ranking rejects weak dense-only matches without hiding exact or strong evidence', () => {
-  const fusedScore = 1 / 61;
-  const results = rankFusedRecallSearchResults(
+void test('dense ranking rejects weak matches and keeps strong matches', () => {
+  const results = rankDenseRecallSearchResults(
     [
-      createRecallCandidate('weak-dense', 'weak', {
-        isOnActiveBranch: true,
-        dense: { rank: 1, cosineDistance: 0.6473 },
-        fusedScore,
-      }),
-      createRecallCandidate('exact', 'exact', {
-        isOnActiveBranch: true,
-        dense: null,
-        lexical: { rank: 1, fullTextScore: 14.25 },
-        fusedScore,
-      }),
-      createRecallCandidate('strong-dense', 'strong', {
-        dense: { rank: 2, cosineDistance: 0.49 },
-        fusedScore: 1 / 62,
-      }),
+      createRecallCandidate('weak-dense', 'weak', { cosineDistance: 0.6473 }),
+      createRecallCandidate('strong-dense', 'strong', { cosineDistance: 0.49 }),
     ],
     5,
     () => new Map(),
@@ -49,11 +37,11 @@ void test('hybrid ranking rejects weak dense-only matches without hiding exact o
 
   assert.deepEqual(
     results.map((result) => result.id),
-    ['exact', 'strong-dense'],
+    ['strong-dense'],
   );
 });
 
-void test('hybrid ranking suppresses overlapping sibling slots and retains exact provenance', () => {
+void test('dense ranking suppresses overlapping sibling slots and retains exact provenance', () => {
   const shared = {
     sessionId: { value: 'shared-session' },
     sessionPath: '/sessions/shared.jsonl',
@@ -72,7 +60,7 @@ void test('hybrid ranking suppresses overlapping sibling slots and retains exact
     chunkIndex: 0,
     siblingIds: ['second'],
     nextSiblingId: 'second',
-    fusedScore: 0.04,
+    cosineDistance: 0.1,
   });
   const second = createRecallCandidate('second', 'gamma delta epsilon', {
     ...shared,
@@ -85,10 +73,10 @@ void test('hybrid ranking suppresses overlapping sibling slots and retains exact
     chunkIndex: 1,
     siblingIds: ['first'],
     previousSiblingId: 'first',
-    fusedScore: 0.03,
+    cosineDistance: 0.2,
   });
 
-  const results = rankFusedRecallSearchResults([first, second], 5, () => new Map());
+  const results = rankDenseRecallSearchResults([first, second], 5, () => new Map());
 
   assert.equal(results.length, 1);
   assert.equal(results[0]?.id, 'first');
@@ -98,16 +86,16 @@ void test('hybrid ranking suppresses overlapping sibling slots and retains exact
   );
 });
 
-void test('hybrid ranking suppresses exact cross-session copies without conflating summaries', () => {
+void test('dense ranking suppresses exact cross-session copies without conflating summaries', () => {
   const original = createRecallCandidate('original', 'same text', {
     checksum: 'same-checksum',
     sessionPath: '/sessions/original.jsonl',
-    fusedScore: 0.04,
+    cosineDistance: 0.1,
   });
   const copy = createRecallCandidate('copy', 'same text', {
     checksum: 'same-checksum',
     sessionPath: '/sessions/copy.jsonl',
-    fusedScore: 0.03,
+    cosineDistance: 0.2,
   });
   const summary = createRecallCandidate('summary', 'same text', {
     checksum: 'same-checksum',
@@ -116,10 +104,10 @@ void test('hybrid ranking suppresses exact cross-session copies without conflati
     summaryKind: 'compaction',
     evidenceKind: 'compaction_summary',
     role: 'summary',
-    fusedScore: 0.02,
+    cosineDistance: 0.3,
   });
 
-  const results = rankFusedRecallSearchResults([copy, summary, original], 5, () => new Map());
+  const results = rankDenseRecallSearchResults([copy, summary, original], 5, () => new Map());
 
   assert.deepEqual(
     results.map((result) => result.id),
@@ -131,15 +119,15 @@ void test('hybrid ranking suppresses exact cross-session copies without conflati
   );
 });
 
-void test('hybrid ranking applies a small active-branch prior without hiding stronger evidence', () => {
-  const results = rankFusedRecallSearchResults(
+void test('dense ranking applies a small active-branch prior without hiding stronger evidence', () => {
+  const results = rankDenseRecallSearchResults(
     [
       createRecallCandidate('active', 'active', {
         isOnActiveBranch: true,
-        fusedScore: 0.02,
+        cosineDistance: 0.3,
       }),
       createRecallCandidate('stronger-abandoned', 'abandoned', {
-        fusedScore: 0.04,
+        cosineDistance: 0.1,
       }),
     ],
     5,
@@ -148,12 +136,12 @@ void test('hybrid ranking applies a small active-branch prior without hiding str
 
   assert.deepEqual(
     results.map((result) => result.id),
-    ['stronger-abandoned', 'active'],
+    ['active', 'stronger-abandoned'],
   );
-  assert.equal(results[1]?.activeBranchPrior, 0.01);
+  assert.equal(results[0]?.activeBranchPrior, 0.01);
 });
 
-void test('hybrid ranking expands only exact contiguous siblings from one visible text run', () => {
+void test('dense ranking expands only exact contiguous siblings from one visible text run', () => {
   const common = {
     sessionId: { value: 'session' },
     sessionPath: '/sessions/source.jsonl',
@@ -208,7 +196,7 @@ void test('hybrid ranking expands only exact contiguous siblings from one visibl
     previousSiblingId: 'winner',
   });
 
-  const results = rankFusedRecallSearchResults(
+  const results = rankDenseRecallSearchResults(
     [winner],
     5,
     (ids) =>
@@ -227,7 +215,7 @@ void test('hybrid ranking expands only exact contiguous siblings from one visibl
   );
 });
 
-void test('hybrid ranking refuses neighbor expansion across a source geometry gap', () => {
+void test('dense ranking refuses neighbor expansion across a source geometry gap', () => {
   const winner = createRecallCandidate('winner', 'gamma delta', {
     sessionPath: '/sessions/source.jsonl',
     entryId: { value: 'entry' },
@@ -258,7 +246,7 @@ void test('hybrid ranking refuses neighbor expansion across a source geometry ga
     nextSiblingId: 'winner',
   });
 
-  const results = rankFusedRecallSearchResults(
+  const results = rankDenseRecallSearchResults(
     [winner],
     5,
     () => new Map([['previous', previous]]),

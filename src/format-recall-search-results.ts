@@ -1,7 +1,9 @@
 import { RecallSearchScope } from './enums.js';
-import type { RecallSearchResult } from './fuse-recall-search-candidates.js';
 import type { RecallConversationSearch } from './recall-conversation-service.js';
-import type { RankedRecallSearchResult } from './rank-recall-search-results.js';
+import type {
+  RankedRecallSearchResult,
+  RecallDenseSearchResult,
+} from './rank-recall-search-results.js';
 
 function truncateRecallExcerpt(content: string, maxCharacters: number): string {
   const normalized = content.replace(/\s+/g, ' ').trim();
@@ -21,7 +23,9 @@ function formatRecallDocumentMetadata(result: RankedRecallSearchResult): string 
   return `${result.summaryKind ?? 'unknown'} summary`;
 }
 
-function formatRecallBranchLabel(result: Pick<RecallSearchResult, 'isOnActiveBranch'>): string {
+function formatRecallBranchLabel(
+  result: Pick<RecallDenseSearchResult, 'isOnActiveBranch'>,
+): string {
   return result.isOnActiveBranch ? 'active branch' : 'abandoned branch';
 }
 
@@ -29,13 +33,13 @@ function formatRecallEvidenceRelation(result: RecallConversationSearch['results'
   return result.evidenceRelation.replaceAll('_', ' ');
 }
 
-function formatRecallDuplicateOccurrence(occurrence: RecallSearchResult): string {
+function formatRecallDuplicateOccurrence(occurrence: RecallDenseSearchResult): string {
   return [
     `Duplicate occurrence: ${formatRecallBranchLabel(occurrence)}`,
     `${occurrence.sessionPath}#${occurrence.entryId.value}`,
     `document ${occurrence.id}`,
     `characters ${occurrence.characterStart}-${occurrence.characterEnd}`,
-    `fused RRF ${occurrence.fusedScore.toFixed(4)}`,
+    `dense #${occurrence.denseRank} cosine distance ${occurrence.cosineDistance.toFixed(4)}`,
   ].join(' · ');
 }
 
@@ -43,23 +47,8 @@ function formatRecallScoreComponents(result: RankedRecallSearchResult): string {
   const components = [
     `ranking ${result.rankingScore.toFixed(4)}`,
     `active prior +${result.activeBranchPrior.toFixed(4)}`,
-    `fused RRF ${result.fusedScore.toFixed(4)}`,
+    `dense #${result.denseRank} cosine distance ${result.cosineDistance.toFixed(4)}`,
   ];
-  if (result.dense) {
-    components.push(
-      `dense #${result.dense.rank} cosine distance ${result.dense.cosineDistance.toFixed(4)}`,
-    );
-  }
-  if (result.lexical) {
-    components.push(
-      `lexical #${result.lexical.rank} FTS ${result.lexical.fullTextScore.toFixed(4)}`,
-    );
-  }
-  if (result.identifier) {
-    components.push(
-      `identifier #${result.identifier.rank} FTS ${result.identifier.fullTextScore.toFixed(4)}`,
-    );
-  }
   return components.join(' · ');
 }
 

@@ -58,18 +58,10 @@ export interface SessionConversationImport {
 /** A token-bounded recall evidence document with complete source and session-graph provenance. */
 export interface SessionConversationChunk {
   schemaVersion: number;
-  documentKind: 'conversation' | 'turn_context' | 'summary' | 'tool';
+  documentKind: 'conversation' | 'turn_context' | 'summary';
   summaryKind: 'compaction' | 'branch' | null;
-  evidenceKind:
-    | 'conversation'
-    | 'turn_context'
-    | 'compaction_summary'
-    | 'branch_summary'
-    | 'tool_call'
-    | 'tool_result'
-    | 'bash_execution';
-  evidencePart: 'content' | 'name' | 'arguments' | 'result' | 'command' | 'output';
-  isDenseSearchable: boolean;
+  evidenceKind: 'conversation' | 'turn_context' | 'compaction_summary' | 'branch_summary';
+  evidencePart: 'content';
   id: string;
   checksum: string;
   sessionId: PiSessionId;
@@ -90,7 +82,7 @@ export interface SessionConversationChunk {
   compactedByEntryIds: PiSessionEntryId[];
   compactionFirstKeptEntryId: PiSessionEntryId | null;
   branchSummaryFromEntryId: PiSessionEntryId | null;
-  role: 'user' | 'assistant' | 'turn' | 'summary' | 'custom' | 'tool';
+  role: 'user' | 'assistant' | 'turn' | 'summary' | 'custom';
   timestamp: string;
   sourceLineStart: number;
   sourceLineEnd: number;
@@ -109,11 +101,6 @@ export interface SessionConversationChunk {
   siblingIds: string[];
   previousSiblingId: string | null;
   nextSiblingId: string | null;
-  toolCallId: string | null;
-  toolName: string | null;
-  toolCallEntryId: PiSessionEntryId | null;
-  toolResultEntryId: PiSessionEntryId | null;
-  toolError: boolean | null;
   content: string;
 }
 
@@ -205,14 +192,8 @@ interface PendingConversationDocumentBase {
   summaryKind: SessionConversationChunk['summaryKind'];
   evidenceKind: SessionConversationChunk['evidenceKind'];
   evidencePart: SessionConversationChunk['evidencePart'];
-  isDenseSearchable: boolean;
   compactionFirstKeptEntryId: string | null;
   branchSummaryFromEntryId: string | null;
-  toolCallId: string | null;
-  toolName: string | null;
-  toolCallEntryId: string | null;
-  toolResultEntryId: string | null;
-  toolError: boolean | null;
   textRun: VisibleConversationTextRun;
 }
 
@@ -1048,14 +1029,8 @@ function createConversationTextDocuments(
     summaryKind: null,
     evidenceKind: 'conversation',
     evidencePart: 'content',
-    isDenseSearchable: true,
     compactionFirstKeptEntryId: null,
     branchSummaryFromEntryId: null,
-    toolCallId: null,
-    toolName: null,
-    toolCallEntryId: null,
-    toolResultEntryId: null,
-    toolError: null,
     textRun,
   }));
 }
@@ -1077,7 +1052,6 @@ function createSummaryTextDocument(
       summaryKind,
       evidenceKind: summaryKind === 'compaction' ? 'compaction_summary' : 'branch_summary',
       evidencePart: 'content',
-      isDenseSearchable: true,
       compactionFirstKeptEntryId:
         summaryKind === 'compaction' && typeof entry.record.firstKeptEntryId === 'string'
           ? entry.record.firstKeptEntryId
@@ -1086,11 +1060,6 @@ function createSummaryTextDocument(
         summaryKind === 'branch' && typeof entry.record.fromId === 'string'
           ? entry.record.fromId
           : null,
-      toolCallId: null,
-      toolName: null,
-      toolCallEntryId: null,
-      toolResultEntryId: null,
-      toolError: null,
       textRun: {
         text,
         textRunIndex: 0,
@@ -1160,14 +1129,8 @@ function addTurnContextPathDocument(
     summaryKind: null,
     evidenceKind: 'turn_context',
     evidencePart: 'content',
-    isDenseSearchable: true,
     compactionFirstKeptEntryId: null,
     branchSummaryFromEntryId: null,
-    toolCallId: null,
-    toolName: null,
-    toolCallEntryId: null,
-    toolResultEntryId: null,
-    toolError: null,
     textRun: {
       text: formatTurnContextText(turnContextText),
       textRunIndex: 0,
@@ -1481,7 +1444,6 @@ function createSessionConversationChunks(
       summaryKind: pending.summaryKind,
       evidenceKind: pending.evidenceKind,
       evidencePart: pending.evidencePart,
-      isDenseSearchable: pending.isDenseSearchable,
       id,
       checksum: hashConversationValue(span.content),
       sessionId: context.sessionId,
@@ -1531,15 +1493,6 @@ function createSessionConversationChunks(
       siblingIds,
       previousSiblingId,
       nextSiblingId,
-      toolCallId: pending.toolCallId,
-      toolName: pending.toolName,
-      toolCallEntryId: pending.toolCallEntryId
-        ? createPiSessionEntryId(pending.toolCallEntryId)
-        : null,
-      toolResultEntryId: pending.toolResultEntryId
-        ? createPiSessionEntryId(pending.toolResultEntryId)
-        : null,
-      toolError: pending.toolError,
       content: span.content,
     };
   });
@@ -1614,7 +1567,7 @@ export async function readSessionConversationImport(
 }
 
 /**
- * Reads exact-token atomic, turn-context, summary, and lexical-only tool evidence from Pi session JSONL.
+ * Reads exact-token atomic conversation, turn-context, and summary documents from Pi session JSONL.
  * Block indexes are inclusive; character spans are half-open UTF-16 offsets; token spans are logical
  * exact-token offsets whose sibling intersections equal overlap.
  */

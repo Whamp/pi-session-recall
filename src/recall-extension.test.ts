@@ -19,8 +19,8 @@ import type {
   RecallConversationToolService,
 } from './recall-conversation-service.js';
 import {
-  createTestRankedRecallSearchResult,
-  createTestRecallSearchResult,
+  createTestRankedRecallDenseSearchResult,
+  createTestRecallDenseSearchResult,
   createTestSessionConversationChunk,
 } from './recall-test-utils.js';
 
@@ -272,7 +272,7 @@ void test('Pi recall call shows a concise exact query without changing retrieval
 
 void test('service-injected Pi recall tool definition executes complete recall evidence', async () => {
   const calls: unknown[] = [];
-  const result = createTestRankedRecallSearchResult({
+  const result = createTestRankedRecallDenseSearchResult({
     id: 'factory-result',
     content: 'The queue uses source-backed recall evidence.',
     sessionPath: '/sessions/factory.jsonl',
@@ -345,10 +345,9 @@ void test('service-injected Pi recall tool definition executes complete recall e
     isOnActiveBranch: true,
     rankingScore: 0.02,
     activeBranchPrior: 0,
-    fusedScore: 0.02,
-    dense: { rank: 1, cosineDistance: 0.1 },
-    lexical: null,
-    identifier: null,
+    denseRank: 1,
+    denseReciprocalRankScore: 1 / 61,
+    cosineDistance: 0.1,
     duplicateOccurrences: [],
     expandedChunks: [],
   });
@@ -359,11 +358,11 @@ void test('untruncated Pi recall results show exact UTF-8 payload metrics and ex
   const restoreKeybindings = await usePiToolExpansionKeybinding('alt+x');
 
   try {
-    const firstResult = createTestRankedRecallSearchResult({
+    const firstResult = createTestRankedRecallDenseSearchResult({
       id: 'collapsed-first',
       content: 'Café résumé 🙂',
     });
-    const secondResult = createTestRankedRecallSearchResult({
+    const secondResult = createTestRankedRecallDenseSearchResult({
       id: 'collapsed-second',
       content: 'Second evidence line.',
     });
@@ -409,7 +408,7 @@ void test('untruncated Pi recall results show exact UTF-8 payload metrics and ex
     );
     const rendered = stripVTControlCharacters(component.render(1_000).join('\n')).trimEnd();
 
-    assert.equal(execution.details.returnedBytes, 857);
+    assert.equal(execution.details.returnedBytes, 817);
     assert.equal(execution.details.returnedLines, 11);
     assert.deepEqual(execution.details.indexMaintenanceStatus, {
       completedAt: '2026-07-25T12:00:00.000Z',
@@ -420,7 +419,7 @@ void test('untruncated Pi recall results show exact UTF-8 payload metrics and ex
     assert.equal('truncation' in execution.details, false);
     assert.equal(
       rendered,
-      '2 recall results · project scope · 857B / 11 lines · index checked 30m ago · 1 failed session (alt+x to expand)',
+      '2 recall results · project scope · 817B / 11 lines · index checked 30m ago · 1 failed session (alt+x to expand)',
     );
   } finally {
     restoreKeybindings();
@@ -432,7 +431,7 @@ void test('Pi recall freshness uses fixed execution-time minute, hour, and day a
   const restoreKeybindings = await usePiToolExpansionKeybinding('alt+x');
 
   try {
-    const result = createTestRankedRecallSearchResult({ id: 'freshness-boundaries' });
+    const result = createTestRankedRecallDenseSearchResult({ id: 'freshness-boundaries' });
     const cases = [
       {
         completedAt: '2026-07-25T12:05:00.000Z',
@@ -536,7 +535,7 @@ void test('collapsed Pi recall result uses singular wording', async () => {
   const restoreKeybindings = await usePiToolExpansionKeybinding('alt+x');
 
   try {
-    const result = createTestRankedRecallSearchResult({ id: 'collapsed-singular' });
+    const result = createTestRankedRecallDenseSearchResult({ id: 'collapsed-singular' });
     const service = {
       ...SOURCE_SEARCH_MUST_NOT_RUN,
       async search() {
@@ -574,7 +573,7 @@ void test('collapsed Pi recall result uses singular wording', async () => {
     );
     const rendered = stripVTControlCharacters(component.render(1_000).join('\n')).trimEnd();
 
-    assert.equal(rendered, '1 recall result · global scope · 494B / 6 lines (alt+x to expand)');
+    assert.equal(rendered, '1 recall result · global scope · 474B / 6 lines (alt+x to expand)');
 
     const oneLineComponent = tool.renderResult(
       {
@@ -635,18 +634,14 @@ void test('expanded Pi recall rendering equals complete execution evidence exact
     id: 'expanded-winning',
     content: 'Winning evidence with exact source geometry.',
   });
-  const duplicate = createTestRecallSearchResult({
+  const duplicate = createTestRecallDenseSearchResult({
     id: 'expanded-duplicate',
     sessionPath: '/sessions/duplicate.jsonl',
   });
-  const result = createTestRankedRecallSearchResult({
+  const result = createTestRankedRecallDenseSearchResult({
     id: 'expanded-result',
     content: winningChunk.content,
     contributingEntryIds: [{ value: 'expanded-entry' }, { value: 'contributing-entry' }],
-    toolCallEntryId: { value: 'tool-call-entry' },
-    toolResultEntryId: { value: 'tool-result-entry' },
-    lexical: { rank: 2, fullTextScore: 1.25 },
-    identifier: { rank: 3, fullTextScore: 0.75 },
     duplicateOccurrences: [duplicate],
     neighborContext: {
       content: `${previousChunk.content} ${winningChunk.content}`,
@@ -771,9 +766,9 @@ void test('truncated Pi recall execution stores full metadata and marks collapse
 
   try {
     const duplicateOccurrences = Array.from({ length: 2_100 }, (_, index) =>
-      createTestRecallSearchResult({ id: `truncation-duplicate-${index}` }),
+      createTestRecallDenseSearchResult({ id: `truncation-duplicate-${index}` }),
     );
-    const result = createTestRankedRecallSearchResult({
+    const result = createTestRankedRecallDenseSearchResult({
       id: 'truncated-result',
       duplicateOccurrences,
     });
@@ -844,7 +839,7 @@ void test('truncated Pi recall execution stores full metadata and marks collapse
     const rendered = stripVTControlCharacters(component.render(1_000).join('\n')).trimEnd();
     assert.equal(
       rendered,
-      '1 recall result · project scope · 50.0KB / 278 lines · output truncated (alt+x to expand)',
+      '1 recall result · project scope · 49.8KB / 257 lines · output truncated (alt+x to expand)',
     );
 
     const expandedComponent = truncatedTool.renderResult(
@@ -949,7 +944,7 @@ void test('Pi recall validation and execution errors retain error presentation',
 });
 
 void test('Pi tool details retain line, block, character, and contributing-entry provenance', () => {
-  const result = createTestRankedRecallSearchResult({
+  const result = createTestRankedRecallDenseSearchResult({
     id: 'source-result',
     sessionPath: '/sessions/source.jsonl',
     entryId: { value: 'source-entry' },
@@ -992,10 +987,9 @@ void test('Pi tool details retain line, block, character, and contributing-entry
     isOnActiveBranch: true,
     rankingScore: 0.02,
     activeBranchPrior: 0,
-    fusedScore: 0.02,
-    dense: { rank: 1, cosineDistance: 0.1 },
-    lexical: null,
-    identifier: null,
+    denseRank: 1,
+    denseReciprocalRankScore: 1 / 61,
+    cosineDistance: 0.1,
     duplicateOccurrences: [],
     expandedChunks: [],
   });

@@ -1,12 +1,22 @@
 import { compareRecallDocumentIds } from './compare-recall-document-ids.js';
-import type { RecallSearchResult } from './fuse-recall-search-candidates.js';
 import type { SessionConversationChunk } from './session-conversation-index.js';
 
 /** Small additive prior used to favor active-branch evidence without filtering other branches. */
 export const RECALL_ACTIVE_BRANCH_PRIOR = 0.01;
 
-/** Maximum cosine distance admitted for a dense-only default hybrid result. */
-export const RECALL_MAX_DENSE_ONLY_COSINE_DISTANCE = 0.5;
+/** Maximum cosine distance admitted for a dense conversation result. */
+export const RECALL_MAX_DENSE_COSINE_DISTANCE = 0.5;
+
+/** One bounded dense candidate; cosine distance is lower-is-better. */
+export interface RecallDenseCandidate extends SessionConversationChunk {
+  cosineDistance: number;
+}
+
+/** One dense candidate with a stable rank score for branch-aware result ordering. */
+export interface RecallDenseSearchResult extends RecallDenseCandidate {
+  denseRank: number;
+  denseReciprocalRankScore: number;
+}
 
 /** Readable context reconstructed from exact same-run atomic chunk provenance. */
 export interface RecallNeighborContext {
@@ -14,24 +24,37 @@ export interface RecallNeighborContext {
   chunks: SessionConversationChunk[];
 }
 
-/** One hybrid recall candidate after deterministic fusion and duplicate suppression. */
-export interface RankedRecallSearchResult extends RecallSearchResult {
+/** One dense recall result after duplicate suppression and neighbor expansion. */
+export interface RankedRecallSearchResult extends RecallDenseSearchResult {
   activeBranchPrior: number;
   rankingScore: number;
-  duplicateOccurrences: RecallSearchResult[];
+  duplicateOccurrences: RecallDenseSearchResult[];
   neighborContext: RecallNeighborContext | null;
 }
 
 interface RecallCandidateGroup {
-  representative: RecallSearchResult;
-  duplicateOccurrences: RecallSearchResult[];
+  representative: RecallDenseSearchResult;
+  duplicateOccurrences: RecallDenseSearchResult[];
 }
 
 function compareRecallCandidatePreference(
-  left: RecallSearchResult,
-  right: RecallSearchResult,
+  left: RecallDenseSearchResult,
+  right: RecallDenseSearchResult,
 ): number {
-  return right.fusedScore - left.fusedScore || compareRecallDocumentIds(left.id, right.id);
+  return (
+    right.denseReciprocalRankScore - left.denseReciprocalRankScore ||
+    compareRecallDocumentIds(left.id, right.id)
+  );
+}
+
+function haveMatchingEntryIds(
+  left: SessionConversationChunk['contributingEntryIds'],
+  right: SessionConversationChunk['contributingEntryIds'],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((entryId, index) => entryId.value === right[index]?.value)
+  );
 }
 
 function areSameRecallTextRun(
@@ -48,7 +71,6 @@ function areSameRecallTextRun(
     left.summaryKind === right.summaryKind &&
     left.evidenceKind === right.evidenceKind &&
     left.evidencePart === right.evidencePart &&
-    left.isDenseSearchable === right.isDenseSearchable &&
     left.role === right.role &&
     left.textRunId === right.textRunId &&
     left.textRunIndex === right.textRunIndex &&
@@ -93,21 +115,21 @@ function getRecallSiblingOverlapCharacters(
 }
 
 function areOverlappingRecallSiblings(
-  left: RecallSearchResult,
-  right: RecallSearchResult,
+  left: RecallDenseSearchResult,
+  right: RecallDenseSearchResult,
 ): boolean {
   const earlier = left.chunkIndex < right.chunkIndex ? left : right;
   const later = earlier === left ? right : left;
   return (getRecallSiblingOverlapCharacters(earlier, later) ?? 0) > 0;
 }
 
-function getRecallCandidateGroupMembers(group: RecallCandidateGroup): RecallSearchResult[] {
+function getRecallCandidateGroupMembers(group: RecallCandidateGroup): RecallDenseSearchResult[] {
   return [group.representative, ...group.duplicateOccurrences];
 }
 
 function mergeRecallCandidateGroups(
   groups: RecallCandidateGroup[],
-  incomingMembers: readonly RecallSearchResult[],
+  incomingMembers: readonly RecallDenseSearchResult[],
   matchingIndexes: readonly number[],
   missingRepresentativeError: string,
 ): void {
@@ -133,7 +155,7 @@ function mergeRecallCandidateGroups(
 }
 
 function createSiblingOverlapCandidateGroups(
-  candidates: readonly RecallSearchResult[],
+  candidates: readonly RecallDenseSearchResult[],
 ): RecallCandidateGroup[] {
   const groups: RecallCandidateGroup[] = [];
   for (const candidate of candidates) {
@@ -159,7 +181,10 @@ function createSiblingOverlapCandidateGroups(
   return groups;
 }
 
-function areExactCrossSessionCopies(left: RecallSearchResult, right: RecallSearchResult): boolean {
+function areExactCrossSessionCopies(
+  left: RecallDenseSearchResult,
+  right: RecallDenseSearchResult,
+): boolean {
   return (
     left.sessionPath !== right.sessionPath &&
     left.checksum === right.checksum &&
@@ -200,28 +225,13 @@ function createCrossSessionCopyCandidateGroups(
   return copyGroups;
 }
 
-function haveMatchingEntryIds(
-  left: SessionConversationChunk['contributingEntryIds'],
-  right: SessionConversationChunk['contributingEntryIds'],
-): boolean {
-  return (
-    left.length === right.length &&
-    left.every((entryId, index) => entryId.value === right[index]?.value)
-  );
-}
-
 function isAtomicConversationChunk(chunk: SessionConversationChunk): boolean {
   return (
     chunk.documentKind === 'conversation' &&
     chunk.summaryKind === null &&
     chunk.evidenceKind === 'conversation' &&
     chunk.evidencePart === 'content' &&
-    (chunk.role === 'user' || chunk.role === 'assistant' || chunk.role === 'custom') &&
-    chunk.toolCallId === null &&
-    chunk.toolName === null &&
-    chunk.toolCallEntryId === null &&
-    chunk.toolResultEntryId === null &&
-    chunk.toolError === null
+    (chunk.role === 'user' || chunk.role === 'assistant' || chunk.role === 'custom')
   );
 }
 
@@ -307,23 +317,14 @@ function expandRankedRecallNeighbors(
   });
 }
 
-function assertRecallRankingResultLimit(resultLimit: number, errorMessage: string): void {
+function assertRecallRankingResultLimit(resultLimit: number): void {
   if (!Number.isInteger(resultLimit) || resultLimit < 1 || resultLimit > 200) {
-    throw new Error(errorMessage);
+    throw new Error('Recall dense result limit invalid: expected an integer from 1 to 200');
   }
 }
 
-function isEligibleHybridRecallCandidate(candidate: RecallSearchResult): boolean {
-  return (
-    candidate.lexical !== null ||
-    candidate.identifier !== null ||
-    candidate.dense === null ||
-    candidate.dense.cosineDistance <= RECALL_MAX_DENSE_ONLY_COSINE_DISTANCE
-  );
-}
-
 function createRecallCandidateGroups(
-  candidates: readonly RecallSearchResult[],
+  candidates: readonly RecallDenseSearchResult[],
 ): RecallCandidateGroup[] {
   return createCrossSessionCopyCandidateGroups(createSiblingOverlapCandidateGroups(candidates));
 }
@@ -339,29 +340,43 @@ function createRankedRecallSearchResult(group: RecallCandidateGroup): RankedReca
   return {
     ...group.representative,
     activeBranchPrior,
-    rankingScore: group.representative.fusedScore + activeBranchPrior,
+    rankingScore: group.representative.denseReciprocalRankScore + activeBranchPrior,
     duplicateOccurrences: group.duplicateOccurrences,
     neighborContext: null,
   };
 }
 
-/** Ranks fused recall candidates while preserving duplicate and neighbor provenance. */
-export function rankFusedRecallSearchResults(
-  candidates: readonly RecallSearchResult[],
+/** Ranks dense recall candidates while preserving duplicate and neighbor provenance. */
+export function rankDenseRecallSearchResults(
+  candidates: readonly RecallDenseCandidate[],
   resultLimit: number,
   fetchConversationChunks: (ids: string[]) => Map<string, SessionConversationChunk>,
 ): RankedRecallSearchResult[] {
-  assertRecallRankingResultLimit(
-    resultLimit,
-    'Recall fused result limit invalid: expected an integer from 1 to 200',
-  );
-  const eligibleCandidates = candidates.filter(isEligibleHybridRecallCandidate);
-  const rankedResults = createRecallCandidateGroups(eligibleCandidates)
+  assertRecallRankingResultLimit(resultLimit);
+  for (const candidate of candidates) {
+    if (!Number.isFinite(candidate.cosineDistance)) {
+      throw new Error(
+        `Dense recall candidate score invalid for document ${candidate.id}: expected a finite cosine distance`,
+      );
+    }
+  }
+  const denseResults: RecallDenseSearchResult[] = candidates
+    .toSorted(
+      (left, right) =>
+        left.cosineDistance - right.cosineDistance || compareRecallDocumentIds(left.id, right.id),
+    )
+    .map((candidate, index) => ({
+      ...candidate,
+      denseRank: index + 1,
+      denseReciprocalRankScore: 1 / (61 + index),
+    }))
+    .filter((candidate) => candidate.cosineDistance <= RECALL_MAX_DENSE_COSINE_DISTANCE);
+  const rankedResults = createRecallCandidateGroups(denseResults)
     .map(createRankedRecallSearchResult)
     .toSorted(
       (left, right) =>
         right.rankingScore - left.rankingScore ||
-        right.fusedScore - left.fusedScore ||
+        right.denseReciprocalRankScore - left.denseReciprocalRankScore ||
         compareRecallDocumentIds(left.id, right.id),
     )
     .slice(0, resultLimit);

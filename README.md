@@ -8,7 +8,7 @@ The standalone `psr index` command is the only index writer. Run it directly or 
 
 Raw session JSONL remains the source of truth, but asking a fresh agent to search it spends time and model context on file discovery, format parsing, branch structure, compaction, and evidence location. Pi Session Recall does that work ahead of time, limits search to the invoking project by default, searches dense conversations and compact Invocations together, and returns exact JSONL line citations.
 
-A measured production comparison gave the same question to the recall tool and to a fresh agent restricted to raw JSONL. The full hybrid tool took 1.48 seconds at the median. The raw agent took 94.43 seconds, examined 54 project files, and used 141,682 tokens plus 852,480 cached tokens. The agent found the answer reliably; the tool required its maximum ten results to include the answer at rank ten. Indexed recall was about 64 times faster and far cheaper in this case, while the ranking result exposed work still needed. This is one measured query, not a universal quality or capacity claim. See [Production recall index value benchmark](docs/research/production-recall-index-value-benchmark.md).
+A measured production comparison gave the same question to the recall tool and to a fresh agent restricted to raw JSONL. The then-current indexed tool took 1.48 seconds at the median. The raw agent took 94.43 seconds, examined 54 project files, and used 141,682 tokens plus 852,480 cached tokens. The agent found the answer reliably; the tool required its maximum ten results to include the answer at rank ten. Indexed recall was about 64 times faster and far cheaper in this case, while the ranking result exposed work still needed. This is one measured query, not a universal quality or capacity claim. See [Production recall index value benchmark](docs/research/production-recall-index-value-benchmark.md).
 
 The compact replacement passed its pre-activation storage, retrieval, Source, and incremental-write gates. See [Compact production recall certification](docs/research/compact-production-recall-certification.md).
 
@@ -33,14 +33,11 @@ psr index                                      # add, update, and remove changed
 psr index --rebuild                            # build and atomically activate a replacement database
 psr index --rebuild --stage                    # build a replacement without activating it
 psr index --rebuild --stage --resume           # continue one interrupted staged build
-psr index --rebuild --stage --resume --reuse-active-vectors # reuse checksum-matched vectors
 psr activate generations/generation-...        # activate one certified staged database
 psr rollback                                   # restore the immediately previous database
 psr index --compact                            # keep the former one-line stdout summary
-psr optimize                                   # explicitly optimize existing zvec data
-psr auto-index install                         # update hourly without optimization
+psr auto-index install                         # update hourly
 psr auto-index install --interval 30m           # replace the update interval
-psr auto-index install --optimize-daily         # also optimize daily at 23:00
 psr auto-index uninstall                        # remove every installed schedule
 psr ignore add path/to/session.jsonl            # exclude one exact physical session path
 psr ignore list                                 # print sorted excluded paths
@@ -58,19 +55,17 @@ psr ignore remove path/to/session.jsonl         # make one exact path eligible a
 - skips ignored files before parsing or embedding them;
 - reports malformed eligible session files and continues with healthy files;
 - shows elapsed time and estimates time remaining after a healthy file completes;
-- leaves collection optimization to the explicit `psr optimize` command.
+- performs no corpus-wide compaction or optimization.
 
 `psr index --rebuild` builds a candidate recall database beside the active database. A fatal error, cancellation, or failed session leaves normal recall on the active database. A successful rebuild closes and verifies the candidate, then atomically makes it active. The replaced database remains available to `psr rollback`. The next rebuild removes failed or interrupted candidates but never removes the previous database.
 
-Add `--stage` when the candidate must pass checks before activation. A staged rebuild uses a separate construction lock, so normal search and scheduled updates keep using the active database. The command prints the exact `generations/generation-...` target and leaves the active pointer unchanged. If a fatal dependency outage interrupts the build, rerun it once with `--rebuild --stage --resume`. Resume requires exactly one interrupted candidate and preserves every completed Physical session. Add `--reuse-active-vectors` during the compact-layout cutover to avoid re-embedding unchanged Dense recall documents. Reuse requires the Active recall database to have the same embedding profile. The indexer also requires each canonical document ID and checksum to match before it copies that vector; changed documents still go to the embedding provider.
+Add `--stage` when the candidate must pass checks before activation. A staged rebuild uses a separate construction lock, so normal search and scheduled updates keep using the active database. The command prints the exact `generations/generation-...` target and leaves the active pointer unchanged. If a fatal dependency outage interrupts the build, rerun it once with `--rebuild --stage --resume`. Resume requires exactly one interrupted candidate and preserves every completed Physical session.
 
 Run `psr activate <database-target>` only after that target passes its checks. Activation takes the shared writer lock, verifies the staged database is complete, records the current database for rollback, and replaces the active pointer atomically.
 
-The first rebuild after upgrading safely adopts the current unversioned layout. It remains active while the candidate builds and becomes the previous database after activation. Run `psr rollback` to restore it without rebuilding. Existing installations can keep using the unversioned database until they activate a compact generation.
+The first compact activation records the current unversioned database as the previous database and does not delete it. If activation verification fails, stop the timer and run `psr rollback` while the compact release is still deployed. When that previous database is the version 6 layout, redeploy release `8402107` before restarting the timer or searching it; compact releases intentionally cannot open the removed legacy schema. Keep both databases until Will explicitly approves ending the rollback window.
 
-The estimate uses the observed rate of healthy files in the current run. Until enough work completes, the command says that it is calculating the estimate rather than inventing an initial duration. `--compact` preserves the former one-line completed summary and `Failed: ...` lines on stdout; progress remains on stderr. The legacy `--no-optimize` flag remains accepted as a compatibility alias for ordinary update-only indexing.
-
-`psr optimize` does not scan or index sessions. It compacts the existing flat dense collection under the same writer lock and may write near-collection-sized temporary output. Invocation search lives in SQLite and is not part of this operation.
+The estimate uses the observed rate of healthy files in the current run. Until enough work completes, the command says that it is calculating the estimate rather than inventing an initial duration. `--compact` preserves the former one-line completed summary and `Failed: ...` lines on stdout; progress remains on stderr.
 
 No startup hook, completed-turn hook, shutdown hook, watcher, package daemon, or search request updates the index.
 
@@ -86,41 +81,34 @@ Path identity is exact and lexical. Relative command arguments resolve from the 
 
 ### Automatic index maintenance
 
-`psr auto-index install` creates one per-user native schedule that updates changed evidence without optimizing zvec. The interval accepts a positive whole number followed by lowercase `m` or `h`; the default is `1h`. Installation never uses `sudo`. Reinstalling replaces the definition and captures absolute paths to the current Node executable and installed package.
+`psr auto-index install` creates one per-user native schedule that runs update-only indexing. The interval accepts a positive whole number followed by lowercase `m` or `h`; the default is `1h`. Installation never uses `sudo`. Reinstalling replaces the definition, captures absolute paths to the current Node executable and installed package, and disables and removes optimization jobs created by older releases.
 
-Optimization is optional. Add `--optimize-daily` to install a second schedule that runs `psr optimize` every day at 23:00 local time. Reinstalling without that flag disables and removes any older optimization schedule. Enable it only when measured query latency, ranking, or workload evidence justifies collection-wide compaction.
-
-The generated definitions run the equivalent of:
+The generated definition runs the equivalent of:
 
 ```text
 <absolute-node> --import tsx <absolute-package-root>/bin/psr index
-# Only with --optimize-daily:
-<absolute-node> --import tsx <absolute-package-root>/bin/psr optimize
 ```
 
-Indexing, activation, rollback, optimization, and search use the same writer lock. A writer cannot switch databases while another writer is active, and search never opens a database while the lock is held. Staged construction uses a separate lock because it writes only its candidate generation. Generated definitions do not copy `PI_RECALL_*` overrides from the installation shell. Scheduled runs use the durable recall configuration file and normal defaults.
+Indexing, activation, rollback, and search use the same writer lock. A writer cannot switch databases while another writer is active, and search never opens a database while the lock is held. Staged construction uses a separate lock because it writes only its candidate generation. Generated definitions do not copy `PI_RECALL_*` overrides from the installation shell. Scheduled runs use the durable recall configuration file and normal defaults.
 
-On Linux, default installation writes one systemd user service and timer under `${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/`. `--optimize-daily` adds a second service and timer. Installation starts the selected timers, then attempts one immediate index run. If that run fails, installation warns but leaves the timers active. Read logs with:
+On Linux, installation writes one systemd user service and timer under `${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/`. It removes stale `pi-session-recall-optimize.service` and `.timer` units, starts the index timer, then attempts one immediate index run. If that run fails, installation warns but leaves the timer active. Read logs with:
 
 ```bash
 journalctl --user-unit=pi-session-recall-index.service
-journalctl --user-unit=pi-session-recall-optimize.service # opt-in schedule only
 ```
 
-On macOS, default installation writes one mode-`0600` LaunchAgent under `~/Library/LaunchAgents/`; it uses `RunAtLoad`. `--optimize-daily` adds a calendar LaunchAgent for 23:00. They write separate logs:
+On macOS, installation removes the stale `dev.pi-session-recall.auto-optimize.plist` LaunchAgent and writes one mode-`0600` index LaunchAgent under `~/Library/LaunchAgents/`; it uses `RunAtLoad`. Logs are written to:
 
 ```text
 ~/.pi/agent/logs/pi-session-recall-auto-index.out.log
 ~/.pi/agent/logs/pi-session-recall-auto-index.err.log
-~/.pi/agent/logs/pi-session-recall-auto-optimize.out.log
-~/.pi/agent/logs/pi-session-recall-auto-optimize.err.log
 ```
 
-The macOS path is runtime-untested. No Mac was available to verify plist acceptance; `RunAtLoad`, `StartInterval`, or `StartCalendarInterval` execution; retry after an exit-status-1 run; overlap suppression across both jobs; absolute Node plus `--import tsx`; log appends; or access to the durable recall configuration and embedding endpoint from the LaunchAgent environment. Other platforms fail with an unsupported-platform error.
+The macOS path is runtime-untested. No Mac was available to verify plist acceptance; `RunAtLoad` or `StartInterval` execution; retry after an exit-status-1 run; absolute Node plus `--import tsx`; log appends; or access to the durable recall configuration and embedding endpoint from the LaunchAgent environment. Other platforms fail with an unsupported-platform error.
 
-The WAL-mode `recall-catalog.sqlite` stores each physical session's size, modification time, dense document identities, and compact Invocation records. Each completed physical session replaces only its own catalog rows in one transaction. If indexing stops, rerun `psr index`; completed sessions remain committed, unfinished sessions are revisited, and matching dense vectors are reused.
+The WAL-mode `recall-catalog.sqlite` stores each physical session's size, modification time, dense document identities, and compact Invocation records. Each completed physical session replaces only its own catalog rows in one transaction. If indexing stops, rerun `psr index`; completed sessions remain committed, unfinished sessions are revisited, and matching dense vectors already in that database are reused.
 
-The compact layout requires a version 7 manifest. Existing installations must run `psr index --rebuild`; ordinary indexing rejects the old layout instead of mixing schemas. After activation, unchanged sessions are skipped from size and modification time without parsing.
+The compact layout requires a version 7 manifest. Existing installations must run `psr index --rebuild`; ordinary indexing rejects the old layout instead of mixing schemas. After activation, unchanged sessions are skipped by size and modification time without parsing.
 
 ## Search
 
@@ -275,7 +263,7 @@ After the first generation rebuild, durable recall state has this shape:
 
 Each new generation contains `zvec/`, `recall-catalog.sqlite`, `index-manifest.json`, and `index-maintenance-status.json`. Failed or interrupted rebuilds can leave a `candidate-.../` directory. The next rebuild removes stale candidates. A successful `--stage` rebuild leaves a complete `generation-.../` directory that remains inactive until its exact target is passed to `psr activate`. Rebuilds do not remove completed generations.
 
-An existing unversioned `zvec/`, `index-state.json`, and old `index-manifest.json` remain in place during the first compact rebuild. The version 7 compact layout rejects that manifest for normal indexing and directs the operator to `psr index --rebuild`. Rebuild candidates create a fresh catalog from canonical session JSONL. The activated generation records the prior layout as its previous database, so `psr rollback` can atomically point `active` back to it.
+An existing unversioned `zvec/`, `index-state.json`, and old `index-manifest.json` remain in place during the first compact rebuild. The version 7 compact layout rejects that manifest for normal indexing and directs the operator to `psr index --rebuild`. Rebuild candidates create a fresh catalog from canonical session JSONL. The activated generation records the prior layout as its previous database, so `psr rollback` can atomically point `active` back to it. Do not delete that rollback database without Will's explicit approval; a version 6 rollback also requires redeploying release `8402107` before search or indexing resumes.
 
 The tokenizer loader also keeps checksum-verified tokenizer assets under `tokenizers/`; these are replaceable inference inputs, not recall state. `operation.lock` exists only while `psr` owns the writer lock and is removed when the command exits. There is no embedding cache, generation registry, replay log, marker spool, or model-artifact cache.
 

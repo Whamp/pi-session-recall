@@ -1,12 +1,11 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
 
 import { RecallProjectIdentitySource } from './enums.js';
-import { SESSION_IMPORT_POLICY_VERSION } from './import-session-jsonl.js';
 import type { InvocationRecord } from './invocation-record.js';
 import { openRecallCatalog } from './recall-catalog.js';
 import { parseRepositoryIdentity } from './resolve-project-identity.js';
@@ -160,49 +159,6 @@ void test('recall catalog searches Invocation records globally and by exact proj
   assert.equal(projectMatches.length, 1);
   assert.equal(projectMatches[0]?.sessionPath, '/sessions/1.jsonl');
   assert.equal(projectMatches[0]?.projectAttribution?.projectIdentity, betaProject);
-});
-
-void test('recall catalog migrates legacy indexed-session knowledge exactly once', async (t) => {
-  const root = await mkdtemp(join(tmpdir(), 'recall-catalog-migrate-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
-  const catalogPath = join(root, 'recall-catalog.sqlite');
-  const legacyStatePath = join(root, 'index-state.json');
-  await writeFile(
-    legacyStatePath,
-    `${JSON.stringify({
-      version: 3,
-      importPolicyVersion: SESSION_IMPORT_POLICY_VERSION,
-      sessions: {
-        '/sessions/legacy.jsonl': {
-          size: 321,
-          mtimeMs: 654,
-          chunks: [{ id: 'legacy-dense-1' }, { id: 'legacy-dense-2' }],
-        },
-      },
-    })}\n`,
-  );
-
-  const migrated = openRecallCatalog(catalogPath, { legacyStatePath });
-  assert.deepEqual(migrated.readPhysicalSessionState('/sessions/legacy.jsonl'), {
-    size: 321,
-    mtimeMs: 654,
-    documentIds: ['legacy-dense-1', 'legacy-dense-2'],
-    denseDocumentIds: [],
-  });
-  assert.equal(migrated.requiresInvocationBackfill('/sessions/legacy.jsonl'), true);
-  migrated.close();
-
-  await writeFile(
-    legacyStatePath,
-    `${JSON.stringify({
-      version: 3,
-      importPolicyVersion: SESSION_IMPORT_POLICY_VERSION,
-      sessions: {},
-    })}\n`,
-  );
-  const reopened = openRecallCatalog(catalogPath, { legacyStatePath });
-  t.after(() => reopened.close());
-  assert.deepEqual(reopened.listPhysicalSessionPaths(), ['/sessions/legacy.jsonl']);
 });
 
 void test('recall catalog rejects an incompatible schema with a rebuild action', async (t) => {

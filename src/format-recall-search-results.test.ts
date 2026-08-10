@@ -3,7 +3,7 @@ import test from 'node:test';
 
 import { RecallEvidenceRelation, RecallSearchScope } from './enums.js';
 import { formatRecallSearchResults } from './format-recall-search-results.js';
-import { createTestRankedRecallSearchResult } from './recall-test-utils.js';
+import { createTestRankedRecallDenseSearchResult } from './recall-test-utils.js';
 import type { RankedRecallSearchResult } from './rank-recall-search-results.js';
 
 function createSearchPolicy(scope = RecallSearchScope.GLOBAL) {
@@ -17,7 +17,7 @@ function createSearchPolicy(scope = RecallSearchScope.GLOBAL) {
   };
 }
 
-const result = createTestRankedRecallSearchResult({
+const result = createTestRankedRecallDenseSearchResult({
   id: 'chunk-1',
   sessionPath: '/sessions/one.jsonl',
   sessionName: 'Queue design',
@@ -28,9 +28,9 @@ const result = createTestRankedRecallSearchResult({
   sourceBlockStart: 1,
   sourceBlockEnd: 2,
   content: 'The durable queue decision and its tradeoffs are documented here.',
-  dense: { rank: 1, cosineDistance: 0.01234 },
-  lexical: { rank: 2, fullTextScore: 0.87654 },
-  fusedScore: 0.03252,
+  denseRank: 1,
+  denseReciprocalRankScore: 0.98766,
+  cosineDistance: 0.01234,
   activeBranchPrior: 0.01,
   rankingScore: 0.04252,
 });
@@ -51,7 +51,6 @@ void test('recall output includes concise evidence and an agent-readable JSONL s
   assert.match(output, /Source: \/sessions\/one\.jsonl:142-146#entry-1/);
   assert.match(output, /ranking 0\.0425/);
   assert.match(output, /dense #1 cosine distance 0\.0123/);
-  assert.match(output, /lexical #2 FTS 0\.8765/);
   assert.match(output, /…/);
   assert.doesNotMatch(output, /Qwen|rerank/iu);
 });

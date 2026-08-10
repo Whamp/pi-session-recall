@@ -43,7 +43,6 @@ function createDenseRecallDocument(
       checksum: `${id}-checksum`,
       content: `${id} content`,
     }),
-    isDenseSearchable: true,
     embedding,
   };
 }
@@ -141,7 +140,7 @@ void test('dense recall conversation store accepts conversation, summary, branch
   );
 });
 
-void test('dense recall conversation store rejects lexical, zero-vector, and tool-provenance rows', async (t) => {
+void test('dense recall conversation store rejects invalid document kinds and vectors', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'dense-recall-validation-'));
   const store = openDenseRecallConversationStore({ databasePath: join(directory, 'collection') });
   t.after(async () => {
@@ -149,11 +148,10 @@ void test('dense recall conversation store rejects lexical, zero-vector, and too
     await rm(directory, { recursive: true, force: true });
   });
 
-  const lexicalOnly = createDenseRecallDocument('lexical-only', createDenseEmbedding([0, 1]));
-  Reflect.set(lexicalOnly, 'isDenseSearchable', false);
-  Reflect.deleteProperty(lexicalOnly, 'embedding');
+  const toolDocument = createDenseRecallDocument('tool-document', createDenseEmbedding([0, 1]));
+  Reflect.set(toolDocument, 'documentKind', 'tool');
   assert.throws(
-    () => store.upsertDocuments([lexicalOnly]),
+    () => store.upsertDocuments([toolDocument]),
     /only conversation, summary, branch-summary, and turn-context documents are allowed/,
   );
   assert.throws(
@@ -175,17 +173,6 @@ void test('dense recall conversation store rejects lexical, zero-vector, and too
         ),
       ]),
     /zero vectors are not allowed/,
-  );
-  assert.throws(
-    () =>
-      store.upsertDocuments([
-        createDenseRecallDocument('tool-provenance', createDenseEmbedding([0, 1]), {
-          role: 'tool',
-          toolName: 'bash',
-          toolCallId: 'call-1',
-        }),
-      ]),
-    /only conversation, summary, branch-summary, and turn-context documents are allowed/,
   );
 });
 

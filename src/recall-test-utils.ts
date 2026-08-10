@@ -1,5 +1,5 @@
 import { RecallEvidenceRelation } from './enums.js';
-import type { RecallSearchResult } from './fuse-recall-search-candidates.js';
+import type { RecallDenseSearchResult } from './rank-recall-search-results.js';
 import type { RecallConversationSearchResult } from './recall-conversation-service.js';
 import type { SessionConversationChunk } from './session-conversation-index.js';
 
@@ -19,7 +19,6 @@ export function createTestSessionConversationChunk(
     summaryKind: null,
     evidenceKind: 'conversation',
     evidencePart: 'content',
-    isDenseSearchable: true,
     checksum: `checksum-${options.id}`,
     sessionId: { value: `session-${options.id}` },
     sessionPath: `/sessions/${options.id}.jsonl`,
@@ -57,11 +56,6 @@ export function createTestSessionConversationChunk(
     siblingIds: [],
     previousSiblingId: null,
     nextSiblingId: null,
-    toolCallId: null,
-    toolName: null,
-    toolCallEntryId: null,
-    toolResultEntryId: null,
-    toolError: null,
     ...options,
     id: options.id,
     content,
@@ -69,26 +63,25 @@ export function createTestSessionConversationChunk(
   };
 }
 
-/** Builds one fused recall-result fixture on top of complete source provenance. */
-export function createTestRecallSearchResult(
-  options: TestSessionConversationChunkOptions & Partial<RecallSearchResult>,
-): RecallSearchResult {
+/** Builds one dense recall-result fixture on top of complete source provenance. */
+export function createTestRecallDenseSearchResult(
+  options: TestSessionConversationChunkOptions & Partial<RecallDenseSearchResult>,
+): RecallDenseSearchResult {
   return {
     ...createTestSessionConversationChunk(options),
-    dense: { rank: 1, cosineDistance: 0.1 },
-    lexical: null,
-    identifier: null,
-    fusedScore: 0.02,
+    cosineDistance: 0.1,
+    denseRank: 1,
+    denseReciprocalRankScore: 1 / 61,
     ...options,
   };
 }
 
 /** Builds one ranked recall-result fixture with no duplicates or neighbor expansion. */
-export function createTestRankedRecallSearchResult(
+export function createTestRankedRecallDenseSearchResult(
   options: TestSessionConversationChunkOptions & Partial<RecallConversationSearchResult>,
 ): RecallConversationSearchResult {
   return {
-    ...createTestRecallSearchResult(options),
+    ...createTestRecallDenseSearchResult(options),
     activeBranchPrior: 0,
     rankingScore: 0.02,
     duplicateOccurrences: [],

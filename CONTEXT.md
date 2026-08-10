@@ -133,7 +133,7 @@ A complete Candidate recall database promoted to a durable generation without ch
 _Avoid_: Active recall database, failed candidate
 
 **Active recall database**:
-The Recall database used by normal indexing, optimization, and search. Activation replaces its pointer atomically after a Candidate recall database completes successfully.
+The Recall database used by normal indexing and search. Activation replaces its pointer atomically after a Candidate recall database completes successfully.
 _Avoid_: Latest database, production directory
 
 **Previous recall database**:
@@ -147,10 +147,6 @@ _Avoid_: Live ingestion, lifecycle reconciliation
 **Maintenance workset**:
 The eligible new or changed physical session files, missing previously indexed files, and ignored indexed files scheduled for removal during one index maintenance operation. It forecasts file-level work; the number of documents requiring embeddings emerges as changed files are processed.
 _Avoid_: Sessions to embed, embedding total
-
-**Index optimization**:
-One explicit `psr optimize` operation that compacts the existing zvec collection without scanning Physical session files or changing which evidence is searchable. It merges FTS segments and may change BM25 scores or ranking. It runs manually or through an opt-in optimization schedule, never as a default part of Index maintenance. It uses the same writer lock as Index maintenance.
-_Avoid_: Index maintenance, rebuild
 
 **Index maintenance status**:
 The durable completion record for the latest normally completed Index maintenance operation. It records when the operation completed and how many Physical session files it scanned or failed. Its absence means freshness is unavailable, not that a live backlog was measured.

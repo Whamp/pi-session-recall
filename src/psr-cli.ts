@@ -24,11 +24,10 @@ import {
 } from './recall-conversation-service.js';
 
 const PSR_USAGE = [
-  'psr usage: psr index [--rebuild] [--stage] [--resume] [--reuse-active-vectors] [--compact] [--no-optimize]',
+  'psr usage: psr index [--rebuild] [--stage] [--resume] [--reuse-active-vectors] [--compact]',
   '           psr activate <database-target>',
-  '           psr optimize',
   '           psr rollback',
-  '           psr auto-index install [--interval <N>m|<N>h] [--optimize-daily]',
+  '           psr auto-index install [--interval <N>m|<N>h]',
   '           psr auto-index uninstall',
   '           psr ignore add <session-path>',
   '           psr ignore list',
@@ -69,26 +68,11 @@ interface RecallIndexProgressTiming {
   indexingElapsedMs?: number;
 }
 
-interface AutoIndexInstallArguments {
-  interval: AutoIndexInterval;
-  optimizeDaily: boolean;
-}
-
-function readAutoIndexInstallArguments(
-  argumentsList: readonly string[],
-): AutoIndexInstallArguments {
+function readAutoIndexInterval(argumentsList: readonly string[]): AutoIndexInterval {
   let interval: AutoIndexInterval = { value: 1n, unit: 'h' };
   let intervalSeen = false;
-  let optimizeDaily = false;
   for (let index = 2; index < argumentsList.length; index += 1) {
     const flag = argumentsList[index];
-    if (flag === '--optimize-daily') {
-      if (optimizeDaily) {
-        throw new Error(PSR_USAGE);
-      }
-      optimizeDaily = true;
-      continue;
-    }
     if (flag !== '--interval' || intervalSeen) {
       throw new Error(PSR_USAGE);
     }
@@ -104,7 +88,7 @@ function readAutoIndexInstallArguments(
     intervalSeen = true;
     index += 1;
   }
-  return { interval, optimizeDaily };
+  return interval;
 }
 
 function formatCountedNoun(count: number, singularNoun: string): string {
@@ -332,19 +316,15 @@ export async function runPsrCli(
     if (argumentsList[1] !== 'install') {
       throw new Error(PSR_USAGE);
     }
-    const { interval, optimizeDaily } = readAutoIndexInstallArguments(argumentsList);
-    const installation = await installAutoIndexSchedule(interval, dependencies.schedulerSystem, {
-      optimizeDaily,
-    });
+    const interval = readAutoIndexInterval(argumentsList);
+    const installation = await installAutoIndexSchedule(interval, dependencies.schedulerSystem);
     if (installation.immediateRunWarning !== undefined) {
       dependencies.writeProgress(
         `Warning: Automatic recall indexing was installed, but ${installation.immediateRunWarning}.\n`,
       );
     }
     dependencies.writeOutput(
-      optimizeDaily
-        ? `Automatic recall indexing installed every ${interval.value}${interval.unit}; optimization scheduled daily at 23:00.\n`
-        : `Automatic recall indexing installed every ${interval.value}${interval.unit}; optimization remains manual.\n`,
+      `Automatic recall indexing installed every ${interval.value}${interval.unit}.\n`,
     );
     return 0;
   }
@@ -383,26 +363,6 @@ export async function runPsrCli(
       },
     });
     dependencies.writeOutput('Previous recall database restored and now active.\n');
-    return 0;
-  }
-
-  if (argumentsList[0] === 'optimize') {
-    if (argumentsList.length !== 1) {
-      throw new Error(PSR_USAGE);
-    }
-    const config = await dependencies.loadConfig();
-    const result = await dependencies.createService(config).optimize({
-      onProgress(event) {
-        if (event.kind === 'waiting-for-write-lock') {
-          dependencies.writeProgress('Waiting for another recall index operation...\n');
-        } else if (event.kind === 'optimizing-collection') {
-          dependencies.writeProgress('Optimizing searchable collection...\n');
-        }
-      },
-    });
-    dependencies.writeOutput(
-      `Optimized ${ENGLISH_INTEGER_FORMAT.format(result.totalChunks)} searchable documents.\n`,
-    );
     return 0;
   }
 

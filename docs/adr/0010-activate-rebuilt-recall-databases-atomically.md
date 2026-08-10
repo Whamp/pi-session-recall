@@ -10,7 +10,7 @@ A normal rebuild activates its candidate only after indexing completes with no f
 
 `psr index --rebuild --stage` stops after it renames the complete candidate to a durable generation. It prints the exact relative database target and leaves `active` unchanged. Staged construction uses a separate construction lock because it writes no Active recall database state. Normal search and scheduled Index maintenance can continue during the build. `psr activate <database-target>` takes the shared recall writer lock, accepts only an exact complete generation beneath the configured generation root, records the current target for rollback, and atomically replaces `active`.
 
-The shared recall writer lock covers normal indexing, activation, rollback, and optimization. Search refuses to open a database while that lock exists. A separate lock serializes staged construction without making the Active recall database unavailable for the duration of a production rebuild.
+The shared recall writer lock covers normal indexing, activation, and rollback. Search refuses to open a database while that lock exists. A separate lock serializes staged construction without making the Active recall database unavailable for the duration of a production rebuild.
 
 Each activated generation records the target that was active immediately before it. `psr rollback` verifies that target and atomically replaces the active pointer. The system does not automatically delete completed generations, so the previous database remains restorable until the operator removes it. A missing or incomplete previous target fails without changing the active pointer.
 

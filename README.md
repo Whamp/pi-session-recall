@@ -37,10 +37,8 @@ psr index --rebuild --stage --resume --reuse-active-vectors # reuse checksum-mat
 psr activate generations/generation-...        # activate one certified staged database
 psr rollback                                   # restore the immediately previous database
 psr index --compact                            # keep the former one-line stdout summary
-psr optimize                                   # explicitly optimize existing zvec data
-psr auto-index install                         # update hourly without optimization
+psr auto-index install                         # update hourly
 psr auto-index install --interval 30m           # replace the update interval
-psr auto-index install --optimize-daily         # also optimize daily at 23:00
 psr auto-index uninstall                        # remove every installed schedule
 psr ignore add path/to/session.jsonl            # exclude one exact physical session path
 psr ignore list                                 # print sorted excluded paths
@@ -58,7 +56,7 @@ psr ignore remove path/to/session.jsonl         # make one exact path eligible a
 - skips ignored files before parsing or embedding them;
 - reports malformed eligible session files and continues with healthy files;
 - shows elapsed time and estimates time remaining after a healthy file completes;
-- leaves collection optimization to the explicit `psr optimize` command.
+- performs no corpus-wide compaction or optimization.
 
 `psr index --rebuild` builds a candidate recall database beside the active database. A fatal error, cancellation, or failed session leaves normal recall on the active database. A successful rebuild closes and verifies the candidate, then atomically makes it active. The replaced database remains available to `psr rollback`. The next rebuild removes failed or interrupted candidates but never removes the previous database.
 
@@ -68,9 +66,7 @@ Run `psr activate <database-target>` only after that target passes its checks. A
 
 The first rebuild after upgrading safely adopts the current unversioned layout. It remains active while the candidate builds and becomes the previous database after activation. Run `psr rollback` to restore it without rebuilding. Existing installations can keep using the unversioned database until they activate a compact generation.
 
-The estimate uses the observed rate of healthy files in the current run. Until enough work completes, the command says that it is calculating the estimate rather than inventing an initial duration. `--compact` preserves the former one-line completed summary and `Failed: ...` lines on stdout; progress remains on stderr. The legacy `--no-optimize` flag remains accepted as a compatibility alias for ordinary update-only indexing.
-
-`psr optimize` does not scan or index sessions. It compacts the existing flat dense collection under the same writer lock and may write near-collection-sized temporary output. Invocation search lives in SQLite and is not part of this operation.
+The estimate uses the observed rate of healthy files in the current run. Until enough work completes, the command says that it is calculating the estimate rather than inventing an initial duration. `--compact` preserves the former one-line completed summary and `Failed: ...` lines on stdout; progress remains on stderr.
 
 No startup hook, completed-turn hook, shutdown hook, watcher, package daemon, or search request updates the index.
 
@@ -86,37 +82,30 @@ Path identity is exact and lexical. Relative command arguments resolve from the 
 
 ### Automatic index maintenance
 
-`psr auto-index install` creates one per-user native schedule that updates changed evidence without optimizing zvec. The interval accepts a positive whole number followed by lowercase `m` or `h`; the default is `1h`. Installation never uses `sudo`. Reinstalling replaces the definition and captures absolute paths to the current Node executable and installed package.
+`psr auto-index install` creates one per-user native schedule that updates changed evidence. The interval accepts a positive whole number followed by lowercase `m` or `h`; the default is `1h`. Installation never uses `sudo`. Reinstalling replaces the definition, captures absolute paths to the current Node executable and installed package, and disables and removes optimization jobs created by older releases.
 
-Optimization is optional. Add `--optimize-daily` to install a second schedule that runs `psr optimize` every day at 23:00 local time. Reinstalling without that flag disables and removes any older optimization schedule. Enable it only when measured query latency, ranking, or workload evidence justifies collection-wide compaction.
-
-The generated definitions run the equivalent of:
+The generated definition runs the equivalent of:
 
 ```text
 <absolute-node> --import tsx <absolute-package-root>/bin/psr index
-# Only with --optimize-daily:
-<absolute-node> --import tsx <absolute-package-root>/bin/psr optimize
 ```
 
-Indexing, activation, rollback, optimization, and search use the same writer lock. A writer cannot switch databases while another writer is active, and search never opens a database while the lock is held. Staged construction uses a separate lock because it writes only its candidate generation. Generated definitions do not copy `PI_RECALL_*` overrides from the installation shell. Scheduled runs use the durable recall configuration file and normal defaults.
+Indexing, activation, rollback, and search use the same writer lock. A writer cannot switch databases while another writer is active, and search never opens a database while the lock is held. Staged construction uses a separate lock because it writes only its candidate generation. Generated definitions do not copy `PI_RECALL_*` overrides from the installation shell. Scheduled runs use the durable recall configuration file and normal defaults.
 
-On Linux, default installation writes one systemd user service and timer under `${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/`. `--optimize-daily` adds a second service and timer. Installation starts the selected timers, then attempts one immediate index run. If that run fails, installation warns but leaves the timers active. Read logs with:
+On Linux, installation writes one systemd user service and timer under `${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/`. It removes stale `pi-session-recall-optimize.service` and `.timer` units, starts the index timer, then attempts one immediate index run. If that run fails, installation warns but leaves the timer active. Read logs with:
 
 ```bash
 journalctl --user-unit=pi-session-recall-index.service
-journalctl --user-unit=pi-session-recall-optimize.service # opt-in schedule only
 ```
 
-On macOS, default installation writes one mode-`0600` LaunchAgent under `~/Library/LaunchAgents/`; it uses `RunAtLoad`. `--optimize-daily` adds a calendar LaunchAgent for 23:00. They write separate logs:
+On macOS, installation removes the stale `dev.pi-session-recall.auto-optimize.plist` LaunchAgent and writes one mode-`0600` index LaunchAgent under `~/Library/LaunchAgents/`; it uses `RunAtLoad`. Logs are written to:
 
 ```text
 ~/.pi/agent/logs/pi-session-recall-auto-index.out.log
 ~/.pi/agent/logs/pi-session-recall-auto-index.err.log
-~/.pi/agent/logs/pi-session-recall-auto-optimize.out.log
-~/.pi/agent/logs/pi-session-recall-auto-optimize.err.log
 ```
 
-The macOS path is runtime-untested. No Mac was available to verify plist acceptance; `RunAtLoad`, `StartInterval`, or `StartCalendarInterval` execution; retry after an exit-status-1 run; overlap suppression across both jobs; absolute Node plus `--import tsx`; log appends; or access to the durable recall configuration and embedding endpoint from the LaunchAgent environment. Other platforms fail with an unsupported-platform error.
+The macOS path is runtime-untested. No Mac was available to verify plist acceptance; `RunAtLoad` or `StartInterval` execution; retry after an exit-status-1 run; absolute Node plus `--import tsx`; log appends; or access to the durable recall configuration and embedding endpoint from the LaunchAgent environment. Other platforms fail with an unsupported-platform error.
 
 The WAL-mode `recall-catalog.sqlite` stores each physical session's size, modification time, dense document identities, and compact Invocation records. Each completed physical session replaces only its own catalog rows in one transaction. If indexing stops, rerun `psr index`; completed sessions remain committed, unfinished sessions are revisited, and matching dense vectors are reused.
 

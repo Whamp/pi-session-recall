@@ -14,6 +14,8 @@ The compact replacement passed its pre-activation storage, retrieval, Source, an
 
 ## Install
 
+The runtime's built-in `node:sqlite` must include FTS5. `psr index` cannot create the Recall catalog without it.
+
 ```bash
 npm install
 npm link

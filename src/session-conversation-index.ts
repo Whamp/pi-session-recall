@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 
 import { SessionImportFormat } from './enums.js';
+import { createSessionInvocationRecords, type InvocationRecord } from './invocation-record.js';
 import { isUnknownRecord } from './is-unknown-record.js';
 import type { ResolvedProjectIdentity } from './resolve-project-identity.js';
 import { assertRecallChunkPolicy } from './recall-chunk-policy.js';
@@ -34,6 +35,7 @@ export interface SessionConversationChunkOptions {
   tokenizer: ConversationTextTokenizer;
   maxTokens?: number;
   overlapTokens?: number;
+  resolveProjectIdentity?: (sessionOrigin: string) => Promise<ResolvedProjectIdentity | null>;
 }
 
 /** Stable graph identities and physical boundaries for one validated logical session. */
@@ -50,6 +52,7 @@ export interface SessionConversationImport {
   format: SessionImportFormat;
   logicalSessions: SessionConversationLogicalSession[];
   chunks: SessionConversationChunk[];
+  invocations: InvocationRecord[];
 }
 
 /** A token-bounded recall evidence document with complete source and session-graph provenance. */
@@ -1845,9 +1848,21 @@ export async function readSessionConversationImport(
   const imported = await importSessionJsonl(sessionPath);
   const logicalSessions: SessionConversationLogicalSession[] = [];
   const chunks: SessionConversationChunk[] = [];
+  const invocations: InvocationRecord[] = [];
   for (const session of imported.sessions) {
     const graph = readValidatedSessionGraph(session);
     logicalSessions.push(createLogicalSessionSummary(session, graph));
+    const projectAttribution = options.resolveProjectIdentity
+      ? await options.resolveProjectIdentity(graph.header.cwd)
+      : null;
+    invocations.push(
+      ...createSessionInvocationRecords(graph.entries, {
+        sessionPath,
+        sessionId: graph.header.id,
+        sessionOrigin: graph.header.cwd,
+        projectAttribution,
+      }),
+    );
     const logicalSessionIdentity =
       imported.format === SessionImportFormat.PI_SESSION_REUSE_HISTORY
         ? `${graph.header.id}@${graph.header.lineIndex}`
@@ -1870,7 +1885,7 @@ export async function readSessionConversationImport(
         .flatMap((pending) => createSessionConversationChunks(context, pending)),
     );
   }
-  return { format: imported.format, logicalSessions, chunks };
+  return { format: imported.format, logicalSessions, chunks, invocations };
 }
 
 /**

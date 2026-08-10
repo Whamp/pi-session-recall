@@ -60,6 +60,14 @@ _Avoid_: Flat turn, tool transcript
 A lexical-only, verbatim tool name, argument object, result text, or direct bash command/output part bounded within one source block or message field. Tool calls and results are linked by call ID. Tool evidence is never sent to the embedding model.
 _Avoid_: Tool transcript, conversation chunk
 
+**Invocation record**:
+A compact searchable record of one tool call or direct bash execution. It contains the tool name, bounded locator arguments or command, call identity, project attribution, and Source locator. It never contains complete tool results or bash output.
+_Avoid_: Tool evidence document, tool result
+
+**Source-backed evidence**:
+Evidence retained only in canonical session JSONL. Complete tool results, bash output, and omitted invocation payloads are Source-backed evidence.
+_Avoid_: Invocation record, copied tool output
+
 **Evidence part**:
 The source component represented by one document: conversation or summary content, tool name, tool arguments, tool result, bash command, or bash output.
 _Avoid_: Chunk type

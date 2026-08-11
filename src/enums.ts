@@ -35,3 +35,19 @@ export enum RecallEvidenceRelation {
   SAME_SESSION_ORIGIN = 'same_session_origin',
   UNRESTRICTED_GLOBAL = 'unrestricted_global_evidence',
 }
+
+/** Durable local Octen artifact state reported without changing the model cache. */
+export enum LocalOctenModelStatusKind {
+  MISSING = 'missing',
+  PARTIAL = 'partial',
+  CORRUPT = 'corrupt',
+  READY = 'ready',
+}
+
+/** Observable stage of one explicitly approved local model download. */
+export enum LocalOctenModelDownloadProgressKind {
+  PREPARING = 'preparing',
+  DOWNLOADING_FILE = 'downloading-file',
+  FILE_VERIFIED = 'file-verified',
+  ACTIVATED = 'activated',
+}

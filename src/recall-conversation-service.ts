@@ -57,12 +57,7 @@ import {
   writeRecallIndexMaintenanceStatus,
   type RecallIndexMaintenanceStatus,
 } from './recall-index-maintenance-status.js';
-import {
-  assertLegacyV6RecallDatabaseCompatible,
-  indexLegacyV6RecallDatabase,
-  openLegacyV6VectorReuseReader,
-  searchLegacyV6RecallDatabase,
-} from './legacy-v6-recall-adapter.js';
+import type * as LegacyV6RecallAdapterModule from './legacy-v6-recall-adapter.js';
 import { createLegacyV6RecallIndexManifest } from './legacy-v6-recall-index-manifest.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
 import {
@@ -357,6 +352,28 @@ function createEmbeddingModelIdentity(
   };
 }
 
+async function loadLegacyV6RecallAdapter(): Promise<typeof LegacyV6RecallAdapterModule> {
+  try {
+    return await import('./legacy-v6-recall-adapter.js');
+  } catch (error) {
+    const optionalPackageMissing =
+      readNodeErrorCode(error) === 'ERR_MODULE_NOT_FOUND' &&
+      error instanceof Error &&
+      error.message.includes("'@zvec/zvec'");
+    const platformBindingUnavailable =
+      error instanceof Error &&
+      error.message.startsWith('Zvec Error: Failed to load prebuilt binary for ') &&
+      error.message.includes('This platform may not be supported.');
+    if (optionalPackageMissing || platformBindingUnavailable) {
+      throw new Error(
+        'Recall legacy-v6 rollback is unavailable on this platform because optional @zvec/zvec could not be loaded; a staged v8 generation is required',
+        { cause: error },
+      );
+    }
+    throw error;
+  }
+}
+
 /** Creates the service used by the read-only Pi tool and standalone `psr` writer. */
 export function createRecallConversationService(
   config: RecallConversationConfig,
@@ -479,6 +496,7 @@ export function createRecallConversationService(
       const activePaths = await resolveActiveRecallDatabasePaths(config);
       const layout = await detectRecallIndexManifestLayout(activePaths.manifestPath);
       if (layout === RecallIndexManifestLayout.LEGACY_V6) {
+        const { assertLegacyV6RecallDatabaseCompatible } = await loadLegacyV6RecallAdapter();
         await assertLegacyV6RecallDatabaseCompatible(activePaths, createExpectedLegacyV6Manifest());
       } else {
         await readCompatibleManifest(activePaths);
@@ -494,6 +512,7 @@ export function createRecallConversationService(
       await assertRecallIndexUnlockedForSearch(config.lockPath);
 
       if (layout === RecallIndexManifestLayout.LEGACY_V6) {
+        const { searchLegacyV6RecallDatabase } = await loadLegacyV6RecallAdapter();
         const legacySearch = searchLegacyV6RecallDatabase({
           paths: activePaths,
           dimensions: config.embeddingStoredDimensions,
@@ -693,6 +712,8 @@ export function createRecallConversationService(
           const reuseLayout = await detectRecallIndexManifestLayout(reusePaths.manifestPath);
           const expectedEmbedding = createEmbeddingModelIdentity(config);
           if (reuseLayout === RecallIndexManifestLayout.LEGACY_V6) {
+            const { assertLegacyV6RecallDatabaseCompatible, openLegacyV6VectorReuseReader } =
+              await loadLegacyV6RecallAdapter();
             const manifest = await assertLegacyV6RecallDatabaseCompatible(
               reusePaths,
               createExpectedLegacyV6Manifest(),
@@ -729,6 +750,8 @@ export function createRecallConversationService(
           if (layout !== RecallIndexManifestLayout.LEGACY_V6) {
             await readCompatibleManifest(activePaths);
           } else {
+            const { assertLegacyV6RecallDatabaseCompatible, indexLegacyV6RecallDatabase } =
+              await loadLegacyV6RecallAdapter();
             const manifest = await assertLegacyV6RecallDatabaseCompatible(
               activePaths,
               createExpectedLegacyV6Manifest(),

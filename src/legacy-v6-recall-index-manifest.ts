@@ -22,13 +22,7 @@ import {
   type RecallProjectLineages,
 } from './resolve-project-identity.js';
 import { SESSION_CONVERSATION_SCHEMA_VERSION } from './session-conversation-index.js';
-import {
-  ZVEC_CONVERSATION_SCHEMA_VERSION,
-  ZVEC_FTS_CONFIGURATION_VERSION,
-  ZVEC_HNSW_EF_CONSTRUCTION,
-  ZVEC_HNSW_EF_SEARCH,
-  ZVEC_HNSW_M,
-} from './zvec-conversation-store.js';
+import { LEGACY_V6_ZVEC_IDENTITY } from './legacy-v6-zvec-identity.js';
 
 /** Exact production manifest version supported only during the legacy-v6 rollback window. */
 export const LEGACY_V6_RECALL_INDEX_MANIFEST_VERSION = 6;
@@ -227,15 +221,7 @@ export function createLegacyV6RecallIndexManifest(options: {
         options.projectLineages ?? normalizeRecallProjectLineages({}),
       ),
     },
-    zvec: {
-      schemaVersion: ZVEC_CONVERSATION_SCHEMA_VERSION,
-      ftsConfigurationVersion: ZVEC_FTS_CONFIGURATION_VERSION,
-      vectorQuantization: 'fp32',
-      metric: 'inner-product',
-      hnswM: ZVEC_HNSW_M,
-      hnswEfConstruction: ZVEC_HNSW_EF_CONSTRUCTION,
-      hnswEfSearch: ZVEC_HNSW_EF_SEARCH,
-    },
+    zvec: { ...LEGACY_V6_ZVEC_IDENTITY },
   };
 }
 

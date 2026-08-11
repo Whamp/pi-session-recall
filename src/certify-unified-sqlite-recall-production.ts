@@ -18,8 +18,6 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'nod
 import { performance } from 'node:perf_hooks';
 import { gunzipSync } from 'node:zlib';
 
-import { ZVecIndexType } from '@zvec/zvec';
-
 import { RecallSearchScope } from './enums.js';
 import { isUnknownRecord } from './is-unknown-record.js';
 import {
@@ -46,11 +44,6 @@ import {
   type SqliteRecallDatabaseCounts,
   type SqliteRecallIntegrityDiagnostics,
 } from './sqlite-recall-database.js';
-import {
-  openZvecConversationStore,
-  readZvecConversationDenseIndexType,
-} from './zvec-conversation-store.js';
-
 const GIBIBYTE = 1_024 ** 3;
 const MEBIBYTE = 1_024 ** 2;
 /** Maximum allocated bytes accepted for one complete production Recall database. */
@@ -862,6 +855,8 @@ async function runCertification(
       `Unified SQLite recall flat-Zvec control is missing: ${argumentsValue.controlZvecPath}`,
     );
   }
+  const [{ ZVecIndexType }, { openZvecConversationStore, readZvecConversationDenseIndexType }] =
+    await Promise.all([import('@zvec/zvec'), import('./zvec-conversation-store.js')]);
   if (readZvecConversationDenseIndexType(argumentsValue.controlZvecPath) !== ZVecIndexType.FLAT) {
     throw new Error(
       `Unified SQLite recall control is not a flat-Zvec store: ${argumentsValue.controlZvecPath}`,

@@ -67,6 +67,8 @@ Run `psr activate <database-target>` only after that target passes its checks. A
 
 Obsolete database layouts are not opened, migrated, or used for vector reuse. Build the current database from canonical session JSONL with `psr index --rebuild --stage`, certify it, and activate it.
 
+For a hard cutover from an obsolete installation, build and certify the staged database with the new package before replacing the installed package. Then pause scheduled indexing, deploy the new package, and immediately activate the exact certified target. Until activation, the deployed current-only code will reject the obsolete root manifest instead of serving or updating it.
+
 The estimate uses the observed rate of healthy files in the current run. Until enough work completes, the command says that it is calculating the estimate rather than inventing an initial duration. `--compact` preserves the former one-line completed summary and `Failed: ...` lines on stdout; progress remains on stderr.
 
 No startup hook, completed-turn hook, shutdown hook, watcher, package daemon, or search request updates the index.

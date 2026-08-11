@@ -259,6 +259,7 @@ void test('clone certification runs one real changed-session index and rejects d
       blockDevice: 'fixture-device',
       minimumFreeBytes: 0,
       readDeviceWrittenBytes: () => deviceWriteSamples.shift() ?? null,
+      flushFilesystemWrites() {},
       runChangedSessionIndex: runRealChangedSessionIndex,
       ...overrides,
     });

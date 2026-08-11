@@ -745,6 +745,52 @@ void test('manual incremental indexing adds, reuses, changes, and deletes SQLite
   assert.deepEqual(readRecallDatabaseSessionPaths(databasePath), []);
 });
 
+void test('selected physical-session maintenance does not process or remove unselected sessions', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-indexer-selected-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const sessionsDirectory = join(root, 'sessions');
+  const databasePath = join(root, 'recall.sqlite');
+  const selectedSessionPath = join(sessionsDirectory, 'selected.jsonl');
+  const unselectedSessionPath = join(sessionsDirectory, 'unselected.jsonl');
+  await mkdir(sessionsDirectory, { recursive: true });
+  await writeSimplePhysicalSessionFile(
+    selectedSessionPath,
+    'selected',
+    'initial selected evidence',
+  );
+  await writeSimplePhysicalSessionFile(
+    unselectedSessionPath,
+    'unselected',
+    'initial unselected evidence',
+  );
+  const options = createIndexerOptions({
+    sessionsDirectory,
+    databasePath,
+    embeddingProvider: createRecordingEmbeddingProvider([]),
+  });
+  await indexChangedConversationSessions(options);
+  const unselectedStateBefore = readRecallDatabaseSessionState(databasePath, unselectedSessionPath);
+
+  await writeSimplePhysicalSessionFile(
+    selectedSessionPath,
+    'selected',
+    'updated selected evidence',
+  );
+  await rm(unselectedSessionPath);
+  const summary = await indexChangedConversationSessions({
+    ...options,
+    selectedPhysicalSessionPaths: [selectedSessionPath],
+  });
+
+  assert.equal(summary.scannedSessions, 1);
+  assert.equal(summary.indexedSessions, 1);
+  assert.equal(summary.removedSessions, 0);
+  assert.deepEqual(
+    readRecallDatabaseSessionState(databasePath, unselectedSessionPath),
+    unselectedStateBefore,
+  );
+});
+
 void test('manual index maintenance reports cumulative progress and continues after a damaged file', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'recall-indexer-invalid-'));
   t.after(() => rm(root, { recursive: true, force: true }));

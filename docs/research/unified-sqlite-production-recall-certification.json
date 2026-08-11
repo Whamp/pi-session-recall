@@ -1,0 +1,523 @@
+{
+  "reportVersion": 1,
+  "issue": 172,
+  "measuredAt": "2026-08-11T14:34:55.288Z",
+  "candidateTarget": "generations/generation-a2824fe3-0717-49c1-80ed-bff6d9c8a378",
+  "candidateDirectory": "$DATA_ROOT/generations/generation-a2824fe3-0717-49c1-80ed-bff6d9c8a378",
+  "safety": {
+    "activeBefore": {
+      "exists": false,
+      "target": null,
+      "bytesSha256": null
+    },
+    "activeAfter": {
+      "exists": false,
+      "target": null,
+      "bytesSha256": null
+    },
+    "candidateInactive": true,
+    "candidateOpenedReadOnly": true,
+    "cloneOnlyMutation": true
+  },
+  "manifest": {
+    "manifestVersion": 8,
+    "importPolicy": {
+      "version": 3
+    },
+    "tokenizer": {
+      "model": "Octen/Octen-Embedding-4B",
+      "revision": "6e188e3b072c3e3678b235ad84e6e97bcbb71e8f",
+      "library": {
+        "name": "@huggingface/tokenizers",
+        "version": "0.1.3"
+      },
+      "encodeOptions": {
+        "addSpecialTokens": false,
+        "returnTokenTypeIds": false
+      },
+      "assets": [
+        {
+          "fileName": "tokenizer.json",
+          "sha256": "83cdf8c3a34f68862319cb1810ee7b1e2c0a44e0864ae930194ddb76bb7feb8d"
+        },
+        {
+          "fileName": "tokenizer_config.json",
+          "sha256": "0a04a9d7d4a62b28482bdfe726c122756de85714fb64166ace92ae75b8f57614"
+        }
+      ]
+    },
+    "chunkPolicy": {
+      "version": 3,
+      "maxTokens": 512,
+      "overlapTokens": 64,
+      "boundaryAlgorithm": "markdown-structure-v1"
+    },
+    "conversationSchemaVersion": 8,
+    "provenanceSchemaVersion": 8,
+    "projectIdentity": {
+      "policyVersion": 4,
+      "metadataSchemaVersion": 3,
+      "lineagePolicyVersion": 1,
+      "lineageDigest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    },
+    "sqliteRecallDatabase": {
+      "schemaVersion": 3,
+      "storageLayout": "unified-sqlite-vec",
+      "sqliteVecVersion": "0.1.9",
+      "routing": {
+        "table": "bucketed",
+        "bucketCount": 16,
+        "bucketFunction": "project-key-modulo-16",
+        "projectExactKey": true,
+        "global": "all-buckets"
+      },
+      "fullTextSearch": {
+        "engine": "fts5",
+        "tokenizer": "unicode61"
+      }
+    }
+  },
+  "sqliteIdentity": {
+    "schemaVersion": 3,
+    "storageLayout": "unified-sqlite-vec",
+    "embeddingDimensions": 1024,
+    "vectorEncoding": "float32",
+    "distanceMetric": "cosine",
+    "projectBucketCount": 16,
+    "sqliteVecVersion": "v0.1.9",
+    "sqliteVersion": "3.53.0",
+    "journalMode": "wal",
+    "queryOnly": true
+  },
+  "linuxX64SqliteVecLoad": {
+    "executed": true,
+    "version": "v0.1.9",
+    "passed": true
+  },
+  "counts": {
+    "physicalSessions": 3732,
+    "sessionDocuments": 345907,
+    "invocations": 222145,
+    "denseDocuments": 345907,
+    "denseVectors": 345907,
+    "denseProjects": 131
+  },
+  "storage": {
+    "allocatedBytes": 3228901376,
+    "maximumBytes": 5368709120
+  },
+  "integrity": {
+    "sqliteIntegrity": ["ok"],
+    "foreignKeyViolations": 0,
+    "invocationFtsIntegrityChecked": false,
+    "invocationFtsDocuments": 222145,
+    "invocationsMissingFts": 0,
+    "ftsDocumentsMissingInvocation": 0,
+    "vectorParity": {
+      "denseDocuments": 345907,
+      "vectors": 345907,
+      "denseDocumentsMissingVector": 0,
+      "vectorsMissingDenseDocument": 0,
+      "projectMetadataMismatches": 0,
+      "healthy": true
+    },
+    "healthy": true
+  },
+  "denseBenchmark": {
+    "observations": [
+      {
+        "query": "Why have recent pi-session-recall optimization attempts failed?",
+        "globalMilliseconds": [
+          365.951178, 361.25356399999987, 356.66896900000006, 363.8299300000001, 361.9412809999999
+        ],
+        "projectMilliseconds": [
+          42.12407200000007, 41.162599999999884, 41.466081999999915, 41.10206799999969,
+          40.91092299999991
+        ],
+        "globalResultIds": [
+          "3949ec80f97526c5871d36c75ff97173505a5da7",
+          "25c69aa5a08ddf30ccbdbf7e642e7963b596eef5",
+          "d21a91e7c8335ae4be572280cfc1a123b17ae1fd",
+          "d4cf32fc90b868892628231e8bc12043d3d0f2ee",
+          "d6f240fee52f0ad1311f6ad6592f20fa04f56eea",
+          "50fb834b121b866d5dfcfb3a45559b8e8dbaf184",
+          "5dcd5a740e7d9a60bcf40b3810eb67e18f20cfb6",
+          "b8a6dd7feefc9941e6f4b533bb313d16956c622d"
+        ],
+        "projectResultIds": [
+          "25c69aa5a08ddf30ccbdbf7e642e7963b596eef5",
+          "d21a91e7c8335ae4be572280cfc1a123b17ae1fd",
+          "d4cf32fc90b868892628231e8bc12043d3d0f2ee",
+          "50fb834b121b866d5dfcfb3a45559b8e8dbaf184",
+          "5dcd5a740e7d9a60bcf40b3810eb67e18f20cfb6",
+          "b38836edf3f43b5c50b5ed085751fcababdf8718",
+          "b8a6dd7feefc9941e6f4b533bb313d16956c622d",
+          "f26e683f90f733c9f193dc390406105d36b73093"
+        ],
+        "passed": true
+      },
+      {
+        "query": "How is automatic recall indexing scheduled?",
+        "globalMilliseconds": [
+          359.50912500000004, 360.5519169999998, 356.6326759999997, 360.52817499999946,
+          361.2740480000002
+        ],
+        "projectMilliseconds": [
+          40.86559000000034, 41.7465229999998, 43.12244299999929, 40.77580300000045,
+          40.87868400000025
+        ],
+        "globalResultIds": [
+          "9e83ceabe3c9e6a1951404910de1fe4b1e4861ee",
+          "b5eda797039a909fe434da24ac1bb1b889a210bc",
+          "c63a9fc228199f63d9351b30dc6f23d67b463a42",
+          "dd2dcbc57feb36f4d600fcd0b75a8d22d0f9fcc6",
+          "24991ab3048f2e956c7772987ac58be8a80e00aa",
+          "57f06527344b6b50eaddd820a9ed6004bb52c3ad",
+          "aa69957e3b325218ab196da01763c9d585eba8e5",
+          "2d9733b7b00a4609a1b8d202e11ab54c2ca8fdbe"
+        ],
+        "projectResultIds": [
+          "9e83ceabe3c9e6a1951404910de1fe4b1e4861ee",
+          "b5eda797039a909fe434da24ac1bb1b889a210bc",
+          "c63a9fc228199f63d9351b30dc6f23d67b463a42",
+          "dd2dcbc57feb36f4d600fcd0b75a8d22d0f9fcc6",
+          "24991ab3048f2e956c7772987ac58be8a80e00aa",
+          "57f06527344b6b50eaddd820a9ed6004bb52c3ad",
+          "aa69957e3b325218ab196da01763c9d585eba8e5",
+          "2d9733b7b00a4609a1b8d202e11ab54c2ca8fdbe"
+        ],
+        "passed": true
+      },
+      {
+        "query": "Which corrupted February session files are ignored?",
+        "globalMilliseconds": [
+          364.00717500000064, 363.2884530000001, 356.26550000000043, 358.2621100000006,
+          361.76904000000013
+        ],
+        "projectMilliseconds": [
+          42.00543299999936, 41.599160000000666, 42.825864000000365, 40.86413799999991,
+          41.08830399999988
+        ],
+        "globalResultIds": [
+          "1cf054e892fada56a9e8b3227bc8d13fdea3b698",
+          "1294b411b868a461a3585e0f49b6b2faa61de85c",
+          "ef18f3bf7acacfee5e67c4644cb0b3c110fff10d",
+          "7eab067382b64c2ff69a7bf5c5192d73eed3b3ca",
+          "13785e6273832580b3a1d9df99881737a17a5d14",
+          "88f7fd0ed4eb2d7220aa0573b1fa2f3c53ac7ffa",
+          "007a331e088e66b87f870df8ff722da343c2e579",
+          "eb1fccad7cc63ad2ff145b98d3fa1c214423b344"
+        ],
+        "projectResultIds": [
+          "1cf054e892fada56a9e8b3227bc8d13fdea3b698",
+          "1294b411b868a461a3585e0f49b6b2faa61de85c",
+          "ef18f3bf7acacfee5e67c4644cb0b3c110fff10d",
+          "7eab067382b64c2ff69a7bf5c5192d73eed3b3ca",
+          "13785e6273832580b3a1d9df99881737a17a5d14",
+          "88f7fd0ed4eb2d7220aa0573b1fa2f3c53ac7ffa",
+          "007a331e088e66b87f870df8ff722da343c2e579",
+          "eb1fccad7cc63ad2ff145b98d3fa1c214423b344"
+        ],
+        "passed": true
+      },
+      {
+        "query": "How large is the recall database?",
+        "globalMilliseconds": [
+          356.15143100000023, 359.85591699999895, 357.7368409999999, 356.45543700000053,
+          361.48850400000083
+        ],
+        "projectMilliseconds": [
+          40.146068000000014, 40.7641339999991, 41.77151100000083, 40.31437000000005,
+          40.473885999999766
+        ],
+        "globalResultIds": [
+          "548d5b2a709c9d3e42ed973c2721dc3854f4847c",
+          "8a2354cc401c2bd0c845106e96cf60ed63aaa5e6",
+          "8db4af6a4bd72ed35f1190440ff7267109ca925e",
+          "5cc1a73e5b0cda9de01d5aad624f6b9cd4161478",
+          "f15455db99015bf8205085ffb75239d834cd4d18",
+          "edd802c91d0aee79199be3d561a3b3083a0455d5",
+          "bf6e64f49e28cc3bee0847dcbe31c44e44829bff",
+          "0fbbb693054fe81b0a6627789b694f9d37caf3c9"
+        ],
+        "projectResultIds": [
+          "548d5b2a709c9d3e42ed973c2721dc3854f4847c",
+          "8a2354cc401c2bd0c845106e96cf60ed63aaa5e6",
+          "8db4af6a4bd72ed35f1190440ff7267109ca925e",
+          "5cc1a73e5b0cda9de01d5aad624f6b9cd4161478",
+          "f15455db99015bf8205085ffb75239d834cd4d18",
+          "edd802c91d0aee79199be3d561a3b3083a0455d5",
+          "0fbbb693054fe81b0a6627789b694f9d37caf3c9",
+          "68fdc934544837daefdcfe9ad2e39616666d67b5"
+        ],
+        "passed": true
+      },
+      {
+        "query": "Why would an agent use pi-session-recall instead of searching raw JSONL?",
+        "globalMilliseconds": [
+          366.0401610000008, 364.60544200000004, 359.5110139999997, 356.04591100000107,
+          361.05462500000067
+        ],
+        "projectMilliseconds": [
+          41.831702000001314, 41.03628700000081, 42.09844699999849, 40.65522299999975,
+          40.6750690000008
+        ],
+        "globalResultIds": [
+          "9df45341eece978decf7a7ebff26c458540c4edb",
+          "e56eb75bb46533c551680a410ca4811a88118b54",
+          "597761f3ef3e36adafd36a3e5d95ebb835dfe163",
+          "250492d179a630150c2b38eefb093871e9d863c4",
+          "43eb1ef9d6b8c65019dd92b93112ae489a2d03b8",
+          "9204e840eca980408964d3611724f099d0565239",
+          "9bcefebb208fbe5219dc005ca74f46ffb5354f3f",
+          "a75601e04009c7905b8648bb35ee8f3f7027f1d4"
+        ],
+        "projectResultIds": [
+          "9df45341eece978decf7a7ebff26c458540c4edb",
+          "250492d179a630150c2b38eefb093871e9d863c4",
+          "43eb1ef9d6b8c65019dd92b93112ae489a2d03b8",
+          "9204e840eca980408964d3611724f099d0565239",
+          "9bcefebb208fbe5219dc005ca74f46ffb5354f3f",
+          "a75601e04009c7905b8648bb35ee8f3f7027f1d4",
+          "85169c193b46190dcc9c2efaa7802ceb90a2ba52",
+          "fb99369585656045f6a4c8d3524ac48254ca2307"
+        ],
+        "passed": true
+      }
+    ],
+    "globalP95Milliseconds": 365.951178,
+    "projectP95Milliseconds": 42.825864000000365
+  },
+  "invocationBenchmark": {
+    "observations": [
+      {
+        "kind": "tool-name",
+        "query": "brain_query",
+        "expectedToolName": "brain_query",
+        "milliseconds": [
+          0.5866169999990234, 0.5275180000007822, 0.5086620000001858, 0.49376500000107626,
+          0.4841980000001058
+        ],
+        "resultCount": 20,
+        "matchedExpectedToolName": true
+      },
+      {
+        "kind": "path",
+        "query": "$HOME/.pi/agent/TAILNET.md",
+        "milliseconds": [
+          1.8576130000001285, 1.7379310000014812, 1.7491620000000694, 1.7807599999996455,
+          1.7833749999990687
+        ],
+        "resultCount": 20,
+        "matchedExpectedToolName": true
+      },
+      {
+        "kind": "url",
+        "query": "http://192.168.0.67:8090/v1",
+        "milliseconds": [
+          0.6415290000004461, 0.6112219999995432, 0.6200989999997546, 0.6182360000002518,
+          0.6086279999999533
+        ],
+        "resultCount": 20,
+        "matchedExpectedToolName": true
+      },
+      {
+        "kind": "command",
+        "query": "psr optimize",
+        "milliseconds": [
+          0.11414200000035635, 0.10786000000007334, 0.21842500000093423, 0.13132300000143005,
+          0.10577600000033271
+        ],
+        "resultCount": 5,
+        "matchedExpectedToolName": true
+      },
+      {
+        "kind": "issue-number",
+        "query": "gh issue view 165",
+        "milliseconds": [
+          0.3967849999989994, 0.4032970000007481, 0.3962339999998221, 0.393699000000197,
+          0.38720699999976205
+        ],
+        "resultCount": 4,
+        "matchedExpectedToolName": true
+      },
+      {
+        "kind": "flag",
+        "query": "--optimize-daily",
+        "milliseconds": [
+          0.08029899999928602, 0.08202200000050652, 0.07842499999969732, 0.0846270000001823,
+          0.0805000000000291
+        ],
+        "resultCount": 2,
+        "matchedExpectedToolName": true
+      }
+    ],
+    "p95Milliseconds": 1.7833749999990687
+  },
+  "sourceSearch": {
+    "observations": [
+      {
+        "kind": "result-only-error",
+        "query": "FtsRocksdbReducer",
+        "filesScanned": 3733,
+        "failures": 0,
+        "exactLocation": {
+          "sessionPath": "$HOME/.pi/agent/sessions/--home-will-projects-pi-session-recall--/2026-08-08T20-43-57-969Z_019fe31e-3e91-7df4-969a-8c8b1f1ec757.jsonl",
+          "sourceLineStart": 176,
+          "sourceLineEnd": 176,
+          "entryId": "2165f7ed",
+          "role": "toolResult"
+        },
+        "passed": true
+      },
+      {
+        "kind": "hardware-identifier",
+        "query": "CT1000P3PSSD8",
+        "filesScanned": 3733,
+        "failures": 0,
+        "exactLocation": {
+          "sessionPath": "$HOME/.pi/agent/sessions/--home-will--/2026-01-08T21-15-34-355Z_1d4e2cfc-3f56-4c74-958a-78a36a55efd1.jsonl",
+          "sourceLineStart": 7,
+          "sourceLineEnd": 7,
+          "entryId": "f3016783",
+          "role": "toolResult"
+        },
+        "passed": true
+      },
+      {
+        "kind": "filename",
+        "query": "2026-02-02T18-31-25",
+        "filesScanned": 3733,
+        "failures": 0,
+        "exactLocation": {
+          "sessionPath": "$HOME/.pi/agent/sessions/--home-will--/2026-02-10T15-22-22-670Z_b3772b85-c4ca-41bf-8e42-15e1debfd844.jsonl",
+          "sourceLineStart": 13,
+          "sourceLineEnd": 13,
+          "entryId": "a8b282ed",
+          "role": "toolResult"
+        },
+        "passed": true
+      },
+      {
+        "kind": "command-output",
+        "query": "pi - AI coding assistant with read, bash, edit, write tools",
+        "filesScanned": 3733,
+        "failures": 0,
+        "exactLocation": {
+          "sessionPath": "$HOME/.pi/agent/sessions/--home-will--/2026-01-12T23-52-11-516Z_442dcec9-9f02-4ee2-a45e-862b6b5ec863.jsonl",
+          "sourceLineStart": 4,
+          "sourceLineEnd": 4,
+          "entryId": "b43c054d",
+          "role": "bashExecution"
+        },
+        "passed": true
+      }
+    ]
+  },
+  "cloneCertification": {
+    "cloneDirectory": "$SCRATCH_ROOT/certification-clone-2311343",
+    "representativeSession": "2026-01-06T03-50-11-439Z_9f80bf5b-afc2-4f51-a8a7-b2e756ca5b9f.jsonl",
+    "unrelatedPhysicalSession": "2025-12-17T19-09-41-940Z_aedb700a-f74b-4888-b5f3-0b649bda3853.jsonl",
+    "concurrentReaderSawCommittedState": true,
+    "explicitRollbackRestoredState": true,
+    "forcedTerminationSignal": "SIGKILL",
+    "forcedTerminationRestoredState": true,
+    "changedSessionIndexer": "indexChangedConversationSessions",
+    "changedSessionIndexedPhysicalSessionPaths": [
+      "$HOME/.pi/agent/sessions/--etc-ssh--/2026-01-06T03-50-11-439Z_9f80bf5b-afc2-4f51-a8a7-b2e756ca5b9f.jsonl"
+    ],
+    "changedSessionIndexSummary": {
+      "scannedSessions": 1,
+      "indexedSessions": 1,
+      "removedSessions": 0,
+      "reusedVectors": 17,
+      "newlyEmbeddedChunks": 0,
+      "embeddingRequestCount": 0,
+      "deletedChunks": 0,
+      "failedSessions": []
+    },
+    "changedSessionIndexSummaryValid": true,
+    "changedSessionIndexExpectedVectorReuseCount": 17,
+    "changedSessionIndexReusedExpectedVectors": true,
+    "changedSessionIndexElapsedMilliseconds": 109.77105499999016,
+    "changedSessionIndexDeviceWrittenBytes": 7720960,
+    "unrelatedPhysicalSessionUnchanged": true,
+    "databaseCountsUnchanged": true,
+    "countsBeforeChangedSessionIndex": {
+      "physicalSessions": 3732,
+      "sessionDocuments": 345907,
+      "invocations": 222145,
+      "denseDocuments": 345907,
+      "denseVectors": 345907,
+      "denseProjects": 131
+    },
+    "countsAfterChangedSessionIndex": {
+      "physicalSessions": 3732,
+      "sessionDocuments": 345907,
+      "invocations": 222145,
+      "denseDocuments": 345907,
+      "denseVectors": 345907,
+      "denseProjects": 131
+    },
+    "directDatabaseChurnProbe": true,
+    "directDatabaseChurnCycles": 100,
+    "directDatabaseChurnElapsedMilliseconds": 4720.986877999996,
+    "directDatabaseChurnDeviceWrittenBytes": 35667968,
+    "directDatabaseChurnAverageDeviceWrittenBytesPerCycle": 356679.68,
+    "deviceWriteMeasurement": "gross-block-device-writes",
+    "allocatedGrowthBytes": 0,
+    "freePageGrowth": 0,
+    "beforeDirectDatabaseChurnStorage": {
+      "allocatedBytes": 3228917760,
+      "storage": {
+        "pageSizeBytes": 4096,
+        "pageCount": 788302,
+        "freePageCount": 1
+      }
+    },
+    "afterDirectDatabaseChurnStorage": {
+      "allocatedBytes": 3228917760,
+      "storage": {
+        "pageSizeBytes": 4096,
+        "pageCount": 788302,
+        "freePageCount": 1
+      }
+    },
+    "postChurnIntegrity": {
+      "sqliteIntegrity": ["ok"],
+      "foreignKeyViolations": 0,
+      "invocationFtsIntegrityChecked": true,
+      "invocationFtsDocuments": 222145,
+      "invocationsMissingFts": 0,
+      "ftsDocumentsMissingInvocation": 0,
+      "vectorParity": {
+        "denseDocuments": 345907,
+        "vectors": 345907,
+        "denseDocumentsMissingVector": 0,
+        "vectorsMissingDenseDocument": 0,
+        "projectMetadataMismatches": 0,
+        "healthy": true
+      },
+      "healthy": true
+    },
+    "postChurnGlobalP95Milliseconds": 348.32130999999936,
+    "postChurnProjectP95Milliseconds": 3.3249829999986105,
+    "postChurnInvocationP95Milliseconds": 0.3936099999991711,
+    "passed": true
+  },
+  "gates": {
+    "storage": true,
+    "projectLatency": true,
+    "globalLatency": true,
+    "invocationLatency": true,
+    "invocationProbes": true,
+    "denseProbes": true,
+    "sourceProvenance": true,
+    "integrity": true,
+    "linuxX64Load": true,
+    "candidateInactive": true,
+    "clone": true
+  },
+  "candidatePreActivationPassed": true,
+  "passed": true
+}

@@ -34,6 +34,8 @@ export interface ConversationIndexSummary {
 /** Dependencies required to update recall storage from Pi session JSONL files. */
 export interface IncrementalSessionIndexerOptions {
   sessionsDirectory: string;
+  /** Explicit physical session files for bounded maintenance without pruning unselected sessions. */
+  selectedPhysicalSessionPaths?: readonly string[];
   /** Already-open unified database owned by the service for this maintenance pass. */
   database?: SqliteRecallDatabase;
   /** Path used only when the indexer itself owns the database handle. */
@@ -286,6 +288,7 @@ async function planMaintenanceWorkset(
   sessionFiles: readonly string[],
   database: SqliteRecallDatabase,
   ignoredPhysicalSessionPaths: ReadonlySet<string>,
+  pruneUnselectedSessions: boolean,
 ): Promise<MaintenanceWorksetPlan> {
   const filesToIndex: PlannedPhysicalSessionFile[] = [];
   for (const sessionPath of sessionFiles) {
@@ -319,14 +322,20 @@ async function planMaintenanceWorkset(
   return {
     discoveredFiles: sessionFiles.length,
     filesToIndex,
-    missingFiles: indexedSessionPaths
+    missingFiles: pruneUnselectedSessions
+      ? indexedSessionPaths
+          .filter(
+            (sessionPath) =>
+              !ignoredPhysicalSessionPaths.has(sessionPath) && !liveSessionPaths.has(sessionPath),
+          )
+          .sort()
+      : [],
+    ignoredIndexedFiles: indexedSessionPaths
       .filter(
         (sessionPath) =>
-          !ignoredPhysicalSessionPaths.has(sessionPath) && !liveSessionPaths.has(sessionPath),
+          ignoredPhysicalSessionPaths.has(sessionPath) &&
+          (pruneUnselectedSessions || liveSessionPaths.has(sessionPath)),
       )
-      .sort(),
-    ignoredIndexedFiles: indexedSessionPaths
-      .filter((sessionPath) => ignoredPhysicalSessionPaths.has(sessionPath))
       .sort(),
   };
 }
@@ -344,12 +353,18 @@ export async function indexChangedConversationSessions(
   try {
     options.onProgress?.({ kind: 'discovering-physical-session-files' });
     const sessionsDirectory = resolve(options.sessionsDirectory);
-    const sessionFiles = await listRecallSessionFiles(sessionsDirectory);
+    const selectedPhysicalSessionPaths = options.selectedPhysicalSessionPaths?.map((sessionPath) =>
+      resolve(sessionPath),
+    );
+    const sessionFiles = selectedPhysicalSessionPaths
+      ? [...new Set(selectedPhysicalSessionPaths)].sort()
+      : await listRecallSessionFiles(sessionsDirectory);
     options.onProgress?.({ kind: 'planning-maintenance-workset' });
     const workset = await planMaintenanceWorkset(
       sessionFiles,
       database,
       options.ignoredPhysicalSessionPaths,
+      selectedPhysicalSessionPaths === undefined,
     );
     const summary = createConversationIndexSummary();
     summary.scannedSessions = workset.discoveredFiles;

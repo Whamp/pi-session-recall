@@ -994,20 +994,12 @@ export function openSqliteRecallDatabase(
     `);
     const readInvocationFtsParity = database.prepare(`
       SELECT
-        (SELECT count(DISTINCT doc) FROM invocations_fts_vocabulary)
-          AS invocation_fts_documents,
+        (SELECT count(*) FROM invocations) AS invocations,
+        (SELECT count(*) FROM invocations_fts_docsize) AS invocation_fts_documents,
         (SELECT count(*)
-          FROM invocations AS invocation
-          WHERE NOT EXISTS (
-            SELECT 1 FROM invocations_fts_vocabulary AS vocabulary
-            WHERE vocabulary.doc = invocation.invocation_id
-          )) AS invocations_missing_fts,
-        (SELECT count(*)
-          FROM (SELECT DISTINCT doc FROM invocations_fts_vocabulary) AS vocabulary
-          WHERE NOT EXISTS (
-            SELECT 1 FROM invocations AS invocation
-            WHERE invocation.invocation_id = vocabulary.doc
-          )) AS fts_documents_missing_invocation
+          FROM invocations_fts_docsize AS fts_document
+          LEFT JOIN invocations AS invocation ON invocation.invocation_id = fts_document.id
+          WHERE invocation.invocation_id IS NULL) AS fts_documents_missing_invocation
     `);
     const readVectorParity = database.prepare(`
       SELECT
@@ -1359,12 +1351,14 @@ export function openSqliteRecallDatabase(
             vectorParity.denseDocumentsMissingVector === 0 &&
             vectorParity.vectorsMissingDenseDocument === 0 &&
             vectorParity.projectMetadataMismatches === 0;
+          const invocationCount = readRequiredInteger(ftsParity, 'invocations');
           const invocationFtsDocuments = readRequiredInteger(ftsParity, 'invocation_fts_documents');
-          const invocationsMissingFts = readRequiredInteger(ftsParity, 'invocations_missing_fts');
           const ftsDocumentsMissingInvocation = readRequiredInteger(
             ftsParity,
             'fts_documents_missing_invocation',
           );
+          const invocationsMissingFts =
+            invocationCount - invocationFtsDocuments + ftsDocumentsMissingInvocation;
           return {
             sqliteIntegrity,
             foreignKeyViolations,

@@ -382,6 +382,15 @@ function readBlockDeviceWrittenBytes(blockDevice: string): number | null {
   return Number.isFinite(sectors) ? sectors * 512 : null;
 }
 
+function flushCertificationFilesystemWrites(): void {
+  const result = spawnSync('sync', [], { encoding: 'utf8' });
+  if (result.status !== 0) {
+    throw new Error(
+      `Unified SQLite recall filesystem write flush failed: ${result.stderr.trim() || result.error?.message || 'unknown error'}`,
+    );
+  }
+}
+
 function runCloneChild(
   databasePath: string,
   sessionPath: string,
@@ -457,6 +466,8 @@ export async function certifyDisposableUnifiedSqliteClone(options: {
   minimumFreeBytes?: number;
   /** Test seam; production callers must read the named block device. */
   readDeviceWrittenBytes?: () => number | null;
+  /** Test seam; production callers flush pending filesystem writes around device counters. */
+  flushFilesystemWrites?: () => void;
   onProgress?: (event: UnifiedSqliteCertificationProgress) => void;
 }): Promise<Record<string, unknown>> {
   if (typeof options.runChangedSessionIndex !== 'function') {
@@ -548,6 +559,9 @@ export async function certifyDisposableUnifiedSqliteClone(options: {
     database.checkpointDisposableClone();
     const readDeviceWrittenBytes =
       options.readDeviceWrittenBytes ?? (() => readBlockDeviceWrittenBytes(options.blockDevice));
+    const flushFilesystemWrites =
+      options.flushFilesystemWrites ?? flushCertificationFilesystemWrites;
+    flushFilesystemWrites();
     const changedSessionIndexWritesBefore = readDeviceWrittenBytes();
     const changedSessionIndexedPhysicalSessionPaths = new Set<string>();
     options.onProgress?.({ stage: 'clone-changed-session' });
@@ -559,6 +573,7 @@ export async function certifyDisposableUnifiedSqliteClone(options: {
     });
     const changedSessionIndexElapsedMilliseconds = performance.now() - changedSessionIndexStarted;
     database.checkpointDisposableClone();
+    flushFilesystemWrites();
     const changedSessionIndexWritesAfter = readDeviceWrittenBytes();
     const changedSessionIndexDeviceWrittenBytes =
       changedSessionIndexWritesBefore === null || changedSessionIndexWritesAfter === null
@@ -599,6 +614,7 @@ export async function certifyDisposableUnifiedSqliteClone(options: {
       allocatedBytes: readDatabaseAllocatedBytes(databasePath),
       storage: database.readStorageMetrics(),
     };
+    flushFilesystemWrites();
     const directDatabaseChurnWritesBefore = readDeviceWrittenBytes();
     const directDatabaseChurnStarted = performance.now();
     options.onProgress?.({ stage: 'clone-churn', completed: 0, total: 100 });
@@ -611,6 +627,7 @@ export async function certifyDisposableUnifiedSqliteClone(options: {
     }
     const directDatabaseChurnElapsedMilliseconds = performance.now() - directDatabaseChurnStarted;
     database.checkpointDisposableClone();
+    flushFilesystemWrites();
     const directDatabaseChurnWritesAfter = readDeviceWrittenBytes();
     const afterMetrics = {
       allocatedBytes: readDatabaseAllocatedBytes(databasePath),
@@ -995,6 +1012,7 @@ async function runCertification(
             runChangedSessionIndex: (database, onIndexProgress) =>
               indexChangedConversationSessions({
                 sessionsDirectory: config.sessionsDirectory,
+                selectedPhysicalSessionPaths: [argumentsValue.representativeSessionPath!],
                 database,
                 embeddingProvider,
                 tokenizer,

@@ -491,6 +491,51 @@ void test('one physical-session replacement commits every Recall projection toge
   });
 });
 
+void test('read-only integrity detects missing Invocation FTS document rows', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'sqlite-recall-fts-integrity-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const databasePath = join(directory, 'recall.sqlite');
+  const writer = openSqliteRecallDatabase(databasePath);
+  const sessionPath = '/sessions/fts-integrity.jsonl';
+  writer.replacePhysicalSession({
+    sessionPath,
+    size: 10,
+    mtimeMs: 20,
+    documentIds: [],
+    denseDocuments: [],
+    denseEmbeddings: new Map(),
+    invocations: [createInvocationRecord(sessionPath)],
+  });
+  writer.close();
+
+  const corruption = new DatabaseSync(databasePath);
+  const invocation = corruption
+    .prepare('SELECT invocation_id, tool_name, searchable_text FROM invocations')
+    .get();
+  const invocationId = invocation?.invocation_id;
+  const toolName = invocation?.tool_name;
+  const searchableText = invocation?.searchable_text;
+  if (invocationId === undefined || toolName === undefined || searchableText === undefined) {
+    throw new Error('SQLite Recall FTS integrity fixture Invocation missing');
+  }
+  corruption
+    .prepare(`
+      INSERT INTO invocations_fts(invocations_fts, rowid, tool_name, searchable_text)
+      VALUES ('delete', ?, ?, ?)
+    `)
+    .run(invocationId, toolName, searchableText);
+  corruption.close();
+
+  const reader = openSqliteRecallDatabase(databasePath, { readOnly: true });
+  t.after(() => reader.close());
+  const diagnostics = reader.checkIntegrity();
+
+  assert.equal(diagnostics.invocationFtsDocuments, 0);
+  assert.equal(diagnostics.invocationsMissingFts, 1);
+  assert.equal(diagnostics.ftsDocumentsMissingInvocation, 0);
+  assert.equal(diagnostics.healthy, false);
+});
+
 void test('replacement refreshes same-ID metadata, vectors, project scope, and Invocation FTS', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'sqlite-recall-refresh-'));
   t.after(() => rm(directory, { recursive: true, force: true }));

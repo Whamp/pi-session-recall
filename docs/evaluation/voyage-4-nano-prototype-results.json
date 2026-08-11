@@ -1,0 +1,144 @@
+{
+  "version": 1,
+  "completedAt": "2026-08-11T22:23:03.922Z",
+  "artifact": {
+    "upstreamRepository": "voyageai/voyage-4-nano",
+    "upstreamRevision": "67fabc9bef010dabc5f6024aa1b1b6b93410426f",
+    "prototypeRepository": "onnx-community/voyage-4-nano-ONNX",
+    "prototypeRevision": "fb6f32cceb63b6eac92e1fdc08e00d03c41cdf5a",
+    "files": [
+      {
+        "fileName": "model_quantized.onnx",
+        "bytes": 268076,
+        "sha256": "e2999ae63b575e34b7bef6a513f48c7f7701cebfb1bfffcb9db23ab0db324157"
+      },
+      {
+        "fileName": "model_quantized.onnx_data",
+        "bytes": 421625856,
+        "sha256": "db94fc1655db1a1b55f67f7019ebbd803142f54e1bd83cfd1c2d6faadd6a648c"
+      }
+    ],
+    "quantization": "INT8 dynamic",
+    "nativeDimensions": 2048,
+    "storedMrlDimensions": 1024,
+    "license": "Apache-2.0"
+  },
+  "runtime": {
+    "package": "onnxruntime-node",
+    "version": "1.27.0",
+    "platform": "linux",
+    "architecture": "x64",
+    "node": "v24.16.0",
+    "cpu": "AMD Ryzen 7 8845HS w/ Radeon 780M Graphics",
+    "logicalCpus": 16,
+    "peakRssBytes": 2401591296,
+    "loadMilliseconds": 47.99032699999998,
+    "embeddedTexts": 13116,
+    "embeddedTokens": 3784166,
+    "batchLatencyMedianMilliseconds": 2089.90456000017,
+    "batchLatencyP95Milliseconds": 3123.7923849999206,
+    "batchSize": 8,
+    "intraOpThreads": 8
+  },
+  "sample": {
+    "selectionAlgorithm": "project-round-robin-sha256-v1",
+    "selectionHash": "de249b629f25b68651c74ed7a1f801512d634499fea5f3164d3bf9acc069dc70",
+    "discoveredSessions": 3737,
+    "selectedSessions": 171,
+    "representedProjectDirectories": 171,
+    "sourceBytes": 170255864,
+    "projectedDenseDocuments": 12966,
+    "projectedInvocations": 12836,
+    "parseFailuresDuringSelection": 0
+  },
+  "quality": {
+    "frozenGatePassed": false,
+    "practicalLocalGatePassed": false,
+    "practicalMinimum": 0.9,
+    "candidatePoolRecall": 0.8125,
+    "finalRecall": 0.8125,
+    "contextUsefulness": 0.8125,
+    "sourceOccurrencePreservation": 0.8125,
+    "queryLatency": {
+      "median": 68.16308800000115,
+      "p95": 86.63360199999988
+    },
+    "strictGateBlockers": [
+      "512-64, 8 candidates/channel, 5 final: candidate-pool recall 0.813 is below 1.000",
+      "512-64, 8 candidates/channel, 5 final: fused top-N recall 0.813 is below 0.900",
+      "512-64, 8 candidates/channel, 5 final: context usefulness 0.813 is below 0.900",
+      "512-64, 8 candidates/channel, 5 final: source occurrence preservation 0.813 is below 1.000",
+      "512-64, 8 candidates/channel, 5 final: session-origin verification 0.813 is below 1.000",
+      "512-64, 8 candidates/channel, 5 final: evidence-relation verification 0.813 is below 1.000",
+      "512-64, 8 candidates/channel, 5 final: contributing-entry verification 0.813 is below 1.000",
+      "512-64, 8 candidates/channel, 5 final: branch verification 0.813 is below 1.000"
+    ]
+  },
+  "sampleIndex": {
+    "durationMilliseconds": 3184488.646696,
+    "denseDocumentsPerSecond": 4.071611312997647,
+    "summary": {
+      "scannedSessions": 171,
+      "indexedSessions": 171,
+      "removedSessions": 0,
+      "reusedVectors": 0,
+      "newlyEmbeddedChunks": 12966,
+      "embeddingRequestCount": 228,
+      "deletedChunks": 0,
+      "failedSessions": []
+    },
+    "deviceWrittenBytes": 3409555456,
+    "scratchAllocatedBytes": 4483121152
+  },
+  "sampleQueries": {
+    "measurements": [
+      {
+        "queryId": "6dcc16729dd1",
+        "latencyMilliseconds": 119.01250099996105,
+        "denseResults": 8,
+        "invocationResults": 0
+      },
+      {
+        "queryId": "9021434dac2a",
+        "latencyMilliseconds": 102.59243900002912,
+        "denseResults": 8,
+        "invocationResults": 0
+      },
+      {
+        "queryId": "07f8535f6913",
+        "latencyMilliseconds": 109.48656499991193,
+        "denseResults": 8,
+        "invocationResults": 0
+      },
+      {
+        "queryId": "cf147d5cb545",
+        "latencyMilliseconds": 114.69235899997875,
+        "denseResults": 8,
+        "invocationResults": 0
+      },
+      {
+        "queryId": "a3b5ad3856db",
+        "latencyMilliseconds": 114.50191600015387,
+        "denseResults": 8,
+        "invocationResults": 0
+      },
+      {
+        "queryId": "b64fbfd2b55c",
+        "latencyMilliseconds": 112.31064300006256,
+        "denseResults": 8,
+        "invocationResults": 0
+      }
+    ],
+    "latencyMedianMilliseconds": 112.31064300006256,
+    "latencyP95Milliseconds": 119.01250099996105
+  },
+  "bounds": {
+    "maximumSessions": 200,
+    "maximumDenseDocuments": 20000,
+    "maximumRuntimeMilliseconds": 7200000,
+    "maximumScratchBytes": 8589934592,
+    "minimumFreeBytes": 257698037760,
+    "productionDatabaseMutated": false
+  },
+  "passed": false
+}

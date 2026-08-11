@@ -17,6 +17,9 @@
     "evaluate:recall": "node --import tsx src/evaluate-recall-quality.ts",
     "replay:session-import": "node --import tsx src/replaySessionImportCorpus.ts",
     "certify:unified-sqlite-recall": "node --import tsx src/certify-unified-sqlite-recall-production.ts",
+    "prototype:local-octen": "node --import tsx prototypes/local-octen-embedding/prototype-local-octen-embedding.ts",
+    "prototype:octen-onnx": "node --import tsx prototypes/local-octen-embedding/prototype-octen-onnx.ts",
+    "prototype:voyage-4-nano": "node --import tsx prototypes/local-octen-embedding/prototype-voyage-4-nano.ts",
     "typecheck": "tsc --noEmit",
     "lint": "oxlint --type-aware src",
     "format:check": "oxfmt --check ."
@@ -41,6 +44,10 @@
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-tui": "*"
+  },
+  "optionalDependencies": {
+    "node-llama-cpp": "^3.19.1",
+    "onnxruntime-node": "^1.27.0"
   },
   "pi": {
     "extensions": [

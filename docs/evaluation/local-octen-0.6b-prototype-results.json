@@ -1,0 +1,123 @@
+{
+  "version": 1,
+  "completedAt": "2026-08-11T21:16:59.010Z",
+  "artifact": {
+    "upstreamRepository": "Octen/Octen-Embedding-0.6B",
+    "upstreamRevision": "d715b32ee68f057b54dff09fc93c23485bc403d3",
+    "prototypeRepository": "mykor/Octen-Embedding-0.6B-GGUF",
+    "prototypeRevision": "26f558910bcf99e75dcf4fbed40615a3145a46ee",
+    "fileName": "Octen-Embedding-0.6B-Q8_0.gguf",
+    "bytes": 639150720,
+    "sha256": "2dbae3888c66d4ef39adb09294b54e14dae7d7246c36620d9a8d9ec8502b5542",
+    "quantization": "Q8_0",
+    "license": "Apache-2.0"
+  },
+  "runtime": {
+    "package": "node-llama-cpp",
+    "version": "3.19.1",
+    "platform": "linux",
+    "architecture": "x64",
+    "node": "v24.16.0",
+    "cpu": "AMD Ryzen 7 8845HS w/ Radeon 780M Graphics",
+    "logicalCpus": 16,
+    "peakRssBytes": 5139030016,
+    "loadMilliseconds": 756.9104959999968,
+    "embeddedTexts": 13116,
+    "latencyMedianMilliseconds": 2061.2006640000036,
+    "latencyP95Milliseconds": 3179.7797900000587,
+    "parallelism": 4,
+    "threadsPerContext": 4
+  },
+  "sample": {
+    "selectionAlgorithm": "project-round-robin-sha256-v1",
+    "selectionHash": "de249b629f25b68651c74ed7a1f801512d634499fea5f3164d3bf9acc069dc70",
+    "discoveredSessions": 3737,
+    "selectedSessions": 171,
+    "representedProjectDirectories": 171,
+    "sourceBytes": 170255864,
+    "projectedDenseDocuments": 12966,
+    "projectedInvocations": 12836,
+    "parseFailuresDuringSelection": 0
+  },
+  "quality": {
+    "frozenGatePassed": true,
+    "practicalLocalGatePassed": true,
+    "practicalMinimum": 0.9,
+    "candidatePoolRecall": 1,
+    "finalRecall": 1,
+    "contextUsefulness": 1,
+    "sourceOccurrencePreservation": 1,
+    "queryLatency": {
+      "median": 52.012249000006705,
+      "p95": 63.58638300000166
+    },
+    "strictGateBlockers": []
+  },
+  "sampleIndex": {
+    "durationMilliseconds": 6049566.118806,
+    "denseDocumentsPerSecond": 2.1432942041402288,
+    "summary": {
+      "scannedSessions": 171,
+      "indexedSessions": 171,
+      "removedSessions": 0,
+      "reusedVectors": 0,
+      "newlyEmbeddedChunks": 12966,
+      "embeddingRequestCount": 228,
+      "deletedChunks": 0,
+      "failedSessions": []
+    },
+    "deviceWrittenBytes": 8866992128,
+    "scratchAllocatedBytes": 5666271232
+  },
+  "sampleQueries": {
+    "measurements": [
+      {
+        "queryId": "6dcc16729dd1",
+        "latencyMilliseconds": 49.68046900071204,
+        "denseResults": 8,
+        "invocationResults": 0
+      },
+      {
+        "queryId": "9021434dac2a",
+        "latencyMilliseconds": 41.06799099966884,
+        "denseResults": 8,
+        "invocationResults": 0
+      },
+      {
+        "queryId": "07f8535f6913",
+        "latencyMilliseconds": 47.19491000007838,
+        "denseResults": 8,
+        "invocationResults": 0
+      },
+      {
+        "queryId": "cf147d5cb545",
+        "latencyMilliseconds": 46.62265899963677,
+        "denseResults": 8,
+        "invocationResults": 0
+      },
+      {
+        "queryId": "a3b5ad3856db",
+        "latencyMilliseconds": 50.7017919998616,
+        "denseResults": 8,
+        "invocationResults": 0
+      },
+      {
+        "queryId": "b64fbfd2b55c",
+        "latencyMilliseconds": 46.68851100001484,
+        "denseResults": 8,
+        "invocationResults": 0
+      }
+    ],
+    "latencyMedianMilliseconds": 46.68851100001484,
+    "latencyP95Milliseconds": 50.7017919998616
+  },
+  "bounds": {
+    "maximumSessions": 200,
+    "maximumDenseDocuments": 20000,
+    "maximumRuntimeMilliseconds": 7200000,
+    "maximumScratchBytes": 8589934592,
+    "minimumFreeBytes": 257698037760,
+    "productionDatabaseMutated": false
+  },
+  "passed": false
+}

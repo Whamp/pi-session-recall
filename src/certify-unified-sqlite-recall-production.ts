@@ -1,4 +1,4 @@
-import { execFileSync, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   cpSync,
@@ -16,7 +16,6 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { performance } from 'node:perf_hooks';
-import { gunzipSync } from 'node:zlib';
 
 import { RecallSearchScope } from './enums.js';
 import { isUnknownRecord } from './is-unknown-record.js';
@@ -142,9 +141,6 @@ export interface UnifiedSqliteCertificationGateInputs {
   sourceProbePasses: readonly boolean[];
   integrityHealthy: boolean;
   linuxX64LoadPassed: boolean;
-  macOsPackagesAvailable: boolean;
-  macOsX64RuntimeLoadPassed: boolean | null;
-  macOsArm64RuntimeLoadPassed: boolean | null;
   candidateInactive: boolean;
   clonePassed: boolean | null;
 }
@@ -169,9 +165,6 @@ export function evaluateUnifiedSqliteCertificationGates(
       inputs.sourceProbePasses.every(Boolean),
     integrity: inputs.integrityHealthy,
     linuxX64Load: inputs.linuxX64LoadPassed,
-    macOsPackageAvailability: inputs.macOsPackagesAvailable,
-    macOsX64RuntimeLoad: inputs.macOsX64RuntimeLoadPassed,
-    macOsArm64RuntimeLoad: inputs.macOsArm64RuntimeLoadPassed,
     candidateInactive: inputs.candidateInactive,
     clone: inputs.clonePassed,
   };
@@ -374,72 +367,6 @@ function readSourceRole(sessionPath: string, sourceLine: number): string | null 
     return typeof value.message.role === 'string' ? value.message.role : null;
   }
   return typeof value.type === 'string' ? value.type : null;
-}
-
-function readTarHeaderString(value: Uint8Array): string {
-  const text = Buffer.from(value).toString('utf8');
-  const terminator = text.indexOf('\0');
-  return terminator < 0 ? text : text.slice(0, terminator);
-}
-
-function inspectTarballFileNames(tarGzip: Uint8Array): string[] {
-  const tar = gunzipSync(tarGzip);
-  const names: string[] = [];
-  for (let offset = 0; offset + 512 <= tar.length; ) {
-    const header = tar.subarray(offset, offset + 512);
-    if (header.every((byte) => byte === 0)) {
-      break;
-    }
-    const name = readTarHeaderString(header.subarray(0, 100));
-    const sizeText = readTarHeaderString(header.subarray(124, 136)).trim();
-    const size = Number.parseInt(sizeText || '0', 8);
-    names.push(name);
-    offset += 512 + Math.ceil(size / 512) * 512;
-  }
-  return names;
-}
-
-async function inspectPublishedSqliteVecPackage(
-  packageName: string,
-): Promise<Record<string, unknown>> {
-  const metadataText = execFileSync(
-    'npm',
-    [
-      'view',
-      `${packageName}@${SQLITE_RECALL_VEC_PACKAGE_VERSION}`,
-      'version',
-      'dist.tarball',
-      '--json',
-    ],
-    { encoding: 'utf8' },
-  );
-  const metadata: unknown = JSON.parse(metadataText);
-  if (!isUnknownRecord(metadata)) {
-    throw new Error(`sqlite-vec package metadata invalid for ${packageName}`);
-  }
-  const tarballUrl = metadata['dist.tarball'];
-  if (typeof tarballUrl !== 'string' || !tarballUrl) {
-    throw new Error(`sqlite-vec package metadata missing tarball for ${packageName}`);
-  }
-  const response = await fetch(tarballUrl);
-  if (!response.ok) {
-    throw new Error(
-      `sqlite-vec package tarball fetch failed for ${packageName}: HTTP ${response.status}`,
-    );
-  }
-  const files = inspectTarballFileNames(new Uint8Array(await response.arrayBuffer()));
-  return {
-    packageName,
-    version: typeof metadata.version === 'string' ? metadata.version : null,
-    tarballHost: new URL(tarballUrl).host,
-    nativeFiles: files.filter((file) => /\.(dylib|so|dll)$/u.test(file)),
-    packageAvailable:
-      metadata.version === SQLITE_RECALL_VEC_PACKAGE_VERSION &&
-      files.some((file) => file.endsWith('vec0.dylib')),
-    inspectionPurpose: 'package-availability-only',
-    executedLoad: false,
-    executionStatus: 'not-executed; runtime load requires the matching macOS GitHub runner',
-  };
 }
 
 function readBlockDeviceWrittenBytes(blockDevice: string): number | null {
@@ -856,7 +783,7 @@ function formatCertificationMarkdown(report: Record<string, unknown>): string {
   const candidateVerdict = report.candidatePreActivationPassed
     ? 'The candidate passed every local pre-activation gate.'
     : 'One or more local pre-activation gates failed or remain pending.';
-  return `# Unified SQLite production recall certification\n\nThis report records pre-activation checks only. The harness did not activate the candidate.\n\n## Verdict\n\n${candidateVerdict} Release readiness is **${report.releaseReady ? 'ready' : 'not ready'}**.\n\n## Gates\n\n| Gate | Result |\n| --- | --- |\n${rows}\n\nTarball inspection records package availability only; it does not prove runtime loading. The stable \`SQLite-vec macOS x64 runtime load\` and \`SQLite-vec macOS arm64 runtime load\` jobs in \`.github/workflows/sqlite-vec-platform-smoke.yml\` supply that external evidence when a PR workflow run succeeds. Record the real run URL after it exists; this report does not fabricate one.\n\n## Activation status\n\nActivation, immediate post-activation indexing, live project/global/Source recall, timer verification, and obsolete-artifact cleanup remain pending until this branch is merged and deployed. macOS x64 and arm64 runtime-load gates remain pending external evidence in this local report.\n`;
+  return `# Unified SQLite production recall certification\n\nThis report records pre-activation checks only. The harness did not activate the candidate.\n\n## Verdict\n\n${candidateVerdict}\n\n## Gates\n\n| Gate | Result |\n| --- | --- |\n${rows}\n\nPlatform runtime loading is verified separately by the PR's SQLite-vec GitHub Actions jobs.\n\n## Activation status\n\nActivation, immediate post-activation indexing, live project/global/Source recall, timer verification, and obsolete-artifact cleanup remain pending until this branch is merged and deployed.\n`;
 }
 
 async function runCertification(
@@ -1082,11 +1009,6 @@ async function runCertification(
           });
         })()
       : null;
-  onProgress({ stage: 'platform-package-checks' });
-  const packageAvailability = await Promise.all([
-    inspectPublishedSqliteVecPackage('sqlite-vec-darwin-x64'),
-    inspectPublishedSqliteVecPackage('sqlite-vec-darwin-arm64'),
-  ]);
   const activeAfter = snapshotUnifiedSqliteActivePointer(argumentsValue.dataRoot);
   const candidateInactive =
     JSON.stringify(activeBefore) === JSON.stringify(activeAfter) &&
@@ -1110,24 +1032,12 @@ async function runCertification(
     linuxX64LoadPassed:
       process.platform === 'linux' &&
       process.arch === 'x64' &&
-      identity.sqliteVecVersion === 'v0.1.9',
-    macOsPackagesAvailable: packageAvailability.every(
-      (packageCheck) => packageCheck.packageAvailable === true,
-    ),
-    macOsX64RuntimeLoadPassed: null,
-    macOsArm64RuntimeLoadPassed: null,
+      identity.sqliteVecVersion === `v${SQLITE_RECALL_VEC_PACKAGE_VERSION}`,
     candidateInactive,
     clonePassed: clone ? Boolean(clone.passed) : null,
   });
-  const localCandidateGateNames = Object.keys(gates).filter(
-    (gate) => gate !== 'macOsX64RuntimeLoad' && gate !== 'macOsArm64RuntimeLoad',
-  );
   const candidatePreActivationPassed =
-    clone !== null && localCandidateGateNames.every((gate) => gates[gate] === true);
-  const releaseReady =
-    candidatePreActivationPassed &&
-    gates.macOsX64RuntimeLoad === true &&
-    gates.macOsArm64RuntimeLoad === true;
+    clone !== null && Object.values(gates).every((gate) => gate === true);
   onProgress({ stage: 'certification-complete' });
   return {
     reportVersion: 1,
@@ -1150,22 +1060,7 @@ async function runCertification(
       passed:
         process.platform === 'linux' &&
         process.arch === 'x64' &&
-        identity.sqliteVecVersion === 'v0.1.9',
-    },
-    macOsPackageAvailability: packageAvailability,
-    macOsRuntimeLoadEvidence: {
-      x64: {
-        runner: 'macos-26-intel',
-        expectedProcessArch: 'x64',
-        status: 'pending external GitHub Actions evidence',
-      },
-      arm64: {
-        runner: 'macos-26',
-        expectedProcessArch: 'arm64',
-        status: 'pending external GitHub Actions evidence',
-      },
-      evidenceSource: '.github/workflows/sqlite-vec-platform-smoke.yml',
-      successfulRunUrl: null,
+        identity.sqliteVecVersion === `v${SQLITE_RECALL_VEC_PACKAGE_VERSION}`,
     },
     counts,
     storage: { allocatedBytes: storageBytes, maximumBytes: MAXIMUM_CERTIFIED_STORAGE_BYTES },
@@ -1183,8 +1078,7 @@ async function runCertification(
     cloneCertification: clone ?? { status: 'pending; rerun with all clone flags' },
     gates,
     candidatePreActivationPassed,
-    releaseReady,
-    passed: releaseReady,
+    passed: candidatePreActivationPassed,
   };
 }
 

@@ -282,7 +282,7 @@ npm run certify:unified-sqlite-recall -- \
   --project-identity git-origin:github.com/Whamp/pi-session-recall
 ```
 
-The read-only phase checks the strict version 8 manifest, sqlite-vec 0.1.9 identity and Linux load, SQLite and projection integrity, counts, allocated database/WAL/SHM storage, fixed Dense and Invocation probes, exact Source provenance, and macOS package metadata and tarball contents. It exits 2 while clone gates remain pending. macOS metadata and tarball inspection proves package availability only, never runtime loading. Local reports keep explicit macOS x64 and arm64 runtime-load gates pending and cannot claim release readiness.
+The read-only phase checks the strict version 8 manifest, sqlite-vec 0.1.9 identity and Linux load, SQLite and projection integrity, counts, allocated database/WAL/SHM storage, fixed Dense and Invocation probes, and exact Source provenance. It exits 2 while clone gates remain pending. The PR's SQLite-vec GitHub Actions jobs separately execute runtime loading on macOS x64 and arm64; local certification does not imitate those checks with package metadata.
 
 CAUTION: The next command deletes its per-run clone directory. Supply a dedicated scratch root that is disjoint from the recall data root. The command refuses to copy when scratch allocation would exceed 6 GiB or free space is below 240 GiB. It never mutates the candidate, the Active database, or canonical session JSONL.
 
@@ -301,7 +301,7 @@ npm run certify:unified-sqlite-recall -- \
 
 The async clone phase makes only the representative clone session stale, then calls the production `indexChangedConversationSessions` path over the real sessions directory with the production tokenizer, exact ignored-path policy, project resolver, and embedding provider. It requires exactly one indexed session, zero failures, expected checksum-vector reuse, available device-write counters, unchanged counts, and an unchanged unrelated Physical session. It separately labels and retains the 100-cycle direct-database churn probe for long-term page and file behavior, plus concurrent-reader isolation, explicit rollback, SIGKILL recovery, post-churn integrity, and latency. `--output` writes sanitized JSON and Markdown only to `docs/research/unified-sqlite-production-recall-certification.*`. Do not commit a report until the real staged candidate has run.
 
-`candidatePreActivationPassed` means the local candidate and clone gates passed. `releaseReady` additionally requires both macOS runtime-load gates and remains false while their external evidence is pending. This certification benchmark is an explicit release operation, not a requirement for ordinary user rebuilds. Staged construction and atomic activation keep partial databases out of service.
+`candidatePreActivationPassed` means every local candidate and disposable-clone gate passed. The PR's required platform jobs supply separate runtime evidence. This certification benchmark is an explicit release operation, not a requirement for ordinary user rebuilds. Staged construction and atomic activation keep partial databases out of service.
 
 After this branch is merged and deployed, the following checks remain pending:
 

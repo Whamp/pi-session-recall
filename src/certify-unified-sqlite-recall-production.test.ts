@@ -67,19 +67,10 @@ void test('certification gate calculations enforce all production thresholds', (
     sourceProbePasses: SOURCE_CERTIFICATION_PROBES.map(() => true),
     integrityHealthy: true,
     linuxX64LoadPassed: true,
-    macOsPackagesAvailable: true,
-    macOsX64RuntimeLoadPassed: null,
-    macOsArm64RuntimeLoadPassed: null,
     candidateInactive: true,
     clonePassed: true,
   });
-  assert.equal(passing.macOsX64RuntimeLoad, null);
-  assert.equal(passing.macOsArm64RuntimeLoad, null);
-  assert.ok(
-    Object.entries(passing)
-      .filter(([gate]) => !gate.startsWith('macOs') || gate === 'macOsPackageAvailability')
-      .every(([, value]) => value === true),
-  );
+  assert.ok(Object.values(passing).every((value) => value === true));
 
   const failing = evaluateUnifiedSqliteCertificationGates({
     storageBytes: MAXIMUM_CERTIFIED_STORAGE_BYTES + 1,
@@ -91,9 +82,6 @@ void test('certification gate calculations enforce all production thresholds', (
     sourceProbePasses: [true],
     integrityHealthy: false,
     linuxX64LoadPassed: false,
-    macOsPackagesAvailable: false,
-    macOsX64RuntimeLoadPassed: null,
-    macOsArm64RuntimeLoadPassed: null,
     candidateInactive: false,
     clonePassed: null,
   });
@@ -107,9 +95,6 @@ void test('certification gate calculations enforce all production thresholds', (
     sourceProvenance: false,
     integrity: false,
     linuxX64Load: false,
-    macOsPackageAvailability: false,
-    macOsX64RuntimeLoad: null,
-    macOsArm64RuntimeLoad: null,
     candidateInactive: false,
     clone: null,
   });

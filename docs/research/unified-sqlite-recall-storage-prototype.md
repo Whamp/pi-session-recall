@@ -2,6 +2,8 @@
 
 **Historical prototype evidence.** The measurements and verdict below come from commit [`f11b892`](https://github.com/Whamp/pi-session-recall/commit/f11b892). The prototype code was throwaway and is not part of the production runtime.
 
+**Final decision:** Production uses only the measured 16-bucket vec0 table and stores each Dense recall vector once. Its warm global p95 of about 0.6 seconds is acceptable. The two-copy recommendation below remains only as historical evidence.
+
 ## Question
 
 Can compact recall eliminate routine compaction while preserving acceptable latency, which store should own Invocation search, and can one SQLite database with FTS5 plus sqlite-vec supersede the draft flat-Zvec-plus-SQLite architecture?

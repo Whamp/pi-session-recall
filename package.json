@@ -42,9 +42,6 @@
     "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-tui": "*"
   },
-  "optionalDependencies": {
-    "@zvec/zvec": "0.6.0"
-  },
   "pi": {
     "extensions": [
       "./src/recall-extension.ts"

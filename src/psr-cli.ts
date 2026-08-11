@@ -26,7 +26,6 @@ import {
 const PSR_USAGE = [
   'psr usage: psr index [--rebuild] [--stage] [--resume] [--reuse-active-vectors] [--compact]',
   '           psr activate <database-target>',
-  '           psr rollback',
   '           psr auto-index install [--interval <N>m|<N>h]',
   '           psr auto-index uninstall',
   '           psr ignore add <session-path>',
@@ -131,9 +130,7 @@ function formatRecallDatabaseTransition(result: RecallConversationIndexResult): 
     case 'active-updated':
       return null;
     case 'candidate-activated':
-      return result.databaseTransition.previousAvailable
-        ? 'Database: activated; previous database available for rollback.'
-        : 'Database: activated; no previous database is available.';
+      return 'Database: activated.';
     case 'candidate-staged':
       return `Database: staged at ${result.databaseTransition.databaseTarget}; active database unchanged.`;
     case 'candidate-failed':
@@ -211,9 +208,7 @@ function formatRecallIndexProgress(
     case 'rebuild-candidate-staged':
       return `Candidate recall database staged at ${event.databaseTarget}; active database remains unchanged.`;
     case 'rebuild-candidate-activated':
-      return event.previousAvailable
-        ? 'Candidate recall database activated; previous database remains available for rollback.'
-        : 'Candidate recall database activated; no previous database is available.';
+      return 'Candidate recall database activated.';
     case 'maintenance-workset-planned': {
       const plannedFiles =
         event.newFiles + event.changedFiles + event.missingFiles + event.ignoredRemovals;
@@ -335,34 +330,14 @@ export async function runPsrCli(
       throw new Error(PSR_USAGE);
     }
     const config = await dependencies.loadConfig();
-    const activation = await dependencies.createService(config).activate(databaseTarget, {
+    await dependencies.createService(config).activate(databaseTarget, {
       onProgress(event) {
         if (event.kind === 'waiting-for-write-lock') {
           dependencies.writeProgress('Waiting for another recall index operation...\n');
         }
       },
     });
-    dependencies.writeOutput(
-      activation.previousAvailable
-        ? 'Staged recall database activated; previous database available for rollback.\n'
-        : 'Staged recall database activated; no previous database is available.\n',
-    );
-    return 0;
-  }
-
-  if (argumentsList[0] === 'rollback') {
-    if (argumentsList.length !== 1) {
-      throw new Error(PSR_USAGE);
-    }
-    const config = await dependencies.loadConfig();
-    await dependencies.createService(config).rollback({
-      onProgress(event) {
-        if (event.kind === 'waiting-for-write-lock') {
-          dependencies.writeProgress('Waiting for another recall index operation...\n');
-        }
-      },
-    });
-    dependencies.writeOutput('Previous recall database restored and now active.\n');
+    dependencies.writeOutput('Staged recall database activated.\n');
     return 0;
   }
 

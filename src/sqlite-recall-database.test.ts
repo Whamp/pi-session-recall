@@ -96,7 +96,7 @@ void test('SQLite Recall database exposes its production schema and runtime iden
   const { sqliteVersion, ...writerIdentity } = writer.identity;
   assert.match(sqliteVersion, /^3\.\d+\.\d+$/u);
   assert.deepEqual(writerIdentity, {
-    schemaVersion: 2,
+    schemaVersion: 3,
     storageLayout: 'unified-sqlite-vec',
     embeddingDimensions: 1_024,
     vectorEncoding: 'float32',
@@ -107,6 +107,16 @@ void test('SQLite Recall database exposes its production schema and runtime iden
     queryOnly: false,
   });
   writer.close();
+
+  const schemaProbe = new DatabaseSync(databasePath, { readOnly: true });
+  const vectorTables = schemaProbe
+    .prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND sql LIKE 'CREATE VIRTUAL TABLE%USING vec0%' ORDER BY name",
+    )
+    .all()
+    .map((row) => row.name);
+  schemaProbe.close();
+  assert.deepEqual(vectorTables, ['dense_vectors']);
 
   const reader = openSqliteRecallDatabase(databasePath, { readOnly: true });
   t.after(() => reader.close());
@@ -133,7 +143,7 @@ void test('SQLite Recall database rejects incompatible schema and runtime identi
 
   const missingIdentityPath = join(directory, 'missing-identity.sqlite');
   const missingIdentity = new DatabaseSync(missingIdentityPath);
-  missingIdentity.exec('PRAGMA user_version = 2');
+  missingIdentity.exec('PRAGMA user_version = 3');
   missingIdentity.close();
   assert.throws(
     () => openSqliteRecallDatabase(missingIdentityPath),
@@ -409,8 +419,7 @@ void test('SQLite Recall database searches compact Invocations and reports proje
     sessionDocuments: 2,
     invocations: 2,
     denseDocuments: 2,
-    denseGlobalVectors: 2,
-    denseProjectVectors: 2,
+    denseVectors: 2,
     denseProjects: 2,
   });
 });
@@ -472,14 +481,10 @@ void test('one physical-session replacement commits every Recall projection toge
     ftsDocumentsMissingInvocation: 0,
     vectorParity: {
       denseDocuments: 1,
-      globalVectors: 1,
-      projectVectors: 1,
-      denseDocumentsMissingGlobalVector: 0,
-      globalVectorsMissingDenseDocument: 0,
-      denseDocumentsMissingProjectVector: 0,
-      projectVectorsMissingDenseDocument: 0,
+      vectors: 1,
+      denseDocumentsMissingVector: 0,
+      vectorsMissingDenseDocument: 0,
       projectMetadataMismatches: 0,
-      vectorValueMismatches: 0,
       healthy: true,
     },
     healthy: true,
@@ -770,8 +775,7 @@ void test('physical-session deletion atomically removes only its complete projec
     sessionDocuments: 1,
     invocations: 1,
     denseDocuments: 1,
-    denseGlobalVectors: 1,
-    denseProjectVectors: 1,
+    denseVectors: 1,
     denseProjects: 1,
   });
   assert.equal(database.checkIntegrity().healthy, true);
@@ -1003,8 +1007,7 @@ void test(
       sessionDocuments: 1,
       invocations: 1,
       denseDocuments: 1,
-      denseGlobalVectors: 1,
-      denseProjectVectors: 1,
+      denseVectors: 1,
       denseProjects: 1,
     });
     assert.equal(isSqliteWriterTransactionActive(databasePath), true);

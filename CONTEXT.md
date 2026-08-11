@@ -117,7 +117,7 @@ The first configured dimensions of one native Octen vector, L2-normalized and st
 _Avoid_: Raw embedding, independently verified MRL vector
 
 **Recall database**:
-One disposable WAL-mode SQLite projection containing Physical session state, compact Invocation records with FTS5, Dense recall metadata, one unpartitioned global vec0 table, and one 16-bucket project vec0 table. One changed Physical session replaces its complete projection in one transaction. Canonical session JSONL owns full payloads and explicit Source search.
+One disposable WAL-mode SQLite projection containing Physical session state, compact Invocation records with FTS5, Dense recall metadata, and one 16-bucket vec0 table. Project and global search use the same stored vector. One changed Physical session replaces its complete projection in one transaction. Canonical session JSONL owns full payloads and explicit Source search.
 _Avoid_: Recall catalog, Zvec collection, index state file
 
 **Candidate recall database**:
@@ -131,10 +131,6 @@ _Avoid_: Active recall database, failed candidate
 **Active recall database**:
 The Recall database used by normal indexing and search. Activation replaces its pointer atomically after a Candidate recall database completes successfully.
 _Avoid_: Latest database, production directory
-
-**Previous recall database**:
-The Recall database that immediately preceded the Active recall database. `psr rollback` can restore it without rebuilding it, and maintenance never removes it automatically.
-_Avoid_: Backup, stale candidate
 
 **Index maintenance**:
 One standalone `psr index` operation that scans physical session files and updates the Active recall database. An operator or opt-in user schedule may start it. `psr index --rebuild` builds and activates a Candidate recall database without modifying the prior Active recall database. Adding `--stage` leaves the completed replacement inactive for certification.

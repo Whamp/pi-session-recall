@@ -19,12 +19,9 @@ void test('recall config defaults to one Octen profile and the frozen search pol
     assert.deepEqual(config.chunkPolicy, { maxTokens: 512, overlapTokens: 64 });
     assert.deepEqual(config.searchCandidateLimits, { dense: 8, invocation: 8 });
     assert.equal(config.sqliteDatabasePath, join(home, '.pi', 'agent', 'recall', 'recall.sqlite'));
-    assert.equal(config.legacyV6ZvecDatabasePath, join(home, '.pi', 'agent', 'recall', 'zvec'));
+    assert.equal('legacyV6ZvecDatabasePath' in config, false);
+    assert.equal('legacyV6StatePath' in config, false);
     assert.equal('catalogPath' in config, false);
-    assert.equal(
-      config.legacyV6StatePath,
-      join(home, '.pi', 'agent', 'recall', 'index-state.json'),
-    );
     assert.equal(config.manifestPath, join(home, '.pi', 'agent', 'recall', 'index-manifest.json'));
     assert.equal(
       config.databaseGenerationRootPath,

@@ -81,22 +81,14 @@ export function formatRecallSearchResults(
   search: RecallConversationSearch,
   maxExcerptCharacters = 2_000,
 ): string {
-  const rankingDescription =
-    search.searchPolicy.rankingMode === 'compact'
-      ? `compact mixed retrieval v${search.searchPolicy.mixedResultPolicyVersion}`
-      : `deterministic fusion v${search.searchPolicy.rankFusionVersion} (RRF k=${search.searchPolicy.reciprocalRankConstant})`;
+  const rankingDescription = `compact mixed retrieval v${search.searchPolicy.mixedResultPolicyVersion}`;
   const scopeDescription =
     search.searchPolicy.scope === RecallSearchScope.PROJECT
       ? `project scope for ${search.searchPolicy.invocationProjectIdentity ?? 'an unresolved project'}`
       : 'global scope';
-  const countDescription =
-    search.searchPolicy.rankingMode === 'legacy-v6-hybrid'
-      ? `${search.totalChunks} legacy-v6 documents`
-      : `${search.documentCounts.dense} dense documents and ${search.documentCounts.invocations} compact Invocations`;
+  const countDescription = `${search.documentCounts.dense} dense documents and ${search.documentCounts.invocations} compact Invocations`;
   const lines = [
-    search.searchPolicy.rankingMode === 'legacy-v6-hybrid'
-      ? `Recall searched ${scopeDescription} across ${search.totalChunks} indexed evidence documents with ${rankingDescription} (active prior +${search.searchPolicy.activeBranchPrior.toFixed(4)}).`
-      : `Recall searched ${scopeDescription} across ${countDescription} with ${rankingDescription} (active prior +${search.searchPolicy.activeBranchPrior.toFixed(4)}).`,
+    `Recall searched ${scopeDescription} across ${countDescription} with ${rankingDescription} (active prior +${search.searchPolicy.activeBranchPrior.toFixed(4)}).`,
   ];
   if (search.results.length === 0) {
     lines.push('No matching past conversations found.');
@@ -133,14 +125,6 @@ export function formatRecallSearchResults(
     if (result.contributingEntryIds.length > 1) {
       lines.push(
         `Contributing entries: ${result.contributingEntryIds.map((id) => id.value).join(' → ')}`,
-      );
-    }
-    if (
-      search.searchPolicy.rankingMode === 'legacy-v6-hybrid' &&
-      (result.toolCallEntryId || result.toolResultEntryId)
-    ) {
-      lines.push(
-        `Call source: ${result.toolCallEntryId?.value ?? 'unknown'} · Result source: ${result.toolResultEntryId?.value ?? 'unknown'}`,
       );
     }
     if (result.neighborContext) {

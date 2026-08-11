@@ -19,12 +19,6 @@ export enum SessionImportReplayOutcome {
   REJECTED = 'rejected',
 }
 
-/** Supported stored layout selected from one recall index manifest. */
-export enum RecallIndexManifestLayout {
-  LEGACY_V6 = 'legacy-v6',
-  UNIFIED_SQLITE_V8 = 'unified-sqlite-v8',
-}
-
 /** Version of trusted-invocation exact project filtering before every retrieval-channel limit. */
 export const PROJECT_SCOPE_POLICY_VERSION = 1;
 

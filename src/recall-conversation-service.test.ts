@@ -1,22 +1,15 @@
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, readdir, readlink, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 import test from 'node:test';
 
 import { RecallProjectIdentitySource, RecallSearchScope } from './enums.js';
-import { SESSION_IMPORT_POLICY_VERSION } from './import-session-jsonl.js';
-import { searchLegacyV6RecallDatabase } from './legacy-v6-recall-adapter.js';
-import {
-  createLegacyV6RecallIndexManifest,
-  writeLegacyV6RecallIndexManifest,
-} from './legacy-v6-recall-index-manifest.js';
 import {
   createRecallConversationService,
   type RecallConversationConfig,
 } from './recall-conversation-service.js';
 import { openSqliteRecallDatabase } from './sqlite-recall-database.js';
-import { openZvecConversationStore } from './zvec-conversation-store.js';
 import type { RecallEmbeddingProvider } from './recall-inference-capabilities.js';
 import {
   normalizeRecallProjectLineages,
@@ -63,8 +56,6 @@ function createTestConfig(
   return {
     sessionsDirectory: join(root, 'sessions'),
     sqliteDatabasePath: join(data, 'recall.sqlite'),
-    legacyV6ZvecDatabasePath: join(data, 'zvec'),
-    legacyV6StatePath: join(data, 'index-state.json'),
     manifestPath: join(data, 'index-manifest.json'),
     indexMaintenanceStatusPath: join(data, 'index-maintenance-status.json'),
     physicalSessionIgnoreStatePath: join(data, 'physical-session-ignore.json'),
@@ -92,37 +83,6 @@ function readSqliteSessionPaths(sqliteDatabasePath: string): string[] {
   } finally {
     database.close();
   }
-}
-
-async function createActualLegacyV6Fixture(config: RecallConversationConfig): Promise<void> {
-  await mkdir(join(config.legacyV6ZvecDatabasePath, '..'), { recursive: true });
-  const store = openZvecConversationStore({
-    databasePath: config.legacyV6ZvecDatabasePath,
-    dimensions: config.embeddingStoredDimensions,
-  });
-  store.close();
-  await writeFile(
-    config.legacyV6StatePath,
-    `${JSON.stringify({
-      version: 3,
-      importPolicyVersion: SESSION_IMPORT_POLICY_VERSION,
-      sessions: {},
-    })}\n`,
-  );
-  await writeLegacyV6RecallIndexManifest(
-    config.manifestPath,
-    createLegacyV6RecallIndexManifest({
-      embeddingIdentity: {
-        requestModel: config.embeddingModel,
-        servedModelId: config.embeddingServedModelId,
-        nativeDimensions: config.embeddingNativeDimensions,
-        storedDimensions: config.embeddingStoredDimensions,
-        transformation: 'vendor-prefix-then-l2-v1',
-      },
-      chunkPolicy: config.chunkPolicy,
-      projectLineages: config.projectLineages,
-    }),
-  );
 }
 
 async function writePhysicalSessionIgnoreState(
@@ -164,83 +124,7 @@ async function writeConversationSession(
   );
 }
 
-async function writeLegacyV6ToolEvidenceSession(
-  path: string,
-  changedEvidence: string,
-): Promise<void> {
-  await mkdir(join(path, '..'), { recursive: true });
-  await writeFile(
-    path,
-    sessionLines([
-      {
-        type: 'session',
-        version: 3,
-        id: 'legacy-v6-tool-session',
-        timestamp: '2026-07-24T10:00:00Z',
-        cwd: '/project',
-      },
-      {
-        type: 'message',
-        id: 'legacy-v6-tool-call-entry',
-        parentId: null,
-        timestamp: '2026-07-24T10:01:00Z',
-        message: {
-          role: 'assistant',
-          content: [
-            {
-              type: 'toolCall',
-              id: 'legacy-v6-tool-call',
-              name: 'read',
-              arguments: { path: '/project/LegacyV6ToolLocatorABC.txt' },
-            },
-          ],
-        },
-      },
-      {
-        type: 'message',
-        id: 'legacy-v6-tool-result-entry',
-        parentId: 'legacy-v6-tool-call-entry',
-        timestamp: '2026-07-24T10:02:00Z',
-        message: {
-          role: 'toolResult',
-          toolCallId: 'legacy-v6-tool-call',
-          toolName: 'read',
-          content: [
-            {
-              type: 'text',
-              text: 'Complete legacy tool result preserves lunar archive wording.',
-            },
-          ],
-          isError: false,
-        },
-      },
-      {
-        type: 'message',
-        id: 'legacy-v6-bash-entry',
-        parentId: 'legacy-v6-tool-result-entry',
-        timestamp: '2026-07-24T10:03:00Z',
-        message: {
-          role: 'bashExecution',
-          command: 'cat /project/LegacyV6BashLocatorXYZ.log',
-          output: 'Complete legacy bash output preserves cobalt harbor wording.',
-          exitCode: 0,
-          cancelled: false,
-          truncated: false,
-          excludeFromContext: true,
-        },
-      },
-      {
-        type: 'message',
-        id: 'legacy-v6-changed-entry',
-        parentId: 'legacy-v6-bash-entry',
-        timestamp: '2026-07-24T10:04:00Z',
-        message: { role: 'user', content: changedEvidence },
-      },
-    ]),
-  );
-}
-
-void test('successful rebuild atomically activates a candidate and rollback restores the previous database', async (t) => {
+void test('successful rebuild atomically replaces the active current-format database', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'recall-generation-activation-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const config = createTestConfig(root, { databaseGenerations: true });
@@ -253,27 +137,23 @@ void test('successful rebuild atomically activates a candidate and rollback rest
 
   const first = await service.index({ rebuild: true });
   const firstActiveTarget = await readlink(join(root, 'recall', 'active'));
-  assert.equal(first.databaseTransition.kind, 'candidate-activated');
-  assert.equal(first.databaseTransition.previousAvailable, false);
+  assert.deepEqual(first.databaseTransition, {
+    kind: 'candidate-activated',
+    staleCandidatesRemoved: 0,
+  });
 
   await writeConversationSession(sessionPath, 'REPLACEMENT_GENERATION_EVIDENCE');
   const second = await service.index({ rebuild: true });
   const secondActiveTarget = await readlink(join(root, 'recall', 'active'));
-  assert.equal(second.databaseTransition.kind, 'candidate-activated');
-  assert.equal(second.databaseTransition.previousAvailable, true);
+  assert.deepEqual(second.databaseTransition, {
+    kind: 'candidate-activated',
+    staleCandidatesRemoved: 0,
+  });
   assert.notEqual(secondActiveTarget, firstActiveTarget);
   const replacementSearch = await service.search('REPLACEMENT_GENERATION_EVIDENCE', 5, {
     scope: RecallSearchScope.GLOBAL,
   });
   assert.match(replacementSearch.results[0]?.content ?? '', /REPLACEMENT_GENERATION_EVIDENCE/u);
-
-  const rollback = await service.rollback();
-  assert.equal(rollback.kind, 'previous-restored');
-  assert.equal(await readlink(join(root, 'recall', 'active')), firstActiveTarget);
-  const restoredSearch = await service.search('ORIGINAL_GENERATION_EVIDENCE', 5, {
-    scope: RecallSearchScope.GLOBAL,
-  });
-  assert.match(restoredSearch.results[0]?.content ?? '', /ORIGINAL_GENERATION_EVIDENCE/u);
 });
 
 void test('deferred rebuild stays inactive until the staged database target is explicitly activated', async (t) => {
@@ -304,7 +184,7 @@ void test('deferred rebuild stays inactive until the staged database target is e
 
   const activation = await service.activate(staged.databaseTransition.databaseTarget);
 
-  assert.deepEqual(activation, { kind: 'staged-activated', previousAvailable: true });
+  assert.deepEqual(activation, { kind: 'staged-activated' });
   assert.equal(
     await readlink(join(root, 'recall', 'active')),
     staged.databaseTransition.databaseTarget,
@@ -531,7 +411,6 @@ void test('failed candidate stays inactive and the next rebuild removes stale ca
   const recovered = await service.index({ rebuild: true });
   assert.deepEqual(recovered.databaseTransition, {
     kind: 'candidate-activated',
-    previousAvailable: true,
     staleCandidatesRemoved: 1,
   });
   assert.equal(
@@ -540,229 +419,6 @@ void test('failed candidate stays inactive and the next rebuild removes stale ca
     ).length,
     0,
   );
-});
-
-void test('rollback rejects missing previous databases without changing the active pointer', async (t) => {
-  const root = await mkdtemp(join(tmpdir(), 'recall-generation-missing-previous-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
-  const config = createTestConfig(root, { databaseGenerations: true });
-  const sessionPath = join(config.sessionsDirectory, 'one.jsonl');
-  await writeConversationSession(sessionPath, 'FIRST_GENERATION');
-  const service = createRecallConversationService(config, {
-    embeddingProvider: TEST_EMBEDDING_PROVIDER,
-    loadTokenizer: async () => tokenizer,
-  });
-  await service.index({ rebuild: true });
-  await assert.rejects(service.rollback(), /No previous recall database/u);
-
-  const firstTarget = await readlink(join(root, 'recall', 'active'));
-  await writeConversationSession(sessionPath, 'SECOND_GENERATION');
-  await service.index({ rebuild: true });
-  const secondTarget = await readlink(join(root, 'recall', 'active'));
-  await rm(resolve(join(root, 'recall'), firstTarget), { recursive: true, force: true });
-
-  await assert.rejects(service.rollback(), /Previous recall database incomplete/u);
-  assert.equal(await readlink(join(root, 'recall', 'active')), secondTarget);
-});
-
-void test('changed legacy-v6 sessions retain full lexical tool evidence and tracked rows', async (t) => {
-  const root = await mkdtemp(join(tmpdir(), 'recall-legacy-v6-tool-update-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
-  const config = createTestConfig(root);
-  const sessionPath = join(config.sessionsDirectory, 'tool-session.jsonl');
-  await createActualLegacyV6Fixture(config);
-  await writeLegacyV6ToolEvidenceSession(sessionPath, 'INITIAL LEGACY V6 SESSION STATE');
-  const service = createRecallConversationService(config, {
-    embeddingProvider: TEST_EMBEDDING_PROVIDER,
-    loadTokenizer: async () => tokenizer,
-  });
-  await service.index();
-
-  await writeLegacyV6ToolEvidenceSession(
-    sessionPath,
-    'CHANGED LEGACY V6 SESSION STATE WITH A DIFFERENT LENGTH',
-  );
-  const changed = await service.index();
-  assert.equal(changed.indexSummary.indexedSessions, 1);
-
-  const searches = [
-    'path project LegacyV6ToolLocatorABC txt',
-    'lunar archive wording',
-    'cat project LegacyV6BashLocatorXYZ log',
-    'cobalt harbor wording',
-  ].map((query) =>
-    searchLegacyV6RecallDatabase({
-      paths: {
-        legacyV6ZvecDatabasePath: config.legacyV6ZvecDatabasePath,
-        legacyV6StatePath: config.legacyV6StatePath,
-        manifestPath: config.manifestPath,
-      },
-      dimensions: config.embeddingStoredDimensions,
-      query,
-      queryEmbedding: createTestEmbeddingVector(query),
-      resultLimit: 20,
-      candidateLimit: 20,
-    }),
-  );
-  const expectedEvidence = [
-    '{"path":"/project/LegacyV6ToolLocatorABC.txt"}',
-    'Complete legacy tool result preserves lunar archive wording.',
-    'cat /project/LegacyV6BashLocatorXYZ.log',
-    'Complete legacy bash output preserves cobalt harbor wording.',
-  ];
-  const trackedState = await readFile(config.legacyV6StatePath, 'utf8');
-  const evidenceResults = searches.map((search, index) =>
-    search.results.find((candidate) => candidate.content === expectedEvidence[index]),
-  );
-  assert.ok(
-    evidenceResults.every((result) => result !== undefined),
-    `missing legacy evidence: ${JSON.stringify(searches.map((search) => search.results))}`,
-  );
-  for (const result of evidenceResults) {
-    assert.ok(result);
-    assert.match(trackedState, new RegExp(`"id":"${result.id}"`, 'u'));
-  }
-  assert.equal(trackedState.match(/"id":/gu)?.length, changed.totalChunks);
-});
-
-void test('actual legacy-v6 stays searchable and updateable before activation and after rollback', async (t) => {
-  const root = await mkdtemp(join(tmpdir(), 'recall-generation-legacy-v6-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
-  const legacyConfig = createTestConfig(root);
-  const sessionPath = join(legacyConfig.sessionsDirectory, 'one.jsonl');
-  await createActualLegacyV6Fixture(legacyConfig);
-  await writeConversationSession(sessionPath, 'LEGACY_V6_INITIAL_EVIDENCE');
-  const legacyService = createRecallConversationService(legacyConfig, {
-    embeddingProvider: TEST_EMBEDDING_PROVIDER,
-    loadTokenizer: async () => tokenizer,
-  });
-
-  await legacyService.index();
-  const initialSearch = await legacyService.search('LEGACY_V6_INITIAL_EVIDENCE', 5, {
-    scope: RecallSearchScope.GLOBAL,
-  });
-  assert.equal(initialSearch.searchPolicy.rankingMode, 'legacy-v6-hybrid');
-  assert.match(initialSearch.results[0]?.content ?? '', /LEGACY_V6_INITIAL_EVIDENCE/u);
-
-  await writeConversationSession(sessionPath, 'LEGACY_V6_CHANGED_BEFORE_ACTIVATION');
-  const changedBeforeActivation = await legacyService.index();
-  assert.equal(changedBeforeActivation.indexSummary.indexedSessions, 1);
-  const changedSearch = await legacyService.search('LEGACY_V6_CHANGED_BEFORE_ACTIVATION', 5, {
-    scope: RecallSearchScope.GLOBAL,
-  });
-  assert.match(changedSearch.results[0]?.content ?? '', /LEGACY_V6_CHANGED_BEFORE_ACTIVATION/u);
-
-  const generationConfig = createTestConfig(root, { databaseGenerations: true });
-  const generationService = createRecallConversationService(generationConfig, {
-    embeddingProvider: {
-      ...TEST_EMBEDDING_PROVIDER,
-      embedDocuments() {
-        throw new Error('compatible active legacy-v6 vectors must avoid embedding');
-      },
-    },
-    loadTokenizer: async () => tokenizer,
-  });
-  await assert.rejects(
-    generationService.index({ rebuild: true }),
-    /legacy-v6 migration must remain staged for certification[\s\S]*--rebuild --stage/u,
-  );
-  const rebuilt = await generationService.index({
-    rebuild: true,
-    deferActivation: true,
-    reuseActiveVectors: true,
-  });
-  assert.equal(rebuilt.indexSummary.newlyEmbeddedChunks, 0);
-  assert.ok(rebuilt.indexSummary.reusedVectors > 0);
-  assert.equal(rebuilt.databaseTransition.kind, 'candidate-staged');
-  if (rebuilt.databaseTransition.kind !== 'candidate-staged') {
-    assert.fail('Expected the legacy-v6 reuse candidate to remain staged');
-  }
-  const activation = await generationService.activate(rebuilt.databaseTransition.databaseTarget);
-  assert.equal(activation.previousAvailable, true);
-
-  await generationService.rollback();
-  assert.equal(await readlink(join(root, 'recall', 'active')), '.');
-  const restoredSearch = await generationService.search('LEGACY_V6_CHANGED_BEFORE_ACTIVATION', 5, {
-    scope: RecallSearchScope.GLOBAL,
-  });
-  assert.match(restoredSearch.results[0]?.content ?? '', /LEGACY_V6_CHANGED_BEFORE_ACTIVATION/u);
-
-  await writeConversationSession(sessionPath, 'LEGACY_V6_CHANGED_AFTER_ROLLBACK');
-  const rollbackService = createRecallConversationService(generationConfig, {
-    embeddingProvider: TEST_EMBEDDING_PROVIDER,
-    loadTokenizer: async () => tokenizer,
-  });
-  const changedAfterRollback = await rollbackService.index();
-  assert.equal(changedAfterRollback.indexSummary.indexedSessions, 1);
-  const rollbackUpdateSearch = await rollbackService.search('LEGACY_V6_CHANGED_AFTER_ROLLBACK', 5, {
-    scope: RecallSearchScope.GLOBAL,
-  });
-  assert.match(rollbackUpdateSearch.results[0]?.content ?? '', /LEGACY_V6_CHANGED_AFTER_ROLLBACK/u);
-});
-
-void test('rebuild activation, rollback, and search respect the shared writer lock', async (t) => {
-  const root = await mkdtemp(join(tmpdir(), 'recall-generation-lock-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
-  const config = createTestConfig(root, { databaseGenerations: true });
-  const sessionPath = join(config.sessionsDirectory, 'one.jsonl');
-  await writeConversationSession(sessionPath, 'LOCKED_ACTIVE_EVIDENCE');
-  const stableService = createRecallConversationService(config, {
-    embeddingProvider: TEST_EMBEDDING_PROVIDER,
-    loadTokenizer: async () => tokenizer,
-  });
-  await stableService.index({ rebuild: true });
-  const stableTarget = await readlink(join(root, 'recall', 'active'));
-
-  await writeConversationSession(sessionPath, 'LOCKED_CANDIDATE_EVIDENCE');
-  let releaseEmbedding: (() => void) | undefined;
-  const embeddingReleased = new Promise<void>((resolveEmbedding) => {
-    releaseEmbedding = resolveEmbedding;
-  });
-  let reportEmbeddingStarted: (() => void) | undefined;
-  const embeddingStarted = new Promise<void>((resolveStarted) => {
-    reportEmbeddingStarted = resolveStarted;
-  });
-  const rebuildingService = createRecallConversationService(config, {
-    embeddingProvider: {
-      ...TEST_EMBEDDING_PROVIDER,
-      async embedDocuments(documents) {
-        reportEmbeddingStarted?.();
-        await embeddingReleased;
-        return documents.map(createTestEmbeddingVector);
-      },
-    },
-    loadTokenizer: async () => tokenizer,
-  });
-  const rebuild = rebuildingService.index({ rebuild: true });
-  await embeddingStarted;
-  await assert.rejects(
-    stableService.search('LOCKED_ACTIVE_EVIDENCE', 5, { scope: RecallSearchScope.GLOBAL }),
-    /Recall index write lock/u,
-  );
-  assert.equal(await readlink(join(root, 'recall', 'active')), stableTarget);
-  releaseEmbedding?.();
-  await rebuild;
-
-  const activatedTarget = await readlink(join(root, 'recall', 'active'));
-  const abortController = new AbortController();
-  await mkdir(config.lockPath);
-  await writeFile(
-    join(config.lockPath, 'owner.json'),
-    `${JSON.stringify({ pid: process.pid })}\n`,
-    'utf8',
-  );
-  await assert.rejects(
-    stableService.rollback({
-      signal: abortController.signal,
-      onProgress(event) {
-        if (event.kind === 'waiting-for-write-lock') {
-          abortController.abort(new Error('Rollback lock wait cancelled'));
-        }
-      },
-    }),
-    /Rollback lock wait cancelled|AbortError/u,
-  );
-  assert.equal(await readlink(join(root, 'recall', 'active')), activatedTarget);
 });
 
 void test('standalone optimization is retired for unified SQLite storage', async (t) => {
@@ -871,7 +527,6 @@ void test('service source search reads raw output without opening the index or e
   assert.equal(search.results[0]?.entryId, 'source-result');
   assert.equal(search.results[0]?.sourceLineStart, 2);
   assert.match(search.results[0]?.text ?? '', /RAW_RESULT_ONLY hardware MODEL-9000/u);
-  await assert.rejects(readFile(config.legacyV6StatePath, 'utf8'), { code: 'ENOENT' });
 });
 
 void test('rebuild activates dense conversations and compact Invocations for combined normal recall', async (t) => {

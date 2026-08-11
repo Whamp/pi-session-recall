@@ -31,7 +31,6 @@ function createPsrCliFixture(
   const optimizeCalls: RecallConversationIndexOptions[] = [];
   const activateCalls: Array<{ databaseTarget: string; options: RecallConversationIndexOptions }> =
     [];
-  const rollbackCalls: RecallConversationIndexOptions[] = [];
   const output: string[] = [];
   const progressOutput: string[] = [];
   const executionLog: string[] = [];
@@ -39,8 +38,6 @@ function createPsrCliFixture(
   const config: RecallConversationConfig = {
     sessionsDirectory: '/sessions',
     sqliteDatabasePath: '/recall/recall.sqlite',
-    legacyV6ZvecDatabasePath: '/recall/zvec',
-    legacyV6StatePath: '/recall/index-state.json',
     manifestPath: '/recall/index-manifest.json',
     indexMaintenanceStatusPath: '/recall/index-maintenance-status.json',
     physicalSessionIgnoreStatePath:
@@ -87,7 +84,7 @@ function createPsrCliFixture(
     },
     async activate(databaseTarget, activateOptions) {
       activateCalls.push({ databaseTarget, options: activateOptions ?? {} });
-      return { kind: 'staged-activated' as const, previousAvailable: true };
+      return { kind: 'staged-activated' as const };
     },
     async optimize(optimizeOptions) {
       optimizeCalls.push(optimizeOptions ?? {});
@@ -95,16 +92,11 @@ function createPsrCliFixture(
       optimizeOptions?.onProgress?.({ kind: 'completed' });
       return { totalChunks: 7 };
     },
-    async rollback(rollbackOptions) {
-      rollbackCalls.push(rollbackOptions ?? {});
-      return { kind: 'previous-restored' as const };
-    },
   } satisfies RecallConversationMaintenanceService;
   return {
     calls,
     optimizeCalls,
     activateCalls,
-    rollbackCalls,
     output,
     progressOutput,
     executionLog,
@@ -254,7 +246,6 @@ void test('psr ignore rejects invalid subcommands and arity with the complete us
   const usage = [
     'psr usage: psr index [--rebuild] [--stage] [--resume] [--reuse-active-vectors] [--compact]',
     '           psr activate <database-target>',
-    '           psr rollback',
     '           psr auto-index install [--interval <N>m|<N>h]',
     '           psr auto-index uninstall',
     '           psr ignore add <session-path>',
@@ -771,10 +762,7 @@ void test('psr activate switches only the named staged database target', async (
   assert.equal(exitCode, 0);
   assert.equal(fixture.activateCalls.length, 1);
   assert.equal(fixture.activateCalls[0]?.databaseTarget, databaseTarget);
-  assert.equal(
-    fixture.output.join(''),
-    'Staged recall database activated; previous database available for rollback.\n',
-  );
+  assert.equal(fixture.output.join(''), 'Staged recall database activated.\n');
   assert.deepEqual(fixture.calls, []);
 });
 
@@ -820,16 +808,15 @@ void test('psr index --reuse-active-vectors requires a staged rebuild', async ()
   assert.deepEqual(fixture.calls, []);
 });
 
-void test('psr rebuild output distinguishes activated, previous, stale, and failed databases', async () => {
+void test('psr rebuild output distinguishes activated, stale, and failed databases', async () => {
   const activated = createPsrCliFixture(
     [
       { kind: 'preparing-rebuild-candidate', staleCandidatesRemoved: 2 },
-      { kind: 'rebuild-candidate-activated', previousAvailable: true },
+      { kind: 'rebuild-candidate-activated' },
     ],
     {
       databaseTransition: {
         kind: 'candidate-activated',
-        previousAvailable: true,
         staleCandidatesRemoved: 2,
       },
     },
@@ -840,7 +827,7 @@ void test('psr rebuild output distinguishes activated, previous, stale, and fail
   assert.match(activated.progressOutput.join(''), /candidate recall database activated/iu);
   assert.match(activated.output.join(''), /Dense documents: 7/iu);
   assert.match(activated.output.join(''), /Compact Invocations: 2/iu);
-  assert.match(activated.output.join(''), /Database: activated; previous database available/iu);
+  assert.match(activated.output.join(''), /Database: activated/iu);
 
   const failed = createPsrCliFixture([{ kind: 'rebuild-candidate-failed' }], {
     failedSessions: [{ sessionPath: '/sessions/damaged.jsonl', error: 'damaged' }],
@@ -851,16 +838,6 @@ void test('psr rebuild output distinguishes activated, previous, stale, and fail
   assert.match(failed.output.join(''), /Dense documents: 7/iu);
   assert.match(failed.output.join(''), /Compact Invocations: 2/iu);
   assert.match(failed.output.join(''), /Database: candidate failed; active database unchanged/iu);
-});
-
-void test('psr rollback restores the previous database under the maintenance service', async () => {
-  const fixture = createPsrCliFixture();
-
-  assert.equal(await runPsrCli(['rollback'], fixture.dependencies), 0);
-
-  assert.equal(fixture.rollbackCalls.length, 1);
-  assert.equal(fixture.output.join(''), 'Previous recall database restored and now active.\n');
-  assert.deepEqual(fixture.calls, []);
 });
 
 void test('psr auto-index install defaults to update-only indexing', async () => {

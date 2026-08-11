@@ -194,8 +194,7 @@ void test('one changed physical session atomically replaces every SQLite Recall 
     sessionDocuments: 1,
     invocations: 1,
     denseDocuments: 1,
-    denseGlobalVectors: 1,
-    denseProjectVectors: 1,
+    denseVectors: 1,
     denseProjects: 1,
   });
   assert.equal(database.checkIntegrity().healthy, true);

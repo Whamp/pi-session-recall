@@ -140,8 +140,6 @@ function assertSafeRecallQualityPaths(
     corpus.sessionDirectory,
     baseConfig.sessionsDirectory,
     baseConfig.sqliteDatabasePath,
-    baseConfig.legacyV6ZvecDatabasePath,
-    baseConfig.legacyV6StatePath,
     baseConfig.manifestPath,
     baseConfig.lockPath,
     ...(baseConfig.databaseGenerationRootPath
@@ -192,8 +190,6 @@ function createChunkPolicyConfig(
     ...baseConfig,
     sessionsDirectory: corpus.sessionDirectory,
     sqliteDatabasePath: join(policyDirectory, 'recall.sqlite'),
-    legacyV6ZvecDatabasePath: join(policyDirectory, 'zvec'),
-    legacyV6StatePath: join(policyDirectory, 'index-state.json'),
     manifestPath: join(policyDirectory, 'index-manifest.json'),
     indexMaintenanceStatusPath: join(policyDirectory, 'index-maintenance-status.json'),
     physicalSessionIgnoreStatePath: join(policyDirectory, 'physical-session-ignore.json'),

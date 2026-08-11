@@ -5,7 +5,6 @@ import { dirname } from 'node:path';
 import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 
-import { RecallIndexManifestLayout } from './enums.js';
 import { assertRecallChunkPolicy, type RecallChunkPolicy } from './recall-chunk-policy.js';
 import {
   SQLITE_RECALL_DATABASE_MANIFEST_IDENTITY,
@@ -146,7 +145,7 @@ const recallIndexManifestSchema = Type.Object(
     ),
     sqliteRecallDatabase: Type.Object(
       {
-        schemaVersion: Type.Literal(2),
+        schemaVersion: Type.Literal(3),
         storageLayout: Type.Literal('unified-sqlite-vec'),
         sqliteVecVersion: Type.Literal('0.1.9'),
         embedding: Type.Object(
@@ -159,15 +158,11 @@ const recallIndexManifestSchema = Type.Object(
         ),
         routing: Type.Object(
           {
-            global: Type.Literal('unpartitioned'),
-            project: Type.Object(
-              {
-                bucketCount: Type.Literal(16),
-                bucketFunction: Type.Literal('project-key-modulo-16'),
-                exactProjectKey: Type.Literal(true),
-              },
-              { additionalProperties: false },
-            ),
+            table: Type.Literal('bucketed'),
+            bucketCount: Type.Literal(16),
+            bucketFunction: Type.Literal('project-key-modulo-16'),
+            projectExactKey: Type.Literal(true),
+            global: Type.Literal('all-buckets'),
           },
           { additionalProperties: false },
         ),
@@ -310,10 +305,8 @@ export function assertRecallIndexManifestCompatible(
   }
 }
 
-/** Detects supported production v6 and unified v8 layouts without adopting staged version 7. */
-export async function detectRecallIndexManifestLayout(
-  manifestPath: string,
-): Promise<RecallIndexManifestLayout> {
+/** Validates that a stored manifest uses the current unified SQLite layout. */
+export async function assertCurrentRecallIndexManifestLayout(manifestPath: string): Promise<void> {
   let parsed: unknown;
   try {
     parsed = JSON.parse(await readFile(manifestPath, 'utf8'));
@@ -329,12 +322,9 @@ export async function detectRecallIndexManifestLayout(
       `Recall index manifest invalid at ${manifestPath}: manifestVersion is missing. Rebuild with psr index --rebuild.`,
     );
   }
-  if (parsed.manifestVersion === 6) {
-    return RecallIndexManifestLayout.LEGACY_V6;
-  }
   if (parsed.manifestVersion === RECALL_INDEX_MANIFEST_VERSION) {
     await readRecallIndexManifest(manifestPath);
-    return RecallIndexManifestLayout.UNIFIED_SQLITE_V8;
+    return;
   }
   throw new Error(
     `Recall index manifest version ${parsed.manifestVersion} at ${manifestPath} is incompatible; rebuild with psr index --rebuild.`,

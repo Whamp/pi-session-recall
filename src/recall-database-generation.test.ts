@@ -9,7 +9,6 @@ import {
   activateStagedRecallDatabase,
   createRecallDatabaseCandidate,
   resolveActiveRecallDatabasePaths,
-  restorePreviousRecallDatabase,
   resumeRecallDatabaseCandidate,
   stageRecallDatabaseCandidate,
   type RecallDatabaseCandidate,
@@ -32,15 +31,13 @@ const OCTEN_IDENTITY: RecallEmbeddingModelIdentity = {
 function createGenerationConfig(dataDirectory: string): RecallDatabaseGenerationConfig {
   return {
     sqliteDatabasePath: join(dataDirectory, 'recall.sqlite'),
-    legacyV6ZvecDatabasePath: join(dataDirectory, 'zvec'),
-    legacyV6StatePath: join(dataDirectory, 'index-state.json'),
     manifestPath: join(dataDirectory, 'index-manifest.json'),
     indexMaintenanceStatusPath: join(dataDirectory, 'index-maintenance-status.json'),
     databaseGenerationRootPath: join(dataDirectory, 'generations'),
   };
 }
 
-async function writeVersion8Manifest(manifestPath: string): Promise<void> {
+async function writeCurrentManifest(manifestPath: string): Promise<void> {
   await writeRecallIndexManifest(
     manifestPath,
     createRecallIndexManifest({ embeddingIdentity: OCTEN_IDENTITY }),
@@ -50,21 +47,13 @@ async function writeVersion8Manifest(manifestPath: string): Promise<void> {
 async function completeRecallDatabaseCandidate(candidate: RecallDatabaseCandidate): Promise<void> {
   await Promise.all([
     writeFile(candidate.paths.sqliteDatabasePath, 'sqlite database'),
-    writeVersion8Manifest(candidate.paths.manifestPath),
+    writeCurrentManifest(candidate.paths.manifestPath),
     writeFile(candidate.paths.indexMaintenanceStatusPath, 'status'),
   ]);
 }
 
-async function createLegacyVersion6Database(config: RecallDatabaseGenerationConfig): Promise<void> {
-  await mkdir(config.legacyV6ZvecDatabasePath);
-  await Promise.all([
-    writeFile(config.legacyV6StatePath, 'legacy state'),
-    writeFile(config.manifestPath, '{"manifestVersion":6}\n'),
-  ]);
-}
-
-void test('version 8 candidate stages and activates with one recall.sqlite database file', async (t) => {
-  const dataDirectory = await mkdtemp(join(tmpdir(), 'recall-v8-candidate-'));
+void test('current-format candidate stages and activates one recall.sqlite database', async (t) => {
+  const dataDirectory = await mkdtemp(join(tmpdir(), 'recall-current-candidate-'));
   t.after(() => rm(dataDirectory, { recursive: true, force: true }));
   const config = createGenerationConfig(dataDirectory);
   const candidate = await createRecallDatabaseCandidate(config);
@@ -75,12 +64,9 @@ void test('version 8 candidate stages and activates with one recall.sqlite datab
   assert.equal(await readFile(staged.paths.sqliteDatabasePath, 'utf8'), 'sqlite database');
   assert.deepEqual(Object.keys(staged.paths).sort(), [
     'indexMaintenanceStatusPath',
-    'legacyV6StatePath',
-    'legacyV6ZvecDatabasePath',
     'manifestPath',
     'sqliteDatabasePath',
   ]);
-  await assert.rejects(readFile(staged.paths.legacyV6ZvecDatabasePath), { code: 'ENOENT' });
   assert.deepEqual((await readdir(staged.directoryPath)).sort(), [
     'index-maintenance-status.json',
     'index-manifest.json',
@@ -88,35 +74,36 @@ void test('version 8 candidate stages and activates with one recall.sqlite datab
   ]);
   await assert.rejects(readlink(join(dataDirectory, 'active')), { code: 'ENOENT' });
 
-  assert.deepEqual(await activateStagedRecallDatabase(config, staged.databaseTarget), {
-    previousAvailable: false,
-  });
+  await activateStagedRecallDatabase(config, staged.databaseTarget);
   assert.equal(await readlink(join(dataDirectory, 'active')), staged.databaseTarget);
   assert.equal(
     (await resolveActiveRecallDatabasePaths(config)).sqliteDatabasePath,
     staged.paths.sqliteDatabasePath,
   );
+  assert.equal((await readdir(staged.directoryPath)).includes('.previous-database.json'), false);
 });
 
-void test('activation records root version 6 and rollback restores it atomically', async (t) => {
-  const dataDirectory = await mkdtemp(join(tmpdir(), 'recall-v6-rollback-'));
+void test('candidate activation replaces the active pointer without compatibility metadata', async (t) => {
+  const dataDirectory = await mkdtemp(join(tmpdir(), 'recall-current-activation-'));
   t.after(() => rm(dataDirectory, { recursive: true, force: true }));
   const config = createGenerationConfig(dataDirectory);
-  await createLegacyVersion6Database(config);
-  const candidate = await createRecallDatabaseCandidate(config);
-  await completeRecallDatabaseCandidate(candidate);
 
-  const activation = await activateRecallDatabaseCandidate(config, candidate);
-  const activeTarget = await readlink(join(dataDirectory, 'active'));
+  const first = await createRecallDatabaseCandidate(config);
+  await completeRecallDatabaseCandidate(first);
+  await activateRecallDatabaseCandidate(config, first);
+  const firstTarget = await readlink(join(dataDirectory, 'active'));
 
-  assert.deepEqual(activation, { previousAvailable: true });
-  await restorePreviousRecallDatabase(config);
-  assert.equal(await readlink(join(dataDirectory, 'active')), '.');
+  const second = await createRecallDatabaseCandidate(config);
+  await completeRecallDatabaseCandidate(second);
+  await activateRecallDatabaseCandidate(config, second);
+  const secondTarget = await readlink(join(dataDirectory, 'active'));
+
+  assert.notEqual(secondTarget, firstTarget);
+  assert.equal((await stat(join(dataDirectory, firstTarget))).isDirectory(), true);
   assert.equal(
-    (await resolveActiveRecallDatabasePaths(config)).legacyV6ZvecDatabasePath,
-    config.legacyV6ZvecDatabasePath,
+    (await readdir(join(dataDirectory, secondTarget))).includes('.previous-database.json'),
+    false,
   );
-  assert.notEqual(activeTarget, '.');
 });
 
 void test('candidate missing recall.sqlite is rejected with an actionable rebuild message', async (t) => {
@@ -125,7 +112,7 @@ void test('candidate missing recall.sqlite is rejected with an actionable rebuil
   const config = createGenerationConfig(dataDirectory);
   const candidate = await createRecallDatabaseCandidate(config);
   await Promise.all([
-    writeVersion8Manifest(candidate.paths.manifestPath),
+    writeCurrentManifest(candidate.paths.manifestPath),
     writeFile(candidate.paths.indexMaintenanceStatusPath, 'status'),
   ]);
 
@@ -136,41 +123,23 @@ void test('candidate missing recall.sqlite is rejected with an actionable rebuil
   await assert.rejects(readlink(join(dataDirectory, 'active')), { code: 'ENOENT' });
 });
 
-void test('existing staged version 7 layout is rejected and never activates', async (t) => {
-  const dataDirectory = await mkdtemp(join(tmpdir(), 'recall-v7-generation-'));
+void test('obsolete staged layouts are rejected and never activate', async (t) => {
+  const dataDirectory = await mkdtemp(join(tmpdir(), 'recall-obsolete-generation-'));
   t.after(() => rm(dataDirectory, { recursive: true, force: true }));
   const config = createGenerationConfig(dataDirectory);
-  const stagedDirectory = join(config.databaseGenerationRootPath ?? '', 'generation-draft-v7');
+  const stagedDirectory = join(config.databaseGenerationRootPath ?? '', 'generation-obsolete');
   await mkdir(stagedDirectory, { recursive: true });
   await Promise.all([
-    writeFile(join(stagedDirectory, 'recall.sqlite'), 'not a unified database'),
+    writeFile(join(stagedDirectory, 'recall.sqlite'), 'not a current database'),
     writeFile(join(stagedDirectory, 'index-manifest.json'), '{"manifestVersion":7}\n'),
     writeFile(join(stagedDirectory, 'index-maintenance-status.json'), 'status'),
   ]);
 
   await assert.rejects(
-    activateStagedRecallDatabase(config, 'generations/generation-draft-v7'),
+    activateStagedRecallDatabase(config, 'generations/generation-obsolete'),
     /version 7[\s\S]*incompatible[\s\S]*psr index --rebuild/u,
   );
   await assert.rejects(readlink(join(dataDirectory, 'active')), { code: 'ENOENT' });
-});
-
-void test('rollback rejects an incomplete root version 6 target without changing active', async (t) => {
-  const dataDirectory = await mkdtemp(join(tmpdir(), 'recall-invalid-rollback-'));
-  t.after(() => rm(dataDirectory, { recursive: true, force: true }));
-  const config = createGenerationConfig(dataDirectory);
-  await createLegacyVersion6Database(config);
-  const candidate = await createRecallDatabaseCandidate(config);
-  await completeRecallDatabaseCandidate(candidate);
-  await activateRecallDatabaseCandidate(config, candidate);
-  const activeTarget = await readlink(join(dataDirectory, 'active'));
-  await rm(config.legacyV6StatePath);
-
-  await assert.rejects(
-    restorePreviousRecallDatabase(config),
-    /Previous recall database incomplete[\s\S]*index-state\.json[\s\S]*psr index --rebuild/u,
-  );
-  assert.equal(await readlink(join(dataDirectory, 'active')), activeTarget);
 });
 
 void test('candidate resume preserves the sole interrupted recall.sqlite file', async (t) => {

@@ -8,18 +8,11 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import {
-  ZVecCollectionSchema,
-  ZVecCreateAndOpen,
-  ZVecDataType,
-  ZVecIndexType,
-  ZVecMetricType,
-} from '@zvec/zvec';
-
-import {
   assertCertificationScratchRoot,
   certifyDisposableUnifiedSqliteClone,
   DENSE_CERTIFICATION_QUERIES,
   evaluateUnifiedSqliteCertificationGates,
+  formatUnifiedSqliteCertificationProgress,
   MAXIMUM_CERTIFIED_STORAGE_BYTES,
   readUnifiedSqliteCertificationArguments,
   resolveCertifiedCandidateDirectory,
@@ -37,7 +30,6 @@ import {
   SQLITE_RECALL_EMBEDDING_DIMENSIONS,
   type SqliteRecallDatabase,
 } from './sqlite-recall-database.js';
-import { readZvecConversationDenseIndexType } from './zvec-conversation-store.js';
 
 function unitEmbedding(): number[] {
   const embedding = Array.from({ length: SQLITE_RECALL_EMBEDDING_DIMENSIONS }, () => 0);
@@ -49,14 +41,28 @@ function hashFile(path: string): string {
   return createHash('sha256').update(readFileSync(path)).digest('hex');
 }
 
+void test('certification progress renders bounded stage counters', () => {
+  assert.equal(
+    formatUnifiedSqliteCertificationProgress({
+      stage: 'clone-churn',
+      completed: 40,
+      total: 100,
+    }),
+    'Certification: clone churn (40/100)',
+  );
+  assert.equal(
+    formatUnifiedSqliteCertificationProgress({ stage: 'candidate-integrity' }),
+    'Certification: candidate integrity',
+  );
+});
+
 void test('certification gate calculations enforce all production thresholds', () => {
   const passing = evaluateUnifiedSqliteCertificationGates({
     storageBytes: MAXIMUM_CERTIFIED_STORAGE_BYTES,
     projectP95Milliseconds: 99.9,
-    globalP95Milliseconds: 499.9,
+    globalP95Milliseconds: 699.9,
     invocationP95Milliseconds: 4.9,
-    denseTopResultsMatch: DENSE_CERTIFICATION_QUERIES.map(() => true),
-    globalTopEightOverlaps: DENSE_CERTIFICATION_QUERIES.map(() => 7),
+    denseProbePasses: DENSE_CERTIFICATION_QUERIES.map(() => true),
     invocationProbePasses: [true, true, true, true, true, true],
     sourceProbePasses: SOURCE_CERTIFICATION_PROBES.map(() => true),
     integrityHealthy: true,
@@ -78,10 +84,9 @@ void test('certification gate calculations enforce all production thresholds', (
   const failing = evaluateUnifiedSqliteCertificationGates({
     storageBytes: MAXIMUM_CERTIFIED_STORAGE_BYTES + 1,
     projectP95Milliseconds: 100,
-    globalP95Milliseconds: 500,
+    globalP95Milliseconds: 700,
     invocationP95Milliseconds: 5,
-    denseTopResultsMatch: [true],
-    globalTopEightOverlaps: [6],
+    denseProbePasses: [true],
     invocationProbePasses: [true],
     sourceProbePasses: [true],
     integrityHealthy: false,
@@ -98,8 +103,7 @@ void test('certification gate calculations enforce all production thresholds', (
     globalLatency: false,
     invocationLatency: false,
     invocationProbes: false,
-    denseTopResults: false,
-    globalOverlap: false,
+    denseProbes: false,
     sourceProvenance: false,
     integrity: false,
     linuxX64Load: false,
@@ -117,8 +121,6 @@ void test('certification arguments require exact output and complete clone flags
     '/safe/data',
     '--candidate-target',
     'generations/generation-fixture',
-    '--control-zvec',
-    '/safe/control',
     '--project-identity',
     'git-origin:github.com/Whamp/pi-session-recall',
   ];
@@ -220,7 +222,6 @@ void test('clone certification runs one real changed-session index and rejects d
   const candidateDatabasePath = join(candidateDirectory, 'recall.sqlite');
   const sessionsDirectory = join(root, 'sessions');
   const scratchRoot = join(root, 'scratch');
-  const controlPath = join(root, 'flat-control');
   const representativeSessionPath = join(sessionsDirectory, 'representative.jsonl');
   const unrelatedSessionPath = join(sessionsDirectory, 'unrelated.jsonl');
   await mkdir(sessionsDirectory, { recursive: true });
@@ -232,22 +233,6 @@ void test('clone certification runs one real changed-session index and rejects d
     'representative certification evidence',
   );
   await writeCertificationSession(unrelatedSessionPath, 'unrelated', 'unrelated stable evidence');
-
-  const control = ZVecCreateAndOpen(
-    controlPath,
-    new ZVecCollectionSchema({
-      name: 'flat_control',
-      vectors: {
-        name: 'embedding',
-        dataType: ZVecDataType.VECTOR_FP32,
-        dimension: SQLITE_RECALL_EMBEDDING_DIMENSIONS,
-        indexParams: { indexType: ZVecIndexType.FLAT, metricType: ZVecMetricType.IP },
-      },
-      fields: [],
-    }),
-  );
-  control.closeSync();
-  assert.equal(readZvecConversationDenseIndexType(controlPath), ZVecIndexType.FLAT);
 
   await indexChangedConversationSessions({
     sessionsDirectory,
@@ -294,8 +279,16 @@ void test('clone certification runs one real changed-session index and rejects d
     });
   };
 
-  const result = await certify();
+  const cloneProgress: string[] = [];
+  const result = await certify({
+    onProgress(event) {
+      cloneProgress.push(formatUnifiedSqliteCertificationProgress(event));
+    },
+  });
   assert.equal(result.passed, true, JSON.stringify(result));
+  assert.equal(cloneProgress.includes('Certification: clone copy'), true);
+  assert.equal(cloneProgress.includes('Certification: clone churn (100/100)'), true);
+  assert.equal(cloneProgress.at(-1), 'Certification: clone complete');
   assert.deepEqual(result.changedSessionIndexedPhysicalSessionPaths, [representativeSessionPath]);
   assert.deepEqual(result.changedSessionIndexSummary, {
     scannedSessions: 2,

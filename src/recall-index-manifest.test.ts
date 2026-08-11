@@ -4,11 +4,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { RecallIndexManifestLayout } from './enums.js';
 import {
   assertRecallIndexManifestCompatible,
   createRecallIndexManifest,
-  detectRecallIndexManifestLayout,
+  assertCurrentRecallIndexManifestLayout,
   readRecallIndexManifest,
   writeRecallIndexManifest,
   type RecallEmbeddingModelIdentity,
@@ -44,6 +43,14 @@ void test('version 8 manifest binds Octen, chunking, and the static unified SQLi
   });
   assert.equal(manifest.tokenizer.model, 'Octen/Octen-Embedding-4B');
   assert.deepEqual(manifest.sqliteRecallDatabase, SQLITE_RECALL_DATABASE_MANIFEST_IDENTITY);
+  assert.equal(manifest.sqliteRecallDatabase.schemaVersion, 3);
+  assert.deepEqual(manifest.sqliteRecallDatabase.routing, {
+    table: 'bucketed',
+    bucketCount: 16,
+    bucketFunction: 'project-key-modulo-16',
+    projectExactKey: true,
+    global: 'all-buckets',
+  });
   assert.equal('queryOnly' in manifest.sqliteRecallDatabase, false);
   assert.equal('sqliteVersion' in manifest.sqliteRecallDatabase, false);
   assert.equal('embeddingCacheVersion' in manifest, false);
@@ -52,18 +59,18 @@ void test('version 8 manifest binds Octen, chunking, and the static unified SQLi
 
 void test('index manifest requires the unified SQLite Recall database schema', () => {
   const expected = createRecallIndexManifest({ embeddingIdentity: OCTEN_IDENTITY });
-  const actualWithNewerSchema: unknown = {
+  const actualWithObsoleteSchema: unknown = {
     ...expected,
     sqliteRecallDatabase: {
       ...expected.sqliteRecallDatabase,
-      schemaVersion: 3,
+      schemaVersion: 2,
     },
   };
 
   assert.throws(
     () =>
       assertRecallIndexManifestCompatible(
-        actualWithNewerSchema,
+        actualWithObsoleteSchema,
         expected,
         '/recall/index-manifest.json',
       ),
@@ -71,25 +78,24 @@ void test('index manifest requires the unified SQLite Recall database schema', (
   );
 });
 
-void test('manifest layout detector accepts production v6 and unified v8 but rejects staged v7', async (t) => {
+void test('manifest layout assertion accepts only the current unified SQLite format', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'recall-manifest-layout-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const path = join(root, 'index-manifest.json');
 
-  await writeFile(path, '{"manifestVersion":6}\n', 'utf8');
-  assert.equal(await detectRecallIndexManifestLayout(path), RecallIndexManifestLayout.LEGACY_V6);
-
   await writeRecallIndexManifest(path, createManifest());
-  assert.equal(
-    await detectRecallIndexManifestLayout(path),
-    RecallIndexManifestLayout.UNIFIED_SQLITE_V8,
-  );
+  await assert.doesNotReject(assertCurrentRecallIndexManifestLayout(path));
 
-  await writeFile(path, '{"manifestVersion":7}\n', 'utf8');
-  await assert.rejects(
-    detectRecallIndexManifestLayout(path),
-    /version 7[\s\S]*incompatible[\s\S]*psr index --rebuild/u,
-  );
+  for (const obsoleteVersion of [6, 7]) {
+    await writeFile(path, `${JSON.stringify({ manifestVersion: obsoleteVersion })}\n`, 'utf8');
+    await assert.rejects(
+      assertCurrentRecallIndexManifestLayout(path),
+      new RegExp(
+        `version ${obsoleteVersion}[\\s\\S]*incompatible[\\s\\S]*psr index --rebuild`,
+        'u',
+      ),
+    );
+  }
 });
 
 void test('index manifest round-trips atomically', async () => {

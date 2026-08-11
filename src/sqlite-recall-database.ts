@@ -17,7 +17,7 @@ import {
 } from './resolve-project-identity.js';
 import type { SessionConversationChunk } from './session-conversation-index.js';
 
-const SQLITE_RECALL_SCHEMA_VERSION = 2;
+const SQLITE_RECALL_SCHEMA_VERSION = 3;
 const SQLITE_RECALL_STORAGE_LAYOUT = 'unified-sqlite-vec';
 /** Production width of every FP32 vector stored in the SQLite Recall database. */
 export const SQLITE_RECALL_EMBEDDING_DIMENSIONS = 1_024;
@@ -40,12 +40,11 @@ export const SQLITE_RECALL_DATABASE_MANIFEST_IDENTITY = Object.freeze({
     distanceMetric: SQLITE_RECALL_DISTANCE_METRIC,
   }),
   routing: Object.freeze({
-    global: 'unpartitioned' as const,
-    project: Object.freeze({
-      bucketCount: SQLITE_RECALL_PROJECT_BUCKET_COUNT,
-      bucketFunction: 'project-key-modulo-16' as const,
-      exactProjectKey: true as const,
-    }),
+    table: 'bucketed' as const,
+    bucketCount: SQLITE_RECALL_PROJECT_BUCKET_COUNT,
+    bucketFunction: 'project-key-modulo-16' as const,
+    projectExactKey: true as const,
+    global: 'all-buckets' as const,
   }),
   fullTextSearch: Object.freeze({ engine: 'fts5' as const, tokenizer: 'unicode61' as const }),
 });
@@ -213,8 +212,7 @@ export interface SqliteRecallDatabaseCounts {
   sessionDocuments: number;
   invocations: number;
   denseDocuments: number;
-  denseGlobalVectors: number;
-  denseProjectVectors: number;
+  denseVectors: number;
   denseProjects: number;
 }
 
@@ -225,17 +223,13 @@ export interface SqliteRecallStorageMetrics {
   freePageCount: number;
 }
 
-/** Parity diagnostics for dense metadata and its two required vec0 copies. */
+/** Parity diagnostics for dense metadata and its single bucketed vec0 projection. */
 export interface SqliteRecallVectorParityDiagnostics {
   denseDocuments: number;
-  globalVectors: number;
-  projectVectors: number;
-  denseDocumentsMissingGlobalVector: number;
-  globalVectorsMissingDenseDocument: number;
-  denseDocumentsMissingProjectVector: number;
-  projectVectorsMissingDenseDocument: number;
+  vectors: number;
+  denseDocumentsMissingVector: number;
+  vectorsMissingDenseDocument: number;
   projectMetadataMismatches: number;
-  vectorValueMismatches: number;
   healthy: boolean;
 }
 
@@ -511,17 +505,13 @@ function createSqliteRecallSchema(database: DatabaseSync): void {
     CREATE INDEX dense_documents_session_path_index ON dense_documents(session_path);
     CREATE INDEX dense_documents_project_key_index ON dense_documents(project_key);
 
-    CREATE VIRTUAL TABLE dense_global_vectors USING vec0(
-      embedding FLOAT[1024] DISTANCE_METRIC=cosine
-    );
-
-    CREATE VIRTUAL TABLE dense_project_vectors USING vec0(
+    CREATE VIRTUAL TABLE dense_vectors USING vec0(
       embedding FLOAT[1024] DISTANCE_METRIC=cosine,
       project_bucket INTEGER PARTITION KEY,
       project_key INTEGER
     );
 
-    PRAGMA user_version = 2;
+    PRAGMA user_version = 3;
   `);
 }
 
@@ -891,7 +881,7 @@ function prepareDenseDocuments(
   return prepared;
 }
 
-/** Opens or creates the schema-v2 WAL database, loading only pinned sqlite-vec before disabling extensions. */
+/** Opens or creates the schema-v3 WAL database, loading only pinned sqlite-vec before disabling extensions. */
 export function openSqliteRecallDatabase(
   databasePath: string,
   options: OpenSqliteRecallDatabaseOptions = {},
@@ -943,13 +933,13 @@ export function openSqliteRecallDatabase(
     const readDenseVector = database.prepare(`
       SELECT vector.embedding
       FROM dense_documents AS document
-      JOIN dense_global_vectors AS vector ON vector.rowid = document.rowid
+      JOIN dense_vectors AS vector ON vector.rowid = document.rowid
       WHERE document.document_id = ?
     `);
     const searchGlobalDenseCandidates = database.prepare(`
       WITH nearest AS (
         SELECT rowid, distance
-        FROM dense_global_vectors
+        FROM dense_vectors
         WHERE embedding MATCH ? AND k = ?
       )
       SELECT document.document_id, document.metadata_json, nearest.distance
@@ -960,7 +950,7 @@ export function openSqliteRecallDatabase(
     const searchProjectDenseCandidates = database.prepare(`
       WITH nearest AS (
         SELECT rowid, distance
-        FROM dense_project_vectors
+        FROM dense_vectors
         WHERE embedding MATCH ? AND k = ?
           AND project_bucket = ? AND project_key = ?
       )
@@ -999,8 +989,7 @@ export function openSqliteRecallDatabase(
         (SELECT count(*) FROM session_documents) AS session_documents,
         (SELECT count(*) FROM invocations) AS invocations,
         (SELECT count(*) FROM dense_documents) AS dense_documents,
-        (SELECT count(*) FROM dense_global_vectors) AS dense_global_vectors,
-        (SELECT count(*) FROM dense_project_vectors) AS dense_project_vectors,
+        (SELECT count(*) FROM dense_vectors) AS dense_vectors,
         (SELECT count(*) FROM dense_projects) AS dense_projects
     `);
     const readInvocationFtsParity = database.prepare(`
@@ -1023,37 +1012,23 @@ export function openSqliteRecallDatabase(
     const readVectorParity = database.prepare(`
       SELECT
         (SELECT count(*) FROM dense_documents) AS dense_documents,
-        (SELECT count(*) FROM dense_global_vectors) AS global_vectors,
-        (SELECT count(*) FROM dense_project_vectors) AS project_vectors,
+        (SELECT count(*) FROM dense_vectors) AS vectors,
         (SELECT count(*)
           FROM dense_documents AS document
-          LEFT JOIN dense_global_vectors AS vector ON vector.rowid = document.rowid
-          WHERE vector.rowid IS NULL) AS dense_documents_missing_global_vector,
+          LEFT JOIN dense_vectors AS vector ON vector.rowid = document.rowid
+          WHERE vector.rowid IS NULL) AS dense_documents_missing_vector,
         (SELECT count(*)
-          FROM dense_global_vectors AS vector
+          FROM dense_vectors AS vector
           LEFT JOIN dense_documents AS document ON document.rowid = vector.rowid
-          WHERE document.rowid IS NULL) AS global_vectors_missing_dense_document,
+          WHERE document.rowid IS NULL) AS vectors_missing_dense_document,
         (SELECT count(*)
           FROM dense_documents AS document
-          LEFT JOIN dense_project_vectors AS vector ON vector.rowid = document.rowid
-          WHERE vector.rowid IS NULL) AS dense_documents_missing_project_vector,
-        (SELECT count(*)
-          FROM dense_project_vectors AS vector
-          LEFT JOIN dense_documents AS document ON document.rowid = vector.rowid
-          WHERE document.rowid IS NULL) AS project_vectors_missing_dense_document,
-        (SELECT count(*)
-          FROM dense_documents AS document
-          JOIN dense_project_vectors AS vector ON vector.rowid = document.rowid
+          JOIN dense_vectors AS vector ON vector.rowid = document.rowid
           WHERE vector.project_key != document.project_key
             OR vector.project_bucket != document.project_key % ${SQLITE_RECALL_PROJECT_BUCKET_COUNT})
-          AS project_metadata_mismatches,
-        (SELECT count(*)
-          FROM dense_global_vectors AS global_vector
-          JOIN dense_project_vectors AS project_vector ON project_vector.rowid = global_vector.rowid
-          WHERE global_vector.embedding != project_vector.embedding)
-          AS vector_value_mismatches
+          AS project_metadata_mismatches
     `);
-    const readSqliteIntegrity = database.prepare('PRAGMA integrity_check');
+    const readSqliteIntegrity = database.prepare('PRAGMA quick_check');
     const readForeignKeyViolations = database.prepare('PRAGMA foreign_key_check');
     const verifyInvocationFtsIntegrity = database.prepare(`
       INSERT INTO invocations_fts(invocations_fts, rank) VALUES ('integrity-check', 1)
@@ -1072,10 +1047,7 @@ export function openSqliteRecallDatabase(
     const readDenseOwner = database.prepare(
       'SELECT rowid, session_path FROM dense_documents WHERE document_id = ?',
     );
-    const deleteGlobalVector = database.prepare('DELETE FROM dense_global_vectors WHERE rowid = ?');
-    const deleteProjectVector = database.prepare(
-      'DELETE FROM dense_project_vectors WHERE rowid = ?',
-    );
+    const deleteDenseVector = database.prepare('DELETE FROM dense_vectors WHERE rowid = ?');
     const deleteDenseDocument = database.prepare('DELETE FROM dense_documents WHERE rowid = ?');
     const updateDenseDocument = database.prepare(`
       UPDATE dense_documents
@@ -1086,11 +1058,8 @@ export function openSqliteRecallDatabase(
       INSERT INTO dense_documents(document_id, session_path, project_key, metadata_json)
       VALUES (?, ?, ?, ?)
     `);
-    const insertGlobalVector = database.prepare(
-      'INSERT INTO dense_global_vectors(rowid, embedding) VALUES (?, ?)',
-    );
-    const insertProjectVector = database.prepare(`
-      INSERT INTO dense_project_vectors(rowid, embedding, project_bucket, project_key)
+    const insertDenseVector = database.prepare(`
+      INSERT INTO dense_vectors(rowid, embedding, project_bucket, project_key)
       VALUES (?, ?, ?, ?)
     `);
     const readProject = database.prepare(
@@ -1322,8 +1291,7 @@ export function openSqliteRecallDatabase(
             sessionDocuments: readRequiredInteger(countRow, 'session_documents'),
             invocations: readRequiredInteger(countRow, 'invocations'),
             denseDocuments: readRequiredInteger(countRow, 'dense_documents'),
-            denseGlobalVectors: readRequiredInteger(countRow, 'dense_global_vectors'),
-            denseProjectVectors: readRequiredInteger(countRow, 'dense_project_vectors'),
+            denseVectors: readRequiredInteger(countRow, 'dense_vectors'),
             denseProjects: readRequiredInteger(countRow, 'dense_projects'),
           };
           database.exec('COMMIT');
@@ -1340,8 +1308,7 @@ export function openSqliteRecallDatabase(
           sessionDocuments: readRequiredInteger(row, 'session_documents'),
           invocations: readRequiredInteger(row, 'invocations'),
           denseDocuments: readRequiredInteger(row, 'dense_documents'),
-          denseGlobalVectors: readRequiredInteger(row, 'dense_global_vectors'),
-          denseProjectVectors: readRequiredInteger(row, 'dense_project_vectors'),
+          denseVectors: readRequiredInteger(row, 'dense_vectors'),
           denseProjects: readRequiredInteger(row, 'dense_projects'),
         };
       },
@@ -1366,46 +1333,32 @@ export function openSqliteRecallDatabase(
           }
           const sqliteIntegrity = readSqliteIntegrity
             .all()
-            .map((row) => readRequiredString(row, 'integrity_check'));
+            .map((row) => readRequiredString(row, 'quick_check'));
           const foreignKeyViolations = readForeignKeyViolations.all().length;
           const ftsParity = readInvocationFtsParity.get();
           const vectorRow = readVectorParity.get();
           const vectorParity: SqliteRecallVectorParityDiagnostics = {
             denseDocuments: readRequiredInteger(vectorRow, 'dense_documents'),
-            globalVectors: readRequiredInteger(vectorRow, 'global_vectors'),
-            projectVectors: readRequiredInteger(vectorRow, 'project_vectors'),
-            denseDocumentsMissingGlobalVector: readRequiredInteger(
+            vectors: readRequiredInteger(vectorRow, 'vectors'),
+            denseDocumentsMissingVector: readRequiredInteger(
               vectorRow,
-              'dense_documents_missing_global_vector',
+              'dense_documents_missing_vector',
             ),
-            globalVectorsMissingDenseDocument: readRequiredInteger(
+            vectorsMissingDenseDocument: readRequiredInteger(
               vectorRow,
-              'global_vectors_missing_dense_document',
-            ),
-            denseDocumentsMissingProjectVector: readRequiredInteger(
-              vectorRow,
-              'dense_documents_missing_project_vector',
-            ),
-            projectVectorsMissingDenseDocument: readRequiredInteger(
-              vectorRow,
-              'project_vectors_missing_dense_document',
+              'vectors_missing_dense_document',
             ),
             projectMetadataMismatches: readRequiredInteger(
               vectorRow,
               'project_metadata_mismatches',
             ),
-            vectorValueMismatches: readRequiredInteger(vectorRow, 'vector_value_mismatches'),
             healthy: false,
           };
           vectorParity.healthy =
-            vectorParity.denseDocuments === vectorParity.globalVectors &&
-            vectorParity.denseDocuments === vectorParity.projectVectors &&
-            vectorParity.denseDocumentsMissingGlobalVector === 0 &&
-            vectorParity.globalVectorsMissingDenseDocument === 0 &&
-            vectorParity.denseDocumentsMissingProjectVector === 0 &&
-            vectorParity.projectVectorsMissingDenseDocument === 0 &&
-            vectorParity.projectMetadataMismatches === 0 &&
-            vectorParity.vectorValueMismatches === 0;
+            vectorParity.denseDocuments === vectorParity.vectors &&
+            vectorParity.denseDocumentsMissingVector === 0 &&
+            vectorParity.vectorsMissingDenseDocument === 0 &&
+            vectorParity.projectMetadataMismatches === 0;
           const invocationFtsDocuments = readRequiredInteger(ftsParity, 'invocation_fts_documents');
           const invocationsMissingFts = readRequiredInteger(ftsParity, 'invocations_missing_fts');
           const ftsDocumentsMissingInvocation = readRequiredInteger(
@@ -1467,8 +1420,7 @@ export function openSqliteRecallDatabase(
             const rowid = readRequiredInteger(row, 'rowid');
             const documentId = readRequiredString(row, 'document_id');
             previousRowids.set(documentId, rowid);
-            deleteGlobalVector.run(BigInt(rowid));
-            deleteProjectVector.run(BigInt(rowid));
+            deleteDenseVector.run(BigInt(rowid));
             if (!currentDenseIds.has(documentId)) {
               deleteDenseDocument.run(rowid);
             }
@@ -1501,8 +1453,7 @@ export function openSqliteRecallDatabase(
               );
               rowid = convertSqliteInteger(result.lastInsertRowid, 'dense document rowid');
             }
-            insertGlobalVector.run(BigInt(rowid), prepared.vectorBlob);
-            insertProjectVector.run(
+            insertDenseVector.run(
               BigInt(rowid),
               prepared.vectorBlob,
               BigInt(projectKey % SQLITE_RECALL_PROJECT_BUCKET_COUNT),
@@ -1532,9 +1483,7 @@ export function openSqliteRecallDatabase(
         let deleted = false;
         runSqliteRecallTransaction(database, () => {
           for (const row of readSessionDenseRows.all(sessionPath)) {
-            const rowid = readRequiredInteger(row, 'rowid');
-            deleteGlobalVector.run(BigInt(rowid));
-            deleteProjectVector.run(BigInt(rowid));
+            deleteDenseVector.run(BigInt(readRequiredInteger(row, 'rowid')));
           }
           deleted =
             convertSqliteInteger(deleteSession.run(sessionPath).changes, 'delete count') > 0;

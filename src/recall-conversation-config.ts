@@ -108,8 +108,6 @@ export async function loadRecallConversationConfig(
       file.sessionsDirectory ??
       join(homeDirectory, '.pi', 'agent', 'sessions'),
     sqliteDatabasePath: join(dataDirectory, 'recall.sqlite'),
-    legacyV6ZvecDatabasePath: join(dataDirectory, 'zvec'),
-    legacyV6StatePath: join(dataDirectory, 'index-state.json'),
     manifestPath: join(dataDirectory, 'index-manifest.json'),
     indexMaintenanceStatusPath: join(dataDirectory, 'index-maintenance-status.json'),
     physicalSessionIgnoreStatePath: join(dataDirectory, 'physical-session-ignore.json'),

@@ -8,7 +8,7 @@ export type RecallIndexProgressEvent =
   | { kind: 'resuming-rebuild-candidate' }
   | { kind: 'rebuild-candidate-failed' }
   | { kind: 'rebuild-candidate-staged'; databaseTarget: string }
-  | { kind: 'rebuild-candidate-activated'; previousAvailable: boolean }
+  | { kind: 'rebuild-candidate-activated' }
   | {
       kind: 'maintenance-workset-planned';
       discoveredFiles: number;

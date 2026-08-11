@@ -3,17 +3,8 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 
-import {
-  RecallEvidenceRelation,
-  RecallIndexManifestLayout,
-  RecallProjectIdentitySource,
-  RecallSearchScope,
-} from './enums.js';
-import {
-  fuseRecallSearchCandidates,
-  RECALL_RANK_FUSION_VERSION,
-  RECALL_RRF_RANK_CONSTANT,
-} from './fuse-recall-search-candidates.js';
+import { RecallEvidenceRelation, RecallProjectIdentitySource, RecallSearchScope } from './enums.js';
+import { fuseRecallSearchCandidates } from './fuse-recall-search-candidates.js';
 import {
   combineCompactRecallResults,
   COMPACT_RECALL_MIXED_RESULT_POLICY_VERSION,
@@ -35,7 +26,6 @@ import {
   activateStagedRecallDatabase,
   createRecallDatabaseCandidate,
   resolveActiveRecallDatabasePaths,
-  restorePreviousRecallDatabase,
   resumeRecallDatabaseCandidate,
   stageRecallDatabaseCandidate,
   type RecallDatabaseCandidate,
@@ -45,7 +35,6 @@ import type { RecallEmbeddingProvider } from './recall-inference-capabilities.js
 import {
   assertRecallIndexManifestCompatible,
   createRecallIndexManifest,
-  detectRecallIndexManifestLayout,
   readRecallIndexManifest,
   writeRecallIndexManifest,
   type RecallEmbeddingModelIdentity,
@@ -57,8 +46,6 @@ import {
   writeRecallIndexMaintenanceStatus,
   type RecallIndexMaintenanceStatus,
 } from './recall-index-maintenance-status.js';
-import type * as LegacyV6RecallAdapterModule from './legacy-v6-recall-adapter.js';
-import { createLegacyV6RecallIndexManifest } from './legacy-v6-recall-index-manifest.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
 import {
   createLineageResolver,
@@ -78,15 +65,10 @@ import type {
 import { searchSessionSourceFiles, type SessionSourceSearch } from './session-source-search.js';
 import { openSqliteRecallDatabase, type SqliteRecallDatabase } from './sqlite-recall-database.js';
 
-/** Unified SQLite paths, temporary legacy-v6 rollback paths, and bounded retrieval settings. */
+/** Unified SQLite paths and bounded retrieval settings. */
 export interface RecallConversationConfig {
   sessionsDirectory: string;
-  /** Unified version 8 SQLite Recall database path. */
   sqliteDatabasePath: string;
-  /** Temporary version 6 Zvec path retained for the rollback adapter. */
-  legacyV6ZvecDatabasePath: string;
-  /** Temporary version 6 index-state path retained for the rollback adapter. */
-  legacyV6StatePath: string;
   manifestPath: string;
   indexMaintenanceStatusPath: string;
   physicalSessionIgnoreStatePath: string;
@@ -117,25 +99,15 @@ export interface RecallConversationSearchOptions {
   signal?: AbortSignal;
 }
 
-/** Reports the manifest-selected retrieval policy used by one search. */
-export type RecallSearchPolicy =
-  | {
-      scope: RecallSearchScope;
-      invocationProjectIdentity: ProjectIdentity | null;
-      rankingMode: 'compact';
-      mixedResultPolicyVersion: number;
-      activeBranchPrior: number;
-      candidateLimits: RecallSearchCandidateLimits;
-    }
-  | {
-      scope: RecallSearchScope;
-      invocationProjectIdentity: ProjectIdentity | null;
-      rankingMode: 'legacy-v6-hybrid';
-      rankFusionVersion: number;
-      reciprocalRankConstant: number;
-      activeBranchPrior: number;
-      candidateLimits: { dense: number; lexical: number; identifier: number };
-    };
+/** Reports the current compact retrieval policy used by one search. */
+export interface RecallSearchPolicy {
+  scope: RecallSearchScope;
+  invocationProjectIdentity: ProjectIdentity | null;
+  rankingMode: 'compact';
+  mixedResultPolicyVersion: number;
+  activeBranchPrior: number;
+  candidateLimits: RecallSearchCandidateLimits;
+}
 
 /** One ranked dense conversation result labeled by its relationship to the invoking project. */
 export type RecallConversationSearchResult = CompactRecallConversationResult;
@@ -172,7 +144,7 @@ export interface RecallConversationOptimizeOptions {
 /** Database state after one completed standalone index update. */
 export type RecallDatabaseTransition =
   | { kind: 'active-updated' }
-  | { kind: 'candidate-activated'; previousAvailable: boolean; staleCandidatesRemoved: number }
+  | { kind: 'candidate-activated'; staleCandidatesRemoved: number }
   | { kind: 'candidate-staged'; databaseTarget: string; staleCandidatesRemoved: number }
   | { kind: 'candidate-failed'; staleCandidatesRemoved: number };
 
@@ -187,12 +159,6 @@ export interface RecallConversationIndexResult {
 /** Result of explicitly activating one certified staged recall database. */
 export interface RecallConversationActivationResult {
   kind: 'staged-activated';
-  previousAvailable: boolean;
-}
-
-/** Result of restoring the database immediately preceding the active generation. */
-export interface RecallConversationRollbackResult {
-  kind: 'previous-restored';
 }
 
 /** Dense document count from one standalone flat-store optimization. */
@@ -230,7 +196,6 @@ export interface RecallConversationMaintenanceService extends RecallConversation
     options?: RecallConversationOptimizeOptions,
   ): Promise<RecallConversationActivationResult>;
   optimize(options?: RecallConversationOptimizeOptions): Promise<RecallConversationOptimizeResult>;
-  rollback(options?: RecallConversationOptimizeOptions): Promise<RecallConversationRollbackResult>;
 }
 
 /** Injectable boundaries for public-seam tests and bounded evaluation. */
@@ -352,28 +317,6 @@ function createEmbeddingModelIdentity(
   };
 }
 
-async function loadLegacyV6RecallAdapter(): Promise<typeof LegacyV6RecallAdapterModule> {
-  try {
-    return await import('./legacy-v6-recall-adapter.js');
-  } catch (error) {
-    const optionalPackageMissing =
-      readNodeErrorCode(error) === 'ERR_MODULE_NOT_FOUND' &&
-      error instanceof Error &&
-      error.message.includes("'@zvec/zvec'");
-    const platformBindingUnavailable =
-      error instanceof Error &&
-      error.message.startsWith('Zvec Error: Failed to load prebuilt binary for ') &&
-      error.message.includes('This platform may not be supported.');
-    if (optionalPackageMissing || platformBindingUnavailable) {
-      throw new Error(
-        'Recall legacy-v6 rollback is unavailable on this platform because optional @zvec/zvec could not be loaded; a staged v8 generation is required',
-        { cause: error },
-      );
-    }
-    throw error;
-  }
-}
-
 /** Creates the service used by the read-only Pi tool and standalone `psr` writer. */
 export function createRecallConversationService(
   config: RecallConversationConfig,
@@ -417,17 +360,6 @@ export function createRecallConversationService(
 
   function createExpectedManifest(): RecallIndexManifest {
     return createRecallIndexManifest({
-      embeddingIdentity: createEmbeddingModelIdentity(config),
-      ...(dependencies.tokenizerIdentity
-        ? { tokenizerIdentity: dependencies.tokenizerIdentity }
-        : {}),
-      chunkPolicy: config.chunkPolicy,
-      projectLineages: config.projectLineages,
-    });
-  }
-
-  function createExpectedLegacyV6Manifest() {
-    return createLegacyV6RecallIndexManifest({
       embeddingIdentity: createEmbeddingModelIdentity(config),
       ...(dependencies.tokenizerIdentity
         ? { tokenizerIdentity: dependencies.tokenizerIdentity }
@@ -494,13 +426,7 @@ export function createRecallConversationService(
         throw new Error('Recall query must not be blank');
       }
       const activePaths = await resolveActiveRecallDatabasePaths(config);
-      const layout = await detectRecallIndexManifestLayout(activePaths.manifestPath);
-      if (layout === RecallIndexManifestLayout.LEGACY_V6) {
-        const { assertLegacyV6RecallDatabaseCompatible } = await loadLegacyV6RecallAdapter();
-        await assertLegacyV6RecallDatabaseCompatible(activePaths, createExpectedLegacyV6Manifest());
-      } else {
-        await readCompatibleManifest(activePaths);
-      }
+      await readCompatibleManifest(activePaths);
       const indexMaintenanceStatus = await readRecallIndexMaintenanceStatus(
         activePaths.indexMaintenanceStatusPath,
       );
@@ -510,45 +436,6 @@ export function createRecallConversationService(
         scope === RecallSearchScope.PROJECT ? invocationProject?.projectIdentity : undefined;
       const queryEmbedding = await embeddingProvider.embedQuery(searchQuery, options.signal);
       await assertRecallIndexUnlockedForSearch(config.lockPath);
-
-      if (layout === RecallIndexManifestLayout.LEGACY_V6) {
-        const { searchLegacyV6RecallDatabase } = await loadLegacyV6RecallAdapter();
-        const legacySearch = searchLegacyV6RecallDatabase({
-          paths: activePaths,
-          dimensions: config.embeddingStoredDimensions,
-          query: searchQuery,
-          queryEmbedding,
-          resultLimit: limit,
-          candidateLimit: config.searchCandidateLimits.dense,
-          ...(projectIdentity ? { projectIdentity } : {}),
-        });
-        return {
-          results: legacySearch.results.map((result) => ({
-            ...result,
-            resultKind: 'conversation' as const,
-            evidenceRelation: classifyEvidenceRelation(
-              result.projectAttribution,
-              invocationProject,
-            ),
-          })),
-          totalChunks: legacySearch.totalChunks,
-          documentCounts: { dense: legacySearch.totalChunks, invocations: 0 },
-          searchPolicy: {
-            scope,
-            invocationProjectIdentity: invocationProject?.projectIdentity ?? null,
-            rankingMode: 'legacy-v6-hybrid' as const,
-            rankFusionVersion: RECALL_RANK_FUSION_VERSION,
-            reciprocalRankConstant: RECALL_RRF_RANK_CONSTANT,
-            activeBranchPrior: RECALL_ACTIVE_BRANCH_PRIOR,
-            candidateLimits: {
-              dense: config.searchCandidateLimits.dense,
-              lexical: config.searchCandidateLimits.dense,
-              identifier: config.searchCandidateLimits.dense,
-            },
-          },
-          indexMaintenanceStatus,
-        };
-      }
 
       const database = openDatabase(activePaths.sqliteDatabasePath, { readOnly: true });
       try {
@@ -675,18 +562,6 @@ export function createRecallConversationService(
         const ignoredPhysicalSessionPaths: ReadonlySet<string> = new Set(
           await listIgnoredPhysicalSessionPaths(config.physicalSessionIgnoreStatePath),
         );
-        if (options.rebuild && !options.deferActivation) {
-          const currentPaths = await resolveActiveRecallDatabasePaths(config);
-          if (
-            existsSync(currentPaths.manifestPath) &&
-            (await detectRecallIndexManifestLayout(currentPaths.manifestPath)) ===
-              RecallIndexManifestLayout.LEGACY_V6
-          ) {
-            throw new Error(
-              'Recall legacy-v6 migration must remain staged for certification; run psr index --rebuild --stage before psr activate',
-            );
-          }
-        }
         candidate =
           options.rebuild && config.databaseGenerationRootPath
             ? options.resumeCandidate
@@ -709,95 +584,22 @@ export function createRecallConversationService(
 
         if (options.reuseActiveVectors) {
           const reusePaths = await resolveActiveRecallDatabasePaths(config);
-          const reuseLayout = await detectRecallIndexManifestLayout(reusePaths.manifestPath);
           const expectedEmbedding = createEmbeddingModelIdentity(config);
-          if (reuseLayout === RecallIndexManifestLayout.LEGACY_V6) {
-            const { assertLegacyV6RecallDatabaseCompatible, openLegacyV6VectorReuseReader } =
-              await loadLegacyV6RecallAdapter();
-            const manifest = await assertLegacyV6RecallDatabaseCompatible(
-              reusePaths,
-              createExpectedLegacyV6Manifest(),
+          const manifest = await readCompatibleManifest(reusePaths);
+          if (JSON.stringify(manifest.embedding) !== JSON.stringify(expectedEmbedding)) {
+            throw new Error(
+              `Recall active vector reuse profile incompatible at ${reusePaths.manifestPath}`,
             );
-            if (JSON.stringify(manifest.embedding) !== JSON.stringify(expectedEmbedding)) {
-              throw new Error(
-                `Recall active vector reuse profile incompatible at ${reusePaths.manifestPath}`,
-              );
-            }
-            vectorReuseReader = openLegacyV6VectorReuseReader(
-              reusePaths,
-              config.embeddingStoredDimensions,
-            );
-          } else {
-            const manifest = await readCompatibleManifest(reusePaths);
-            if (JSON.stringify(manifest.embedding) !== JSON.stringify(expectedEmbedding)) {
-              throw new Error(
-                `Recall active vector reuse profile incompatible at ${reusePaths.manifestPath}`,
-              );
-            }
-            const reuseDatabase = openDatabase(reusePaths.sqliteDatabasePath, { readOnly: true });
-            vectorReuseReader = {
-              fetchDocuments: (ids) => reuseDatabase.fetchDenseDocuments(ids),
-              fetchVectors: (ids) => reuseDatabase.fetchDenseVectors(ids),
-              close: () => reuseDatabase.close(),
-            };
           }
-        }
-
-        const targetIsVersion8 =
-          candidate !== undefined || options.rebuild || !existsSync(activePaths.manifestPath);
-        if (!targetIsVersion8) {
-          const layout = await detectRecallIndexManifestLayout(activePaths.manifestPath);
-          if (layout !== RecallIndexManifestLayout.LEGACY_V6) {
-            await readCompatibleManifest(activePaths);
-          } else {
-            const { assertLegacyV6RecallDatabaseCompatible, indexLegacyV6RecallDatabase } =
-              await loadLegacyV6RecallAdapter();
-            const manifest = await assertLegacyV6RecallDatabaseCompatible(
-              activePaths,
-              createExpectedLegacyV6Manifest(),
-            );
-            const conversationTokenizer = await getTokenizer();
-            const legacyResult = await indexLegacyV6RecallDatabase({
-              paths: activePaths,
-              dimensions: config.embeddingStoredDimensions,
-              sessionsDirectory: config.sessionsDirectory,
-              embeddingProvider,
-              tokenizer: conversationTokenizer,
-              chunkPolicy: {
-                maxTokens: manifest.chunkPolicy.maxTokens,
-                overlapTokens: manifest.chunkPolicy.overlapTokens,
-              },
-              ignoredPhysicalSessionPaths,
-              resolveProjectIdentity: resolveSearchProjectIdentity,
-              ...(options.signal ? { signal: options.signal } : {}),
-              ...(options.onProgress ? { onProgress: options.onProgress } : {}),
-            });
-            await writeRecallIndexMaintenanceStatus(activePaths.indexMaintenanceStatusPath, {
-              version: 1,
-              completedAt: getCurrentTime().toISOString(),
-              scannedSessions: legacyResult.indexSummary.scannedSessions,
-              failedSessions: legacyResult.indexSummary.failedSessions.length,
-            });
-            options.onProgress?.({ kind: 'completed' });
-            return {
-              indexSummary: legacyResult.indexSummary,
-              totalChunks: legacyResult.totalChunks,
-              documentCounts: { dense: legacyResult.totalChunks, invocations: 0 },
-              databaseTransition: { kind: 'active-updated' as const },
-            };
-          }
+          const reuseDatabase = openDatabase(reusePaths.sqliteDatabasePath, { readOnly: true });
+          vectorReuseReader = {
+            fetchDocuments: (ids) => reuseDatabase.fetchDenseDocuments(ids),
+            fetchVectors: (ids) => reuseDatabase.fetchDenseVectors(ids),
+            close: () => reuseDatabase.close(),
+          };
         }
 
         if (options.rebuild && !candidate) {
-          if (
-            existsSync(activePaths.manifestPath) &&
-            (await detectRecallIndexManifestLayout(activePaths.manifestPath)) ===
-              RecallIndexManifestLayout.LEGACY_V6
-          ) {
-            throw new Error(
-              'Recall version 8 rebuild cannot replace an unversioned legacy-v6 rollback database; configure staged database generations',
-            );
-          }
           await rm(activePaths.indexMaintenanceStatusPath, { force: true });
           await rm(activePaths.sqliteDatabasePath, { force: true });
           await rm(activePaths.manifestPath, { force: true });
@@ -858,14 +660,10 @@ export function createRecallConversationService(
               staleCandidatesRemoved: candidate.staleCandidatesRemoved,
             };
           } else {
-            const activation = await activateRecallDatabaseCandidate(config, candidate);
-            options.onProgress?.({
-              kind: 'rebuild-candidate-activated',
-              previousAvailable: activation.previousAvailable,
-            });
+            await activateRecallDatabaseCandidate(config, candidate);
+            options.onProgress?.({ kind: 'rebuild-candidate-activated' });
             databaseTransition = {
               kind: 'candidate-activated',
-              previousAvailable: activation.previousAvailable,
               staleCandidatesRemoved: candidate.staleCandidatesRemoved,
             };
           }
@@ -898,24 +696,8 @@ export function createRecallConversationService(
           : undefined,
       );
       try {
-        const activation = await activateStagedRecallDatabase(config, databaseTarget);
-        return { kind: 'staged-activated', previousAvailable: activation.previousAvailable };
-      } finally {
-        await releaseLock();
-      }
-    },
-
-    async rollback(options = {}) {
-      const releaseLock = await acquireRecallConversationLock(
-        config.lockPath,
-        options.signal,
-        options.onProgress
-          ? () => options.onProgress?.({ kind: 'waiting-for-write-lock' })
-          : undefined,
-      );
-      try {
-        await restorePreviousRecallDatabase(config);
-        return { kind: 'previous-restored' };
+        await activateStagedRecallDatabase(config, databaseTarget);
+        return { kind: 'staged-activated' };
       } finally {
         await releaseLock();
       }

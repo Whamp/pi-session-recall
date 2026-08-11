@@ -8,7 +8,7 @@ const REBUILD_PROGRESS_EVENTS = [
   { kind: 'resuming-rebuild-candidate' },
   { kind: 'rebuild-candidate-failed' },
   { kind: 'rebuild-candidate-staged', databaseTarget: 'generations/candidate' },
-  { kind: 'rebuild-candidate-activated', previousAvailable: true },
+  { kind: 'rebuild-candidate-activated' },
 ] satisfies readonly RecallIndexProgressEvent[];
 
 void test('recall index progress events carry the candidate rebuild lifecycle facts', () => {
@@ -24,11 +24,8 @@ void test('recall index progress events carry the candidate rebuild lifecycle fa
   );
   const preparingEvent = REBUILD_PROGRESS_EVENTS.at(0);
   const stagedEvent = REBUILD_PROGRESS_EVENTS.at(3);
-  const activatedEvent = REBUILD_PROGRESS_EVENTS.at(4);
   assert.ok(preparingEvent);
   assert.ok(stagedEvent);
-  assert.ok(activatedEvent);
   assert.equal(preparingEvent.staleCandidatesRemoved, 2);
   assert.equal(stagedEvent.databaseTarget, 'generations/candidate');
-  assert.equal(activatedEvent.previousAvailable, true);
 });

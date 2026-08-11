@@ -532,8 +532,6 @@ export function openZvecConversationStore(config: {
   dimensions: number;
   createIfMissing?: boolean;
   readOnly?: boolean;
-  /** Creation-only override for bounded flat-index certification fixtures. */
-  createDenseIndexType?: ZVecIndexType;
 }): ZvecConversationStore {
   const databaseExists = existsSync(config.databasePath);
   if (!databaseExists && config.createIfMissing === false) {
@@ -544,7 +542,6 @@ export function openZvecConversationStore(config: {
   if (!databaseExists) {
     mkdirSync(dirname(config.databasePath), { recursive: true });
   }
-  const createDenseIndexType = config.createDenseIndexType ?? ZVecIndexType.HNSW;
   const collection: ZVecCollection = databaseExists
     ? config.readOnly
       ? ZVecOpen(config.databasePath, { readOnly: true })
@@ -557,26 +554,16 @@ export function openZvecConversationStore(config: {
             name: 'embedding',
             dataType: ZVecDataType.VECTOR_FP32,
             dimension: config.dimensions,
-            indexParams:
-              createDenseIndexType === ZVecIndexType.FLAT
-                ? { indexType: ZVecIndexType.FLAT, metricType: ZVecMetricType.IP }
-                : {
-                    indexType: ZVecIndexType.HNSW,
-                    metricType: ZVecMetricType.IP,
-                    m: ZVEC_HNSW_M,
-                    efConstruction: ZVEC_HNSW_EF_CONSTRUCTION,
-                  },
+            indexParams: {
+              indexType: ZVecIndexType.HNSW,
+              metricType: ZVecMetricType.IP,
+              m: ZVEC_HNSW_M,
+              efConstruction: ZVEC_HNSW_EF_CONSTRUCTION,
+            },
           },
           fields: [...ZVEC_CONVERSATION_FIELD_SCHEMAS],
         }),
       );
-  const storedDenseIndexType = collection.schema.vector('embedding').indexParams?.indexType;
-  if (storedDenseIndexType !== ZVecIndexType.HNSW && storedDenseIndexType !== ZVecIndexType.FLAT) {
-    collection.closeSync();
-    throw new Error(
-      `Recall zvec dense index unsupported at ${config.databasePath}: ${String(storedDenseIndexType)}`,
-    );
-  }
   const storedDimensions = collection.schema.vector('embedding').dimension;
   if (storedDimensions !== config.dimensions) {
     collection.closeSync();
@@ -652,9 +639,7 @@ export function openZvecConversationStore(config: {
           filter: projectFilter
             ? `isDenseSearchable = true AND ${projectFilter}`
             : 'isDenseSearchable = true',
-          ...(storedDenseIndexType === ZVecIndexType.HNSW
-            ? { params: { indexType: ZVecIndexType.HNSW, ef: ZVEC_HNSW_EF_SEARCH } }
-            : {}),
+          params: { indexType: ZVecIndexType.HNSW, ef: ZVEC_HNSW_EF_SEARCH },
         })
         .map((doc) => ({
           ...deserializeConversationChunk(doc),

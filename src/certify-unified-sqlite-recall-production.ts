@@ -855,13 +855,8 @@ async function runCertification(
       `Unified SQLite recall flat-Zvec control is missing: ${argumentsValue.controlZvecPath}`,
     );
   }
-  const [{ ZVecIndexType }, { openZvecConversationStore, readZvecConversationDenseIndexType }] =
-    await Promise.all([import('@zvec/zvec'), import('./zvec-conversation-store.js')]);
-  if (readZvecConversationDenseIndexType(argumentsValue.controlZvecPath) !== ZVecIndexType.FLAT) {
-    throw new Error(
-      `Unified SQLite recall control is not a flat-Zvec store: ${argumentsValue.controlZvecPath}`,
-    );
-  }
+  const { openLegacyV7FlatZvecCertificationControl } =
+    await import('./legacy-v7-flat-zvec-certification-control.js');
   const candidateDatabasePath = join(candidateDirectory, 'recall.sqlite');
   const manifestPath = join(candidateDirectory, 'index-manifest.json');
   const activeBefore = snapshotUnifiedSqliteActivePointer(argumentsValue.dataRoot);
@@ -895,11 +890,9 @@ async function runCertification(
   });
   const projectIdentity = parseProjectIdentity(argumentsValue.projectIdentity);
   const candidate = openSqliteRecallDatabase(candidateDatabasePath, { readOnly: true });
-  const control = openZvecConversationStore({
+  const control = openLegacyV7FlatZvecCertificationControl({
     databasePath: argumentsValue.controlZvecPath,
     dimensions: config.embeddingStoredDimensions,
-    createIfMissing: false,
-    readOnly: true,
   });
   const denseObservations: Array<{
     query: string;
@@ -920,10 +913,8 @@ async function runCertification(
       const globalMilliseconds: number[] = [];
       const projectMilliseconds: number[] = [];
       for (let repetition = 0; repetition < BENCHMARK_REPETITIONS; repetition += 1) {
-        controlGlobalIds = control.searchDenseCandidates(embedding, 8).map(({ id }) => id);
-        controlProjectIds = control
-          .searchDenseCandidates(embedding, 8, projectIdentity)
-          .map(({ id }) => id);
+        controlGlobalIds = control.searchDocumentIds(embedding, 8);
+        controlProjectIds = control.searchDocumentIds(embedding, 8, projectIdentity);
         let started = performance.now();
         candidateGlobalIds = candidate.searchDenseCandidates(embedding, 8).map(({ id }) => id);
         const globalElapsed = performance.now() - started;

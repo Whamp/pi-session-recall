@@ -4,8 +4,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { ZVecIndexType } from '@zvec/zvec';
-
 import { createTestSessionConversationChunk } from './recall-test-utils.js';
 import type { SessionConversationChunk } from './session-conversation-index.js';
 import {
@@ -245,37 +243,6 @@ void test('zvec round-trips lexical-only tool evidence and excludes it from dens
   const { fullTextScore, ...storedToolChunk } = lexicalResult;
   assert.ok(fullTextScore > 0);
   assert.deepEqual(storedToolChunk, toolChunk);
-});
-
-void test('zvec conversation search uses the persisted flat dense index type', async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), 'recall-zvec-flat-'));
-  const databasePath = join(directory, 'collection');
-  t.after(() => rm(directory, { recursive: true, force: true }));
-
-  const writer = openZvecConversationStore({
-    databasePath,
-    dimensions: 3,
-    createDenseIndexType: ZVecIndexType.FLAT,
-  });
-  writer.upsertChunks([
-    {
-      ...baseChunk,
-      id: 'flat-chunk',
-      checksum: 'flat-checksum',
-      embedding: [1, 0, 0],
-    },
-  ]);
-  writer.close();
-
-  const reader = openZvecConversationStore({
-    databasePath,
-    dimensions: 3,
-    createIfMissing: false,
-    readOnly: true,
-  });
-  t.after(() => reader.close());
-
-  assert.equal(reader.searchDenseCandidates([1, 0, 0], 1)[0]?.id, 'flat-chunk');
 });
 
 void test('zvec conversation store rejects an embedding dimension change that requires reindexing', async (t) => {

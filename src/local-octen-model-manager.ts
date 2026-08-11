@@ -17,6 +17,7 @@ import {
   LocalOctenModelStatusKind,
 } from './enums.js';
 import { isUnknownRecord } from './is-unknown-record.js';
+import { probeLocalOctenEmbeddingRuntime } from './local-octen-embedding-provider.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
 
 const LOCAL_OCTEN_RELEASE_TAG = 'model-octen-embedding-0.6b-onnx-int8-v1';
@@ -422,6 +423,10 @@ export function createLocalOctenModelManager(
   const modelDirectory = join(options.modelRootDirectory, artifact.artifactId);
   const totalBytes = artifact.files.reduce((sum, file) => sum + file.bytes, 0);
   const downloadSource = options.downloadSource ?? fetchDownloadSource;
+  const probeRuntime =
+    options.probeRuntime ??
+    ((directory: string) =>
+      probeLocalOctenEmbeddingRuntime(directory, artifact.nativeDimensions));
 
   async function status(): Promise<LocalOctenModelStatus> {
     const partialDirectories = await listPartialDirectories(
@@ -529,15 +534,8 @@ export function createLocalOctenModelManager(
       if (integrityFailure) {
         return { healthy: false, status: currentStatus, detail: integrityFailure };
       }
-      if (!options.probeRuntime) {
-        return {
-          healthy: true,
-          status: currentStatus,
-          detail: 'Local Octen model files passed checksum verification',
-        };
-      }
       try {
-        const runtime = await options.probeRuntime(modelDirectory);
+        const runtime = await probeRuntime(modelDirectory);
         if (
           runtime.dimensions !== artifact.nativeDimensions ||
           !Number.isFinite(runtime.norm) ||

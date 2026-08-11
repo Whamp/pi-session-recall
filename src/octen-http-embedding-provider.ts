@@ -46,5 +46,6 @@ export function createOctenHttpEmbeddingProvider(
       const nativeEmbeddings = await client.embedTexts([...documents], signal);
       return nativeEmbeddings.map(convertNativeEmbedding);
     },
+    async close() {},
   };
 }

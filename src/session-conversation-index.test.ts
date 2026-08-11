@@ -406,7 +406,7 @@ void test('turn-context documents reject a token budget that cannot contain both
   );
 });
 
-void test('session chunks index bounded verbatim tool evidence with exact call provenance', async () => {
+void test('session import keeps compact tool-call locators while leaving result payloads source-backed', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'recall-tool-evidence-'));
   const sessionPath = join(directory, 'session.jsonl');
   const toolOutput = 'EPERM readNodeErrorCode /tmp/locked-file\nsecond output line';
@@ -463,40 +463,22 @@ void test('session chunks index bounded verbatim tool evidence with exact call p
       .join('\n') + '\n',
   );
 
-  const chunks = await readSessionConversationChunks(sessionPath, {
+  const imported = await readSessionConversationImport(sessionPath, {
     tokenizer: createWhitespaceConversationTokenizer(),
     maxTokens: 4,
     overlapTokens: 1,
   });
-  const toolChunks = chunks.filter((chunk) => chunk.documentKind === 'tool');
-  const callChunks = toolChunks.filter((chunk) => chunk.evidenceKind === 'tool_call');
-  const resultChunks = toolChunks.filter((chunk) => chunk.evidenceKind === 'tool_result');
 
-  assert.deepEqual(
-    callChunks.map((chunk) => chunk.evidencePart),
-    ['name', 'arguments'],
-  );
-  assert.equal(callChunks[0]?.content, 'bash');
-  assert.equal(
-    callChunks[1]?.content,
-    '{"command":"cat /tmp/locked-file","url":"https://example.test/tool-output?id=EPERM"}',
-  );
-  assert.equal(
-    resultChunks.map((chunk) => chunk.content).join(''),
-    toolOutput + 'final result URL https://example.test/final',
-  );
-  assert.ok(toolChunks.every((chunk) => chunk.isDenseSearchable === false));
-  assert.ok(toolChunks.every((chunk) => chunk.tokenCount <= 4));
-  assert.ok(toolChunks.every((chunk) => chunk.overlapTokenCount === 0));
-  assert.ok(toolChunks.every((chunk) => chunk.toolCallId === 'call-tools'));
-  assert.ok(toolChunks.every((chunk) => chunk.toolName === 'bash'));
-  assert.ok(callChunks.every((chunk) => chunk.toolCallEntryId?.value === 'assistant-tools'));
-  assert.ok(callChunks.every((chunk) => chunk.toolResultEntryId?.value === 'result-tools'));
-  assert.ok(resultChunks.every((chunk) => chunk.toolCallEntryId?.value === 'assistant-tools'));
-  assert.ok(resultChunks.every((chunk) => chunk.toolResultEntryId?.value === 'result-tools'));
-  assert.ok(callChunks.every((chunk) => chunk.sourceBlockStart === 1));
-  assert.deepEqual([...new Set(resultChunks.map((chunk) => chunk.sourceBlockStart))], [0, 2]);
-  assert.ok(chunks.every((chunk) => !chunk.content.includes('private tool plan')));
+  assert.deepEqual(imported.chunks, []);
+  assert.equal(imported.invocations.length, 1);
+  assert.equal(imported.invocations[0]?.toolName, 'bash');
+  assert.equal(imported.invocations[0]?.toolCallId, 'call-tools');
+  assert.equal(imported.invocations[0]?.entryId, 'assistant-tools');
+  assert.equal(imported.invocations[0]?.sourceBlockIndex, 1);
+  assert.equal(imported.invocations[0]?.isError, true);
+  assert.match(imported.invocations[0]?.searchableText ?? '', /cat \/tmp\/locked-file/u);
+  assert.match(imported.invocations[0]?.searchableText ?? '', /example\.test\/tool-output/u);
+  assert.doesNotMatch(imported.invocations[0]?.searchableText ?? '', /second output line/u);
 });
 
 void test('session chunks exclude derived pi-session-recall tool calls and results', async () => {
@@ -560,7 +542,7 @@ void test('session chunks exclude derived pi-session-recall tool calls and resul
   );
 });
 
-void test('session chunks index direct bash commands and outputs as lexical-only evidence', async () => {
+void test('session import indexes direct bash commands but leaves bash output source-backed', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'recall-bash-evidence-'));
   const sessionPath = join(directory, 'session.jsonl');
   await writeFile(
@@ -593,37 +575,22 @@ void test('session chunks index direct bash commands and outputs as lexical-only
       .join('\n') + '\n',
   );
 
-  const chunks = await readSessionConversationChunks(sessionPath, {
+  const imported = await readSessionConversationImport(sessionPath, {
     tokenizer: createWhitespaceConversationTokenizer(),
     maxTokens: 3,
     overlapTokens: 1,
   });
 
-  assert.deepEqual(
-    chunks.map((chunk) => chunk.evidencePart),
-    ['command', 'output'],
+  assert.deepEqual(imported.chunks, []);
+  assert.equal(imported.invocations.length, 1);
+  assert.equal(imported.invocations[0]?.kind, 'bash_execution');
+  assert.equal(imported.invocations[0]?.toolName, 'bash');
+  assert.equal(imported.invocations[0]?.toolCallId, null);
+  assert.equal(imported.invocations[0]?.isError, true);
+  assert.ok(
+    imported.invocations[0]?.searchableText.includes('rg \\"needle\\" src/read-node-error-code.ts'),
   );
-  assert.equal(
-    chunks
-      .filter((chunk) => chunk.evidencePart === 'command')
-      .map((chunk) => chunk.content)
-      .join(''),
-    'rg "needle" src/read-node-error-code.ts',
-  );
-  assert.equal(
-    chunks
-      .filter((chunk) => chunk.evidencePart === 'output')
-      .map((chunk) => chunk.content)
-      .join(''),
-    'src/read-node-error-code.ts: EPERM needle',
-  );
-  assert.ok(chunks.every((chunk) => chunk.documentKind === 'tool'));
-  assert.ok(chunks.every((chunk) => chunk.evidenceKind === 'bash_execution'));
-  assert.ok(chunks.every((chunk) => chunk.toolName === 'bash'));
-  assert.ok(chunks.every((chunk) => chunk.toolCallId === null));
-  assert.ok(chunks.every((chunk) => chunk.toolError === true));
-  assert.ok(chunks.every((chunk) => chunk.isDenseSearchable === false));
-  assert.ok(chunks.every((chunk) => chunk.overlapTokenCount === 0));
+  assert.doesNotMatch(imported.invocations[0]?.searchableText ?? '', /EPERM needle/u);
 });
 
 void test('session chunks expose branch, summary, sibling, and source geometry provenance', async () => {
@@ -1085,8 +1052,8 @@ void test('unversioned Pi v1 sessions convert deterministically through the stri
   assert.ok(imported.chunks.every((chunk) => chunk.sessionPath === sessionPath));
   assert.ok(imported.chunks.every((chunk) => chunk.cwd === '/legacy/project'));
   assert.ok(imported.chunks.every((chunk) => chunk.parentSessionPath === '/legacy/parent.jsonl'));
-  assert.ok(imported.chunks.some((chunk) => chunk.evidenceKind === 'tool_call'));
-  assert.ok(imported.chunks.some((chunk) => chunk.evidenceKind === 'tool_result'));
+  assert.equal(imported.invocations.length, 1);
+  assert.equal(imported.invocations[0]?.kind, 'tool_call');
   assert.ok(imported.chunks.some((chunk) => chunk.evidenceKind === 'compaction_summary'));
   const compaction = imported.chunks.find((chunk) => chunk.evidenceKind === 'compaction_summary');
   assert.equal(

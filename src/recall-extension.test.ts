@@ -14,7 +14,10 @@ import recallExtension, {
   type PiRecallParameters,
   searchPiRecall,
 } from './recall-extension.js';
-import type { RecallConversationService } from './recall-conversation-service.js';
+import type {
+  RecallConversationService,
+  RecallConversationToolService,
+} from './recall-conversation-service.js';
 import {
   createTestRankedRecallSearchResult,
   createTestRecallSearchResult,
@@ -68,19 +71,25 @@ async function usePiToolExpansionKeybinding(key: string): Promise<() => void> {
   };
 }
 
+const SOURCE_SEARCH_MUST_NOT_RUN = {
+  async searchSource(): Promise<never> {
+    throw new Error('indexed recall must not scan source sessions');
+  },
+};
+
 function createEmptySearch(scope: RecallSearchScope, invocationProjectIdentity: null = null) {
   return {
     results: [],
     totalChunks: 0,
+    documentCounts: { dense: 0, invocations: 0 },
     indexMaintenanceStatus: null,
     searchPolicy: {
       scope,
       invocationProjectIdentity,
-      rankingMode: 'hybrid' as const,
-      rankFusionVersion: 2,
-      reciprocalRankConstant: 60,
+      rankingMode: 'compact' as const,
+      mixedResultPolicyVersion: 1,
       activeBranchPrior: 0.01,
-      candidateLimits: { dense: 8, lexical: 8, identifier: 8 },
+      candidateLimits: { dense: 8, invocation: 8 },
     },
   };
 }
@@ -88,6 +97,7 @@ function createEmptySearch(scope: RecallSearchScope, invocationProjectIdentity: 
 void test('Pi recall applies trusted cwd and project-default scope without a write path', async () => {
   const calls: unknown[] = [];
   const service = {
+    ...SOURCE_SEARCH_MUST_NOT_RUN,
     async search(query, limit, options) {
       calls.push({ query, limit, options });
       return createEmptySearch(options?.scope ?? RecallSearchScope.PROJECT);
@@ -124,9 +134,87 @@ void test('Pi recall applies trusted cwd and project-default scope without a wri
   ]);
 });
 
+void test('Pi recall source option scans raw output and returns exact physical provenance', async () => {
+  const calls: unknown[] = [];
+  const service = {
+    async search() {
+      throw new Error('source option must not run indexed recall');
+    },
+    async searchSource(query, limit, options) {
+      calls.push({ query, limit, options });
+      return {
+        results: [
+          {
+            sessionPath: '/sessions/raw-output.jsonl',
+            sourceLineStart: 42,
+            sourceLineEnd: 42,
+            entryId: 'raw-result-entry',
+            sessionOrigin: '/trusted/project',
+            text: 'Tool failed on hardware MODEL-9000 with --repair-all',
+          },
+        ],
+        failures: [
+          {
+            sessionPath: '/sessions/missing.jsonl',
+            error: 'Source session missing at /sessions/missing.jsonl',
+          },
+        ],
+        filesScanned: 17,
+        scope: options?.scope ?? RecallSearchScope.PROJECT,
+        invocationProjectIdentity: null,
+      };
+    },
+    async index() {
+      throw new Error('source search adapter must not index');
+    },
+  } satisfies RecallConversationToolService;
+  const tool = createPiRecallToolDefinition(service);
+
+  const execution = await tool.execute(
+    'source-call',
+    { query: '  MODEL-9000  ', limit: 2, scope: 'global', source: true },
+    undefined,
+    undefined,
+    { cwd: '/trusted/project' },
+  );
+  const text = execution.content[0]?.type === 'text' ? execution.content[0].text : '';
+
+  assert.deepEqual(calls, [
+    {
+      query: 'MODEL-9000',
+      limit: 2,
+      options: {
+        scope: RecallSearchScope.GLOBAL,
+        invocationDirectory: '/trusted/project',
+      },
+    },
+  ]);
+  assert.match(text, /Source search scanned 17 eligible physical session files/u);
+  assert.match(text, /Source session missing at \/sessions\/missing\.jsonl/u);
+  assert.match(text, /\/sessions\/raw-output\.jsonl:42-42#raw-result-entry/u);
+  assert.match(text, /hardware MODEL-9000 with --repair-all/u);
+  assert.deepEqual(execution.details.sources, [
+    {
+      sessionPath: '/sessions/raw-output.jsonl',
+      entryId: 'raw-result-entry',
+      sourceLineStart: 42,
+      sourceLineEnd: 42,
+      sessionOrigin: '/trusted/project',
+    },
+  ]);
+  assert.ok('sourceFailures' in execution.details);
+  assert.deepEqual(execution.details.sourceFailures, [
+    {
+      sessionPath: '/sessions/missing.jsonl',
+      error: 'Source session missing at /sessions/missing.jsonl',
+    },
+  ]);
+});
+
 void test('Pi recall call shows a concise exact query without changing retrieval input', async () => {
   const calls: unknown[] = [];
   const service = {
+    ...SOURCE_SEARCH_MUST_NOT_RUN,
     async search(query, limit, options) {
       calls.push({ query, limit, options });
       return createEmptySearch(options?.scope ?? RecallSearchScope.PROJECT);
@@ -195,10 +283,12 @@ void test('service-injected Pi recall tool definition executes complete recall e
   const search = {
     results: [result],
     totalChunks: 42_318,
+    documentCounts: { dense: 42_318, invocations: 0 },
     indexMaintenanceStatus: null,
     searchPolicy: createEmptySearch(RecallSearchScope.PROJECT).searchPolicy,
   };
   const service = {
+    ...SOURCE_SEARCH_MUST_NOT_RUN,
     async search(query, limit, options) {
       calls.push({ query, limit, options });
       return search;
@@ -278,10 +368,12 @@ void test('untruncated Pi recall results show exact UTF-8 payload metrics and ex
       content: 'Second evidence line.',
     });
     const service = {
+      ...SOURCE_SEARCH_MUST_NOT_RUN,
       async search() {
         return {
           results: [firstResult, secondResult],
           totalChunks: 42_318,
+          documentCounts: { dense: 42_318, invocations: 0 },
           indexMaintenanceStatus: {
             version: 1,
             completedAt: '2026-07-25T12:00:00.000Z',
@@ -317,7 +409,7 @@ void test('untruncated Pi recall results show exact UTF-8 payload metrics and ex
     );
     const rendered = stripVTControlCharacters(component.render(1_000).join('\n')).trimEnd();
 
-    assert.equal(execution.details.returnedBytes, 850);
+    assert.equal(execution.details.returnedBytes, 857);
     assert.equal(execution.details.returnedLines, 11);
     assert.deepEqual(execution.details.indexMaintenanceStatus, {
       completedAt: '2026-07-25T12:00:00.000Z',
@@ -328,7 +420,7 @@ void test('untruncated Pi recall results show exact UTF-8 payload metrics and ex
     assert.equal('truncation' in execution.details, false);
     assert.equal(
       rendered,
-      '2 recall results · project scope · 850B / 11 lines · index checked 30m ago · 1 failed session (alt+x to expand)',
+      '2 recall results · project scope · 857B / 11 lines · index checked 30m ago · 1 failed session (alt+x to expand)',
     );
   } finally {
     restoreKeybindings();
@@ -366,10 +458,12 @@ void test('Pi recall freshness uses fixed execution-time minute, hour, and day a
       let currentTime = new Date(freshnessCase.currentTime);
       let clockCalls = 0;
       const service = {
+        ...SOURCE_SEARCH_MUST_NOT_RUN,
         async search() {
           return {
             results: [result],
             totalChunks: 1,
+            documentCounts: { dense: 1, invocations: 0 },
             indexMaintenanceStatus: {
               version: 1 as const,
               completedAt: freshnessCase.completedAt,
@@ -444,10 +538,12 @@ void test('collapsed Pi recall result uses singular wording', async () => {
   try {
     const result = createTestRankedRecallSearchResult({ id: 'collapsed-singular' });
     const service = {
+      ...SOURCE_SEARCH_MUST_NOT_RUN,
       async search() {
         return {
           results: [result],
           totalChunks: 9,
+          documentCounts: { dense: 9, invocations: 0 },
           indexMaintenanceStatus: null,
           searchPolicy: createEmptySearch(RecallSearchScope.GLOBAL).searchPolicy,
         };
@@ -478,7 +574,7 @@ void test('collapsed Pi recall result uses singular wording', async () => {
     );
     const rendered = stripVTControlCharacters(component.render(1_000).join('\n')).trimEnd();
 
-    assert.equal(rendered, '1 recall result · global scope · 487B / 6 lines (alt+x to expand)');
+    assert.equal(rendered, '1 recall result · global scope · 494B / 6 lines (alt+x to expand)');
 
     const oneLineComponent = tool.renderResult(
       {
@@ -558,10 +654,12 @@ void test('expanded Pi recall rendering equals complete execution evidence exact
     },
   });
   const service = {
+    ...SOURCE_SEARCH_MUST_NOT_RUN,
     async search() {
       return {
         results: [result],
         totalChunks: 12,
+        documentCounts: { dense: 12, invocations: 0 },
         indexMaintenanceStatus: null,
         searchPolicy: createEmptySearch(RecallSearchScope.GLOBAL).searchPolicy,
       };
@@ -583,7 +681,6 @@ void test('expanded Pi recall rendering equals complete execution evidence exact
   assert.match(executionText, /ranking 0\.0200/);
   assert.match(executionText, /Neighbor context before the winning evidence/);
   assert.match(executionText, /Contributing entries:/);
-  assert.match(executionText, /Call source:/);
   assert.match(executionText, /Expanded chunks:/);
   assert.match(executionText, /Duplicate occurrence:/);
   assert.match(executionText, /Source:/);
@@ -613,10 +710,12 @@ void test('zero-match Pi recall rendering stays concise without an expansion hin
 
   try {
     const service = {
+      ...SOURCE_SEARCH_MUST_NOT_RUN,
       async search() {
         return {
           ...createEmptySearch(RecallSearchScope.PROJECT),
           totalChunks: 42_318,
+          documentCounts: { dense: 42_318, invocations: 0 },
           indexMaintenanceStatus: {
             version: 1,
             completedAt: '2026-07-25T12:00:00.000Z',
@@ -679,10 +778,12 @@ void test('truncated Pi recall execution stores full metadata and marks collapse
       duplicateOccurrences,
     });
     const truncatedService = {
+      ...SOURCE_SEARCH_MUST_NOT_RUN,
       async search() {
         return {
           results: [result],
           totalChunks: 42_318,
+          documentCounts: { dense: 42_318, invocations: 0 },
           indexMaintenanceStatus: null,
           searchPolicy: createEmptySearch(RecallSearchScope.PROJECT).searchPolicy,
         };
@@ -764,6 +865,7 @@ void test('truncated Pi recall execution stores full metadata and marks collapse
     assert.equal(expandedText, truncatedText);
 
     const untruncatedService = {
+      ...SOURCE_SEARCH_MUST_NOT_RUN,
       async search() {
         return createEmptySearch(RecallSearchScope.GLOBAL);
       },
@@ -786,6 +888,7 @@ void test('truncated Pi recall execution stores full metadata and marks collapse
 
 void test('Pi recall validation and execution errors retain error presentation', async () => {
   const service = {
+    ...SOURCE_SEARCH_MUST_NOT_RUN,
     async search() {
       throw new Error('Recall index unavailable');
     },
@@ -863,6 +966,7 @@ void test('Pi tool details retain line, block, character, and contributing-entry
   const details = createPiRecallToolDetails({
     results: [result],
     totalChunks: 1,
+    documentCounts: { dense: 1, invocations: 0 },
     indexMaintenanceStatus: null,
     searchPolicy: createEmptySearch(RecallSearchScope.GLOBAL).searchPolicy,
   });
@@ -918,5 +1022,7 @@ void test('Pi extension registers only the read-only recall tool and directs mai
   const schemaText = JSON.stringify(registeredParameters);
   assert.match(schemaText, /query/);
   assert.match(schemaText, /scope/);
+  assert.match(schemaText, /source/);
+  assert.match(registeredDescription, /slower scan of original session JSONL/u);
   assert.doesNotMatch(schemaText, /mode|rebuild/);
 });

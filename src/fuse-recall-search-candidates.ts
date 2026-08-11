@@ -12,7 +12,7 @@ export interface RecallDenseCandidate extends SessionConversationChunk {
   cosineDistance: number;
 }
 
-/** One bounded full text search (FTS) candidate; zvec score is higher-is-better. */
+/** One bounded full text search (FTS) candidate with a higher-is-better score. */
 export interface RecallFullTextCandidate extends SessionConversationChunk {
   fullTextScore: number;
 }

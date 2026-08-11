@@ -14,7 +14,7 @@ void test('fixed recall quality corpus resolves every independently declared sou
 
   assert.equal(loaded.specification.corpus.id, 'recall-quality-project-scoped-bounded-v3');
   assert.equal(loaded.sessionFiles.length, 15);
-  assert.equal(loaded.specification.cases.length, 17);
+  assert.equal(loaded.specification.cases.length, 16);
   assert.deepEqual(
     Array.from(new Set(loaded.specification.cases.map(({ category }) => category))).sort(),
     [
@@ -25,7 +25,6 @@ void test('fixed recall quality corpus resolves every independently declared sou
       'project_scope',
       'semantic_paraphrase',
       'summary',
-      'tool_evidence',
     ],
   );
   assert.ok(loaded.sessionFiles.every(({ sha256 }) => sha256.length === 64));

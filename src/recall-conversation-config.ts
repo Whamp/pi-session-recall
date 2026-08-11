@@ -96,19 +96,24 @@ export async function loadRecallConversationConfig(
       `Recall configuration stored dimensions ${embeddingStoredDimensions} exceed native dimensions ${embeddingNativeDimensions}`,
     );
   }
+  if (embeddingStoredDimensions !== DEFAULT_OCTEN_STORED_DIMENSIONS) {
+    throw new Error(
+      `Recall configuration stored dimensions ${embeddingStoredDimensions} do not match the manifest version 8 FP32 vector width ${DEFAULT_OCTEN_STORED_DIMENSIONS}`,
+    );
+  }
 
   return {
     sessionsDirectory:
       environment.PI_RECALL_SESSIONS_DIRECTORY ??
       file.sessionsDirectory ??
       join(homeDirectory, '.pi', 'agent', 'sessions'),
-    databasePath: join(dataDirectory, 'zvec'),
-    statePath: join(dataDirectory, 'index-state.json'),
+    sqliteDatabasePath: join(dataDirectory, 'recall.sqlite'),
     manifestPath: join(dataDirectory, 'index-manifest.json'),
     indexMaintenanceStatusPath: join(dataDirectory, 'index-maintenance-status.json'),
     physicalSessionIgnoreStatePath: join(dataDirectory, 'physical-session-ignore.json'),
     tokenizerCacheDirectory: join(dataDirectory, 'tokenizers'),
     lockPath: join(dataDirectory, 'operation.lock'),
+    databaseGenerationRootPath: join(dataDirectory, 'generations'),
     embeddingBaseUrl:
       environment.PI_RECALL_EMBEDDING_BASE_URL ??
       file.embeddingBaseUrl ??
@@ -129,8 +134,7 @@ export async function loadRecallConversationConfig(
     projectLineages: normalizeRecallProjectLineages(file.projectLineages ?? {}),
     searchCandidateLimits: {
       dense: DEFAULT_RECALL_CHANNEL_CANDIDATE_LIMIT,
-      lexical: DEFAULT_RECALL_CHANNEL_CANDIDATE_LIMIT,
-      identifier: DEFAULT_RECALL_CHANNEL_CANDIDATE_LIMIT,
+      invocation: DEFAULT_RECALL_CHANNEL_CANDIDATE_LIMIT,
     },
     chunkPolicy: { ...DEFAULT_RECALL_CHUNK_POLICY },
   };

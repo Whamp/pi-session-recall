@@ -155,27 +155,6 @@
       "excludedSessionFiles": []
     },
     {
-      "id": "tool-evidence-lease-token",
-      "category": "tool_evidence",
-      "query": "ELOCKED cobalt-7f31 lease-owner.ts",
-      "expectedSources": [
-        {
-          "sessionFile": "identifiers-tools.jsonl",
-          "entryId": "lease-tool-result",
-          "requiredText": ["ELOCKED", "cobalt-7f31", "src/lease-owner.ts"],
-          "expectedEvidenceKind": "tool_result",
-          "expectedBranch": "active",
-          "expectedSessionOrigin": "/evaluation/runtime",
-          "expectedEvidenceRelation": "unrestricted_global_evidence",
-          "requiredContributingEntryIds": ["lease-tool-result"]
-        }
-      ],
-      "requiredContext": ["ELOCKED", "cobalt-7f31"],
-      "minimumPreservedSourceOccurrences": 1,
-      "scope": "global",
-      "excludedSessionFiles": []
-    },
-    {
       "id": "context-europe-rollout-conditions",
       "category": "context_dependent_reply",
       "query": "Under what conditions did we say yes to the rollout in Europe?",
@@ -333,7 +312,7 @@
       "excludedSessionFiles": ["unrelated-similar-project.jsonl"],
       "preLimitChannelProof": {
         "pollutingSessionFiles": ["unrelated-similar-project.jsonl"],
-        "requiredChannels": ["dense", "lexical", "identifier"],
+        "requiredChannels": ["dense"],
         "minimumPollutingCandidatesPerChannel": 8
       },
       "requiredContext": ["cedar-worktree-41", "project evidence"],

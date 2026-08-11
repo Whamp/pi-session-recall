@@ -1,48 +1,22 @@
-import { mkdir, readdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
-
-import { Type } from 'typebox';
-import { Value } from 'typebox/value';
+import { stat } from 'node:fs/promises';
+import { resolve } from 'node:path';
 
 import type { RecallChunkPolicy } from './recall-chunk-policy.js';
 import type { RecallIndexProgressEvent } from './recall-index-progress.js';
 import type { RecallEmbeddingProvider } from './recall-inference-capabilities.js';
-import { SESSION_IMPORT_POLICY_VERSION } from './import-session-jsonl.js';
-import { readNodeErrorCode } from './read-node-error-code.js';
+import { listRecallSessionFiles } from './listRecallSessionFiles.js';
 import type { ResolvedProjectIdentity } from './resolve-project-identity.js';
 import {
-  readSessionConversationChunks,
+  readSessionConversationImport,
   type ConversationTextTokenizer,
   type SessionConversationChunk,
 } from './session-conversation-index.js';
-import type {
-  ConversationChunkStore,
-  IndexedSessionConversationChunk,
-} from './zvec-conversation-store.js';
+import { openSqliteRecallDatabase, type SqliteRecallDatabase } from './sqlite-recall-database.js';
 
-const conversationIndexStateSchema = Type.Object({
-  version: Type.Literal(3),
-  importPolicyVersion: Type.Literal(SESSION_IMPORT_POLICY_VERSION),
-  sessions: Type.Record(
-    Type.String(),
-    Type.Object({
-      size: Type.Number({ minimum: 0 }),
-      mtimeMs: Type.Number({ minimum: 0 }),
-      chunks: Type.Array(Type.Object({ id: Type.String() })),
-    }),
-  ),
-});
-
-interface IndexedSessionState {
-  size: number;
-  mtimeMs: number;
-  chunks: Array<{ id: string }>;
-}
-
-interface ConversationIndexState {
-  version: 3;
-  importPolicyVersion: typeof SESSION_IMPORT_POLICY_VERSION;
-  sessions: Record<string, IndexedSessionState>;
+/** Read-only active-database vectors whose embedding profile the caller already verified. */
+export interface RecallVectorReuseReader {
+  fetchDocuments(ids: string[]): Map<string, SessionConversationChunk>;
+  fetchVectors(ids: string[]): Map<string, number[]>;
 }
 
 /** Counts and source failures from one explicit incremental indexing pass. */
@@ -57,11 +31,17 @@ export interface ConversationIndexSummary {
   failedSessions: Array<{ sessionPath: string; error: string }>;
 }
 
-/** Dependencies required to update the one zvec collection from Pi session JSONL files. */
+/** Dependencies required to update recall storage from Pi session JSONL files. */
 export interface IncrementalSessionIndexerOptions {
   sessionsDirectory: string;
-  statePath: string;
-  store: ConversationChunkStore;
+  /** Explicit physical session files for bounded maintenance without pruning unselected sessions. */
+  selectedPhysicalSessionPaths?: readonly string[];
+  /** Already-open unified database owned by the service for this maintenance pass. */
+  database?: SqliteRecallDatabase;
+  /** Path used only when the indexer itself owns the database handle. */
+  databasePath?: string;
+  /** Read-only active database used only during staged embedding reuse. */
+  vectorReuseReader?: RecallVectorReuseReader;
   embeddingProvider: RecallEmbeddingProvider;
   tokenizer: ConversationTextTokenizer;
   chunkPolicy: RecallChunkPolicy;
@@ -84,58 +64,6 @@ interface MaintenanceWorksetPlan {
   filesToIndex: PlannedPhysicalSessionFile[];
   missingFiles: string[];
   ignoredIndexedFiles: string[];
-}
-
-async function listRecallSessionFiles(directory: string): Promise<string[]> {
-  const files: string[] = [];
-  async function visit(current: string): Promise<void> {
-    let entries;
-    try {
-      entries = await readdir(current, { withFileTypes: true });
-    } catch (error) {
-      if (readNodeErrorCode(error) === 'ENOENT') {
-        return;
-      }
-      throw error;
-    }
-    for (const entry of entries) {
-      const path = join(current, entry.name);
-      if (entry.isDirectory()) {
-        await visit(path);
-      } else if (entry.isFile() && entry.name.endsWith('.jsonl')) {
-        files.push(path);
-      }
-    }
-  }
-  await visit(directory);
-  return files.sort();
-}
-
-async function readConversationIndexState(statePath: string): Promise<ConversationIndexState> {
-  try {
-    const parsed: unknown = JSON.parse(await readFile(statePath, 'utf8'));
-    return Value.Parse(conversationIndexStateSchema, parsed);
-  } catch (error) {
-    if (readNodeErrorCode(error) === 'ENOENT') {
-      return {
-        version: 3,
-        importPolicyVersion: SESSION_IMPORT_POLICY_VERSION,
-        sessions: {},
-      };
-    }
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`Recall index state invalid at ${statePath}: ${message}`, { cause: error });
-  }
-}
-
-async function writeConversationIndexState(
-  statePath: string,
-  state: ConversationIndexState,
-): Promise<void> {
-  await mkdir(dirname(statePath), { recursive: true });
-  const temporaryPath = `${statePath}.${process.pid}.tmp`;
-  await writeFile(temporaryPath, `${JSON.stringify(state)}\n`, 'utf8');
-  await rename(temporaryPath, statePath);
 }
 
 function throwIfIndexingAborted(signal: AbortSignal | undefined): void {
@@ -178,20 +106,16 @@ function emitMaintenanceWorksetProgress(
 }
 
 function removeIndexedSession(
-  state: ConversationIndexState,
+  database: SqliteRecallDatabase,
   sessionPath: string,
-  store: ConversationChunkStore,
   summary: ConversationIndexSummary,
 ): boolean {
-  const previous = state.sessions[sessionPath];
-  if (!previous) {
+  const previous = database.readPhysicalSessionState(sessionPath);
+  if (!previous || !database.deletePhysicalSession(sessionPath)) {
     return false;
   }
-  const staleIds = previous.chunks.map((chunk) => chunk.id);
-  store.deleteChunks(staleIds);
-  summary.deletedChunks += staleIds.length;
+  summary.deletedChunks += previous.documentIds.length;
   summary.removedSessions += 1;
-  delete state.sessions[sessionPath];
   return true;
 }
 
@@ -232,83 +156,86 @@ async function attributeRecallChunksToProjects(
   }));
 }
 
-async function prepareChangedRecallRows(
-  chunks: readonly SessionConversationChunk[],
-  store: ConversationChunkStore,
+async function prepareChangedRecallEmbeddingMap(
+  chunks: readonly (SessionConversationChunk & { isDenseSearchable: true })[],
+  database: SqliteRecallDatabase,
   embeddingProvider: RecallEmbeddingProvider,
+  vectorReuseReader: RecallVectorReuseReader | undefined,
   summary: ConversationIndexSummary,
   onBatchPrepared: () => void,
   signal?: AbortSignal,
-): Promise<IndexedSessionConversationChunk[]> {
-  const changedRows: IndexedSessionConversationChunk[] = [];
+): Promise<Map<string, readonly number[]>> {
+  const embeddingByDocumentId = new Map<string, readonly number[]>();
   for (let start = 0; start < chunks.length; start += 128) {
     throwIfIndexingAborted(signal);
     const batch = chunks.slice(start, start + 128);
     const ids = batch.map((chunk) => chunk.id);
-    const existingChunks = store.fetchConversationChunks(ids);
-    const existingVectors = store.fetchVectors(
-      batch.filter((chunk) => chunk.isDenseSearchable).map((chunk) => chunk.id),
-    );
-    const rowsNeedingWrite = batch.filter((chunk) => {
-      const existing = existingChunks.get(chunk.id);
-      return (
-        !existing ||
-        existing.checksum !== chunk.checksum ||
-        (chunk.isDenseSearchable && !existingVectors.has(chunk.id))
-      );
+    const currentDocuments = database.fetchDenseDocuments(ids);
+    const currentVectors = database.fetchDenseVectors(ids);
+    const chunksMissingCurrentVector = batch.filter((chunk) => {
+      const currentDocument = currentDocuments.get(chunk.id);
+      const currentVector = currentVectors.get(chunk.id);
+      if (currentDocument?.checksum !== chunk.checksum || !currentVector) {
+        return true;
+      }
+      embeddingByDocumentId.set(chunk.id, currentVector);
+      summary.reusedVectors += 1;
+      return false;
     });
-    summary.reusedVectors += batch.filter(
-      (chunk) =>
-        chunk.isDenseSearchable &&
-        existingChunks.get(chunk.id)?.checksum === chunk.checksum &&
-        existingVectors.has(chunk.id),
-    ).length;
-    const denseRows = rowsNeedingWrite.filter((chunk) => chunk.isDenseSearchable);
+
+    const legacyIds = chunksMissingCurrentVector.map((chunk) => chunk.id);
+    const legacyDocuments = vectorReuseReader?.fetchDocuments(legacyIds);
+    const legacyVectors = vectorReuseReader?.fetchVectors(legacyIds);
+    const chunksNeedingEmbedding = chunksMissingCurrentVector.filter((chunk) => {
+      const legacyVector = legacyVectors?.get(chunk.id);
+      if (legacyDocuments?.get(chunk.id)?.checksum !== chunk.checksum || !legacyVector) {
+        return true;
+      }
+      embeddingByDocumentId.set(chunk.id, legacyVector);
+      summary.reusedVectors += 1;
+      return false;
+    });
+
     const embeddings =
-      denseRows.length === 0
+      chunksNeedingEmbedding.length === 0
         ? []
         : await embeddingProvider.embedDocuments(
-            denseRows.map((chunk) => chunk.content),
+            chunksNeedingEmbedding.map((chunk) => chunk.content),
             signal,
           );
-    if (denseRows.length > 0) {
+    if (chunksNeedingEmbedding.length > 0) {
       summary.embeddingRequestCount += 1;
-      summary.newlyEmbeddedChunks += denseRows.length;
+      summary.newlyEmbeddedChunks += chunksNeedingEmbedding.length;
     }
-    let denseIndex = 0;
-    for (const chunk of rowsNeedingWrite) {
-      if (!chunk.isDenseSearchable) {
-        changedRows.push({ ...chunk, isDenseSearchable: false });
-        continue;
-      }
-      const embedding = embeddings[denseIndex];
-      denseIndex += 1;
+    for (const [index, chunk] of chunksNeedingEmbedding.entries()) {
+      const embedding = embeddings[index];
       if (!embedding) {
         throw new Error(`Recall embedding missing for conversation chunk ${chunk.id}`);
       }
-      changedRows.push({ ...chunk, isDenseSearchable: true, embedding });
+      embeddingByDocumentId.set(chunk.id, embedding);
     }
     onBatchPrepared();
   }
-  return changedRows;
+  return embeddingByDocumentId;
 }
 
 async function indexChangedRecallSessionFile(
   options: IncrementalSessionIndexerOptions,
-  state: ConversationIndexState,
+  database: SqliteRecallDatabase,
   plannedFile: PlannedPhysicalSessionFile,
   summary: ConversationIndexSummary,
   resolveSessionProjectIdentity: (sessionOrigin: string) => Promise<ResolvedProjectIdentity | null>,
   onBatchPrepared: () => void,
-): Promise<boolean> {
+): Promise<void> {
   const { sessionPath } = plannedFile;
-  const previous = state.sessions[sessionPath];
+  const previous = database.readPhysicalSessionState(sessionPath);
 
-  let chunks: SessionConversationChunk[];
+  let imported: Awaited<ReturnType<typeof readSessionConversationImport>>;
   try {
-    chunks = await readSessionConversationChunks(sessionPath, {
+    imported = await readSessionConversationImport(sessionPath, {
       tokenizer: options.tokenizer,
       ...options.chunkPolicy,
+      resolveProjectIdentity: resolveSessionProjectIdentity,
     });
   } catch (error) {
     summary.failedSessions.push({
@@ -317,46 +244,51 @@ async function indexChangedRecallSessionFile(
     });
     options.onProgress?.({ kind: 'physical-session-file-failed', sessionPath });
     if (previous) {
-      removeIndexedSession(state, sessionPath, options.store, summary);
-      return true;
+      removeIndexedSession(database, sessionPath, summary);
     }
-    return false;
+    return;
   }
 
   const attributedChunks = await attributeRecallChunksToProjects(
-    chunks,
+    imported.chunks,
     resolveSessionProjectIdentity,
   );
-  const currentIds = new Set(attributedChunks.map((chunk) => chunk.id));
+  const denseChunks = attributedChunks.filter(
+    (chunk): chunk is SessionConversationChunk & { isDenseSearchable: true } =>
+      chunk.isDenseSearchable,
+  );
+  const currentIds = new Set(denseChunks.map((chunk) => chunk.id));
   const removedIds =
-    previous?.chunks.filter((chunk) => !currentIds.has(chunk.id)).map((chunk) => chunk.id) ?? [];
-  const changedRows = await prepareChangedRecallRows(
-    attributedChunks,
-    options.store,
+    previous?.denseDocumentIds.filter((documentId) => !currentIds.has(documentId)) ?? [];
+  const denseEmbeddings = await prepareChangedRecallEmbeddingMap(
+    denseChunks,
+    database,
     options.embeddingProvider,
+    options.vectorReuseReader,
     summary,
     onBatchPrepared,
     options.signal,
   );
 
-  options.store.deleteChunks(removedIds);
-  for (let start = 0; start < changedRows.length; start += 128) {
-    options.store.upsertChunks(changedRows.slice(start, start + 128));
-  }
-  summary.deletedChunks += removedIds.length;
-  state.sessions[sessionPath] = {
+  throwIfIndexingAborted(options.signal);
+  database.replacePhysicalSession({
+    sessionPath,
     size: plannedFile.size,
     mtimeMs: plannedFile.mtimeMs,
-    chunks: attributedChunks.map(({ id }) => ({ id })),
-  };
+    documentIds: denseChunks.map((chunk) => chunk.id),
+    denseDocuments: denseChunks,
+    denseEmbeddings,
+    invocations: imported.invocations,
+  });
+  summary.deletedChunks += removedIds.length;
   summary.indexedSessions += 1;
-  return true;
 }
 
 async function planMaintenanceWorkset(
   sessionFiles: readonly string[],
-  state: ConversationIndexState,
+  database: SqliteRecallDatabase,
   ignoredPhysicalSessionPaths: ReadonlySet<string>,
+  pruneUnselectedSessions: boolean,
 ): Promise<MaintenanceWorksetPlan> {
   const filesToIndex: PlannedPhysicalSessionFile[] = [];
   for (const sessionPath of sessionFiles) {
@@ -364,7 +296,7 @@ async function planMaintenanceWorkset(
       continue;
     }
     const fileStats = await stat(sessionPath);
-    const previous = state.sessions[sessionPath];
+    const previous = database.readPhysicalSessionState(sessionPath);
     if (!previous) {
       filesToIndex.push({
         sessionPath,
@@ -372,7 +304,11 @@ async function planMaintenanceWorkset(
         mtimeMs: fileStats.mtimeMs,
         change: 'new',
       });
-    } else if (previous.size !== fileStats.size || previous.mtimeMs !== fileStats.mtimeMs) {
+    } else if (
+      previous.size !== fileStats.size ||
+      previous.mtimeMs !== fileStats.mtimeMs ||
+      database.requiresInvocationBackfill(sessionPath)
+    ) {
       filesToIndex.push({
         sessionPath,
         size: fileStats.size,
@@ -382,18 +318,24 @@ async function planMaintenanceWorkset(
     }
   }
   const liveSessionPaths = new Set(sessionFiles);
-  const indexedSessionPaths = Object.keys(state.sessions);
+  const indexedSessionPaths = database.listPhysicalSessionPaths();
   return {
     discoveredFiles: sessionFiles.length,
     filesToIndex,
-    missingFiles: indexedSessionPaths
+    missingFiles: pruneUnselectedSessions
+      ? indexedSessionPaths
+          .filter(
+            (sessionPath) =>
+              !ignoredPhysicalSessionPaths.has(sessionPath) && !liveSessionPaths.has(sessionPath),
+          )
+          .sort()
+      : [],
+    ignoredIndexedFiles: indexedSessionPaths
       .filter(
         (sessionPath) =>
-          !ignoredPhysicalSessionPaths.has(sessionPath) && !liveSessionPaths.has(sessionPath),
+          ignoredPhysicalSessionPaths.has(sessionPath) &&
+          (pruneUnselectedSessions || liveSessionPaths.has(sessionPath)),
       )
-      .sort(),
-    ignoredIndexedFiles: indexedSessionPaths
-      .filter((sessionPath) => ignoredPhysicalSessionPaths.has(sessionPath))
       .sort(),
   };
 }
@@ -402,91 +344,93 @@ async function planMaintenanceWorkset(
 export async function indexChangedConversationSessions(
   options: IncrementalSessionIndexerOptions,
 ): Promise<ConversationIndexSummary> {
-  const state = await readConversationIndexState(options.statePath);
-  options.onProgress?.({ kind: 'discovering-physical-session-files' });
-  const sessionsDirectory = resolve(options.sessionsDirectory);
-  const sessionFiles = await listRecallSessionFiles(sessionsDirectory);
-  options.onProgress?.({ kind: 'planning-maintenance-workset' });
-  const workset = await planMaintenanceWorkset(
-    sessionFiles,
-    state,
-    options.ignoredPhysicalSessionPaths,
-  );
-  const summary = createConversationIndexSummary();
-  summary.scannedSessions = workset.discoveredFiles;
-  options.onProgress?.({
-    kind: 'maintenance-workset-planned',
-    discoveredFiles: workset.discoveredFiles,
-    newFiles: workset.filesToIndex.filter((file) => file.change === 'new').length,
-    changedFiles: workset.filesToIndex.filter((file) => file.change === 'changed').length,
-    missingFiles: workset.missingFiles.length,
-    ignoredRemovals: workset.ignoredIndexedFiles.length,
-    rebuild: options.rebuild ?? false,
-  });
+  const { databasePath } = options;
+  if (!options.database && !databasePath) {
+    throw new Error('Recall indexing database path missing');
+  }
+  const database = options.database ?? openSqliteRecallDatabase(databasePath ?? '');
+  const ownsDatabase = options.database === undefined;
+  try {
+    options.onProgress?.({ kind: 'discovering-physical-session-files' });
+    const sessionsDirectory = resolve(options.sessionsDirectory);
+    const selectedPhysicalSessionPaths = options.selectedPhysicalSessionPaths?.map((sessionPath) =>
+      resolve(sessionPath),
+    );
+    const sessionFiles = selectedPhysicalSessionPaths
+      ? [...new Set(selectedPhysicalSessionPaths)].sort()
+      : await listRecallSessionFiles(sessionsDirectory);
+    options.onProgress?.({ kind: 'planning-maintenance-workset' });
+    const workset = await planMaintenanceWorkset(
+      sessionFiles,
+      database,
+      options.ignoredPhysicalSessionPaths,
+      selectedPhysicalSessionPaths === undefined,
+    );
+    const summary = createConversationIndexSummary();
+    summary.scannedSessions = workset.discoveredFiles;
+    options.onProgress?.({
+      kind: 'maintenance-workset-planned',
+      discoveredFiles: workset.discoveredFiles,
+      newFiles: workset.filesToIndex.filter((file) => file.change === 'new').length,
+      changedFiles: workset.filesToIndex.filter((file) => file.change === 'changed').length,
+      missingFiles: workset.missingFiles.length,
+      ignoredRemovals: workset.ignoredIndexedFiles.length,
+      rebuild: options.rebuild ?? false,
+    });
 
-  const indexedPathsToRemove = [...workset.missingFiles, ...workset.ignoredIndexedFiles];
-  const totalWorksetFiles = indexedPathsToRemove.length + workset.filesToIndex.length;
-  let completedWorksetFiles = 0;
-  for (const sessionPath of indexedPathsToRemove) {
-    throwIfIndexingAborted(options.signal);
-    removeIndexedSession(state, sessionPath, options.store, summary);
-    completedWorksetFiles += 1;
-    emitMaintenanceWorksetProgress(
-      options,
-      summary,
-      completedWorksetFiles,
-      totalWorksetFiles,
-      sessionPath,
-    );
-  }
-  if (summary.removedSessions > 0) {
-    await writeConversationIndexState(options.statePath, state);
-  }
-
-  const resolveSessionProjectIdentity = createSessionProjectIdentityResolver(
-    options.resolveProjectIdentity,
-  );
-  let sessionsSinceCheckpoint = 0;
-  if (workset.filesToIndex.length > 0) {
-    options.onProgress?.({ kind: 'indexing-changed-physical-session-files' });
-  }
-  for (const plannedFile of workset.filesToIndex) {
-    throwIfIndexingAborted(options.signal);
-    const stateChanged = await indexChangedRecallSessionFile(
-      options,
-      state,
-      plannedFile,
-      summary,
-      resolveSessionProjectIdentity,
-      () => {
-        emitMaintenanceWorksetProgress(
-          options,
-          summary,
-          completedWorksetFiles,
-          totalWorksetFiles,
-          plannedFile.sessionPath,
-        );
-      },
-    );
-    completedWorksetFiles += 1;
-    emitMaintenanceWorksetProgress(
-      options,
-      summary,
-      completedWorksetFiles,
-      totalWorksetFiles,
-      plannedFile.sessionPath,
-    );
-    if (stateChanged) {
-      sessionsSinceCheckpoint += 1;
+    const indexedPathsToRemove = [...workset.missingFiles, ...workset.ignoredIndexedFiles];
+    const totalWorksetFiles = indexedPathsToRemove.length + workset.filesToIndex.length;
+    let completedWorksetFiles = 0;
+    for (const sessionPath of indexedPathsToRemove) {
+      throwIfIndexingAborted(options.signal);
+      removeIndexedSession(database, sessionPath, summary);
+      completedWorksetFiles += 1;
+      emitMaintenanceWorksetProgress(
+        options,
+        summary,
+        completedWorksetFiles,
+        totalWorksetFiles,
+        sessionPath,
+      );
     }
-    if (sessionsSinceCheckpoint >= 100) {
-      await writeConversationIndexState(options.statePath, state);
-      sessionsSinceCheckpoint = 0;
+
+    const resolveSessionProjectIdentity = createSessionProjectIdentityResolver(
+      options.resolveProjectIdentity,
+    );
+    if (workset.filesToIndex.length > 0) {
+      options.onProgress?.({ kind: 'indexing-changed-physical-session-files' });
+    }
+    for (const plannedFile of workset.filesToIndex) {
+      throwIfIndexingAborted(options.signal);
+      await indexChangedRecallSessionFile(
+        options,
+        database,
+        plannedFile,
+        summary,
+        resolveSessionProjectIdentity,
+        () => {
+          emitMaintenanceWorksetProgress(
+            options,
+            summary,
+            completedWorksetFiles,
+            totalWorksetFiles,
+            plannedFile.sessionPath,
+          );
+        },
+      );
+      completedWorksetFiles += 1;
+      emitMaintenanceWorksetProgress(
+        options,
+        summary,
+        completedWorksetFiles,
+        totalWorksetFiles,
+        plannedFile.sessionPath,
+      );
+    }
+    return summary;
+  } finally {
+    if (ownsDatabase) {
+      database.close();
     }
   }
-
-  if (sessionsSinceCheckpoint > 0) {
-    await writeConversationIndexState(options.statePath, state);
-  }
-  return summary;
 }

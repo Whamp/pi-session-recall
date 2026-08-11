@@ -6,6 +6,10 @@ import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 
 import { assertRecallChunkPolicy, type RecallChunkPolicy } from './recall-chunk-policy.js';
+import {
+  SQLITE_RECALL_DATABASE_MANIFEST_IDENTITY,
+  type SqliteRecallDatabaseManifestIdentity,
+} from './sqlite-recall-database.js';
 import { isUnknownRecord } from './is-unknown-record.js';
 import { SESSION_IMPORT_POLICY_VERSION } from './import-session-jsonl.js';
 import {
@@ -22,16 +26,8 @@ import {
   type RecallProjectLineages,
 } from './resolve-project-identity.js';
 import { SESSION_CONVERSATION_SCHEMA_VERSION } from './session-conversation-index.js';
-import {
-  ZVEC_CONVERSATION_SCHEMA_VERSION,
-  ZVEC_FTS_CONFIGURATION_VERSION,
-  ZVEC_HNSW_EF_CONSTRUCTION,
-  ZVEC_HNSW_EF_SEARCH,
-  ZVEC_HNSW_M,
-} from './zvec-conversation-store.js';
-
-/** Version of the simple single-store index manifest. */
-export const RECALL_INDEX_MANIFEST_VERSION = 6;
+/** Version of the unified SQLite Recall database manifest. */
+export const RECALL_INDEX_MANIFEST_VERSION = 8;
 
 /** Frozen chunk geometry selected by the accepted recall-quality evaluation. */
 export const DEFAULT_RECALL_CHUNK_POLICY: Readonly<RecallChunkPolicy> = Object.freeze({
@@ -57,9 +53,9 @@ export interface RecallTokenizerManifestIdentity {
   assets: Array<{ fileName: string; sha256: string }>;
 }
 
-/** Complete compatibility identity for one explicitly maintained zvec index. */
+/** Complete compatibility identity for one explicitly maintained Recall database. */
 export interface RecallIndexManifest {
-  manifestVersion: 6;
+  manifestVersion: 8;
   importPolicy: { version: number };
   embedding: RecallEmbeddingModelIdentity;
   tokenizer: RecallTokenizerManifestIdentity;
@@ -77,15 +73,7 @@ export interface RecallIndexManifest {
     lineagePolicyVersion: number;
     lineageDigest: string;
   };
-  zvec: {
-    schemaVersion: number;
-    ftsConfigurationVersion: number;
-    vectorQuantization: 'fp32';
-    metric: 'inner-product';
-    hnswM: number;
-    hnswEfConstruction: number;
-    hnswEfSearch: number;
-  };
+  sqliteRecallDatabase: SqliteRecallDatabaseManifestIdentity;
 }
 
 const manifestAssetSchema = Type.Object(
@@ -98,7 +86,7 @@ const manifestAssetSchema = Type.Object(
 
 const recallIndexManifestSchema = Type.Object(
   {
-    manifestVersion: Type.Literal(6),
+    manifestVersion: Type.Literal(8),
     importPolicy: Type.Object(
       { version: Type.Literal(SESSION_IMPORT_POLICY_VERSION) },
       { additionalProperties: false },
@@ -155,15 +143,36 @@ const recallIndexManifestSchema = Type.Object(
       },
       { additionalProperties: false },
     ),
-    zvec: Type.Object(
+    sqliteRecallDatabase: Type.Object(
       {
-        schemaVersion: Type.Integer({ minimum: 1 }),
-        ftsConfigurationVersion: Type.Integer({ minimum: 1 }),
-        vectorQuantization: Type.Literal('fp32'),
-        metric: Type.Literal('inner-product'),
-        hnswM: Type.Integer({ minimum: 1 }),
-        hnswEfConstruction: Type.Integer({ minimum: 1 }),
-        hnswEfSearch: Type.Integer({ minimum: 1 }),
+        schemaVersion: Type.Literal(3),
+        storageLayout: Type.Literal('unified-sqlite-vec'),
+        sqliteVecVersion: Type.Literal('0.1.9'),
+        embedding: Type.Object(
+          {
+            dimensions: Type.Literal(1_024),
+            encoding: Type.Literal('fp32'),
+            distanceMetric: Type.Literal('cosine'),
+          },
+          { additionalProperties: false },
+        ),
+        routing: Type.Object(
+          {
+            table: Type.Literal('bucketed'),
+            bucketCount: Type.Literal(16),
+            bucketFunction: Type.Literal('project-key-modulo-16'),
+            projectExactKey: Type.Literal(true),
+            global: Type.Literal('all-buckets'),
+          },
+          { additionalProperties: false },
+        ),
+        fullTextSearch: Type.Object(
+          {
+            engine: Type.Literal('fts5'),
+            tokenizer: Type.Literal('unicode61'),
+          },
+          { additionalProperties: false },
+        ),
       },
       { additionalProperties: false },
     ),
@@ -226,15 +235,7 @@ export function createRecallIndexManifest(options: {
         options.projectLineages ?? normalizeRecallProjectLineages({}),
       ),
     },
-    zvec: {
-      schemaVersion: ZVEC_CONVERSATION_SCHEMA_VERSION,
-      ftsConfigurationVersion: ZVEC_FTS_CONFIGURATION_VERSION,
-      vectorQuantization: 'fp32',
-      metric: 'inner-product',
-      hnswM: ZVEC_HNSW_M,
-      hnswEfConstruction: ZVEC_HNSW_EF_CONSTRUCTION,
-      hnswEfSearch: ZVEC_HNSW_EF_SEARCH,
-    },
+    sqliteRecallDatabase: structuredClone(SQLITE_RECALL_DATABASE_MANIFEST_IDENTITY),
   };
 }
 
@@ -286,7 +287,7 @@ function collectManifestMismatches(
 
 /** Rejects any stored identity that requires an explicit `psr index --rebuild`. */
 export function assertRecallIndexManifestCompatible(
-  actual: RecallIndexManifest | null,
+  actual: unknown,
   expected: RecallIndexManifest,
   manifestPath: string,
 ): asserts actual is RecallIndexManifest {
@@ -304,7 +305,33 @@ export function assertRecallIndexManifestCompatible(
   }
 }
 
-/** Reads and strictly validates the simple index manifest. */
+/** Validates that a stored manifest uses the current unified SQLite layout. */
+export async function assertCurrentRecallIndexManifestLayout(manifestPath: string): Promise<void> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(await readFile(manifestPath, 'utf8'));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `Recall index manifest invalid at ${manifestPath}: ${message}. Rebuild with psr index --rebuild.`,
+      { cause: error },
+    );
+  }
+  if (!isUnknownRecord(parsed) || typeof parsed.manifestVersion !== 'number') {
+    throw new Error(
+      `Recall index manifest invalid at ${manifestPath}: manifestVersion is missing. Rebuild with psr index --rebuild.`,
+    );
+  }
+  if (parsed.manifestVersion === RECALL_INDEX_MANIFEST_VERSION) {
+    await readRecallIndexManifest(manifestPath);
+    return;
+  }
+  throw new Error(
+    `Recall index manifest version ${parsed.manifestVersion} at ${manifestPath} is incompatible; rebuild with psr index --rebuild.`,
+  );
+}
+
+/** Reads and strictly validates the version 8 index manifest. */
 export async function readRecallIndexManifest(
   manifestPath: string,
 ): Promise<RecallIndexManifest | null> {

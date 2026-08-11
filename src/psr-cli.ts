@@ -24,9 +24,9 @@ import {
 } from './recall-conversation-service.js';
 
 const PSR_USAGE = [
-  'psr usage: psr index [--rebuild] [--compact] [--no-optimize]',
-  '           psr optimize',
-  '           psr auto-index install [--interval <N>m|<N>h] [--optimize-daily]',
+  'psr usage: psr index [--rebuild] [--stage] [--resume] [--reuse-active-vectors] [--compact]',
+  '           psr activate <database-target>',
+  '           psr auto-index install [--interval <N>m|<N>h]',
   '           psr auto-index uninstall',
   '           psr ignore add <session-path>',
   '           psr ignore list',
@@ -67,26 +67,11 @@ interface RecallIndexProgressTiming {
   indexingElapsedMs?: number;
 }
 
-interface AutoIndexInstallArguments {
-  interval: AutoIndexInterval;
-  optimizeDaily: boolean;
-}
-
-function readAutoIndexInstallArguments(
-  argumentsList: readonly string[],
-): AutoIndexInstallArguments {
+function readAutoIndexInterval(argumentsList: readonly string[]): AutoIndexInterval {
   let interval: AutoIndexInterval = { value: 1n, unit: 'h' };
   let intervalSeen = false;
-  let optimizeDaily = false;
   for (let index = 2; index < argumentsList.length; index += 1) {
     const flag = argumentsList[index];
-    if (flag === '--optimize-daily') {
-      if (optimizeDaily) {
-        throw new Error(PSR_USAGE);
-      }
-      optimizeDaily = true;
-      continue;
-    }
     if (flag !== '--interval' || intervalSeen) {
       throw new Error(PSR_USAGE);
     }
@@ -102,7 +87,7 @@ function readAutoIndexInstallArguments(
     intervalSeen = true;
     index += 1;
   }
-  return { interval, optimizeDaily };
+  return interval;
 }
 
 function formatCountedNoun(count: number, singularNoun: string): string {
@@ -140,8 +125,24 @@ function formatRemainingTime(
   return `about ${formatDuration(remainingMs)} remaining`;
 }
 
+function formatRecallDatabaseTransition(result: RecallConversationIndexResult): string | null {
+  switch (result.databaseTransition.kind) {
+    case 'active-updated':
+      return null;
+    case 'candidate-activated':
+      return 'Database: activated.';
+    case 'candidate-staged':
+      return `Database: staged at ${result.databaseTransition.databaseTarget}; active database unchanged.`;
+    case 'candidate-failed':
+      return 'Database: candidate failed; active database unchanged.';
+    default:
+      throw new Error('Recall database transition kind is unsupported');
+  }
+}
+
 function formatCompactRecallIndexSummary(result: RecallConversationIndexResult): string {
   const summary = result.indexSummary;
+  const databaseTransition = formatRecallDatabaseTransition(result);
   const lines = [
     [
       `Indexed ${summary.indexedSessions} of ${summary.scannedSessions} sessions`,
@@ -149,9 +150,10 @@ function formatCompactRecallIndexSummary(result: RecallConversationIndexResult):
       `embedded ${summary.newlyEmbeddedChunks}`,
       `reused ${summary.reusedVectors} vectors`,
       `deleted ${summary.deletedChunks} documents`,
-      `${result.totalChunks} searchable documents`,
+      `${result.documentCounts.dense} dense documents · ${result.documentCounts.invocations} compact Invocations`,
       `${summary.failedSessions.length} failed sessions`,
     ].join(' · '),
+    ...(databaseTransition ? [databaseTransition] : []),
     ...summary.failedSessions.map((failure) => `Failed: ${failure.sessionPath}: ${failure.error}`),
   ];
   return `${lines.join('\n')}\n`;
@@ -162,13 +164,16 @@ function formatReadableRecallIndexSummary(
   elapsedMs: number,
 ): string {
   const summary = result.indexSummary;
+  const databaseTransition = formatRecallDatabaseTransition(result);
   const lines = [
     'Summary',
     `  Elapsed: ${formatDuration(elapsedMs)}`,
     `  Sessions: ${ENGLISH_INTEGER_FORMAT.format(summary.indexedSessions)} indexed of ${ENGLISH_INTEGER_FORMAT.format(summary.scannedSessions)} scanned; ${ENGLISH_INTEGER_FORMAT.format(summary.removedSessions)} removed`,
     `  Documents: ${ENGLISH_INTEGER_FORMAT.format(summary.newlyEmbeddedChunks)} embedded; ${ENGLISH_INTEGER_FORMAT.format(summary.reusedVectors)} vectors reused; ${ENGLISH_INTEGER_FORMAT.format(summary.deletedChunks)} deleted`,
-    `  Searchable documents: ${ENGLISH_INTEGER_FORMAT.format(result.totalChunks)}`,
+    `  Dense documents: ${ENGLISH_INTEGER_FORMAT.format(result.documentCounts.dense)}`,
+    `  Compact Invocations: ${ENGLISH_INTEGER_FORMAT.format(result.documentCounts.invocations)}`,
     `  Failed sessions: ${ENGLISH_INTEGER_FORMAT.format(summary.failedSessions.length)}`,
+    ...(databaseTransition ? [`  ${databaseTransition}`] : []),
   ];
   if (summary.failedSessions.length > 0) {
     lines.push('', 'Failures');
@@ -192,6 +197,18 @@ function formatRecallIndexProgress(
       return 'Discovering physical session files...';
     case 'planning-maintenance-workset':
       return 'Planning maintenance workset...';
+    case 'preparing-rebuild-candidate':
+      return event.staleCandidatesRemoved === 0
+        ? 'Building candidate recall database beside the active database...'
+        : `Building candidate recall database beside the active database; ${formatCountedNoun(event.staleCandidatesRemoved, 'stale candidate database')} removed...`;
+    case 'resuming-rebuild-candidate':
+      return 'Resuming the interrupted candidate recall database...';
+    case 'rebuild-candidate-failed':
+      return 'Candidate recall database failed; active database remains unchanged.';
+    case 'rebuild-candidate-staged':
+      return `Candidate recall database staged at ${event.databaseTarget}; active database remains unchanged.`;
+    case 'rebuild-candidate-activated':
+      return 'Candidate recall database activated.';
     case 'maintenance-workset-planned': {
       const plannedFiles =
         event.newFiles + event.changedFiles + event.missingFiles + event.ignoredRemovals;
@@ -225,6 +242,8 @@ function formatRecallIndexProgress(
       return '\nOptimizing searchable collection...';
     case 'completed':
       return `\nCompleted in ${formatDuration(timing.elapsedMs)}.`;
+    default:
+      throw new Error('Recall index progress event kind is unsupported');
   }
 }
 
@@ -292,53 +311,64 @@ export async function runPsrCli(
     if (argumentsList[1] !== 'install') {
       throw new Error(PSR_USAGE);
     }
-    const { interval, optimizeDaily } = readAutoIndexInstallArguments(argumentsList);
-    const installation = await installAutoIndexSchedule(interval, dependencies.schedulerSystem, {
-      optimizeDaily,
-    });
+    const interval = readAutoIndexInterval(argumentsList);
+    const installation = await installAutoIndexSchedule(interval, dependencies.schedulerSystem);
     if (installation.immediateRunWarning !== undefined) {
       dependencies.writeProgress(
         `Warning: Automatic recall indexing was installed, but ${installation.immediateRunWarning}.\n`,
       );
     }
     dependencies.writeOutput(
-      optimizeDaily
-        ? `Automatic recall indexing installed every ${interval.value}${interval.unit}; optimization scheduled daily at 23:00.\n`
-        : `Automatic recall indexing installed every ${interval.value}${interval.unit}; optimization remains manual.\n`,
+      `Automatic recall indexing installed every ${interval.value}${interval.unit}.\n`,
     );
     return 0;
   }
 
-  if (argumentsList[0] === 'optimize') {
-    if (argumentsList.length !== 1) {
+  if (argumentsList[0] === 'activate') {
+    const databaseTarget = argumentsList[1];
+    if (!databaseTarget || argumentsList.length !== 2) {
       throw new Error(PSR_USAGE);
     }
     const config = await dependencies.loadConfig();
-    const result = await dependencies.createService(config).optimize({
+    await dependencies.createService(config).activate(databaseTarget, {
       onProgress(event) {
         if (event.kind === 'waiting-for-write-lock') {
           dependencies.writeProgress('Waiting for another recall index operation...\n');
-        } else if (event.kind === 'optimizing-collection') {
-          dependencies.writeProgress('Optimizing searchable collection...\n');
         }
       },
     });
-    dependencies.writeOutput(
-      `Optimized ${ENGLISH_INTEGER_FORMAT.format(result.totalChunks)} searchable documents.\n`,
-    );
+    dependencies.writeOutput('Staged recall database activated.\n');
     return 0;
   }
 
   const flags = argumentsList.slice(1);
   const distinctFlags = new Set(flags);
   const validFlags = flags.every(
-    (flag) => flag === '--rebuild' || flag === '--compact' || flag === '--no-optimize',
+    (flag) =>
+      flag === '--rebuild' ||
+      flag === '--stage' ||
+      flag === '--resume' ||
+      flag === '--reuse-active-vectors' ||
+      flag === '--compact' ||
+      flag === '--no-optimize',
   );
   if (argumentsList[0] !== 'index' || !validFlags || distinctFlags.size !== flags.length) {
     throw new Error(PSR_USAGE);
   }
   const rebuild = distinctFlags.has('--rebuild');
+  const stage = distinctFlags.has('--stage');
+  const resume = distinctFlags.has('--resume');
+  const reuseActiveVectors = distinctFlags.has('--reuse-active-vectors');
   const compact = distinctFlags.has('--compact');
+  if (resume && (!rebuild || !stage)) {
+    throw new Error('psr index --resume requires --rebuild --stage');
+  }
+  if (reuseActiveVectors && (!rebuild || !stage)) {
+    throw new Error('psr index --reuse-active-vectors requires --rebuild --stage');
+  }
+  if (stage && !rebuild) {
+    throw new Error('psr index --stage requires --rebuild');
+  }
 
   let commandStartedAtMs: number | undefined;
   let indexingStartedAtMs: number | undefined;
@@ -378,6 +408,9 @@ export async function runPsrCli(
   const config = await dependencies.loadConfig();
   const result = await dependencies.createService(config).index({
     rebuild,
+    ...(stage ? { deferActivation: true } : {}),
+    ...(resume ? { resumeCandidate: true } : {}),
+    ...(reuseActiveVectors ? { reuseActiveVectors: true } : {}),
     optimize: false,
     onProgress: reportProgress,
   });

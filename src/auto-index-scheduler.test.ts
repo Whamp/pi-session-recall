@@ -134,37 +134,6 @@ void test('installs a default hourly systemd user timer with direct absolute inv
   ]);
 });
 
-void test('systemd adds daily optimization at 23:00 only when explicitly enabled', async () => {
-  const fixture = createAutoIndexSchedulerFixture();
-
-  await installAutoIndexSchedule({ value: 1n, unit: 'h' }, fixture.system, { optimizeDaily: true });
-
-  const userUnitDirectory = '/home/recall-user/.config-test/systemd/user';
-  assert.match(
-    fixture.files.get(`${userUnitDirectory}/pi-session-recall-index.service`) ?? '',
-    /bin\/psr" index$/mu,
-  );
-  assert.equal(
-    fixture.files.get(`${userUnitDirectory}/pi-session-recall-optimize.timer`),
-    [
-      '[Unit]',
-      'Description=Schedule daily pi-session-recall optimization',
-      '',
-      '[Timer]',
-      'OnCalendar=*-*-* 23:00:00',
-      'Persistent=true',
-      '',
-      '[Install]',
-      'WantedBy=timers.target',
-      '',
-    ].join('\n'),
-  );
-  assert.match(
-    fixture.files.get(`${userUnitDirectory}/pi-session-recall-optimize.service`) ?? '',
-    /bin\/psr" optimize/u,
-  );
-});
-
 void test('uses the home systemd config directory when XDG_CONFIG_HOME is empty', async () => {
   const fixture = createAutoIndexSchedulerFixture({ xdgConfigHome: '' });
 
@@ -269,9 +238,9 @@ void test('installs a per-user macOS LaunchAgent with escaped paths and mode 060
   const optimizePlistPath =
     '/Users/recall-user/Library/LaunchAgents/dev.pi-session-recall.auto-optimize.plist';
 
-  await installAutoIndexSchedule({ value: 15n, unit: 'm' }, fixture.system, {
-    optimizeDaily: true,
-  });
+  fixture.files.set(optimizePlistPath, 'legacy optimization job');
+
+  await installAutoIndexSchedule({ value: 15n, unit: 'm' }, fixture.system);
 
   const plist = fixture.files.get(plistPath) ?? '';
   assert.match(plist, /<string>\/Applications\/Node &amp; Tools\/bin\/node<\/string>/u);
@@ -282,26 +251,17 @@ void test('installs a per-user macOS LaunchAgent with escaped paths and mode 060
   assert.match(plist, /pi-session-recall-auto-index\.out\.log/u);
   assert.match(plist, /pi-session-recall-auto-index\.err\.log/u);
   assert.doesNotMatch(plist, /KeepAlive|LaunchOnlyOnce|Persistent|Restart/iu);
-  const optimizePlist = fixture.files.get(optimizePlistPath) ?? '';
-  assert.match(optimizePlist, /<string>optimize<\/string>/u);
-  assert.match(
-    optimizePlist,
-    /<key>Hour<\/key>\n    <integer>23<\/integer>\n    <key>Minute<\/key>\n    <integer>0<\/integer>/u,
-  );
-  assert.doesNotMatch(optimizePlist, /RunAtLoad/u);
+  assert.equal(fixture.files.has(optimizePlistPath), false);
   assert.equal(fixture.fileModes.get(plistPath), 0o600);
-  assert.equal(fixture.fileModes.get(optimizePlistPath), 0o600);
   assert.deepEqual(fixture.actions, [
     `launchctl unload ${plistPath}`,
     `launchctl unload ${optimizePlistPath}`,
+    `remove ${optimizePlistPath}`,
     'mkdir /Users/recall-user/Library/LaunchAgents',
     'mkdir /Users/recall-user/.pi/agent/logs',
     `write ${plistPath}`,
-    `write ${optimizePlistPath}`,
     `chmod 600 ${plistPath}`,
-    `chmod 600 ${optimizePlistPath}`,
     `launchctl load ${plistPath}`,
-    `launchctl load ${optimizePlistPath}`,
   ]);
 });
 

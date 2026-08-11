@@ -1,8 +1,10 @@
 ---
-status: accepted
+status: superseded
 ---
 
 # Store normalized Octen prefixes with inner product
+
+> ADR-0014 retains normalized FP32 Octen prefixes but supersedes the Zvec inner-product storage and search decision with sqlite-vec cosine search.
 
 Conversation Recall uses one configured Octen HTTP model. It retains the first configured dimensions of each native vector, L2-normalizes that prefix, stores it once as FP32, and searches zvec with inner product. The default profile stores 1,024 of Octen's 2,560 native dimensions.
 

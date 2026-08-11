@@ -13,7 +13,7 @@ const localEmbeddingResponseSchema = Type.Object({
   ),
 });
 
-/** OpenAI-compatible endpoint settings, including the exact vector width required by zvec. */
+/** OpenAI-compatible endpoint settings, including the exact stored vector width. */
 export interface LocalEmbeddingClientConfig {
   baseUrl: string;
   model: string;

@@ -1,0 +1,1136 @@
+import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import {
+  cpSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  opendirSync,
+  readFileSync,
+  readlinkSync,
+  rmSync,
+  statfsSync,
+  statSync,
+} from 'node:fs';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { performance } from 'node:perf_hooks';
+
+import { RecallSearchScope } from './enums.js';
+import { isUnknownRecord } from './is-unknown-record.js';
+import {
+  indexChangedConversationSessions,
+  type ConversationIndexSummary,
+} from './incremental-session-indexer.js';
+import { loadOctenConversationTokenizer } from './octen-conversation-tokenizer.js';
+import { createOctenHttpEmbeddingProvider } from './octen-http-embedding-provider.js';
+import { listIgnoredPhysicalSessionPaths } from './physical-session-ignore.js';
+import { loadRecallConversationConfig } from './recall-conversation-config.js';
+import { createRecallConversationService } from './recall-conversation-service.js';
+import { readRecallIndexManifest } from './recall-index-manifest.js';
+import type { RecallIndexProgressEvent } from './recall-index-progress.js';
+import { readNodeErrorCode } from './read-node-error-code.js';
+import {
+  createLineageResolver,
+  parseProjectIdentity,
+  resolveProjectIdentity,
+} from './resolve-project-identity.js';
+import {
+  openSqliteRecallDatabase,
+  SQLITE_RECALL_VEC_PACKAGE_VERSION,
+  type SqliteRecallDatabase,
+  type SqliteRecallDatabaseCounts,
+  type SqliteRecallIntegrityDiagnostics,
+} from './sqlite-recall-database.js';
+const GIBIBYTE = 1_024 ** 3;
+const MEBIBYTE = 1_024 ** 2;
+/** Maximum allocated bytes accepted for one complete production Recall database. */
+export const MAXIMUM_CERTIFIED_STORAGE_BYTES = 5 * GIBIBYTE;
+/** Maximum allocation permitted for one disposable certification clone. */
+export const MAXIMUM_SCRATCH_ALLOCATION_BYTES = 6 * GIBIBYTE;
+/** Minimum free bytes required before creating a disposable certification clone. */
+export const MINIMUM_SCRATCH_FREE_BYTES = 240 * GIBIBYTE;
+/** Maximum accepted warm project-scoped dense-search p95 in milliseconds. */
+export const MAXIMUM_PROJECT_P95_MILLISECONDS = 100;
+/** Maximum accepted warm global dense-search p95 in milliseconds. */
+export const MAXIMUM_GLOBAL_P95_MILLISECONDS = 700;
+/** Maximum accepted warm Invocation-search p95 in milliseconds. */
+export const MAXIMUM_INVOCATION_P95_MILLISECONDS = 5;
+/** Maximum device bytes written by one representative changed-session replacement. */
+export const MAXIMUM_AVERAGE_DEVICE_WRITES_BYTES = 10 * MEBIBYTE;
+const BENCHMARK_REPETITIONS = 6;
+
+/** One visible certification stage with an optional fixed-work counter. */
+export interface UnifiedSqliteCertificationProgress {
+  stage: string;
+  completed?: number;
+  total?: number;
+}
+
+/** Formats one certification progress event for stderr or tests. */
+export function formatUnifiedSqliteCertificationProgress(
+  event: UnifiedSqliteCertificationProgress,
+): string {
+  const stage = event.stage.replaceAll('-', ' ');
+  const counter =
+    event.completed === undefined || event.total === undefined
+      ? ''
+      : ` (${event.completed}/${event.total})`;
+  return `Certification: ${stage}${counter}`;
+}
+const REPORT_JSON_PATH = resolve(
+  'docs/research/unified-sqlite-production-recall-certification.json',
+);
+const REPORT_MARKDOWN_PATH = resolve(
+  'docs/research/unified-sqlite-production-recall-certification.md',
+);
+const USAGE =
+  'Unified SQLite recall certification usage: --data-root <exact-path> --candidate-target generations/generation-... --project-identity <identity> [--scratch-root <exact-path> --representative-session <indexed-path> --block-device <name>] [--output docs/research/unified-sqlite-production-recall-certification.json]';
+
+/** Fixed production-derived questions used for dense latency and overlap certification. */
+export const DENSE_CERTIFICATION_QUERIES = [
+  'Why have recent pi-session-recall optimization attempts failed?',
+  'How is automatic recall indexing scheduled?',
+  'Which corrupted February session files are ignored?',
+  'How large is the recall database?',
+  'Why would an agent use pi-session-recall instead of searching raw JSONL?',
+] as const;
+
+/** Fixed locator classes that every production Invocation FTS projection must retrieve. */
+export const INVOCATION_CERTIFICATION_PROBES = [
+  { kind: 'tool-name', query: 'brain_query', expectedToolName: 'brain_query' },
+  { kind: 'path', query: '/home/will/.pi/agent/TAILNET.md' },
+  { kind: 'url', query: 'http://192.168.0.67:8090/v1' },
+  { kind: 'command', query: 'psr optimize' },
+  { kind: 'issue-number', query: 'gh issue view 165' },
+  { kind: 'flag', query: '--optimize-daily' },
+] as const;
+
+/** Fixed raw-payload evidence that explicit Source search must locate with provenance. */
+export const SOURCE_CERTIFICATION_PROBES = [
+  { kind: 'result-only-error', query: 'FtsRocksdbReducer', requiredRole: 'toolResult' },
+  { kind: 'hardware-identifier', query: 'CT1000P3PSSD8', requiredRole: 'toolResult' },
+  { kind: 'filename', query: '2026-02-02T18-31-25' },
+  {
+    kind: 'command-output',
+    query: 'pi - AI coding assistant with read, bash, edit, write tools',
+    requiredRole: 'bashExecution',
+  },
+] as const;
+
+/** Exact operator inputs for read-only candidate checks and optional clone-only mutation checks. */
+export interface UnifiedSqliteCertificationArguments {
+  dataRoot: string;
+  candidateTarget: string;
+  projectIdentity: string;
+  scratchRoot: string | null;
+  representativeSessionPath: string | null;
+  blockDevice: string | null;
+  outputPath: string | null;
+}
+
+/** Gate inputs kept separate so ordinary tests can prove the production thresholds. */
+export interface UnifiedSqliteCertificationGateInputs {
+  storageBytes: number;
+  projectP95Milliseconds: number;
+  globalP95Milliseconds: number;
+  invocationP95Milliseconds: number;
+  denseProbePasses: readonly boolean[];
+  invocationProbePasses: readonly boolean[];
+  sourceProbePasses: readonly boolean[];
+  integrityHealthy: boolean;
+  linuxX64LoadPassed: boolean;
+  candidateInactive: boolean;
+  clonePassed: boolean | null;
+}
+
+/** Evaluates every pre-activation threshold without reading production state. */
+export function evaluateUnifiedSqliteCertificationGates(
+  inputs: UnifiedSqliteCertificationGateInputs,
+): Record<string, boolean | null> {
+  return {
+    storage: inputs.storageBytes <= MAXIMUM_CERTIFIED_STORAGE_BYTES,
+    projectLatency: inputs.projectP95Milliseconds < MAXIMUM_PROJECT_P95_MILLISECONDS,
+    globalLatency: inputs.globalP95Milliseconds < MAXIMUM_GLOBAL_P95_MILLISECONDS,
+    invocationLatency: inputs.invocationP95Milliseconds < MAXIMUM_INVOCATION_P95_MILLISECONDS,
+    invocationProbes:
+      inputs.invocationProbePasses.length === INVOCATION_CERTIFICATION_PROBES.length &&
+      inputs.invocationProbePasses.every(Boolean),
+    denseProbes:
+      inputs.denseProbePasses.length === DENSE_CERTIFICATION_QUERIES.length &&
+      inputs.denseProbePasses.every(Boolean),
+    sourceProvenance:
+      inputs.sourceProbePasses.length === SOURCE_CERTIFICATION_PROBES.length &&
+      inputs.sourceProbePasses.every(Boolean),
+    integrity: inputs.integrityHealthy,
+    linuxX64Load: inputs.linuxX64LoadPassed,
+    candidateInactive: inputs.candidateInactive,
+    clone: inputs.clonePassed,
+  };
+}
+
+/** Parses exact paths before any production or candidate state is opened. */
+export function readUnifiedSqliteCertificationArguments(
+  argumentsList: readonly string[],
+): UnifiedSqliteCertificationArguments {
+  const values = new Map<string, string>();
+  for (let index = 0; index < argumentsList.length; index += 2) {
+    const flag = argumentsList[index];
+    const value = argumentsList[index + 1];
+    if (!flag || !value || !flag.startsWith('--') || values.has(flag)) {
+      throw new Error(USAGE);
+    }
+    values.set(flag, value);
+  }
+  const allowed = new Set([
+    '--data-root',
+    '--candidate-target',
+    '--project-identity',
+    '--scratch-root',
+    '--representative-session',
+    '--block-device',
+    '--output',
+  ]);
+  if ([...values.keys()].some((flag) => !allowed.has(flag))) {
+    throw new Error(USAGE);
+  }
+  const required = ['--data-root', '--candidate-target', '--project-identity'];
+  if (required.some((flag) => !values.get(flag))) {
+    throw new Error(USAGE);
+  }
+  const scratchFlags = ['--scratch-root', '--representative-session', '--block-device'];
+  const suppliedScratchFlags = scratchFlags.filter((flag) => values.has(flag));
+  if (suppliedScratchFlags.length !== 0 && suppliedScratchFlags.length !== scratchFlags.length) {
+    throw new Error(
+      'Unified SQLite recall clone certification requires --scratch-root, --representative-session, and --block-device together',
+    );
+  }
+  for (const pathFlag of ['--data-root', '--scratch-root', '--representative-session']) {
+    const pathValue = values.get(pathFlag);
+    if (pathValue && !isAbsolute(pathValue)) {
+      throw new Error(
+        `Unified SQLite recall certification requires an absolute path for ${pathFlag}`,
+      );
+    }
+  }
+  const blockDevice = values.get('--block-device') ?? null;
+  if (blockDevice && !/^[A-Za-z0-9._-]+$/u.test(blockDevice)) {
+    throw new Error(
+      `Unified SQLite recall certification block device name is invalid: ${blockDevice}`,
+    );
+  }
+  const outputPath = values.get('--output') ? resolve(values.get('--output') ?? '') : null;
+  if (outputPath && outputPath !== REPORT_JSON_PATH) {
+    throw new Error(
+      'Unified SQLite recall certification output must be docs/research/unified-sqlite-production-recall-certification.json',
+    );
+  }
+  return {
+    dataRoot: resolve(values.get('--data-root') ?? ''),
+    candidateTarget: values.get('--candidate-target') ?? '',
+    projectIdentity: values.get('--project-identity') ?? '',
+    scratchRoot: values.get('--scratch-root') ? resolve(values.get('--scratch-root') ?? '') : null,
+    representativeSessionPath: values.get('--representative-session')
+      ? resolve(values.get('--representative-session') ?? '')
+      : null,
+    blockDevice,
+    outputPath,
+  };
+}
+
+/** Resolves only one exact generation target and rejects aliases, traversal, and active storage. */
+export function resolveCertifiedCandidateDirectory(
+  dataRoot: string,
+  candidateTarget: string,
+): string {
+  const normalizedTarget = candidateTarget.replaceAll('\\', '/');
+  if (
+    normalizedTarget !== candidateTarget ||
+    !/^generations\/generation-[A-Za-z0-9][A-Za-z0-9-]*$/u.test(candidateTarget)
+  ) {
+    throw new Error(
+      `Unified SQLite recall candidate target is not an exact staged generation: ${candidateTarget}`,
+    );
+  }
+  const candidateDirectory = resolve(dataRoot, candidateTarget);
+  if (relative(dataRoot, candidateDirectory) !== candidateTarget) {
+    throw new Error(
+      `Unified SQLite recall candidate target escapes the data root: ${candidateTarget}`,
+    );
+  }
+  return candidateDirectory;
+}
+
+/** Rejects scratch roots that could overlap the candidate, active data root, or filesystem root. */
+export function assertCertificationScratchRoot(
+  scratchRoot: string,
+  dataRoot: string,
+  candidateDirectory: string,
+): void {
+  const scratch = resolve(scratchRoot);
+  const data = resolve(dataRoot);
+  const candidate = resolve(candidateDirectory);
+  const contains = (parent: string, child: string): boolean => {
+    const path = relative(parent, child);
+    return path === '' || (!path.startsWith(`..${sep}`) && path !== '..');
+  };
+  if (
+    scratch === resolve('/') ||
+    contains(scratch, data) ||
+    contains(data, scratch) ||
+    contains(scratch, candidate) ||
+    contains(candidate, scratch)
+  ) {
+    throw new Error(
+      `Unified SQLite recall scratch root must be disposable and disjoint: ${scratch}`,
+    );
+  }
+}
+
+function readAllocatedBytes(path: string): number {
+  if (!existsSync(path)) {
+    return 0;
+  }
+  const stats = statSync(path);
+  if (stats.isFile()) {
+    return stats.blocks * 512;
+  }
+  let bytes = 0;
+  const directory = opendirSync(path);
+  try {
+    for (;;) {
+      const entry = directory.readSync();
+      if (!entry) {
+        break;
+      }
+      bytes += readAllocatedBytes(join(path, entry.name));
+    }
+  } finally {
+    directory.closeSync();
+  }
+  return bytes;
+}
+
+function readDatabaseAllocatedBytes(databasePath: string): number {
+  return ['', '-wal', '-shm'].reduce(
+    (bytes, suffix) => bytes + readAllocatedBytes(`${databasePath}${suffix}`),
+    0,
+  );
+}
+
+function readPercentile(values: readonly number[], percentile: number): number {
+  if (values.length === 0) {
+    throw new Error('Unified SQLite recall latency sample is empty');
+  }
+  const sorted = [...values].sort((left, right) => left - right);
+  return sorted[Math.max(0, Math.ceil(percentile * sorted.length) - 1)] ?? 0;
+}
+
+interface ActivePointerSnapshot {
+  exists: boolean;
+  target: string | null;
+  bytesSha256: string | null;
+}
+
+/** Captures active pointer bytes and target without following it. */
+export function snapshotUnifiedSqliteActivePointer(dataRoot: string): ActivePointerSnapshot {
+  const pointerPath = join(dataRoot, 'active');
+  let stats: ReturnType<typeof lstatSync>;
+  try {
+    stats = lstatSync(pointerPath);
+  } catch (error) {
+    if (readNodeErrorCode(error) === 'ENOENT') {
+      return { exists: false, target: null, bytesSha256: null };
+    }
+    throw error;
+  }
+  const target = stats.isSymbolicLink() ? readlinkSync(pointerPath) : null;
+  const bytes = Buffer.from(target ?? readFileSync(pointerPath));
+  return {
+    exists: true,
+    target,
+    bytesSha256: createHash('sha256').update(bytes).digest('hex'),
+  };
+}
+
+function readSourceRole(sessionPath: string, sourceLine: number): string | null {
+  const line = readFileSync(sessionPath, 'utf8').split('\n')[sourceLine - 1];
+  if (!line) {
+    return null;
+  }
+  const value: unknown = JSON.parse(line);
+  if (!isUnknownRecord(value)) {
+    return null;
+  }
+  if (value.type === 'message' && isUnknownRecord(value.message)) {
+    return typeof value.message.role === 'string' ? value.message.role : null;
+  }
+  return typeof value.type === 'string' ? value.type : null;
+}
+
+function readBlockDeviceWrittenBytes(blockDevice: string): number | null {
+  if (process.platform !== 'linux') {
+    return null;
+  }
+  const path = `/sys/class/block/${blockDevice}/stat`;
+  if (!existsSync(path)) {
+    return null;
+  }
+  const fields = readFileSync(path, 'utf8').trim().split(/\s+/u);
+  const sectors = Number(fields[6]);
+  return Number.isFinite(sectors) ? sectors * 512 : null;
+}
+
+function flushCertificationFilesystemWrites(): void {
+  const result = spawnSync('sync', [], { encoding: 'utf8' });
+  if (result.status !== 0) {
+    throw new Error(
+      `Unified SQLite recall filesystem write flush failed: ${result.stderr.trim() || result.error?.message || 'unknown error'}`,
+    );
+  }
+}
+
+function runCloneChild(
+  databasePath: string,
+  sessionPath: string,
+  mode: 'reader' | 'sigkill',
+): { status: number | null; signal: NodeJS.Signals | null; stdout: string } {
+  const child = spawnSync(
+    process.execPath,
+    ['--import', 'tsx', import.meta.filename, '--clone-child', mode, databasePath, sessionPath],
+    { encoding: 'utf8' },
+  );
+  return { status: child.status, signal: child.signal, stdout: child.stdout };
+}
+
+function runCloneChildMode(argumentsList: readonly string[]): boolean {
+  if (argumentsList[0] !== '--clone-child') {
+    return false;
+  }
+  const mode = argumentsList[1];
+  const databasePath = argumentsList[2];
+  const sessionPath = argumentsList[3];
+  if (!databasePath || !sessionPath || (mode !== 'reader' && mode !== 'sigkill')) {
+    throw new Error(USAGE);
+  }
+  if (mode === 'reader') {
+    const reader = openSqliteRecallDatabase(databasePath, { readOnly: true });
+    try {
+      process.stdout.write(JSON.stringify(reader.readPhysicalSessionState(sessionPath)));
+    } finally {
+      reader.close();
+    }
+    return true;
+  }
+  const writer = openSqliteRecallDatabase(databasePath);
+  const replacement = writer.readPhysicalSessionReplacement(sessionPath);
+  if (!replacement) {
+    throw new Error(`Unified SQLite recall representative session is not indexed: ${sessionPath}`);
+  }
+  writer.replacePhysicalSession(replacement, {
+    beforeCommit() {
+      process.kill(process.pid, 'SIGKILL');
+    },
+  });
+  throw new Error('Unified SQLite recall forced-termination child survived SIGKILL');
+}
+
+function snapshotPhysicalSessionProjection(
+  replacement: ReturnType<SqliteRecallDatabase['readPhysicalSessionReplacement']>,
+): string {
+  if (!replacement) {
+    return 'null';
+  }
+  return JSON.stringify({
+    ...replacement,
+    denseEmbeddings: [...replacement.denseEmbeddings.entries()].sort(([left], [right]) =>
+      left.localeCompare(right),
+    ),
+  });
+}
+
+/** Runs every mutation probe against a disposable candidate clone and removes it afterward. */
+export async function certifyDisposableUnifiedSqliteClone(options: {
+  candidateDirectory: string;
+  candidateDatabasePath: string;
+  scratchRoot: string;
+  dataRoot: string;
+  representativeSessionPath: string;
+  blockDevice: string;
+  runChangedSessionIndex?: (
+    database: SqliteRecallDatabase,
+    onProgress: (event: RecallIndexProgressEvent) => void,
+  ) => Promise<ConversationIndexSummary>;
+  /** Test seam; production callers must use the 240 GiB default. */
+  minimumFreeBytes?: number;
+  /** Test seam; production callers must read the named block device. */
+  readDeviceWrittenBytes?: () => number | null;
+  /** Test seam; production callers flush pending filesystem writes around device counters. */
+  flushFilesystemWrites?: () => void;
+  onProgress?: (event: UnifiedSqliteCertificationProgress) => void;
+}): Promise<Record<string, unknown>> {
+  if (typeof options.runChangedSessionIndex !== 'function') {
+    throw new Error('Unified SQLite recall real changed-session index callback is required');
+  }
+  assertCertificationScratchRoot(options.scratchRoot, options.dataRoot, options.candidateDirectory);
+  mkdirSync(options.scratchRoot, { recursive: true });
+  const scratchStats = statfsSync(options.scratchRoot);
+  const freeBytes = scratchStats.bavail * scratchStats.bsize;
+  if (freeBytes < (options.minimumFreeBytes ?? MINIMUM_SCRATCH_FREE_BYTES)) {
+    throw new Error('Unified SQLite recall scratch free space is below the 240 GiB floor');
+  }
+  const candidateBytes = readAllocatedBytes(options.candidateDirectory);
+  if (candidateBytes > MAXIMUM_SCRATCH_ALLOCATION_BYTES) {
+    throw new Error('Unified SQLite recall candidate exceeds the 6 GiB scratch allocation ceiling');
+  }
+  const cloneDirectory = join(options.scratchRoot, `certification-clone-${process.pid}`);
+  let concurrentReaderState: unknown = null;
+  options.onProgress?.({ stage: 'clone-copy' });
+  let stateBeforeRollback: unknown = null;
+  rmSync(cloneDirectory, { recursive: true, force: true });
+  try {
+    cpSync(options.candidateDirectory, cloneDirectory, { recursive: true, errorOnExist: true });
+    if (readAllocatedBytes(cloneDirectory) > MAXIMUM_SCRATCH_ALLOCATION_BYTES) {
+      throw new Error('Unified SQLite recall clone exceeded the 6 GiB scratch allocation ceiling');
+    }
+    const databasePath = join(cloneDirectory, basename(options.candidateDatabasePath));
+    const database = openSqliteRecallDatabase(databasePath);
+    const replacement = database.readPhysicalSessionReplacement(options.representativeSessionPath);
+    if (!replacement) {
+      database.close();
+      throw new Error(
+        `Unified SQLite recall representative session is not indexed: ${options.representativeSessionPath}`,
+      );
+    }
+    stateBeforeRollback = database.readPhysicalSessionState(options.representativeSessionPath);
+    options.onProgress?.({ stage: 'clone-rollback' });
+    try {
+      database.replacePhysicalSession(replacement, {
+        beforeCommit() {
+          const reader = runCloneChild(databasePath, options.representativeSessionPath, 'reader');
+          if (reader.status !== 0) {
+            throw new Error('Unified SQLite recall concurrent reader probe failed');
+          }
+          concurrentReaderState = JSON.parse(reader.stdout);
+          throw new Error('explicit-certification-rollback');
+        },
+      });
+      throw new Error('Unified SQLite recall explicit rollback probe committed unexpectedly');
+    } finally {
+      database.close();
+    }
+  } catch (error) {
+    if (!(error instanceof Error) || error.message !== 'explicit-certification-rollback') {
+      rmSync(cloneDirectory, { recursive: true, force: true });
+      throw error;
+    }
+  }
+
+  try {
+    const databasePath = join(cloneDirectory, basename(options.candidateDatabasePath));
+    let database = openSqliteRecallDatabase(databasePath);
+    const replacement = database.readPhysicalSessionReplacement(options.representativeSessionPath);
+    if (!replacement) {
+      throw new Error('Unified SQLite recall clone lost its representative session');
+    }
+    const unrelatedSessionPath = database
+      .listPhysicalSessionPaths()
+      .find((sessionPath) => sessionPath !== options.representativeSessionPath);
+    if (!unrelatedSessionPath) {
+      throw new Error('Unified SQLite recall clone requires an unrelated indexed physical session');
+    }
+    const beforeState = database.readPhysicalSessionState(options.representativeSessionPath);
+    const afterRollbackState = database.readPhysicalSessionState(options.representativeSessionPath);
+    database.close();
+    options.onProgress?.({ stage: 'clone-interruption' });
+    const crash = runCloneChild(databasePath, options.representativeSessionPath, 'sigkill');
+    database = openSqliteRecallDatabase(databasePath);
+    const afterCrashState = database.readPhysicalSessionState(options.representativeSessionPath);
+
+    // Stale only clone-owned state. Canonical JSONL, candidate storage, and active storage stay read-only.
+    const canonicalSessionSize = statSync(options.representativeSessionPath).size;
+    database.replacePhysicalSession({ ...replacement, size: canonicalSessionSize + 1 });
+    const expectedVectorReuseCount = replacement.denseDocuments.length;
+    const unrelatedProjectionBefore = snapshotPhysicalSessionProjection(
+      database.readPhysicalSessionReplacement(unrelatedSessionPath),
+    );
+    const countsBeforeChangedSessionIndex = database.readCounts();
+    database.checkpointDisposableClone();
+    const readDeviceWrittenBytes =
+      options.readDeviceWrittenBytes ?? (() => readBlockDeviceWrittenBytes(options.blockDevice));
+    const flushFilesystemWrites =
+      options.flushFilesystemWrites ?? flushCertificationFilesystemWrites;
+    flushFilesystemWrites();
+    const changedSessionIndexWritesBefore = readDeviceWrittenBytes();
+    const changedSessionIndexedPhysicalSessionPaths = new Set<string>();
+    options.onProgress?.({ stage: 'clone-changed-session' });
+    const changedSessionIndexStarted = performance.now();
+    const changedSessionIndexSummary = await options.runChangedSessionIndex(database, (event) => {
+      if (event.kind === 'indexing-maintenance-workset') {
+        changedSessionIndexedPhysicalSessionPaths.add(event.sessionPath);
+      }
+    });
+    const changedSessionIndexElapsedMilliseconds = performance.now() - changedSessionIndexStarted;
+    database.checkpointDisposableClone();
+    flushFilesystemWrites();
+    const changedSessionIndexWritesAfter = readDeviceWrittenBytes();
+    const changedSessionIndexDeviceWrittenBytes =
+      changedSessionIndexWritesBefore === null || changedSessionIndexWritesAfter === null
+        ? null
+        : changedSessionIndexWritesAfter - changedSessionIndexWritesBefore;
+    const unrelatedProjectionAfter = snapshotPhysicalSessionProjection(
+      database.readPhysicalSessionReplacement(unrelatedSessionPath),
+    );
+    const countsAfterChangedSessionIndex = database.readCounts();
+    const unrelatedPhysicalSessionUnchanged =
+      unrelatedProjectionBefore === unrelatedProjectionAfter;
+    const databaseCountsUnchanged =
+      JSON.stringify(countsBeforeChangedSessionIndex) ===
+      JSON.stringify(countsAfterChangedSessionIndex);
+    const indexedPhysicalSessionPaths = [...changedSessionIndexedPhysicalSessionPaths].sort();
+    const changedSessionIndexSummaryValid =
+      changedSessionIndexSummary.indexedSessions === 1 &&
+      changedSessionIndexSummary.removedSessions === 0 &&
+      changedSessionIndexSummary.failedSessions.length === 0 &&
+      indexedPhysicalSessionPaths.length === 1 &&
+      indexedPhysicalSessionPaths[0] === options.representativeSessionPath;
+    const changedSessionIndexReusedExpectedVectors =
+      expectedVectorReuseCount > 0 &&
+      changedSessionIndexSummary.reusedVectors === expectedVectorReuseCount &&
+      changedSessionIndexSummary.newlyEmbeddedChunks === 0 &&
+      changedSessionIndexSummary.embeddingRequestCount === 0;
+
+    const churnReplacement = database.readPhysicalSessionReplacement(
+      options.representativeSessionPath,
+    );
+    if (!churnReplacement) {
+      throw new Error(
+        'Unified SQLite recall changed-session index removed its representative session',
+      );
+    }
+    database.checkpointDisposableClone();
+    const beforeMetrics = {
+      allocatedBytes: readDatabaseAllocatedBytes(databasePath),
+      storage: database.readStorageMetrics(),
+    };
+    flushFilesystemWrites();
+    const directDatabaseChurnWritesBefore = readDeviceWrittenBytes();
+    const directDatabaseChurnStarted = performance.now();
+    options.onProgress?.({ stage: 'clone-churn', completed: 0, total: 100 });
+    for (let cycle = 0; cycle < 100; cycle += 1) {
+      database.replacePhysicalSession(churnReplacement);
+      const completed = cycle + 1;
+      if (completed % 10 === 0) {
+        options.onProgress?.({ stage: 'clone-churn', completed, total: 100 });
+      }
+    }
+    const directDatabaseChurnElapsedMilliseconds = performance.now() - directDatabaseChurnStarted;
+    database.checkpointDisposableClone();
+    flushFilesystemWrites();
+    const directDatabaseChurnWritesAfter = readDeviceWrittenBytes();
+    const afterMetrics = {
+      allocatedBytes: readDatabaseAllocatedBytes(databasePath),
+      storage: database.readStorageMetrics(),
+    };
+    const directDatabaseChurnDeviceWrittenBytes =
+      directDatabaseChurnWritesBefore === null || directDatabaseChurnWritesAfter === null
+        ? null
+        : directDatabaseChurnWritesAfter - directDatabaseChurnWritesBefore;
+    options.onProgress?.({ stage: 'clone-integrity-and-latency' });
+    const integrity = database.checkIntegrity();
+    const globalLatencySamples: number[] = [];
+    const projectLatencySamples: number[] = [];
+    const invocationLatencySamples: number[] = [];
+    const embedding = [...churnReplacement.denseEmbeddings.values()][0];
+    const projectIdentity = churnReplacement.denseDocuments[0]?.projectAttribution?.projectIdentity;
+    if (embedding) {
+      for (let index = 0; index < BENCHMARK_REPETITIONS; index += 1) {
+        let sampleStarted = performance.now();
+        database.searchDenseCandidates(embedding, 8);
+        const globalElapsed = performance.now() - sampleStarted;
+        sampleStarted = performance.now();
+        database.searchDenseCandidates(embedding, 8, projectIdentity);
+        const projectElapsed = performance.now() - sampleStarted;
+        sampleStarted = performance.now();
+        database.searchInvocations(INVOCATION_CERTIFICATION_PROBES[0].query, 20, projectIdentity);
+        const invocationElapsed = performance.now() - sampleStarted;
+        if (index > 0) {
+          globalLatencySamples.push(globalElapsed);
+          projectLatencySamples.push(projectElapsed);
+          invocationLatencySamples.push(invocationElapsed);
+        }
+      }
+    }
+    database.close();
+    const allocatedGrowthBytes = afterMetrics.allocatedBytes - beforeMetrics.allocatedBytes;
+    const freePageGrowth = afterMetrics.storage.freePageCount - beforeMetrics.storage.freePageCount;
+    const readerSawCommittedState =
+      JSON.stringify(stateBeforeRollback) === JSON.stringify(concurrentReaderState);
+    const passed =
+      readerSawCommittedState &&
+      JSON.stringify(beforeState) === JSON.stringify(afterRollbackState) &&
+      JSON.stringify(beforeState) === JSON.stringify(afterCrashState) &&
+      crash.signal === 'SIGKILL' &&
+      changedSessionIndexSummaryValid &&
+      changedSessionIndexReusedExpectedVectors &&
+      unrelatedPhysicalSessionUnchanged &&
+      databaseCountsUnchanged &&
+      integrity.healthy &&
+      integrity.invocationFtsIntegrityChecked &&
+      embedding !== undefined &&
+      projectIdentity !== undefined &&
+      globalLatencySamples.length > 0 &&
+      readPercentile(globalLatencySamples, 0.95) < MAXIMUM_GLOBAL_P95_MILLISECONDS &&
+      projectLatencySamples.length > 0 &&
+      readPercentile(projectLatencySamples, 0.95) < MAXIMUM_PROJECT_P95_MILLISECONDS &&
+      invocationLatencySamples.length > 0 &&
+      readPercentile(invocationLatencySamples, 0.95) < MAXIMUM_INVOCATION_P95_MILLISECONDS &&
+      allocatedGrowthBytes === 0 &&
+      freePageGrowth <= 0 &&
+      changedSessionIndexDeviceWrittenBytes !== null &&
+      changedSessionIndexDeviceWrittenBytes < MAXIMUM_AVERAGE_DEVICE_WRITES_BYTES &&
+      directDatabaseChurnDeviceWrittenBytes !== null &&
+      directDatabaseChurnDeviceWrittenBytes / 100 < MAXIMUM_AVERAGE_DEVICE_WRITES_BYTES;
+    options.onProgress?.({ stage: 'clone-complete' });
+    return {
+      cloneDirectory,
+      representativeSession: basename(options.representativeSessionPath),
+      unrelatedPhysicalSession: basename(unrelatedSessionPath),
+      concurrentReaderSawCommittedState: readerSawCommittedState,
+      explicitRollbackRestoredState:
+        JSON.stringify(beforeState) === JSON.stringify(afterRollbackState),
+      forcedTerminationSignal: crash.signal,
+      forcedTerminationRestoredState:
+        JSON.stringify(beforeState) === JSON.stringify(afterCrashState),
+      changedSessionIndexer: 'indexChangedConversationSessions',
+      changedSessionIndexedPhysicalSessionPaths: indexedPhysicalSessionPaths,
+      changedSessionIndexSummary,
+      changedSessionIndexSummaryValid,
+      changedSessionIndexExpectedVectorReuseCount: expectedVectorReuseCount,
+      changedSessionIndexReusedExpectedVectors,
+      changedSessionIndexElapsedMilliseconds,
+      changedSessionIndexDeviceWrittenBytes,
+      unrelatedPhysicalSessionUnchanged,
+      databaseCountsUnchanged,
+      countsBeforeChangedSessionIndex,
+      countsAfterChangedSessionIndex,
+      directDatabaseChurnProbe: true,
+      directDatabaseChurnCycles: 100,
+      directDatabaseChurnElapsedMilliseconds,
+      directDatabaseChurnDeviceWrittenBytes,
+      directDatabaseChurnAverageDeviceWrittenBytesPerCycle:
+        directDatabaseChurnDeviceWrittenBytes === null
+          ? null
+          : directDatabaseChurnDeviceWrittenBytes / 100,
+      deviceWriteMeasurement:
+        changedSessionIndexDeviceWrittenBytes === null ||
+        directDatabaseChurnDeviceWrittenBytes === null
+          ? 'unavailable'
+          : 'gross-block-device-writes',
+      allocatedGrowthBytes,
+      freePageGrowth,
+      beforeDirectDatabaseChurnStorage: beforeMetrics,
+      afterDirectDatabaseChurnStorage: afterMetrics,
+      postChurnIntegrity: integrity,
+      postChurnGlobalP95Milliseconds: globalLatencySamples.length
+        ? readPercentile(globalLatencySamples, 0.95)
+        : null,
+      postChurnProjectP95Milliseconds: projectLatencySamples.length
+        ? readPercentile(projectLatencySamples, 0.95)
+        : null,
+      postChurnInvocationP95Milliseconds: invocationLatencySamples.length
+        ? readPercentile(invocationLatencySamples, 0.95)
+        : null,
+      passed,
+    };
+  } finally {
+    rmSync(cloneDirectory, { recursive: true, force: true });
+  }
+}
+
+/** Replaces machine-specific roots and strips excerpts before a report becomes durable. */
+export function sanitizeUnifiedSqliteCertificationReport(
+  value: unknown,
+  replacements: Readonly<Record<string, string>> = {},
+): unknown {
+  const pathReplacements = {
+    [homedir()]: '$HOME',
+    ...replacements,
+  };
+  const sanitizeString = (input: string): string => {
+    let output = input;
+    for (const [raw, replacement] of Object.entries(pathReplacements).sort(
+      ([left], [right]) => right.length - left.length,
+    )) {
+      if (raw) {
+        output = output.replaceAll(raw, replacement);
+      }
+    }
+    return output;
+  };
+  if (typeof value === 'string') {
+    return sanitizeString(value);
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeUnifiedSqliteCertificationReport(item, pathReplacements));
+  }
+  if (isUnknownRecord(value)) {
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([key]) => !['text', 'searchableText', 'embedding'].includes(key))
+        .map(([key, item]) => [
+          key,
+          sanitizeUnifiedSqliteCertificationReport(item, pathReplacements),
+        ]),
+    );
+  }
+  return value;
+}
+
+function formatCertificationMarkdown(report: Record<string, unknown>): string {
+  if (!isUnknownRecord(report.gates)) {
+    throw new Error('Unified SQLite recall certification report gates are missing');
+  }
+  const rows = Object.entries(report.gates)
+    .map(
+      ([gate, passed]) => `| ${gate} | ${passed === null ? 'PENDING' : passed ? 'PASS' : 'FAIL'} |`,
+    )
+    .join('\n');
+  const candidateVerdict = report.candidatePreActivationPassed
+    ? 'The candidate passed every local pre-activation gate.'
+    : 'One or more local pre-activation gates failed or remain pending.';
+  return `# Unified SQLite production recall certification\n\nThis report records pre-activation checks only. The harness did not activate the candidate.\n\n## Verdict\n\n${candidateVerdict}\n\n## Gates\n\n| Gate | Result |\n| --- | --- |\n${rows}\n\nPlatform runtime loading is verified separately by the PR's SQLite-vec GitHub Actions jobs.\n\n## Activation status\n\nActivation, immediate post-activation indexing, live project/global/Source recall, timer verification, and obsolete-artifact cleanup remain pending until this branch is merged and deployed.\n`;
+}
+
+async function runCertification(
+  argumentsValue: UnifiedSqliteCertificationArguments,
+  onProgress: (event: UnifiedSqliteCertificationProgress) => void,
+): Promise<Record<string, unknown>> {
+  onProgress({ stage: 'candidate-resolution' });
+  const candidateDirectory = resolveCertifiedCandidateDirectory(
+    argumentsValue.dataRoot,
+    argumentsValue.candidateTarget,
+  );
+  if (!existsSync(candidateDirectory)) {
+    throw new Error(`Unified SQLite recall staged candidate is missing: ${candidateDirectory}`);
+  }
+  const candidateDatabasePath = join(candidateDirectory, 'recall.sqlite');
+  const manifestPath = join(candidateDirectory, 'index-manifest.json');
+  const activeBefore = snapshotUnifiedSqliteActivePointer(argumentsValue.dataRoot);
+  if (
+    activeBefore.target &&
+    resolve(argumentsValue.dataRoot, activeBefore.target) === candidateDirectory
+  ) {
+    throw new Error(
+      `Unified SQLite recall candidate is active and cannot be certified: ${argumentsValue.candidateTarget}`,
+    );
+  }
+  const manifest = await readRecallIndexManifest(manifestPath);
+  if (
+    !manifest ||
+    manifest.manifestVersion !== 8 ||
+    manifest.sqliteRecallDatabase.sqliteVecVersion !== '0.1.9'
+  ) {
+    throw new Error(
+      'Unified SQLite recall candidate manifest must be strict version 8 with sqlite-vec 0.1.9',
+    );
+  }
+  const config = await loadRecallConversationConfig({
+    environment: { ...process.env, PI_RECALL_DATA_DIRECTORY: argumentsValue.dataRoot },
+  });
+  const embeddingProvider = createOctenHttpEmbeddingProvider({
+    baseUrl: config.embeddingBaseUrl,
+    model: config.embeddingModel,
+    nativeDimensions: config.embeddingNativeDimensions,
+    storedDimensions: config.embeddingStoredDimensions,
+    batchSize: config.embeddingBatchSize,
+  });
+  const projectIdentity = parseProjectIdentity(argumentsValue.projectIdentity);
+  const candidate = openSqliteRecallDatabase(candidateDatabasePath, { readOnly: true });
+  const denseObservations: Array<{
+    query: string;
+    globalMilliseconds: number[];
+    projectMilliseconds: number[];
+    globalResultIds: string[];
+    projectResultIds: string[];
+    passed: boolean;
+  }> = [];
+  try {
+    for (const [queryIndex, query] of DENSE_CERTIFICATION_QUERIES.entries()) {
+      onProgress({
+        stage: 'dense-probes',
+        completed: queryIndex,
+        total: DENSE_CERTIFICATION_QUERIES.length,
+      });
+      const embedding = await embeddingProvider.embedQuery(query);
+      let candidateGlobalIds: string[] = [];
+      let candidateProjectIds: string[] = [];
+      const globalMilliseconds: number[] = [];
+      const projectMilliseconds: number[] = [];
+      for (let repetition = 0; repetition < BENCHMARK_REPETITIONS; repetition += 1) {
+        let started = performance.now();
+        candidateGlobalIds = candidate.searchDenseCandidates(embedding, 8).map(({ id }) => id);
+        const globalElapsed = performance.now() - started;
+        started = performance.now();
+        candidateProjectIds = candidate
+          .searchDenseCandidates(embedding, 8, projectIdentity)
+          .map(({ id }) => id);
+        const projectElapsed = performance.now() - started;
+        if (repetition > 0) {
+          globalMilliseconds.push(globalElapsed);
+          projectMilliseconds.push(projectElapsed);
+        }
+      }
+      denseObservations.push({
+        query,
+        globalMilliseconds,
+        projectMilliseconds,
+        globalResultIds: candidateGlobalIds,
+        projectResultIds: candidateProjectIds,
+        passed: candidateGlobalIds.length > 0 && candidateProjectIds.length > 0,
+      });
+    }
+    onProgress({
+      stage: 'dense-probes',
+      completed: DENSE_CERTIFICATION_QUERIES.length,
+      total: DENSE_CERTIFICATION_QUERIES.length,
+    });
+  } catch (error) {
+    candidate.close();
+    throw error;
+  }
+  const { invocationObservations, counts, integrity, identity } = (() => {
+    try {
+      const observations = INVOCATION_CERTIFICATION_PROBES.map((probe, probeIndex) => {
+        onProgress({
+          stage: 'invocation-probes',
+          completed: probeIndex,
+          total: INVOCATION_CERTIFICATION_PROBES.length,
+        });
+        const milliseconds: number[] = [];
+        let results = candidate.searchInvocations(probe.query, 20);
+        for (let repetition = 0; repetition < BENCHMARK_REPETITIONS; repetition += 1) {
+          const started = performance.now();
+          results = candidate.searchInvocations(probe.query, 20);
+          if (repetition > 0) {
+            milliseconds.push(performance.now() - started);
+          }
+        }
+        return {
+          ...probe,
+          milliseconds,
+          resultCount: results.length,
+          matchedExpectedToolName:
+            !('expectedToolName' in probe) ||
+            results.some(({ toolName }) => toolName === probe.expectedToolName),
+        };
+      });
+      onProgress({
+        stage: 'invocation-probes',
+        completed: INVOCATION_CERTIFICATION_PROBES.length,
+        total: INVOCATION_CERTIFICATION_PROBES.length,
+      });
+      onProgress({ stage: 'candidate-integrity' });
+      return {
+        invocationObservations: observations,
+        counts: candidate.readCounts() satisfies SqliteRecallDatabaseCounts,
+        integrity: candidate.checkIntegrity() satisfies SqliteRecallIntegrityDiagnostics,
+        identity: candidate.identity,
+      };
+    } finally {
+      candidate.close();
+    }
+  })();
+
+  const { databaseGenerationRootPath: omittedGenerationRoot, ...ungeneratedConfig } = config;
+  void omittedGenerationRoot;
+  const sourceService = createRecallConversationService({
+    ...ungeneratedConfig,
+    sqliteDatabasePath: candidateDatabasePath,
+    manifestPath,
+    indexMaintenanceStatusPath: join(candidateDirectory, 'index-maintenance-status.json'),
+    lockPath: join(candidateDirectory, 'certification-read-only.lock'),
+  });
+  const sourceObservations: Array<Record<string, unknown>> = [];
+  for (const [probeIndex, probe] of SOURCE_CERTIFICATION_PROBES.entries()) {
+    onProgress({
+      stage: 'source-probes',
+      completed: probeIndex,
+      total: SOURCE_CERTIFICATION_PROBES.length,
+    });
+    const search = await sourceService.searchSource(probe.query, 20, {
+      scope: RecallSearchScope.GLOBAL,
+    });
+    const locations = search.results.map((result) => ({
+      sessionPath: result.sessionPath,
+      sourceLineStart: result.sourceLineStart,
+      sourceLineEnd: result.sourceLineEnd,
+      entryId: result.entryId,
+      role: readSourceRole(result.sessionPath, result.sourceLineStart),
+    }));
+    const exactLocation = locations.find(
+      (location) => !('requiredRole' in probe) || location.role === probe.requiredRole,
+    );
+    sourceObservations.push({
+      kind: probe.kind,
+      query: probe.query,
+      filesScanned: search.filesScanned,
+      failures: search.failures.length,
+      exactLocation: exactLocation ?? null,
+      passed: search.failures.length === 0 && exactLocation !== undefined,
+    });
+  }
+  onProgress({
+    stage: 'source-probes',
+    completed: SOURCE_CERTIFICATION_PROBES.length,
+    total: SOURCE_CERTIFICATION_PROBES.length,
+  });
+
+  const clone =
+    argumentsValue.scratchRoot &&
+    argumentsValue.representativeSessionPath &&
+    argumentsValue.blockDevice
+      ? await (async () => {
+          // Argument parsing requires all three clone values together; this branch proves presence.
+          const [tokenizer, ignoredPhysicalSessionPathList] = await Promise.all([
+            loadOctenConversationTokenizer({ cacheDirectory: config.tokenizerCacheDirectory }),
+            listIgnoredPhysicalSessionPaths(config.physicalSessionIgnoreStatePath),
+          ]);
+          const resolveSessionProjectIdentity = createLineageResolver(
+            config.projectLineages,
+            resolveProjectIdentity,
+          );
+          return certifyDisposableUnifiedSqliteClone({
+            candidateDirectory,
+            candidateDatabasePath,
+            scratchRoot: argumentsValue.scratchRoot!,
+            dataRoot: argumentsValue.dataRoot,
+            representativeSessionPath: argumentsValue.representativeSessionPath!,
+            blockDevice: argumentsValue.blockDevice!,
+            onProgress,
+            runChangedSessionIndex: (database, onIndexProgress) =>
+              indexChangedConversationSessions({
+                sessionsDirectory: config.sessionsDirectory,
+                selectedPhysicalSessionPaths: [argumentsValue.representativeSessionPath!],
+                database,
+                embeddingProvider,
+                tokenizer,
+                ignoredPhysicalSessionPaths: new Set(ignoredPhysicalSessionPathList),
+                chunkPolicy: {
+                  maxTokens: manifest.chunkPolicy.maxTokens,
+                  overlapTokens: manifest.chunkPolicy.overlapTokens,
+                },
+                resolveProjectIdentity: resolveSessionProjectIdentity,
+                onProgress: onIndexProgress,
+              }),
+          });
+        })()
+      : null;
+  const activeAfter = snapshotUnifiedSqliteActivePointer(argumentsValue.dataRoot);
+  const candidateInactive =
+    JSON.stringify(activeBefore) === JSON.stringify(activeAfter) &&
+    (!activeAfter.target ||
+      resolve(argumentsValue.dataRoot, activeAfter.target) !== candidateDirectory);
+  const storageBytes = readDatabaseAllocatedBytes(candidateDatabasePath);
+  const globalTimes = denseObservations.flatMap((item) => item.globalMilliseconds);
+  const projectTimes = denseObservations.flatMap((item) => item.projectMilliseconds);
+  const invocationTimes = invocationObservations.flatMap(({ milliseconds }) => milliseconds);
+  const gates = evaluateUnifiedSqliteCertificationGates({
+    storageBytes,
+    projectP95Milliseconds: readPercentile(projectTimes, 0.95),
+    globalP95Milliseconds: readPercentile(globalTimes, 0.95),
+    invocationP95Milliseconds: readPercentile(invocationTimes, 0.95),
+    denseProbePasses: denseObservations.map((item) => item.passed),
+    invocationProbePasses: invocationObservations.map(
+      (item) => item.resultCount > 0 && item.matchedExpectedToolName,
+    ),
+    sourceProbePasses: sourceObservations.map((item) => Boolean(item.passed)),
+    integrityHealthy: integrity.healthy && integrity.invocationFtsIntegrityChecked === false,
+    linuxX64LoadPassed:
+      process.platform === 'linux' &&
+      process.arch === 'x64' &&
+      identity.sqliteVecVersion === `v${SQLITE_RECALL_VEC_PACKAGE_VERSION}`,
+    candidateInactive,
+    clonePassed: clone ? Boolean(clone.passed) : null,
+  });
+  const candidatePreActivationPassed =
+    clone !== null && Object.values(gates).every((gate) => gate === true);
+  onProgress({ stage: 'certification-complete' });
+  return {
+    reportVersion: 1,
+    issue: 172,
+    measuredAt: new Date().toISOString(),
+    candidateTarget: argumentsValue.candidateTarget,
+    candidateDirectory,
+    safety: {
+      activeBefore,
+      activeAfter,
+      candidateInactive,
+      candidateOpenedReadOnly: true,
+      cloneOnlyMutation: true,
+    },
+    manifest,
+    sqliteIdentity: identity,
+    linuxX64SqliteVecLoad: {
+      executed: process.platform === 'linux' && process.arch === 'x64',
+      version: identity.sqliteVecVersion,
+      passed:
+        process.platform === 'linux' &&
+        process.arch === 'x64' &&
+        identity.sqliteVecVersion === `v${SQLITE_RECALL_VEC_PACKAGE_VERSION}`,
+    },
+    counts,
+    storage: { allocatedBytes: storageBytes, maximumBytes: MAXIMUM_CERTIFIED_STORAGE_BYTES },
+    integrity,
+    denseBenchmark: {
+      observations: denseObservations,
+      globalP95Milliseconds: readPercentile(globalTimes, 0.95),
+      projectP95Milliseconds: readPercentile(projectTimes, 0.95),
+    },
+    invocationBenchmark: {
+      observations: invocationObservations,
+      p95Milliseconds: readPercentile(invocationTimes, 0.95),
+    },
+    sourceSearch: { observations: sourceObservations },
+    cloneCertification: clone ?? { status: 'pending; rerun with all clone flags' },
+    gates,
+    candidatePreActivationPassed,
+    passed: candidatePreActivationPassed,
+  };
+}
+
+async function main(): Promise<void> {
+  const argumentsList = process.argv.slice(2);
+  if (runCloneChildMode(argumentsList)) {
+    return;
+  }
+  if (argumentsList.length === 1 && argumentsList[0] === '--help') {
+    process.stdout.write(`${USAGE}\n`);
+    return;
+  }
+  const argumentsValue = readUnifiedSqliteCertificationArguments(argumentsList);
+  const report = await runCertification(argumentsValue, (event) => {
+    process.stderr.write(`${formatUnifiedSqliteCertificationProgress(event)}\n`);
+  });
+  const sanitized = sanitizeUnifiedSqliteCertificationReport(report, {
+    [argumentsValue.dataRoot]: '$DATA_ROOT',
+    ...(argumentsValue.scratchRoot ? { [argumentsValue.scratchRoot]: '$SCRATCH_ROOT' } : {}),
+  });
+  if (!isUnknownRecord(sanitized)) {
+    throw new Error('Unified SQLite recall certification report sanitization failed');
+  }
+  process.stdout.write(`${JSON.stringify(sanitized, null, 2)}\n`);
+  if (argumentsValue.outputPath) {
+    await mkdir(dirname(argumentsValue.outputPath), { recursive: true });
+    await writeFile(argumentsValue.outputPath, `${JSON.stringify(sanitized, null, 2)}\n`, 'utf8');
+    await writeFile(REPORT_MARKDOWN_PATH, formatCertificationMarkdown(sanitized), 'utf8');
+  }
+  if (!report.passed) {
+    process.exitCode = 2;
+  }
+}
+
+if (process.argv[1] && resolve(process.argv[1]) === resolve(import.meta.filename)) {
+  await main();
+}

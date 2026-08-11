@@ -1,0 +1,256 @@
+{
+  "status": "superseded",
+  "supersededBy": "ADR-0014 unified SQLite v8",
+  "warning": "Historical v7 flat-Zvec-plus-SQLite evidence; not current certification.",
+  "reportVersion": 1,
+  "issue": 172,
+  "measuredAt": "2026-08-10T12:24:28.559Z",
+  "candidateTarget": "generations/generation-f71da5f6-7ea1-43a8-8412-d0c746c6068d",
+  "candidateDirectory": "/home/will/.pi/agent/recall/generations/generation-f71da5f6-7ea1-43a8-8412-d0c746c6068d",
+  "production": {
+    "sessionsDirectory": "/home/will/.pi/agent/sessions",
+    "activeDatabasePath": "/home/will/.pi/agent/recall/zvec",
+    "activeTargetBeforeCertification": null,
+    "activeTargetAfterCertification": null,
+    "activeDatabaseUnchanged": true,
+    "ignoredPhysicalSessionCount": 2
+  },
+  "storage": {
+    "denseStoreBytes": 2178654208,
+    "catalogBytes": 267890688,
+    "compactStorageBytes": 2446544896,
+    "maximumBytes": 2684354560,
+    "passed": true
+  },
+  "denseBenchmark": {
+    "observations": [
+      {
+        "query": "Why have recent pi-session-recall optimization attempts failed?",
+        "controlHnswMilliseconds": [
+          7.6205309999999145, 6.817821999999978, 7.124501000000009, 7.186425999999983,
+          7.112368999999944
+        ],
+        "candidateFlatMilliseconds": [
+          48.109016999999994, 46.13768900000002, 45.84510599999999, 44.62237799999991,
+          46.135955999999965
+        ],
+        "topResultMatches": true,
+        "topEightOverlap": 7
+      },
+      {
+        "query": "How is automatic recall indexing scheduled?",
+        "controlHnswMilliseconds": [
+          6.936341999999968, 6.879788000000076, 7.929444999999987, 6.599226999999928,
+          7.124250999999958
+        ],
+        "candidateFlatMilliseconds": [
+          49.025619000000006, 49.05587400000002, 46.428629, 46.213399999999865, 46.896347000000105
+        ],
+        "topResultMatches": true,
+        "topEightOverlap": 7
+      },
+      {
+        "query": "Which corrupted February session files are ignored?",
+        "controlHnswMilliseconds": [
+          7.015740000000051, 7.08997700000009, 7.870094999999992, 5.373802000000069,
+          7.377950999999939
+        ],
+        "candidateFlatMilliseconds": [
+          46.57784599999991, 46.29181500000004, 46.50075300000003, 46.16773499999999,
+          46.61609599999997
+        ],
+        "topResultMatches": true,
+        "topEightOverlap": 8
+      },
+      {
+        "query": "How large is the recall database?",
+        "controlHnswMilliseconds": [
+          8.147479000000203, 7.224386999999979, 5.94591400000013, 8.353422000000137,
+          7.345209999999952
+        ],
+        "candidateFlatMilliseconds": [
+          46.84471200000007, 46.734646999999995, 46.8119099999999, 46.893671999999924,
+          47.968687000000045
+        ],
+        "topResultMatches": true,
+        "topEightOverlap": 8
+      },
+      {
+        "query": "Why would an agent use pi-session-recall instead of searching raw JSONL?",
+        "controlHnswMilliseconds": [
+          7.615101999999979, 7.741616000000022, 7.733181000000059, 6.94003900000007,
+          7.149387000000388
+        ],
+        "candidateFlatMilliseconds": [
+          47.602247000000034, 47.29576799999995, 46.782014999999774, 47.111687000000074,
+          46.90687600000001
+        ],
+        "topResultMatches": true,
+        "topEightOverlap": 8
+      }
+    ],
+    "candidateFlatP95Milliseconds": 49.025619000000006,
+    "maximumP95Milliseconds": 100,
+    "matchingTopResults": 5,
+    "queryCount": 5,
+    "passed": true
+  },
+  "invocationBenchmark": {
+    "observations": [
+      {
+        "kind": "tool-name",
+        "query": "brain_query",
+        "expectedToolName": "brain_query",
+        "milliseconds": [
+          0.7544600000001083, 0.65672799999993, 0.637724000000162, 0.6277350000000297,
+          0.5884610000002795
+        ],
+        "resultCount": 20,
+        "matchedExpectedToolName": true
+      },
+      {
+        "kind": "path",
+        "query": "/home/will/.pi/agent/TAILNET.md",
+        "milliseconds": [
+          3.651155999999901, 3.2600400000001173, 3.163850999999795, 3.0852759999997943,
+          3.026296000000002
+        ],
+        "resultCount": 20,
+        "matchedExpectedToolName": true
+      },
+      {
+        "kind": "url",
+        "query": "http://192.168.0.67:8090/v1",
+        "milliseconds": [
+          0.7274800000000141, 0.702694000000065, 0.6922549999999319, 0.6979649999998401,
+          0.7209680000000844
+        ],
+        "resultCount": 20,
+        "matchedExpectedToolName": true
+      },
+      {
+        "kind": "command",
+        "query": "psr optimize",
+        "milliseconds": [
+          0.19170600000006743, 0.1934489999998732, 0.2039079999999558, 0.18524299999990035,
+          0.1809760000001006
+        ],
+        "resultCount": 4,
+        "matchedExpectedToolName": true
+      },
+      {
+        "kind": "issue-number",
+        "query": "gh issue view 165",
+        "milliseconds": [
+          0.48678300000028685, 0.46371999999973923, 0.47282700000005207, 0.47213700000020253,
+          0.4976429999996981
+        ],
+        "resultCount": 2,
+        "matchedExpectedToolName": true
+      },
+      {
+        "kind": "flag",
+        "query": "--optimize-daily",
+        "milliseconds": [
+          0.14268500000025597, 0.13723399999980757, 0.1382160000002841, 0.14364599999998973,
+          0.13762500000029831
+        ],
+        "resultCount": 2,
+        "matchedExpectedToolName": true
+      }
+    ],
+    "p95Milliseconds": 3.2600400000001173,
+    "maximumP95Milliseconds": 5,
+    "passed": true
+  },
+  "sourceSearch": {
+    "observations": [
+      {
+        "kind": "result-only-error",
+        "query": "FtsRocksdbReducer",
+        "elapsedMilliseconds": 15439.203196,
+        "filesScanned": 3719,
+        "failures": 0,
+        "matchedExpectedRole": true,
+        "location": {
+          "sessionPath": "/home/will/.pi/agent/sessions/--home-will-projects-pi-session-recall--/2026-08-08T20-43-57-969Z_019fe31e-3e91-7df4-969a-8c8b1f1ec757.jsonl",
+          "sourceLineStart": 176,
+          "sourceLineEnd": 176,
+          "entryId": "2165f7ed",
+          "role": "toolResult"
+        }
+      },
+      {
+        "kind": "hardware-identifier",
+        "query": "CT1000P3PSSD8",
+        "elapsedMilliseconds": 15499.946212999996,
+        "filesScanned": 3719,
+        "failures": 0,
+        "matchedExpectedRole": true,
+        "location": {
+          "sessionPath": "/home/will/.pi/agent/sessions/--home-will--/2026-01-08T21-15-34-355Z_1d4e2cfc-3f56-4c74-958a-78a36a55efd1.jsonl",
+          "sourceLineStart": 7,
+          "sourceLineEnd": 7,
+          "entryId": "f3016783",
+          "role": "toolResult"
+        }
+      },
+      {
+        "kind": "filename",
+        "query": "2026-02-02T18-31-25",
+        "elapsedMilliseconds": 15349.843820000002,
+        "filesScanned": 3719,
+        "failures": 0,
+        "matchedExpectedRole": true,
+        "location": {
+          "sessionPath": "/home/will/.pi/agent/sessions/--home-will--/2026-02-10T15-22-22-670Z_b3772b85-c4ca-41bf-8e42-15e1debfd844.jsonl",
+          "sourceLineStart": 13,
+          "sourceLineEnd": 13,
+          "entryId": "a8b282ed",
+          "role": "toolResult"
+        }
+      },
+      {
+        "kind": "command-output",
+        "query": "pi - AI coding assistant with read, bash, edit, write tools",
+        "elapsedMilliseconds": 15065.046477000004,
+        "filesScanned": 3719,
+        "failures": 0,
+        "matchedExpectedRole": true,
+        "location": {
+          "sessionPath": "/home/will/.pi/agent/sessions/--home-will--/2026-01-12T23-52-11-516Z_442dcec9-9f02-4ee2-a45e-862b6b5ec863.jsonl",
+          "sourceLineStart": 4,
+          "sourceLineEnd": 4,
+          "entryId": "b43c054d",
+          "role": "bashExecution"
+        }
+      }
+    ],
+    "passed": true
+  },
+  "changedSessionUpdate": {
+    "sessionPath": "/home/will/.pi/agent/sessions/--home-will-projects-pi-session-recall--/2026-08-08T20-43-57-969Z_019fe31e-3e91-7df4-969a-8c8b1f1ec757.jsonl",
+    "method": "reversible source mtime change followed by restoration",
+    "baselineIndexedSessions": 0,
+    "elapsedMilliseconds": 5592.524609999993,
+    "expectedChangedSessionCount": 1,
+    "indexedSessions": 1,
+    "removedSessions": 0,
+    "newlyEmbeddedDocuments": 0,
+    "reusedVectors": 829,
+    "failedSessions": [],
+    "processReadBytes": 0,
+    "processWriteBytes": 622592,
+    "grossDeviceWrittenBytes": 13508608,
+    "idleDeviceWriteSamples": [7503872, 18354176, 6729728],
+    "medianIdleDeviceWrittenBytes": 7503872,
+    "deviceWrittenBytes": 6004736,
+    "deviceWriteMeasurement": "gross NVMe writes minus median of three equal-duration idle windows",
+    "maximumDeviceWrittenBytes": 10485760,
+    "unrelatedSessionChanges": [],
+    "sourceMtimeRestored": true,
+    "restoredCatalogIndexedSessions": 1,
+    "passed": true
+  },
+  "passed": true
+}

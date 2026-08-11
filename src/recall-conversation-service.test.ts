@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, readlink, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -9,13 +9,13 @@ import {
   createRecallConversationService,
   type RecallConversationConfig,
 } from './recall-conversation-service.js';
+import { openSqliteRecallDatabase } from './sqlite-recall-database.js';
 import type { RecallEmbeddingProvider } from './recall-inference-capabilities.js';
 import {
   normalizeRecallProjectLineages,
   parseProjectIdentity,
 } from './resolve-project-identity.js';
 import type { ConversationTextTokenizer } from './session-conversation-index.js';
-import { openZvecConversationStore } from './zvec-conversation-store.js';
 
 function sessionLines(entries: object[]): string {
   return `${entries.map((entry) => JSON.stringify(entry)).join('\n')}\n`;
@@ -28,13 +28,15 @@ const tokenizer: ConversationTextTokenizer = {
 };
 
 function createTestEmbeddingVector(text: string): number[] {
-  if (/atlas|manual|zvec/iu.test(text)) {
-    return [1, 0, 0];
+  const vector = Array.from({ length: 1_024 }, () => 0);
+  if (/atlas|manual|zvec|compact/iu.test(text)) {
+    vector[0] = 1;
+  } else if (/queue/iu.test(text)) {
+    vector[1] = 1;
+  } else {
+    vector[2] = 1;
   }
-  if (/queue/iu.test(text)) {
-    return [0, 1, 0];
-  }
-  return [0, 0, 1];
+  return vector;
 }
 
 const TEST_EMBEDDING_PROVIDER: RecallEmbeddingProvider = {
@@ -46,27 +48,41 @@ const TEST_EMBEDDING_PROVIDER: RecallEmbeddingProvider = {
   },
 };
 
-function createTestConfig(root: string): RecallConversationConfig {
+function createTestConfig(
+  root: string,
+  options: { databaseGenerations?: boolean } = {},
+): RecallConversationConfig {
   const data = join(root, 'recall');
   return {
     sessionsDirectory: join(root, 'sessions'),
-    databasePath: join(data, 'zvec'),
-    statePath: join(data, 'index-state.json'),
+    sqliteDatabasePath: join(data, 'recall.sqlite'),
     manifestPath: join(data, 'index-manifest.json'),
     indexMaintenanceStatusPath: join(data, 'index-maintenance-status.json'),
     physicalSessionIgnoreStatePath: join(data, 'physical-session-ignore.json'),
     tokenizerCacheDirectory: join(data, 'tokenizers'),
     lockPath: join(data, 'operation.lock'),
+    ...(options.databaseGenerations
+      ? { databaseGenerationRootPath: join(data, 'generations') }
+      : {}),
     embeddingBaseUrl: 'http://127.0.0.1:8090/v1',
     embeddingModel: 'octen-test',
     embeddingServedModelId: 'Octen/Octen-Embedding-4B',
-    embeddingNativeDimensions: 4,
-    embeddingStoredDimensions: 3,
+    embeddingNativeDimensions: 1_024,
+    embeddingStoredDimensions: 1_024,
     embeddingBatchSize: 8,
     projectLineages: normalizeRecallProjectLineages({}),
-    searchCandidateLimits: { dense: 8, lexical: 8, identifier: 8 },
+    searchCandidateLimits: { dense: 8, invocation: 8 },
     chunkPolicy: { maxTokens: 512, overlapTokens: 64 },
   };
+}
+
+function readSqliteSessionPaths(sqliteDatabasePath: string): string[] {
+  const database = openSqliteRecallDatabase(sqliteDatabasePath);
+  try {
+    return database.listPhysicalSessionPaths();
+  } finally {
+    database.close();
+  }
 }
 
 async function writePhysicalSessionIgnoreState(
@@ -108,58 +124,494 @@ async function writeConversationSession(
   );
 }
 
-void test('standalone optimization compacts the existing collection without indexing sessions', async (t) => {
+void test('successful rebuild atomically replaces the active current-format database', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-generation-activation-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const config = createTestConfig(root, { databaseGenerations: true });
+  const sessionPath = join(config.sessionsDirectory, 'one.jsonl');
+  await writeConversationSession(sessionPath, 'ORIGINAL_GENERATION_EVIDENCE');
+  const service = createRecallConversationService(config, {
+    embeddingProvider: TEST_EMBEDDING_PROVIDER,
+    loadTokenizer: async () => tokenizer,
+  });
+
+  const first = await service.index({ rebuild: true });
+  const firstActiveTarget = await readlink(join(root, 'recall', 'active'));
+  assert.deepEqual(first.databaseTransition, {
+    kind: 'candidate-activated',
+    staleCandidatesRemoved: 0,
+  });
+
+  await writeConversationSession(sessionPath, 'REPLACEMENT_GENERATION_EVIDENCE');
+  const second = await service.index({ rebuild: true });
+  const secondActiveTarget = await readlink(join(root, 'recall', 'active'));
+  assert.deepEqual(second.databaseTransition, {
+    kind: 'candidate-activated',
+    staleCandidatesRemoved: 0,
+  });
+  assert.notEqual(secondActiveTarget, firstActiveTarget);
+  const replacementSearch = await service.search('REPLACEMENT_GENERATION_EVIDENCE', 5, {
+    scope: RecallSearchScope.GLOBAL,
+  });
+  assert.match(replacementSearch.results[0]?.content ?? '', /REPLACEMENT_GENERATION_EVIDENCE/u);
+});
+
+void test('deferred rebuild stays inactive until the staged database target is explicitly activated', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-generation-staging-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const config = createTestConfig(root, { databaseGenerations: true });
+  const sessionPath = join(config.sessionsDirectory, 'one.jsonl');
+  await writeConversationSession(sessionPath, 'ACTIVE_BEFORE_CERTIFICATION');
+  const service = createRecallConversationService(config, {
+    embeddingProvider: TEST_EMBEDDING_PROVIDER,
+    loadTokenizer: async () => tokenizer,
+  });
+  await service.index({ rebuild: true });
+  const activeBeforeStaging = await readlink(join(root, 'recall', 'active'));
+  await writeConversationSession(sessionPath, 'STAGED_FOR_CERTIFICATION');
+
+  const staged = await service.index({ rebuild: true, deferActivation: true });
+
+  assert.equal(staged.databaseTransition.kind, 'candidate-staged');
+  assert.equal(await readlink(join(root, 'recall', 'active')), activeBeforeStaging);
+  const activeSearch = await service.search('ACTIVE_BEFORE_CERTIFICATION', 5, {
+    scope: RecallSearchScope.GLOBAL,
+  });
+  assert.match(activeSearch.results[0]?.content ?? '', /ACTIVE_BEFORE_CERTIFICATION/u);
+  if (staged.databaseTransition.kind !== 'candidate-staged') {
+    assert.fail('Expected the rebuilt database to remain staged');
+  }
+
+  const activation = await service.activate(staged.databaseTransition.databaseTarget);
+
+  assert.deepEqual(activation, { kind: 'staged-activated' });
+  assert.equal(
+    await readlink(join(root, 'recall', 'active')),
+    staged.databaseTransition.databaseTarget,
+  );
+  const activatedSearch = await service.search('STAGED_FOR_CERTIFICATION', 5, {
+    scope: RecallSearchScope.GLOBAL,
+  });
+  assert.match(activatedSearch.results[0]?.content ?? '', /STAGED_FOR_CERTIFICATION/u);
+});
+
+void test('staged version 8 rebuild reuses compatible vectors from the active version 8 database', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-v8-active-vector-reuse-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const config = createTestConfig(root, { databaseGenerations: true });
+  await writeConversationSession(
+    join(config.sessionsDirectory, 'one.jsonl'),
+    'VERSION_8_REUSABLE_VECTOR_EVIDENCE',
+  );
+  const activeService = createRecallConversationService(config, {
+    embeddingProvider: TEST_EMBEDDING_PROVIDER,
+    loadTokenizer: async () => tokenizer,
+  });
+  await activeService.index({ rebuild: true });
+  const reuseService = createRecallConversationService(config, {
+    embeddingProvider: {
+      ...TEST_EMBEDDING_PROVIDER,
+      embedDocuments() {
+        throw new Error('compatible active version 8 vectors must avoid embedding');
+      },
+    },
+    loadTokenizer: async () => tokenizer,
+  });
+
+  const staged = await reuseService.index({
+    rebuild: true,
+    deferActivation: true,
+    reuseActiveVectors: true,
+  });
+
+  assert.equal(staged.indexSummary.newlyEmbeddedChunks, 0);
+  assert.ok(staged.indexSummary.reusedVectors > 0);
+  assert.equal(staged.databaseTransition.kind, 'candidate-staged');
+});
+
+void test('staged rebuild uses a separate construction lock and leaves active search available', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-generation-construction-lock-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const config = createTestConfig(root, { databaseGenerations: true });
+  const sessionPath = join(config.sessionsDirectory, 'one.jsonl');
+  await writeConversationSession(sessionPath, 'READABLE_DURING_STAGED_CONSTRUCTION');
+  const stableService = createRecallConversationService(config, {
+    embeddingProvider: TEST_EMBEDDING_PROVIDER,
+    loadTokenizer: async () => tokenizer,
+  });
+  await stableService.index({ rebuild: true });
+
+  let releaseEmbedding: (() => void) | undefined;
+  const embeddingReleased = new Promise<void>((resolveEmbedding) => {
+    releaseEmbedding = resolveEmbedding;
+  });
+  let reportEmbeddingStarted: (() => void) | undefined;
+  const embeddingStarted = new Promise<void>((resolveStarted) => {
+    reportEmbeddingStarted = resolveStarted;
+  });
+  const stagingService = createRecallConversationService(config, {
+    embeddingProvider: {
+      ...TEST_EMBEDDING_PROVIDER,
+      async embedDocuments(documents) {
+        reportEmbeddingStarted?.();
+        await embeddingReleased;
+        return documents.map(createTestEmbeddingVector);
+      },
+    },
+    loadTokenizer: async () => tokenizer,
+  });
+  const staging = stagingService.index({ rebuild: true, deferActivation: true });
+  await embeddingStarted;
+
+  await assert.rejects(readFile(join(config.lockPath, 'owner.json')), { code: 'ENOENT' });
+  const activeSearch = await stableService.search('READABLE_DURING_STAGED_CONSTRUCTION', 5, {
+    scope: RecallSearchScope.GLOBAL,
+  });
+  assert.match(activeSearch.results[0]?.content ?? '', /READABLE_DURING_STAGED_CONSTRUCTION/u);
+
+  releaseEmbedding?.();
+  await staging;
+});
+
+void test('resumed staged rebuild preserves completed sessions after a fatal embedding outage', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-generation-resume-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const config = createTestConfig(root, { databaseGenerations: true });
+  await writeConversationSession(
+    join(config.sessionsDirectory, 'one.jsonl'),
+    'COMPLETED_BEFORE_OUTAGE',
+    'session-one',
+  );
+  await writeConversationSession(
+    join(config.sessionsDirectory, 'two.jsonl'),
+    'FAILED_DURING_OUTAGE',
+    'session-two',
+  );
+  const failingService = createRecallConversationService(config, {
+    embeddingProvider: {
+      ...TEST_EMBEDDING_PROVIDER,
+      embedDocuments(documents) {
+        if (documents.some((document) => document.includes('FAILED_DURING_OUTAGE'))) {
+          throw new Error('Embedding endpoint unavailable');
+        }
+        return Promise.resolve(documents.map(createTestEmbeddingVector));
+      },
+    },
+    loadTokenizer: async () => tokenizer,
+  });
+  await assert.rejects(
+    failingService.index({ rebuild: true, deferActivation: true }),
+    /Embedding endpoint unavailable/u,
+  );
+  const resumedService = createRecallConversationService(config, {
+    embeddingProvider: TEST_EMBEDDING_PROVIDER,
+    loadTokenizer: async () => tokenizer,
+  });
+
+  const resumed = await resumedService.index({
+    rebuild: true,
+    deferActivation: true,
+    resumeCandidate: true,
+  });
+
+  assert.equal(resumed.indexSummary.indexedSessions, 1);
+  assert.equal(resumed.databaseTransition.kind, 'candidate-staged');
+  if (resumed.databaseTransition.kind !== 'candidate-staged') {
+    assert.fail('Expected resumed candidate to remain staged');
+  }
+  await resumedService.activate(resumed.databaseTransition.databaseTarget);
+  const completedSearch = await resumedService.search('COMPLETED_BEFORE_OUTAGE', 5, {
+    scope: RecallSearchScope.GLOBAL,
+  });
+  const recoveredSearch = await resumedService.search('FAILED_DURING_OUTAGE', 5, {
+    scope: RecallSearchScope.GLOBAL,
+  });
+  assert.ok(
+    completedSearch.results.some((result) => /COMPLETED_BEFORE_OUTAGE/u.test(result.content)),
+  );
+  assert.ok(recoveredSearch.results.some((result) => /FAILED_DURING_OUTAGE/u.test(result.content)));
+});
+
+void test('fatal and interrupted rebuilds leave the active database unchanged', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-generation-failure-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const config = createTestConfig(root, { databaseGenerations: true });
+  const sessionPath = join(config.sessionsDirectory, 'one.jsonl');
+  await writeConversationSession(sessionPath, 'STABLE_ACTIVE_EVIDENCE');
+  const stableService = createRecallConversationService(config, {
+    embeddingProvider: TEST_EMBEDDING_PROVIDER,
+    loadTokenizer: async () => tokenizer,
+  });
+  await stableService.index({ rebuild: true });
+  const stableTarget = await readlink(join(root, 'recall', 'active'));
+
+  await writeConversationSession(sessionPath, 'FAILED_CANDIDATE_EVIDENCE');
+  const failingService = createRecallConversationService(config, {
+    embeddingProvider: {
+      ...TEST_EMBEDDING_PROVIDER,
+      async embedDocuments() {
+        throw new Error('Candidate embedding failed');
+      },
+    },
+    loadTokenizer: async () => tokenizer,
+  });
+  await assert.rejects(failingService.index({ rebuild: true }), /Candidate embedding failed/u);
+  assert.equal(await readlink(join(root, 'recall', 'active')), stableTarget);
+
+  const abortController = new AbortController();
+  const interruptedService = createRecallConversationService(config, {
+    embeddingProvider: {
+      ...TEST_EMBEDDING_PROVIDER,
+      async embedDocuments(documents, signal) {
+        void documents;
+        abortController.abort(new Error('Candidate rebuild interrupted'));
+        signal?.throwIfAborted();
+        return [];
+      },
+    },
+    loadTokenizer: async () => tokenizer,
+  });
+  await assert.rejects(
+    interruptedService.index({ rebuild: true, signal: abortController.signal }),
+    /Candidate rebuild interrupted/u,
+  );
+  assert.equal(await readlink(join(root, 'recall', 'active')), stableTarget);
+  const search = await stableService.search('STABLE_ACTIVE_EVIDENCE', 5, {
+    scope: RecallSearchScope.GLOBAL,
+  });
+  assert.match(search.results[0]?.content ?? '', /STABLE_ACTIVE_EVIDENCE/u);
+});
+
+void test('failed candidate stays inactive and the next rebuild removes stale candidates', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-generation-stale-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const config = createTestConfig(root, { databaseGenerations: true });
+  const sessionPath = join(config.sessionsDirectory, 'one.jsonl');
+  await writeConversationSession(sessionPath, 'ACTIVE_BEFORE_FAILED_CANDIDATE');
+  const service = createRecallConversationService(config, {
+    embeddingProvider: TEST_EMBEDDING_PROVIDER,
+    loadTokenizer: async () => tokenizer,
+  });
+  await service.index({ rebuild: true });
+  const activeBeforeFailure = await readlink(join(root, 'recall', 'active'));
+  await writeFile(join(config.sessionsDirectory, 'damaged.jsonl'), 'not JSON\n', 'utf8');
+
+  const failed = await service.index({ rebuild: true });
+  assert.equal(failed.databaseTransition.kind, 'candidate-failed');
+  assert.equal(await readlink(join(root, 'recall', 'active')), activeBeforeFailure);
+  assert.equal(
+    (await readdir(config.databaseGenerationRootPath ?? '')).filter((name) =>
+      name.startsWith('candidate-'),
+    ).length,
+    1,
+  );
+
+  await rm(join(config.sessionsDirectory, 'damaged.jsonl'));
+  await writeConversationSession(sessionPath, 'ACTIVE_AFTER_STALE_CLEANUP');
+  const recovered = await service.index({ rebuild: true });
+  assert.deepEqual(recovered.databaseTransition, {
+    kind: 'candidate-activated',
+    staleCandidatesRemoved: 1,
+  });
+  assert.equal(
+    (await readdir(config.databaseGenerationRootPath ?? '')).filter((name) =>
+      name.startsWith('candidate-'),
+    ).length,
+    0,
+  );
+});
+
+void test('standalone optimization is retired for unified SQLite storage', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'recall-standalone-optimize-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const config = createTestConfig(root);
   await writeConversationSession(
     join(config.sessionsDirectory, 'one.jsonl'),
-    'Force optimization fixture evidence.',
+    'Update-only indexing fixture evidence.',
   );
   const service = createRecallConversationService(config, {
     embeddingProvider: TEST_EMBEDDING_PROVIDER,
     loadTokenizer: async () => tokenizer,
   });
   await service.index({ rebuild: true });
-  const progressKinds: string[] = [];
 
-  const result = await service.optimize({
-    onProgress(event) {
-      progressKinds.push(event.kind);
-    },
-  });
-
-  assert.ok(result.totalChunks > 0);
-  assert.deepEqual(progressKinds, ['optimizing-collection', 'completed']);
+  await assert.rejects(
+    service.optimize(),
+    /Recall optimization has been retired; normal indexing is update-only/u,
+  );
 });
 
-void test('standalone optimization remains repeatable after later indexed writes', async (t) => {
+void test('normal indexing never requires a whole-database optimization', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'recall-repeatable-optimize-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const config = createTestConfig(root);
   await writeConversationSession(
     join(config.sessionsDirectory, 'first.jsonl'),
-    'Initial repeatable optimization evidence.',
+    'Initial update-only evidence.',
   );
   const service = createRecallConversationService(config, {
     embeddingProvider: TEST_EMBEDDING_PROVIDER,
     loadTokenizer: async () => tokenizer,
   });
   await service.index({ rebuild: true });
-  const firstOptimization = await service.optimize();
-
   await writeConversationSession(
     join(config.sessionsDirectory, 'second.jsonl'),
-    'Later repeatable optimization evidence.',
+    'Later update-only evidence.',
   );
-  const laterIndex = await service.index();
-  const secondOptimization = await service.optimize();
+
+  const laterIndex = await service.index({ optimize: true });
 
   assert.equal(laterIndex.indexSummary.indexedSessions, 1);
-  assert.ok(secondOptimization.totalChunks > firstOptimization.totalChunks);
+  assert.equal(laterIndex.documentCounts.dense, 2);
 });
 
-void test('service builds one zvec collection and performs read-only hybrid search', async (t) => {
+void test('service source search reads raw output without opening the index or embedding', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-service-source-search-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const config = createTestConfig(root);
+  const sessionPath = join(config.sessionsDirectory, 'source.jsonl');
+  await mkdir(config.sessionsDirectory, { recursive: true });
+  await writeFile(
+    sessionPath,
+    sessionLines([
+      {
+        type: 'session',
+        version: 3,
+        id: 'source-session',
+        timestamp: '2026-08-10T10:00:00Z',
+        cwd: '/project',
+      },
+      {
+        type: 'message',
+        id: 'source-result',
+        parentId: null,
+        timestamp: '2026-08-10T10:01:00Z',
+        message: {
+          role: 'toolResult',
+          toolCallId: 'source-call',
+          toolName: 'bash',
+          isError: true,
+          content: [{ type: 'text', text: 'RAW_RESULT_ONLY hardware MODEL-9000' }],
+        },
+      },
+    ]),
+  );
+  const projectIdentity = parseProjectIdentity('non-git-session-origin:/project');
+  const service = createRecallConversationService(config, {
+    embeddingProvider: {
+      embedQuery() {
+        throw new Error('source search must not embed');
+      },
+      embedDocuments() {
+        throw new Error('source search must not embed');
+      },
+    },
+    loadTokenizer: async () => {
+      throw new Error('source search must not load the tokenizer');
+    },
+    openDatabase() {
+      throw new Error('source search must not open the database');
+    },
+    resolveProjectIdentity: async () => ({
+      projectIdentity,
+      identitySource: RecallProjectIdentitySource.NON_GIT_SESSION_ORIGIN,
+    }),
+  });
+
+  const search = await service.searchSource('MODEL-9000', 5, {
+    scope: RecallSearchScope.PROJECT,
+    invocationDirectory: '/trusted/project',
+  });
+
+  assert.equal(search.results[0]?.sessionPath, sessionPath);
+  assert.equal(search.results[0]?.entryId, 'source-result');
+  assert.equal(search.results[0]?.sourceLineStart, 2);
+  assert.match(search.results[0]?.text ?? '', /RAW_RESULT_ONLY hardware MODEL-9000/u);
+});
+
+void test('rebuild activates dense conversations and compact Invocations for combined normal recall', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-service-compact-layout-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const config = createTestConfig(root, { databaseGenerations: true });
+  const sessionPath = join(config.sessionsDirectory, 'compact.jsonl');
+  await mkdir(config.sessionsDirectory, { recursive: true });
+  await writeFile(
+    sessionPath,
+    sessionLines([
+      {
+        type: 'session',
+        version: 3,
+        id: 'compact-session',
+        timestamp: '2026-08-10T10:00:00Z',
+        cwd: '/project',
+      },
+      {
+        type: 'message',
+        id: 'compact-conversation',
+        parentId: null,
+        timestamp: '2026-08-10T10:01:00Z',
+        message: {
+          role: 'user',
+          content: 'Keep the compact catalog migration source-backed and searchable.',
+        },
+      },
+      {
+        type: 'message',
+        id: 'compact-tool-call',
+        parentId: 'compact-conversation',
+        timestamp: '2026-08-10T10:02:00Z',
+        message: {
+          role: 'assistant',
+          content: [
+            {
+              type: 'toolCall',
+              id: 'compact-call',
+              name: 'read',
+              arguments: { path: '/project/src/compact-catalog.ts' },
+            },
+          ],
+        },
+      },
+      {
+        type: 'message',
+        id: 'compact-result',
+        parentId: 'compact-tool-call',
+        timestamp: '2026-08-10T10:03:00Z',
+        message: {
+          role: 'toolResult',
+          toolCallId: 'compact-call',
+          toolName: 'read',
+          content: [{ type: 'text', text: 'RAW_RESULT_MUST_STAY_SOURCE_BACKED' }],
+          isError: false,
+        },
+      },
+    ]),
+  );
+  const service = createRecallConversationService(config, {
+    embeddingProvider: TEST_EMBEDDING_PROVIDER,
+    loadTokenizer: async () => tokenizer,
+  });
+
+  const indexed = await service.index({ rebuild: true });
+  const search = await service.search('compact catalog', 2, {
+    scope: RecallSearchScope.GLOBAL,
+  });
+
+  assert.equal(indexed.databaseTransition.kind, 'candidate-activated');
+  assert.deepEqual(indexed.documentCounts, { dense: 1, invocations: 1 });
+  assert.deepEqual(search.documentCounts, { dense: 1, invocations: 1 });
+  assert.deepEqual(
+    search.results.map((result) => result.resultKind),
+    ['conversation', 'invocation'],
+  );
+  assert.ok(
+    search.results.every(
+      (result) => !JSON.stringify(result).includes('RAW_RESULT_MUST_STAY_SOURCE_BACKED'),
+    ),
+  );
+});
+
+void test('service builds one unified SQLite database and performs read-only combined search', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'recall-service-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const config = createTestConfig(root);
@@ -170,30 +622,25 @@ void test('service builds one zvec collection and performs read-only hybrid sear
     embeddingProvider: TEST_EMBEDDING_PROVIDER,
     loadTokenizer: async () => tokenizer,
     getCurrentTime: () => new Date('2026-07-25T12:00:00.000Z'),
-    openStore(mode) {
-      openedModes.push(mode);
-      return openZvecConversationStore({
-        databasePath: config.databasePath,
-        dimensions: config.embeddingStoredDimensions,
-        createIfMissing: mode === 'write',
-        readOnly: mode === 'read',
-      });
+    openDatabase(sqliteDatabasePath, options) {
+      openedModes.push(options?.readOnly ? 'read' : 'write');
+      return openSqliteRecallDatabase(sqliteDatabasePath, options);
     },
   });
 
   const indexed = await service.index({ rebuild: true, optimize: true });
-  const stateBeforeSearch = await readFile(config.statePath, 'utf8');
+  const databaseBeforeSearch = await readFile(config.sqliteDatabasePath);
   const statusBeforeSearch = await readFile(config.indexMaintenanceStatusPath, 'utf8');
   const search = await service.search('manual zvec', 5, { scope: RecallSearchScope.GLOBAL });
-  const stateAfterSearch = await readFile(config.statePath, 'utf8');
+  const databaseAfterSearch = await readFile(config.sqliteDatabasePath);
   const statusAfterSearch = await readFile(config.indexMaintenanceStatusPath, 'utf8');
 
   assert.equal(indexed.indexSummary.indexedSessions, 1);
   assert.ok(indexed.totalChunks >= 1);
   assert.equal(search.results[0]?.sessionPath, sessionPath);
   assert.equal(search.results[0]?.sourceLineStart, 2);
-  assert.equal(search.searchPolicy.rankingMode, 'hybrid');
-  assert.deepEqual(search.searchPolicy.candidateLimits, { dense: 8, lexical: 8, identifier: 8 });
+  assert.equal(search.searchPolicy.rankingMode, 'compact');
+  assert.deepEqual(search.searchPolicy.candidateLimits, { dense: 8, invocation: 8 });
   assert.deepEqual(search.indexMaintenanceStatus, {
     version: 1,
     completedAt: '2026-07-25T12:00:00.000Z',
@@ -201,7 +648,7 @@ void test('service builds one zvec collection and performs read-only hybrid sear
     failedSessions: 0,
   });
   assert.equal(statusBeforeSearch, `${JSON.stringify(search.indexMaintenanceStatus, null, 2)}\n`);
-  assert.equal(stateAfterSearch, stateBeforeSearch);
+  assert.deepEqual(databaseAfterSearch, databaseBeforeSearch);
   assert.equal(statusAfterSearch, statusBeforeSearch);
   assert.deepEqual(
     (await readdir(join(root, 'recall'))).filter((name) =>
@@ -210,6 +657,12 @@ void test('service builds one zvec collection and performs read-only hybrid sear
     [],
   );
   assert.deepEqual(openedModes, ['write', 'read']);
+  assert.deepEqual(
+    (await readdir(join(root, 'recall'))).filter((name) =>
+      ['zvec', 'recall-catalog.sqlite', 'index-state.json'].includes(name),
+    ),
+    [],
+  );
 });
 
 void test('completed no-op Index maintenance refreshes its durable status', async (t) => {
@@ -411,11 +864,8 @@ void test('service maintenance reads persisted ignores and rebuild preserves the
     await readFile(config.physicalSessionIgnoreStatePath, 'utf8'),
     ignoreStateBeforeRebuild,
   );
-  const stateText = await readFile(config.statePath, 'utf8');
   const manifestText = await readFile(config.manifestPath, 'utf8');
-  assert.ok(stateText.includes(JSON.stringify(eligiblePath)));
-  assert.ok(!stateText.includes(JSON.stringify(ignoredPath)));
-  assert.ok(!stateText.includes('ignoredPhysicalSessionPaths'));
+  assert.deepEqual(readSqliteSessionPaths(config.sqliteDatabasePath), [eligiblePath]);
   assert.ok(!manifestText.includes('ignoredPhysicalSessionPaths'));
   assert.ok(!manifestText.includes('physical-session-ignore.json'));
 });
@@ -431,13 +881,13 @@ void test('malformed ignore state aborts rebuild before deleting a working index
     loadTokenizer: async () => tokenizer,
   });
   await service.index({ rebuild: true });
-  const stateBefore = await readFile(config.statePath, 'utf8');
+  const databaseBefore = await readFile(config.sqliteDatabasePath);
   const manifestBefore = await readFile(config.manifestPath, 'utf8');
   await writeFile(config.physicalSessionIgnoreStatePath, '{"version":1}\n', 'utf8');
 
   await assert.rejects(service.index({ rebuild: true }), /Physical session ignore state invalid/u);
 
-  assert.equal(await readFile(config.statePath, 'utf8'), stateBefore);
+  assert.deepEqual(await readFile(config.sqliteDatabasePath), databaseBefore);
   assert.equal(await readFile(config.manifestPath, 'utf8'), manifestBefore);
   const search = await service.search('WORKING_GENERATION_EVIDENCE', 5, {
     scope: RecallSearchScope.GLOBAL,
@@ -484,7 +934,7 @@ void test('search tolerates unavailable status without catching up changed sessi
     loadTokenizer: async () => tokenizer,
   });
   await service.index({ rebuild: true });
-  const stateBeforeSearch = await readFile(config.statePath, 'utf8');
+  const databaseBeforeSearch = await readFile(config.sqliteDatabasePath);
   await writeConversationSession(sessionPath, 'NEW_UNINDEXED_SOURCE_MARKER');
   const unavailableStatuses: Array<{ name: string; content: string | null }> = [
     { name: 'missing', content: null },
@@ -518,7 +968,7 @@ void test('search tolerates unavailable status without catching up changed sessi
     });
 
     assert.equal(search.indexMaintenanceStatus, null, unavailableStatus.name);
-    assert.equal(await readFile(config.statePath, 'utf8'), stateBeforeSearch);
+    assert.deepEqual(await readFile(config.sqliteDatabasePath), databaseBeforeSearch);
     assert.ok(
       search.results.every((result) => !result.content.includes('NEW_UNINDEXED_SOURCE_MARKER')),
       unavailableStatus.name,
@@ -535,7 +985,7 @@ void test('search tolerates unavailable status without catching up changed sessi
   }
 });
 
-void test('manual rebuild replaces incompatible stored-dimension manifests', async (t) => {
+void test('manual rebuild replaces an incompatible embedding-model manifest', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'recall-rebuild-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const config = createTestConfig(root);
@@ -549,23 +999,15 @@ void test('manual rebuild replaces incompatible stored-dimension manifests', asy
   });
   await service.index({ rebuild: true });
 
-  const changedConfig = { ...config, embeddingNativeDimensions: 3, embeddingStoredDimensions: 2 };
-  const changedProvider: RecallEmbeddingProvider = {
-    async embedQuery() {
-      return [1, 0];
-    },
-    async embedDocuments(documents) {
-      return documents.map(() => [1, 0]);
-    },
-  };
+  const changedConfig = { ...config, embeddingServedModelId: 'Octen/Replacement-Embedding-4B' };
   const changedService = createRecallConversationService(changedConfig, {
-    embeddingProvider: changedProvider,
+    embeddingProvider: TEST_EMBEDDING_PROVIDER,
     loadTokenizer: async () => tokenizer,
   });
 
   await assert.rejects(
     changedService.search('Atlas', 5, { scope: RecallSearchScope.GLOBAL }),
-    /embedding\.nativeDimensions[\s\S]*psr index --rebuild/,
+    /embedding\.servedModelId[\s\S]*psr index --rebuild/,
   );
   const rebuilt = await changedService.index({ rebuild: true });
   assert.equal(rebuilt.indexSummary.indexedSessions, 1);
@@ -596,13 +1038,47 @@ void test('ordinary indexing preserves the existing generation when its manifest
   assert.equal(await readFile(config.manifestPath, 'utf8'), manifestBefore);
 });
 
-void test('project scope filters every retrieval channel before final ranking', async (t) => {
+void test('project scope filters both SQLite projections before mixed-result selection', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'recall-project-scope-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const config = createTestConfig(root);
-  await writeConversationSession(
-    join(config.sessionsDirectory, 'one.jsonl'),
-    'Atlas evidence for this project.',
+  const sessionPath = join(config.sessionsDirectory, 'one.jsonl');
+  await mkdir(config.sessionsDirectory, { recursive: true });
+  await writeFile(
+    sessionPath,
+    sessionLines([
+      {
+        type: 'session',
+        version: 3,
+        id: 'project-scope-session',
+        timestamp: '2026-07-24T10:00:00Z',
+        cwd: '/project',
+      },
+      {
+        type: 'message',
+        id: 'project-conversation',
+        parentId: null,
+        timestamp: '2026-07-24T10:01:00Z',
+        message: { role: 'user', content: 'Atlas evidence for this project.' },
+      },
+      {
+        type: 'message',
+        id: 'project-invocation',
+        parentId: 'project-conversation',
+        timestamp: '2026-07-24T10:02:00Z',
+        message: {
+          role: 'assistant',
+          content: [
+            {
+              type: 'toolCall',
+              id: 'project-call',
+              name: 'read',
+              arguments: { path: '/project/Atlas.ts' },
+            },
+          ],
+        },
+      },
+    ]),
   );
   const projectIdentity = parseProjectIdentity('non-git-session-origin:/project');
   const service = createRecallConversationService(config, {
@@ -625,8 +1101,14 @@ void test('project scope filters every retrieval channel before final ranking', 
   });
   const global = await service.search('Atlas', 5, { scope: RecallSearchScope.GLOBAL });
 
-  assert.equal(included.results.length, 1);
-  assert.equal(global.results.length, 1);
+  assert.deepEqual(
+    included.results.map((result) => result.resultKind),
+    ['conversation', 'invocation'],
+  );
+  assert.deepEqual(
+    global.results.map((result) => result.resultKind),
+    ['conversation', 'invocation'],
+  );
   await assert.rejects(
     service.search('Atlas', 5, {
       scope: RecallSearchScope.PROJECT,

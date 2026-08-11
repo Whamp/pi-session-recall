@@ -56,29 +56,37 @@ _Avoid_: Character chunk, transcript chunk
 A token-bounded secondary document that joins visible user text with visible assistant text on one parent-linked path until the next user entry. It may cross intervening tool activity but excludes thinking and raw tool output. It cites every entry whose text contributes.
 _Avoid_: Flat turn, tool transcript
 
-**Tool evidence document**:
-A lexical-only, verbatim tool name, argument object, result text, or direct bash command/output part bounded within one source block or message field. Tool calls and results are linked by call ID. Tool evidence is never sent to the embedding model.
-_Avoid_: Tool transcript, conversation chunk
+**Invocation record**:
+A compact searchable record of one tool call or direct bash execution. It contains the tool name, bounded locator arguments or command, call identity, project attribution, and Source locator. It never contains complete tool results or bash output.
+_Avoid_: Tool evidence document, tool result
+
+**Source-backed evidence**:
+Evidence retained only in canonical session JSONL. Complete tool results, bash output, and omitted invocation payloads are Source-backed evidence.
+_Avoid_: Invocation record, copied tool output
+
+**Source search**:
+An explicit, slow, read-only scan of eligible Physical session files for complete Source-backed evidence. It never runs during normal recall and writes no index or cache data.
+_Avoid_: Normal recall, source neighborhood index
 
 **Evidence part**:
-The source component represented by one document: conversation or summary content, tool name, tool arguments, tool result, bash command, or bash output.
-_Avoid_: Chunk type
+The source component represented by one Dense recall document. Compact Invocation fields and Source-backed evidence are not Evidence parts.
+_Avoid_: Chunk type, Invocation field
+
+**Dense recall document**:
+A conversation chunk, compaction summary, branch summary, or turn-context document with a real 1,024-dimension FP32 embedding. Dense recall documents contain no tool calls, tool results, or bash output.
+_Avoid_: Invocation record, Tool evidence document
 
 **Dense candidate**:
 An atomic conversation chunk surfaced because its meaning is close to the search query.
 _Avoid_: Semantic result
 
-**Lexical candidate**:
-An atomic conversation chunk surfaced by case-insensitive ordinary-text retrieval.
-_Avoid_: Keyword result
+**Invocation candidate**:
+An Invocation record surfaced by SQLite full-text search over tool names, bounded locator arguments, or direct bash commands.
+_Avoid_: Tool result, Source-backed evidence
 
-**Identifier candidate**:
-An atomic conversation chunk surfaced by case-preserving retrieval of identifiers, filenames, hashes, or similar source tokens.
-_Avoid_: Exact result
-
-**Hybrid recall result**:
-One conversation, summary, or tool evidence document deduplicated across retrieval channels, with its document kind and each component rank and score retained.
-_Avoid_: Semantic match
+**Normal recall result**:
+One Dense recall document or Invocation record selected from the Recall database before the requested result limit is applied.
+_Avoid_: Source search result, Hybrid recall result
 
 **Recall result presentation**:
 The Pi TUI view of completed `pi-session-recall` output. It keeps model-visible recall evidence unchanged, shows a one-line summary while collapsed, and reveals the full output through Pi's configured tool-expansion action. It is a UI concept, not a Hybrid recall result or Tool evidence document.
@@ -92,33 +100,45 @@ _Avoid_: Duplicate result, source alias
 One representative recall candidate plus every overlapping-sibling or exact-copy occurrence suppressed from separate result slots. Raw evidence and synthetic summaries never share a group.
 _Avoid_: Duplicate result list
 
-**Ranked hybrid result**:
-One duplicate evidence group ordered by fused retrieval score plus a small active-branch preference. Abandoned-branch evidence remains eligible and labeled.
-_Avoid_: Reranked result, semantic match
+**Ranked conversation result**:
+One Duplicate evidence group ordered by dense similarity plus a small active-branch preference. Abandoned-branch evidence remains eligible and labeled.
+_Avoid_: Invocation candidate, semantic match
 
 **Neighbor context**:
 Readable context formed from a winning atomic conversation chunk and its valid contiguous siblings in the same visible text run. The contributing chunks remain individually identified.
 _Avoid_: Expanded transcript, joined messages
 
 **Index manifest**:
-The versioned identity of the Octen model, native and stored dimensions, prefix normalization, tokenizer, chunk policy, provenance schema, project identity, and zvec schema used by one explicitly maintained index.
+The versioned identity of the Octen model, fixed 1,024-dimension stored prefix, tokenizer, chunk policy, provenance schema, project identity, and Dense recall store schema used by one explicitly maintained Recall database.
 _Avoid_: Index state, configuration
 
 **Stored recall embedding**:
-The first configured dimensions of one native Octen vector, L2-normalized and stored as FP32 for inner-product search.
+The first configured dimensions of one native Octen vector, L2-normalized and stored as FP32 for cosine search.
 _Avoid_: Raw embedding, independently verified MRL vector
 
+**Recall database**:
+One disposable WAL-mode SQLite projection containing Physical session state, compact Invocation records with FTS5, Dense recall metadata, and one 16-bucket vec0 table. Project and global search use the same stored vector. One changed Physical session replaces its complete projection in one transaction. Canonical session JSONL owns full payloads and explicit Source search.
+_Avoid_: Recall catalog, Zvec collection, index state file
+
+**Candidate recall database**:
+A Recall database that `psr index --rebuild` builds beside the Active recall database. It cannot serve normal search until a successful rebuild completes.
+_Avoid_: Temporary index, partial active database
+
+**Staged recall database**:
+A complete Candidate recall database promoted to a durable generation without changing the active pointer. It remains inactive until `psr activate` names its exact database target.
+_Avoid_: Active recall database, failed candidate
+
+**Active recall database**:
+The Recall database used by normal indexing and search. Activation replaces its pointer atomically after a Candidate recall database completes successfully.
+_Avoid_: Latest database, production directory
+
 **Index maintenance**:
-One standalone `psr index` operation that scans physical session files and updates one zvec collection. An operator or opt-in user schedule may start it. `psr index --rebuild` replaces incompatible index state.
+One standalone `psr index` operation that scans physical session files and updates the Active recall database. An operator or opt-in user schedule may start it. `psr index --rebuild` builds and activates a Candidate recall database without modifying the prior Active recall database. Adding `--stage` leaves the completed replacement inactive for certification.
 _Avoid_: Live ingestion, lifecycle reconciliation
 
 **Maintenance workset**:
 The eligible new or changed physical session files, missing previously indexed files, and ignored indexed files scheduled for removal during one index maintenance operation. It forecasts file-level work; the number of documents requiring embeddings emerges as changed files are processed.
 _Avoid_: Sessions to embed, embedding total
-
-**Index optimization**:
-One explicit `psr optimize` operation that compacts the existing zvec collection without scanning Physical session files or changing which evidence is searchable. It merges FTS segments and may change BM25 scores or ranking. It runs manually or through an opt-in optimization schedule, never as a default part of Index maintenance. It uses the same writer lock as Index maintenance.
-_Avoid_: Index maintenance, rebuild
 
 **Index maintenance status**:
 The durable completion record for the latest normally completed Index maintenance operation. It records when the operation completed and how many Physical session files it scanned or failed. Its absence means freshness is unavailable, not that a live backlog was measured.

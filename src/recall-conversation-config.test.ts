@@ -17,10 +17,16 @@ void test('recall config defaults to one Octen profile and the frozen search pol
     assert.equal(config.embeddingNativeDimensions, 2_560);
     assert.equal(config.embeddingStoredDimensions, 1_024);
     assert.deepEqual(config.chunkPolicy, { maxTokens: 512, overlapTokens: 64 });
-    assert.deepEqual(config.searchCandidateLimits, { dense: 8, lexical: 8, identifier: 8 });
-    assert.equal(config.databasePath, join(home, '.pi', 'agent', 'recall', 'zvec'));
-    assert.equal(config.statePath, join(home, '.pi', 'agent', 'recall', 'index-state.json'));
+    assert.deepEqual(config.searchCandidateLimits, { dense: 8, invocation: 8 });
+    assert.equal(config.sqliteDatabasePath, join(home, '.pi', 'agent', 'recall', 'recall.sqlite'));
+    assert.equal('legacyV6ZvecDatabasePath' in config, false);
+    assert.equal('legacyV6StatePath' in config, false);
+    assert.equal('catalogPath' in config, false);
     assert.equal(config.manifestPath, join(home, '.pi', 'agent', 'recall', 'index-manifest.json'));
+    assert.equal(
+      config.databaseGenerationRootPath,
+      join(home, '.pi', 'agent', 'recall', 'generations'),
+    );
     assert.equal(
       config.indexMaintenanceStatusPath,
       join(home, '.pi', 'agent', 'recall', 'index-maintenance-status.json'),
@@ -36,7 +42,7 @@ void test('recall config defaults to one Octen profile and the frozen search pol
   }
 });
 
-void test('recall config accepts direct Octen HTTP and stored-prefix overrides', async () => {
+void test('recall config accepts direct Octen HTTP and fixed-width profile overrides', async () => {
   const home = await mkdtemp(join(tmpdir(), 'recall-config-env-'));
   try {
     const config = await loadRecallConversationConfig({
@@ -45,21 +51,32 @@ void test('recall config accepts direct Octen HTTP and stored-prefix overrides',
         PI_RECALL_EMBEDDING_BASE_URL: 'http://127.0.0.1:8090/v1',
         PI_RECALL_EMBEDDING_MODEL: 'octen-test',
         PI_RECALL_EMBEDDING_NATIVE_DIMENSIONS: '2560',
-        PI_RECALL_EMBEDDING_STORED_DIMENSIONS: '768',
+        PI_RECALL_EMBEDDING_STORED_DIMENSIONS: '1024',
         PI_RECALL_EMBEDDING_BATCH_SIZE: '4',
       },
     });
 
     assert.equal(config.embeddingBaseUrl, 'http://127.0.0.1:8090/v1');
     assert.equal(config.embeddingModel, 'octen-test');
-    assert.equal(config.embeddingStoredDimensions, 768);
+    assert.equal(config.embeddingStoredDimensions, 1_024);
     assert.equal(config.embeddingBatchSize, 4);
   } finally {
     await rm(home, { recursive: true, force: true });
   }
 });
 
-void test('recall config rejects a stored width larger than Octen native output', async () => {
+void test('recall config rejects widths that cannot back the manifest version 8 FP32 vector', async () => {
+  await assert.rejects(
+    loadRecallConversationConfig({
+      homeDirectory: '/tmp/recall-config-wrong-width',
+      environment: {
+        PI_RECALL_EMBEDDING_NATIVE_DIMENSIONS: '2560',
+        PI_RECALL_EMBEDDING_STORED_DIMENSIONS: '768',
+      },
+    }),
+    /stored dimensions 768 do not match the manifest version 8 FP32 vector width 1024/,
+  );
+
   await assert.rejects(
     loadRecallConversationConfig({
       homeDirectory: '/tmp/recall-config-invalid',

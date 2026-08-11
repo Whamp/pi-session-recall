@@ -9,10 +9,7 @@ import {
   RecallProjectIdentitySource,
   RecallSearchScope,
 } from './enums.js';
-import {
-  RECALL_RANK_FUSION_VERSION,
-  RECALL_RRF_RANK_CONSTANT,
-} from './fuse-recall-search-candidates.js';
+import { COMPACT_RECALL_MIXED_RESULT_POLICY_VERSION } from './combine-compact-recall-results.js';
 import type { ConversationIndexSummary } from './incremental-session-indexer.js';
 import type { RecallEmbeddingProvider } from './recall-inference-capabilities.js';
 import { createOctenHttpEmbeddingProvider } from './octen-http-embedding-provider.js';
@@ -29,6 +26,7 @@ import {
   type RecallConversationConfig,
   type RecallConversationDependencies,
   type RecallConversationSearchOptions,
+  type RecallConversationSearchResult,
 } from './recall-conversation-service.js';
 import {
   selectRecallQualityPolicy,
@@ -93,17 +91,16 @@ export interface RecallQualityEvaluationIdentity {
   projectIdentityMetadataSchemaVersion: number;
   lineagePolicyVersion: number;
   lineageDigest: string;
-  rankingMode: 'hybrid';
-  rankFusionVersion: number;
-  reciprocalRankConstant: number;
+  rankingMode: 'compact';
+  mixedResultPolicyVersion: number;
   activeBranchPrior: number;
-  candidateLimits: { dense: 8; lexical: 8; identifier: 8 };
+  candidateLimits: { dense: 8; invocation: 8 };
   finalResultCount: 5;
 }
 
 /** Raw measured configurations, gate selection, and bounded-work evidence from one run. */
 export interface RecallQualityEvaluationResult {
-  version: 5;
+  version: 6;
   evaluationIdentity: RecallQualityEvaluationIdentity;
   startedAt: string;
   completedAt: string;
@@ -142,10 +139,15 @@ function assertSafeRecallQualityPaths(
   const protectedPaths = [
     corpus.sessionDirectory,
     baseConfig.sessionsDirectory,
-    baseConfig.databasePath,
-    baseConfig.statePath,
+    baseConfig.sqliteDatabasePath,
     baseConfig.manifestPath,
     baseConfig.lockPath,
+    ...(baseConfig.databaseGenerationRootPath
+      ? [
+          baseConfig.databaseGenerationRootPath,
+          join(dirname(baseConfig.databaseGenerationRootPath), 'active'),
+        ]
+      : []),
   ].map((path) => resolve(path));
   for (const protectedPath of protectedPaths) {
     if (
@@ -187,12 +189,12 @@ function createChunkPolicyConfig(
   return {
     ...baseConfig,
     sessionsDirectory: corpus.sessionDirectory,
-    databasePath: join(policyDirectory, 'zvec'),
-    statePath: join(policyDirectory, 'index-state.json'),
+    sqliteDatabasePath: join(policyDirectory, 'recall.sqlite'),
     manifestPath: join(policyDirectory, 'index-manifest.json'),
     indexMaintenanceStatusPath: join(policyDirectory, 'index-maintenance-status.json'),
     physicalSessionIgnoreStatePath: join(policyDirectory, 'physical-session-ignore.json'),
     lockPath: join(policyDirectory, 'operation.lock'),
+    databaseGenerationRootPath: join(policyDirectory, 'generations'),
     projectLineages: normalizeRecallProjectLineages(corpus.specification.projectLineages),
     chunkPolicy: {
       maxTokens: chunkPolicy.maxTokens,
@@ -200,8 +202,7 @@ function createChunkPolicyConfig(
     },
     searchCandidateLimits: {
       dense: candidateCount,
-      lexical: candidateCount,
-      identifier: candidateCount,
+      invocation: candidateCount,
     },
   };
 }
@@ -310,8 +311,16 @@ function createEvaluationSearchOptions(
   };
 }
 
+function selectConversationQualityResults(
+  results: readonly { resultKind: 'conversation' | 'invocation' }[],
+): RecallConversationSearchResult[] {
+  return results.filter(
+    (result): result is RecallConversationSearchResult => result.resultKind === 'conversation',
+  );
+}
+
 function assertBoundedCandidateCount(candidateCount: number): void {
-  const maximumCandidates = candidateCount * 3;
+  const maximumCandidates = candidateCount * 2;
   if (maximumCandidates > RECALL_QUALITY_FULL_POOL_LIMIT) {
     throw new Error(
       `Recall quality candidate bound exceeded: ${candidateCount} per channel can produce ${maximumCandidates}, above full-pool limit ${RECALL_QUALITY_FULL_POOL_LIMIT}`,
@@ -447,12 +456,12 @@ export async function runRecallQualityEvaluation(
                 : {}),
             },
           );
-          globalControlResults = globalControl.results;
+          globalControlResults = selectConversationQualityResults(globalControl.results);
           executedSearchRequests += 1;
         }
         observations.push({
           evaluationCase,
-          results: search.results,
+          results: selectConversationQualityResults(search.results),
           searchPolicy: {
             scope: search.searchPolicy.scope,
             invocationProjectIdentity: search.searchPolicy.invocationProjectIdentity,
@@ -487,7 +496,7 @@ export async function runRecallQualityEvaluation(
   }
   const completedAt = new Date();
   return {
-    version: 5,
+    version: 6,
     evaluationIdentity: {
       defaultScope: RecallSearchScope.PROJECT,
       projectScopePolicyVersion: PROJECT_SCOPE_POLICY_VERSION,
@@ -497,11 +506,10 @@ export async function runRecallQualityEvaluation(
       lineageDigest: createLineageDigest(
         normalizeRecallProjectLineages(specification.projectLineages),
       ),
-      rankingMode: 'hybrid',
-      rankFusionVersion: RECALL_RANK_FUSION_VERSION,
-      reciprocalRankConstant: RECALL_RRF_RANK_CONSTANT,
+      rankingMode: 'compact',
+      mixedResultPolicyVersion: COMPACT_RECALL_MIXED_RESULT_POLICY_VERSION,
       activeBranchPrior: RECALL_ACTIVE_BRANCH_PRIOR,
-      candidateLimits: { dense: 8, lexical: 8, identifier: 8 },
+      candidateLimits: { dense: 8, invocation: 8 },
       finalResultCount: 5,
     },
     startedAt: startedAt.toISOString(),
@@ -519,7 +527,7 @@ export async function runRecallQualityEvaluation(
       indexRuns: indexRuns.length,
       executedSearchRequests,
       chunkEmbeddingRequests,
-      maximumCandidatesPerSearch: Math.max(...specification.candidateCounts) * 3,
+      maximumCandidatesPerSearch: Math.max(...specification.candidateCounts) * 2,
       repositoryIdentityResolutions: projectResolver.repositoryIdentityResolutions,
     },
   };

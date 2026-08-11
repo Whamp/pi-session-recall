@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readlink, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -111,29 +111,34 @@ void test('recall quality runner indexes and searches only the bounded declared 
   const corpus = await loadRecallQualityCorpus(specificationPath);
   const baseConfig: RecallConversationConfig = {
     sessionsDirectory: join(directory, 'must-not-scan-production-sessions'),
-    databasePath: join(directory, 'unused-zvec'),
-    statePath: join(directory, 'unused-state.json'),
+    sqliteDatabasePath: join(directory, 'unused-recall.sqlite'),
     manifestPath: join(directory, 'unused-manifest.json'),
     indexMaintenanceStatusPath: join(directory, 'unused-maintenance-status.json'),
     physicalSessionIgnoreStatePath: join(directory, 'unused-physical-session-ignore.json'),
     tokenizerCacheDirectory: join(directory, 'unused-tokenizers'),
     lockPath: join(directory, 'unused.lock'),
+    databaseGenerationRootPath: join(directory, 'unused-generations'),
     embeddingBaseUrl: 'http://unused.test/v1',
     embeddingModel: 'test-embedding',
     embeddingServedModelId: 'test-embedding-served',
-    embeddingNativeDimensions: 3,
-    embeddingStoredDimensions: 3,
+    embeddingNativeDimensions: 1_024,
+    embeddingStoredDimensions: 1_024,
     embeddingBatchSize: 8,
     projectLineages: normalizeRecallProjectLineages({}),
-    searchCandidateLimits: { dense: 8, lexical: 8, identifier: 8 },
+    searchCandidateLimits: { dense: 8, invocation: 8 },
     chunkPolicy: { maxTokens: 512, overlapTokens: 64 },
   };
+  const baseGenerationTarget = 'unused-generations/existing-generation';
+  await mkdir(join(directory, baseGenerationTarget), { recursive: true });
+  await symlink(baseGenerationTarget, join(directory, 'active'), 'dir');
+
+  const testEmbedding = [1, ...Array.from({ length: 1_023 }, () => 0)];
   const embeddingProvider: RecallEmbeddingProvider = {
     async embedQuery() {
-      return [1, 0, 0];
+      return testEmbedding;
     },
     async embedDocuments(documents) {
-      return documents.map(() => [1, 0, 0]);
+      return documents.map(() => testEmbedding);
     },
   };
   const tokenizer: ConversationTextTokenizer = {
@@ -156,7 +161,7 @@ void test('recall quality runner indexes and searches only the bounded declared 
     },
   });
 
-  assert.equal(result.version, 5);
+  assert.equal(result.version, 6);
   assert.equal(result.boundedWork.indexRuns, 1);
   assert.equal(result.boundedWork.executedSearchRequests, 1);
   assert.equal(result.boundedWork.repositoryIdentityResolutions, 1);
@@ -167,11 +172,10 @@ void test('recall quality runner indexes and searches only the bounded declared 
     projectIdentityMetadataSchemaVersion: 3,
     lineagePolicyVersion: 1,
     lineageDigest: '44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a',
-    rankingMode: 'hybrid',
-    rankFusionVersion: 2,
-    reciprocalRankConstant: 60,
+    rankingMode: 'compact',
+    mixedResultPolicyVersion: 1,
     activeBranchPrior: 0.01,
-    candidateLimits: { dense: 8, lexical: 8, identifier: 8 },
+    candidateLimits: { dense: 8, invocation: 8 },
     finalResultCount: 5,
   });
   assert.equal(result.indexRuns.length, 1);
@@ -183,6 +187,8 @@ void test('recall quality runner indexes and searches only the bounded declared 
   assert.deepEqual(result.configurations[0]?.measurement.policyFailureCaseIds, []);
   assert.deepEqual(result.configurations[0]?.measurement.queryLatencyByScope.global, null);
   assert.ok(result.configurations[0]?.measurement.queryLatencyByScope.project);
+  assert.equal(await readlink(join(directory, 'active')), baseGenerationTarget);
+  assert.deepEqual(await readdir(join(directory, baseGenerationTarget)), []);
 
   await assert.rejects(
     () =>

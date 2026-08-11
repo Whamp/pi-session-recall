@@ -130,7 +130,7 @@ function assertReplayCorpusOutsideProduction(
 async function resolveReplayCorpusRoot(corpusRoot: string): Promise<string> {
   const requestedRoot = resolve(corpusRoot);
   const recallConfig = await loadRecallConversationConfig();
-  const productionRecallDirectory = resolve(dirname(recallConfig.databasePath));
+  const productionRecallDirectory = resolve(dirname(recallConfig.sqliteDatabasePath));
   assertReplayCorpusOutsideProduction(requestedRoot, productionRecallDirectory);
   const resolvedRoot = await realpath(requestedRoot);
   assertReplayCorpusOutsideProduction(resolvedRoot, productionRecallDirectory);

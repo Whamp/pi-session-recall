@@ -5,6 +5,8 @@ import { join } from 'node:path';
 import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 
+import { RecallEmbeddingProfile } from './enums.js';
+import { LOCAL_OCTEN_ARTIFACT_IDENTITY } from './local-octen-model-manager.js';
 import type { RecallConversationConfig } from './recall-conversation-service.js';
 import { DEFAULT_RECALL_CHUNK_POLICY } from './recall-index-manifest.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
@@ -13,17 +15,23 @@ import { normalizeRecallProjectLineages } from './resolve-project-identity.js';
 const DEFAULT_RECALL_CHANNEL_CANDIDATE_LIMIT = 8;
 const DEFAULT_OCTEN_NATIVE_DIMENSIONS = 2_560;
 const DEFAULT_OCTEN_STORED_DIMENSIONS = 1_024;
+const DEFAULT_LOCAL_OCTEN_PARALLELISM = 4;
+const DEFAULT_LOCAL_OCTEN_INTRA_OPERATION_THREADS = 4;
 
 const recallConfigFileSchema = Type.Object(
   {
     sessionsDirectory: Type.Optional(Type.String({ minLength: 1 })),
     dataDirectory: Type.Optional(Type.String({ minLength: 1 })),
+    embeddingProfile: Type.Optional(Type.Enum(RecallEmbeddingProfile)),
     embeddingBaseUrl: Type.Optional(Type.String({ minLength: 1 })),
     embeddingModel: Type.Optional(Type.String({ minLength: 1 })),
     embeddingServedModelId: Type.Optional(Type.String({ minLength: 1 })),
     embeddingNativeDimensions: Type.Optional(Type.Integer({ minimum: 1 })),
     embeddingStoredDimensions: Type.Optional(Type.Integer({ minimum: 1 })),
     embeddingBatchSize: Type.Optional(Type.Integer({ minimum: 1 })),
+    localModelRootDirectory: Type.Optional(Type.String({ minLength: 1 })),
+    localEmbeddingParallelism: Type.Optional(Type.Integer({ minimum: 1 })),
+    localEmbeddingIntraOperationThreads: Type.Optional(Type.Integer({ minimum: 1 })),
     projectLineages: Type.Optional(
       Type.Record(
         Type.String({ minLength: 1 }),
@@ -64,7 +72,17 @@ async function readRecallConfigFile(
   }
 }
 
-/** Loads paths and one direct Octen HTTP embedding profile for `psr` and read-only search. */
+function readEmbeddingProfile(value: string | undefined): RecallEmbeddingProfile {
+  if (value === undefined || value === RecallEmbeddingProfile.OCTEN_HTTP) {
+    return RecallEmbeddingProfile.OCTEN_HTTP;
+  }
+  if (value === RecallEmbeddingProfile.LOCAL_OCTEN) {
+    return RecallEmbeddingProfile.LOCAL_OCTEN;
+  }
+  throw new Error(`Recall configuration embedding profile is unsupported: ${value}`);
+}
+
+/** Loads paths and one explicit local or direct HTTP Octen embedding profile. */
 export async function loadRecallConversationConfig(
   options: RecallConversationConfigLoadOptions = {},
 ): Promise<RecallConversationConfig> {
@@ -79,18 +97,43 @@ export async function loadRecallConversationConfig(
     environment.PI_RECALL_DATA_DIRECTORY ??
     file.dataDirectory ??
     join(homeDirectory, '.pi', 'agent', 'recall');
-  const embeddingNativeDimensions = environment.PI_RECALL_EMBEDDING_NATIVE_DIMENSIONS
-    ? parsePositiveInteger(
-        environment.PI_RECALL_EMBEDDING_NATIVE_DIMENSIONS,
-        'PI_RECALL_EMBEDDING_NATIVE_DIMENSIONS',
-      )
-    : (file.embeddingNativeDimensions ?? DEFAULT_OCTEN_NATIVE_DIMENSIONS);
-  const embeddingStoredDimensions = environment.PI_RECALL_EMBEDDING_STORED_DIMENSIONS
-    ? parsePositiveInteger(
-        environment.PI_RECALL_EMBEDDING_STORED_DIMENSIONS,
-        'PI_RECALL_EMBEDDING_STORED_DIMENSIONS',
-      )
-    : (file.embeddingStoredDimensions ?? DEFAULT_OCTEN_STORED_DIMENSIONS);
+  const embeddingProfile = readEmbeddingProfile(
+    environment.PI_RECALL_EMBEDDING_PROFILE ?? file.embeddingProfile,
+  );
+  const localProfileSelected = embeddingProfile === RecallEmbeddingProfile.LOCAL_OCTEN;
+  const httpOverrides = [
+    environment.PI_RECALL_EMBEDDING_BASE_URL,
+    environment.PI_RECALL_EMBEDDING_MODEL,
+    environment.PI_RECALL_EMBEDDING_SERVED_MODEL_ID,
+    environment.PI_RECALL_EMBEDDING_NATIVE_DIMENSIONS,
+    environment.PI_RECALL_EMBEDDING_STORED_DIMENSIONS,
+    environment.PI_RECALL_EMBEDDING_BATCH_SIZE,
+    file.embeddingBaseUrl,
+    file.embeddingModel,
+    file.embeddingServedModelId,
+    file.embeddingNativeDimensions,
+    file.embeddingStoredDimensions,
+    file.embeddingBatchSize,
+  ];
+  if (localProfileSelected && httpOverrides.some((value) => value !== undefined)) {
+    throw new Error('Recall local Octen profile cannot use HTTP embedding settings');
+  }
+  const embeddingNativeDimensions = localProfileSelected
+    ? LOCAL_OCTEN_ARTIFACT_IDENTITY.nativeDimensions
+    : environment.PI_RECALL_EMBEDDING_NATIVE_DIMENSIONS
+      ? parsePositiveInteger(
+          environment.PI_RECALL_EMBEDDING_NATIVE_DIMENSIONS,
+          'PI_RECALL_EMBEDDING_NATIVE_DIMENSIONS',
+        )
+      : (file.embeddingNativeDimensions ?? DEFAULT_OCTEN_NATIVE_DIMENSIONS);
+  const embeddingStoredDimensions = localProfileSelected
+    ? LOCAL_OCTEN_ARTIFACT_IDENTITY.nativeDimensions
+    : environment.PI_RECALL_EMBEDDING_STORED_DIMENSIONS
+      ? parsePositiveInteger(
+          environment.PI_RECALL_EMBEDDING_STORED_DIMENSIONS,
+          'PI_RECALL_EMBEDDING_STORED_DIMENSIONS',
+        )
+      : (file.embeddingStoredDimensions ?? DEFAULT_OCTEN_STORED_DIMENSIONS);
   if (embeddingStoredDimensions > embeddingNativeDimensions) {
     throw new Error(
       `Recall configuration stored dimensions ${embeddingStoredDimensions} exceed native dimensions ${embeddingNativeDimensions}`,
@@ -101,6 +144,21 @@ export async function loadRecallConversationConfig(
       `Recall configuration stored dimensions ${embeddingStoredDimensions} do not match the manifest version 8 FP32 vector width ${DEFAULT_OCTEN_STORED_DIMENSIONS}`,
     );
   }
+
+  const localEmbeddingParallelism = environment.PI_RECALL_LOCAL_EMBEDDING_PARALLELISM
+    ? parsePositiveInteger(
+        environment.PI_RECALL_LOCAL_EMBEDDING_PARALLELISM,
+        'PI_RECALL_LOCAL_EMBEDDING_PARALLELISM',
+      )
+    : (file.localEmbeddingParallelism ?? DEFAULT_LOCAL_OCTEN_PARALLELISM);
+  const localEmbeddingIntraOperationThreads =
+    environment.PI_RECALL_LOCAL_EMBEDDING_INTRA_OPERATION_THREADS
+      ? parsePositiveInteger(
+          environment.PI_RECALL_LOCAL_EMBEDDING_INTRA_OPERATION_THREADS,
+          'PI_RECALL_LOCAL_EMBEDDING_INTRA_OPERATION_THREADS',
+        )
+      : (file.localEmbeddingIntraOperationThreads ??
+        DEFAULT_LOCAL_OCTEN_INTRA_OPERATION_THREADS);
 
   return {
     sessionsDirectory:
@@ -114,23 +172,36 @@ export async function loadRecallConversationConfig(
     tokenizerCacheDirectory: join(dataDirectory, 'tokenizers'),
     lockPath: join(dataDirectory, 'operation.lock'),
     databaseGenerationRootPath: join(dataDirectory, 'generations'),
-    embeddingBaseUrl:
-      environment.PI_RECALL_EMBEDDING_BASE_URL ??
-      file.embeddingBaseUrl ??
-      'http://192.168.0.67:8090/v1',
-    embeddingModel: environment.PI_RECALL_EMBEDDING_MODEL ?? file.embeddingModel ?? 'octen-embed',
-    embeddingServedModelId:
-      environment.PI_RECALL_EMBEDDING_SERVED_MODEL_ID ??
-      file.embeddingServedModelId ??
-      'Octen/Octen-Embedding-4B',
+    embeddingProfile,
+    embeddingBaseUrl: localProfileSelected
+      ? 'local://octen-embedding-0.6b'
+      : (environment.PI_RECALL_EMBEDDING_BASE_URL ??
+        file.embeddingBaseUrl ??
+        'http://192.168.0.67:8090/v1'),
+    embeddingModel: localProfileSelected
+      ? LOCAL_OCTEN_ARTIFACT_IDENTITY.artifactId
+      : (environment.PI_RECALL_EMBEDDING_MODEL ?? file.embeddingModel ?? 'octen-embed'),
+    embeddingServedModelId: localProfileSelected
+      ? 'Octen/Octen-Embedding-0.6B'
+      : (environment.PI_RECALL_EMBEDDING_SERVED_MODEL_ID ??
+        file.embeddingServedModelId ??
+        'Octen/Octen-Embedding-4B'),
     embeddingNativeDimensions,
     embeddingStoredDimensions,
-    embeddingBatchSize: environment.PI_RECALL_EMBEDDING_BATCH_SIZE
-      ? parsePositiveInteger(
-          environment.PI_RECALL_EMBEDDING_BATCH_SIZE,
-          'PI_RECALL_EMBEDDING_BATCH_SIZE',
-        )
-      : (file.embeddingBatchSize ?? 16),
+    embeddingBatchSize: localProfileSelected
+      ? 1
+      : environment.PI_RECALL_EMBEDDING_BATCH_SIZE
+        ? parsePositiveInteger(
+            environment.PI_RECALL_EMBEDDING_BATCH_SIZE,
+            'PI_RECALL_EMBEDDING_BATCH_SIZE',
+          )
+        : (file.embeddingBatchSize ?? 16),
+    localModelRootDirectory:
+      environment.PI_RECALL_LOCAL_MODEL_ROOT_DIRECTORY ??
+      file.localModelRootDirectory ??
+      join(homeDirectory, '.pi', 'agent', 'recall-models'),
+    localEmbeddingParallelism,
+    localEmbeddingIntraOperationThreads,
     projectLineages: normalizeRecallProjectLineages(file.projectLineages ?? {}),
     searchCandidateLimits: {
       dense: DEFAULT_RECALL_CHANNEL_CANDIDATE_LIMIT,

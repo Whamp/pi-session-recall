@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
 
+import { RecallEmbeddingProfile } from './enums.js';
 import type {
   RecallConversationConfig,
   RecallConversationIndexOptions,
@@ -44,12 +45,16 @@ function createPsrCliFixture(
       options.physicalSessionIgnoreStatePath ?? '/recall/physical-session-ignore.json',
     tokenizerCacheDirectory: '/recall/tokenizers',
     lockPath: '/recall/operation.lock',
+    embeddingProfile: RecallEmbeddingProfile.OCTEN_HTTP,
     embeddingBaseUrl: 'http://127.0.0.1:8090/v1',
     embeddingModel: 'octen-embed',
     embeddingServedModelId: 'Octen/Octen-Embedding-4B',
     embeddingNativeDimensions: 2_560,
     embeddingStoredDimensions: 1_024,
     embeddingBatchSize: 16,
+    localModelRootDirectory: '/recall-models',
+    localEmbeddingParallelism: 4,
+    localEmbeddingIntraOperationThreads: 4,
     projectLineages: normalizeRecallProjectLineages({}),
     searchCandidateLimits: { dense: 8, invocation: 8 },
     chunkPolicy: { maxTokens: 512, overlapTokens: 64 },

@@ -41,7 +41,7 @@ export interface RecallEmbeddingModelIdentity {
   servedModelId: string;
   nativeDimensions: number;
   storedDimensions: number;
-  transformation: 'vendor-prefix-then-l2-v1';
+  transformation: 'vendor-prefix-then-l2-v1' | 'tokenizer-final-token-then-l2-v1';
 }
 
 /** Tokenizer implementation and immutable assets that determine chunk geometry. */
@@ -97,7 +97,10 @@ const recallIndexManifestSchema = Type.Object(
         servedModelId: Type.String({ minLength: 1 }),
         nativeDimensions: Type.Integer({ minimum: 1 }),
         storedDimensions: Type.Integer({ minimum: 1 }),
-        transformation: Type.Literal('vendor-prefix-then-l2-v1'),
+        transformation: Type.Union([
+          Type.Literal('vendor-prefix-then-l2-v1'),
+          Type.Literal('tokenizer-final-token-then-l2-v1'),
+        ]),
       },
       { additionalProperties: false },
     ),

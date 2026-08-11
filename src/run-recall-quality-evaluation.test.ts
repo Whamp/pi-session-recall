@@ -5,7 +5,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { RecallEvidenceRelation, RecallProjectIdentitySource, RecallSearchScope } from './enums.js';
+import {
+  RecallEmbeddingProfile,
+  RecallEvidenceRelation,
+  RecallProjectIdentitySource,
+  RecallSearchScope,
+} from './enums.js';
 import type { RecallEmbeddingProvider } from './recall-inference-capabilities.js';
 import { loadRecallQualityCorpus } from './recall-quality-corpus.js';
 import type { RecallConversationConfig } from './recall-conversation-service.js';
@@ -118,12 +123,16 @@ void test('recall quality runner indexes and searches only the bounded declared 
     tokenizerCacheDirectory: join(directory, 'unused-tokenizers'),
     lockPath: join(directory, 'unused.lock'),
     databaseGenerationRootPath: join(directory, 'unused-generations'),
+    embeddingProfile: RecallEmbeddingProfile.OCTEN_HTTP,
     embeddingBaseUrl: 'http://unused.test/v1',
     embeddingModel: 'test-embedding',
     embeddingServedModelId: 'test-embedding-served',
     embeddingNativeDimensions: 1_024,
     embeddingStoredDimensions: 1_024,
     embeddingBatchSize: 8,
+    localModelRootDirectory: join(directory, 'unused-recall-models'),
+    localEmbeddingParallelism: 4,
+    localEmbeddingIntraOperationThreads: 4,
     projectLineages: normalizeRecallProjectLineages({}),
     searchCandidateLimits: { dense: 8, invocation: 8 },
     chunkPolicy: { maxTokens: 512, overlapTokens: 64 },

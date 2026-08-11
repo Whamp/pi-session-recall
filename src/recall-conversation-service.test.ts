@@ -4,11 +4,17 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { RecallProjectIdentitySource, RecallSearchScope } from './enums.js';
+import {
+  RecallEmbeddingProfile,
+  RecallProjectIdentitySource,
+  RecallSearchScope,
+} from './enums.js';
+import { isUnknownRecord } from './is-unknown-record.js';
 import {
   createRecallConversationService,
   type RecallConversationConfig,
 } from './recall-conversation-service.js';
+import { LOCAL_OCTEN_ARTIFACT_IDENTITY } from './local-octen-model-manager.js';
 import { openSqliteRecallDatabase } from './sqlite-recall-database.js';
 import type { RecallEmbeddingProvider } from './recall-inference-capabilities.js';
 import {
@@ -64,12 +70,16 @@ function createTestConfig(
     ...(options.databaseGenerations
       ? { databaseGenerationRootPath: join(data, 'generations') }
       : {}),
+    embeddingProfile: RecallEmbeddingProfile.OCTEN_HTTP,
     embeddingBaseUrl: 'http://127.0.0.1:8090/v1',
     embeddingModel: 'octen-test',
     embeddingServedModelId: 'Octen/Octen-Embedding-4B',
     embeddingNativeDimensions: 1_024,
     embeddingStoredDimensions: 1_024,
     embeddingBatchSize: 8,
+    localModelRootDirectory: join(root, 'recall-models'),
+    localEmbeddingParallelism: 4,
+    localEmbeddingIntraOperationThreads: 4,
     projectLineages: normalizeRecallProjectLineages({}),
     searchCandidateLimits: { dense: 8, invocation: 8 },
     chunkPolicy: { maxTokens: 512, overlapTokens: 64 },
@@ -1013,6 +1023,45 @@ void test('manual rebuild replaces an incompatible embedding-model manifest', as
   assert.equal(rebuilt.indexSummary.indexedSessions, 1);
   const search = await changedService.search('Atlas', 5, { scope: RecallSearchScope.GLOBAL });
   assert.equal(search.results.length, 1);
+});
+
+void test('switching to local Octen requires rebuild and records its tokenizer and pooling identity', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-local-profile-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const config = createTestConfig(root);
+  await writeConversationSession(join(config.sessionsDirectory, 'one.jsonl'), 'Atlas evidence.');
+  const externalService = createRecallConversationService(config, {
+    embeddingProvider: TEST_EMBEDDING_PROVIDER,
+    loadTokenizer: async () => tokenizer,
+  });
+  await externalService.index({ rebuild: true });
+
+  const localConfig: RecallConversationConfig = {
+    ...config,
+    embeddingProfile: RecallEmbeddingProfile.LOCAL_OCTEN,
+    embeddingBaseUrl: 'local://octen-embedding-0.6b',
+    embeddingModel: LOCAL_OCTEN_ARTIFACT_IDENTITY.artifactId,
+    embeddingServedModelId: 'Octen/Octen-Embedding-0.6B',
+    embeddingNativeDimensions: 1_024,
+    embeddingStoredDimensions: 1_024,
+    embeddingBatchSize: 1,
+  };
+  const localService = createRecallConversationService(localConfig, {
+    embeddingProvider: TEST_EMBEDDING_PROVIDER,
+    loadTokenizer: async () => tokenizer,
+  });
+
+  await assert.rejects(
+    localService.search('Atlas', 5, { scope: RecallSearchScope.GLOBAL }),
+    /embedding\.requestModel[\s\S]*psr index --rebuild/u,
+  );
+  await localService.index({ rebuild: true });
+  const manifest: unknown = JSON.parse(await readFile(localConfig.manifestPath, 'utf8'));
+  assert.ok(isUnknownRecord(manifest));
+  assert.ok(isUnknownRecord(manifest.embedding));
+  assert.ok(isUnknownRecord(manifest.tokenizer));
+  assert.equal(manifest.embedding.transformation, 'tokenizer-final-token-then-l2-v1');
+  assert.equal(manifest.tokenizer.model, 'Octen/Octen-Embedding-0.6B');
 });
 
 void test('ordinary indexing preserves the existing generation when its manifest is incompatible', async (t) => {

@@ -414,13 +414,22 @@ async function downloadVerifiedFile(
   }
 }
 
+/** Resolves the immutable installed directory for one local Octen artifact. */
+export function resolveLocalOctenModelDirectory(
+  modelRootDirectory: string,
+  artifact: LocalOctenArtifactIdentity = LOCAL_OCTEN_ARTIFACT_IDENTITY,
+): string {
+  assertSafeArtifactIdentity(artifact);
+  return join(modelRootDirectory, artifact.artifactId);
+}
+
 /** Creates one deep artifact manager that never exposes a partial model directory. */
 export function createLocalOctenModelManager(
   options: LocalOctenModelManagerOptions,
 ): LocalOctenModelManager {
   const artifact = options.artifact ?? LOCAL_OCTEN_ARTIFACT_IDENTITY;
   assertSafeArtifactIdentity(artifact);
-  const modelDirectory = join(options.modelRootDirectory, artifact.artifactId);
+  const modelDirectory = resolveLocalOctenModelDirectory(options.modelRootDirectory, artifact);
   const totalBytes = artifact.files.reduce((sum, file) => sum + file.bytes, 0);
   const downloadSource = options.downloadSource ?? fetchDownloadSource;
   const probeRuntime =

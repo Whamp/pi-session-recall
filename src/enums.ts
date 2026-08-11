@@ -36,6 +36,12 @@ export enum RecallEvidenceRelation {
   UNRESTRICTED_GLOBAL = 'unrestricted_global_evidence',
 }
 
+/** Explicit embedding backend and immutable semantic profile selected by configuration. */
+export enum RecallEmbeddingProfile {
+  OCTEN_HTTP = 'octen-http-v1',
+  LOCAL_OCTEN = 'local-octen-embedding-0.6b-onnx-int8-v1',
+}
+
 /** Durable local Octen artifact state reported without changing the model cache. */
 export enum LocalOctenModelStatusKind {
   MISSING = 'missing',

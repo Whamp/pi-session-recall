@@ -43,7 +43,7 @@
     "@earendil-works/pi-tui": "*"
   },
   "optionalDependencies": {
-    "onnxruntime-node": "1.27.0",
+    "onnxruntime-node": "1.23.2",
     "onnxruntime-web": "1.27.0"
   },
   "overrides": {

@@ -118,6 +118,31 @@ async function loadLocalOctenTokenizer(
   };
 }
 
+interface LocalOctenOnnxOutput {
+  readonly dims: readonly number[];
+  readonly data: unknown;
+}
+
+async function runLocalOctenOnnxInference(
+  input: LocalOctenInferenceInput,
+  run: (
+    inputIds: BigInt64Array,
+    attentionMask: BigInt64Array,
+    dimensions: readonly [number, number],
+  ) => Promise<LocalOctenOnnxOutput>,
+): Promise<LocalOctenInferenceOutput> {
+  const dimensions = [1, input.inputIds.length] as const;
+  const output = await run(
+    BigInt64Array.from(input.inputIds, (value) => BigInt(value)),
+    BigInt64Array.from(input.attentionMask, (value) => BigInt(value)),
+    dimensions,
+  );
+  if (!(output.data instanceof Float32Array)) {
+    throw new Error('Local Octen ONNX output last_hidden_state is missing or not FP32');
+  }
+  return { dimensions: output.dims, data: output.data };
+}
+
 async function loadNativeLocalOctenInferenceSession(
   modelDirectory: string,
   intraOperationThreads: number,
@@ -141,23 +166,13 @@ async function loadNativeLocalOctenInferenceSession(
   });
   return {
     async run(input) {
-      const tokenCount = input.inputIds.length;
-      const inputIds = new runtime.Tensor(
-        'int64',
-        BigInt64Array.from(input.inputIds, (value) => BigInt(value)),
-        [1, tokenCount],
-      );
-      const attentionMask = new runtime.Tensor(
-        'int64',
-        BigInt64Array.from(input.attentionMask, (value) => BigInt(value)),
-        [1, tokenCount],
-      );
-      const outputs = await session.run({ input_ids: inputIds, attention_mask: attentionMask });
-      const hiddenState = outputs.last_hidden_state;
-      if (!hiddenState || !(hiddenState.data instanceof Float32Array)) {
-        throw new Error('Local Octen ONNX output last_hidden_state is missing or not FP32');
-      }
-      return { dimensions: hiddenState.dims, data: hiddenState.data };
+      return runLocalOctenOnnxInference(input, async (inputIds, attentionMask, dimensions) => {
+        const outputs = await session.run({
+          input_ids: new runtime.Tensor('int64', inputIds, dimensions),
+          attention_mask: new runtime.Tensor('int64', attentionMask, dimensions),
+        });
+        return outputs.last_hidden_state ?? { dims: [], data: undefined };
+      });
     },
     async release() {
       await session.release();
@@ -191,23 +206,13 @@ async function loadWasmLocalOctenInferenceSession(
   });
   return {
     async run(input) {
-      const tokenCount = input.inputIds.length;
-      const inputIds = new runtime.Tensor(
-        'int64',
-        BigInt64Array.from(input.inputIds, (value) => BigInt(value)),
-        [1, tokenCount],
-      );
-      const attentionMask = new runtime.Tensor(
-        'int64',
-        BigInt64Array.from(input.attentionMask, (value) => BigInt(value)),
-        [1, tokenCount],
-      );
-      const outputs = await session.run({ input_ids: inputIds, attention_mask: attentionMask });
-      const hiddenState = outputs.last_hidden_state;
-      if (!hiddenState || !(hiddenState.data instanceof Float32Array)) {
-        throw new Error('Local Octen ONNX output last_hidden_state is missing or not FP32');
-      }
-      return { dimensions: hiddenState.dims, data: hiddenState.data };
+      return runLocalOctenOnnxInference(input, async (inputIds, attentionMask, dimensions) => {
+        const outputs = await session.run({
+          input_ids: new runtime.Tensor('int64', inputIds, dimensions),
+          attention_mask: new runtime.Tensor('int64', attentionMask, dimensions),
+        });
+        return outputs.last_hidden_state ?? { dims: [], data: undefined };
+      });
     },
     async release() {
       await session.release();
@@ -318,7 +323,7 @@ export function createLocalOctenEmbeddingProvider(
   return {
     embedQuery: embedText,
     async embedDocuments(documents, signal) {
-      const results = new Array<number[]>(documents.length);
+      const results: number[][] = [];
       let nextIndex = 0;
       async function worker(): Promise<void> {
         while (true) {
@@ -345,11 +350,9 @@ export function createLocalOctenEmbeddingProvider(
         if (!resourcesPromise) {
           return;
         }
-        try {
-          const { session } = await resourcesPromise;
-          await session.release();
-        } catch {
-          // Resource acquisition failed before a reachable session existed.
+        const [resourcesResult] = await Promise.allSettled([resourcesPromise]);
+        if (resourcesResult?.status === 'fulfilled') {
+          await resourcesResult.value.session.release();
         }
       })();
       return releasePromise;

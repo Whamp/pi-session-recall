@@ -195,6 +195,33 @@ void test('local Octen provider does not create a native session after tokenizer
   await assert.doesNotReject(provider.close());
 });
 
+void test('local Octen provider propagates a loaded session release failure', async () => {
+  const provider = createLocalOctenEmbeddingProvider({
+    modelDirectory: '/models/local-octen',
+    nativeDimensions: 2,
+    runtimeBackend: LocalOctenRuntimeBackend.NATIVE,
+    async loadTokenizer() {
+      return { encode: () => [1, LOCAL_OCTEN_END_TOKEN_ID] };
+    },
+    async loadSession() {
+      return {
+        async run() {
+          return {
+            dimensions: [1, 2, 2],
+            data: new Float32Array([0, 0, 1, 1]),
+          };
+        },
+        async release() {
+          throw new Error('release failed');
+        },
+      };
+    },
+  });
+
+  await provider.embedQuery('loaded');
+  await assert.rejects(provider.close(), /release failed/u);
+});
+
 void test('local Octen provider honors cancellation before loading native runtime', async () => {
   const controller = new AbortController();
   controller.abort(new Error('stop'));

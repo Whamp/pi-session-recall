@@ -288,12 +288,10 @@ function createEmbeddingConfig(
   if (!parsed.baseUrl) {
     throw new Error(`psr setup --external requires --base-url\n${PSR_SETUP_USAGE}`);
   }
-  let baseUrl: URL;
-  try {
-    baseUrl = new URL(parsed.baseUrl);
-  } catch (error) {
-    throw new Error(`psr setup --base-url is invalid: ${parsed.baseUrl}`, { cause: error });
+  if (!URL.canParse(parsed.baseUrl)) {
+    throw new Error(`psr setup --base-url is invalid: ${parsed.baseUrl}`);
   }
+  const baseUrl = new URL(parsed.baseUrl);
   if (baseUrl.protocol !== 'http:' && baseUrl.protocol !== 'https:') {
     throw new Error('psr setup --base-url must use http or https');
   }

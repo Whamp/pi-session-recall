@@ -42,6 +42,12 @@ export enum RecallEmbeddingProfile {
   LOCAL_OCTEN = 'local-octen-embedding-0.6b-onnx-int8-v1',
 }
 
+/** Platform-selected ONNX execution backend bound into local vector compatibility. */
+export enum LocalOctenRuntimeBackend {
+  NATIVE = 'onnxruntime-node@1.27.0',
+  WASM = 'onnxruntime-web@1.27.0-wasm',
+}
+
 /** Durable local Octen artifact state reported without changing the model cache. */
 export enum LocalOctenModelStatusKind {
   MISSING = 'missing',

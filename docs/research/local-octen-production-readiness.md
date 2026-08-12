@@ -4,7 +4,7 @@ Status: **local evidence passed; platform CI pending**
 
 ## Artifact
 
-The production profile uses the project-controlled [`model-octen-embedding-0.6b-onnx-int8-v1`](https://github.com/Whamp/pi-session-recall/releases/tag/model-octen-embedding-0.6b-onnx-int8-v1) release through pinned `onnxruntime-node` 1.27.0. GitHub's reported byte sizes and SHA-256 digests match the implementation constants and downloaded files.
+The production profile uses the project-controlled [`model-octen-embedding-0.6b-onnx-int8-v1`](https://github.com/Whamp/pi-session-recall/releases/tag/model-octen-embedding-0.6b-onnx-int8-v1) release through pinned native `onnxruntime-node` 1.27.0 on Linux x64 and macOS arm64. macOS x64 uses pinned `onnxruntime-web` 1.27.0 WASM because stable ONNX Runtime Node packages omit its native binding. GitHub's reported byte sizes and SHA-256 digests match the implementation constants and downloaded files.
 
 ## Bounded prototype
 
@@ -33,6 +33,10 @@ The integration test independently compared query and document embeddings with u
 
 All paths were under the dedicated scratch root or the test runner's temporary directory. The active production Recall database and production configuration were not opened or mutated.
 
+## macOS x64 fallback
+
+The portable WASM runtime loaded the same graph and 1.06 GB external weights in Node on the Linux prototype host. It loaded in 740 ms, answered one query in 372 ms, used about 2.50 GB RSS, and reached 0.98489 cosine against the upstream Safetensors reference. Production serializes WASM operations and records `onnxruntime-web@1.27.0-wasm` in the manifest so moving a database between native and WASM platforms requires a rebuild.
+
 ## Dependency audit
 
 `onnxruntime-node` 1.27.0 declared vulnerable `adm-zip <0.6.0` in its install-script dependency tree. The lockfile overrides that dependency to patched 0.6.0, matching Microsoft's merged post-1.27 dependency bump. `npm audit --omit=dev` reports zero vulnerabilities, and the real artifact still passed after the override.
@@ -45,6 +49,6 @@ All paths were under the dedicated scratch root or the test runner's temporary d
 - macOS arm64;
 - macOS x64.
 
-Each job downloads or restores the exact project artifact, runs `psr model doctor`, and executes the real conformance plus offline SQLite build-close-reopen-search test. Windows remains unverified.
+Each job downloads or restores the exact project artifact, runs `psr model doctor`, and executes the real conformance plus offline SQLite build-close-reopen-search test. Unsupported platforms are rejected before download.
 
 Machine-readable evidence: [`local-octen-production-readiness.json`](../evaluation/local-octen-production-readiness.json).

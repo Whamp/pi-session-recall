@@ -14,6 +14,7 @@ function createFixture(options: {
   confirmations?: boolean[];
   modelStatus?: LocalOctenModelStatusKind;
   promptResponses?: string[];
+  platformError?: Error;
 }): {
   dependencies: Parameters<typeof runPsrSetupCli>[1];
   output: string[];
@@ -44,6 +45,11 @@ function createFixture(options: {
       },
       async promptText(_question, defaultValue) {
         return promptResponses.shift() ?? defaultValue;
+      },
+      assertLocalPlatformSupported() {
+        if (options.platformError) {
+          throw options.platformError;
+        }
       },
       createModelManager(modelRootDirectory) {
         managerRoots.push(modelRootDirectory);
@@ -159,6 +165,22 @@ void test('psr setup cancellation leaves existing configuration unchanged', asyn
   assert.deepEqual(result, { exitCode: 1, runInitialIndex: false });
   assert.equal(await readFile(configPath, 'utf8'), existing);
   assert.deepEqual(fixture.downloadApprovals, []);
+});
+
+void test('psr setup rejects unsupported local platforms before model access', async (t) => {
+  const home = await mkdtemp(join(tmpdir(), 'psr-setup-unsupported-platform-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const fixture = createFixture({
+    homeDirectory: home,
+    platformError: new Error('Local Octen embedding runtime is unsupported on win32/x64'),
+  });
+
+  await assert.rejects(
+    runPsrSetupCli(['--local', '--yes'], fixture.dependencies),
+    /unsupported on win32\/x64/u,
+  );
+
+  assert.deepEqual(fixture.managerRoots, []);
 });
 
 void test('psr setup rejects unsupported existing settings before model access', async (t) => {

@@ -9,6 +9,7 @@ import {
   LocalOctenModelStatusKind,
   RecallEmbeddingProfile,
 } from './enums.js';
+import { assertLocalOctenPlatformSupported } from './local-octen-embedding-provider.js';
 import {
   createLocalOctenModelManager,
   type LocalOctenModelManager,
@@ -56,6 +57,7 @@ export interface PsrSetupCliDependencies {
   selectProfile: () => Promise<RecallEmbeddingProfile>;
   confirm: (question: string) => Promise<boolean>;
   promptText: (question: string, defaultValue: string) => Promise<string>;
+  assertLocalPlatformSupported: () => void;
   createModelManager: (modelRootDirectory: string) => LocalOctenModelManager;
   writeOutput: (text: string) => void;
   writeProgress: (text: string) => void;
@@ -88,6 +90,7 @@ const DEFAULT_PSR_SETUP_CLI_DEPENDENCIES: PsrSetupCliDependencies = {
   selectProfile: selectTerminalEmbeddingProfile,
   confirm: confirmTerminalAction,
   promptText: promptTerminalText,
+  assertLocalPlatformSupported: assertLocalOctenPlatformSupported,
   createModelManager(modelRootDirectory) {
     return createLocalOctenModelManager({ modelRootDirectory });
   },
@@ -402,6 +405,7 @@ async function installLocalSetupModel(
   modelRootDirectory: string,
   dependencies: PsrSetupCliDependencies,
 ): Promise<boolean> {
+  dependencies.assertLocalPlatformSupported();
   const manager = dependencies.createModelManager(modelRootDirectory);
   const status = await manager.status();
   const approved =

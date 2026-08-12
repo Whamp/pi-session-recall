@@ -28,7 +28,10 @@ import {
 } from './octen-conversation-tokenizer.js';
 import { listIgnoredPhysicalSessionPaths } from './physical-session-ignore.js';
 import type { RecallIndexProgressEvent } from './recall-index-progress.js';
-import { createLocalOctenEmbeddingProvider } from './local-octen-embedding-provider.js';
+import {
+  createLocalOctenEmbeddingProvider,
+  resolveLocalOctenRuntimeBackend,
+} from './local-octen-embedding-provider.js';
 import {
   LOCAL_OCTEN_ARTIFACT_IDENTITY,
   resolveLocalOctenModelDirectory,
@@ -333,6 +336,9 @@ function createEmbeddingModelIdentity(
     servedModelId: config.embeddingServedModelId,
     nativeDimensions: config.embeddingNativeDimensions,
     storedDimensions: config.embeddingStoredDimensions,
+    ...(config.embeddingProfile === RecallEmbeddingProfile.LOCAL_OCTEN
+      ? { executionBackend: resolveLocalOctenRuntimeBackend() }
+      : {}),
     transformation:
       config.embeddingProfile === RecallEmbeddingProfile.LOCAL_OCTEN
         ? 'tokenizer-final-token-then-l2-v1'

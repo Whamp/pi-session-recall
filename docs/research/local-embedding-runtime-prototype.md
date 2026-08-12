@@ -4,7 +4,7 @@ Status: **accepted for implementation**
 
 ## Decision
 
-Use `Octen/Octen-Embedding-0.6B` as the default local embedding model for new Pi Session Recall installations. Run the model through `onnxruntime-node` 1.27.0 with the verified SmoothQuant INT8 ONNX artifact. Store its native 1,024-dimensional normalized vectors.
+Use `Octen/Octen-Embedding-0.6B` as the default local embedding model for new Pi Session Recall installations. Run the verified SmoothQuant INT8 ONNX artifact through native `onnxruntime-node` 1.27.0 on Linux x64 and macOS arm64. Stable ONNX Runtime Node packages omit Darwin x64, so use `onnxruntime-web` 1.27.0 WASM there with the same graph and weights. Store native 1,024-dimensional normalized vectors.
 
 Do not use Voyage 4 Nano as the default. Its runtime was smaller and faster, but it recovered only 81.25% of the fixed recall corpus. Do not use the compact full-INT8 Octen ONNX export: its vector similarity fell as low as 0.696 against upstream Safetensors. The Octen Q8_0 GGUF preserved quality but used more memory and indexed more slowly than the accepted ONNX path.
 
@@ -93,11 +93,15 @@ The accepted model and its upstream are ungated and Apache 2.0. The exact verifi
 
 The community repository documents SmoothQuant, but its checked-in `quantize_octen_int8.py` still describes the older vanilla dynamic-INT8 path. The project release therefore makes no unsupported reproducibility claim: it mirrors the exact certified community bytes and records both source revisions. Replace it only through a separately versioned and re-certified artifact.
 
+## Production platform amendment
+
+`onnxruntime-node` 1.25.1, 1.26.0, and 1.27.0 were inspected after the initial decision; all ship Darwin arm64 but no Darwin x64 binding. The same accepted model loaded through `onnxruntime-web` 1.27.0 WASM in Node with external weights, reached 0.98489 cosine against the upstream reference, loaded in 740 ms, answered one query in 372 ms, and used about 2.50 GB RSS on the Linux prototype host. Production therefore uses that single-threaded portable backend only on macOS x64 and binds the backend name into the manifest.
+
 ## Implementation consequences
 
 The production change should add one profile, not restore the retired inference platform:
 
-- local profile: Octen 0.6B SmoothQuant INT8 through `onnxruntime-node`;
+- local profile: Octen 0.6B SmoothQuant INT8 through native ONNX Runtime or the Darwin x64 WASM fallback;
 - external profile: existing OpenAI-compatible Octen HTTP provider;
 - local artifact cache with partial download, checksums, receipt, atomic activation, status, and diagnosis;
 - `psr setup` plus `psr model status`, `download`, and `doctor`;

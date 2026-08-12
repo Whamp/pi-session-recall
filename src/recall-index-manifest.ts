@@ -41,6 +41,7 @@ export interface RecallEmbeddingModelIdentity {
   servedModelId: string;
   nativeDimensions: number;
   storedDimensions: number;
+  executionBackend?: string;
   transformation: 'vendor-prefix-then-l2-v1' | 'tokenizer-final-token-then-l2-v1';
 }
 
@@ -97,6 +98,7 @@ const recallIndexManifestSchema = Type.Object(
         servedModelId: Type.String({ minLength: 1 }),
         nativeDimensions: Type.Integer({ minimum: 1 }),
         storedDimensions: Type.Integer({ minimum: 1 }),
+        executionBackend: Type.Optional(Type.String({ minLength: 1 })),
         transformation: Type.Union([
           Type.Literal('vendor-prefix-then-l2-v1'),
           Type.Literal('tokenizer-final-token-then-l2-v1'),

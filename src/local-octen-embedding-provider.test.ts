@@ -2,12 +2,24 @@ import assert from 'node:assert/strict';
 import { setTimeout as sleep } from 'node:timers/promises';
 import test from 'node:test';
 
+import { LocalOctenRuntimeBackend } from './enums.js';
 import {
   createLocalOctenEmbeddingProvider,
   LOCAL_OCTEN_END_TOKEN_ID,
+  resolveLocalOctenRuntimeBackend,
   type LocalOctenInferenceInput,
   type LocalOctenInferenceOutput,
 } from './local-octen-embedding-provider.js';
+
+void test('local Octen runtime backend is deterministic for each supported platform', () => {
+  assert.equal(resolveLocalOctenRuntimeBackend('linux', 'x64'), LocalOctenRuntimeBackend.NATIVE);
+  assert.equal(resolveLocalOctenRuntimeBackend('darwin', 'arm64'), LocalOctenRuntimeBackend.NATIVE);
+  assert.equal(resolveLocalOctenRuntimeBackend('darwin', 'x64'), LocalOctenRuntimeBackend.WASM);
+  assert.throws(
+    () => resolveLocalOctenRuntimeBackend('win32', 'x64'),
+    /unsupported on win32\/x64/u,
+  );
+});
 
 void test('local Octen provider uses the tokenizer final token, pools it, and L2-normalizes', async () => {
   const inputs: LocalOctenInferenceInput[] = [];
@@ -16,6 +28,7 @@ void test('local Octen provider uses the tokenizer final token, pools it, and L2
     modelDirectory: '/models/local-octen',
     nativeDimensions: 4,
     parallelism: 2,
+    runtimeBackend: LocalOctenRuntimeBackend.NATIVE,
     async loadTokenizer() {
       return {
         encode(text) {
@@ -65,6 +78,7 @@ void test('local Octen provider preserves document order under bounded concurren
     modelDirectory: '/models/local-octen',
     nativeDimensions: 2,
     parallelism: 2,
+    runtimeBackend: LocalOctenRuntimeBackend.NATIVE,
     async loadTokenizer() {
       return {
         encode(text) {
@@ -100,6 +114,38 @@ void test('local Octen provider preserves document order under bounded concurren
   assert.ok(embeddings[2]![0]! > embeddings[1]![0]!);
 });
 
+void test('local Octen WASM provider serializes batch-one operations', async () => {
+  let active = 0;
+  let maximumActive = 0;
+  const provider = createLocalOctenEmbeddingProvider({
+    modelDirectory: '/models/local-octen',
+    nativeDimensions: 2,
+    parallelism: 4,
+    runtimeBackend: LocalOctenRuntimeBackend.WASM,
+    async loadTokenizer() {
+      return { encode: () => [1, LOCAL_OCTEN_END_TOKEN_ID] };
+    },
+    async loadSession() {
+      return {
+        async run() {
+          active += 1;
+          maximumActive = Math.max(maximumActive, active);
+          await sleep(2);
+          active -= 1;
+          return {
+            dimensions: [1, 2, 2],
+            data: new Float32Array([0, 0, 1, 1]),
+          };
+        },
+        async release() {},
+      };
+    },
+  });
+
+  await provider.embedDocuments(['one', 'two', 'three']);
+  assert.equal(maximumActive, 1);
+});
+
 void test('local Octen provider rejects invalid output without returning a vector', async () => {
   const outputs: LocalOctenInferenceOutput[] = [
     { dimensions: [1, 2, 3], data: new Float32Array(6) },
@@ -111,6 +157,7 @@ void test('local Octen provider rejects invalid output without returning a vecto
   const provider = createLocalOctenEmbeddingProvider({
     modelDirectory: '/models/local-octen',
     nativeDimensions: 2,
+    runtimeBackend: LocalOctenRuntimeBackend.NATIVE,
     async loadTokenizer() {
       return { encode: () => [1, LOCAL_OCTEN_END_TOKEN_ID] };
     },
@@ -133,6 +180,7 @@ void test('local Octen provider does not create a native session after tokenizer
   const provider = createLocalOctenEmbeddingProvider({
     modelDirectory: '/models/local-octen',
     nativeDimensions: 2,
+    runtimeBackend: LocalOctenRuntimeBackend.NATIVE,
     async loadTokenizer() {
       throw new Error('tokenizer corrupt');
     },
@@ -154,6 +202,7 @@ void test('local Octen provider honors cancellation before loading native runtim
   const provider = createLocalOctenEmbeddingProvider({
     modelDirectory: '/models/local-octen',
     nativeDimensions: 2,
+    runtimeBackend: LocalOctenRuntimeBackend.NATIVE,
     async loadTokenizer() {
       loaded = true;
       return { encode: () => [1, LOCAL_OCTEN_END_TOKEN_ID] };

@@ -6,6 +6,7 @@ import test from 'node:test';
 
 import { RecallEmbeddingProfile, RecallProjectIdentitySource, RecallSearchScope } from './enums.js';
 import { isUnknownRecord } from './is-unknown-record.js';
+import { resolveLocalOctenRuntimeBackend } from './local-octen-embedding-provider.js';
 import {
   createRecallConversationService,
   type RecallConversationConfig,
@@ -1057,6 +1058,7 @@ void test('switching to local Octen requires rebuild and records its tokenizer a
   assert.ok(isUnknownRecord(manifest.embedding));
   assert.ok(isUnknownRecord(manifest.tokenizer));
   assert.equal(manifest.embedding.transformation, 'tokenizer-final-token-then-l2-v1');
+  assert.equal(manifest.embedding.executionBackend, resolveLocalOctenRuntimeBackend());
   assert.equal(manifest.tokenizer.model, 'Octen/Octen-Embedding-0.6B');
 });
 

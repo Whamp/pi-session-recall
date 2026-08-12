@@ -4,7 +4,7 @@
   "artifact": {
     "profileId": "local-octen-embedding-0.6b-onnx-int8-v1",
     "release": "https://github.com/Whamp/pi-session-recall/releases/tag/model-octen-embedding-0.6b-onnx-int8-v1",
-    "runtime": "onnxruntime-node@1.27.0",
+    "runtimes": ["onnxruntime-node@1.27.0", "onnxruntime-web@1.27.0-wasm"],
     "dimensions": 1024,
     "bytes": 1079567980,
     "graphSha256": "48c4eb1401ba5a5d22d7a7e1fb3e94d63e8ed06231e3d124babc00ead78c8771",
@@ -31,6 +31,14 @@
     "integrationDurationMilliseconds": 4979.67515,
     "totalElapsedSeconds": 42,
     "productionDatabaseMutated": false
+  },
+  "wasmFallbackPrototype": {
+    "reason": "Stable onnxruntime-node packages omit Darwin x64",
+    "loadMilliseconds": 740.155795,
+    "queryMilliseconds": 372.371054,
+    "peakObservedRssBytes": 2497564672,
+    "upstreamCosine": 0.9848904859933368,
+    "finalToken": 151643
   },
   "security": {
     "productionAuditVulnerabilities": 0,

@@ -229,21 +229,21 @@ Atomic chunks never cross entries, roles, visible text runs, tools, thinking, im
 
 Fresh `psr setup` defaults to local Octen:
 
-| Setting                      | Local default                                      |
-| ---------------------------- | -------------------------------------------------- |
-| Profile                      | `local-octen-embedding-0.6b-onnx-int8-v1`          |
-| Model                        | `Octen/Octen-Embedding-0.6B`                       |
-| Runtime                      | `onnxruntime-node` 1.27.0, CPU                     |
-| Artifact                     | SmoothQuant INT8 ONNX, 1.01 GiB                    |
-| Native and stored dimensions | 1,024 FP32                                         |
-| Transformation               | tokenizer final token, then local L2 normalization |
-| sqlite-vec metric            | cosine                                             |
+| Setting                      | Local default                                                                                         |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------- |
+| Profile                      | `local-octen-embedding-0.6b-onnx-int8-v1`                                                             |
+| Model                        | `Octen/Octen-Embedding-0.6B`                                                                          |
+| Runtime                      | native `onnxruntime-node` 1.27.0 on Linux x64/macOS arm64; `onnxruntime-web` 1.27.0 WASM on macOS x64 |
+| Artifact                     | SmoothQuant INT8 ONNX, 1.01 GiB                                                                       |
+| Native and stored dimensions | 1,024 FP32                                                                                            |
+| Transformation               | tokenizer final token, then local L2 normalization                                                    |
+| sqlite-vec metric            | cosine                                                                                                |
 
-The graph accepts batch size one. Pi Session Recall runs four bounded concurrent operations against one shared session by default. The certified tokenizer post-processor appends `<|endoftext|>` token `151643`; manually appending its configured `<|im_end|>` EOS token `151645` produces incompatible vectors. The [project release](https://github.com/Whamp/pi-session-recall/releases/tag/model-octen-embedding-0.6b-onnx-int8-v1) pins every artifact byte and carries the Apache 2.0 license and provenance notice.
+The graph accepts batch size one. Native Pi Session Recall runs four bounded concurrent operations against one shared session by default. The macOS x64 WASM path serializes operations because ONNX Runtime Web supports single-threaded WASM under Node. The certified tokenizer post-processor appends `<|endoftext|>` token `151643`; manually appending its configured `<|im_end|>` EOS token `151645` produces incompatible vectors. The [project release](https://github.com/Whamp/pi-session-recall/releases/tag/model-octen-embedding-0.6b-onnx-int8-v1) pins every artifact byte and carries the Apache 2.0 license and provenance notice.
 
 After download, local indexing and search work offline. Conversation text stays in the Pi process and is not sent to an embedding server. `psr model status` reads receipt and file sizes. `psr model doctor` additionally hashes every artifact file, loads the native runtime, produces one normalized 1,024-dimensional embedding, and releases the session. `psr model download` requires confirmation or `--yes`; it streams into a unique partial directory, verifies hashes, and only then activates the complete model. If status reports `partial` or `corrupt`, rerun `psr model download`; failed downloads remove their partial directory and do not replace an existing artifact.
 
-The real artifact download, native query, fixed-vector conformance, disposable SQLite build, close, reopen, and offline search run in CI on Linux x64, macOS arm64, and macOS x64. Windows is unverified and the CLI directs unsupported platforms to the HTTP profile.
+The real artifact download, runtime query, fixed-vector conformance, disposable SQLite build, close, reopen, and offline search run in CI on Linux x64, macOS arm64, and macOS x64. Linux x64 and macOS arm64 use native ONNX Runtime; macOS x64 uses its measured WASM fallback. Unsupported platforms are rejected before the 1.01 GiB download and directed to the HTTP profile.
 
 The explicit HTTP profile retains the previous behavior:
 

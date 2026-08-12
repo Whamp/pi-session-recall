@@ -3,7 +3,9 @@ import { join } from 'node:path';
 
 import { Tokenizer } from '@huggingface/tokenizers';
 import type * as OnnxRuntimeModule from 'onnxruntime-node';
+import type * as OnnxRuntimeWebModule from 'onnxruntime-web';
 
+import { LocalOctenRuntimeBackend } from './enums.js';
 import { isUnknownRecord } from './is-unknown-record.js';
 import type { RecallEmbeddingProvider } from './recall-inference-capabilities.js';
 import { createStoredRecallEmbedding } from './recall-stored-embedding.js';
@@ -40,30 +42,42 @@ export interface LocalOctenEmbeddingProviderOptions {
   nativeDimensions: number;
   parallelism?: number;
   intraOperationThreads?: number;
+  runtimeBackend?: LocalOctenRuntimeBackend;
   loadTokenizer?: (modelDirectory: string) => Promise<LocalOctenEmbeddingTokenizer>;
   loadSession?: (
     modelDirectory: string,
     intraOperationThreads: number,
+    runtimeBackend: LocalOctenRuntimeBackend,
   ) => Promise<LocalOctenInferenceSession>;
 }
 
-/** Local provider with an explicit native-runtime cleanup boundary. */
+/** Local provider with an explicit native or WASM runtime cleanup boundary. */
 export interface LocalOctenEmbeddingProvider extends RecallEmbeddingProvider {
   close(): Promise<void>;
 }
 
-function assertSupportedLocalOctenPlatform(
+/** Resolves the certified native or WASM backend for one supported platform. */
+export function resolveLocalOctenRuntimeBackend(
   platform: NodeJS.Platform = process.platform,
   architecture: string = process.arch,
-): void {
-  const supported =
+): LocalOctenRuntimeBackend {
+  if (
     (platform === 'linux' && architecture === 'x64') ||
-    (platform === 'darwin' && (architecture === 'x64' || architecture === 'arm64'));
-  if (!supported) {
-    throw new Error(
-      `Local Octen embedding runtime is unsupported on ${platform}/${architecture}; configure the external Octen HTTP profile instead`,
-    );
+    (platform === 'darwin' && architecture === 'arm64')
+  ) {
+    return LocalOctenRuntimeBackend.NATIVE;
   }
+  if (platform === 'darwin' && architecture === 'x64') {
+    return LocalOctenRuntimeBackend.WASM;
+  }
+  throw new Error(
+    `Local Octen embedding runtime is unsupported on ${platform}/${architecture}; configure the external Octen HTTP profile instead`,
+  );
+}
+
+/** Rejects unsupported local setup before a model download starts. */
+export function assertLocalOctenPlatformSupported(): void {
+  resolveLocalOctenRuntimeBackend();
 }
 
 function parseTokenizerAsset(content: string, path: string): Record<string, unknown> {
@@ -104,11 +118,10 @@ async function loadLocalOctenTokenizer(
   };
 }
 
-async function loadLocalOctenInferenceSession(
+async function loadNativeLocalOctenInferenceSession(
   modelDirectory: string,
   intraOperationThreads: number,
 ): Promise<LocalOctenInferenceSession> {
-  assertSupportedLocalOctenPlatform();
   let runtime: typeof OnnxRuntimeModule;
   try {
     runtime = await import('onnxruntime-node');
@@ -152,6 +165,66 @@ async function loadLocalOctenInferenceSession(
   };
 }
 
+async function loadWasmLocalOctenInferenceSession(
+  modelDirectory: string,
+): Promise<LocalOctenInferenceSession> {
+  let runtime: typeof OnnxRuntimeWebModule;
+  try {
+    runtime = await import('onnxruntime-web');
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `Local Octen WASM runtime failed to load on ${process.platform}/${process.arch}: ${message}; reinstall dependencies or configure the external Octen HTTP profile`,
+      { cause: error },
+    );
+  }
+  runtime.env.wasm.numThreads = 1;
+  runtime.env.wasm.simd = true;
+  const [model, weights] = await Promise.all([
+    readFile(join(modelDirectory, 'model.int8.onnx')),
+    readFile(join(modelDirectory, 'model.int8.onnx.data')),
+  ]);
+  const session = await runtime.InferenceSession.create(model, {
+    executionProviders: ['wasm'],
+    graphOptimizationLevel: 'all',
+    externalData: [{ path: 'model.int8.onnx.data', data: weights }],
+  });
+  return {
+    async run(input) {
+      const tokenCount = input.inputIds.length;
+      const inputIds = new runtime.Tensor(
+        'int64',
+        BigInt64Array.from(input.inputIds, (value) => BigInt(value)),
+        [1, tokenCount],
+      );
+      const attentionMask = new runtime.Tensor(
+        'int64',
+        BigInt64Array.from(input.attentionMask, (value) => BigInt(value)),
+        [1, tokenCount],
+      );
+      const outputs = await session.run({ input_ids: inputIds, attention_mask: attentionMask });
+      const hiddenState = outputs.last_hidden_state;
+      if (!hiddenState || !(hiddenState.data instanceof Float32Array)) {
+        throw new Error('Local Octen ONNX output last_hidden_state is missing or not FP32');
+      }
+      return { dimensions: hiddenState.dims, data: hiddenState.data };
+    },
+    async release() {
+      await session.release();
+    },
+  };
+}
+
+async function loadLocalOctenInferenceSession(
+  modelDirectory: string,
+  intraOperationThreads: number,
+  runtimeBackend: LocalOctenRuntimeBackend,
+): Promise<LocalOctenInferenceSession> {
+  return runtimeBackend === LocalOctenRuntimeBackend.NATIVE
+    ? loadNativeLocalOctenInferenceSession(modelDirectory, intraOperationThreads)
+    : loadWasmLocalOctenInferenceSession(modelDirectory);
+}
+
 function assertPositiveInteger(value: number, label: string): void {
   if (!Number.isInteger(value) || value < 1) {
     throw new Error(`${label} must be a positive integer`);
@@ -163,9 +236,11 @@ export function createLocalOctenEmbeddingProvider(
   options: LocalOctenEmbeddingProviderOptions,
 ): LocalOctenEmbeddingProvider {
   assertPositiveInteger(options.nativeDimensions, 'Local Octen native dimensions');
-  const parallelism = options.parallelism ?? 4;
+  const configuredParallelism = options.parallelism ?? 4;
+  const runtimeBackend = options.runtimeBackend ?? resolveLocalOctenRuntimeBackend();
+  const parallelism = runtimeBackend === LocalOctenRuntimeBackend.WASM ? 1 : configuredParallelism;
   const intraOperationThreads = options.intraOperationThreads ?? 4;
-  assertPositiveInteger(parallelism, 'Local Octen parallelism');
+  assertPositiveInteger(configuredParallelism, 'Local Octen parallelism');
   assertPositiveInteger(intraOperationThreads, 'Local Octen intra-operation threads');
   const loadTokenizer = options.loadTokenizer ?? loadLocalOctenTokenizer;
   const loadSession = options.loadSession ?? loadLocalOctenInferenceSession;
@@ -184,7 +259,11 @@ export function createLocalOctenEmbeddingProvider(
     }
     resourcesPromise ??= (async () => {
       const tokenizer = await loadTokenizer(options.modelDirectory);
-      const session = await loadSession(options.modelDirectory, intraOperationThreads);
+      const session = await loadSession(
+        options.modelDirectory,
+        intraOperationThreads,
+        runtimeBackend,
+      );
       return { tokenizer, session };
     })();
     return resourcesPromise;
@@ -278,7 +357,7 @@ export function createLocalOctenEmbeddingProvider(
   };
 }
 
-/** Runs one deterministic normalized embedding and releases the native session. */
+/** Runs one deterministic normalized embedding and releases the selected runtime session. */
 export async function probeLocalOctenEmbeddingRuntime(
   modelDirectory: string,
   nativeDimensions: number,

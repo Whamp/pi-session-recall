@@ -11,12 +11,26 @@ import {
   type LocalOctenInferenceOutput,
 } from './local-octen-embedding-provider.js';
 
-void test('local Octen runtime backend is deterministic for each supported platform', () => {
-  assert.equal(resolveLocalOctenRuntimeBackend('linux', 'x64'), LocalOctenRuntimeBackend.WASM);
-  assert.equal(resolveLocalOctenRuntimeBackend('darwin', 'arm64'), LocalOctenRuntimeBackend.NATIVE);
-  assert.equal(resolveLocalOctenRuntimeBackend('darwin', 'x64'), LocalOctenRuntimeBackend.WASM);
+void test('local Octen runtime backend selects the certified engine for each CPU family', () => {
+  assert.equal(
+    resolveLocalOctenRuntimeBackend('linux', 'x64', ['AMD Ryzen 7 8845HS']),
+    LocalOctenRuntimeBackend.NATIVE,
+  );
+  assert.equal(
+    resolveLocalOctenRuntimeBackend('linux', 'x64', ['Intel(R) Xeon(R) Platinum 8370C']),
+    LocalOctenRuntimeBackend.WASM,
+  );
+  assert.equal(resolveLocalOctenRuntimeBackend('linux', 'x64', []), LocalOctenRuntimeBackend.WASM);
+  assert.equal(
+    resolveLocalOctenRuntimeBackend('darwin', 'arm64', ['Apple M4']),
+    LocalOctenRuntimeBackend.NATIVE,
+  );
+  assert.equal(
+    resolveLocalOctenRuntimeBackend('darwin', 'x64', ['Intel(R) Core(TM) i7']),
+    LocalOctenRuntimeBackend.WASM,
+  );
   assert.throws(
-    () => resolveLocalOctenRuntimeBackend('win32', 'x64'),
+    () => resolveLocalOctenRuntimeBackend('win32', 'x64', ['AMD Ryzen 7 8845HS']),
     /unsupported on win32\/x64/u,
   );
 });

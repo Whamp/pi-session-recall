@@ -32,8 +32,20 @@
     "totalElapsedSeconds": 42,
     "productionDatabaseMutated": false
   },
+  "amdLinuxBackendComparison": {
+    "evidence": "local-octen-amd-backend-comparison.json",
+    "publicTextProbes": 6,
+    "sessions": 0,
+    "nativeWarmMedianMilliseconds": 19.28,
+    "wasmWarmMedianMilliseconds": 152.1,
+    "nativeIncrementalPeakRssBytes": 635629568,
+    "wasmIncrementalPeakRssBytes": 2305966080,
+    "nativeMinimumUpstreamCosine": 0.970399,
+    "wasmMinimumUpstreamCosine": 0.965321,
+    "oneSessionOfflineIntegrationPassed": true
+  },
   "wasmFallbackPrototype": {
-    "reason": "Native Intel Linux and macOS runners produce incompatible vectors; stable onnxruntime-node also omits Darwin x64",
+    "reason": "Native Intel Linux and macOS runners produce incompatible vectors; stable onnxruntime-node also omits Darwin x64. Linux x64 AMD uses native ONNX instead.",
     "loadMilliseconds": 740.155795,
     "queryMilliseconds": 372.371054,
     "peakObservedRssBytes": 2497564672,

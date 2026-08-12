@@ -63,8 +63,13 @@ void test(
     try {
       const queryEmbedding = await conformanceProvider.embedQuery(texts[0]!);
       const documentEmbedding = (await conformanceProvider.embedDocuments([texts[1]!]))[0]!;
-      assert.ok(cosineSimilarity(queryEmbedding, vectors[0]!) >= 0.94);
-      assert.ok(cosineSimilarity(documentEmbedding, vectors[1]!) >= 0.94);
+      const queryCosine = cosineSimilarity(queryEmbedding, vectors[0]!);
+      const documentCosine = cosineSimilarity(documentEmbedding, vectors[1]!);
+      assert.ok(queryCosine >= 0.94, `Query conformance cosine ${queryCosine} is below 0.94`);
+      assert.ok(
+        documentCosine >= 0.94,
+        `Document conformance cosine ${documentCosine} is below 0.94`,
+      );
     } finally {
       await conformanceProvider.close();
     }

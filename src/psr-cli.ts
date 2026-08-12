@@ -348,15 +348,20 @@ export async function runPsrCli(
       throw new Error(PSR_USAGE);
     }
     const config = await dependencies.loadConfig();
-    await dependencies.createService(config).activate(databaseTarget, {
-      onProgress(event) {
-        if (event.kind === 'waiting-for-write-lock') {
-          dependencies.writeProgress('Waiting for another recall index operation...\n');
-        }
-      },
-    });
-    dependencies.writeOutput('Staged recall database activated.\n');
-    return 0;
+    const service = dependencies.createService(config);
+    try {
+      await service.activate(databaseTarget, {
+        onProgress(event) {
+          if (event.kind === 'waiting-for-write-lock') {
+            dependencies.writeProgress('Waiting for another recall index operation...\n');
+          }
+        },
+      });
+      dependencies.writeOutput('Staged recall database activated.\n');
+      return 0;
+    } finally {
+      await service.close?.();
+    }
   }
 
   const flags = argumentsList.slice(1);
@@ -424,22 +429,27 @@ export async function runPsrCli(
 
   reportProgress({ kind: 'preparing' });
   const config = await dependencies.loadConfig();
-  const result = await dependencies.createService(config).index({
-    rebuild,
-    ...(stage ? { deferActivation: true } : {}),
-    ...(resume ? { resumeCandidate: true } : {}),
-    ...(reuseActiveVectors ? { reuseActiveVectors: true } : {}),
-    optimize: false,
-    onProgress: reportProgress,
-  });
-  const summary = result.indexSummary;
-  dependencies.writeOutput(
-    compact
-      ? formatCompactRecallIndexSummary(result)
-      : formatReadableRecallIndexSummary(
-          result,
-          lastProgressTimeMs - (commandStartedAtMs ?? lastProgressTimeMs),
-        ),
-  );
-  return summary.failedSessions.length === 0 ? 0 : 1;
+  const service = dependencies.createService(config);
+  try {
+    const result = await service.index({
+      rebuild,
+      ...(stage ? { deferActivation: true } : {}),
+      ...(resume ? { resumeCandidate: true } : {}),
+      ...(reuseActiveVectors ? { reuseActiveVectors: true } : {}),
+      optimize: false,
+      onProgress: reportProgress,
+    });
+    const summary = result.indexSummary;
+    dependencies.writeOutput(
+      compact
+        ? formatCompactRecallIndexSummary(result)
+        : formatReadableRecallIndexSummary(
+            result,
+            lastProgressTimeMs - (commandStartedAtMs ?? lastProgressTimeMs),
+          ),
+    );
+    return summary.failedSessions.length === 0 ? 0 : 1;
+  } finally {
+    await service.close?.();
+  }
 }

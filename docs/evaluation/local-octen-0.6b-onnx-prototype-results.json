@@ -1,0 +1,135 @@
+{
+  "version": 1,
+  "completedAt": "2026-08-11T23:35:36.075Z",
+  "artifact": {
+    "upstreamRepository": "Octen/Octen-Embedding-0.6B",
+    "upstreamRevision": "d715b32ee68f057b54dff09fc93c23485bc403d3",
+    "prototypeRepository": "cstr/Octen-Embedding-0.6B-ONNX-INT8",
+    "prototypeRevision": "3d68a234435972890cbdf71b6a90f9d3fecc7370",
+    "files": [
+      {
+        "fileName": "model.int8.onnx",
+        "bytes": 5451403,
+        "sha256": "48c4eb1401ba5a5d22d7a7e1fb3e94d63e8ed06231e3d124babc00ead78c8771"
+      },
+      {
+        "fileName": "model.int8.onnx.data",
+        "bytes": 1062674432,
+        "sha256": "1ea5b1a2737474b819a301725cb71381e418d7baa8263769f73486fbe9a74b65"
+      }
+    ],
+    "quantization": "SmoothQuant INT8",
+    "nativeDimensions": 1024,
+    "storedDimensions": 1024,
+    "license": "Apache-2.0"
+  },
+  "runtime": {
+    "package": "onnxruntime-node",
+    "version": "1.27.0",
+    "platform": "linux",
+    "architecture": "x64",
+    "node": "v24.16.0",
+    "cpu": "AMD Ryzen 7 8845HS w/ Radeon 780M Graphics",
+    "logicalCpus": 16,
+    "peakRssBytes": 1923796992,
+    "loadMilliseconds": 417.5643670000002,
+    "embeddedTexts": 13116,
+    "embeddedTokens": 3716603,
+    "operationLatencyMedianMilliseconds": 1324.8438360001892,
+    "operationLatencyP95Milliseconds": 2007.1259309999878,
+    "parallelism": 4,
+    "intraOpThreads": 4
+  },
+  "sample": {
+    "selectionAlgorithm": "project-round-robin-sha256-v1",
+    "selectionHash": "de249b629f25b68651c74ed7a1f801512d634499fea5f3164d3bf9acc069dc70",
+    "discoveredSessions": 3737,
+    "selectedSessions": 171,
+    "representedProjectDirectories": 171,
+    "sourceBytes": 170255864,
+    "projectedDenseDocuments": 12966,
+    "projectedInvocations": 12836,
+    "parseFailuresDuringSelection": 0
+  },
+  "quality": {
+    "frozenGatePassed": true,
+    "practicalLocalGatePassed": true,
+    "practicalMinimum": 0.9,
+    "candidatePoolRecall": 1,
+    "finalRecall": 1,
+    "contextUsefulness": 1,
+    "sourceOccurrencePreservation": 1,
+    "queryLatency": {
+      "median": 26.65539600000011,
+      "p95": 33.854198999999426
+    },
+    "strictGateBlockers": []
+  },
+  "sampleIndex": {
+    "durationMilliseconds": 3836803.680233,
+    "denseDocumentsPerSecond": 3.379375407399684,
+    "summary": {
+      "scannedSessions": 171,
+      "indexedSessions": 171,
+      "removedSessions": 0,
+      "reusedVectors": 0,
+      "newlyEmbeddedChunks": 12966,
+      "embeddingRequestCount": 228,
+      "deletedChunks": 0,
+      "failedSessions": []
+    },
+    "deviceWrittenBytes": 30445899776,
+    "scratchAllocatedBytes": 1865961472
+  },
+  "sampleQueries": {
+    "measurements": [
+      {
+        "queryId": "6dcc16729dd1",
+        "latencyMilliseconds": 58.09494599979371,
+        "denseResults": 8,
+        "invocationResults": 0
+      },
+      {
+        "queryId": "9021434dac2a",
+        "latencyMilliseconds": 37.485518999863416,
+        "denseResults": 8,
+        "invocationResults": 0
+      },
+      {
+        "queryId": "07f8535f6913",
+        "latencyMilliseconds": 37.13832399994135,
+        "denseResults": 8,
+        "invocationResults": 0
+      },
+      {
+        "queryId": "cf147d5cb545",
+        "latencyMilliseconds": 37.22709900001064,
+        "denseResults": 8,
+        "invocationResults": 0
+      },
+      {
+        "queryId": "a3b5ad3856db",
+        "latencyMilliseconds": 42.570201999973506,
+        "denseResults": 8,
+        "invocationResults": 0
+      },
+      {
+        "queryId": "b64fbfd2b55c",
+        "latencyMilliseconds": 36.83233699994162,
+        "denseResults": 8,
+        "invocationResults": 0
+      }
+    ],
+    "latencyMedianMilliseconds": 37.22709900001064,
+    "latencyP95Milliseconds": 58.09494599979371
+  },
+  "bounds": {
+    "maximumSessions": 200,
+    "maximumDenseDocuments": 20000,
+    "maximumRuntimeMilliseconds": 7200000,
+    "maximumScratchBytes": 8589934592,
+    "minimumFreeBytes": 257698037760,
+    "productionDatabaseMutated": false
+  },
+  "passed": true
+}

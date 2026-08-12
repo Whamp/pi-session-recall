@@ -1,18 +1,17 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import {
-  LocalOctenModelDownloadProgressKind,
-  LocalOctenModelStatusKind,
-} from './enums.js';
+import { LocalOctenModelDownloadProgressKind, LocalOctenModelStatusKind } from './enums.js';
 import type { LocalOctenModelManager } from './local-octen-model-manager.js';
 import { runPsrModelCli } from './psr-model-cli.js';
 
-function createFixture(options: {
-  statusKind?: LocalOctenModelStatusKind;
-  approved?: boolean;
-  doctorHealthy?: boolean;
-} = {}) {
+function createFixture(
+  options: {
+    statusKind?: LocalOctenModelStatusKind;
+    approved?: boolean;
+    doctorHealthy?: boolean;
+  } = {},
+) {
   const output: string[] = [];
   const progress: string[] = [];
   let downloadCalls = 0;
@@ -81,6 +80,15 @@ function createFixture(options: {
     },
   };
 }
+
+void test('psr model --help prints command usage without loading model state', async () => {
+  const fixture = createFixture();
+
+  assert.equal(await runPsrModelCli(['--help'], fixture.dependencies), 0);
+  assert.match(fixture.output.join(''), /psr model status[\s\S]*psr model doctor/u);
+  assert.equal(fixture.downloadCalls, 0);
+  assert.equal(fixture.doctorCalls, 0);
+});
 
 void test('psr model status reports cache state without downloading or probing', async () => {
   const fixture = createFixture({ statusKind: LocalOctenModelStatusKind.READY });

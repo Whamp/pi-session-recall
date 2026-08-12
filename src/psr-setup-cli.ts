@@ -14,8 +14,9 @@ import {
   type LocalOctenModelManager,
 } from './local-octen-model-manager.js';
 import { isUnknownRecord } from './is-unknown-record.js';
+import { parseRecallConfigFileValue } from './recall-conversation-config.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
-import { confirmTerminalAction } from './terminal-confirm.js';
+import { confirmTerminalAction, promptTerminalText } from './terminal-confirm.js';
 
 const PSR_SETUP_USAGE = [
   'psr setup [--local|--external] [--yes] [--index]',
@@ -53,6 +54,7 @@ export interface PsrSetupCliDependencies {
   getHomeDirectory: () => string;
   selectProfile: () => Promise<RecallEmbeddingProfile>;
   confirm: (question: string) => Promise<boolean>;
+  promptText: (question: string, defaultValue: string) => Promise<string>;
   createModelManager: (modelRootDirectory: string) => LocalOctenModelManager;
   writeOutput: (text: string) => void;
   writeProgress: (text: string) => void;
@@ -84,6 +86,7 @@ const DEFAULT_PSR_SETUP_CLI_DEPENDENCIES: PsrSetupCliDependencies = {
   getHomeDirectory: homedir,
   selectProfile: selectTerminalEmbeddingProfile,
   confirm: confirmTerminalAction,
+  promptText: promptTerminalText,
   createModelManager(modelRootDirectory) {
     return createLocalOctenModelManager({ modelRootDirectory });
   },
@@ -155,11 +158,21 @@ function parseSetupArguments(argumentsList: readonly string[]): ParsedSetupArgum
         if (!value || value.startsWith('--')) {
           throw new Error(PSR_SETUP_USAGE);
         }
-        if (flag === '--config') parsed.configPath = value;
-        if (flag === '--model-root') parsed.modelRootDirectory = value;
-        if (flag === '--base-url') parsed.baseUrl = value;
-        if (flag === '--model') parsed.model = value;
-        if (flag === '--served-model-id') parsed.servedModelId = value;
+        if (flag === '--config') {
+          parsed.configPath = value;
+        }
+        if (flag === '--model-root') {
+          parsed.modelRootDirectory = value;
+        }
+        if (flag === '--base-url') {
+          parsed.baseUrl = value;
+        }
+        if (flag === '--model') {
+          parsed.model = value;
+        }
+        if (flag === '--served-model-id') {
+          parsed.servedModelId = value;
+        }
         index += 1;
         break;
       }
@@ -168,10 +181,18 @@ function parseSetupArguments(argumentsList: readonly string[]): ParsedSetupArgum
       case '--parallelism':
       case '--intra-op-threads': {
         const value = readPositiveInteger(argumentsList[index + 1], flag);
-        if (flag === '--native-dimensions') parsed.nativeDimensions = value;
-        if (flag === '--batch-size') parsed.batchSize = value;
-        if (flag === '--parallelism') parsed.localParallelism = value;
-        if (flag === '--intra-op-threads') parsed.localIntraOperationThreads = value;
+        if (flag === '--native-dimensions') {
+          parsed.nativeDimensions = value;
+        }
+        if (flag === '--batch-size') {
+          parsed.batchSize = value;
+        }
+        if (flag === '--parallelism') {
+          parsed.localParallelism = value;
+        }
+        if (flag === '--intra-op-threads') {
+          parsed.localIntraOperationThreads = value;
+        }
         index += 1;
         break;
       }
@@ -293,6 +314,10 @@ export async function runPsrSetupCli(
   argumentsList: readonly string[],
   dependencies: PsrSetupCliDependencies = DEFAULT_PSR_SETUP_CLI_DEPENDENCIES,
 ): Promise<PsrSetupCliResult> {
+  if (argumentsList.length === 1 && argumentsList[0] === '--help') {
+    dependencies.writeOutput(`${PSR_SETUP_USAGE}\n`);
+    return { exitCode: 0, runInitialIndex: false };
+  }
   const parsed = parseSetupArguments(argumentsList);
   const homeDirectory = dependencies.getHomeDirectory();
   const configPath = resolve(
@@ -316,7 +341,51 @@ export async function runPsrSetupCli(
     return { exitCode: 1, runInitialIndex: false };
   }
   const existing = await readExistingConfig(configPath);
+  const profileSelectedInteractively = !parsed.local && !parsed.external;
+  if (profile === RecallEmbeddingProfile.OCTEN_HTTP && profileSelectedInteractively) {
+    parsed.baseUrl = await dependencies.promptText(
+      'OpenAI-compatible embedding base URL',
+      typeof existing.embeddingBaseUrl === 'string'
+        ? existing.embeddingBaseUrl
+        : 'http://127.0.0.1:8090/v1',
+    );
+    parsed.model = await dependencies.promptText(
+      'Embedding request model',
+      typeof existing.embeddingModel === 'string'
+        ? existing.embeddingModel
+        : DEFAULT_EXTERNAL_MODEL,
+    );
+    parsed.servedModelId = await dependencies.promptText(
+      'Served model identity',
+      typeof existing.embeddingServedModelId === 'string'
+        ? existing.embeddingServedModelId
+        : DEFAULT_EXTERNAL_SERVED_MODEL_ID,
+    );
+    parsed.nativeDimensions = readPositiveInteger(
+      await dependencies.promptText(
+        'Native embedding dimensions',
+        String(
+          typeof existing.embeddingNativeDimensions === 'number'
+            ? existing.embeddingNativeDimensions
+            : DEFAULT_EXTERNAL_NATIVE_DIMENSIONS,
+        ),
+      ),
+      'Native embedding dimensions',
+    );
+    parsed.batchSize = readPositiveInteger(
+      await dependencies.promptText(
+        'Embedding request batch size',
+        String(
+          typeof existing.embeddingBatchSize === 'number'
+            ? existing.embeddingBatchSize
+            : DEFAULT_EXTERNAL_BATCH_SIZE,
+        ),
+      ),
+      'Embedding request batch size',
+    );
+  }
   const nextConfig = createEmbeddingConfig(existing, profile, parsed, modelRootDirectory);
+  parseRecallConfigFileValue(nextConfig);
 
   if (profile === RecallEmbeddingProfile.LOCAL_OCTEN) {
     if (

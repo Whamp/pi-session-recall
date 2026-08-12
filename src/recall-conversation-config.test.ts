@@ -40,10 +40,7 @@ void test('recall config defaults to one Octen profile and the frozen search pol
     );
     assert.equal('embeddingCacheDirectory' in config, false);
     assert.equal('diagnosticLogPath' in config, false);
-    assert.equal(
-      config.localModelRootDirectory,
-      join(home, '.pi', 'agent', 'recall-models'),
-    );
+    assert.equal(config.localModelRootDirectory, join(home, '.pi', 'agent', 'recall-models'));
   } finally {
     await rm(home, { recursive: true, force: true });
   }

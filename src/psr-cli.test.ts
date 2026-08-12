@@ -36,6 +36,7 @@ function createPsrCliFixture(
   const output: string[] = [];
   const progressOutput: string[] = [];
   const executionLog: string[] = [];
+  let closeCalls = 0;
   const schedulerProcessCalls: Array<{ executable: string; argumentsList: readonly string[] }> = [];
   const modelCommandCalls: string[][] = [];
   const setupCommandCalls: string[][] = [];
@@ -63,6 +64,9 @@ function createPsrCliFixture(
     chunkPolicy: { maxTokens: 512, overlapTokens: 64 },
   };
   const service = {
+    async close() {
+      closeCalls += 1;
+    },
     async search() {
       throw new Error('psr must not search');
     },
@@ -158,6 +162,9 @@ function createPsrCliFixture(
     schedulerProcessCalls,
     modelCommandCalls,
     setupCommandCalls,
+    get closeCalls() {
+      return closeCalls;
+    },
   };
 }
 
@@ -684,13 +691,14 @@ void test('psr index warns immediately while retaining complete failure details 
   assert.match(fixture.output.join(''), new RegExp(error, 'u'));
 });
 
-void test('psr index lets fatal service errors reach the standalone process handler', async () => {
+void test('psr index releases embedding resources after a fatal service error', async () => {
   const fixture = createPsrCliFixture([], { fatalError: new Error('Store setup failed') });
 
   await assert.rejects(runPsrCli(['index'], fixture.dependencies), /Store setup failed/u);
 
   assert.equal(fixture.output.join(''), '');
   assert.match(fixture.progressOutput.join(''), /Preparing recall index/iu);
+  assert.equal(fixture.closeCalls, 1);
 });
 
 void test('psr index --compact preserves the former one-line stdout summary', async () => {

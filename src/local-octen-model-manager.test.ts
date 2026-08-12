@@ -86,10 +86,7 @@ void test('local model download publishes only a complete checksum-verified arti
 
   assert.equal(result.downloaded, true);
   assert.equal(result.modelDirectory, join(root, TEST_ARTIFACT.artifactId));
-  assert.deepEqual(
-    await readFile(join(result.modelDirectory, 'model.onnx')),
-    Buffer.from(MODEL),
-  );
+  assert.deepEqual(await readFile(join(result.modelDirectory, 'model.onnx')), Buffer.from(MODEL));
   assert.deepEqual(
     await readFile(join(result.modelDirectory, 'tokenizer.json')),
     Buffer.from(TOKENIZER),

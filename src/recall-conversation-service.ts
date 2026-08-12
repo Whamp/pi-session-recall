@@ -192,6 +192,8 @@ export interface RecallConversationService {
     options?: RecallConversationSearchOptions,
   ): Promise<RecallConversationSearch>;
   index(options?: RecallConversationIndexOptions): Promise<RecallConversationIndexResult>;
+  /** Releases embedding runtime resources owned by this service. */
+  close?(): Promise<void>;
 }
 
 /** Explicit slow source-search capability used only when the Pi tool requests it. */
@@ -478,6 +480,9 @@ export function createRecallConversationService(
   }
 
   return {
+    async close() {
+      await embeddingProvider.close?.();
+    },
     async search(query, limit, options = {}) {
       const searchQuery = query.trim();
       if (!searchQuery) {

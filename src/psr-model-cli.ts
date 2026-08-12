@@ -1,7 +1,4 @@
-import {
-  LocalOctenModelDownloadProgressKind,
-  LocalOctenModelStatusKind,
-} from './enums.js';
+import { LocalOctenModelDownloadProgressKind, LocalOctenModelStatusKind } from './enums.js';
 import {
   createLocalOctenModelManager,
   type LocalOctenModelManager,
@@ -9,11 +6,9 @@ import {
 import { loadRecallConversationConfig } from './recall-conversation-config.js';
 import { confirmTerminalAction } from './terminal-confirm.js';
 
-const PSR_MODEL_USAGE = [
-  'psr model status',
-  'psr model download [--yes]',
-  'psr model doctor',
-].join('\n');
+const PSR_MODEL_USAGE = ['psr model status', 'psr model download [--yes]', 'psr model doctor'].join(
+  '\n',
+);
 
 /** Replaceable command boundaries for local model CLI behavior. */
 export interface PsrModelCliDependencies {
@@ -48,11 +43,14 @@ export async function runPsrModelCli(
   argumentsList: readonly string[],
   dependencies: PsrModelCliDependencies = DEFAULT_PSR_MODEL_CLI_DEPENDENCIES,
 ): Promise<number> {
+  if (argumentsList.length === 1 && argumentsList[0] === '--help') {
+    dependencies.writeOutput(`${PSR_MODEL_USAGE}\n`);
+    return 0;
+  }
   const subcommand = argumentsList[0];
   const validDownload =
     subcommand === 'download' &&
-    (argumentsList.length === 1 ||
-      (argumentsList.length === 2 && argumentsList[1] === '--yes'));
+    (argumentsList.length === 1 || (argumentsList.length === 2 && argumentsList[1] === '--yes'));
   if (
     !(
       (subcommand === 'status' && argumentsList.length === 1) ||

@@ -4,10 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import {
-  LocalOctenModelStatusKind,
-  RecallEmbeddingProfile,
-} from './enums.js';
+import { LocalOctenModelStatusKind, RecallEmbeddingProfile } from './enums.js';
 import type { LocalOctenModelManager } from './local-octen-model-manager.js';
 import { runPsrSetupCli } from './psr-setup-cli.js';
 
@@ -16,6 +13,7 @@ function createFixture(options: {
   selectedProfile?: RecallEmbeddingProfile;
   confirmations?: boolean[];
   modelStatus?: LocalOctenModelStatusKind;
+  promptResponses?: string[];
 }): {
   dependencies: Parameters<typeof runPsrSetupCli>[1];
   output: string[];
@@ -28,6 +26,7 @@ function createFixture(options: {
   const managerRoots: string[] = [];
   const downloadApprovals: boolean[] = [];
   const confirmations = [...(options.confirmations ?? [])];
+  const promptResponses = [...(options.promptResponses ?? [])];
   return {
     output,
     progress,
@@ -42,6 +41,9 @@ function createFixture(options: {
       },
       async confirm() {
         return confirmations.shift() ?? false;
+      },
+      async promptText(_question, defaultValue) {
+        return promptResponses.shift() ?? defaultValue;
       },
       createModelManager(modelRootDirectory) {
         managerRoots.push(modelRootDirectory);
@@ -76,6 +78,17 @@ function createFixture(options: {
   };
 }
 
+void test('psr setup --help prints complete flags without selecting a profile', async () => {
+  const fixture = createFixture({ homeDirectory: '/tmp/psr-setup-help' });
+
+  assert.deepEqual(await runPsrSetupCli(['--help'], fixture.dependencies), {
+    exitCode: 0,
+    runInitialIndex: false,
+  });
+  assert.match(fixture.output.join(''), /psr setup \[--local\|--external\][\s\S]*--base-url/u);
+  assert.deepEqual(fixture.managerRoots, []);
+});
+
 void test('psr setup --local writes a verified local profile atomically', async (t) => {
   const home = await mkdtemp(join(tmpdir(), 'psr-setup-local-'));
   t.after(() => rm(home, { recursive: true, force: true }));
@@ -96,7 +109,10 @@ void test('psr setup --local writes a verified local profile atomically', async 
     localModelRootDirectory: modelRoot,
   });
   assert.equal((await stat(configPath)).mode & 0o777, 0o600);
-  assert.match(fixture.output.join(''), /Local Octen embeddings configured[\s\S]*psr index --rebuild/u);
+  assert.match(
+    fixture.output.join(''),
+    /Local Octen embeddings configured[\s\S]*psr index --rebuild/u,
+  );
 });
 
 void test('psr setup preserves unrelated settings and removes stale HTTP fields', async (t) => {
@@ -120,10 +136,7 @@ void test('psr setup preserves unrelated settings and removes stale HTTP fields'
   );
   const fixture = createFixture({ homeDirectory: home });
 
-  await runPsrSetupCli(
-    ['--local', '--yes', '--config', configPath],
-    fixture.dependencies,
-  );
+  await runPsrSetupCli(['--local', '--yes', '--config', configPath], fixture.dependencies);
 
   assert.deepEqual(JSON.parse(await readFile(configPath, 'utf8')), {
     sessionsDirectory: '/sessions',
@@ -141,14 +154,28 @@ void test('psr setup cancellation leaves existing configuration unchanged', asyn
   await writeFile(configPath, existing, 'utf8');
   const fixture = createFixture({ homeDirectory: home, confirmations: [false] });
 
-  const result = await runPsrSetupCli(
-    ['--local', '--config', configPath],
-    fixture.dependencies,
-  );
+  const result = await runPsrSetupCli(['--local', '--config', configPath], fixture.dependencies);
 
   assert.deepEqual(result, { exitCode: 1, runInitialIndex: false });
   assert.equal(await readFile(configPath, 'utf8'), existing);
   assert.deepEqual(fixture.downloadApprovals, []);
+});
+
+void test('psr setup rejects unsupported existing settings before model access', async (t) => {
+  const home = await mkdtemp(join(tmpdir(), 'psr-setup-invalid-existing-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const configPath = join(home, 'recall.json');
+  const existing = '{"unsupportedSetting":true}\n';
+  await writeFile(configPath, existing, 'utf8');
+  const fixture = createFixture({ homeDirectory: home });
+
+  await assert.rejects(
+    runPsrSetupCli(['--local', '--yes', '--config', configPath], fixture.dependencies),
+    /Recall configuration invalid/u,
+  );
+
+  assert.equal(await readFile(configPath, 'utf8'), existing);
+  assert.deepEqual(fixture.managerRoots, []);
 });
 
 void test('psr setup does not write local config when model download is declined', async (t) => {
@@ -157,10 +184,7 @@ void test('psr setup does not write local config when model download is declined
   const configPath = join(home, 'recall.json');
   const fixture = createFixture({ homeDirectory: home, confirmations: [false] });
 
-  const result = await runPsrSetupCli(
-    ['--local', '--config', configPath],
-    fixture.dependencies,
-  );
+  const result = await runPsrSetupCli(['--local', '--config', configPath], fixture.dependencies);
 
   assert.deepEqual(result, { exitCode: 1, runInitialIndex: false });
   await assert.rejects(readFile(configPath, 'utf8'), { code: 'ENOENT' });
@@ -204,6 +228,36 @@ void test('psr setup writes an explicit external HTTP profile without model acce
     embeddingNativeDimensions: 2_560,
     embeddingStoredDimensions: 1_024,
     embeddingBatchSize: 64,
+  });
+});
+
+void test('interactive external setup prompts for endpoint and model details', async (t) => {
+  const home = await mkdtemp(join(tmpdir(), 'psr-setup-interactive-external-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const configPath = join(home, 'recall.json');
+  const fixture = createFixture({
+    homeDirectory: home,
+    selectedProfile: RecallEmbeddingProfile.OCTEN_HTTP,
+    promptResponses: [
+      'https://embeddings.example.test/v1',
+      'octen-request',
+      'Octen/Octen-Embedding-4B',
+      '2560',
+      '32',
+    ],
+  });
+
+  const result = await runPsrSetupCli(['--yes', '--config', configPath], fixture.dependencies);
+
+  assert.deepEqual(result, { exitCode: 0, runInitialIndex: false });
+  assert.deepEqual(JSON.parse(await readFile(configPath, 'utf8')), {
+    embeddingProfile: RecallEmbeddingProfile.OCTEN_HTTP,
+    embeddingBaseUrl: 'https://embeddings.example.test/v1',
+    embeddingModel: 'octen-request',
+    embeddingServedModelId: 'Octen/Octen-Embedding-4B',
+    embeddingNativeDimensions: 2_560,
+    embeddingStoredDimensions: 1_024,
+    embeddingBatchSize: 32,
   });
 });
 

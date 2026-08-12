@@ -57,12 +57,24 @@ function parsePositiveInteger(value: string, settingName: string): number {
   return parsed;
 }
 
+/** Strictly parses the supported durable recall.json surface. */
+export function parseRecallConfigFileValue(
+  value: unknown,
+): ReturnType<typeof Value.Parse<typeof recallConfigFileSchema>> {
+  try {
+    return Value.Parse(recallConfigFileSchema, value);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Recall configuration invalid: ${message}`, { cause: error });
+  }
+}
+
 async function readRecallConfigFile(
   configPath: string,
 ): Promise<ReturnType<typeof Value.Parse<typeof recallConfigFileSchema>>> {
   try {
     const raw: unknown = JSON.parse(await readFile(configPath, 'utf8'));
-    return Value.Parse(recallConfigFileSchema, raw);
+    return parseRecallConfigFileValue(raw);
   } catch (error) {
     if (readNodeErrorCode(error) === 'ENOENT') {
       return {};
@@ -73,10 +85,10 @@ async function readRecallConfigFile(
 }
 
 function readEmbeddingProfile(value: string | undefined): RecallEmbeddingProfile {
-  if (value === undefined || value === RecallEmbeddingProfile.OCTEN_HTTP) {
+  if (value === undefined || value === 'octen-http-v1') {
     return RecallEmbeddingProfile.OCTEN_HTTP;
   }
-  if (value === RecallEmbeddingProfile.LOCAL_OCTEN) {
+  if (value === 'local-octen-embedding-0.6b-onnx-int8-v1') {
     return RecallEmbeddingProfile.LOCAL_OCTEN;
   }
   throw new Error(`Recall configuration embedding profile is unsupported: ${value}`);
@@ -157,8 +169,7 @@ export async function loadRecallConversationConfig(
           environment.PI_RECALL_LOCAL_EMBEDDING_INTRA_OPERATION_THREADS,
           'PI_RECALL_LOCAL_EMBEDDING_INTRA_OPERATION_THREADS',
         )
-      : (file.localEmbeddingIntraOperationThreads ??
-        DEFAULT_LOCAL_OCTEN_INTRA_OPERATION_THREADS);
+      : (file.localEmbeddingIntraOperationThreads ?? DEFAULT_LOCAL_OCTEN_INTRA_OPERATION_THREADS);
 
   return {
     sessionsDirectory:

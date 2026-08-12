@@ -4,11 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import {
-  RecallEmbeddingProfile,
-  RecallProjectIdentitySource,
-  RecallSearchScope,
-} from './enums.js';
+import { RecallEmbeddingProfile, RecallProjectIdentitySource, RecallSearchScope } from './enums.js';
 import { isUnknownRecord } from './is-unknown-record.js';
 import {
   createRecallConversationService,

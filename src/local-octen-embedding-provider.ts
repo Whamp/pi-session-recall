@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { Tokenizer } from '@huggingface/tokenizers';
+import type * as OnnxRuntimeModule from 'onnxruntime-node';
 
 import { isUnknownRecord } from './is-unknown-record.js';
 import type { RecallEmbeddingProvider } from './recall-inference-capabilities.js';
@@ -108,7 +109,7 @@ async function loadLocalOctenInferenceSession(
   intraOperationThreads: number,
 ): Promise<LocalOctenInferenceSession> {
   assertSupportedLocalOctenPlatform();
-  let runtime: typeof import('onnxruntime-node');
+  let runtime: typeof OnnxRuntimeModule;
   try {
     runtime = await import('onnxruntime-node');
   } catch (error) {
@@ -181,10 +182,11 @@ export function createLocalOctenEmbeddingProvider(
     if (closed) {
       throw new Error('Local Octen embedding provider is closed');
     }
-    resourcesPromise ??= Promise.all([
-      loadTokenizer(options.modelDirectory),
-      loadSession(options.modelDirectory, intraOperationThreads),
-    ]).then(([tokenizer, session]) => ({ tokenizer, session }));
+    resourcesPromise ??= (async () => {
+      const tokenizer = await loadTokenizer(options.modelDirectory);
+      const session = await loadSession(options.modelDirectory, intraOperationThreads);
+      return { tokenizer, session };
+    })();
     return resourcesPromise;
   }
 
@@ -264,8 +266,12 @@ export function createLocalOctenEmbeddingProvider(
         if (!resourcesPromise) {
           return;
         }
-        const { session } = await resourcesPromise;
-        await session.release();
+        try {
+          const { session } = await resourcesPromise;
+          await session.release();
+        } catch {
+          // Resource acquisition failed before a reachable session existed.
+        }
       })();
       return releasePromise;
     },

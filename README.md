@@ -10,7 +10,7 @@ Raw session JSONL remains the source of truth, but asking a fresh agent to searc
 
 A measured production comparison gave the same question to the recall tool and to a fresh agent restricted to raw JSONL. The full hybrid tool took 1.48 seconds at the median. The raw agent took 94.43 seconds, examined 54 project files, and used 141,682 tokens plus 852,480 cached tokens. The agent found the answer reliably; the tool required its maximum ten results to include the answer at rank ten. Indexed recall was about 64 times faster and far cheaper in this case, while the ranking result exposed work still needed. This is one measured query, not a universal quality or capacity claim. See [Production recall index value benchmark](docs/research/production-recall-index-value-benchmark.md).
 
-The [unified SQLite prototype](docs/research/unified-sqlite-recall-storage-prototype.md) passed its storage, latency, retrieval-overlap, update-write, churn, and atomicity gates. The old [v7 certification](docs/research/superseded-v7-compact-production-recall-certification.md) is superseded and does not certify v8. Real v8 production certification and activation still remain. The production gates are at most 5 GiB allocated storage, project Dense search below 100 ms p95, and global Dense search below 700 ms p95 on the measured corpus.
+The [unified SQLite prototype](docs/research/unified-sqlite-recall-storage-prototype.md) passed its storage, latency, retrieval-overlap, update-write, churn, and atomicity gates. The [production certification](docs/research/unified-sqlite-production-recall-certification.md) then passed every pre-activation gate, and the current layout was activated and live-verified on 2026-08-11. The old [v7 certification](docs/research/superseded-v7-compact-production-recall-certification.md) remains only as historical evidence.
 
 ## Install
 
@@ -22,15 +22,39 @@ npm link
 pi install /path/to/pi-session-recall
 ```
 
-Reload Pi after installation. Build the first index explicitly:
+Reload Pi after installation. Fresh users should run guided setup. Local Octen is the default; it downloads and verifies a 1.01 GiB model before writing configuration.
 
 ```bash
+psr setup
+psr index --rebuild
+```
+
+Agents and scripts can run the same flow without prompts:
+
+```bash
+psr setup --local --yes
+psr index --rebuild
+```
+
+To use an existing OpenAI-compatible embedding server instead:
+
+```bash
+psr setup --external --yes \
+  --base-url http://127.0.0.1:8090/v1 \
+  --model octen-embed \
+  --served-model-id Octen/Octen-Embedding-4B \
+  --native-dimensions 2560
 psr index --rebuild
 ```
 
 ## Commands
 
 ```bash
+psr setup                                      # guided fresh-install setup; local is the default
+psr setup --local --yes --index                # noninteractive local setup and initial rebuild
+psr model status                               # inspect local artifact state without mutation
+psr model download [--yes]                     # explicitly download or repair the local artifact
+psr model doctor                               # verify hashes, native runtime, and one embedding
 psr index                                      # add, update, and remove changed session evidence
 psr index --rebuild                            # build and atomically activate a replacement database
 psr index --rebuild --stage                    # build a replacement without activating it
@@ -51,7 +75,7 @@ psr ignore remove path/to/session.jsonl         # make one exact path eligible a
 - recursively scans configured `.jsonl` session files;
 - skips files whose size and modification time have not changed;
 - reuses checksum-matched vectors already stored in the current Recall database when explicitly requested for a staged rebuild;
-- calls Octen only for changed conversation, summary, and turn-context documents;
+- calls the configured local or HTTP Octen profile only for changed conversation, summary, and turn-context documents;
 - replaces each changed session's state, compact Invocations, Dense recall metadata, and single vector projection in one SQLite transaction;
 - removes evidence for deleted or newly ignored indexed session files;
 - skips ignored files before parsing or embedding them;
@@ -193,7 +217,7 @@ npm run --silent replay:session-import -- --corpus-root /path/to/session-corpus
 
 ## Chunking
 
-The index uses the checksum-pinned `Octen/Octen-Embedding-4B` tokenizer with the frozen policy:
+The index uses the checksum-pinned tokenizer belonging to the selected embedding profile with the frozen policy:
 
 - 512 tokens maximum;
 - 64 tokens overlap between adjacent atomic conversation chunks;
@@ -201,24 +225,41 @@ The index uses the checksum-pinned `Octen/Octen-Embedding-4B` tokenizer with the
 
 Atomic chunks never cross entries, roles, visible text runs, tools, thinking, images, results, or summaries. Turn-context documents retain both user and assistant text and cite every contributing entry.
 
-## Octen stored dimensions
+## Embedding profiles
 
-The default profile uses:
+Fresh `psr setup` defaults to local Octen:
 
-| Setting           | Value                                |
-| ----------------- | ------------------------------------ |
-| Request model     | `octen-embed`                        |
-| Served model      | `Octen/Octen-Embedding-4B`           |
-| Native dimensions | 2,560                                |
-| Stored dimensions | 1,024                                |
-| Transformation    | first N, then local L2 normalization |
-| sqlite-vec metric | cosine                               |
+| Setting                      | Local default                                      |
+| ---------------------------- | -------------------------------------------------- |
+| Profile                      | `local-octen-embedding-0.6b-onnx-int8-v1`          |
+| Model                        | `Octen/Octen-Embedding-0.6B`                       |
+| Runtime                      | `onnxruntime-node` 1.27.0, CPU                     |
+| Artifact                     | SmoothQuant INT8 ONNX, 1.01 GiB                    |
+| Native and stored dimensions | 1,024 FP32                                         |
+| Transformation               | tokenizer final token, then local L2 normalization |
+| sqlite-vec metric            | cosine                                             |
 
-The same transformation applies to document and query vectors. sqlite-vec compares the stored FP32 vectors with cosine distance. The feature is vendor-supported prefix storage; this repository does not claim independently verified MRL quality at every cutoff.
+The graph accepts batch size one. Pi Session Recall runs four bounded concurrent operations against one shared session by default. The certified tokenizer post-processor appends `<|endoftext|>` token `151643`; manually appending its configured `<|im_end|>` EOS token `151645` produces incompatible vectors. The [project release](https://github.com/Whamp/pi-session-recall/releases/tag/model-octen-embedding-0.6b-onnx-int8-v1) pins every artifact byte and carries the Apache 2.0 license and provenance notice.
 
-Both `psr index` and `pi-session-recall` require the configured Octen HTTP endpoint. This package has no local embedding fallback.
+After download, local indexing and search work offline. Conversation text stays in the Pi process and is not sent to an embedding server. `psr model status` reads receipt and file sizes. `psr model doctor` additionally hashes every artifact file, loads the native runtime, produces one normalized 1,024-dimensional embedding, and releases the session. `psr model download` requires confirmation or `--yes`; it streams into a unique partial directory, verifies hashes, and only then activates the complete model. If status reports `partial` or `corrupt`, rerun `psr model download`; failed downloads remove their partial directory and do not replace an existing artifact.
 
-The version 8 manifest binds request model, served model, fixed 1,024-dimension FP32 width, cosine distance, sqlite-vec 0.1.9, FTS5, one-table 16-bucket routing, tokenizer assets, 512/64 chunking, import policy, and project identity policy. Any change requires:
+The real artifact download, native query, fixed-vector conformance, disposable SQLite build, close, reopen, and offline search run in CI on Linux x64, macOS arm64, and macOS x64. Windows is unverified and the CLI directs unsupported platforms to the HTTP profile.
+
+The explicit HTTP profile retains the previous behavior:
+
+| Setting           | External HTTP default               |
+| ----------------- | ----------------------------------- |
+| Profile           | `octen-http-v1`                     |
+| Request model     | `octen-embed`                       |
+| Served model      | `Octen/Octen-Embedding-4B`          |
+| Native dimensions | 2,560                               |
+| Stored dimensions | first 1,024 FP32 values             |
+| Transformation    | prefix, then local L2 normalization |
+| sqlite-vec metric | cosine                              |
+
+Installations without `embeddingProfile` continue to select this HTTP profile so an upgrade cannot reinterpret an existing database. `psr setup` writes the local profile for fresh users. There is no silent model or backend fallback.
+
+The version 8 manifest binds request profile, served model, native and stored dimensions, transformation, tokenizer assets, cosine distance, sqlite-vec 0.1.9, FTS5, one-table 16-bucket routing, 512/64 chunking, import policy, and project identity policy. Switching profile or changing any bound setting requires:
 
 ```bash
 psr index --rebuild
@@ -226,11 +267,23 @@ psr index --rebuild
 
 ## Configuration
 
-Configuration defaults to `~/.pi/agent/recall.json`:
+`psr setup` writes `~/.pi/agent/recall.json` atomically with mode `0600`. A local setup resembles:
 
 ```json
 {
-  "embeddingBaseUrl": "http://192.168.0.67:8090/v1",
+  "embeddingProfile": "local-octen-embedding-0.6b-onnx-int8-v1",
+  "localModelRootDirectory": "/home/you/.pi/agent/recall-models"
+}
+```
+
+Optional local tuning fields are `localEmbeddingParallelism` and `localEmbeddingIntraOperationThreads`. The measured defaults are both `4` on a 16-thread AMD Ryzen 7 8845HS. Lower them on smaller machines if native inference contends with other work.
+
+An external configuration resembles:
+
+```json
+{
+  "embeddingProfile": "octen-http-v1",
+  "embeddingBaseUrl": "http://127.0.0.1:8090/v1",
   "embeddingModel": "octen-embed",
   "embeddingServedModelId": "Octen/Octen-Embedding-4B",
   "embeddingNativeDimensions": 2560,
@@ -245,31 +298,43 @@ Environment overrides:
 - `PI_RECALL_CONFIG`
 - `PI_RECALL_SESSIONS_DIRECTORY`
 - `PI_RECALL_DATA_DIRECTORY`
+- `PI_RECALL_EMBEDDING_PROFILE`
 - `PI_RECALL_EMBEDDING_BASE_URL`
 - `PI_RECALL_EMBEDDING_MODEL`
 - `PI_RECALL_EMBEDDING_SERVED_MODEL_ID`
 - `PI_RECALL_EMBEDDING_NATIVE_DIMENSIONS`
 - `PI_RECALL_EMBEDDING_STORED_DIMENSIONS` (must remain `1024` for manifest version 8)
 - `PI_RECALL_EMBEDDING_BATCH_SIZE`
+- `PI_RECALL_LOCAL_MODEL_ROOT_DIRECTORY`
+- `PI_RECALL_LOCAL_EMBEDDING_PARALLELISM`
+- `PI_RECALL_LOCAL_EMBEDDING_INTRA_OPERATION_THREADS`
 
 ## Local state
 
 After the first generation rebuild, durable recall state has this shape:
 
 ```text
-~/.pi/agent/recall/
-├── active -> generations/generation-.../
-├── generations/
-│   ├── generation-.../              # active recall database
-│   └── generation-.../              # inactive completed generation
-└── physical-session-ignore.json
+~/.pi/agent/
+├── recall/
+│   ├── active -> generations/generation-.../
+│   ├── generations/
+│   │   ├── generation-.../          # active recall database
+│   │   └── generation-.../          # inactive completed generation
+│   └── physical-session-ignore.json
+└── recall-models/
+    └── local-octen-embedding-0.6b-onnx-int8-v1/
+        ├── model.int8.onnx
+        ├── model.int8.onnx.data
+        ├── tokenizer.json
+        ├── tokenizer_config.json
+        └── model-receipt.json
 ```
 
 Each version 8 generation contains `recall.sqlite`, `index-manifest.json`, and `index-maintenance-status.json`. SQLite may create `recall.sqlite-wal` and `recall.sqlite-shm` while the database is open; they are part of the same transactional database, not separate stores. Failed or interrupted rebuilds can leave a `candidate-.../` directory. The next fresh rebuild removes stale candidates. A successful `--stage` rebuild leaves a complete `generation-.../` directory inactive until its exact target is passed to `psr activate`. Rebuilds do not remove completed generations.
 
 Rebuild candidates create `recall.sqlite` from canonical session JSONL. The current code ignores obsolete root database artifacts and staged legacy generations; remove them after the current database is certified and active.
 
-The tokenizer loader also keeps checksum-verified tokenizer assets under `tokenizers/`; these are replaceable inference inputs, not recall state. `operation.lock` exists only while `psr` owns the writer lock and is removed when the command exits. There is no embedding cache, generation registry, replay log, marker spool, or model-artifact cache.
+The HTTP tokenizer loader keeps checksum-verified tokenizer assets under `recall/tokenizers/`. The local profile reads its tokenizer from the verified model directory. Both are replaceable inference inputs, not recall state. `operation.lock` exists only while `psr` owns the writer lock and is removed when the command exits. There is no embedding cache, generation registry, replay log, marker spool, or background inference worker.
 
 ## Certify a staged version 8 database
 
@@ -305,15 +370,9 @@ The async clone phase makes only the representative clone session stale, then ca
 
 `candidatePreActivationPassed` means every local candidate and disposable-clone gate passed. The PR's required platform jobs supply separate runtime evidence. This certification benchmark is an explicit release operation, not a requirement for ordinary user rebuilds. Staged construction and atomic activation keep partial databases out of service.
 
-After this branch is merged and deployed, the following checks remain pending:
+The production version 8 candidate passed this certification on 2026-08-11. It was then activated, immediately indexed, checked through project, global, normal, and Source recall, and verified with exact Dense/vector and Invocation/FTS parity. The hourly timer resumed successfully. Approved obsolete Zvec and root artifacts were removed only after those checks, reducing the live recall directory from about 17 GiB to 3.1 GiB at cutover. The durable results are in [the production certification report](docs/research/unified-sqlite-production-recall-certification.md).
 
-1. Pause automatic indexing for the bounded activation window.
-2. Run `psr activate generations/generation-...` with the exact certified target.
-3. Run one immediate changed-session index.
-4. Run project, global, normal, and Source recall against the Active database.
-5. Confirm the hourly timer is active.
-6. Remove obsolete database artifacts after the current database passes live checks.
-7. Obtain a successful `.github/workflows/sqlite-vec-platform-smoke.yml` PR run. Its stable `SQLite-vec macOS x64 runtime load` job runs on `macos-26-intel` and asserts `process.arch === 'x64'`; its stable `SQLite-vec macOS arm64 runtime load` job runs on `macos-26` and asserts `process.arch === 'arm64'`. Both jobs load pinned sqlite-vec 0.1.9 through `node:sqlite`, call `vec_version()`, query FTS5, and insert/query vec0. Record the real successful workflow URL as release evidence only after it exists.
+`.github/workflows/sqlite-vec-platform-smoke.yml` separately verifies pinned sqlite-vec 0.1.9 on macOS x64 and arm64. `.github/workflows/local-octen-platform-smoke.yml` verifies the local model artifact and native inference path on Linux x64, macOS x64, and macOS arm64.
 
 ## Development validation
 

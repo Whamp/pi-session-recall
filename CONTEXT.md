@@ -108,13 +108,21 @@ _Avoid_: Invocation candidate, semantic match
 Readable context formed from a winning atomic conversation chunk and its valid contiguous siblings in the same visible text run. The contributing chunks remain individually identified.
 _Avoid_: Expanded transcript, joined messages
 
+**Embedding profile**:
+One immutable model, tokenizer, vector width, pooling or prefix transformation, normalization rule, and execution backend. Fresh setup selects local Octen 0.6B; existing no-profile configuration retains direct Octen 4B HTTP. Changing profiles requires a Recall database rebuild.
+_Avoid_: Provider plugin, silent fallback
+
+**Local model artifact**:
+The checksum-pinned Octen 0.6B SmoothQuant ONNX graph, external weights, tokenizer, license, notice, and receipt installed under `recall-models/`. A partial or corrupt download cannot serve embeddings.
+_Avoid_: Embedding cache, Recall database
+
 **Index manifest**:
-The versioned identity of the Octen model, fixed 1,024-dimension stored prefix, tokenizer, chunk policy, provenance schema, project identity, and Dense recall store schema used by one explicitly maintained Recall database.
+The versioned identity of the selected Embedding profile, fixed 1,024-dimension stored vector, tokenizer, chunk policy, provenance schema, project identity, and Dense recall store schema used by one explicitly maintained Recall database.
 _Avoid_: Index state, configuration
 
 **Stored recall embedding**:
-The first configured dimensions of one native Octen vector, L2-normalized and stored as FP32 for cosine search.
-_Avoid_: Raw embedding, independently verified MRL vector
+One L2-normalized 1,024-dimensional FP32 vector for cosine search. The local profile stores its complete native vector; the HTTP profile stores the first 1,024 values of a 2,560-dimensional native vector.
+_Avoid_: Raw embedding, unnormalized vector
 
 **Recall database**:
 One disposable WAL-mode SQLite projection containing Physical session state, compact Invocation records with FTS5, Dense recall metadata, and one 16-bucket vec0 table. Project and global search use the same stored vector. One changed Physical session replaces its complete projection in one transaction. Canonical session JSONL owns full payloads and explicit Source search.

@@ -1,30 +1,15 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { createReadStream } from 'node:fs';
-import {
-  mkdir,
-  open,
-  readFile,
-  readdir,
-  rename,
-  rm,
-  stat,
-  writeFile,
-} from 'node:fs/promises';
+import { mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 
-import {
-  LocalOctenModelDownloadProgressKind,
-  LocalOctenModelStatusKind,
-} from './enums.js';
+import { LocalOctenModelDownloadProgressKind, LocalOctenModelStatusKind } from './enums.js';
 import { isUnknownRecord } from './is-unknown-record.js';
 import { probeLocalOctenEmbeddingRuntime } from './local-octen-embedding-provider.js';
 import { readNodeErrorCode } from './read-node-error-code.js';
 
 const LOCAL_OCTEN_RELEASE_TAG = 'model-octen-embedding-0.6b-onnx-int8-v1';
-const LOCAL_OCTEN_RELEASE_URL =
-  `https://github.com/Whamp/pi-session-recall/releases/tag/${LOCAL_OCTEN_RELEASE_TAG}`;
-const LOCAL_OCTEN_ASSET_BASE_URL =
-  `https://github.com/Whamp/pi-session-recall/releases/download/${LOCAL_OCTEN_RELEASE_TAG}`;
+const LOCAL_OCTEN_RELEASE_URL = `https://github.com/Whamp/pi-session-recall/releases/tag/${LOCAL_OCTEN_RELEASE_TAG}`;
+const LOCAL_OCTEN_ASSET_BASE_URL = `https://github.com/Whamp/pi-session-recall/releases/download/${LOCAL_OCTEN_RELEASE_TAG}`;
 const MODEL_RECEIPT_FILE_NAME = 'model-receipt.json';
 
 /** One immutable file required by the local Octen embedding runtime. */
@@ -50,13 +35,33 @@ export const LOCAL_OCTEN_ARTIFACT_IDENTITY: LocalOctenArtifactIdentity = Object.
   nativeDimensions: 1_024,
   files: Object.freeze(
     [
-      ['artifact-manifest.json', 1_074, '893d00b0bda44277cae5f887fe58b302ae60a3a8db87d32221a6315379e549f0'],
+      [
+        'artifact-manifest.json',
+        1_074,
+        '893d00b0bda44277cae5f887fe58b302ae60a3a8db87d32221a6315379e549f0',
+      ],
       ['LICENSE.txt', 11_358, 'cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30'],
-      ['model.int8.onnx', 5_451_403, '48c4eb1401ba5a5d22d7a7e1fb3e94d63e8ed06231e3d124babc00ead78c8771'],
-      ['model.int8.onnx.data', 1_062_674_432, '1ea5b1a2737474b819a301725cb71381e418d7baa8263769f73486fbe9a74b65'],
+      [
+        'model.int8.onnx',
+        5_451_403,
+        '48c4eb1401ba5a5d22d7a7e1fb3e94d63e8ed06231e3d124babc00ead78c8771',
+      ],
+      [
+        'model.int8.onnx.data',
+        1_062_674_432,
+        '1ea5b1a2737474b819a301725cb71381e418d7baa8263769f73486fbe9a74b65',
+      ],
       ['NOTICE.txt', 604, '283ce364ec7c107fd25e23092800dd261bdefd99bfefb5bd870ebc9b35c56451'],
-      ['tokenizer.json', 11_423_705, 'def76fb086971c7867b829c23a26261e38d9d74e02139253b38aeb9df8b4b50a'],
-      ['tokenizer_config.json', 5_404, '443bfa629eb16387a12edbf92a76f6a6f10b2af3b53d87ba1550adfcf45f7fa0'],
+      [
+        'tokenizer.json',
+        11_423_705,
+        'def76fb086971c7867b829c23a26261e38d9d74e02139253b38aeb9df8b4b50a',
+      ],
+      [
+        'tokenizer_config.json',
+        5_404,
+        '443bfa629eb16387a12edbf92a76f6a6f10b2af3b53d87ba1550adfcf45f7fa0',
+      ],
     ].map(([fileName, bytes, sha256]) => ({
       fileName: String(fileName),
       url: `${LOCAL_OCTEN_ASSET_BASE_URL}/${String(fileName)}`,
@@ -263,7 +268,9 @@ async function inspectInstalledArtifact(
 
   let receipt: LocalOctenModelReceipt | null = null;
   try {
-    receipt = parseModelReceipt(await readFile(join(modelDirectory, MODEL_RECEIPT_FILE_NAME), 'utf8'));
+    receipt = parseModelReceipt(
+      await readFile(join(modelDirectory, MODEL_RECEIPT_FILE_NAME), 'utf8'),
+    );
   } catch (error) {
     if (readNodeErrorCode(error) !== 'ENOENT') {
       throw error;
@@ -312,8 +319,18 @@ async function inspectInstalledArtifact(
 
 async function hashFile(path: string): Promise<string> {
   const hash = createHash('sha256');
-  for await (const chunk of createReadStream(path)) {
-    hash.update(chunk);
+  const handle = await open(path, 'r');
+  const buffer = Buffer.allocUnsafe(1024 * 1024);
+  try {
+    while (true) {
+      const { bytesRead } = await handle.read(buffer, 0, buffer.byteLength, null);
+      if (bytesRead === 0) {
+        break;
+      }
+      hash.update(buffer.subarray(0, bytesRead));
+    }
+  } finally {
+    await handle.close();
   }
   return hash.digest('hex');
 }
@@ -381,12 +398,7 @@ async function downloadVerifiedFile(
       signal?.throwIfAborted();
       let offset = 0;
       while (offset < chunk.byteLength) {
-        const writeResult = await handle.write(
-          chunk,
-          offset,
-          chunk.byteLength - offset,
-          null,
-        );
+        const writeResult = await handle.write(chunk, offset, chunk.byteLength - offset, null);
         offset += writeResult.bytesWritten;
       }
       hash.update(chunk);
@@ -434,8 +446,7 @@ export function createLocalOctenModelManager(
   const downloadSource = options.downloadSource ?? fetchDownloadSource;
   const probeRuntime =
     options.probeRuntime ??
-    ((directory: string) =>
-      probeLocalOctenEmbeddingRuntime(directory, artifact.nativeDimensions));
+    ((directory: string) => probeLocalOctenEmbeddingRuntime(directory, artifact.nativeDimensions));
 
   async function status(): Promise<LocalOctenModelStatus> {
     const partialDirectories = await listPartialDirectories(

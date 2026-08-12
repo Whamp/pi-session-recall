@@ -128,6 +128,25 @@ void test('local Octen provider rejects invalid output without returning a vecto
   await assert.rejects(provider.embedQuery('non-finite'), /non-finite value/u);
 });
 
+void test('local Octen provider does not create a native session after tokenizer load failure', async () => {
+  let sessionLoaded = false;
+  const provider = createLocalOctenEmbeddingProvider({
+    modelDirectory: '/models/local-octen',
+    nativeDimensions: 2,
+    async loadTokenizer() {
+      throw new Error('tokenizer corrupt');
+    },
+    async loadSession() {
+      sessionLoaded = true;
+      throw new Error('must not load');
+    },
+  });
+
+  await assert.rejects(provider.embedQuery('broken'), /tokenizer corrupt/u);
+  assert.equal(sessionLoaded, false);
+  await assert.doesNotReject(provider.close());
+});
+
 void test('local Octen provider honors cancellation before loading native runtime', async () => {
   const controller = new AbortController();
   controller.abort(new Error('stop'));

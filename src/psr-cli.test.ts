@@ -36,6 +36,7 @@ function createPsrCliFixture(
   const progressOutput: string[] = [];
   const executionLog: string[] = [];
   const schedulerProcessCalls: Array<{ executable: string; argumentsList: readonly string[] }> = [];
+  const modelCommandCalls: string[][] = [];
   const config: RecallConversationConfig = {
     sessionsDirectory: '/sessions',
     sqliteDatabasePath: '/recall/recall.sqlite',
@@ -128,6 +129,10 @@ function createPsrCliFixture(
       getCurrentDirectory() {
         return options.currentDirectory ?? '/working-directory';
       },
+      async runModelCommand(argumentsList: readonly string[]) {
+        modelCommandCalls.push([...argumentsList]);
+        return 0;
+      },
       schedulerSystem: {
         platform: options.schedulerPlatform ?? 'linux',
         homeDirectory: '/home/recall-user',
@@ -145,6 +150,7 @@ function createPsrCliFixture(
       },
     },
     schedulerProcessCalls,
+    modelCommandCalls,
   };
 }
 
@@ -251,6 +257,7 @@ void test('psr ignore rejects invalid subcommands and arity with the complete us
   const usage = [
     'psr usage: psr index [--rebuild] [--stage] [--resume] [--reuse-active-vectors] [--compact]',
     '           psr activate <database-target>',
+    '           psr model status|download [--yes]|doctor',
     '           psr auto-index install [--interval <N>m|<N>h]',
     '           psr auto-index uninstall',
     '           psr ignore add <session-path>',
@@ -275,6 +282,16 @@ void test('psr ignore rejects invalid subcommands and arity with the complete us
     });
   }
   assert.deepEqual(fixture.executionLog, []);
+});
+
+void test('psr model delegates only model arguments without opening the recall service', async () => {
+  const fixture = createPsrCliFixture();
+
+  assert.equal(await runPsrCli(['model', 'download', '--yes'], fixture.dependencies), 0);
+  assert.deepEqual(fixture.modelCommandCalls, [['download', '--yes']]);
+  assert.deepEqual(fixture.calls, []);
+  assert.ok(!fixture.executionLog.includes('load config'));
+  assert.ok(!fixture.executionLog.includes('create service'));
 });
 
 void test('psr index keeps progress on stderr and the completed summary on stdout', async () => {
@@ -927,7 +944,7 @@ void test('psr auto-index rejects unsupported platforms with one clear error', a
   assert.equal(fixture.schedulerProcessCalls.length, 0);
 });
 
-void test('psr rejects every command surface other than index, auto-index, and ignore', async () => {
+void test('psr rejects every command surface outside its documented commands', async () => {
   const fixture = createPsrCliFixture();
 
   await assert.rejects(

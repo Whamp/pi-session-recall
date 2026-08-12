@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
+import { LocalOctenRuntimeBackend } from './enums.js';
 import {
   assertRecallIndexManifestCompatible,
   createRecallIndexManifest,
@@ -134,6 +135,16 @@ void test('manifest compatibility requires rebuild when model or stored width ch
         '/recall/index-manifest.json',
       ),
     /embedding\.servedModelId: expected "other\/model"/,
+  );
+});
+
+void test('manifest compatibility binds the local ONNX execution backend', () => {
+  const actual = createManifest({ executionBackend: LocalOctenRuntimeBackend.NATIVE });
+  const expected = createManifest({ executionBackend: LocalOctenRuntimeBackend.WASM });
+
+  assert.throws(
+    () => assertRecallIndexManifestCompatible(actual, expected, '/manifest.json'),
+    /embedding\.executionBackend[\s\S]*onnxruntime-web@1\.27\.0-wasm/u,
   );
 });
 

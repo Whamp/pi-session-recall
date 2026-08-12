@@ -15,6 +15,8 @@ import {
   type AutoIndexSchedulerSystem,
 } from './auto-index-scheduler.js';
 import { loadRecallConversationConfig } from './recall-conversation-config.js';
+import { runPsrModelCli } from './psr-model-cli.js';
+import { runPsrSetupCli, type PsrSetupCliResult } from './psr-setup-cli.js';
 import type { RecallIndexProgressEvent } from './recall-index-progress.js';
 import {
   createRecallConversationService,
@@ -26,6 +28,8 @@ import {
 const PSR_USAGE = [
   'psr usage: psr index [--rebuild] [--stage] [--resume] [--reuse-active-vectors] [--compact]',
   '           psr activate <database-target>',
+  '           psr setup [--local|--external] [--yes] [--index] [profile options]',
+  '           psr model status|download [--yes]|doctor',
   '           psr auto-index install [--interval <N>m|<N>h]',
   '           psr auto-index uninstall',
   '           psr ignore add <session-path>',
@@ -39,17 +43,21 @@ const ENGLISH_INTEGER_FORMAT = new Intl.NumberFormat('en-US');
 
 /** Replaceable process boundaries for the standalone `psr` command. */
 export interface PsrCliDependencies {
-  loadConfig: () => Promise<RecallConversationConfig>;
+  loadConfig: (configPath?: string) => Promise<RecallConversationConfig>;
   createService: (config: RecallConversationConfig) => RecallConversationMaintenanceService;
   writeOutput: (text: string) => void;
   writeProgress: (text: string) => void;
   getMonotonicTimeMs: () => number;
   getCurrentDirectory: () => string;
   schedulerSystem: AutoIndexSchedulerSystem;
+  runModelCommand: (argumentsList: readonly string[]) => Promise<number>;
+  runSetupCommand: (argumentsList: readonly string[]) => Promise<PsrSetupCliResult>;
 }
 
 const DEFAULT_PSR_CLI_DEPENDENCIES: PsrCliDependencies = {
-  loadConfig: loadRecallConversationConfig,
+  loadConfig(configPath) {
+    return loadRecallConversationConfig(configPath ? { configPath } : {});
+  },
   createService: createRecallConversationService,
   writeOutput(text) {
     process.stdout.write(text);
@@ -60,6 +68,8 @@ const DEFAULT_PSR_CLI_DEPENDENCIES: PsrCliDependencies = {
   getMonotonicTimeMs: performance.now.bind(performance),
   getCurrentDirectory: () => process.cwd(),
   schedulerSystem: DEFAULT_AUTO_INDEX_SCHEDULER_SYSTEM,
+  runModelCommand: runPsrModelCli,
+  runSetupCommand: runPsrSetupCli,
 };
 
 interface RecallIndexProgressTiming {
@@ -302,6 +312,19 @@ export async function runPsrCli(
   if (argumentsList[0] === 'ignore') {
     return runPsrIgnoreCommand(argumentsList, dependencies);
   }
+  if (argumentsList[0] === 'model') {
+    return dependencies.runModelCommand(argumentsList.slice(1));
+  }
+  if (argumentsList[0] === 'setup') {
+    const setup = await dependencies.runSetupCommand(argumentsList.slice(1));
+    if (setup.exitCode !== 0 || !setup.runInitialIndex) {
+      return setup.exitCode;
+    }
+    return runPsrCli(['index', '--rebuild'], {
+      ...dependencies,
+      loadConfig: () => dependencies.loadConfig(setup.configPath),
+    });
+  }
   if (argumentsList[0] === 'auto-index') {
     if (argumentsList[1] === 'uninstall' && argumentsList.length === 2) {
       await uninstallAutoIndexSchedule(dependencies.schedulerSystem);
@@ -330,15 +353,20 @@ export async function runPsrCli(
       throw new Error(PSR_USAGE);
     }
     const config = await dependencies.loadConfig();
-    await dependencies.createService(config).activate(databaseTarget, {
-      onProgress(event) {
-        if (event.kind === 'waiting-for-write-lock') {
-          dependencies.writeProgress('Waiting for another recall index operation...\n');
-        }
-      },
-    });
-    dependencies.writeOutput('Staged recall database activated.\n');
-    return 0;
+    const service = dependencies.createService(config);
+    try {
+      await service.activate(databaseTarget, {
+        onProgress(event) {
+          if (event.kind === 'waiting-for-write-lock') {
+            dependencies.writeProgress('Waiting for another recall index operation...\n');
+          }
+        },
+      });
+      dependencies.writeOutput('Staged recall database activated.\n');
+      return 0;
+    } finally {
+      await service.close?.();
+    }
   }
 
   const flags = argumentsList.slice(1);
@@ -406,22 +434,27 @@ export async function runPsrCli(
 
   reportProgress({ kind: 'preparing' });
   const config = await dependencies.loadConfig();
-  const result = await dependencies.createService(config).index({
-    rebuild,
-    ...(stage ? { deferActivation: true } : {}),
-    ...(resume ? { resumeCandidate: true } : {}),
-    ...(reuseActiveVectors ? { reuseActiveVectors: true } : {}),
-    optimize: false,
-    onProgress: reportProgress,
-  });
-  const summary = result.indexSummary;
-  dependencies.writeOutput(
-    compact
-      ? formatCompactRecallIndexSummary(result)
-      : formatReadableRecallIndexSummary(
-          result,
-          lastProgressTimeMs - (commandStartedAtMs ?? lastProgressTimeMs),
-        ),
-  );
-  return summary.failedSessions.length === 0 ? 0 : 1;
+  const service = dependencies.createService(config);
+  try {
+    const result = await service.index({
+      rebuild,
+      ...(stage ? { deferActivation: true } : {}),
+      ...(resume ? { resumeCandidate: true } : {}),
+      ...(reuseActiveVectors ? { reuseActiveVectors: true } : {}),
+      optimize: false,
+      onProgress: reportProgress,
+    });
+    const summary = result.indexSummary;
+    dependencies.writeOutput(
+      compact
+        ? formatCompactRecallIndexSummary(result)
+        : formatReadableRecallIndexSummary(
+            result,
+            lastProgressTimeMs - (commandStartedAtMs ?? lastProgressTimeMs),
+          ),
+    );
+    return summary.failedSessions.length === 0 ? 0 : 1;
+  } finally {
+    await service.close?.();
+  }
 }

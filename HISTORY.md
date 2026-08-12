@@ -269,6 +269,20 @@ The certified database allocated 3.01 GiB, stayed below every latency gate, reus
 
 [PR #174](https://github.com/Whamp/pi-session-recall/pull/174) merged on August 11 as commit [`8046871`](https://github.com/Whamp/pi-session-recall/commit/8046871). The exact certified candidate was activated, caught up, and exercised through project, global, and Source searches. The hourly update-only timer completed successfully. After explicit approval, the old 14 GiB Zvec database, legacy index state, stray catalog, markers, and stale locks were removed.
 
+## 9. August 11: restore one practical local embedding path
+
+**Status: Current fresh-install default**
+
+The QMD-era architecture had implemented downloaded local model artifacts and embedded inference, but PR #143 removed that whole platform with the planner, reranker, cache, workers, and model registry. The remaining product required a separately running OpenAI-compatible Octen 4B server. That was reasonable for the production machine but a poor fresh-install default for users without a spare model server or hosted embedding budget.
+
+A bounded prototype revisited the requirement without restoring the old platform. It tested 171 deterministic real sessions containing 12,966 Dense documents and 12,836 compact Invocations. Octen 0.6B Q8_0 through llama.cpp preserved 100% of the fixed quality corpus but indexed at 2.14 documents per second and peaked at 5.14 GB RSS. Voyage 4 Nano INT8 ONNX improved throughput and memory but preserved only 81.25% of the fixed corpus. Octen 0.6B SmoothQuant INT8 ONNX preserved 100%, indexed at 3.38 documents per second, peaked at 1.92 GB RSS, and kept sampled search below 58.1 ms p95.
+
+The accepted path uses one project-controlled 1.01 GiB artifact with pinned native `onnxruntime-node` 1.27.0 on macOS arm64. Stable ONNX Runtime Node packages omitted Darwin x64, and native Intel runners on Linux and macOS produced the same incompatible 0.73689-cosine vector for the accepted quantized graph. Both x64 platforms therefore use pinned single-threaded `onnxruntime-web` 1.27.0 WASM with the same graph and weights. Independent probes exposed an important semantic detail: the artifact's tokenizer post-processor appends `<|endoftext|>` token `151643`; manually appending the configured `<|im_end|>` EOS token `151645` reduced upstream vector cosine to about 0.64–0.72. The final provider follows the measured tokenizer output, pools its last token, and normalizes the native 1,024-dimensional vector.
+
+`psr setup` now defaults fresh users to local Octen, while an explicit external HTTP profile preserves the 4B server path. Installations without a profile remain HTTP-compatible so upgrades do not reinterpret existing databases. Profile identity lives in the manifest, so changing model or backend requires an explicit rebuild. Download receipts, byte counts, SHA-256 checks, unique partial directories, and atomic activation protect the model cache without introducing a generic provider registry or persistent embedding cache.
+
+See [issue #175](https://github.com/Whamp/pi-session-recall/issues/175), [ADR 0015](docs/adr/0015-use-local-octen-as-the-fresh-install-default.md), the [prototype report](docs/research/local-embedding-runtime-prototype.md), and the [model release](https://github.com/Whamp/pi-session-recall/releases/tag/model-octen-embedding-0.6b-onnx-int8-v1).
+
 ## What survived every rewrite
 
 The storage engine changed, but several principles endured:
@@ -302,7 +316,10 @@ The current design differs mainly in where those principles are enforced. SQLite
 | Vectorless Zvec Invocation store                          | Prototype                                    | Viable, but larger and more write-heavy than SQLite and lacked the session-state transaction.        |
 | Unified SQLite with two vector tables                     | Prototype and draft implementation           | Faster global search did not justify about 1.35 GiB of duplicate vectors and duplicate maintenance.  |
 | Legacy v6/v7 readers and database rollback                | Draft implementation                         | Canonical JSONL rebuilds were simpler than permanent obsolete-layout machinery.                      |
-| Unified SQLite with one 16-bucket vector table            | Production                                   | Current design.                                                                                      |
+| Octen 0.6B Q8_0 GGUF local default                        | Prototype                                    | Quality passed, but indexing was slower and four contexts exceeded the 4 GiB memory gate.            |
+| Voyage 4 Nano INT8 ONNX local default                     | Prototype                                    | Runtime cost passed, but fixed-corpus recall reached only 81.25%.                                    |
+| Octen 0.6B SmoothQuant ONNX local default                 | Production                                   | Current fresh-install inference path; external Octen HTTP remains available.                         |
+| Unified SQLite with one 16-bucket vector table            | Production                                   | Current storage design.                                                                              |
 
 ## Lessons for future changes
 
@@ -348,6 +365,8 @@ The coherent-generation branch was sophisticated and heavily tested. It was stil
 - Superseded split-store candidate: [v7 certification](docs/research/superseded-v7-compact-production-recall-certification.md)
 - Unified SQLite prototype: [prototype report](docs/research/unified-sqlite-recall-storage-prototype.md)
 - Final specification: [issue #165](https://github.com/Whamp/pi-session-recall/issues/165)
-- Final decision: [ADR 0014](docs/adr/0014-store-recall-in-one-sqlite-database.md)
+- Final storage decision: [ADR 0014](docs/adr/0014-store-recall-in-one-sqlite-database.md)
+- Local embedding decision: [ADR 0015](docs/adr/0015-use-local-octen-as-the-fresh-install-default.md)
+- Local embedding prototype: [runtime comparison](docs/research/local-embedding-runtime-prototype.md)
 - Production certification: [SQLite certification](docs/research/unified-sqlite-production-recall-certification.md)
 - Production implementation: [PR #174](https://github.com/Whamp/pi-session-recall/pull/174), commit [`8046871`](https://github.com/Whamp/pi-session-recall/commit/8046871)

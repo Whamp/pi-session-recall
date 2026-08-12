@@ -3,7 +3,12 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 
-import { RecallEvidenceRelation, RecallProjectIdentitySource, RecallSearchScope } from './enums.js';
+import {
+  RecallEmbeddingProfile,
+  RecallEvidenceRelation,
+  RecallProjectIdentitySource,
+  RecallSearchScope,
+} from './enums.js';
 import { fuseRecallSearchCandidates } from './fuse-recall-search-candidates.js';
 import {
   combineCompactRecallResults,
@@ -16,9 +21,21 @@ import {
   indexChangedConversationSessions,
   type ConversationIndexSummary,
 } from './incremental-session-indexer.js';
-import { loadOctenConversationTokenizer } from './octen-conversation-tokenizer.js';
+import {
+  loadInstalledConversationTokenizer,
+  loadOctenConversationTokenizer,
+  LOCAL_OCTEN_TOKENIZER_IDENTITY,
+} from './octen-conversation-tokenizer.js';
 import { listIgnoredPhysicalSessionPaths } from './physical-session-ignore.js';
 import type { RecallIndexProgressEvent } from './recall-index-progress.js';
+import {
+  createLocalOctenEmbeddingProvider,
+  resolveLocalOctenRuntimeBackend,
+} from './local-octen-embedding-provider.js';
+import {
+  LOCAL_OCTEN_ARTIFACT_IDENTITY,
+  resolveLocalOctenModelDirectory,
+} from './local-octen-model-manager.js';
 import { createOctenHttpEmbeddingProvider } from './octen-http-embedding-provider.js';
 import type { RecallChunkPolicy } from './recall-chunk-policy.js';
 import {
@@ -75,12 +92,16 @@ export interface RecallConversationConfig {
   tokenizerCacheDirectory: string;
   lockPath: string;
   databaseGenerationRootPath?: string;
+  embeddingProfile: RecallEmbeddingProfile;
   embeddingBaseUrl: string;
   embeddingModel: string;
   embeddingServedModelId: string;
   embeddingNativeDimensions: number;
   embeddingStoredDimensions: number;
   embeddingBatchSize: number;
+  localModelRootDirectory: string;
+  localEmbeddingParallelism: number;
+  localEmbeddingIntraOperationThreads: number;
   projectLineages: RecallProjectLineages;
   searchCandidateLimits: RecallSearchCandidateLimits;
   chunkPolicy: RecallChunkPolicy;
@@ -174,6 +195,8 @@ export interface RecallConversationService {
     options?: RecallConversationSearchOptions,
   ): Promise<RecallConversationSearch>;
   index(options?: RecallConversationIndexOptions): Promise<RecallConversationIndexResult>;
+  /** Releases embedding runtime resources owned by this service. */
+  close?(): Promise<void>;
 }
 
 /** Explicit slow source-search capability used only when the Pi tool requests it. */
@@ -313,7 +336,13 @@ function createEmbeddingModelIdentity(
     servedModelId: config.embeddingServedModelId,
     nativeDimensions: config.embeddingNativeDimensions,
     storedDimensions: config.embeddingStoredDimensions,
-    transformation: 'vendor-prefix-then-l2-v1',
+    ...(config.embeddingProfile === RecallEmbeddingProfile.LOCAL_OCTEN
+      ? { executionBackend: resolveLocalOctenRuntimeBackend() }
+      : {}),
+    transformation:
+      config.embeddingProfile === RecallEmbeddingProfile.LOCAL_OCTEN
+        ? 'tokenizer-final-token-then-l2-v1'
+        : 'vendor-prefix-then-l2-v1',
   };
 }
 
@@ -322,18 +351,36 @@ export function createRecallConversationService(
   config: RecallConversationConfig,
   dependencies: RecallConversationDependencies = {},
 ): RecallConversationMaintenanceService & RecallSourceSearchService {
+  const localModelDirectory = resolveLocalOctenModelDirectory(config.localModelRootDirectory);
   const embeddingProvider =
     dependencies.embeddingProvider ??
-    createOctenHttpEmbeddingProvider({
-      baseUrl: config.embeddingBaseUrl,
-      model: config.embeddingModel,
-      nativeDimensions: config.embeddingNativeDimensions,
-      storedDimensions: config.embeddingStoredDimensions,
-      batchSize: config.embeddingBatchSize,
-    });
+    (config.embeddingProfile === RecallEmbeddingProfile.LOCAL_OCTEN
+      ? createLocalOctenEmbeddingProvider({
+          modelDirectory: localModelDirectory,
+          nativeDimensions: LOCAL_OCTEN_ARTIFACT_IDENTITY.nativeDimensions,
+          parallelism: config.localEmbeddingParallelism,
+          intraOperationThreads: config.localEmbeddingIntraOperationThreads,
+        })
+      : createOctenHttpEmbeddingProvider({
+          baseUrl: config.embeddingBaseUrl,
+          model: config.embeddingModel,
+          nativeDimensions: config.embeddingNativeDimensions,
+          storedDimensions: config.embeddingStoredDimensions,
+          batchSize: config.embeddingBatchSize,
+        }));
+  const tokenizerIdentity =
+    config.embeddingProfile === RecallEmbeddingProfile.LOCAL_OCTEN
+      ? LOCAL_OCTEN_TOKENIZER_IDENTITY
+      : undefined;
   const loadTokenizer =
     dependencies.loadTokenizer ??
-    (() => loadOctenConversationTokenizer({ cacheDirectory: config.tokenizerCacheDirectory }));
+    (tokenizerIdentity
+      ? () =>
+          loadInstalledConversationTokenizer({
+            assetDirectory: localModelDirectory,
+            identity: tokenizerIdentity,
+          })
+      : () => loadOctenConversationTokenizer({ cacheDirectory: config.tokenizerCacheDirectory }));
   const resolveSearchProjectIdentity = createLineageResolver(
     config.projectLineages,
     dependencies.resolveProjectIdentity ?? resolveProjectIdentity,
@@ -363,7 +410,26 @@ export function createRecallConversationService(
       embeddingIdentity: createEmbeddingModelIdentity(config),
       ...(dependencies.tokenizerIdentity
         ? { tokenizerIdentity: dependencies.tokenizerIdentity }
-        : {}),
+        : tokenizerIdentity
+          ? {
+              tokenizerIdentity: {
+                model: tokenizerIdentity.model,
+                revision: tokenizerIdentity.revision,
+                library: { ...tokenizerIdentity.library },
+                encodeOptions: { ...tokenizerIdentity.encodeOptions },
+                assets: [
+                  {
+                    fileName: tokenizerIdentity.tokenizerJson.fileName,
+                    sha256: tokenizerIdentity.tokenizerJson.sha256,
+                  },
+                  {
+                    fileName: tokenizerIdentity.tokenizerConfigJson.fileName,
+                    sha256: tokenizerIdentity.tokenizerConfigJson.sha256,
+                  },
+                ],
+              },
+            }
+          : {}),
       chunkPolicy: config.chunkPolicy,
       projectLineages: config.projectLineages,
     });
@@ -420,6 +486,9 @@ export function createRecallConversationService(
   }
 
   return {
+    async close() {
+      await embeddingProvider.close?.();
+    },
     async search(query, limit, options = {}) {
       const searchQuery = query.trim();
       if (!searchQuery) {

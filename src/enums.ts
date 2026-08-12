@@ -35,3 +35,31 @@ export enum RecallEvidenceRelation {
   SAME_SESSION_ORIGIN = 'same_session_origin',
   UNRESTRICTED_GLOBAL = 'unrestricted_global_evidence',
 }
+
+/** Explicit embedding backend and immutable semantic profile selected by configuration. */
+export enum RecallEmbeddingProfile {
+  OCTEN_HTTP = 'octen-http-v1',
+  LOCAL_OCTEN = 'local-octen-embedding-0.6b-onnx-int8-v1',
+}
+
+/** Platform-selected ONNX execution backend bound into local vector compatibility. */
+export enum LocalOctenRuntimeBackend {
+  NATIVE = 'onnxruntime-node@1.27.0',
+  WASM = 'onnxruntime-web@1.27.0-wasm',
+}
+
+/** Durable local Octen artifact state reported without changing the model cache. */
+export enum LocalOctenModelStatusKind {
+  MISSING = 'missing',
+  PARTIAL = 'partial',
+  CORRUPT = 'corrupt',
+  READY = 'ready',
+}
+
+/** Observable stage of one explicitly approved local model download. */
+export enum LocalOctenModelDownloadProgressKind {
+  PREPARING = 'preparing',
+  DOWNLOADING_FILE = 'downloading-file',
+  FILE_VERIFIED = 'file-verified',
+  ACTIVATED = 'activated',
+}

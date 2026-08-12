@@ -1,0 +1,87 @@
+{
+  "referenceModel": "voyageai/voyage-4-nano",
+  "referenceRevision": "67fabc9bef010dabc5f6024aa1b1b6b93410426f",
+  "onnxRepository": "onnx-community/voyage-4-nano-ONNX",
+  "onnxRevision": "fb6f32cceb63b6eac92e1fdc08e00d03c41cdf5a",
+  "graphSha256": "e2999ae63b575e34b7bef6a513f48c7f7701cebfb1bfffcb9db23ab0db324157",
+  "weightsSha256": "db94fc1655db1a1b55f67f7019ebbd803142f54e1bd83cfd1c2d6faadd6a648c",
+  "dimensions": 1024,
+  "minimumCosineSimilarity": 0.9998212356051915,
+  "medianCosineSimilarity": 0.9999117786512286,
+  "maximumRmse": 0.0005932734726352807,
+  "loadMilliseconds": 45.141887999999994,
+  "queryBatchMilliseconds": 153.64429,
+  "documentBatchMilliseconds": 102.84531400000003,
+  "rows": [
+    {
+      "kind": "query",
+      "text": "Hello world",
+      "cosineSimilarity": 0.999903665808406,
+      "maxAbsoluteDelta": 0.0014418791962216154,
+      "rmse": 0.00043589696079736215
+    },
+    {
+      "kind": "query",
+      "text": "How did we repair the malformed FTS segment?",
+      "cosineSimilarity": 0.9998830472535989,
+      "maxAbsoluteDelta": 0.0016088354409146063,
+      "rmse": 0.0004793510003331013
+    },
+    {
+      "kind": "query",
+      "text": "psr index --rebuild --stage",
+      "cosineSimilarity": 0.9998712955945065,
+      "maxAbsoluteDelta": 0.0017363568538362462,
+      "rmse": 0.0005074799384734244
+    },
+    {
+      "kind": "query",
+      "text": "\u4e3a\u4ec0\u4e48\u7d22\u5f15\u4f18\u5316\u5931\u8d25\uff1f",
+      "cosineSimilarity": 0.9999091637162117,
+      "maxAbsoluteDelta": 0.0013670139361793947,
+      "rmse": 0.0004289379339221806
+    },
+    {
+      "kind": "query",
+      "text": "Rust ownership prevents use-after-free errors.",
+      "cosineSimilarity": 0.9998212356051915,
+      "maxAbsoluteDelta": 0.0020556466619903683,
+      "rmse": 0.0005932734726352807
+    },
+    {
+      "kind": "document",
+      "text": "Hello there",
+      "cosineSimilarity": 0.9999143935862456,
+      "maxAbsoluteDelta": 0.001693294013579455,
+      "rmse": 0.0004095813034928574
+    },
+    {
+      "kind": "document",
+      "text": "The source postings are not BitPacked in shard 26.",
+      "cosineSimilarity": 0.9999242796485309,
+      "maxAbsoluteDelta": 0.0012965495492142575,
+      "rmse": 0.00038902493824639195
+    },
+    {
+      "kind": "document",
+      "text": "Build and activate a staged recall database.",
+      "cosineSimilarity": 0.9999185863906938,
+      "maxAbsoluteDelta": 0.001252507787312408,
+      "rmse": 0.00039937219922019367
+    },
+    {
+      "kind": "document",
+      "text": "\u7d22\u5f15\u4f18\u5316\u5931\u8d25\u662f\u56e0\u4e3a\u5168\u6587\u641c\u7d22\u6bb5\u635f\u574f\u3002",
+      "cosineSimilarity": 0.9999231125547977,
+      "maxAbsoluteDelta": 0.0013946415852312127,
+      "rmse": 0.00039329491787897707
+    },
+    {
+      "kind": "document",
+      "text": "Rust uses ownership and borrowing for memory safety.",
+      "cosineSimilarity": 0.999928697564163,
+      "maxAbsoluteDelta": 0.001200543399347144,
+      "rmse": 0.0003800674604720808
+    }
+  ]
+}

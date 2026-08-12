@@ -5,4 +5,7 @@ export interface RecallEmbeddingProvider {
 
   /** Embeds index documents in input order using the same stored-prefix semantics. */
   embedDocuments(documents: readonly string[], signal?: AbortSignal): Promise<number[][]>;
+
+  /** Releases native resources when the owning process no longer needs this provider. */
+  close?(): Promise<void>;
 }

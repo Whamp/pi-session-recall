@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
+import { RecallEmbeddingProfile } from './enums.js';
+import { LOCAL_OCTEN_ARTIFACT_IDENTITY } from './local-octen-model-manager.js';
 import { loadRecallConversationConfig } from './recall-conversation-config.js';
 
 void test('recall config defaults to one Octen profile and the frozen search policy', async () => {
@@ -11,6 +13,7 @@ void test('recall config defaults to one Octen profile and the frozen search pol
   try {
     const config = await loadRecallConversationConfig({ homeDirectory: home, environment: {} });
 
+    assert.equal(config.embeddingProfile, RecallEmbeddingProfile.OCTEN_HTTP);
     assert.equal(config.embeddingBaseUrl, 'http://192.168.0.67:8090/v1');
     assert.equal(config.embeddingModel, 'octen-embed');
     assert.equal(config.embeddingServedModelId, 'Octen/Octen-Embedding-4B');
@@ -37,6 +40,7 @@ void test('recall config defaults to one Octen profile and the frozen search pol
     );
     assert.equal('embeddingCacheDirectory' in config, false);
     assert.equal('diagnosticLogPath' in config, false);
+    assert.equal(config.localModelRootDirectory, join(home, '.pi', 'agent', 'recall-models'));
   } finally {
     await rm(home, { recursive: true, force: true });
   }
@@ -62,6 +66,60 @@ void test('recall config accepts direct Octen HTTP and fixed-width profile overr
     assert.equal(config.embeddingBatchSize, 4);
   } finally {
     await rm(home, { recursive: true, force: true });
+  }
+});
+
+void test('recall config selects the immutable local Octen profile explicitly', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-config-local-'));
+  const path = join(root, 'recall.json');
+  try {
+    await writeFile(
+      path,
+      `${JSON.stringify({
+        embeddingProfile: RecallEmbeddingProfile.LOCAL_OCTEN,
+        localEmbeddingParallelism: 2,
+        localEmbeddingIntraOperationThreads: 3,
+      })}\n`,
+      'utf8',
+    );
+
+    const config = await loadRecallConversationConfig({
+      configPath: path,
+      homeDirectory: root,
+      environment: {},
+    });
+
+    assert.equal(config.embeddingProfile, RecallEmbeddingProfile.LOCAL_OCTEN);
+    assert.equal(config.embeddingModel, LOCAL_OCTEN_ARTIFACT_IDENTITY.artifactId);
+    assert.equal(config.embeddingServedModelId, 'Octen/Octen-Embedding-0.6B');
+    assert.equal(config.embeddingNativeDimensions, 1_024);
+    assert.equal(config.embeddingStoredDimensions, 1_024);
+    assert.equal(config.localEmbeddingParallelism, 2);
+    assert.equal(config.localEmbeddingIntraOperationThreads, 3);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+void test('local recall profile rejects HTTP-only embedding overrides', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-config-local-http-'));
+  const path = join(root, 'recall.json');
+  try {
+    await writeFile(
+      path,
+      `${JSON.stringify({
+        embeddingProfile: RecallEmbeddingProfile.LOCAL_OCTEN,
+        embeddingBaseUrl: 'http://127.0.0.1:8090/v1',
+      })}\n`,
+      'utf8',
+    );
+
+    await assert.rejects(
+      loadRecallConversationConfig({ configPath: path, homeDirectory: root, environment: {} }),
+      /local Octen profile cannot use HTTP embedding settings/u,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });
 

@@ -1,0 +1,76 @@
+name: Local Octen platform smoke
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/local-octen-platform-smoke.yml'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'src/local-octen-*.ts'
+      - 'src/octen-conversation-tokenizer.ts'
+      - 'src/recall-conversation-config.ts'
+      - 'src/recall-conversation-service.ts'
+      - 'src/recall-index-manifest.ts'
+
+permissions:
+  contents: read
+
+jobs:
+  local-octen-runtime:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Linux x64
+            runner: ubuntu-latest
+            architecture: x64
+          - label: macOS arm64
+            runner: macos-26
+            architecture: arm64
+          - label: macOS x64
+            runner: macos-26-intel
+            architecture: x64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install pinned dependencies
+        run: npm ci
+
+      - name: Check runner architecture
+        env:
+          EXPECTED_ARCHITECTURE: ${{ matrix.architecture }}
+        run: node -e "if (process.arch !== process.env.EXPECTED_ARCHITECTURE) throw new Error('Expected ' + process.env.EXPECTED_ARCHITECTURE + ', received ' + process.arch)"
+
+      - name: Restore verified model cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/psr-local-models
+          key: local-octen-v1-${{ runner.os }}-${{ matrix.architecture }}
+
+      - name: Download and verify local model
+        env:
+          PI_RECALL_CONFIG: ${{ runner.temp }}/psr-recall.json
+        run: >-
+          ./bin/psr setup --local --yes
+          --config "$PI_RECALL_CONFIG"
+          --model-root "${{ runner.temp }}/psr-local-models"
+
+      - name: Diagnose native runtime and artifact
+        env:
+          PI_RECALL_CONFIG: ${{ runner.temp }}/psr-recall.json
+        run: ./bin/psr model doctor
+
+      - name: Build, close, reopen, and search offline
+        env:
+          PI_LOCAL_OCTEN_MODEL_ROOT_DIRECTORY: ${{ runner.temp }}/psr-local-models
+        run: node --import tsx --test src/local-octen-production.integration.test.ts

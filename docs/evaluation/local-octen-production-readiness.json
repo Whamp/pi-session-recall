@@ -1,0 +1,77 @@
+{
+  "version": 1,
+  "recordedAt": "2026-08-12T01:06:36.000Z",
+  "artifact": {
+    "profileId": "local-octen-embedding-0.6b-onnx-int8-v1",
+    "release": "https://github.com/Whamp/pi-session-recall/releases/tag/model-octen-embedding-0.6b-onnx-int8-v1",
+    "runtimes": ["onnxruntime-node@1.27.0", "onnxruntime-web@1.27.0-wasm"],
+    "dimensions": 1024,
+    "bytes": 1079567980,
+    "graphSha256": "48c4eb1401ba5a5d22d7a7e1fb3e94d63e8ed06231e3d124babc00ead78c8771",
+    "weightsSha256": "1ea5b1a2737474b819a301725cb71381e418d7baa8263769f73486fbe9a74b65",
+    "tokenizerSha256": "def76fb086971c7867b829c23a26261e38d9d74e02139253b38aeb9df8b4b50a"
+  },
+  "prototype": {
+    "selectedSessions": 171,
+    "denseDocuments": 12966,
+    "fixedCorpusRecall": 1,
+    "denseDocumentsPerSecond": 3.379375407399684,
+    "peakRssBytes": 1923796992,
+    "sampleQueryP95Milliseconds": 58.09494599979371
+  },
+  "linuxX64LocalCertification": {
+    "hardware": "AMD Ryzen 7 8845HS",
+    "node": "24.16.0",
+    "cleanCliDownloadPassed": true,
+    "statusPassed": true,
+    "doctorPassed": true,
+    "doctorDimensions": 1024,
+    "doctorNorm": 1.0000000028391913,
+    "offlineBuildCloseReopenSearchPassed": true,
+    "integrationDurationMilliseconds": 4979.67515,
+    "totalElapsedSeconds": 42,
+    "productionDatabaseMutated": false
+  },
+  "wasmFallbackPrototype": {
+    "reason": "Native Intel Linux and macOS runners produce incompatible vectors; stable onnxruntime-node also omits Darwin x64",
+    "loadMilliseconds": 740.155795,
+    "queryMilliseconds": 372.371054,
+    "peakObservedRssBytes": 2497564672,
+    "upstreamCosine": 0.9848904859933368,
+    "finalToken": 151643,
+    "nativeIntelQueryCosine": 0.7368910858535719
+  },
+  "security": {
+    "productionAuditVulnerabilities": 0,
+    "onnxRuntimeTransitiveOverride": "adm-zip@0.6.0",
+    "advisory": "GHSA-xcpc-8h2w-3j85",
+    "realModelPassedAfterOverride": true,
+    "socketObfuscatedCodeWarning": {
+      "package": "onnxruntime-web@1.27.0",
+      "disposition": "accepted official Microsoft generated/minified WASM distribution",
+      "socketChecksPassed": true
+    }
+  },
+  "platformCi": {
+    "workflow": ".github/workflows/local-octen-platform-smoke.yml",
+    "runUrl": "https://github.com/Whamp/pi-session-recall/actions/runs/31552401490",
+    "headSha": "eead5609b9c3f76bba9dfb001be98bb4ca934d80",
+    "linuxX64": {
+      "backend": "onnxruntime-web@1.27.0-wasm",
+      "status": "passed",
+      "jobUrl": "https://github.com/Whamp/pi-session-recall/actions/runs/31552401490/job/93977697017"
+    },
+    "macosArm64": {
+      "backend": "onnxruntime-node@1.27.0",
+      "status": "passed",
+      "jobUrl": "https://github.com/Whamp/pi-session-recall/actions/runs/31552401490/job/93977697024"
+    },
+    "macosX64": {
+      "backend": "onnxruntime-web@1.27.0-wasm",
+      "status": "passed",
+      "jobUrl": "https://github.com/Whamp/pi-session-recall/actions/runs/31552401490/job/93977696992"
+    }
+  },
+  "localEvidencePassed": true,
+  "releaseReady": true
+}

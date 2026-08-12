@@ -1,0 +1,76 @@
+{
+  "referenceModel": "Octen/Octen-Embedding-0.6B",
+  "referenceRevision": "d715b32ee68f057b54dff09fc93c23485bc403d3",
+  "onnxRepository": "cstr/Octen-Embedding-0.6B-ONNX-INT8",
+  "onnxRevision": "3d68a234435972890cbdf71b6a90f9d3fecc7370",
+  "graphSha256": "48c4eb1401ba5a5d22d7a7e1fb3e94d63e8ed06231e3d124babc00ead78c8771",
+  "weightsSha256": "1ea5b1a2737474b819a301725cb71381e418d7baa8263769f73486fbe9a74b65",
+  "dimensions": 1024,
+  "minimumCosineSimilarity": 0.9279967491380336,
+  "medianCosineSimilarity": 0.955893483014979,
+  "maximumRmse": 0.011862696364922905,
+  "loadMilliseconds": 403.491129,
+  "batchMilliseconds": 82.83275000000003,
+  "rows": [
+    {
+      "text": "Hello world",
+      "cosineSimilarity": 0.944082813782813,
+      "maxAbsoluteDelta": 0.07277962364060976,
+      "rmse": 0.010449260597361579
+    },
+    {
+      "text": "Hello there",
+      "cosineSimilarity": 0.945237852706161,
+      "maxAbsoluteDelta": 0.05397302573417631,
+      "rmse": 0.010344140883019333
+    },
+    {
+      "text": "A PostgreSQL transaction commits atomically",
+      "cosineSimilarity": 0.9612196700699224,
+      "maxAbsoluteDelta": 0.03549923430889647,
+      "rmse": 0.008698251089781308
+    },
+    {
+      "text": "A banana is a yellow fruit",
+      "cosineSimilarity": 0.959328347690181,
+      "maxAbsoluteDelta": 0.06548960920317656,
+      "rmse": 0.008915229372277829
+    },
+    {
+      "text": "How did we repair the malformed FTS segment?",
+      "cosineSimilarity": 0.9557684741161542,
+      "maxAbsoluteDelta": 0.06901873342675631,
+      "rmse": 0.009310120303892718
+    },
+    {
+      "text": "The source postings are not BitPacked in shard 26.",
+      "cosineSimilarity": 0.945305123021786,
+      "maxAbsoluteDelta": 0.06583179690457559,
+      "rmse": 0.01035203729163861
+    },
+    {
+      "text": "psr index --rebuild --stage",
+      "cosineSimilarity": 0.9279967491380336,
+      "maxAbsoluteDelta": 0.05275724208496522,
+      "rmse": 0.011862696364922905
+    },
+    {
+      "text": "createRecallConversationService embeds the search query.",
+      "cosineSimilarity": 0.9599341581859908,
+      "maxAbsoluteDelta": 0.07273457326650981,
+      "rmse": 0.008854530343793429
+    },
+    {
+      "text": "\u4e3a\u4ec0\u4e48\u7d22\u5f15\u4f18\u5316\u5931\u8d25\uff1f",
+      "cosineSimilarity": 0.9639716423489366,
+      "maxAbsoluteDelta": 0.05714064333494796,
+      "rmse": 0.008396030953205479
+    },
+    {
+      "text": "Rust ownership prevents use-after-free errors.",
+      "cosineSimilarity": 0.9560184919138037,
+      "maxAbsoluteDelta": 0.038757797083566164,
+      "rmse": 0.009280871737829146
+    }
+  ]
+}

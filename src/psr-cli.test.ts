@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
 
+import { RecallEmbeddingProfile } from './enums.js';
 import type {
   RecallConversationConfig,
   RecallConversationIndexOptions,
@@ -25,6 +26,7 @@ function createPsrCliFixture(
     physicalSessionIgnoreStatePath?: string;
     currentDirectory?: string;
     databaseTransition?: RecallDatabaseTransition;
+    setupResult?: { exitCode: number; runInitialIndex: boolean; configPath?: string };
   } = {},
 ) {
   const calls: RecallConversationIndexOptions[] = [];
@@ -34,7 +36,11 @@ function createPsrCliFixture(
   const output: string[] = [];
   const progressOutput: string[] = [];
   const executionLog: string[] = [];
+  const loadedConfigPaths: Array<string | undefined> = [];
+  let closeCalls = 0;
   const schedulerProcessCalls: Array<{ executable: string; argumentsList: readonly string[] }> = [];
+  const modelCommandCalls: string[][] = [];
+  const setupCommandCalls: string[][] = [];
   const config: RecallConversationConfig = {
     sessionsDirectory: '/sessions',
     sqliteDatabasePath: '/recall/recall.sqlite',
@@ -44,17 +50,24 @@ function createPsrCliFixture(
       options.physicalSessionIgnoreStatePath ?? '/recall/physical-session-ignore.json',
     tokenizerCacheDirectory: '/recall/tokenizers',
     lockPath: '/recall/operation.lock',
+    embeddingProfile: RecallEmbeddingProfile.OCTEN_HTTP,
     embeddingBaseUrl: 'http://127.0.0.1:8090/v1',
     embeddingModel: 'octen-embed',
     embeddingServedModelId: 'Octen/Octen-Embedding-4B',
     embeddingNativeDimensions: 2_560,
     embeddingStoredDimensions: 1_024,
     embeddingBatchSize: 16,
+    localModelRootDirectory: '/recall-models',
+    localEmbeddingParallelism: 4,
+    localEmbeddingIntraOperationThreads: 4,
     projectLineages: normalizeRecallProjectLineages({}),
     searchCandidateLimits: { dense: 8, invocation: 8 },
     chunkPolicy: { maxTokens: 512, overlapTokens: 64 },
   };
   const service = {
+    async close() {
+      closeCalls += 1;
+    },
     async search() {
       throw new Error('psr must not search');
     },
@@ -101,8 +114,9 @@ function createPsrCliFixture(
     progressOutput,
     executionLog,
     dependencies: {
-      loadConfig: async () => {
+      loadConfig: async (configPath?: string) => {
         executionLog.push('load config');
+        loadedConfigPaths.push(configPath);
         return config;
       },
       createService(receivedConfig: RecallConversationConfig) {
@@ -123,6 +137,14 @@ function createPsrCliFixture(
       getCurrentDirectory() {
         return options.currentDirectory ?? '/working-directory';
       },
+      async runModelCommand(argumentsList: readonly string[]) {
+        modelCommandCalls.push([...argumentsList]);
+        return 0;
+      },
+      async runSetupCommand(argumentsList: readonly string[]) {
+        setupCommandCalls.push([...argumentsList]);
+        return options.setupResult ?? { exitCode: 0, runInitialIndex: false };
+      },
       schedulerSystem: {
         platform: options.schedulerPlatform ?? 'linux',
         homeDirectory: '/home/recall-user',
@@ -140,6 +162,12 @@ function createPsrCliFixture(
       },
     },
     schedulerProcessCalls,
+    modelCommandCalls,
+    setupCommandCalls,
+    loadedConfigPaths,
+    get closeCalls() {
+      return closeCalls;
+    },
   };
 }
 
@@ -246,6 +274,8 @@ void test('psr ignore rejects invalid subcommands and arity with the complete us
   const usage = [
     'psr usage: psr index [--rebuild] [--stage] [--resume] [--reuse-active-vectors] [--compact]',
     '           psr activate <database-target>',
+    '           psr setup [--local|--external] [--yes] [--index] [profile options]',
+    '           psr model status|download [--yes]|doctor',
     '           psr auto-index install [--interval <N>m|<N>h]',
     '           psr auto-index uninstall',
     '           psr ignore add <session-path>',
@@ -270,6 +300,36 @@ void test('psr ignore rejects invalid subcommands and arity with the complete us
     });
   }
   assert.deepEqual(fixture.executionLog, []);
+});
+
+void test('psr model delegates only model arguments without opening the recall service', async () => {
+  const fixture = createPsrCliFixture();
+
+  assert.equal(await runPsrCli(['model', 'download', '--yes'], fixture.dependencies), 0);
+  assert.deepEqual(fixture.modelCommandCalls, [['download', '--yes']]);
+  assert.deepEqual(fixture.calls, []);
+  assert.ok(!fixture.executionLog.includes('load config'));
+  assert.ok(!fixture.executionLog.includes('create service'));
+});
+
+void test('psr setup delegates profile arguments and optionally starts a rebuild', async () => {
+  const configured = createPsrCliFixture();
+  assert.equal(await runPsrCli(['setup', '--local', '--yes'], configured.dependencies), 0);
+  assert.deepEqual(configured.setupCommandCalls, [['--local', '--yes']]);
+  assert.deepEqual(configured.calls, []);
+
+  const indexing = createPsrCliFixture([], {
+    setupResult: {
+      exitCode: 0,
+      runInitialIndex: true,
+      configPath: '/custom/recall.json',
+    },
+  });
+  assert.equal(await runPsrCli(['setup', '--local', '--yes', '--index'], indexing.dependencies), 0);
+  assert.deepEqual(indexing.setupCommandCalls, [['--local', '--yes', '--index']]);
+  assert.equal(indexing.calls.length, 1);
+  assert.equal(indexing.calls[0]?.rebuild, true);
+  assert.deepEqual(indexing.loadedConfigPaths, ['/custom/recall.json']);
 });
 
 void test('psr index keeps progress on stderr and the completed summary on stdout', async () => {
@@ -639,13 +699,14 @@ void test('psr index warns immediately while retaining complete failure details 
   assert.match(fixture.output.join(''), new RegExp(error, 'u'));
 });
 
-void test('psr index lets fatal service errors reach the standalone process handler', async () => {
+void test('psr index releases embedding resources after a fatal service error', async () => {
   const fixture = createPsrCliFixture([], { fatalError: new Error('Store setup failed') });
 
   await assert.rejects(runPsrCli(['index'], fixture.dependencies), /Store setup failed/u);
 
   assert.equal(fixture.output.join(''), '');
   assert.match(fixture.progressOutput.join(''), /Preparing recall index/iu);
+  assert.equal(fixture.closeCalls, 1);
 });
 
 void test('psr index --compact preserves the former one-line stdout summary', async () => {
@@ -922,7 +983,7 @@ void test('psr auto-index rejects unsupported platforms with one clear error', a
   assert.equal(fixture.schedulerProcessCalls.length, 0);
 });
 
-void test('psr rejects every command surface other than index, auto-index, and ignore', async () => {
+void test('psr rejects every command surface outside its documented commands', async () => {
   const fixture = createPsrCliFixture();
 
   await assert.rejects(

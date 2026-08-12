@@ -79,6 +79,24 @@ export const OCTEN_TOKENIZER_IDENTITY: ConversationTokenizerAssetIdentity = {
   },
 };
 
+/** Tokenizer identity shipped with the certified local Octen 0.6B artifact. */
+export const LOCAL_OCTEN_TOKENIZER_IDENTITY: ConversationTokenizerAssetIdentity = {
+  model: 'Octen/Octen-Embedding-0.6B',
+  revision: 'd715b32ee68f057b54dff09fc93c23485bc403d3',
+  library: { name: '@huggingface/tokenizers', version: OCTEN_TOKENIZER_LIBRARY_VERSION },
+  encodeOptions: OCTEN_TOKENIZER_ENCODE_OPTIONS,
+  tokenizerJson: {
+    fileName: 'tokenizer.json',
+    url: 'https://github.com/Whamp/pi-session-recall/releases/download/model-octen-embedding-0.6b-onnx-int8-v1/tokenizer.json',
+    sha256: 'def76fb086971c7867b829c23a26261e38d9d74e02139253b38aeb9df8b4b50a',
+  },
+  tokenizerConfigJson: {
+    fileName: 'tokenizer_config.json',
+    url: 'https://github.com/Whamp/pi-session-recall/releases/download/model-octen-embedding-0.6b-onnx-int8-v1/tokenizer_config.json',
+    sha256: '443bfa629eb16387a12edbf92a76f6a6f10b2af3b53d87ba1550adfcf45f7fa0',
+  },
+};
+
 function hashTokenizerAsset(content: Uint8Array): string {
   return createHash('sha256').update(content).digest('hex');
 }
@@ -219,6 +237,38 @@ async function fetchOctenTokenizerAsset(url: string): Promise<Uint8Array> {
     throw new Error(`HTTP ${response.status} ${response.statusText}`);
   }
   return new Uint8Array(await response.arrayBuffer());
+}
+
+/** Loads an already-installed tokenizer pair after verifying both exact artifact hashes. */
+export async function loadInstalledConversationTokenizer(options: {
+  assetDirectory: string;
+  identity: ConversationTokenizerAssetIdentity;
+}): Promise<ConversationTextTokenizer> {
+  assertSafeTokenizerAssetIdentity(options.identity);
+  const tokenizerPath = join(options.assetDirectory, options.identity.tokenizerJson.fileName);
+  const configPath = join(options.assetDirectory, options.identity.tokenizerConfigJson.fileName);
+  const [tokenizerContent, configContent] = await Promise.all([
+    readVerifiedCachedTokenizerAsset(tokenizerPath, options.identity.tokenizerJson),
+    readVerifiedCachedTokenizerAsset(configPath, options.identity.tokenizerConfigJson),
+  ]);
+  if (!tokenizerContent || !configContent) {
+    throw new Error(
+      `Recall local tokenizer is missing from ${options.assetDirectory}; run psr model download`,
+    );
+  }
+  const tokenizer = new Tokenizer(
+    parseTokenizerJson(tokenizerContent, tokenizerPath),
+    parseTokenizerJson(configContent, configPath),
+  );
+  return {
+    encodeConversationText(text) {
+      const encoding = tokenizer.encode(text, {
+        'add_special_tokens': options.identity.encodeOptions.addSpecialTokens,
+        'return_token_type_ids': options.identity.encodeOptions.returnTokenTypeIds,
+      });
+      return { ids: [...encoding.ids] };
+    },
+  };
 }
 
 /** Loads the exact pinned Octen tokenizer from the recall data cache, downloading only on a miss. */

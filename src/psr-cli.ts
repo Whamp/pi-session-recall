@@ -16,6 +16,7 @@ import {
 } from './auto-index-scheduler.js';
 import { loadRecallConversationConfig } from './recall-conversation-config.js';
 import { runPsrModelCli } from './psr-model-cli.js';
+import { runPsrSetupCli, type PsrSetupCliResult } from './psr-setup-cli.js';
 import type { RecallIndexProgressEvent } from './recall-index-progress.js';
 import {
   createRecallConversationService,
@@ -27,6 +28,7 @@ import {
 const PSR_USAGE = [
   'psr usage: psr index [--rebuild] [--stage] [--resume] [--reuse-active-vectors] [--compact]',
   '           psr activate <database-target>',
+  '           psr setup [--local|--external] [--yes] [--index] [profile options]',
   '           psr model status|download [--yes]|doctor',
   '           psr auto-index install [--interval <N>m|<N>h]',
   '           psr auto-index uninstall',
@@ -49,6 +51,7 @@ export interface PsrCliDependencies {
   getCurrentDirectory: () => string;
   schedulerSystem: AutoIndexSchedulerSystem;
   runModelCommand: (argumentsList: readonly string[]) => Promise<number>;
+  runSetupCommand: (argumentsList: readonly string[]) => Promise<PsrSetupCliResult>;
 }
 
 const DEFAULT_PSR_CLI_DEPENDENCIES: PsrCliDependencies = {
@@ -64,6 +67,7 @@ const DEFAULT_PSR_CLI_DEPENDENCIES: PsrCliDependencies = {
   getCurrentDirectory: () => process.cwd(),
   schedulerSystem: DEFAULT_AUTO_INDEX_SCHEDULER_SYSTEM,
   runModelCommand: runPsrModelCli,
+  runSetupCommand: runPsrSetupCli,
 };
 
 interface RecallIndexProgressTiming {
@@ -308,6 +312,13 @@ export async function runPsrCli(
   }
   if (argumentsList[0] === 'model') {
     return dependencies.runModelCommand(argumentsList.slice(1));
+  }
+  if (argumentsList[0] === 'setup') {
+    const setup = await dependencies.runSetupCommand(argumentsList.slice(1));
+    if (setup.exitCode !== 0 || !setup.runInitialIndex) {
+      return setup.exitCode;
+    }
+    return runPsrCli(['index', '--rebuild'], dependencies);
   }
   if (argumentsList[0] === 'auto-index') {
     if (argumentsList[1] === 'uninstall' && argumentsList.length === 2) {

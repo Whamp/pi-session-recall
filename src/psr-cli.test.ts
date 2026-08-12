@@ -26,6 +26,7 @@ function createPsrCliFixture(
     physicalSessionIgnoreStatePath?: string;
     currentDirectory?: string;
     databaseTransition?: RecallDatabaseTransition;
+    setupResult?: { exitCode: number; runInitialIndex: boolean };
   } = {},
 ) {
   const calls: RecallConversationIndexOptions[] = [];
@@ -37,6 +38,7 @@ function createPsrCliFixture(
   const executionLog: string[] = [];
   const schedulerProcessCalls: Array<{ executable: string; argumentsList: readonly string[] }> = [];
   const modelCommandCalls: string[][] = [];
+  const setupCommandCalls: string[][] = [];
   const config: RecallConversationConfig = {
     sessionsDirectory: '/sessions',
     sqliteDatabasePath: '/recall/recall.sqlite',
@@ -133,6 +135,10 @@ function createPsrCliFixture(
         modelCommandCalls.push([...argumentsList]);
         return 0;
       },
+      async runSetupCommand(argumentsList: readonly string[]) {
+        setupCommandCalls.push([...argumentsList]);
+        return options.setupResult ?? { exitCode: 0, runInitialIndex: false };
+      },
       schedulerSystem: {
         platform: options.schedulerPlatform ?? 'linux',
         homeDirectory: '/home/recall-user',
@@ -151,6 +157,7 @@ function createPsrCliFixture(
     },
     schedulerProcessCalls,
     modelCommandCalls,
+    setupCommandCalls,
   };
 }
 
@@ -257,6 +264,7 @@ void test('psr ignore rejects invalid subcommands and arity with the complete us
   const usage = [
     'psr usage: psr index [--rebuild] [--stage] [--resume] [--reuse-active-vectors] [--compact]',
     '           psr activate <database-target>',
+    '           psr setup [--local|--external] [--yes] [--index] [profile options]',
     '           psr model status|download [--yes]|doctor',
     '           psr auto-index install [--interval <N>m|<N>h]',
     '           psr auto-index uninstall',
@@ -292,6 +300,21 @@ void test('psr model delegates only model arguments without opening the recall s
   assert.deepEqual(fixture.calls, []);
   assert.ok(!fixture.executionLog.includes('load config'));
   assert.ok(!fixture.executionLog.includes('create service'));
+});
+
+void test('psr setup delegates profile arguments and optionally starts a rebuild', async () => {
+  const configured = createPsrCliFixture();
+  assert.equal(await runPsrCli(['setup', '--local', '--yes'], configured.dependencies), 0);
+  assert.deepEqual(configured.setupCommandCalls, [['--local', '--yes']]);
+  assert.deepEqual(configured.calls, []);
+
+  const indexing = createPsrCliFixture([], {
+    setupResult: { exitCode: 0, runInitialIndex: true },
+  });
+  assert.equal(await runPsrCli(['setup', '--local', '--yes', '--index'], indexing.dependencies), 0);
+  assert.deepEqual(indexing.setupCommandCalls, [['--local', '--yes', '--index']]);
+  assert.equal(indexing.calls.length, 1);
+  assert.equal(indexing.calls[0]?.rebuild, true);
 });
 
 void test('psr index keeps progress on stderr and the completed summary on stdout', async () => {

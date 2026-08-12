@@ -309,6 +309,122 @@ function createEmbeddingConfig(
   return config;
 }
 
+async function selectSetupProfile(
+  parsed: ParsedSetupArguments,
+  dependencies: PsrSetupCliDependencies,
+): Promise<RecallEmbeddingProfile> {
+  if (parsed.local) {
+    return RecallEmbeddingProfile.LOCAL_OCTEN;
+  }
+  if (parsed.external) {
+    return RecallEmbeddingProfile.OCTEN_HTTP;
+  }
+  return dependencies.selectProfile();
+}
+
+async function readInteractiveExternalArguments(
+  profile: RecallEmbeddingProfile,
+  parsed: ParsedSetupArguments,
+  existing: Record<string, unknown>,
+  dependencies: PsrSetupCliDependencies,
+): Promise<ParsedSetupArguments> {
+  if (profile !== RecallEmbeddingProfile.OCTEN_HTTP || parsed.local || parsed.external) {
+    return parsed;
+  }
+  const baseUrl = await dependencies.promptText(
+    'OpenAI-compatible embedding base URL',
+    typeof existing.embeddingBaseUrl === 'string'
+      ? existing.embeddingBaseUrl
+      : 'http://127.0.0.1:8090/v1',
+  );
+  const model = await dependencies.promptText(
+    'Embedding request model',
+    typeof existing.embeddingModel === 'string' ? existing.embeddingModel : DEFAULT_EXTERNAL_MODEL,
+  );
+  const servedModelId = await dependencies.promptText(
+    'Served model identity',
+    typeof existing.embeddingServedModelId === 'string'
+      ? existing.embeddingServedModelId
+      : DEFAULT_EXTERNAL_SERVED_MODEL_ID,
+  );
+  const nativeDimensions = readPositiveInteger(
+    await dependencies.promptText(
+      'Native embedding dimensions',
+      String(
+        typeof existing.embeddingNativeDimensions === 'number'
+          ? existing.embeddingNativeDimensions
+          : DEFAULT_EXTERNAL_NATIVE_DIMENSIONS,
+      ),
+    ),
+    'Native embedding dimensions',
+  );
+  const batchSize = readPositiveInteger(
+    await dependencies.promptText(
+      'Embedding request batch size',
+      String(
+        typeof existing.embeddingBatchSize === 'number'
+          ? existing.embeddingBatchSize
+          : DEFAULT_EXTERNAL_BATCH_SIZE,
+      ),
+    ),
+    'Embedding request batch size',
+  );
+  return { ...parsed, baseUrl, model, servedModelId, nativeDimensions, batchSize };
+}
+
+function assertSetupFlagsMatchProfile(
+  profile: RecallEmbeddingProfile,
+  parsed: ParsedSetupArguments,
+): void {
+  if (
+    profile === RecallEmbeddingProfile.LOCAL_OCTEN &&
+    (parsed.baseUrl !== undefined ||
+      parsed.model !== undefined ||
+      parsed.servedModelId !== undefined ||
+      parsed.nativeDimensions !== undefined ||
+      parsed.batchSize !== undefined)
+  ) {
+    throw new Error(`Local setup cannot use external HTTP flags\n${PSR_SETUP_USAGE}`);
+  }
+  if (
+    profile === RecallEmbeddingProfile.OCTEN_HTTP &&
+    (parsed.modelRootDirectory !== undefined ||
+      parsed.localParallelism !== undefined ||
+      parsed.localIntraOperationThreads !== undefined)
+  ) {
+    throw new Error(`External setup cannot use local model flags\n${PSR_SETUP_USAGE}`);
+  }
+}
+
+async function installLocalSetupModel(
+  parsed: ParsedSetupArguments,
+  modelRootDirectory: string,
+  dependencies: PsrSetupCliDependencies,
+): Promise<boolean> {
+  const manager = dependencies.createModelManager(modelRootDirectory);
+  const status = await manager.status();
+  const approved =
+    status.kind === LocalOctenModelStatusKind.READY ||
+    parsed.approved ||
+    (await dependencies.confirm(
+      `Download ${(status.totalBytes / 1_073_741_824).toFixed(2)} GiB local Octen model?`,
+    ));
+  if (!approved) {
+    return false;
+  }
+  await manager.download({
+    approved: true,
+    onProgress(event) {
+      if (event.kind === LocalOctenModelDownloadProgressKind.DOWNLOADING_FILE) {
+        dependencies.writeProgress(`Downloading ${event.fileName ?? 'model artifact'}...\n`);
+      } else if (event.kind === LocalOctenModelDownloadProgressKind.FILE_VERIFIED) {
+        dependencies.writeProgress(`Verified ${event.fileName ?? 'model artifact'}.\n`);
+      }
+    },
+  });
+  return true;
+}
+
 /** Configures one fresh local or external embedding profile without indexing by itself. */
 export async function runPsrSetupCli(
   argumentsList: readonly string[],
@@ -318,113 +434,41 @@ export async function runPsrSetupCli(
     dependencies.writeOutput(`${PSR_SETUP_USAGE}\n`);
     return { exitCode: 0, runInitialIndex: false };
   }
-  const parsed = parseSetupArguments(argumentsList);
+  const initialArguments = parseSetupArguments(argumentsList);
   const homeDirectory = dependencies.getHomeDirectory();
   const configPath = resolve(
-    parsed.configPath ?? join(homeDirectory, '.pi', 'agent', 'recall.json'),
+    initialArguments.configPath ?? join(homeDirectory, '.pi', 'agent', 'recall.json'),
   );
   const modelRootDirectory = resolve(
-    parsed.modelRootDirectory ?? join(homeDirectory, '.pi', 'agent', 'recall-models'),
+    initialArguments.modelRootDirectory ?? join(homeDirectory, '.pi', 'agent', 'recall-models'),
   );
-  const profile = parsed.local
-    ? RecallEmbeddingProfile.LOCAL_OCTEN
-    : parsed.external
-      ? RecallEmbeddingProfile.OCTEN_HTTP
-      : await dependencies.selectProfile();
+  const profile = await selectSetupProfile(initialArguments, dependencies);
   const configExists = await pathExists(configPath);
   if (
     configExists &&
-    !parsed.approved &&
+    !initialArguments.approved &&
     !(await dependencies.confirm(`Replace embedding settings in ${configPath}?`))
   ) {
     dependencies.writeOutput('Recall setup cancelled; existing configuration unchanged.\n');
     return { exitCode: 1, runInitialIndex: false };
   }
   const existing = await readExistingConfig(configPath);
-  const profileSelectedInteractively = !parsed.local && !parsed.external;
-  if (profile === RecallEmbeddingProfile.OCTEN_HTTP && profileSelectedInteractively) {
-    parsed.baseUrl = await dependencies.promptText(
-      'OpenAI-compatible embedding base URL',
-      typeof existing.embeddingBaseUrl === 'string'
-        ? existing.embeddingBaseUrl
-        : 'http://127.0.0.1:8090/v1',
-    );
-    parsed.model = await dependencies.promptText(
-      'Embedding request model',
-      typeof existing.embeddingModel === 'string'
-        ? existing.embeddingModel
-        : DEFAULT_EXTERNAL_MODEL,
-    );
-    parsed.servedModelId = await dependencies.promptText(
-      'Served model identity',
-      typeof existing.embeddingServedModelId === 'string'
-        ? existing.embeddingServedModelId
-        : DEFAULT_EXTERNAL_SERVED_MODEL_ID,
-    );
-    parsed.nativeDimensions = readPositiveInteger(
-      await dependencies.promptText(
-        'Native embedding dimensions',
-        String(
-          typeof existing.embeddingNativeDimensions === 'number'
-            ? existing.embeddingNativeDimensions
-            : DEFAULT_EXTERNAL_NATIVE_DIMENSIONS,
-        ),
-      ),
-      'Native embedding dimensions',
-    );
-    parsed.batchSize = readPositiveInteger(
-      await dependencies.promptText(
-        'Embedding request batch size',
-        String(
-          typeof existing.embeddingBatchSize === 'number'
-            ? existing.embeddingBatchSize
-            : DEFAULT_EXTERNAL_BATCH_SIZE,
-        ),
-      ),
-      'Embedding request batch size',
-    );
-  }
+  const parsed = await readInteractiveExternalArguments(
+    profile,
+    initialArguments,
+    existing,
+    dependencies,
+  );
+  assertSetupFlagsMatchProfile(profile, parsed);
   const nextConfig = createEmbeddingConfig(existing, profile, parsed, modelRootDirectory);
   parseRecallConfigFileValue(nextConfig);
 
-  if (profile === RecallEmbeddingProfile.LOCAL_OCTEN) {
-    if (
-      parsed.baseUrl !== undefined ||
-      parsed.model !== undefined ||
-      parsed.servedModelId !== undefined ||
-      parsed.nativeDimensions !== undefined ||
-      parsed.batchSize !== undefined
-    ) {
-      throw new Error(`Local setup cannot use external HTTP flags\n${PSR_SETUP_USAGE}`);
-    }
-    const manager = dependencies.createModelManager(modelRootDirectory);
-    const status = await manager.status();
-    const modelApproved =
-      status.kind === LocalOctenModelStatusKind.READY ||
-      parsed.approved ||
-      (await dependencies.confirm(
-        `Download ${(status.totalBytes / 1_073_741_824).toFixed(2)} GiB local Octen model?`,
-      ));
-    if (!modelApproved) {
-      dependencies.writeOutput('Recall setup cancelled; local model was not downloaded.\n');
-      return { exitCode: 1, runInitialIndex: false };
-    }
-    await manager.download({
-      approved: true,
-      onProgress(event) {
-        if (event.kind === LocalOctenModelDownloadProgressKind.DOWNLOADING_FILE) {
-          dependencies.writeProgress(`Downloading ${event.fileName ?? 'model artifact'}...\n`);
-        } else if (event.kind === LocalOctenModelDownloadProgressKind.FILE_VERIFIED) {
-          dependencies.writeProgress(`Verified ${event.fileName ?? 'model artifact'}.\n`);
-        }
-      },
-    });
-  } else if (
-    parsed.modelRootDirectory !== undefined ||
-    parsed.localParallelism !== undefined ||
-    parsed.localIntraOperationThreads !== undefined
+  if (
+    profile === RecallEmbeddingProfile.LOCAL_OCTEN &&
+    !(await installLocalSetupModel(parsed, modelRootDirectory, dependencies))
   ) {
-    throw new Error(`External setup cannot use local model flags\n${PSR_SETUP_USAGE}`);
+    dependencies.writeOutput('Recall setup cancelled; local model was not downloaded.\n');
+    return { exitCode: 1, runInitialIndex: false };
   }
 
   await writeConfigAtomically(configPath, nextConfig);

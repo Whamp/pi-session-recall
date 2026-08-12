@@ -47,6 +47,7 @@ const EMBEDDING_SETTING_KEYS = [
 export interface PsrSetupCliResult {
   exitCode: number;
   runInitialIndex: boolean;
+  configPath?: string;
 }
 
 /** Replaceable terminal and artifact boundaries for setup behavior. */
@@ -477,5 +478,5 @@ export async function runPsrSetupCli(
       ? `Local Octen embeddings configured in ${configPath}. Run psr index --rebuild to build recall.\n`
       : `External Octen HTTP embeddings configured in ${configPath}. Run psr index --rebuild to build recall.\n`,
   );
-  return { exitCode: 0, runInitialIndex: parsed.runInitialIndex };
+  return { exitCode: 0, runInitialIndex: parsed.runInitialIndex, configPath };
 }

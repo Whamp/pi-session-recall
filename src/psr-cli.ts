@@ -43,7 +43,7 @@ const ENGLISH_INTEGER_FORMAT = new Intl.NumberFormat('en-US');
 
 /** Replaceable process boundaries for the standalone `psr` command. */
 export interface PsrCliDependencies {
-  loadConfig: () => Promise<RecallConversationConfig>;
+  loadConfig: (configPath?: string) => Promise<RecallConversationConfig>;
   createService: (config: RecallConversationConfig) => RecallConversationMaintenanceService;
   writeOutput: (text: string) => void;
   writeProgress: (text: string) => void;
@@ -55,7 +55,9 @@ export interface PsrCliDependencies {
 }
 
 const DEFAULT_PSR_CLI_DEPENDENCIES: PsrCliDependencies = {
-  loadConfig: loadRecallConversationConfig,
+  loadConfig(configPath) {
+    return loadRecallConversationConfig(configPath ? { configPath } : {});
+  },
   createService: createRecallConversationService,
   writeOutput(text) {
     process.stdout.write(text);
@@ -318,7 +320,10 @@ export async function runPsrCli(
     if (setup.exitCode !== 0 || !setup.runInitialIndex) {
       return setup.exitCode;
     }
-    return runPsrCli(['index', '--rebuild'], dependencies);
+    return runPsrCli(['index', '--rebuild'], {
+      ...dependencies,
+      loadConfig: () => dependencies.loadConfig(setup.configPath),
+    });
   }
   if (argumentsList[0] === 'auto-index') {
     if (argumentsList[1] === 'uninstall' && argumentsList.length === 2) {

@@ -101,7 +101,7 @@ void test('psr setup --local writes a verified local profile atomically', async 
     fixture.dependencies,
   );
 
-  assert.deepEqual(result, { exitCode: 0, runInitialIndex: false });
+  assert.deepEqual(result, { exitCode: 0, runInitialIndex: false, configPath });
   assert.deepEqual(fixture.managerRoots, [modelRoot]);
   assert.deepEqual(fixture.downloadApprovals, [true]);
   assert.deepEqual(JSON.parse(await readFile(configPath, 'utf8')), {
@@ -218,7 +218,7 @@ void test('psr setup writes an explicit external HTTP profile without model acce
     fixture.dependencies,
   );
 
-  assert.deepEqual(result, { exitCode: 0, runInitialIndex: true });
+  assert.deepEqual(result, { exitCode: 0, runInitialIndex: true, configPath });
   assert.deepEqual(fixture.managerRoots, []);
   assert.deepEqual(JSON.parse(await readFile(configPath, 'utf8')), {
     embeddingProfile: RecallEmbeddingProfile.OCTEN_HTTP,
@@ -249,7 +249,7 @@ void test('interactive external setup prompts for endpoint and model details', a
 
   const result = await runPsrSetupCli(['--yes', '--config', configPath], fixture.dependencies);
 
-  assert.deepEqual(result, { exitCode: 0, runInitialIndex: false });
+  assert.deepEqual(result, { exitCode: 0, runInitialIndex: false, configPath });
   assert.deepEqual(JSON.parse(await readFile(configPath, 'utf8')), {
     embeddingProfile: RecallEmbeddingProfile.OCTEN_HTTP,
     embeddingBaseUrl: 'https://embeddings.example.test/v1',

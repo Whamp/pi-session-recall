@@ -26,7 +26,7 @@ function createPsrCliFixture(
     physicalSessionIgnoreStatePath?: string;
     currentDirectory?: string;
     databaseTransition?: RecallDatabaseTransition;
-    setupResult?: { exitCode: number; runInitialIndex: boolean };
+    setupResult?: { exitCode: number; runInitialIndex: boolean; configPath?: string };
   } = {},
 ) {
   const calls: RecallConversationIndexOptions[] = [];
@@ -36,6 +36,7 @@ function createPsrCliFixture(
   const output: string[] = [];
   const progressOutput: string[] = [];
   const executionLog: string[] = [];
+  const loadedConfigPaths: Array<string | undefined> = [];
   let closeCalls = 0;
   const schedulerProcessCalls: Array<{ executable: string; argumentsList: readonly string[] }> = [];
   const modelCommandCalls: string[][] = [];
@@ -113,8 +114,9 @@ function createPsrCliFixture(
     progressOutput,
     executionLog,
     dependencies: {
-      loadConfig: async () => {
+      loadConfig: async (configPath?: string) => {
         executionLog.push('load config');
+        loadedConfigPaths.push(configPath);
         return config;
       },
       createService(receivedConfig: RecallConversationConfig) {
@@ -162,6 +164,7 @@ function createPsrCliFixture(
     schedulerProcessCalls,
     modelCommandCalls,
     setupCommandCalls,
+    loadedConfigPaths,
     get closeCalls() {
       return closeCalls;
     },
@@ -316,12 +319,17 @@ void test('psr setup delegates profile arguments and optionally starts a rebuild
   assert.deepEqual(configured.calls, []);
 
   const indexing = createPsrCliFixture([], {
-    setupResult: { exitCode: 0, runInitialIndex: true },
+    setupResult: {
+      exitCode: 0,
+      runInitialIndex: true,
+      configPath: '/custom/recall.json',
+    },
   });
   assert.equal(await runPsrCli(['setup', '--local', '--yes', '--index'], indexing.dependencies), 0);
   assert.deepEqual(indexing.setupCommandCalls, [['--local', '--yes', '--index']]);
   assert.equal(indexing.calls.length, 1);
   assert.equal(indexing.calls[0]?.rebuild, true);
+  assert.deepEqual(indexing.loadedConfigPaths, ['/custom/recall.json']);
 });
 
 void test('psr index keeps progress on stderr and the completed summary on stdout', async () => {

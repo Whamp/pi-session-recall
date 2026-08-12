@@ -61,8 +61,8 @@ function readLocalOctenProcessorModels(): string[] {
   return cpus().map((processor) => processor.model);
 }
 
-function hasAmdX64Processor(processorModels: readonly string[]): boolean {
-  return processorModels.some((model) => /\b(?:AMD|EPYC|Ryzen)\b/iu.test(model));
+function hasCertifiedRyzenProcessor(processorModels: readonly string[]): boolean {
+  return processorModels.some((model) => /\bRyzen\b/iu.test(model));
 }
 
 /** Resolves the certified native or WASM backend for one operating system and CPU family. */
@@ -75,7 +75,7 @@ export function resolveLocalOctenRuntimeBackend(
     return LocalOctenRuntimeBackend.NATIVE;
   }
   if (platform === 'linux' && architecture === 'x64') {
-    return hasAmdX64Processor(processorModels)
+    return hasCertifiedRyzenProcessor(processorModels)
       ? LocalOctenRuntimeBackend.NATIVE
       : LocalOctenRuntimeBackend.WASM;
   }

@@ -4,7 +4,7 @@ Status: **release evidence passed**
 
 ## Artifact
 
-The production profile uses the project-controlled [`model-octen-embedding-0.6b-onnx-int8-v1`](https://github.com/Whamp/pi-session-recall/releases/tag/model-octen-embedding-0.6b-onnx-int8-v1) release through pinned native `onnxruntime-node` 1.27.0 on macOS arm64 and Linux x64 AMD processors. Linux x64 Intel or unknown processors and macOS x64 use pinned `onnxruntime-web` 1.27.0 WASM because native Intel runners produced incompatible vectors and stable ONNX Runtime Node packages omit the current Darwin x64 binding. GitHub's reported byte sizes and SHA-256 digests match the implementation constants and downloaded files.
+The production profile uses the project-controlled [`model-octen-embedding-0.6b-onnx-int8-v1`](https://github.com/Whamp/pi-session-recall/releases/tag/model-octen-embedding-0.6b-onnx-int8-v1) release through pinned native `onnxruntime-node` 1.27.0 on macOS arm64 and Linux x64 Ryzen processors. Other Linux x64 processors and macOS x64 use pinned `onnxruntime-web` 1.27.0 WASM because native Intel and EPYC runners produced incompatible vectors and stable ONNX Runtime Node packages omit the current Darwin x64 binding. GitHub's reported byte sizes and SHA-256 digests match the implementation constants and downloaded files.
 
 ## Bounded prototype
 
@@ -37,9 +37,9 @@ All paths were under the dedicated scratch root or the test runner's temporary d
 
 The portable WASM runtime loaded the same graph and 1.06 GB external weights in Node on the Linux prototype host. It loaded in 740 ms, answered one query in 372 ms, used about 2.50 GB RSS, and reached 0.98489 cosine against the upstream Safetensors reference. Native Intel Linux and macOS runners instead produced the same incompatible 0.736891 query cosine.
 
-A later six-public-text comparison on an AMD Ryzen 7 8845HS measured native ONNX at 19.28 ms warm median, 24.63 ms p95, and 636 MB incremental peak RSS. WASM measured 152.10 ms median, 242.63 ms p95, and 2.31 GB incremental peak RSS. Minimum upstream cosine was 0.9704 native and 0.9653 WASM. This small check used no sessions and wrote no database; it supports runtime routing, not corpus-throughput claims. See [`local-octen-amd-backend-comparison.json`](../evaluation/local-octen-amd-backend-comparison.json).
+A later six-public-text comparison on an AMD Ryzen 7 8845HS measured native ONNX at 19.28 ms warm median, 24.63 ms p95, and 636 MB incremental peak RSS. WASM measured 152.10 ms median, 242.63 ms p95, and 2.31 GB incremental peak RSS. Minimum upstream cosine was 0.9704 native and 0.9653 WASM. This small check used no sessions and wrote no database; it supports runtime routing, not corpus-throughput claims. See [`local-octen-ryzen-backend-comparison.json`](../evaluation/local-octen-ryzen-backend-comparison.json).
 
-Production uses native ONNX on Linux x64 AMD and WASM on Linux x64 Intel or unknown processors. macOS x64 remains WASM because current stable packages omit its native binding. The manifest records the selected backend, so moving a database between native and WASM platforms requires a rebuild.
+Production uses native ONNX on Linux x64 Ryzen and WASM on other Linux x64 processors. GitHub's EPYC runner produced the same incompatible 0.736891 native cosine as Intel, so CPU vendor is not a safe boundary. macOS x64 remains WASM because current stable packages omit its native binding. The manifest records the selected backend, so moving a database between native and WASM platforms requires a rebuild.
 
 ## Dependency audit
 
@@ -51,7 +51,7 @@ Socket reports an obfuscated-code warning for `onnxruntime-web`'s generated/mini
 
 [GitHub Actions run 31552401490](https://github.com/Whamp/pi-session-recall/actions/runs/31552401490) passed at commit `eead5609b9c3f76bba9dfb001be98bb4ca934d80`:
 
-- [Linux x64 Intel](https://github.com/Whamp/pi-session-recall/actions/runs/31552401490/job/93977697017), using WASM;
+- [Linux x64](https://github.com/Whamp/pi-session-recall/actions/runs/31552401490/job/93977697017), using WASM;
 - [macOS arm64](https://github.com/Whamp/pi-session-recall/actions/runs/31552401490/job/93977697024), using native ONNX Runtime;
 - [macOS x64](https://github.com/Whamp/pi-session-recall/actions/runs/31552401490/job/93977696992), using WASM.
 

@@ -17,6 +17,10 @@ void test('local Octen runtime backend selects the certified engine for each CPU
     LocalOctenRuntimeBackend.NATIVE,
   );
   assert.equal(
+    resolveLocalOctenRuntimeBackend('linux', 'x64', ['AMD EPYC 7763 64-Core Processor']),
+    LocalOctenRuntimeBackend.WASM,
+  );
+  assert.equal(
     resolveLocalOctenRuntimeBackend('linux', 'x64', ['Intel(R) Xeon(R) Platinum 8370C']),
     LocalOctenRuntimeBackend.WASM,
   );

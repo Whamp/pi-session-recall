@@ -229,21 +229,23 @@ Atomic chunks never cross entries, roles, visible text runs, tools, thinking, im
 
 Fresh `psr setup` defaults to local Octen:
 
-| Setting                      | Local default                                                                                     |
-| ---------------------------- | ------------------------------------------------------------------------------------------------- |
-| Profile                      | `local-octen-embedding-0.6b-onnx-int8-v1`                                                         |
-| Model                        | `Octen/Octen-Embedding-0.6B`                                                                      |
-| Runtime                      | native `onnxruntime-node` 1.27.0 on macOS arm64; `onnxruntime-web` 1.27.0 WASM on Linux/macOS x64 |
-| Artifact                     | SmoothQuant INT8 ONNX, 1.01 GiB                                                                   |
-| Native and stored dimensions | 1,024 FP32                                                                                        |
-| Transformation               | tokenizer final token, then local L2 normalization                                                |
-| sqlite-vec metric            | cosine                                                                                            |
+| Setting                      | Local default                                                                                                                            |
+| ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| Profile                      | `local-octen-embedding-0.6b-onnx-int8-v1`                                                                                                |
+| Model                        | `Octen/Octen-Embedding-0.6B`                                                                                                             |
+| Runtime                      | native `onnxruntime-node` 1.27.0 on macOS arm64 and Linux x64 Ryzen; `onnxruntime-web` 1.27.0 WASM on other Linux x64 CPUs and macOS x64 |
+| Artifact                     | SmoothQuant INT8 ONNX, 1.01 GiB                                                                                                          |
+| Native and stored dimensions | 1,024 FP32                                                                                                                               |
+| Transformation               | tokenizer final token, then local L2 normalization                                                                                       |
+| sqlite-vec metric            | cosine                                                                                                                                   |
 
-The graph accepts batch size one. Native Pi Session Recall on macOS arm64 runs four bounded concurrent operations against one shared session by default. The x64 WASM path serializes operations because ONNX Runtime Web supports single-threaded WASM under Node. The certified tokenizer post-processor appends `<|endoftext|>` token `151643`; manually appending its configured `<|im_end|>` EOS token `151645` produces incompatible vectors. The [project release](https://github.com/Whamp/pi-session-recall/releases/tag/model-octen-embedding-0.6b-onnx-int8-v1) pins every artifact byte and carries the Apache 2.0 license and provenance notice.
+The graph accepts batch size one. Native Pi Session Recall on macOS arm64 and Linux x64 Ryzen runs four bounded concurrent operations against one shared session by default. The WASM path serializes operations because ONNX Runtime Web supports single-threaded WASM under Node. The certified tokenizer post-processor appends `<|endoftext|>` token `151643`; manually appending its configured `<|im_end|>` EOS token `151645` produces incompatible vectors. The [project release](https://github.com/Whamp/pi-session-recall/releases/tag/model-octen-embedding-0.6b-onnx-int8-v1) pins every artifact byte and carries the Apache 2.0 license and provenance notice.
 
 After download, local indexing and search work offline. Conversation text stays in the Pi process and is not sent to an embedding server. `psr model status` reads receipt and file sizes. `psr model doctor` additionally hashes every artifact file, loads the native runtime, produces one normalized 1,024-dimensional embedding, and releases the session. `psr model download` requires confirmation or `--yes`; it streams into a unique partial directory, verifies hashes, and only then activates the complete model. If status reports `partial` or `corrupt`, rerun `psr model download`; failed downloads remove their partial directory and do not replace an existing artifact.
 
-The real artifact download, runtime query, fixed-vector conformance, disposable SQLite build, close, reopen, and offline search run in CI on Linux x64, macOS arm64, and macOS x64. macOS arm64 uses native ONNX Runtime; both x64 platforms use the measured WASM fallback because native Intel runners produced incompatible vectors. Unsupported platforms are rejected before the 1.01 GiB download and directed to the HTTP profile.
+The real artifact download, runtime query, fixed-vector conformance, disposable SQLite build, close, reopen, and offline search run in CI on Linux x64 EPYC, macOS arm64, and macOS x64 Intel. macOS arm64 uses native ONNX Runtime; EPYC and Intel runners use the measured WASM fallback because native inference produced incompatible vectors on both. Linux x64 Ryzen uses native ONNX Runtime after a real Ryzen conformance and one-session offline integration check. Unsupported platforms are rejected before the 1.01 GiB download and directed to the HTTP profile.
+
+The execution backend is part of the embedding profile recorded in the Recall manifest. A Ryzen Linux installation that built a local Recall database with the earlier all-x64 WASM policy must run `psr index --rebuild` once after upgrading. Pi Session Recall refuses ordinary indexing against the incompatible manifest instead of mixing vectors from two runtimes.
 
 The explicit HTTP profile retains the previous behavior:
 

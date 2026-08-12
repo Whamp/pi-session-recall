@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import { cpus } from 'node:os';
 import { join } from 'node:path';
 
 import { Tokenizer } from '@huggingface/tokenizers';
@@ -56,18 +57,29 @@ export interface LocalOctenEmbeddingProvider extends RecallEmbeddingProvider {
   close(): Promise<void>;
 }
 
-/** Resolves the certified native or WASM backend for one supported platform. */
+function readLocalOctenProcessorModels(): string[] {
+  return cpus().map((processor) => processor.model);
+}
+
+function hasCertifiedRyzenProcessor(processorModels: readonly string[]): boolean {
+  return processorModels.some((model) => /\bRyzen\b/iu.test(model));
+}
+
+/** Resolves the certified native or WASM backend for one operating system and CPU family. */
 export function resolveLocalOctenRuntimeBackend(
   platform: NodeJS.Platform = process.platform,
   architecture: string = process.arch,
+  processorModels: readonly string[] = readLocalOctenProcessorModels(),
 ): LocalOctenRuntimeBackend {
   if (platform === 'darwin' && architecture === 'arm64') {
     return LocalOctenRuntimeBackend.NATIVE;
   }
-  if (
-    (platform === 'linux' && architecture === 'x64') ||
-    (platform === 'darwin' && architecture === 'x64')
-  ) {
+  if (platform === 'linux' && architecture === 'x64') {
+    return hasCertifiedRyzenProcessor(processorModels)
+      ? LocalOctenRuntimeBackend.NATIVE
+      : LocalOctenRuntimeBackend.WASM;
+  }
+  if (platform === 'darwin' && architecture === 'x64') {
     return LocalOctenRuntimeBackend.WASM;
   }
   throw new Error(

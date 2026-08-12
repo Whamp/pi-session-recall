@@ -4,7 +4,7 @@ Status: **accepted for implementation**
 
 ## Decision
 
-Use `Octen/Octen-Embedding-0.6B` as the default local embedding model for new Pi Session Recall installations. Run the verified SmoothQuant INT8 ONNX artifact through native `onnxruntime-node` 1.27.0 on macOS arm64. Use `onnxruntime-web` 1.27.0 WASM on Linux x64 and macOS x64 with the same graph and weights because native Intel execution produced incompatible vectors. Store native 1,024-dimensional normalized vectors.
+Use `Octen/Octen-Embedding-0.6B` as the default local embedding model for new Pi Session Recall installations. Run the verified SmoothQuant INT8 ONNX artifact through native `onnxruntime-node` 1.27.0 on macOS arm64 and Linux x64 Ryzen processors. Use `onnxruntime-web` 1.27.0 WASM on other Linux x64 processors and macOS x64 because native Intel and EPYC execution produced incompatible vectors. Store native 1,024-dimensional normalized vectors.
 
 Do not use Voyage 4 Nano as the default. Its runtime was smaller and faster, but it recovered only 81.25% of the fixed recall corpus. Do not use the compact full-INT8 Octen ONNX export: its vector similarity fell as low as 0.696 against upstream Safetensors. The Octen Q8_0 GGUF preserved quality but used more memory and indexed more slowly than the accepted ONNX path.
 
@@ -95,13 +95,15 @@ The community repository documents SmoothQuant, but its checked-in `quantize_oct
 
 ## Production platform amendment
 
-`onnxruntime-node` 1.25.1, 1.26.0, and 1.27.0 were inspected after the initial decision; all ship Darwin arm64 but no Darwin x64 binding. Native Intel Linux with 1.27.0 and native Intel macOS with the older 1.23.2 package both produced the same incompatible 0.736891 query cosine. The accepted model loaded through `onnxruntime-web` 1.27.0 WASM in Node with external weights, reached 0.98489 cosine against the upstream reference, loaded in 740 ms, answered one query in 372 ms, and used about 2.50 GB RSS on the Linux prototype host. Production therefore uses that single-threaded portable backend on both x64 platforms and binds the backend name into the manifest.
+`onnxruntime-node` 1.25.1, 1.26.0, and 1.27.0 were inspected after the initial decision; all ship Darwin arm64 but no Darwin x64 binding. Native Intel Linux with 1.27.0 and native Intel macOS with the older 1.23.2 package both produced the same incompatible 0.736891 query cosine. The accepted model loaded through `onnxruntime-web` 1.27.0 WASM in Node with external weights, reached 0.98489 cosine against the upstream reference, loaded in 740 ms, answered one query in 372 ms, and used about 2.50 GB RSS on the Linux prototype host.
+
+A follow-up six-public-text comparison found that native ONNX remained conformant on the AMD Ryzen prototype host and reduced warm median query embedding from 152.10 ms to 19.28 ms versus WASM. It also reduced incremental peak RSS from 2.31 GB to 636 MB. This small comparison used no session corpus or database. Production therefore uses native ONNX on Linux x64 Ryzen, retains WASM on other Linux x64 processors and macOS x64, and binds the backend name into the manifest.
 
 ## Implementation consequences
 
 The production change should add one profile, not restore the retired inference platform:
 
-- local profile: Octen 0.6B SmoothQuant INT8 through native ONNX Runtime on macOS arm64 or the x64 WASM fallback;
+- local profile: Octen 0.6B SmoothQuant INT8 through native ONNX Runtime on macOS arm64 and Linux x64 Ryzen, with WASM on other Linux x64 processors and macOS x64;
 - external profile: existing OpenAI-compatible Octen HTTP provider;
 - local artifact cache with partial download, checksums, receipt, atomic activation, status, and diagnosis;
 - `psr setup` plus `psr model status`, `download`, and `doctor`;

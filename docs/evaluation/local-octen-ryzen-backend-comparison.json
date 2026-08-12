@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "measuredAt": "2026-08-12",
+  "purpose": "Compare native ONNX Runtime with ONNX Runtime Web WASM on one supported Ryzen Linux host without indexing private sessions.",
+  "host": {
+    "operatingSystem": "Linux x64",
+    "processor": "AMD Ryzen 7 8845HS w/ Radeon 780M Graphics",
+    "nodeVersion": "24.16.0"
+  },
+  "artifact": "local-octen-embedding-0.6b-onnx-int8-v1",
+  "method": {
+    "publicTextProbes": 6,
+    "sessions": 0,
+    "databaseWrites": 0,
+    "parallelism": 1,
+    "intraOperationThreads": 4,
+    "limitations": [
+      "One short run on one Ryzen host.",
+      "Warm timings contain five measured queries per backend.",
+      "The result measures query embedding only, not corpus indexing throughput."
+    ]
+  },
+  "results": [
+    {
+      "backend": "onnxruntime-node@1.27.0",
+      "coldMilliseconds": 881.21,
+      "warmMedianMilliseconds": 19.28,
+      "warmP95Milliseconds": 24.63,
+      "minimumUpstreamCosine": 0.970399,
+      "medianUpstreamCosine": 0.981282,
+      "absolutePeakRssBytes": 751599616,
+      "incrementalPeakRssBytes": 635629568
+    },
+    {
+      "backend": "onnxruntime-web@1.27.0-wasm",
+      "coldMilliseconds": 1972.21,
+      "warmMedianMilliseconds": 152.1,
+      "warmP95Milliseconds": 242.63,
+      "minimumUpstreamCosine": 0.965321,
+      "medianUpstreamCosine": 0.98131,
+      "absolutePeakRssBytes": 3054485504,
+      "incrementalPeakRssBytes": 2305966080
+    }
+  ],
+  "decision": "Use native ONNX Runtime on Linux x64 Ryzen processors. Keep WASM on other Linux x64 processors and macOS x64."
+}

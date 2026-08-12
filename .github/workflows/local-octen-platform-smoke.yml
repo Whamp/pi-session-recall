@@ -73,4 +73,4 @@ jobs:
       - name: Build, close, reopen, and search offline
         env:
           PI_LOCAL_OCTEN_MODEL_ROOT_DIRECTORY: ${{ runner.temp }}/psr-local-models
-        run: node --import tsx --test src/local-octen-production.integration.test.ts
+        run: node --import tsx --test src/local-octen-embedding-provider.test.ts src/local-octen-production.integration.test.ts

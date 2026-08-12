@@ -1,6 +1,6 @@
 # Local Octen production readiness
 
-Status: **local evidence passed; platform CI pending**
+Status: **release evidence passed**
 
 ## Artifact
 
@@ -27,7 +27,7 @@ A clean temporary configuration and model root ran the public commands against t
 3. `psr model doctor`
 4. the real environment-gated integration test
 
-Setup streamed, size-checked, and hash-checked all seven release assets before activating the model directory and writing configuration. Status reported `ready`. Doctor rehashed the artifact, loaded the native runtime, and returned a normalized 1,024-dimensional vector with norm `1.0000000028391913`.
+Setup streamed, size-checked, and hash-checked all seven release assets before activating the model directory and writing configuration. Status reported `ready`. Doctor rehashed the artifact, loaded the selected runtime, and returned a normalized 1,024-dimensional vector with norm `1.0000000028391913`.
 
 The integration test independently compared query and document embeddings with upstream Safetensors references, built a disposable SQLite Recall database from one canonical session while `fetch` was disabled, released the provider, created a fresh service, and recovered the expected result through global search. It completed in 4.98 seconds. The complete download, status, doctor, and integration sequence took 42 seconds on an AMD Ryzen 7 8845HS with Node 24.16.0.
 
@@ -41,14 +41,16 @@ The portable WASM runtime loaded the same graph and 1.06 GB external weights in 
 
 `onnxruntime-node` 1.27.0 declared vulnerable `adm-zip <0.6.0` in its install-script dependency tree. The lockfile overrides that dependency to patched 0.6.0, matching Microsoft's merged post-1.27 dependency bump. `npm audit --omit=dev` reports zero vulnerabilities, and the real artifact still passed after the override.
 
-## Remaining gate
+Socket reports an obfuscated-code warning for `onnxruntime-web`'s generated/minified runtime bundles. This is the official pinned Microsoft package, not an unknown wrapper; its project and pull-request checks pass, and the exact runtime executes the checksum-pinned model under the conformance gate. The warning is accepted for this required x64 fallback.
 
-`.github/workflows/local-octen-platform-smoke.yml` must pass on:
+## Supported-platform evidence
 
-- Linux x64;
-- macOS arm64;
-- macOS x64.
+[GitHub Actions run 31552401490](https://github.com/Whamp/pi-session-recall/actions/runs/31552401490) passed at commit `eead5609b9c3f76bba9dfb001be98bb4ca934d80`:
 
-Each job downloads or restores the exact project artifact, runs `psr model doctor`, and executes the real conformance plus offline SQLite build-close-reopen-search test. Unsupported platforms are rejected before download.
+- [Linux x64](https://github.com/Whamp/pi-session-recall/actions/runs/31552401490/job/93977697017), using WASM;
+- [macOS arm64](https://github.com/Whamp/pi-session-recall/actions/runs/31552401490/job/93977697024), using native ONNX Runtime;
+- [macOS x64](https://github.com/Whamp/pi-session-recall/actions/runs/31552401490/job/93977696992), using WASM.
+
+Each job downloaded or restored the exact project artifact, ran `psr model doctor`, and executed the real conformance plus offline SQLite build-close-reopen-search test. Unsupported platforms are rejected before download.
 
 Machine-readable evidence: [`local-octen-production-readiness.json`](../evaluation/local-octen-production-readiness.json).

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "recordedAt": "2026-08-12T00:20:24.375Z",
+  "recordedAt": "2026-08-12T01:06:36.000Z",
   "artifact": {
     "profileId": "local-octen-embedding-0.6b-onnx-int8-v1",
     "release": "https://github.com/Whamp/pi-session-recall/releases/tag/model-octen-embedding-0.6b-onnx-int8-v1",
@@ -45,14 +45,33 @@
     "productionAuditVulnerabilities": 0,
     "onnxRuntimeTransitiveOverride": "adm-zip@0.6.0",
     "advisory": "GHSA-xcpc-8h2w-3j85",
-    "realModelPassedAfterOverride": true
+    "realModelPassedAfterOverride": true,
+    "socketObfuscatedCodeWarning": {
+      "package": "onnxruntime-web@1.27.0",
+      "disposition": "accepted official Microsoft generated/minified WASM distribution",
+      "socketChecksPassed": true
+    }
   },
   "platformCi": {
     "workflow": ".github/workflows/local-octen-platform-smoke.yml",
-    "linuxX64": "pending",
-    "macosArm64": "pending",
-    "macosX64": "pending"
+    "runUrl": "https://github.com/Whamp/pi-session-recall/actions/runs/31552401490",
+    "headSha": "eead5609b9c3f76bba9dfb001be98bb4ca934d80",
+    "linuxX64": {
+      "backend": "onnxruntime-web@1.27.0-wasm",
+      "status": "passed",
+      "jobUrl": "https://github.com/Whamp/pi-session-recall/actions/runs/31552401490/job/93977697017"
+    },
+    "macosArm64": {
+      "backend": "onnxruntime-node@1.27.0",
+      "status": "passed",
+      "jobUrl": "https://github.com/Whamp/pi-session-recall/actions/runs/31552401490/job/93977697024"
+    },
+    "macosX64": {
+      "backend": "onnxruntime-web@1.27.0-wasm",
+      "status": "passed",
+      "jobUrl": "https://github.com/Whamp/pi-session-recall/actions/runs/31552401490/job/93977696992"
+    }
   },
   "localEvidencePassed": true,
-  "releaseReady": false
+  "releaseReady": true
 }

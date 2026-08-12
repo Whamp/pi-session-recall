@@ -114,7 +114,7 @@ void test(
         embeddingProfile: RecallEmbeddingProfile.LOCAL_OCTEN,
         localModelRootDirectory: modelRootDirectory,
         localEmbeddingParallelism: 2,
-        localEmbeddingIntraOperationThreads: 1,
+        localEmbeddingIntraOperationThreads: 2,
       })}\n`,
       'utf8',
     );

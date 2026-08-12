@@ -4,7 +4,7 @@ Status: **local evidence passed; platform CI pending**
 
 ## Artifact
 
-The production profile uses the project-controlled [`model-octen-embedding-0.6b-onnx-int8-v1`](https://github.com/Whamp/pi-session-recall/releases/tag/model-octen-embedding-0.6b-onnx-int8-v1) release through pinned native `onnxruntime-node` 1.27.0 on Linux x64 and macOS arm64. macOS x64 uses pinned `onnxruntime-web` 1.27.0 WASM because stable ONNX Runtime Node packages omit its native binding. GitHub's reported byte sizes and SHA-256 digests match the implementation constants and downloaded files.
+The production profile uses the project-controlled [`model-octen-embedding-0.6b-onnx-int8-v1`](https://github.com/Whamp/pi-session-recall/releases/tag/model-octen-embedding-0.6b-onnx-int8-v1) release through pinned native `onnxruntime-node` 1.27.0 on macOS arm64. Linux x64 and macOS x64 use pinned `onnxruntime-web` 1.27.0 WASM because native Intel runners produced incompatible vectors and stable ONNX Runtime Node packages omit the current Darwin x64 binding. GitHub's reported byte sizes and SHA-256 digests match the implementation constants and downloaded files.
 
 ## Bounded prototype
 
@@ -35,7 +35,7 @@ All paths were under the dedicated scratch root or the test runner's temporary d
 
 ## macOS x64 fallback
 
-The portable WASM runtime loaded the same graph and 1.06 GB external weights in Node on the Linux prototype host. It loaded in 740 ms, answered one query in 372 ms, used about 2.50 GB RSS, and reached 0.98489 cosine against the upstream Safetensors reference. Production serializes WASM operations and records `onnxruntime-web@1.27.0-wasm` in the manifest so moving a database between native and WASM platforms requires a rebuild.
+The portable WASM runtime loaded the same graph and 1.06 GB external weights in Node on the Linux prototype host. It loaded in 740 ms, answered one query in 372 ms, used about 2.50 GB RSS, and reached 0.98489 cosine against the upstream Safetensors reference. Native Intel Linux and macOS runners instead produced the same incompatible 0.736891 query cosine. Production therefore serializes WASM operations on both x64 platforms and records `onnxruntime-web@1.27.0-wasm` in the manifest so moving a database between native and WASM platforms requires a rebuild.
 
 ## Dependency audit
 

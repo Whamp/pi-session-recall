@@ -12,9 +12,9 @@ import {
 } from './local-octen-embedding-provider.js';
 
 void test('local Octen runtime backend is deterministic for each supported platform', () => {
-  assert.equal(resolveLocalOctenRuntimeBackend('linux', 'x64'), LocalOctenRuntimeBackend.NATIVE);
+  assert.equal(resolveLocalOctenRuntimeBackend('linux', 'x64'), LocalOctenRuntimeBackend.WASM);
   assert.equal(resolveLocalOctenRuntimeBackend('darwin', 'arm64'), LocalOctenRuntimeBackend.NATIVE);
-  assert.equal(resolveLocalOctenRuntimeBackend('darwin', 'x64'), LocalOctenRuntimeBackend.NATIVE);
+  assert.equal(resolveLocalOctenRuntimeBackend('darwin', 'x64'), LocalOctenRuntimeBackend.WASM);
   assert.throws(
     () => resolveLocalOctenRuntimeBackend('win32', 'x64'),
     /unsupported on win32\/x64/u,

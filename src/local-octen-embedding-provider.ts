@@ -61,11 +61,14 @@ export function resolveLocalOctenRuntimeBackend(
   platform: NodeJS.Platform = process.platform,
   architecture: string = process.arch,
 ): LocalOctenRuntimeBackend {
+  if (platform === 'darwin' && architecture === 'arm64') {
+    return LocalOctenRuntimeBackend.NATIVE;
+  }
   if (
     (platform === 'linux' && architecture === 'x64') ||
-    (platform === 'darwin' && (architecture === 'arm64' || architecture === 'x64'))
+    (platform === 'darwin' && architecture === 'x64')
   ) {
-    return LocalOctenRuntimeBackend.NATIVE;
+    return LocalOctenRuntimeBackend.WASM;
   }
   throw new Error(
     `Local Octen embedding runtime is unsupported on ${platform}/${architecture}; configure the external Octen HTTP profile instead`,

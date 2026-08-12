@@ -44,7 +44,7 @@ export enum RecallEmbeddingProfile {
 
 /** Platform-selected ONNX execution backend bound into local vector compatibility. */
 export enum LocalOctenRuntimeBackend {
-  NATIVE = 'onnxruntime-node@1.23.2',
+  NATIVE = 'onnxruntime-node@1.27.0',
   WASM = 'onnxruntime-web@1.27.0-wasm',
 }
 

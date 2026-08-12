@@ -33,12 +33,13 @@
     "productionDatabaseMutated": false
   },
   "wasmFallbackPrototype": {
-    "reason": "Stable onnxruntime-node packages omit Darwin x64",
+    "reason": "Native Intel Linux and macOS runners produce incompatible vectors; stable onnxruntime-node also omits Darwin x64",
     "loadMilliseconds": 740.155795,
     "queryMilliseconds": 372.371054,
     "peakObservedRssBytes": 2497564672,
     "upstreamCosine": 0.9848904859933368,
-    "finalToken": 151643
+    "finalToken": 151643,
+    "nativeIntelQueryCosine": 0.7368910858535719
   },
   "security": {
     "productionAuditVulnerabilities": 0,

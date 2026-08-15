@@ -10,6 +10,8 @@ The recommended next implementation is an append-aware Physical session projecto
 
 This decision is compatible with ADR-0003, which explicitly leaves append-aware ingestion as a separate design problem, and ADR-0014, which requires every changed Physical session projection to become visible in one SQLite transaction.
 
+The follow-up [incremental indexing performance plan](incremental-indexing-performance-plan.md) deliberately starts smaller than the full architecture below. It first reuses tokenized projection inputs while retaining full graph validation and full transactional replacement, then adds a coarse graph checkpoint only if a new profile proves it necessary.
+
 ## Instrumentation
 
 `psr index` now emits one `physical-session-file-profiled` progress event after each successful Physical session replacement. The scheduled CLI writes the event to the journal with the exact file path, planned source-byte change, document counts, and these elapsed phases:

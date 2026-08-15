@@ -15,6 +15,7 @@ import {
   readSessionConversationImport,
   type ConversationTextTokenizer,
   type SessionConversationChunk,
+  type SessionConversationChunkOptions,
 } from './session-conversation-index.js';
 import { openSqliteRecallDatabase, type SqliteRecallDatabase } from './sqlite-recall-database.js';
 
@@ -308,55 +309,55 @@ async function indexChangedRecallSessionFile(
     }
   }
 
+  const importOptions: SessionConversationChunkOptions = {
+    tokenizer: options.tokenizer,
+    ...options.chunkPolicy,
+    resolveProjectIdentity: resolveSessionProjectIdentity,
+  };
+  if (previous) {
+    importOptions.reusableProjectionInputs = database.readConversationProjectionInputs(sessionPath);
+  }
+  if (measurePhaseElapsedMilliseconds) {
+    importOptions.monotonicNow = monotonicNow;
+    importOptions.onImportPhaseMeasured = (measurement) => {
+      switch (measurement.phase) {
+        case 'read-parse':
+          phaseElapsedMilliseconds.readParse += measurement.elapsedMilliseconds;
+          break;
+        case 'graph-validation':
+          phaseElapsedMilliseconds.graphValidation += measurement.elapsedMilliseconds;
+          break;
+        case 'document-construction-tokenization':
+          phaseElapsedMilliseconds.documentConstructionTokenization +=
+            measurement.elapsedMilliseconds;
+          break;
+      }
+    };
+    importOptions.onDocumentPhaseMeasured = (measurement) => {
+      switch (measurement.phase) {
+        case 'pending-atomic-summary-documents':
+          documentPhaseElapsedMilliseconds.pendingAtomicSummaryDocuments +=
+            measurement.elapsedMilliseconds;
+          break;
+        case 'turn-context-construction-budget-splitting':
+          documentPhaseElapsedMilliseconds.turnContextConstructionBudgetSplitting +=
+            measurement.elapsedMilliseconds;
+          break;
+        case 'conversation-chunk-tokenization':
+          documentPhaseElapsedMilliseconds.conversationChunkTokenization +=
+            measurement.elapsedMilliseconds;
+          break;
+        case 'metadata-invocation-project-attribution':
+          documentPhaseElapsedMilliseconds.metadataInvocationProjectAttribution +=
+            measurement.elapsedMilliseconds;
+          break;
+      }
+    };
+  }
+
   let imported: Awaited<ReturnType<typeof readSessionConversationImport>>;
   try {
-    imported = await readSessionConversationImport(sessionPath, {
-      tokenizer: options.tokenizer,
-      ...options.chunkPolicy,
-      resolveProjectIdentity: resolveSessionProjectIdentity,
-      ...(previous
-        ? { reusableProjectionInputs: database.readConversationProjectionInputs(sessionPath) }
-        : {}),
-      ...(measurePhaseElapsedMilliseconds
-        ? {
-            monotonicNow,
-            onImportPhaseMeasured(measurement) {
-              switch (measurement.phase) {
-                case 'read-parse':
-                  phaseElapsedMilliseconds.readParse += measurement.elapsedMilliseconds;
-                  break;
-                case 'graph-validation':
-                  phaseElapsedMilliseconds.graphValidation += measurement.elapsedMilliseconds;
-                  break;
-                case 'document-construction-tokenization':
-                  phaseElapsedMilliseconds.documentConstructionTokenization +=
-                    measurement.elapsedMilliseconds;
-                  break;
-              }
-            },
-            onDocumentPhaseMeasured(measurement) {
-              switch (measurement.phase) {
-                case 'pending-atomic-summary-documents':
-                  documentPhaseElapsedMilliseconds.pendingAtomicSummaryDocuments +=
-                    measurement.elapsedMilliseconds;
-                  break;
-                case 'turn-context-construction-budget-splitting':
-                  documentPhaseElapsedMilliseconds.turnContextConstructionBudgetSplitting +=
-                    measurement.elapsedMilliseconds;
-                  break;
-                case 'conversation-chunk-tokenization':
-                  documentPhaseElapsedMilliseconds.conversationChunkTokenization +=
-                    measurement.elapsedMilliseconds;
-                  break;
-                case 'metadata-invocation-project-attribution':
-                  documentPhaseElapsedMilliseconds.metadataInvocationProjectAttribution +=
-                    measurement.elapsedMilliseconds;
-                  break;
-              }
-            },
-          }
-        : {}),
-    });
+    imported = await readSessionConversationImport(sessionPath, importOptions);
   } catch (error) {
     summary.failedSessions.push({
       sessionPath,

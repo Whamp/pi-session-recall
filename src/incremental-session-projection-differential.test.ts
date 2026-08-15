@@ -37,16 +37,14 @@ function createDifferentialEmbedding(): number[] {
   return embedding;
 }
 
-function createDifferentialEmbeddingProvider(): RecallEmbeddingProvider {
-  return {
-    async embedQuery() {
-      return createDifferentialEmbedding();
-    },
-    async embedDocuments(documents) {
-      return documents.map(() => createDifferentialEmbedding());
-    },
-  };
-}
+const DIFFERENTIAL_EMBEDDING_PROVIDER: RecallEmbeddingProvider = {
+  embedQuery() {
+    return Promise.resolve(createDifferentialEmbedding());
+  },
+  embedDocuments(documents) {
+    return Promise.resolve(documents.map(() => createDifferentialEmbedding()));
+  },
+};
 
 function serializeSessionRecords(records: readonly Record<string, unknown>[]): string {
   return `${records.map((record) => JSON.stringify(record)).join('\n')}\n`;
@@ -297,7 +295,7 @@ void test('cached incremental projection equals full import across graph transit
       const options = {
         sessionsDirectory,
         databasePath,
-        embeddingProvider: createDifferentialEmbeddingProvider(),
+        embeddingProvider: DIFFERENTIAL_EMBEDDING_PROVIDER,
         tokenizer: DIFFERENTIAL_TOKENIZER,
         chunkPolicy: DIFFERENTIAL_CHUNK_POLICY,
         ignoredPhysicalSessionPaths: new Set<string>(),

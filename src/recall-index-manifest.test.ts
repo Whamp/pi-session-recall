@@ -44,7 +44,7 @@ void test('version 8 manifest binds Octen, chunking, and the static unified SQLi
   });
   assert.equal(manifest.tokenizer.model, 'Octen/Octen-Embedding-4B');
   assert.deepEqual(manifest.sqliteRecallDatabase, SQLITE_RECALL_DATABASE_MANIFEST_IDENTITY);
-  assert.equal(manifest.sqliteRecallDatabase.schemaVersion, 3);
+  assert.equal(manifest.sqliteRecallDatabase.schemaVersion, 4);
   assert.deepEqual(manifest.sqliteRecallDatabase.routing, {
     table: 'bucketed',
     bucketCount: 16,

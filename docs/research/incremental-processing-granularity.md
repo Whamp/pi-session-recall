@@ -29,7 +29,7 @@ The follow-up [incremental indexing performance plan](incremental-indexing-perfo
 
 The event names the size captured while planning the workset and the size stored by the prior index. A file can grow while indexing, so these values do not claim to describe every byte processed. A positive difference is reported as **additional source bytes at planning**, not appended bytes. Size and modification time alone cannot prove append-only history because Pi can migrate old files by rewriting them.
 
-The measurement mechanism performs two monotonic-clock reads around each phase or vector batch and emits one event outside the measured total. On this host, one million `performance.now()` calls took 44.1 ms at the median. About 400 clock reads therefore cost an estimated 0.018 ms. This is a mechanism estimate, not an end-to-end overhead benchmark; a future optimization PR should still compare profiling enabled and disabled on representative files.
+The measurement mechanism performs two monotonic-clock reads around each measured operation and emits one event outside the measured total. Detailed clocks are omitted when the indexer has no progress consumer. On this host, one million `performance.now()` calls took 44.1 ms at the median. The Phase 1 implementation also measured complete profiled and unprofiled representative tail runs; their medians differed by −0.10%, within timing noise and below the 1% overhead gate.
 
 ## Measured baseline
 
@@ -66,6 +66,24 @@ A later working-tree profile decomposed the dominant document phase on the same 
 | Subphase 2 |         133.0s |        0.011s (0.008%) |                           6.57s (4.94%) |    126.1s (94.81%) |                     0.307s (0.23%) |
 
 This confirms tokenization as the first implementation target. Turn-context construction is measurable but secondary. Pending document construction and metadata work do not justify separate storage or write-path optimization.
+
+### Phase 1 optimization result
+
+Schema 4 adds exact source SHA-256 state and a disposable token-geometry cache keyed by stable projection input and exact input checksum. The same work also replaced quadratic parent-cycle validation with a linear completed-path walk. The full importer, full strict graph validation, vector checksum reuse, and atomic `replacePhysicalSession` writer remain in place.
+
+A fresh disposable database indexed a valid 120,116,193-byte prefix, then an 18,819-byte tail from the representative session:
+
+| Sample                        |   Wall | Graph validation | Documents/tokenization | Chunk tokenization | Vector lookup | SQLite replacement |
+| ----------------------------- | -----: | ---------------: | ---------------------: | -----------------: | ------------: | -----------------: |
+| Initial prefix build          | 131.0s |           0.243s |                 127.3s |             120.3s |        0.007s |              3.00s |
+| 18.8 KB tail                  |  8.91s |           0.215s |                 0.359s |             0.014s |         2.26s |              3.75s |
+| Content-identical false dirty | 0.125s |                0 |                      0 |                  0 |             0 |                  0 |
+
+The tail embedded seven documents and reused 11,394 vectors. The false-dirty pass spent 81 ms hashing the complete 120 MB source and performed no parse, validation, tokenization, vector, embedding, or replacement work.
+
+Three alternating profiled and unprofiled reflink-reset tail updates measured 9.478s and 9.488s at the median respectively, or −0.10% observed overhead. This is timing noise but passes the less-than-1% gate. Thirty fresh-database small-file samples measured 12.34 ms at the median versus 12.52 ms at the fixed base revision, a −1.43% change that passes the no-more-than-10% regression gate.
+
+Both performance targets pass: the tail is below 18.7 seconds and false-dirty detection is below 2 seconds. Graph validation no longer prevents the target, so the conditional append checkpoint is not triggered. Adding one now would violate the plan's stop rule and add derived state without a measured need.
 
 ### What the baseline rejects
 

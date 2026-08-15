@@ -1,6 +1,7 @@
 import { stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
+import { readPhysicalSessionSourceIdentity } from './import-session-jsonl.js';
 import type { RecallChunkPolicy } from './recall-chunk-policy.js';
 import type {
   PhysicalSessionDocumentPhaseElapsedMilliseconds,
@@ -63,6 +64,7 @@ interface PlannedPhysicalSessionFile {
   size: number;
   mtimeMs: number;
   change: 'new' | 'changed';
+  requiresInvocationBackfill: boolean;
 }
 
 interface MaintenanceWorksetPlan {
@@ -170,6 +172,7 @@ async function prepareChangedRecallEmbeddingMap(
   summary: ConversationIndexSummary,
   phaseElapsedMilliseconds: PhysicalSessionIndexPhaseElapsedMilliseconds,
   monotonicNow: () => number,
+  measurePhaseElapsedMilliseconds: boolean,
   onBatchPrepared: () => void,
   signal?: AbortSignal,
 ): Promise<Map<string, readonly number[]>> {
@@ -177,7 +180,7 @@ async function prepareChangedRecallEmbeddingMap(
   for (let start = 0; start < chunks.length; start += 128) {
     throwIfIndexingAborted(signal);
     const batch = chunks.slice(start, start + 128);
-    const vectorLookupStartedAt = monotonicNow();
+    const vectorLookupStartedAt = measurePhaseElapsedMilliseconds ? monotonicNow() : 0;
     const ids = batch.map((chunk) => chunk.id);
     const currentDocuments = database.fetchDenseDocuments(ids);
     const currentVectors = database.fetchDenseVectors(ids);
@@ -204,18 +207,22 @@ async function prepareChangedRecallEmbeddingMap(
       summary.reusedVectors += 1;
       return false;
     });
-    phaseElapsedMilliseconds.vectorLookup += Math.max(0, monotonicNow() - vectorLookupStartedAt);
+    if (measurePhaseElapsedMilliseconds) {
+      phaseElapsedMilliseconds.vectorLookup += Math.max(0, monotonicNow() - vectorLookupStartedAt);
+    }
 
     let embeddings: readonly (readonly number[])[] = [];
     if (chunksNeedingEmbedding.length > 0) {
-      const embeddingStartedAt = monotonicNow();
+      const embeddingStartedAt = measurePhaseElapsedMilliseconds ? monotonicNow() : 0;
       try {
         embeddings = await embeddingProvider.embedDocuments(
           chunksNeedingEmbedding.map((chunk) => chunk.content),
           signal,
         );
       } finally {
-        phaseElapsedMilliseconds.embedding += Math.max(0, monotonicNow() - embeddingStartedAt);
+        if (measurePhaseElapsedMilliseconds) {
+          phaseElapsedMilliseconds.embedding += Math.max(0, monotonicNow() - embeddingStartedAt);
+        }
       }
       summary.embeddingRequestCount += 1;
       summary.newlyEmbeddedChunks += chunksNeedingEmbedding.length;
@@ -242,6 +249,7 @@ async function indexChangedRecallSessionFile(
 ): Promise<void> {
   const { sessionPath } = plannedFile;
   const monotonicNow = options.monotonicNow ?? (() => performance.now());
+  const measurePhaseElapsedMilliseconds = options.onProgress !== undefined;
   const totalStartedAt = monotonicNow();
   const previous = database.readPhysicalSessionState(sessionPath);
   const reusedVectorsBefore = summary.reusedVectors;
@@ -261,47 +269,93 @@ async function indexChangedRecallSessionFile(
     metadataInvocationProjectAttribution: 0,
   };
 
+  if (previous && !plannedFile.requiresInvocationBackfill && plannedFile.size === previous.size) {
+    const sourceHashStartedAt = measurePhaseElapsedMilliseconds ? monotonicNow() : 0;
+    const sourceIdentity = await readPhysicalSessionSourceIdentity(sessionPath);
+    if (measurePhaseElapsedMilliseconds) {
+      phaseElapsedMilliseconds.readParse += Math.max(0, monotonicNow() - sourceHashStartedAt);
+    }
+    if (
+      sourceIdentity.sourceByteLength === previous.size &&
+      sourceIdentity.sourceSha256 === previous.sourceSha256
+    ) {
+      if (
+        !database.refreshPhysicalSessionSource({
+          sessionPath,
+          size: sourceIdentity.sourceByteLength,
+          mtimeMs: plannedFile.mtimeMs,
+          sourceSha256: sourceIdentity.sourceSha256,
+        })
+      ) {
+        throw new Error(`Recall physical session source refresh missing for ${sessionPath}`);
+      }
+      summary.indexedSessions += 1;
+      options.onProgress?.({
+        kind: 'physical-session-file-profiled',
+        sessionPath,
+        change: plannedFile.change,
+        sourceBytesAtPlanning: plannedFile.size,
+        indexedSourceBytesBefore: previous.size,
+        denseDocuments: previous.denseDocumentIds.length,
+        invocations: previous.invocationCount,
+        newlyEmbeddedDocuments: 0,
+        reusedVectors: 0,
+        totalElapsedMilliseconds: Math.max(0, monotonicNow() - totalStartedAt),
+        phaseElapsedMilliseconds,
+        documentPhaseElapsedMilliseconds,
+      });
+      return;
+    }
+  }
+
   let imported: Awaited<ReturnType<typeof readSessionConversationImport>>;
   try {
     imported = await readSessionConversationImport(sessionPath, {
       tokenizer: options.tokenizer,
       ...options.chunkPolicy,
       resolveProjectIdentity: resolveSessionProjectIdentity,
-      monotonicNow,
-      onImportPhaseMeasured(measurement) {
-        switch (measurement.phase) {
-          case 'read-parse':
-            phaseElapsedMilliseconds.readParse += measurement.elapsedMilliseconds;
-            break;
-          case 'graph-validation':
-            phaseElapsedMilliseconds.graphValidation += measurement.elapsedMilliseconds;
-            break;
-          case 'document-construction-tokenization':
-            phaseElapsedMilliseconds.documentConstructionTokenization +=
-              measurement.elapsedMilliseconds;
-            break;
-        }
-      },
-      onDocumentPhaseMeasured(measurement) {
-        switch (measurement.phase) {
-          case 'pending-atomic-summary-documents':
-            documentPhaseElapsedMilliseconds.pendingAtomicSummaryDocuments +=
-              measurement.elapsedMilliseconds;
-            break;
-          case 'turn-context-construction-budget-splitting':
-            documentPhaseElapsedMilliseconds.turnContextConstructionBudgetSplitting +=
-              measurement.elapsedMilliseconds;
-            break;
-          case 'conversation-chunk-tokenization':
-            documentPhaseElapsedMilliseconds.conversationChunkTokenization +=
-              measurement.elapsedMilliseconds;
-            break;
-          case 'metadata-invocation-project-attribution':
-            documentPhaseElapsedMilliseconds.metadataInvocationProjectAttribution +=
-              measurement.elapsedMilliseconds;
-            break;
-        }
-      },
+      ...(previous
+        ? { reusableProjectionInputs: database.readConversationProjectionInputs(sessionPath) }
+        : {}),
+      ...(measurePhaseElapsedMilliseconds
+        ? {
+            monotonicNow,
+            onImportPhaseMeasured(measurement) {
+              switch (measurement.phase) {
+                case 'read-parse':
+                  phaseElapsedMilliseconds.readParse += measurement.elapsedMilliseconds;
+                  break;
+                case 'graph-validation':
+                  phaseElapsedMilliseconds.graphValidation += measurement.elapsedMilliseconds;
+                  break;
+                case 'document-construction-tokenization':
+                  phaseElapsedMilliseconds.documentConstructionTokenization +=
+                    measurement.elapsedMilliseconds;
+                  break;
+              }
+            },
+            onDocumentPhaseMeasured(measurement) {
+              switch (measurement.phase) {
+                case 'pending-atomic-summary-documents':
+                  documentPhaseElapsedMilliseconds.pendingAtomicSummaryDocuments +=
+                    measurement.elapsedMilliseconds;
+                  break;
+                case 'turn-context-construction-budget-splitting':
+                  documentPhaseElapsedMilliseconds.turnContextConstructionBudgetSplitting +=
+                    measurement.elapsedMilliseconds;
+                  break;
+                case 'conversation-chunk-tokenization':
+                  documentPhaseElapsedMilliseconds.conversationChunkTokenization +=
+                    measurement.elapsedMilliseconds;
+                  break;
+                case 'metadata-invocation-project-attribution':
+                  documentPhaseElapsedMilliseconds.metadataInvocationProjectAttribution +=
+                    measurement.elapsedMilliseconds;
+                  break;
+              }
+            },
+          }
+        : {}),
     });
   } catch (error) {
     summary.failedSessions.push({
@@ -315,15 +369,17 @@ async function indexChangedRecallSessionFile(
     return;
   }
 
-  const attributionStartedAt = monotonicNow();
+  const attributionStartedAt = measurePhaseElapsedMilliseconds ? monotonicNow() : 0;
   const attributedChunks = await attributeRecallChunksToProjects(
     imported.chunks,
     resolveSessionProjectIdentity,
   );
-  const attributionElapsedMilliseconds = Math.max(0, monotonicNow() - attributionStartedAt);
-  phaseElapsedMilliseconds.documentConstructionTokenization += attributionElapsedMilliseconds;
-  documentPhaseElapsedMilliseconds.metadataInvocationProjectAttribution +=
-    attributionElapsedMilliseconds;
+  if (measurePhaseElapsedMilliseconds) {
+    const attributionElapsedMilliseconds = Math.max(0, monotonicNow() - attributionStartedAt);
+    phaseElapsedMilliseconds.documentConstructionTokenization += attributionElapsedMilliseconds;
+    documentPhaseElapsedMilliseconds.metadataInvocationProjectAttribution +=
+      attributionElapsedMilliseconds;
+  }
   const denseChunks = attributedChunks.filter(
     (chunk): chunk is SessionConversationChunk & { isDenseSearchable: true } =>
       chunk.isDenseSearchable,
@@ -339,27 +395,32 @@ async function indexChangedRecallSessionFile(
     summary,
     phaseElapsedMilliseconds,
     monotonicNow,
+    measurePhaseElapsedMilliseconds,
     onBatchPrepared,
     options.signal,
   );
 
   throwIfIndexingAborted(options.signal);
-  const sqliteReplacementStartedAt = monotonicNow();
+  const sqliteReplacementStartedAt = measurePhaseElapsedMilliseconds ? monotonicNow() : 0;
   try {
     database.replacePhysicalSession({
       sessionPath,
-      size: plannedFile.size,
+      size: imported.sourceByteLength,
       mtimeMs: plannedFile.mtimeMs,
+      sourceSha256: imported.sourceSha256,
       documentIds: denseChunks.map((chunk) => chunk.id),
       denseDocuments: denseChunks,
       denseEmbeddings,
       invocations: imported.invocations,
+      conversationProjectionInputs: imported.projectionInputs,
     });
   } finally {
-    phaseElapsedMilliseconds.sqliteReplacement += Math.max(
-      0,
-      monotonicNow() - sqliteReplacementStartedAt,
-    );
+    if (measurePhaseElapsedMilliseconds) {
+      phaseElapsedMilliseconds.sqliteReplacement += Math.max(
+        0,
+        monotonicNow() - sqliteReplacementStartedAt,
+      );
+    }
   }
   summary.deletedChunks += removedIds.length;
   summary.indexedSessions += 1;
@@ -398,17 +459,23 @@ async function planMaintenanceWorkset(
         size: fileStats.size,
         mtimeMs: fileStats.mtimeMs,
         change: 'new',
+        requiresInvocationBackfill: false,
       });
-    } else if (
-      previous.size !== fileStats.size ||
-      previous.mtimeMs !== fileStats.mtimeMs ||
-      database.requiresInvocationBackfill(sessionPath)
-    ) {
+    } else {
+      const requiresInvocationBackfill = database.requiresInvocationBackfill(sessionPath);
+      if (
+        previous.size === fileStats.size &&
+        previous.mtimeMs === fileStats.mtimeMs &&
+        !requiresInvocationBackfill
+      ) {
+        continue;
+      }
       filesToIndex.push({
         sessionPath,
         size: fileStats.size,
         mtimeMs: fileStats.mtimeMs,
         change: 'changed',
+        requiresInvocationBackfill,
       });
     }
   }

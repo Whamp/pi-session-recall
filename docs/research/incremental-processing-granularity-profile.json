@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "measuredAt": "2026-08-15T09:01:07-07:00",
   "baseRevision": "13f7f39d846c291ff63eaed19cc7ebb83e944880",
   "environment": {
@@ -181,6 +181,98 @@
       "foreignKeyViolations": 0,
       "invocationsMissingFts": 0,
       "ftsDocumentsMissingInvocation": 0,
+      "denseDocumentsMissingVector": 0,
+      "vectorsMissingDenseDocument": 0,
+      "projectMetadataMismatches": 0,
+      "healthy": true
+    }
+  },
+  "phase1OptimizationProfile": {
+    "measuredAt": "2026-08-15T10:10:58-07:00",
+    "implementationBaseRevision": "82628218258c7bf2c065115a7ed215e4b322045f",
+    "workload": {
+      "sourceLabel": "representative-large-active-session-disposable-prefix-tail",
+      "sourceBytes": 120135012,
+      "prefixBytes": 120116193,
+      "tailBytes": 18819,
+      "denseDocumentsAfterTail": 11401,
+      "invocationsAfterTail": 6800
+    },
+    "method": {
+      "database": "fresh disposable schema-v4 SQLite database for one representative Physical session",
+      "source": "copy-on-write source copy split at the nearest complete JSONL record before the target tail size",
+      "tokenizer": "production Octen tokenizer",
+      "embedding": "deterministic local 1024-dimension unit vectors to isolate indexing work",
+      "comparison": "full prefix build, tail update, then same-content modification-time change",
+      "integrityCheck": "SQLite quick check, foreign keys, projection-input cache parity, Invocation FTS parity, Dense vector parity, and Project metadata parity"
+    },
+    "samples": {
+      "initialPrefixBuild": {
+        "wallElapsedMilliseconds": 131002.625264,
+        "totalElapsedMilliseconds": 130969.927211,
+        "graphValidationMilliseconds": 242.907383,
+        "documentConstructionTokenizationMilliseconds": 127286.397001,
+        "conversationChunkTokenizationMilliseconds": 120319.284366,
+        "sqliteReplacementMilliseconds": 3001.339018,
+        "newlyEmbeddedDocuments": 11397
+      },
+      "tailUpdate": {
+        "wallElapsedMilliseconds": 8913.090012,
+        "totalElapsedMilliseconds": 8888.931598,
+        "readParseMilliseconds": 402.773298,
+        "graphValidationMilliseconds": 214.52307,
+        "documentConstructionTokenizationMilliseconds": 359.203588,
+        "conversationChunkTokenizationMilliseconds": 13.847469,
+        "vectorLookupMilliseconds": 2264.306115,
+        "embeddingMilliseconds": 0.021961,
+        "sqliteReplacementMilliseconds": 3753.689616,
+        "newlyEmbeddedDocuments": 7,
+        "reusedVectors": 11394
+      },
+      "contentIdenticalFalseDirty": {
+        "wallElapsedMilliseconds": 124.575343,
+        "totalElapsedMilliseconds": 109.638521,
+        "completeSourceHashMilliseconds": 81.336207,
+        "graphValidationMilliseconds": 0,
+        "documentConstructionTokenizationMilliseconds": 0,
+        "vectorLookupMilliseconds": 0,
+        "embeddingMilliseconds": 0,
+        "sqliteReplacementMilliseconds": 0
+      }
+    },
+    "smallChangedFileRegression": {
+      "method": "thirty fresh-database indexing samples after five warmups using the same small canonical fixture and deterministic 1024-dimension embeddings",
+      "baseRevision": "4508266295b9de5b2274d6ddd4ef742e9c1ed9dc",
+      "baseMedianMilliseconds": 12.517735,
+      "optimizedMedianMilliseconds": 12.338462,
+      "regressionPercent": -1.432152,
+      "targetMaximumRegressionPercent": 10,
+      "targetPassed": true
+    },
+    "profilingOverhead": {
+      "method": "three alternating profiled and unprofiled tail updates from the same reflink-reset prefix database",
+      "unprofiledWallMilliseconds": [9488.043082, 9390.828948, 9559.912114],
+      "profiledWallMilliseconds": [9439.406742, 9661.318172, 9478.433759],
+      "unprofiledMedianMilliseconds": 9488.043082,
+      "profiledMedianMilliseconds": 9478.433759,
+      "measuredOverheadPercent": -0.101278
+    },
+    "decision": {
+      "tailTargetMilliseconds": 18700,
+      "tailTargetPassed": true,
+      "falseDirtyTargetMilliseconds": 2000,
+      "falseDirtyTargetPassed": true,
+      "profilingOverheadTargetPercent": 1,
+      "profilingOverheadTargetPassed": true,
+      "appendCheckpointTriggered": false,
+      "reason": "After replacing quadratic parent-cycle validation with a linear completed-path walk, graph validation took 215 ms and the complete tail update took 8.9 seconds. A persisted append checkpoint would add complexity without addressing a remaining target failure."
+    },
+    "postProfileIntegrity": {
+      "sqliteQuickCheck": "ok",
+      "foreignKeyViolations": 0,
+      "invocationsMissingFts": 0,
+      "ftsDocumentsMissingInvocation": 0,
+      "projectionInputsMissingDenseDocument": 0,
       "denseDocumentsMissingVector": 0,
       "vectorsMissingDenseDocument": 0,
       "projectMetadataMismatches": 0,

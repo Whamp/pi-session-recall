@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -34,6 +35,11 @@ void test('session JSONL importer preserves Unicode separators through the publi
   );
 
   assert.equal(imported.format, SessionImportFormat.CANONICAL_JSONL);
+  const sourceBytes = await readFile(
+    join(import.meta.dirname, 'fixtures/session-import/canonical-unicode-separators.jsonl'),
+  );
+  assert.equal(imported.sourceByteLength, sourceBytes.length);
+  assert.equal(imported.sourceSha256, createHash('sha256').update(sourceBytes).digest('hex'));
   assert.equal(imported.logicalSessions.length, 1);
   assert.deepEqual(
     imported.chunks.map((chunk) => chunk.content),

@@ -15,9 +15,12 @@ import {
   type ProjectIdentity,
   type ResolvedProjectIdentity,
 } from './resolve-project-identity.js';
-import type { SessionConversationChunk } from './session-conversation-index.js';
+import type {
+  SessionConversationChunk,
+  SessionConversationProjectionInput,
+} from './session-conversation-index.js';
 
-const SQLITE_RECALL_SCHEMA_VERSION = 3;
+const SQLITE_RECALL_SCHEMA_VERSION = 4;
 const SQLITE_RECALL_STORAGE_LAYOUT = 'unified-sqlite-vec';
 /** Production width of every FP32 vector stored in the SQLite Recall database. */
 export const SQLITE_RECALL_EMBEDDING_DIMENSIONS = 1_024;
@@ -178,6 +181,8 @@ export interface SqliteRecallDatabaseIdentity {
 export interface SqliteRecallPhysicalSessionState {
   size: number;
   mtimeMs: number;
+  sourceSha256: string;
+  invocationCount: number;
   documentIds: string[];
   denseDocumentIds: string[];
 }
@@ -241,6 +246,7 @@ export interface SqliteRecallIntegrityDiagnostics {
   invocationFtsDocuments: number;
   invocationsMissingFts: number;
   ftsDocumentsMissingInvocation: number;
+  projectionInputsMissingDenseDocument: number;
   vectorParity: SqliteRecallVectorParityDiagnostics;
   healthy: boolean;
 }
@@ -250,10 +256,20 @@ export interface SqliteRecallPhysicalSessionReplacement {
   sessionPath: string;
   size: number;
   mtimeMs: number;
+  sourceSha256: string;
   documentIds: readonly string[];
   denseDocuments: readonly SessionConversationChunk[];
   denseEmbeddings: ReadonlyMap<string, readonly number[]>;
   invocations: readonly InvocationRecord[];
+  conversationProjectionInputs: readonly SessionConversationProjectionInput[];
+}
+
+/** Source metadata refreshed after a content-identical Physical session hash. */
+export interface SqliteRecallPhysicalSessionSourceRefresh {
+  sessionPath: string;
+  size: number;
+  mtimeMs: number;
+  sourceSha256: string;
 }
 
 /** Clone-certification coordination at the transaction boundary; never use against active storage. */
@@ -265,6 +281,10 @@ export interface SqliteRecallReplacementProbe {
 export interface SqliteRecallDatabase {
   readonly identity: Readonly<SqliteRecallDatabaseIdentity>;
   readPhysicalSessionState(sessionPath: string): SqliteRecallPhysicalSessionState | null;
+  readConversationProjectionInputs(
+    sessionPath: string,
+  ): Map<string, SessionConversationProjectionInput>;
+  refreshPhysicalSessionSource(refresh: SqliteRecallPhysicalSessionSourceRefresh): boolean;
   listPhysicalSessionPaths(): string[];
   requiresInvocationBackfill(sessionPath: string): boolean;
   fetchDenseDocuments(ids: readonly string[]): Map<string, SessionConversationChunk>;
@@ -336,11 +356,15 @@ function convertSqliteInteger(value: number | bigint, subject: string): number {
   return converted;
 }
 
-function runSqliteRecallTransaction(database: DatabaseSync, operation: () => void): void {
+function runSqliteRecallTransaction<Result>(
+  database: DatabaseSync,
+  operation: () => Result,
+): Result {
   database.exec('BEGIN IMMEDIATE');
   try {
-    operation();
+    const result = operation();
     database.exec('COMMIT');
+    return result;
   } catch (error) {
     database.exec('ROLLBACK');
     throw error;
@@ -428,6 +452,7 @@ function createSqliteRecallSchema(database: DatabaseSync): void {
       session_path TEXT PRIMARY KEY,
       size INTEGER NOT NULL CHECK (size >= 0),
       mtime_ms REAL NOT NULL CHECK (mtime_ms >= 0),
+      source_sha256 TEXT NOT NULL CHECK (length(source_sha256) = 64 AND source_sha256 NOT GLOB '*[^a-f0-9]*'),
       invocations_indexed INTEGER NOT NULL CHECK (invocations_indexed IN (0, 1))
     ) STRICT;
 
@@ -436,6 +461,18 @@ function createSqliteRecallSchema(database: DatabaseSync): void {
       document_id TEXT NOT NULL,
       is_dense INTEGER NOT NULL CHECK (is_dense IN (0, 1)),
       PRIMARY KEY (session_path, document_id)
+    ) STRICT, WITHOUT ROWID;
+
+    CREATE TABLE conversation_projection_input_documents (
+      session_path TEXT NOT NULL,
+      projection_input_id TEXT NOT NULL CHECK (length(projection_input_id) = 40),
+      input_checksum TEXT NOT NULL CHECK (length(input_checksum) = 64 AND input_checksum NOT GLOB '*[^a-f0-9]*'),
+      document_id TEXT NOT NULL,
+      document_index INTEGER NOT NULL CHECK (document_index >= 0),
+      PRIMARY KEY (session_path, projection_input_id, document_index),
+      UNIQUE (session_path, projection_input_id, document_id),
+      FOREIGN KEY (session_path, document_id)
+        REFERENCES session_documents(session_path, document_id) ON DELETE CASCADE
     ) STRICT, WITHOUT ROWID;
 
     CREATE TABLE invocations (
@@ -511,7 +548,7 @@ function createSqliteRecallSchema(database: DatabaseSync): void {
       project_key INTEGER
     );
 
-    PRAGMA user_version = 3;
+    PRAGMA user_version = 4;
   `);
 }
 
@@ -881,7 +918,7 @@ function prepareDenseDocuments(
   return prepared;
 }
 
-/** Opens or creates the schema-v3 WAL database, loading only pinned sqlite-vec before disabling extensions. */
+/** Opens or creates the schema-v4 WAL database, loading only pinned sqlite-vec before disabling extensions. */
 export function openSqliteRecallDatabase(
   databasePath: string,
   options: OpenSqliteRecallDatabaseOptions = {},
@@ -915,9 +952,12 @@ export function openSqliteRecallDatabase(
     }
     const identity = readSqliteRecallIdentity(database, databasePath, readOnly);
 
-    const readSession = database.prepare(
-      'SELECT size, mtime_ms FROM physical_sessions WHERE session_path = ?',
-    );
+    const readSession = database.prepare(`
+      SELECT size, mtime_ms, source_sha256,
+        (SELECT count(*) FROM invocations WHERE session_path = ?) AS invocation_count
+      FROM physical_sessions
+      WHERE session_path = ?
+    `);
     const listSessionDocuments = database.prepare(
       'SELECT document_id, is_dense FROM session_documents WHERE session_path = ? ORDER BY document_id',
     );
@@ -958,6 +998,14 @@ export function openSqliteRecallDatabase(
       FROM nearest
       JOIN dense_documents AS document ON document.rowid = nearest.rowid
       ORDER BY nearest.distance, document.document_id
+    `);
+    const readConversationProjectionInputDocuments = database.prepare(`
+      SELECT projection.projection_input_id, projection.input_checksum,
+             projection.document_index, projection.document_id, document.metadata_json
+      FROM conversation_projection_input_documents AS projection
+      JOIN dense_documents AS document ON document.document_id = projection.document_id
+      WHERE projection.session_path = ?
+      ORDER BY projection.projection_input_id, projection.document_index
     `);
     const readSessionInvocations = database.prepare(`
       SELECT kind, tool_name, tool_call_id, session_path, session_id, entry_id,
@@ -1001,6 +1049,17 @@ export function openSqliteRecallDatabase(
           LEFT JOIN invocations AS invocation ON invocation.invocation_id = fts_document.id
           WHERE invocation.invocation_id IS NULL) AS fts_documents_missing_invocation
     `);
+    const readProjectionInputParity = database.prepare(`
+      SELECT count(*) AS projection_inputs_missing_dense_document
+      FROM conversation_projection_input_documents AS projection
+      LEFT JOIN session_documents AS membership
+        ON membership.session_path = projection.session_path
+        AND membership.document_id = projection.document_id
+      LEFT JOIN dense_documents AS document
+        ON document.session_path = projection.session_path
+        AND document.document_id = projection.document_id
+      WHERE membership.is_dense IS NOT 1 OR document.document_id IS NULL
+    `);
     const readVectorParity = database.prepare(`
       SELECT
         (SELECT count(*) FROM dense_documents) AS dense_documents,
@@ -1026,12 +1085,18 @@ export function openSqliteRecallDatabase(
       INSERT INTO invocations_fts(invocations_fts, rank) VALUES ('integrity-check', 1)
     `);
     const upsertSession = database.prepare(`
-      INSERT INTO physical_sessions(session_path, size, mtime_ms, invocations_indexed)
-      VALUES (?, ?, ?, 1)
+      INSERT INTO physical_sessions(session_path, size, mtime_ms, source_sha256, invocations_indexed)
+      VALUES (?, ?, ?, ?, 1)
       ON CONFLICT(session_path) DO UPDATE SET
         size = excluded.size,
         mtime_ms = excluded.mtime_ms,
+        source_sha256 = excluded.source_sha256,
         invocations_indexed = 1
+    `);
+    const refreshSessionSource = database.prepare(`
+      UPDATE physical_sessions
+      SET size = ?, mtime_ms = ?, source_sha256 = ?
+      WHERE session_path = ?
     `);
     const readSessionDenseRows = database.prepare(
       'SELECT rowid, document_id FROM dense_documents WHERE session_path = ?',
@@ -1066,6 +1131,14 @@ export function openSqliteRecallDatabase(
     const insertSessionDocument = database.prepare(
       'INSERT INTO session_documents(session_path, document_id, is_dense) VALUES (?, ?, ?)',
     );
+    const deleteConversationProjectionInputs = database.prepare(
+      'DELETE FROM conversation_projection_input_documents WHERE session_path = ?',
+    );
+    const insertConversationProjectionInputDocument = database.prepare(`
+      INSERT INTO conversation_projection_input_documents(
+        session_path, projection_input_id, input_checksum, document_id, document_index
+      ) VALUES (?, ?, ?, ?, ?)
+    `);
     const deleteInvocations = database.prepare('DELETE FROM invocations WHERE session_path = ?');
     const insertInvocation = database.prepare(`
       INSERT INTO invocations(
@@ -1087,7 +1160,7 @@ export function openSqliteRecallDatabase(
       sessionPath: string,
     ): SqliteRecallPhysicalSessionState | null =>
       runSqliteRecallRead(database, () => {
-        const row = readSession.get(sessionPath);
+        const row = readSession.get(sessionPath, sessionPath);
         if (!row) {
           return null;
         }
@@ -1109,10 +1182,51 @@ export function openSqliteRecallDatabase(
         return {
           size: readRequiredInteger(row, 'size'),
           mtimeMs: readRequiredNumber(row, 'mtime_ms'),
+          sourceSha256: readRequiredString(row, 'source_sha256'),
+          invocationCount: readRequiredInteger(row, 'invocation_count'),
           documentIds,
           denseDocumentIds,
         };
       });
+
+    const readConversationProjectionInputs = (
+      sessionPath: string,
+    ): Map<string, SessionConversationProjectionInput> => {
+      const projectionInputs = new Map<string, SessionConversationProjectionInput>();
+      for (const row of readConversationProjectionInputDocuments.all(sessionPath)) {
+        const projectionInputId = readRequiredString(row, 'projection_input_id');
+        const inputChecksum = readRequiredString(row, 'input_checksum');
+        const documentIndex = readRequiredInteger(row, 'document_index');
+        const document = parseDenseDocumentMetadata(
+          readRequiredString(row, 'metadata_json'),
+          readRequiredString(row, 'document_id'),
+        );
+        const existing = projectionInputs.get(projectionInputId);
+        if (!existing) {
+          if (documentIndex !== 0) {
+            throw new Error(
+              `SQLite Recall conversation projection input order invalid for ${projectionInputId}`,
+            );
+          }
+          projectionInputs.set(projectionInputId, {
+            projectionInputId,
+            inputChecksum,
+            documents: [document],
+          });
+          continue;
+        }
+        if (
+          existing.inputChecksum !== inputChecksum ||
+          documentIndex !== existing.documents.length
+        ) {
+          throw new Error(
+            `SQLite Recall conversation projection input state invalid for ${projectionInputId}`,
+          );
+        }
+        existing.documents.push(document);
+      }
+      return projectionInputs;
+    };
 
     const resolveProjectKey = (projectIdentity: string | null): number => {
       const identityKey = projectIdentity ?? '';
@@ -1133,6 +1247,21 @@ export function openSqliteRecallDatabase(
     return {
       identity,
       readPhysicalSessionState,
+      readConversationProjectionInputs(sessionPath) {
+        return runSqliteRecallRead(database, () => readConversationProjectionInputs(sessionPath));
+      },
+      refreshPhysicalSessionSource(refresh) {
+        assertWritable('refreshPhysicalSessionSource');
+        return runSqliteRecallTransaction(database, () => {
+          const result = refreshSessionSource.run(
+            refresh.size,
+            refresh.mtimeMs,
+            refresh.sourceSha256,
+            refresh.sessionPath,
+          );
+          return result.changes === 1;
+        });
+      },
       listPhysicalSessionPaths() {
         return listSessions.all().map((row) => readRequiredString(row, 'session_path'));
       },
@@ -1328,6 +1457,11 @@ export function openSqliteRecallDatabase(
             .map((row) => readRequiredString(row, 'quick_check'));
           const foreignKeyViolations = readForeignKeyViolations.all().length;
           const ftsParity = readInvocationFtsParity.get();
+          const projectionInputParity = readProjectionInputParity.get();
+          const projectionInputsMissingDenseDocument = readRequiredInteger(
+            projectionInputParity,
+            'projection_inputs_missing_dense_document',
+          );
           const vectorRow = readVectorParity.get();
           const vectorParity: SqliteRecallVectorParityDiagnostics = {
             denseDocuments: readRequiredInteger(vectorRow, 'dense_documents'),
@@ -1366,6 +1500,7 @@ export function openSqliteRecallDatabase(
             invocationFtsDocuments,
             invocationsMissingFts,
             ftsDocumentsMissingInvocation,
+            projectionInputsMissingDenseDocument,
             vectorParity,
             healthy:
               sqliteIntegrity.length === 1 &&
@@ -1373,6 +1508,7 @@ export function openSqliteRecallDatabase(
               foreignKeyViolations === 0 &&
               invocationsMissingFts === 0 &&
               ftsDocumentsMissingInvocation === 0 &&
+              projectionInputsMissingDenseDocument === 0 &&
               vectorParity.healthy,
           };
         });
@@ -1386,6 +1522,7 @@ export function openSqliteRecallDatabase(
           sessionPath,
           size: state.size,
           mtimeMs: state.mtimeMs,
+          sourceSha256: state.sourceSha256,
           documentIds: state.documentIds,
           denseDocuments: state.denseDocumentIds.map((documentId) => {
             const row = readDenseDocument.get(documentId);
@@ -1401,14 +1538,43 @@ export function openSqliteRecallDatabase(
             }),
           ),
           invocations: readSessionInvocations.all(sessionPath).map(decodeInvocationSearchResult),
+          conversationProjectionInputs: Array.from(
+            readConversationProjectionInputs(sessionPath).values(),
+          ),
         };
       },
       replacePhysicalSession(replacement, probe = {}) {
         assertWritable('replacePhysicalSession');
         const denseDocuments = prepareDenseDocuments(replacement);
         const currentDenseIds = new Set(denseDocuments.map(({ document }) => document.id));
+        const projectionInputIds = new Set<string>();
+        const cachedDocumentIds = new Set<string>();
+        for (const projectionInput of replacement.conversationProjectionInputs) {
+          if (
+            projectionInputIds.has(projectionInput.projectionInputId) ||
+            projectionInput.documents.length === 0
+          ) {
+            throw new Error(
+              `SQLite Recall conversation projection input invalid for ${projectionInput.projectionInputId}`,
+            );
+          }
+          projectionInputIds.add(projectionInput.projectionInputId);
+          for (const document of projectionInput.documents) {
+            if (!currentDenseIds.has(document.id) || cachedDocumentIds.has(document.id)) {
+              throw new Error(
+                `SQLite Recall conversation projection document invalid for ${document.id}`,
+              );
+            }
+            cachedDocumentIds.add(document.id);
+          }
+        }
         runSqliteRecallTransaction(database, () => {
-          upsertSession.run(replacement.sessionPath, replacement.size, replacement.mtimeMs);
+          upsertSession.run(
+            replacement.sessionPath,
+            replacement.size,
+            replacement.mtimeMs,
+            replacement.sourceSha256,
+          );
           const previousRowids = new Map<string, number>();
           for (const row of readSessionDenseRows.all(replacement.sessionPath)) {
             const rowid = readRequiredInteger(row, 'rowid');
@@ -1455,6 +1621,7 @@ export function openSqliteRecallDatabase(
             );
           }
 
+          deleteConversationProjectionInputs.run(replacement.sessionPath);
           deleteSessionDocuments.run(replacement.sessionPath);
           for (const documentId of replacement.documentIds) {
             insertSessionDocument.run(
@@ -1462,6 +1629,18 @@ export function openSqliteRecallDatabase(
               documentId,
               currentDenseIds.has(documentId) ? 1 : 0,
             );
+          }
+
+          for (const projectionInput of replacement.conversationProjectionInputs) {
+            projectionInput.documents.forEach((document, documentIndex) => {
+              insertConversationProjectionInputDocument.run(
+                replacement.sessionPath,
+                projectionInput.projectionInputId,
+                projectionInput.inputChecksum,
+                document.id,
+                documentIndex,
+              );
+            });
           }
 
           deleteInvocations.run(replacement.sessionPath);

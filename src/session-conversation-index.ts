@@ -61,6 +61,8 @@ export interface SessionConversationChunkOptions {
   onImportPhaseMeasured?: (measurement: SessionConversationImportPhaseMeasurement) => void;
   /** Receives content-free detail within each logical session's document phase. */
   onDocumentPhaseMeasured?: (measurement: SessionConversationDocumentPhaseMeasurement) => void;
+  /** Prior exact token geometry keyed by stable projection input ID. */
+  reusableProjectionInputs?: ReadonlyMap<string, SessionConversationProjectionInput>;
 }
 
 /** Stable graph identities and physical boundaries for one validated logical session. */
@@ -72,12 +74,22 @@ export interface SessionConversationLogicalSession {
   parentEntryIds: Array<string | null>;
 }
 
+/** Cached Dense documents produced by one exact pre-tokenization projection input. */
+export interface SessionConversationProjectionInput {
+  projectionInputId: string;
+  inputChecksum: string;
+  documents: SessionConversationChunk[];
+}
+
 /** Searchable documents plus the exact physical import classification that produced them. */
 export interface SessionConversationImport {
+  sourceByteLength: number;
+  sourceSha256: string;
   format: SessionImportFormat;
   logicalSessions: SessionConversationLogicalSession[];
   chunks: SessionConversationChunk[];
   invocations: InvocationRecord[];
+  projectionInputs: SessionConversationProjectionInput[];
 }
 
 /** A token-bounded recall evidence document with complete source and session-graph provenance. */
@@ -528,17 +540,26 @@ function assertSessionParentPathsAcyclic(
   entriesById: Map<string, ParsedSessionEntry>,
   sessionPath: string,
 ): void {
+  const completedEntryIds = new Set<string>();
   for (const entry of entries) {
-    const visited = new Set<string>();
+    if (completedEntryIds.has(entry.id)) {
+      continue;
+    }
+    const pathEntryIds: string[] = [];
+    const pathEntryIdSet = new Set<string>();
     let current: ParsedSessionEntry | undefined = entry;
-    while (current) {
-      if (visited.has(current.id)) {
+    while (current && !completedEntryIds.has(current.id)) {
+      if (pathEntryIdSet.has(current.id)) {
         throw new Error(
           `Recall session graph invalid at ${sessionPath}:${entry.lineIndex}: parent cycle includes ${current.id}`,
         );
       }
-      visited.add(current.id);
+      pathEntryIds.push(current.id);
+      pathEntryIdSet.add(current.id);
       current = current.parentId ? entriesById.get(current.parentId) : undefined;
+    }
+    for (const pathEntryId of pathEntryIds) {
+      completedEntryIds.add(pathEntryId);
     }
   }
 }
@@ -1456,20 +1477,12 @@ function findContributingCompactionEntryIds(
 
 type MeasureSessionConversationOperation = <Result>(operation: () => Result) => Result;
 
-function createSessionConversationChunks(
+function createSessionConversationChunksFromSpans(
   context: SessionConversationChunkContext,
   pending: PendingConversationDocument,
-  measureTokenization: MeasureSessionConversationOperation,
+  chunkSpans: readonly ConversationChunkSpan[],
   measureMetadata: MeasureSessionConversationOperation,
 ): SessionConversationChunk[] {
-  const chunkSpans = measureTokenization(() =>
-    splitConversationTextByTokens(
-      pending.textRun.text,
-      context.tokenizer,
-      context.maxTokens,
-      context.overlapTokens,
-    ),
-  );
   return measureMetadata(() => {
     const { graph } = context;
     const entryId = createPiSessionEntryId(pending.entry.id);
@@ -1579,6 +1592,151 @@ function createSessionConversationChunks(
   });
 }
 
+function createSessionConversationProjectionInputIdentity(
+  context: SessionConversationChunkContext,
+  pending: PendingConversationDocument,
+): { projectionInputId: string; inputChecksum: string } {
+  const contributingEntryIdentity = createContributingEntryIdentity(pending.contributingEntries);
+  const projectionInputId = hashConversationValue(
+    `conversation-projection-input-v1\0${SESSION_CONVERSATION_SCHEMA_VERSION}\0${context.logicalSessionIdentity}\0${pending.entry.id}\0${contributingEntryIdentity}\0${pending.documentKind}\0${pending.evidenceKind}\0${pending.evidencePart}\0${pending.textRun.textRunIndex}`,
+  ).slice(0, 40);
+  const inputChecksum = hashConversationValue(
+    `conversation-projection-input-content-v1\0${context.maxTokens}\0${context.overlapTokens}\0${pending.textRun.text}`,
+  );
+  return { projectionInputId, inputChecksum };
+}
+
+function hasMatchingConversationChunkGeometry(
+  current: SessionConversationChunk,
+  cached: SessionConversationChunk,
+): boolean {
+  return (
+    current.id === cached.id &&
+    current.checksum === cached.checksum &&
+    current.content === cached.content &&
+    current.characterStart === cached.characterStart &&
+    current.characterEnd === cached.characterEnd &&
+    current.tokenStart === cached.tokenStart &&
+    current.tokenEnd === cached.tokenEnd &&
+    current.tokenCount === cached.tokenCount &&
+    current.overlapTokenCount === cached.overlapTokenCount &&
+    current.textRunId === cached.textRunId &&
+    current.textRunIndex === cached.textRunIndex &&
+    current.chunkIndex === cached.chunkIndex &&
+    current.chunkCount === cached.chunkCount &&
+    current.previousSiblingId === cached.previousSiblingId &&
+    current.nextSiblingId === cached.nextSiblingId &&
+    current.siblingIds.length === cached.siblingIds.length &&
+    current.siblingIds.every((siblingId, index) => siblingId === cached.siblingIds[index])
+  );
+}
+
+function rebuildCachedSessionConversationProjection(
+  context: SessionConversationChunkContext,
+  pending: PendingConversationDocument,
+  cached: SessionConversationProjectionInput | undefined,
+  inputChecksum: string,
+  measureMetadata: MeasureSessionConversationOperation,
+): SessionConversationChunk[] | null {
+  if (!cached || cached.inputChecksum !== inputChecksum || cached.documents.length === 0) {
+    return null;
+  }
+  const cachedDocumentsByTextRunIndex = new Map<number, SessionConversationChunk[]>();
+  for (const document of cached.documents) {
+    const documents = cachedDocumentsByTextRunIndex.get(document.textRunIndex) ?? [];
+    documents.push(document);
+    cachedDocumentsByTextRunIndex.set(document.textRunIndex, documents);
+  }
+  const rebuiltDocuments: SessionConversationChunk[] = [];
+  for (const [textRunIndex, cachedDocuments] of cachedDocumentsByTextRunIndex) {
+    if (
+      cachedDocuments.some(
+        (document, chunkIndex) =>
+          !document.isDenseSearchable ||
+          document.chunkIndex !== chunkIndex ||
+          document.chunkCount !== cachedDocuments.length,
+      )
+    ) {
+      return null;
+    }
+    const pendingTextRun: PendingConversationDocument = {
+      ...pending,
+      textRun: { ...pending.textRun, textRunIndex },
+    };
+    const chunkSpans = cachedDocuments.map(
+      (document): ConversationChunkSpan => ({
+        characterStart: document.characterStart,
+        characterEnd: document.characterEnd,
+        tokenStart: document.tokenStart,
+        tokenEnd: document.tokenEnd,
+        tokenCount: document.tokenCount,
+        overlapTokenCount: document.overlapTokenCount,
+        content: document.content,
+      }),
+    );
+    const currentDocuments = createSessionConversationChunksFromSpans(
+      context,
+      pendingTextRun,
+      chunkSpans,
+      measureMetadata,
+    );
+    if (
+      currentDocuments.length !== cachedDocuments.length ||
+      currentDocuments.some(
+        (document, index) =>
+          !cachedDocuments[index] ||
+          !hasMatchingConversationChunkGeometry(document, cachedDocuments[index]),
+      )
+    ) {
+      return null;
+    }
+    rebuiltDocuments.push(...currentDocuments);
+  }
+  return rebuiltDocuments;
+}
+
+function createSessionConversationProjectionInput(
+  context: SessionConversationChunkContext,
+  pending: PendingConversationDocument,
+  reusableProjectionInputs: ReadonlyMap<string, SessionConversationProjectionInput> | undefined,
+  measureTurnContext: MeasureSessionConversationOperation,
+  measureTokenization: MeasureSessionConversationOperation,
+  measureMetadata: MeasureSessionConversationOperation,
+): SessionConversationProjectionInput {
+  const { projectionInputId, inputChecksum } = createSessionConversationProjectionInputIdentity(
+    context,
+    pending,
+  );
+  const cachedDocuments = rebuildCachedSessionConversationProjection(
+    context,
+    pending,
+    reusableProjectionInputs?.get(projectionInputId),
+    inputChecksum,
+    measureMetadata,
+  );
+  if (cachedDocuments) {
+    return { projectionInputId, inputChecksum, documents: cachedDocuments };
+  }
+  const boundedDocuments =
+    pending.documentKind === 'turn_context'
+      ? measureTurnContext(() =>
+          createTokenBoundedTurnContextDocuments(pending, context.tokenizer, context.maxTokens),
+        )
+      : [pending];
+  const documents = boundedDocuments.flatMap((bounded) => {
+    const chunkSpans = measureTokenization(() =>
+      splitConversationTextByTokens(
+        bounded.textRun.text,
+        context.tokenizer,
+        context.maxTokens,
+        context.overlapTokens,
+      ),
+    );
+    return createSessionConversationChunksFromSpans(context, bounded, chunkSpans, measureMetadata);
+  });
+  return { projectionInputId, inputChecksum, documents };
+}
+
 function createLogicalSessionSummary(
   session: CanonicalSessionRepresentation,
   graph: ParsedSessionGraph,
@@ -1638,6 +1796,7 @@ export async function readSessionConversationImport(
   const logicalSessions: SessionConversationLogicalSession[] = [];
   const chunks: SessionConversationChunk[] = [];
   const invocations: InvocationRecord[] = [];
+  const projectionInputs: SessionConversationProjectionInput[] = [];
   const documentPhaseOrder: readonly SessionConversationDocumentPhaseMeasurement['phase'][] = [
     'pending-atomic-summary-documents',
     'turn-context-construction-budget-splitting',
@@ -1730,17 +1889,24 @@ export async function readSessionConversationImport(
           'turn-context-construction-budget-splitting',
           () => createTurnContextDocuments(graph),
         );
-        const boundedTurnContextDocuments = measureDocumentPhase(
-          'turn-context-construction-budget-splitting',
-          () =>
-            turnContextDocuments.flatMap((pending) =>
-              createTokenBoundedTurnContextDocuments(pending, context.tokenizer, context.maxTokens),
-            ),
-        );
-        chunks.push(
-          ...[...entryScopedDocuments, ...boundedTurnContextDocuments].flatMap((pending) =>
-            createSessionConversationChunks(context, pending, measureTokenization, measureMetadata),
+        const measureTurnContext: MeasureSessionConversationOperation = (operation) =>
+          measureDocumentPhase('turn-context-construction-budget-splitting', operation);
+        const logicalSessionProjectionInputs = [
+          ...entryScopedDocuments,
+          ...turnContextDocuments,
+        ].map((pending) =>
+          createSessionConversationProjectionInput(
+            context,
+            pending,
+            options.reusableProjectionInputs,
+            measureTurnContext,
+            measureTokenization,
+            measureMetadata,
           ),
+        );
+        projectionInputs.push(...logicalSessionProjectionInputs);
+        chunks.push(
+          ...logicalSessionProjectionInputs.flatMap((projectionInput) => projectionInput.documents),
         );
       } finally {
         for (const phase of documentPhaseOrder) {
@@ -1752,7 +1918,15 @@ export async function readSessionConversationImport(
       }
     });
   }
-  return { format: imported.format, logicalSessions, chunks, invocations };
+  return {
+    sourceByteLength: imported.sourceByteLength,
+    sourceSha256: imported.sourceSha256,
+    format: imported.format,
+    logicalSessions,
+    chunks,
+    invocations,
+    projectionInputs,
+  };
 }
 
 /**

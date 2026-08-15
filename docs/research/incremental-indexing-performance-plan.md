@@ -1,6 +1,6 @@
 # Plan: improve changed-session indexing without making Recall authoritative
 
-Status: proposed
+Status: Phase 1 implemented; Phase 2 not triggered
 
 ## Outcome
 
@@ -9,6 +9,8 @@ Reduce indexing time for large active Physical session files while keeping canon
 The Recall database is a disposable projection. When its schema, cache state, or checkpoint state is incompatible, rebuild it from JSONL instead of migrating or repairing it. Keep the hourly schedule, the standalone `psr index` writer, strict session validation, and one atomic Physical session replacement.
 
 Use the existing full importer as both the fallback and the differential correctness oracle.
+
+Measured result: schema 4 projection reuse plus linear parent-cycle validation reduced the representative 18.8 KB tail update to 8.9 seconds and content-identical false-dirty work to 0.12 seconds. Both gates pass, so the plan stops before the coarse append checkpoint.
 
 ## Evidence and first target
 

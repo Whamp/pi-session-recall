@@ -7,6 +7,12 @@ import { isUnknownRecord } from './is-unknown-record.js';
 /** Versioned identity of exact session framing, detection, and virtual conversion policy. */
 export const SESSION_IMPORT_POLICY_VERSION = 3;
 
+/** Exact byte identity of one complete Physical session source read. */
+export interface PhysicalSessionSourceIdentity {
+  sourceByteLength: number;
+  sourceSha256: string;
+}
+
 /** One parsed physical JSONL record with its trustworthy one-based source line. */
 export interface PhysicalSessionJsonlRecord {
   sourceLine: number;
@@ -24,9 +30,28 @@ export interface CanonicalSessionRepresentation {
 }
 
 /** Detected physical format and canonical logical sessions ready for strict graph validation. */
-export interface SessionJsonlImport {
+export interface SessionJsonlImport extends PhysicalSessionSourceIdentity {
   format: SessionImportFormat;
   sessions: CanonicalSessionRepresentation[];
+}
+
+interface PhysicalSessionSourceIdentityAccumulator {
+  update(chunk: Buffer): void;
+  finish(): PhysicalSessionSourceIdentity;
+}
+
+function createPhysicalSessionSourceIdentityAccumulator(): PhysicalSessionSourceIdentityAccumulator {
+  const sha256 = createHash('sha256');
+  let sourceByteLength = 0;
+  return {
+    update(chunk) {
+      sourceByteLength += chunk.length;
+      sha256.update(chunk);
+    },
+    finish() {
+      return { sourceByteLength, sourceSha256: sha256.digest('hex') };
+    },
+  };
 }
 
 function decodeSessionJsonlRecord(
@@ -41,12 +66,14 @@ function decodeSessionJsonlRecord(
 
 async function* frameSessionJsonlRecords(
   sessionPath: string,
+  onSourceChunk?: (chunk: Buffer) => void,
 ): AsyncGenerator<{ sourceLine: number; text: string }> {
   const recordParts: Buffer[] = [];
   let recordByteLength = 0;
   let sourceLine = 0;
   for await (const streamChunk of createReadStream(sessionPath)) {
     const chunk = Buffer.isBuffer(streamChunk) ? streamChunk : Buffer.from(String(streamChunk));
+    onSourceChunk?.(chunk);
     let recordStart = 0;
     let lineFeedIndex = chunk.indexOf(0x0a, recordStart);
     while (lineFeedIndex !== -1) {
@@ -78,11 +105,15 @@ async function* frameSessionJsonlRecords(
   }
 }
 
-async function readPhysicalSessionJsonlRecords(
-  sessionPath: string,
-): Promise<PhysicalSessionJsonlRecord[]> {
+async function readPhysicalSessionJsonlRecords(sessionPath: string): Promise<{
+  records: PhysicalSessionJsonlRecord[];
+  sourceIdentity: PhysicalSessionSourceIdentity;
+}> {
   const records: PhysicalSessionJsonlRecord[] = [];
-  for await (const framed of frameSessionJsonlRecords(sessionPath)) {
+  const sourceIdentity = createPhysicalSessionSourceIdentityAccumulator();
+  for await (const framed of frameSessionJsonlRecords(sessionPath, (chunk) =>
+    sourceIdentity.update(chunk),
+  )) {
     if (!framed.text.trim()) {
       continue;
     }
@@ -103,7 +134,19 @@ async function readPhysicalSessionJsonlRecords(
     }
     records.push({ sourceLine: framed.sourceLine, value: parsed });
   }
-  return records;
+  return { records, sourceIdentity: sourceIdentity.finish() };
+}
+
+/** Streams one Physical session file and returns its exact byte length and SHA-256. */
+export async function readPhysicalSessionSourceIdentity(
+  sessionPath: string,
+): Promise<PhysicalSessionSourceIdentity> {
+  const sourceIdentity = createPhysicalSessionSourceIdentityAccumulator();
+  for await (const streamChunk of createReadStream(sessionPath)) {
+    const chunk = Buffer.isBuffer(streamChunk) ? streamChunk : Buffer.from(String(streamChunk));
+    sourceIdentity.update(chunk);
+  }
+  return sourceIdentity.finish();
 }
 
 function isNonemptyString(value: unknown): value is string {
@@ -360,24 +403,27 @@ function createCanonicalSingleSession(
 
 /** Streams and frames one physical session file, then selects one exact virtual import path. */
 export async function importSessionJsonl(sessionPath: string): Promise<SessionJsonlImport> {
-  const records = await readPhysicalSessionJsonlRecords(sessionPath);
+  const { records, sourceIdentity } = await readPhysicalSessionJsonlRecords(sessionPath);
   if (records.length === 0) {
     throw new Error(`Recall session import unsupported or ambiguous at ${sessionPath}: no records`);
   }
   const reuseSessions = splitPiSessionReuseHistory(sessionPath, records);
   if (reuseSessions) {
     return {
+      ...sourceIdentity,
       format: SessionImportFormat.PI_SESSION_REUSE_HISTORY,
       sessions: reuseSessions,
     };
   }
   if (isPiV1LinearSession(records)) {
     return {
+      ...sourceIdentity,
       format: SessionImportFormat.PI_V1_LINEAR,
       sessions: [convertPiV1LinearSession(sessionPath, records)],
     };
   }
   return {
+    ...sourceIdentity,
     format: SessionImportFormat.CANONICAL_JSONL,
     sessions: [createCanonicalSingleSession(sessionPath, records)],
   };

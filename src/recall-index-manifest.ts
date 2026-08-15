@@ -150,7 +150,7 @@ const recallIndexManifestSchema = Type.Object(
     ),
     sqliteRecallDatabase: Type.Object(
       {
-        schemaVersion: Type.Literal(3),
+        schemaVersion: Type.Literal(4),
         storageLayout: Type.Literal('unified-sqlite-vec'),
         sqliteVecVersion: Type.Literal('0.1.9'),
         embedding: Type.Object(

@@ -74,6 +74,8 @@ psr ignore remove path/to/session.jsonl         # make one exact path eligible a
 
 - recursively scans configured `.jsonl` session files;
 - skips files whose size and modification time have not changed;
+- hashes same-size files whose modification time changed and refreshes source metadata without parsing when the SHA-256 is unchanged;
+- reuses exact token geometry for unchanged Dense projection inputs while rebuilding graph-dynamic metadata from the current validated graph;
 - reuses checksum-matched vectors already stored in the current Recall database when explicitly requested for a staged rebuild;
 - calls the configured local or HTTP Octen profile only for changed conversation, summary, and turn-context documents;
 - replaces each changed session's state, compact Invocations, Dense recall metadata, and single vector projection in one SQLite transaction;
@@ -135,9 +137,9 @@ On macOS, installation removes the stale `dev.pi-session-recall.auto-optimize.pl
 
 The macOS path is runtime-untested. No Mac was available to verify plist acceptance; `RunAtLoad` or `StartInterval` execution; retry after an exit-status-1 run; absolute Node plus `--import tsx`; log appends; or access to the durable recall configuration and embedding endpoint from the LaunchAgent environment. Other platforms fail with an unsupported-platform error.
 
-The WAL-mode `recall.sqlite` database stores each Physical session's size and modification time, compact Invocation rows with FTS5, Dense recall metadata, and one 16-bucket vec0 table. Each Dense recall document stores one vector. Each completed Physical session replaces only its own rows across all projections in one transaction. If indexing stops, rerun `psr index`; completed sessions remain committed and unfinished sessions are revisited.
+The WAL-mode `recall.sqlite` database stores each Physical session's exact imported byte length and SHA-256, size/mtime freshness hints, compact Invocation rows with FTS5, Dense recall metadata, disposable token-geometry cache rows, and one 16-bucket vec0 table. Each Dense recall document stores one vector. Each completed Physical session replaces only its own rows across all projections and cache state in one transaction. If indexing stops, rerun `psr index`; completed sessions remain committed and unfinished sessions are revisited.
 
-Manifest version 8 and SQLite schema version 3 identify this layout. Obsolete database layouts are incompatible; rebuild them from canonical JSONL. After activation, unchanged sessions are skipped by size and modification time without parsing.
+Manifest version 8 and SQLite schema version 4 identify this layout. Obsolete database layouts are incompatible; rebuild them from canonical JSONL. After activation, unchanged sessions are skipped by size and modification time without parsing, and same-size metadata-only changes are skipped after a complete SHA-256 read.
 
 ## Search
 

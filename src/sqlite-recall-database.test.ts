@@ -18,6 +18,8 @@ import {
   SQLITE_RECALL_EMBEDDING_DIMENSIONS,
 } from './sqlite-recall-database.js';
 
+const TEST_SOURCE_SHA256 = 'a'.repeat(64);
+
 function createUnitEmbedding(componentIndex: number): number[] {
   const embedding = Array.from({ length: SQLITE_RECALL_EMBEDDING_DIMENSIONS }, () => 0);
   embedding[componentIndex] = 1;
@@ -96,7 +98,7 @@ void test('SQLite Recall database exposes its production schema and runtime iden
   const { sqliteVersion, ...writerIdentity } = writer.identity;
   assert.match(sqliteVersion, /^3\.\d+\.\d+$/u);
   assert.deepEqual(writerIdentity, {
-    schemaVersion: 3,
+    schemaVersion: 4,
     storageLayout: 'unified-sqlite-vec',
     embeddingDimensions: 1_024,
     vectorEncoding: 'float32',
@@ -143,7 +145,7 @@ void test('SQLite Recall database rejects incompatible schema and runtime identi
 
   const missingIdentityPath = join(directory, 'missing-identity.sqlite');
   const missingIdentity = new DatabaseSync(missingIdentityPath);
-  missingIdentity.exec('PRAGMA user_version = 3');
+  missingIdentity.exec('PRAGMA user_version = 4');
   missingIdentity.close();
   assert.throws(
     () => openSqliteRecallDatabase(missingIdentityPath),
@@ -205,6 +207,14 @@ void test('SQLite Recall database losslessly round-trips dense metadata and vect
     sessionPath,
     size: 12_345,
     mtimeMs: 67_890.5,
+    sourceSha256: TEST_SOURCE_SHA256,
+    conversationProjectionInputs: [
+      {
+        projectionInputId: 'b'.repeat(40),
+        inputChecksum: 'c'.repeat(64),
+        documents: [document],
+      },
+    ],
     documentIds: ['compatibility-only', document.id],
     denseDocuments: [document],
     denseEmbeddings: new Map([[document.id, embedding]]),
@@ -214,9 +224,24 @@ void test('SQLite Recall database losslessly round-trips dense metadata and vect
   assert.deepEqual(database.readPhysicalSessionState(sessionPath), {
     size: 12_345,
     mtimeMs: 67_890.5,
+    sourceSha256: TEST_SOURCE_SHA256,
+    invocationCount: 0,
     documentIds: ['compatibility-only', document.id],
     denseDocumentIds: [document.id],
   });
+  assert.deepEqual(
+    database.readConversationProjectionInputs(sessionPath),
+    new Map([
+      [
+        'b'.repeat(40),
+        {
+          projectionInputId: 'b'.repeat(40),
+          inputChecksum: 'c'.repeat(64),
+          documents: [document],
+        },
+      ],
+    ]),
+  );
   assert.deepEqual(database.listPhysicalSessionPaths(), [sessionPath]);
   assert.equal(database.requiresInvocationBackfill(sessionPath), false);
   assert.deepEqual(database.fetchDenseDocuments([document.id]), new Map([[document.id, document]]));
@@ -267,6 +292,8 @@ void test('SQLite Recall database routes global and pre-k exact project dense se
     sessionPath,
     size: 1,
     mtimeMs: 2,
+    sourceSha256: TEST_SOURCE_SHA256,
+    conversationProjectionInputs: [],
     documentIds: [target.id, ...otherDocuments.map(({ id }) => id)],
     denseDocuments: [target, ...otherDocuments],
     denseEmbeddings,
@@ -304,6 +331,8 @@ void test('SQLite Recall database rejects zero vectors and tool rows', async (t)
         sessionPath,
         size: 1,
         mtimeMs: 2,
+        sourceSha256: TEST_SOURCE_SHA256,
+        conversationProjectionInputs: [],
         documentIds: [conversation.id],
         denseDocuments: [conversation],
         denseEmbeddings: new Map([
@@ -330,6 +359,8 @@ void test('SQLite Recall database rejects zero vectors and tool rows', async (t)
         sessionPath,
         size: 1,
         mtimeMs: 2,
+        sourceSha256: TEST_SOURCE_SHA256,
+        conversationProjectionInputs: [],
         documentIds: [toolDocument.id],
         denseDocuments: [toolDocument],
         denseEmbeddings: new Map([[toolDocument.id, createUnitEmbedding(0)]]),
@@ -348,6 +379,8 @@ void test('SQLite Recall database rejects zero vectors and tool rows', async (t)
         sessionPath,
         size: 1,
         mtimeMs: 2,
+        sourceSha256: TEST_SOURCE_SHA256,
+        conversationProjectionInputs: [],
         documentIds: [disguisedToolResult.id],
         denseDocuments: [disguisedToolResult],
         denseEmbeddings: new Map([[disguisedToolResult.id, createUnitEmbedding(0)]]),
@@ -380,6 +413,8 @@ void test('SQLite Recall database searches compact Invocations and reports proje
       sessionPath,
       size: 100 + index,
       mtimeMs: 200 + index,
+      sourceSha256: TEST_SOURCE_SHA256,
+      conversationProjectionInputs: [],
       documentIds: [document.id],
       denseDocuments: [document],
       denseEmbeddings: new Map([[document.id, createUnitEmbedding(index)]]),
@@ -453,6 +488,8 @@ void test('one physical-session replacement commits every Recall projection toge
     sessionPath,
     size: 55,
     mtimeMs: 66,
+    sourceSha256: TEST_SOURCE_SHA256,
+    conversationProjectionInputs: [],
     documentIds: [document.id],
     denseDocuments: [document],
     denseEmbeddings: new Map([[document.id, embedding]]),
@@ -462,6 +499,8 @@ void test('one physical-session replacement commits every Recall projection toge
   assert.deepEqual(database.readPhysicalSessionState(sessionPath), {
     size: 55,
     mtimeMs: 66,
+    sourceSha256: TEST_SOURCE_SHA256,
+    invocationCount: 1,
     documentIds: [document.id],
     denseDocumentIds: [document.id],
   });
@@ -479,6 +518,7 @@ void test('one physical-session replacement commits every Recall projection toge
     invocationFtsDocuments: 1,
     invocationsMissingFts: 0,
     ftsDocumentsMissingInvocation: 0,
+    projectionInputsMissingDenseDocument: 0,
     vectorParity: {
       denseDocuments: 1,
       vectors: 1,
@@ -501,6 +541,8 @@ void test('read-only integrity detects missing Invocation FTS document rows', as
     sessionPath,
     size: 10,
     mtimeMs: 20,
+    sourceSha256: TEST_SOURCE_SHA256,
+    conversationProjectionInputs: [],
     documentIds: [],
     denseDocuments: [],
     denseEmbeddings: new Map(),
@@ -559,6 +601,8 @@ void test('replacement refreshes same-ID metadata, vectors, project scope, and I
     sessionPath,
     size: 90,
     mtimeMs: 100,
+    sourceSha256: TEST_SOURCE_SHA256,
+    conversationProjectionInputs: [],
     documentIds: [oldDocument.id],
     denseDocuments: [oldDocument],
     denseEmbeddings: new Map([[oldDocument.id, createUnitEmbedding(60)]]),
@@ -586,6 +630,8 @@ void test('replacement refreshes same-ID metadata, vectors, project scope, and I
     sessionPath,
     size: 91,
     mtimeMs: 101,
+    sourceSha256: TEST_SOURCE_SHA256,
+    conversationProjectionInputs: [],
     documentIds: [currentDocument.id],
     denseDocuments: [currentDocument],
     denseEmbeddings: new Map([[currentDocument.id, currentEmbedding]]),
@@ -599,6 +645,8 @@ void test('replacement refreshes same-ID metadata, vectors, project scope, and I
   assert.deepEqual(database.readPhysicalSessionState(sessionPath), {
     size: 91,
     mtimeMs: 101,
+    sourceSha256: TEST_SOURCE_SHA256,
+    invocationCount: 1,
     documentIds: [currentDocument.id],
     denseDocumentIds: [currentDocument.id],
   });
@@ -657,6 +705,8 @@ void test('a late replacement constraint failure rolls back all projections and 
     sessionPath: replacedSessionPath,
     size: 10,
     mtimeMs: 20,
+    sourceSha256: TEST_SOURCE_SHA256,
+    conversationProjectionInputs: [],
     documentIds: [initialDocument.id],
     denseDocuments: [initialDocument],
     denseEmbeddings: new Map([[initialDocument.id, initialEmbedding]]),
@@ -670,6 +720,8 @@ void test('a late replacement constraint failure rolls back all projections and 
     sessionPath: unrelatedSessionPath,
     size: 30,
     mtimeMs: 40,
+    sourceSha256: TEST_SOURCE_SHA256,
+    conversationProjectionInputs: [],
     documentIds: [unrelatedDocument.id],
     denseDocuments: [unrelatedDocument],
     denseEmbeddings: new Map([[unrelatedDocument.id, unrelatedEmbedding]]),
@@ -703,6 +755,8 @@ void test('a late replacement constraint failure rolls back all projections and 
       sessionPath: replacedSessionPath,
       size: 11,
       mtimeMs: 21,
+      sourceSha256: TEST_SOURCE_SHA256,
+      conversationProjectionInputs: [],
       documentIds: [failedDocument.id],
       denseDocuments: [failedDocument],
       denseEmbeddings: new Map([[failedDocument.id, createUnitEmbedding(33)]]),
@@ -719,6 +773,8 @@ void test('a late replacement constraint failure rolls back all projections and 
   assert.deepEqual(database.readPhysicalSessionState(replacedSessionPath), {
     size: 10,
     mtimeMs: 20,
+    sourceSha256: TEST_SOURCE_SHA256,
+    invocationCount: 1,
     documentIds: [initialDocument.id],
     denseDocumentIds: [initialDocument.id],
   });
@@ -781,6 +837,8 @@ void test('physical-session deletion atomically removes only its complete projec
       sessionPath,
       size: 1,
       mtimeMs: 2,
+      sourceSha256: TEST_SOURCE_SHA256,
+      conversationProjectionInputs: [],
       documentIds: [document.id],
       denseDocuments: [document],
       denseEmbeddings: new Map([[document.id, embedding]]),
@@ -846,6 +904,8 @@ void test(
       sessionPath,
       size: 1,
       mtimeMs: 1,
+      sourceSha256: TEST_SOURCE_SHA256,
+      conversationProjectionInputs: [],
       documentIds: [priorDocument.id],
       denseDocuments: [priorDocument],
       denseEmbeddings: new Map([[priorDocument.id, embedding]]),
@@ -870,6 +930,8 @@ void test(
         sessionPath,
         size: 2,
         mtimeMs: 2,
+        sourceSha256: TEST_SOURCE_SHA256,
+        conversationProjectionInputs: [],
         documentIds: replacementDocuments.map(({ id }) => id),
         denseDocuments: replacementDocuments,
         denseEmbeddings: replacementDocuments.map((document) => [document.id, embedding]),
@@ -961,6 +1023,8 @@ void test(
       sessionPath,
       size: 70,
       mtimeMs: 80,
+      sourceSha256: TEST_SOURCE_SHA256,
+      conversationProjectionInputs: [],
       documentIds: [priorDocument.id],
       denseDocuments: [priorDocument],
       denseEmbeddings: new Map([[priorDocument.id, priorEmbedding]]),
@@ -993,6 +1057,8 @@ void test(
         sessionPath,
         size: 71,
         mtimeMs: 81,
+        sourceSha256: TEST_SOURCE_SHA256,
+        conversationProjectionInputs: [],
         documentIds: replacementDocuments.map(({ id }) => id),
         denseDocuments: replacementDocuments,
         denseEmbeddings: replacementEmbeddings,
@@ -1035,6 +1101,8 @@ void test(
     assert.deepEqual(reader.readPhysicalSessionState(sessionPath), {
       size: 70,
       mtimeMs: 80,
+      sourceSha256: TEST_SOURCE_SHA256,
+      invocationCount: 1,
       documentIds: [priorDocument.id],
       denseDocumentIds: [priorDocument.id],
     });
@@ -1066,6 +1134,8 @@ void test(
     assert.deepEqual(recovered.readPhysicalSessionState(sessionPath), {
       size: 70,
       mtimeMs: 80,
+      sourceSha256: TEST_SOURCE_SHA256,
+      invocationCount: 1,
       documentIds: [priorDocument.id],
       denseDocumentIds: [priorDocument.id],
     });

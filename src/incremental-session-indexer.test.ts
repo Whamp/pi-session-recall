@@ -1,5 +1,14 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
+import {
+  appendFile,
+  mkdtemp,
+  mkdir,
+  readFile,
+  rm,
+  stat,
+  utimes,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -14,9 +23,10 @@ import {
   SQLITE_RECALL_EMBEDDING_DIMENSIONS,
 } from './sqlite-recall-database.js';
 import type { RecallEmbeddingProvider } from './recall-inference-capabilities.js';
-import type {
-  ConversationTextTokenizer,
-  SessionConversationChunk,
+import {
+  readSessionConversationImport,
+  type ConversationTextTokenizer,
+  type SessionConversationChunk,
 } from './session-conversation-index.js';
 
 type IndexingMaintenanceWorksetEvent = Extract<
@@ -1019,6 +1029,192 @@ void test('manual index maintenance skips an unchanged physical session without 
 
   assert.equal(skipped.indexedSessions, 0);
   assert.equal(skipped.failedSessions.length, 0);
+});
+
+void test('metadata-only dirty detection skips parsing, tokenization, embedding, and replacement', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-indexer-content-identical-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const sessionsDirectory = join(root, 'sessions');
+  const sessionPath = join(sessionsDirectory, 'content-identical.jsonl');
+  const databasePath = join(root, 'recall.sqlite');
+  await mkdir(sessionsDirectory, { recursive: true });
+  await writeSimplePhysicalSessionFile(
+    sessionPath,
+    'content-identical',
+    'content-identical source evidence',
+  );
+  await indexChangedConversationSessions(
+    createIndexerOptions({
+      sessionsDirectory,
+      databasePath,
+      embeddingProvider: createRecordingEmbeddingProvider([]),
+    }),
+  );
+  const previousState = readRecallDatabaseSessionState(databasePath, sessionPath);
+  assert.ok(previousState);
+  assert.match(previousState.sourceSha256, /^[a-f0-9]{64}$/u);
+  const changedTimestamp = new Date(previousState.mtimeMs + 10_000);
+  await utimes(sessionPath, changedTimestamp, changedTimestamp);
+  const progressEvents: RecallIndexProgressEvent[] = [];
+
+  const result = await indexChangedConversationSessions({
+    ...createIndexerOptions({
+      sessionsDirectory,
+      databasePath,
+      embeddingProvider: {
+        async embedQuery() {
+          throw new Error('Content-identical fast path must not embed a query');
+        },
+        async embedDocuments() {
+          throw new Error('Content-identical fast path must not embed documents');
+        },
+      },
+    }),
+    tokenizer: {
+      encodeConversationText() {
+        throw new Error('Content-identical fast path must not tokenize');
+      },
+    },
+    onProgress(event) {
+      progressEvents.push(event);
+    },
+  });
+
+  assert.equal(result.indexedSessions, 1);
+  assert.equal(result.newlyEmbeddedChunks, 0);
+  assert.equal(result.reusedVectors, 0);
+  const currentState = readRecallDatabaseSessionState(databasePath, sessionPath);
+  assert.ok(currentState);
+  assert.equal(currentState.sourceSha256, previousState.sourceSha256);
+  assert.equal(currentState.size, previousState.size);
+  assert.ok(currentState.mtimeMs > previousState.mtimeMs);
+  const profile = progressEvents.find((event) => event.kind === 'physical-session-file-profiled');
+  assert.ok(profile?.kind === 'physical-session-file-profiled');
+  assert.equal(profile.phaseElapsedMilliseconds.graphValidation, 0);
+  assert.equal(profile.phaseElapsedMilliseconds.documentConstructionTokenization, 0);
+  assert.deepEqual(Object.values(profile.documentPhaseElapsedMilliseconds), [0, 0, 0, 0]);
+});
+
+void test('changed session reuses old token geometry and equals a clean full import', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-indexer-projection-cache-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const sessionsDirectory = join(root, 'sessions');
+  const sessionPath = join(sessionsDirectory, 'projection-cache.jsonl');
+  const databasePath = join(root, 'recall.sqlite');
+  const oldContent = 'historical token geometry must be reused';
+  const newContent = 'new custom projection input';
+  await mkdir(sessionsDirectory, { recursive: true });
+  await writeSimplePhysicalSessionFile(sessionPath, 'projection-cache', oldContent);
+  await indexChangedConversationSessions(
+    createIndexerOptions({
+      sessionsDirectory,
+      databasePath,
+      embeddingProvider: createRecordingEmbeddingProvider([]),
+    }),
+  );
+  await appendFile(
+    sessionPath,
+    `${JSON.stringify({
+      type: 'custom_message',
+      id: 'custom-appended',
+      parentId: 'user-projection-cache',
+      timestamp: '2026-01-01',
+      role: 'custom',
+      content: newContent,
+      display: true,
+    })}\n`,
+  );
+  const encodedTexts: string[] = [];
+  const cachingTokenizer: ConversationTextTokenizer = {
+    encodeConversationText(text) {
+      encodedTexts.push(text);
+      if (text.includes(oldContent)) {
+        throw new Error('Projection cache retokenized unchanged historical content');
+      }
+      return { ids: Array.from(text.split(/\s+/u).filter(Boolean).keys()) };
+    },
+  };
+
+  const result = await indexChangedConversationSessions({
+    ...createIndexerOptions({
+      sessionsDirectory,
+      databasePath,
+      embeddingProvider: createRecordingEmbeddingProvider([]),
+    }),
+    tokenizer: cachingTokenizer,
+  });
+
+  assert.equal(result.failedSessions.length, 0);
+  assert.ok(encodedTexts.some((text) => text.includes(newContent)));
+  const optimizedDocuments = readSessionDenseDocuments(databasePath, sessionPath);
+  const fullImport = await readSessionConversationImport(sessionPath, {
+    tokenizer,
+    maxTokens: 512,
+    overlapTokens: 64,
+  });
+  const expectedDocuments = new Map(
+    fullImport.chunks
+      .filter((chunk) => chunk.isDenseSearchable)
+      .map((chunk) => [chunk.id, chunk] as const),
+  );
+  assert.deepEqual(optimizedDocuments, expectedDocuments);
+  const historicalDocument = Array.from(optimizedDocuments.values()).find((document) =>
+    document.content.includes(oldContent),
+  );
+  assert.deepEqual(
+    historicalDocument?.childEntryIds.map((entryId) => entryId.value),
+    ['custom-appended'],
+  );
+});
+
+void test('mismatched projection cache state falls back to current tokenization', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-indexer-projection-cache-miss-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const sessionsDirectory = join(root, 'sessions');
+  const sessionPath = join(sessionsDirectory, 'projection-cache-miss.jsonl');
+  const databasePath = join(root, 'recall.sqlite');
+  const oldContent = 'cache mismatch must retokenize this history';
+  await mkdir(sessionsDirectory, { recursive: true });
+  await writeSimplePhysicalSessionFile(sessionPath, 'projection-cache-miss', oldContent);
+  const options = createIndexerOptions({
+    sessionsDirectory,
+    databasePath,
+    embeddingProvider: createRecordingEmbeddingProvider([]),
+  });
+  await indexChangedConversationSessions(options);
+  const rawDatabase = new DatabaseSync(databasePath);
+  rawDatabase
+    .prepare('UPDATE conversation_projection_input_documents SET input_checksum = ?')
+    .run('f'.repeat(64));
+  rawDatabase.close();
+  await appendFile(
+    sessionPath,
+    `${JSON.stringify({
+      type: 'custom_message',
+      id: 'cache-miss-appended',
+      parentId: 'user-projection-cache-miss',
+      timestamp: '2026-01-01',
+      content: 'cache miss appended evidence',
+      display: true,
+    })}\n`,
+  );
+  const encodedTexts: string[] = [];
+
+  const result = await indexChangedConversationSessions({
+    ...options,
+    tokenizer: {
+      encodeConversationText(text) {
+        encodedTexts.push(text);
+        return { ids: Array.from(text.split(/\s+/u).filter(Boolean).keys()) };
+      },
+    },
+  });
+
+  assert.equal(result.failedSessions.length, 0);
+  assert.ok(encodedTexts.some((text) => text.includes(oldContent)));
+  const database = openSqliteRecallDatabase(databasePath, { readOnly: true });
+  assert.equal(database.checkIntegrity().healthy, true);
+  database.close();
 });
 
 void test('a late SQLite replacement failure leaves the previous physical session intact', async (t) => {

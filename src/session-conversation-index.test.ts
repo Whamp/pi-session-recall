@@ -1167,6 +1167,40 @@ void test('session import measures graph and document phases for every reused lo
   );
 });
 
+void test('session import decomposes document work for every reused logical session', async () => {
+  const sessionPath = join(
+    import.meta.dirname,
+    'fixtures/session-import/pi-session-reuse-history.jsonl',
+  );
+  let monotonicTime = 0;
+  const measurements: Array<{ phase: string; elapsedMilliseconds: number }> = [];
+
+  await readSessionConversationImport(sessionPath, {
+    tokenizer: createWhitespaceConversationTokenizer(),
+    monotonicNow() {
+      monotonicTime += 5;
+      return monotonicTime;
+    },
+    onDocumentPhaseMeasured(measurement) {
+      measurements.push(measurement);
+    },
+  });
+
+  const expectedLogicalSessionPhases = [
+    'pending-atomic-summary-documents',
+    'turn-context-construction-budget-splitting',
+    'conversation-chunk-tokenization',
+    'metadata-invocation-project-attribution',
+  ];
+  assert.deepEqual(
+    measurements.map(({ phase }) => phase),
+    [...expectedLogicalSessionPhases, ...expectedLogicalSessionPhases],
+  );
+  for (const measurement of measurements) {
+    assert.ok(measurement.elapsedMilliseconds > 0);
+  }
+});
+
 void test('v1 compaction conversion validates edge indexes and maps compaction references directly', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'recall-v1-compaction-indexes-'));
   const options = { tokenizer: createWhitespaceConversationTokenizer() };

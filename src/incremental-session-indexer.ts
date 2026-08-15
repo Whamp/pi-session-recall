@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 
 import type { RecallChunkPolicy } from './recall-chunk-policy.js';
 import type {
+  PhysicalSessionDocumentPhaseElapsedMilliseconds,
   PhysicalSessionIndexPhaseElapsedMilliseconds,
   RecallIndexProgressEvent,
 } from './recall-index-progress.js';
@@ -253,6 +254,12 @@ async function indexChangedRecallSessionFile(
     embedding: 0,
     sqliteReplacement: 0,
   };
+  const documentPhaseElapsedMilliseconds: PhysicalSessionDocumentPhaseElapsedMilliseconds = {
+    pendingAtomicSummaryDocuments: 0,
+    turnContextConstructionBudgetSplitting: 0,
+    conversationChunkTokenization: 0,
+    metadataInvocationProjectAttribution: 0,
+  };
 
   let imported: Awaited<ReturnType<typeof readSessionConversationImport>>;
   try {
@@ -275,6 +282,26 @@ async function indexChangedRecallSessionFile(
             break;
         }
       },
+      onDocumentPhaseMeasured(measurement) {
+        switch (measurement.phase) {
+          case 'pending-atomic-summary-documents':
+            documentPhaseElapsedMilliseconds.pendingAtomicSummaryDocuments +=
+              measurement.elapsedMilliseconds;
+            break;
+          case 'turn-context-construction-budget-splitting':
+            documentPhaseElapsedMilliseconds.turnContextConstructionBudgetSplitting +=
+              measurement.elapsedMilliseconds;
+            break;
+          case 'conversation-chunk-tokenization':
+            documentPhaseElapsedMilliseconds.conversationChunkTokenization +=
+              measurement.elapsedMilliseconds;
+            break;
+          case 'metadata-invocation-project-attribution':
+            documentPhaseElapsedMilliseconds.metadataInvocationProjectAttribution +=
+              measurement.elapsedMilliseconds;
+            break;
+        }
+      },
     });
   } catch (error) {
     summary.failedSessions.push({
@@ -293,10 +320,10 @@ async function indexChangedRecallSessionFile(
     imported.chunks,
     resolveSessionProjectIdentity,
   );
-  phaseElapsedMilliseconds.documentConstructionTokenization += Math.max(
-    0,
-    monotonicNow() - attributionStartedAt,
-  );
+  const attributionElapsedMilliseconds = Math.max(0, monotonicNow() - attributionStartedAt);
+  phaseElapsedMilliseconds.documentConstructionTokenization += attributionElapsedMilliseconds;
+  documentPhaseElapsedMilliseconds.metadataInvocationProjectAttribution +=
+    attributionElapsedMilliseconds;
   const denseChunks = attributedChunks.filter(
     (chunk): chunk is SessionConversationChunk & { isDenseSearchable: true } =>
       chunk.isDenseSearchable,
@@ -348,6 +375,7 @@ async function indexChangedRecallSessionFile(
     reusedVectors: summary.reusedVectors - reusedVectorsBefore,
     totalElapsedMilliseconds: Math.max(0, monotonicNow() - totalStartedAt),
     phaseElapsedMilliseconds,
+    documentPhaseElapsedMilliseconds,
   });
 }
 

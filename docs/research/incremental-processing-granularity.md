@@ -56,6 +56,17 @@ The forced-stale counterfactual first caught up the clone, then decremented only
 
 The first catch-up process consumed 166.2 CPU seconds and 175.6 wall seconds. The path is CPU-work dominated rather than blocked on the embedding service. Read/parse, vector lookup, embedding, and replacement together accounted for less than 8% of either ordinary catch-up sample.
 
+### Refined document-phase profile
+
+A later working-tree profile decomposed the dominant document phase on the same Physical session after it had grown to 120,135,012 bytes, 11,401 Dense documents, and 6,800 Invocations. Two forced-metadata-stale clone runs embedded nothing, reused every vector, and ended with healthy SQLite, foreign-key, FTS, vector, and Project metadata checks.
+
+| Sample     | Document phase | Pending atomic/summary | Turn-context construction and splitting | Chunk tokenization | Metadata, Invocations, and Project |
+| ---------- | -------------: | ---------------------: | --------------------------------------: | -----------------: | ---------------------------------: |
+| Subphase 1 |         132.0s |        0.010s (0.008%) |                           6.40s (4.85%) |    125.3s (94.91%) |                     0.307s (0.23%) |
+| Subphase 2 |         133.0s |        0.011s (0.008%) |                           6.57s (4.94%) |    126.1s (94.81%) |                     0.307s (0.23%) |
+
+This confirms tokenization as the first implementation target. Turn-context construction is measurable but secondary. Pending document construction and metadata work do not justify separate storage or write-path optimization.
+
 ### What the baseline rejects
 
 - A 30-minute schedule would not halve per-run cost. It would repeat almost all cumulative graph and document work twice as often when the file remains active.

@@ -922,6 +922,15 @@ void test('manual index maintenance profiles each changed physical session file 
   for (const elapsedMilliseconds of Object.values(profile.phaseElapsedMilliseconds)) {
     assert.ok(elapsedMilliseconds > 0);
   }
+  assert.deepEqual(Object.keys(profile.documentPhaseElapsedMilliseconds).sort(), [
+    'conversationChunkTokenization',
+    'metadataInvocationProjectAttribution',
+    'pendingAtomicSummaryDocuments',
+    'turnContextConstructionBudgetSplitting',
+  ]);
+  for (const elapsedMilliseconds of Object.values(profile.documentPhaseElapsedMilliseconds)) {
+    assert.ok(elapsedMilliseconds > 0);
+  }
   assert.doesNotMatch(JSON.stringify(profile), /updated profile evidence/iu);
 });
 

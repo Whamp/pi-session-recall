@@ -1,3 +1,11 @@
+/** Content-free elapsed milliseconds within document construction for one Physical session file. */
+export interface PhysicalSessionDocumentPhaseElapsedMilliseconds {
+  pendingAtomicSummaryDocuments: number;
+  turnContextConstructionBudgetSplitting: number;
+  conversationChunkTokenization: number;
+  metadataInvocationProjectAttribution: number;
+}
+
 /** Content-free elapsed milliseconds for the expensive phases of one changed Physical session file. */
 export interface PhysicalSessionIndexPhaseElapsedMilliseconds {
   readParse: number;
@@ -52,6 +60,7 @@ export type RecallIndexProgressEvent =
       reusedVectors: number;
       totalElapsedMilliseconds: number;
       phaseElapsedMilliseconds: PhysicalSessionIndexPhaseElapsedMilliseconds;
+      documentPhaseElapsedMilliseconds: PhysicalSessionDocumentPhaseElapsedMilliseconds;
     }
   | { kind: 'physical-session-file-failed'; sessionPath: string }
   | { kind: 'optimizing-collection' }

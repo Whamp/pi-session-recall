@@ -39,6 +39,16 @@ export interface SessionConversationImportPhaseMeasurement {
   elapsedMilliseconds: number;
 }
 
+/** One content-free measurement within Physical session document construction. */
+export interface SessionConversationDocumentPhaseMeasurement {
+  phase:
+    | 'pending-atomic-summary-documents'
+    | 'turn-context-construction-budget-splitting'
+    | 'conversation-chunk-tokenization'
+    | 'metadata-invocation-project-attribution';
+  elapsedMilliseconds: number;
+}
+
 /** Token limits for one atomic conversation chunk; production limits cannot be exceeded. */
 export interface SessionConversationChunkOptions {
   tokenizer: ConversationTextTokenizer;
@@ -49,6 +59,8 @@ export interface SessionConversationChunkOptions {
   monotonicNow?: () => number;
   /** Receives content-free timing for each complete or failed import phase. */
   onImportPhaseMeasured?: (measurement: SessionConversationImportPhaseMeasurement) => void;
+  /** Receives content-free detail within each logical session's document phase. */
+  onDocumentPhaseMeasured?: (measurement: SessionConversationDocumentPhaseMeasurement) => void;
 }
 
 /** Stable graph identities and physical boundaries for one validated logical session. */
@@ -1390,10 +1402,10 @@ function createTurnContextDocuments(graph: ParsedSessionGraph): PendingConversat
   return Array.from(documentsByContributingEntryIdentity.values());
 }
 
-function createPendingConversationDocuments(
+function createEntryScopedConversationDocuments(
   graph: ParsedSessionGraph,
 ): PendingConversationDocument[] {
-  const entryScopedDocuments = graph.entries.flatMap((entry) => {
+  return graph.entries.flatMap((entry) => {
     if (entry.type === 'message' && isUnknownRecord(entry.record.message)) {
       const message = entry.record.message;
       if (message.role === 'user' || message.role === 'assistant') {
@@ -1412,7 +1424,6 @@ function createPendingConversationDocuments(
     }
     return [];
   });
-  return [...entryScopedDocuments, ...createTurnContextDocuments(graph)];
 }
 
 function findContributingBranchPathLeafIds(
@@ -1443,118 +1454,128 @@ function findContributingCompactionEntryIds(
   return Array.from(compactionEntryIds);
 }
 
+type MeasureSessionConversationOperation = <Result>(operation: () => Result) => Result;
+
 function createSessionConversationChunks(
   context: SessionConversationChunkContext,
   pending: PendingConversationDocument,
+  measureTokenization: MeasureSessionConversationOperation,
+  measureMetadata: MeasureSessionConversationOperation,
 ): SessionConversationChunk[] {
-  const { graph } = context;
-  const entryId = createPiSessionEntryId(pending.entry.id);
-  const contributingEntryIds = pending.contributingEntries.map((entry) =>
-    createPiSessionEntryId(entry.id),
+  const chunkSpans = measureTokenization(() =>
+    splitConversationTextByTokens(
+      pending.textRun.text,
+      context.tokenizer,
+      context.maxTokens,
+      context.overlapTokens,
+    ),
   );
-  const contributingEntryIdentity = createContributingEntryIdentity(pending.contributingEntries);
-  const branchPathLeafIds = findContributingBranchPathLeafIds(graph, pending.contributingEntries);
-  const compactedByEntryIds = findContributingCompactionEntryIds(
-    graph,
-    pending.contributingEntries,
-  );
-  const sourceLineIndexes = pending.contributingEntries.map((entry) => entry.lineIndex);
-  const textRunId = hashConversationValue(
-    `${SESSION_CONVERSATION_SCHEMA_VERSION}\0${context.logicalSessionIdentity}\0${pending.entry.id}\0${contributingEntryIdentity}\0${pending.evidenceKind}\0${pending.evidencePart}\0${pending.textRun.textRunIndex}`,
-  ).slice(0, 40);
-  const chunkSpans = splitConversationTextByTokens(
-    pending.textRun.text,
-    context.tokenizer,
-    context.maxTokens,
-    context.overlapTokens,
-  );
-  const chunkIds = chunkSpans.map((span) =>
-    hashConversationValue(
-      `${SESSION_CONVERSATION_SCHEMA_VERSION}\0${textRunId}\0${span.characterStart}\0${span.characterEnd}`,
-    ).slice(0, 40),
-  );
+  return measureMetadata(() => {
+    const { graph } = context;
+    const entryId = createPiSessionEntryId(pending.entry.id);
+    const contributingEntryIds = pending.contributingEntries.map((entry) =>
+      createPiSessionEntryId(entry.id),
+    );
+    const contributingEntryIdentity = createContributingEntryIdentity(pending.contributingEntries);
+    const branchPathLeafIds = findContributingBranchPathLeafIds(graph, pending.contributingEntries);
+    const compactedByEntryIds = findContributingCompactionEntryIds(
+      graph,
+      pending.contributingEntries,
+    );
+    const sourceLineIndexes = pending.contributingEntries.map((entry) => entry.lineIndex);
+    const textRunId = hashConversationValue(
+      `${SESSION_CONVERSATION_SCHEMA_VERSION}\0${context.logicalSessionIdentity}\0${pending.entry.id}\0${contributingEntryIdentity}\0${pending.evidenceKind}\0${pending.evidencePart}\0${pending.textRun.textRunIndex}`,
+    ).slice(0, 40);
+    const chunkIds = chunkSpans.map((span) =>
+      hashConversationValue(
+        `${SESSION_CONVERSATION_SCHEMA_VERSION}\0${textRunId}\0${span.characterStart}\0${span.characterEnd}`,
+      ).slice(0, 40),
+    );
 
-  return chunkSpans.map((span, chunkIndex) => {
-    const id = chunkIds[chunkIndex];
-    if (!id) {
-      throw new Error(`Recall chunk identity missing for ${textRunId}:${chunkIndex}`);
-    }
-    const previousSiblingId = chunkIds[chunkIndex - 1] ?? null;
-    const nextSiblingId = chunkIds[chunkIndex + 1] ?? null;
-    const siblingIds: string[] = [];
-    if (previousSiblingId) {
-      siblingIds.push(previousSiblingId);
-    }
-    if (nextSiblingId) {
-      siblingIds.push(nextSiblingId);
-    }
-    return {
-      schemaVersion: SESSION_CONVERSATION_SCHEMA_VERSION,
-      documentKind: pending.documentKind,
-      summaryKind: pending.summaryKind,
-      evidenceKind: pending.evidenceKind,
-      evidencePart: pending.evidencePart,
-      isDenseSearchable: pending.isDenseSearchable,
-      id,
-      checksum: hashConversationValue(span.content),
-      sessionId: context.sessionId,
-      sessionPath: context.sessionPath,
-      parentSessionPath: graph.header.parentSessionPath,
-      cwd: graph.header.cwd,
-      projectPath: graph.header.cwd,
-      projectAttribution: null,
-      sessionName: graph.sessionName,
-      entryId,
-      parentEntryId: pending.entry.parentId ? createPiSessionEntryId(pending.entry.parentId) : null,
-      childEntryIds: (graph.childEntryIdsById.get(pending.entry.id) ?? []).map(
-        createPiSessionEntryId,
-      ),
-      contributingEntryIds,
-      currentLeafId: context.currentLeafId,
-      branchPathLeafIds: branchPathLeafIds.map(createPiSessionEntryId),
-      isOnActiveBranch: pending.contributingEntries.every((entry) =>
-        graph.activeBranchEntryIds.has(entry.id),
-      ),
-      isVisibleInActiveContext: pending.contributingEntries.every((entry) =>
-        graph.activeContextEntryIds.has(entry.id),
-      ),
-      compactedByEntryIds: compactedByEntryIds.map(createPiSessionEntryId),
-      compactionFirstKeptEntryId: pending.compactionFirstKeptEntryId
-        ? createPiSessionEntryId(pending.compactionFirstKeptEntryId)
-        : null,
-      branchSummaryFromEntryId: pending.branchSummaryFromEntryId
-        ? createPiSessionEntryId(pending.branchSummaryFromEntryId)
-        : null,
-      role: pending.role,
-      timestamp: pending.entry.timestamp,
-      sourceLineStart: Math.min(...sourceLineIndexes),
-      sourceLineEnd: Math.max(...sourceLineIndexes),
-      sourceBlockStart: pending.textRun.sourceBlockStart,
-      sourceBlockEnd: pending.textRun.sourceBlockEnd,
-      characterStart: span.characterStart,
-      characterEnd: span.characterEnd,
-      tokenStart: span.tokenStart,
-      tokenEnd: span.tokenEnd,
-      tokenCount: span.tokenCount,
-      overlapTokenCount: span.overlapTokenCount,
-      textRunId,
-      textRunIndex: pending.textRun.textRunIndex,
-      chunkIndex,
-      chunkCount: chunkIds.length,
-      siblingIds,
-      previousSiblingId,
-      nextSiblingId,
-      toolCallId: pending.toolCallId,
-      toolName: pending.toolName,
-      toolCallEntryId: pending.toolCallEntryId
-        ? createPiSessionEntryId(pending.toolCallEntryId)
-        : null,
-      toolResultEntryId: pending.toolResultEntryId
-        ? createPiSessionEntryId(pending.toolResultEntryId)
-        : null,
-      toolError: pending.toolError,
-      content: span.content,
-    };
+    return chunkSpans.map((span, chunkIndex) => {
+      const id = chunkIds[chunkIndex];
+      if (!id) {
+        throw new Error(`Recall chunk identity missing for ${textRunId}:${chunkIndex}`);
+      }
+      const previousSiblingId = chunkIds[chunkIndex - 1] ?? null;
+      const nextSiblingId = chunkIds[chunkIndex + 1] ?? null;
+      const siblingIds: string[] = [];
+      if (previousSiblingId) {
+        siblingIds.push(previousSiblingId);
+      }
+      if (nextSiblingId) {
+        siblingIds.push(nextSiblingId);
+      }
+      return {
+        schemaVersion: SESSION_CONVERSATION_SCHEMA_VERSION,
+        documentKind: pending.documentKind,
+        summaryKind: pending.summaryKind,
+        evidenceKind: pending.evidenceKind,
+        evidencePart: pending.evidencePart,
+        isDenseSearchable: pending.isDenseSearchable,
+        id,
+        checksum: hashConversationValue(span.content),
+        sessionId: context.sessionId,
+        sessionPath: context.sessionPath,
+        parentSessionPath: graph.header.parentSessionPath,
+        cwd: graph.header.cwd,
+        projectPath: graph.header.cwd,
+        projectAttribution: null,
+        sessionName: graph.sessionName,
+        entryId,
+        parentEntryId: pending.entry.parentId
+          ? createPiSessionEntryId(pending.entry.parentId)
+          : null,
+        childEntryIds: (graph.childEntryIdsById.get(pending.entry.id) ?? []).map(
+          createPiSessionEntryId,
+        ),
+        contributingEntryIds,
+        currentLeafId: context.currentLeafId,
+        branchPathLeafIds: branchPathLeafIds.map(createPiSessionEntryId),
+        isOnActiveBranch: pending.contributingEntries.every((entry) =>
+          graph.activeBranchEntryIds.has(entry.id),
+        ),
+        isVisibleInActiveContext: pending.contributingEntries.every((entry) =>
+          graph.activeContextEntryIds.has(entry.id),
+        ),
+        compactedByEntryIds: compactedByEntryIds.map(createPiSessionEntryId),
+        compactionFirstKeptEntryId: pending.compactionFirstKeptEntryId
+          ? createPiSessionEntryId(pending.compactionFirstKeptEntryId)
+          : null,
+        branchSummaryFromEntryId: pending.branchSummaryFromEntryId
+          ? createPiSessionEntryId(pending.branchSummaryFromEntryId)
+          : null,
+        role: pending.role,
+        timestamp: pending.entry.timestamp,
+        sourceLineStart: Math.min(...sourceLineIndexes),
+        sourceLineEnd: Math.max(...sourceLineIndexes),
+        sourceBlockStart: pending.textRun.sourceBlockStart,
+        sourceBlockEnd: pending.textRun.sourceBlockEnd,
+        characterStart: span.characterStart,
+        characterEnd: span.characterEnd,
+        tokenStart: span.tokenStart,
+        tokenEnd: span.tokenEnd,
+        tokenCount: span.tokenCount,
+        overlapTokenCount: span.overlapTokenCount,
+        textRunId,
+        textRunIndex: pending.textRun.textRunIndex,
+        chunkIndex,
+        chunkCount: chunkIds.length,
+        siblingIds,
+        previousSiblingId,
+        nextSiblingId,
+        toolCallId: pending.toolCallId,
+        toolName: pending.toolName,
+        toolCallEntryId: pending.toolCallEntryId
+          ? createPiSessionEntryId(pending.toolCallEntryId)
+          : null,
+        toolResultEntryId: pending.toolResultEntryId
+          ? createPiSessionEntryId(pending.toolResultEntryId)
+          : null,
+        toolError: pending.toolError,
+        content: span.content,
+      };
+    });
   });
 }
 
@@ -1617,42 +1638,118 @@ export async function readSessionConversationImport(
   const logicalSessions: SessionConversationLogicalSession[] = [];
   const chunks: SessionConversationChunk[] = [];
   const invocations: InvocationRecord[] = [];
+  const documentPhaseOrder: readonly SessionConversationDocumentPhaseMeasurement['phase'][] = [
+    'pending-atomic-summary-documents',
+    'turn-context-construction-budget-splitting',
+    'conversation-chunk-tokenization',
+    'metadata-invocation-project-attribution',
+  ];
   for (const session of imported.sessions) {
     const graph = measurePhase('graph-validation', () => readValidatedSessionGraph(session));
+    const documentPhaseElapsedMilliseconds: Record<
+      SessionConversationDocumentPhaseMeasurement['phase'],
+      number
+    > = {
+      'pending-atomic-summary-documents': 0,
+      'turn-context-construction-budget-splitting': 0,
+      'conversation-chunk-tokenization': 0,
+      'metadata-invocation-project-attribution': 0,
+    };
+    const measureDocumentPhase = <Result>(
+      phase: SessionConversationDocumentPhaseMeasurement['phase'],
+      operation: () => Result,
+    ): Result => {
+      if (!options.onDocumentPhaseMeasured) {
+        return operation();
+      }
+      const startedAt = monotonicNow();
+      try {
+        return operation();
+      } finally {
+        documentPhaseElapsedMilliseconds[phase] += Math.max(0, monotonicNow() - startedAt);
+      }
+    };
+    const measureAsyncDocumentPhase = async <Result>(
+      phase: SessionConversationDocumentPhaseMeasurement['phase'],
+      operation: () => Promise<Result>,
+    ): Promise<Result> => {
+      if (!options.onDocumentPhaseMeasured) {
+        return operation();
+      }
+      const startedAt = monotonicNow();
+      try {
+        return await operation();
+      } finally {
+        documentPhaseElapsedMilliseconds[phase] += Math.max(0, monotonicNow() - startedAt);
+      }
+    };
+    const measureTokenization: MeasureSessionConversationOperation = (operation) =>
+      measureDocumentPhase('conversation-chunk-tokenization', operation);
+    const measureMetadata: MeasureSessionConversationOperation = (operation) =>
+      measureDocumentPhase('metadata-invocation-project-attribution', operation);
+
     await measureAsyncPhase('document-construction-tokenization', async () => {
-      logicalSessions.push(createLogicalSessionSummary(session, graph));
-      const projectAttribution = options.resolveProjectIdentity
-        ? await options.resolveProjectIdentity(graph.header.cwd)
-        : null;
-      invocations.push(
-        ...createSessionInvocationRecords(graph.entries, {
-          sessionPath,
-          sessionId: graph.header.id,
-          sessionOrigin: graph.header.cwd,
-          projectAttribution,
-        }),
-      );
-      const logicalSessionIdentity =
-        imported.format === SessionImportFormat.PI_SESSION_REUSE_HISTORY
-          ? `${graph.header.id}@${graph.header.lineIndex}`
-          : graph.header.id;
-      const context: SessionConversationChunkContext = {
-        graph,
-        sessionPath,
-        logicalSessionIdentity,
-        tokenizer: options.tokenizer,
-        maxTokens,
-        overlapTokens,
-        sessionId: { value: graph.header.id },
-        currentLeafId: graph.currentLeafId ? createPiSessionEntryId(graph.currentLeafId) : null,
-      };
-      chunks.push(
-        ...createPendingConversationDocuments(graph)
-          .flatMap((pending) =>
-            createTokenBoundedTurnContextDocuments(pending, context.tokenizer, context.maxTokens),
-          )
-          .flatMap((pending) => createSessionConversationChunks(context, pending)),
-      );
+      try {
+        measureMetadata(() => logicalSessions.push(createLogicalSessionSummary(session, graph)));
+        const resolveProjectIdentity = options.resolveProjectIdentity;
+        const projectAttribution = resolveProjectIdentity
+          ? await measureAsyncDocumentPhase('metadata-invocation-project-attribution', () =>
+              resolveProjectIdentity(graph.header.cwd),
+            )
+          : null;
+        measureMetadata(() =>
+          invocations.push(
+            ...createSessionInvocationRecords(graph.entries, {
+              sessionPath,
+              sessionId: graph.header.id,
+              sessionOrigin: graph.header.cwd,
+              projectAttribution,
+            }),
+          ),
+        );
+        const context = measureMetadata((): SessionConversationChunkContext => {
+          const logicalSessionIdentity =
+            imported.format === SessionImportFormat.PI_SESSION_REUSE_HISTORY
+              ? `${graph.header.id}@${graph.header.lineIndex}`
+              : graph.header.id;
+          return {
+            graph,
+            sessionPath,
+            logicalSessionIdentity,
+            tokenizer: options.tokenizer,
+            maxTokens,
+            overlapTokens,
+            sessionId: { value: graph.header.id },
+            currentLeafId: graph.currentLeafId ? createPiSessionEntryId(graph.currentLeafId) : null,
+          };
+        });
+        const entryScopedDocuments = measureDocumentPhase('pending-atomic-summary-documents', () =>
+          createEntryScopedConversationDocuments(graph),
+        );
+        const turnContextDocuments = measureDocumentPhase(
+          'turn-context-construction-budget-splitting',
+          () => createTurnContextDocuments(graph),
+        );
+        const boundedTurnContextDocuments = measureDocumentPhase(
+          'turn-context-construction-budget-splitting',
+          () =>
+            turnContextDocuments.flatMap((pending) =>
+              createTokenBoundedTurnContextDocuments(pending, context.tokenizer, context.maxTokens),
+            ),
+        );
+        chunks.push(
+          ...[...entryScopedDocuments, ...boundedTurnContextDocuments].flatMap((pending) =>
+            createSessionConversationChunks(context, pending, measureTokenization, measureMetadata),
+          ),
+        );
+      } finally {
+        for (const phase of documentPhaseOrder) {
+          options.onDocumentPhaseMeasured?.({
+            phase,
+            elapsedMilliseconds: documentPhaseElapsedMilliseconds[phase],
+          });
+        }
+      }
     });
   }
   return { format: imported.format, logicalSessions, chunks, invocations };

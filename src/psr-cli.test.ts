@@ -477,6 +477,12 @@ void test('psr index logs content-free per-file phase measurements', async () =>
         embedding: 1_100,
         sqliteReplacement: 2_000,
       },
+      documentPhaseElapsedMilliseconds: {
+        pendingAtomicSummaryDocuments: 4_200,
+        turnContextConstructionBudgetSplitting: 88_100,
+        conversationChunkTokenization: 20_300,
+        metadataInvocationProjectAttribution: 3_100,
+      },
     },
   ]);
 
@@ -487,6 +493,10 @@ void test('psr index logs content-free per-file phase measurements', async () =>
   assert.match(progress, /read\/parse 12s/iu);
   assert.match(progress, /graph validation 8\.4s/iu);
   assert.match(progress, /documents\/tokenization 1m 56s/iu);
+  assert.match(progress, /pending documents 4\.2s/iu);
+  assert.match(progress, /turn contexts 1m 28s/iu);
+  assert.match(progress, /chunk tokenization 20s/iu);
+  assert.match(progress, /metadata\/Invocations\/Project 3\.1s/iu);
   assert.match(progress, /vector lookup 5\.2s/iu);
   assert.match(progress, /embedding 1\.1s/iu);
   assert.match(progress, /SQLite replacement 2\.0s/iu);

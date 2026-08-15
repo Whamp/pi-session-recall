@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "measuredAt": "2026-08-15T09:01:07-07:00",
   "baseRevision": "13f7f39d846c291ff63eaed19cc7ebb83e944880",
   "environment": {
@@ -119,5 +119,72 @@
     "vectorsMissingDenseDocument": 0,
     "projectMetadataMismatches": 0,
     "healthy": true
+  },
+  "documentSubphaseProfile": {
+    "measuredAt": "2026-08-15T09:35:41-07:00",
+    "instrumentationBaseRevision": "fb0c8190e758a545624c810d5130948fea7237d5",
+    "workload": {
+      "sourceLabel": "representative-large-active-session-forced-metadata-stale",
+      "sourceBytes": 120135012,
+      "denseDocuments": 11401,
+      "invocations": 6800,
+      "sourceByteDelta": 0
+    },
+    "method": {
+      "database": "copy-on-write clone of the active Recall database",
+      "source": "read-only production Physical session file",
+      "counterfactual": "before each sample, decrement only the clone's stored modification time by one millisecond",
+      "integrityCheck": "read-only SQLite quick check, foreign keys, Invocation FTS parity, Dense vector parity, and Project metadata parity"
+    },
+    "samples": [
+      {
+        "name": "document-subphases-1",
+        "totalElapsedMilliseconds": 166476.18986,
+        "graphValidationMilliseconds": 24300.973894,
+        "documentConstructionTokenizationMilliseconds": 132018.380426,
+        "documentPhaseElapsedMilliseconds": {
+          "pendingAtomicSummaryDocuments": 10.333853,
+          "turnContextConstructionBudgetSplitting": 6398.255786,
+          "conversationChunkTokenization": 125297.893609,
+          "metadataInvocationProjectAttribution": 306.505056,
+          "unattributedResidual": 5.392122
+        },
+        "documentPhasePercent": {
+          "pendingAtomicSummaryDocuments": 0.008,
+          "turnContextConstructionBudgetSplitting": 4.846,
+          "conversationChunkTokenization": 94.909,
+          "metadataInvocationProjectAttribution": 0.232
+        }
+      },
+      {
+        "name": "document-subphases-2",
+        "totalElapsedMilliseconds": 165306.702312,
+        "graphValidationMilliseconds": 25791.056547,
+        "documentConstructionTokenizationMilliseconds": 132972.851807,
+        "documentPhaseElapsedMilliseconds": {
+          "pendingAtomicSummaryDocuments": 10.661159,
+          "turnContextConstructionBudgetSplitting": 6572.46758,
+          "conversationChunkTokenization": 126075.974406,
+          "metadataInvocationProjectAttribution": 306.973814,
+          "unattributedResidual": 6.774848
+        },
+        "documentPhasePercent": {
+          "pendingAtomicSummaryDocuments": 0.008,
+          "turnContextConstructionBudgetSplitting": 4.943,
+          "conversationChunkTokenization": 94.813,
+          "metadataInvocationProjectAttribution": 0.231
+        }
+      }
+    ],
+    "postProfileIntegrity": {
+      "sqliteQuickCheck": "ok",
+      "foreignKeyViolations": 0,
+      "invocationsMissingFts": 0,
+      "ftsDocumentsMissingInvocation": 0,
+      "denseDocumentsMissingVector": 0,
+      "vectorsMissingDenseDocument": 0,
+      "projectMetadataMismatches": 0,
+      "healthy": true
+    }
   }
 }

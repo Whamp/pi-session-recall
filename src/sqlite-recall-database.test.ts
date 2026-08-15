@@ -129,6 +129,16 @@ void test('SQLite Recall database exposes its production schema and runtime iden
     () => reader.deletePhysicalSession('/sessions/read-only.jsonl'),
     /SQLite Recall database is read-only: deletePhysicalSession is unavailable/u,
   );
+  assert.throws(
+    () =>
+      reader.refreshPhysicalSessionSource({
+        sessionPath: '/sessions/read-only.jsonl',
+        size: 1,
+        mtimeMs: 2,
+        sourceSha256: TEST_SOURCE_SHA256,
+      }),
+    /SQLite Recall database is read-only: refreshPhysicalSessionSource is unavailable/u,
+  );
 });
 
 void test('SQLite Recall database rejects incompatible schema and runtime identity with a rebuild action', async (t) => {
@@ -706,7 +716,13 @@ void test('a late replacement constraint failure rolls back all projections and 
     size: 10,
     mtimeMs: 20,
     sourceSha256: TEST_SOURCE_SHA256,
-    conversationProjectionInputs: [],
+    conversationProjectionInputs: [
+      {
+        projectionInputId: 'd'.repeat(40),
+        inputChecksum: 'e'.repeat(64),
+        documents: [initialDocument],
+      },
+    ],
     documentIds: [initialDocument.id],
     denseDocuments: [initialDocument],
     denseEmbeddings: new Map([[initialDocument.id, initialEmbedding]]),
@@ -755,8 +771,14 @@ void test('a late replacement constraint failure rolls back all projections and 
       sessionPath: replacedSessionPath,
       size: 11,
       mtimeMs: 21,
-      sourceSha256: TEST_SOURCE_SHA256,
-      conversationProjectionInputs: [],
+      sourceSha256: 'f'.repeat(64),
+      conversationProjectionInputs: [
+        {
+          projectionInputId: '1'.repeat(40),
+          inputChecksum: '2'.repeat(64),
+          documents: [failedDocument],
+        },
+      ],
       documentIds: [failedDocument.id],
       denseDocuments: [failedDocument],
       denseEmbeddings: new Map([[failedDocument.id, createUnitEmbedding(33)]]),
@@ -778,6 +800,19 @@ void test('a late replacement constraint failure rolls back all projections and 
     documentIds: [initialDocument.id],
     denseDocumentIds: [initialDocument.id],
   });
+  assert.deepEqual(
+    database.readConversationProjectionInputs(replacedSessionPath),
+    new Map([
+      [
+        'd'.repeat(40),
+        {
+          projectionInputId: 'd'.repeat(40),
+          inputChecksum: 'e'.repeat(64),
+          documents: [initialDocument],
+        },
+      ],
+    ]),
+  );
   assert.deepEqual(
     database.fetchDenseDocuments([initialDocument.id]),
     new Map([[initialDocument.id, initialDocument]]),

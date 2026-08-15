@@ -1,0 +1,123 @@
+{
+  "version": 1,
+  "measuredAt": "2026-08-15T09:01:07-07:00",
+  "baseRevision": "13f7f39d846c291ff63eaed19cc7ebb83e944880",
+  "environment": {
+    "node": "v24.16.0",
+    "operatingSystem": "Linux 7.1.8-arch1-3 x86_64",
+    "embeddingProfile": "octen-http-v1"
+  },
+  "workload": {
+    "sourceLabel": "representative-large-active-session",
+    "sourceBytes": 119626979,
+    "sourceLines": 20004,
+    "indexedSourceBytesBeforeCatchUp": 119608656,
+    "additionalSourceBytes": 18323,
+    "indexedDenseDocumentsBeforeCatchUp": 11352,
+    "invocationsAfterCatchUp": 6761
+  },
+  "method": {
+    "database": "copy-on-write clone of the active Recall database",
+    "source": "read-only production Physical session file",
+    "writerIsolation": "production service inactive and operation lock absent before cloning",
+    "counterfactual": "after catch-up, decrement only the clone's stored mtime by one millisecond and rerun with identical source bytes",
+    "integrityCheck": "read-only SQLite quick check, foreign keys, Invocation FTS parity, and Dense vector parity"
+  },
+  "samples": [
+    {
+      "name": "catch-up-1",
+      "sourceByteDelta": 18323,
+      "denseDocuments": 11353,
+      "newlyEmbeddedDocuments": 12,
+      "reusedVectors": 11341,
+      "deletedDocuments": 11,
+      "totalElapsedMilliseconds": 161555.706169,
+      "phaseElapsedMilliseconds": {
+        "readParse": 351.864115,
+        "graphValidation": 22586.307991,
+        "documentConstructionTokenization": 128523.609115,
+        "vectorLookup": 3787.170613,
+        "embedding": 1553.267486,
+        "sqliteReplacement": 4740.218172
+      },
+      "phasePercentOfTotal": {
+        "readParse": 0.22,
+        "graphValidation": 13.98,
+        "documentConstructionTokenization": 79.55,
+        "vectorLookup": 2.34,
+        "embedding": 0.96,
+        "sqliteReplacement": 2.93
+      }
+    },
+    {
+      "name": "catch-up-2",
+      "sourceByteDelta": 18323,
+      "denseDocuments": 11353,
+      "newlyEmbeddedDocuments": 12,
+      "reusedVectors": 11341,
+      "deletedDocuments": 11,
+      "totalElapsedMilliseconds": 170305.302949,
+      "phaseElapsedMilliseconds": {
+        "readParse": 384.271916,
+        "graphValidation": 24496.59907,
+        "documentConstructionTokenization": 133852.092681,
+        "vectorLookup": 4828.281913,
+        "embedding": 1307.860935,
+        "sqliteReplacement": 5424.604184
+      },
+      "phasePercentOfTotal": {
+        "readParse": 0.23,
+        "graphValidation": 14.38,
+        "documentConstructionTokenization": 78.6,
+        "vectorLookup": 2.84,
+        "embedding": 0.77,
+        "sqliteReplacement": 3.19
+      }
+    },
+    {
+      "name": "forced-metadata-stale-zero-delta",
+      "sourceByteDelta": 0,
+      "denseDocuments": 11353,
+      "newlyEmbeddedDocuments": 0,
+      "reusedVectors": 11353,
+      "deletedDocuments": 0,
+      "totalElapsedMilliseconds": 186551.007039,
+      "phaseElapsedMilliseconds": {
+        "readParse": 394.991718,
+        "graphValidation": 45621.882856,
+        "documentConstructionTokenization": 134248.822137,
+        "vectorLookup": 2569.322414,
+        "embedding": 0,
+        "sqliteReplacement": 3703.46007
+      },
+      "phasePercentOfTotal": {
+        "readParse": 0.21,
+        "graphValidation": 24.46,
+        "documentConstructionTokenization": 71.96,
+        "vectorLookup": 1.38,
+        "embedding": 0,
+        "sqliteReplacement": 1.99
+      }
+    }
+  ],
+  "processTimingForCatchUp1Milliseconds": {
+    "wall": 175620,
+    "userCpu": 166190,
+    "systemCpu": 11990
+  },
+  "measurementCostProbe": {
+    "operation": "one million performance.now calls, ten samples",
+    "medianMilliseconds": 44.073717,
+    "estimatedClockReadCostForFourHundredCallsMilliseconds": 0.017629
+  },
+  "postProfileIntegrity": {
+    "sqliteQuickCheck": "ok",
+    "foreignKeyViolations": 0,
+    "invocationsMissingFts": 0,
+    "ftsDocumentsMissingInvocation": 0,
+    "denseDocumentsMissingVector": 0,
+    "vectorsMissingDenseDocument": 0,
+    "projectMetadataMismatches": 0,
+    "healthy": true
+  }
+}

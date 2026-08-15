@@ -2,7 +2,10 @@ import { stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
 import type { RecallChunkPolicy } from './recall-chunk-policy.js';
-import type { RecallIndexProgressEvent } from './recall-index-progress.js';
+import type {
+  PhysicalSessionIndexPhaseElapsedMilliseconds,
+  RecallIndexProgressEvent,
+} from './recall-index-progress.js';
 import type { RecallEmbeddingProvider } from './recall-inference-capabilities.js';
 import { listRecallSessionFiles } from './listRecallSessionFiles.js';
 import type { ResolvedProjectIdentity } from './resolve-project-identity.js';
@@ -49,6 +52,8 @@ export interface IncrementalSessionIndexerOptions {
   resolveProjectIdentity?: (sessionOrigin: string) => Promise<ResolvedProjectIdentity | null>;
   signal?: AbortSignal;
   rebuild?: boolean;
+  /** Monotonic milliseconds used only for per-file index phase measurements. */
+  monotonicNow?: () => number;
   onProgress?: (event: RecallIndexProgressEvent) => void;
 }
 
@@ -162,6 +167,8 @@ async function prepareChangedRecallEmbeddingMap(
   embeddingProvider: RecallEmbeddingProvider,
   vectorReuseReader: RecallVectorReuseReader | undefined,
   summary: ConversationIndexSummary,
+  phaseElapsedMilliseconds: PhysicalSessionIndexPhaseElapsedMilliseconds,
+  monotonicNow: () => number,
   onBatchPrepared: () => void,
   signal?: AbortSignal,
 ): Promise<Map<string, readonly number[]>> {
@@ -169,6 +176,7 @@ async function prepareChangedRecallEmbeddingMap(
   for (let start = 0; start < chunks.length; start += 128) {
     throwIfIndexingAborted(signal);
     const batch = chunks.slice(start, start + 128);
+    const vectorLookupStartedAt = monotonicNow();
     const ids = batch.map((chunk) => chunk.id);
     const currentDocuments = database.fetchDenseDocuments(ids);
     const currentVectors = database.fetchDenseVectors(ids);
@@ -195,15 +203,19 @@ async function prepareChangedRecallEmbeddingMap(
       summary.reusedVectors += 1;
       return false;
     });
+    phaseElapsedMilliseconds.vectorLookup += Math.max(0, monotonicNow() - vectorLookupStartedAt);
 
-    const embeddings =
-      chunksNeedingEmbedding.length === 0
-        ? []
-        : await embeddingProvider.embedDocuments(
-            chunksNeedingEmbedding.map((chunk) => chunk.content),
-            signal,
-          );
+    let embeddings: readonly (readonly number[])[] = [];
     if (chunksNeedingEmbedding.length > 0) {
+      const embeddingStartedAt = monotonicNow();
+      try {
+        embeddings = await embeddingProvider.embedDocuments(
+          chunksNeedingEmbedding.map((chunk) => chunk.content),
+          signal,
+        );
+      } finally {
+        phaseElapsedMilliseconds.embedding += Math.max(0, monotonicNow() - embeddingStartedAt);
+      }
       summary.embeddingRequestCount += 1;
       summary.newlyEmbeddedChunks += chunksNeedingEmbedding.length;
     }
@@ -228,7 +240,19 @@ async function indexChangedRecallSessionFile(
   onBatchPrepared: () => void,
 ): Promise<void> {
   const { sessionPath } = plannedFile;
+  const monotonicNow = options.monotonicNow ?? (() => performance.now());
+  const totalStartedAt = monotonicNow();
   const previous = database.readPhysicalSessionState(sessionPath);
+  const reusedVectorsBefore = summary.reusedVectors;
+  const newlyEmbeddedChunksBefore = summary.newlyEmbeddedChunks;
+  const phaseElapsedMilliseconds: PhysicalSessionIndexPhaseElapsedMilliseconds = {
+    readParse: 0,
+    graphValidation: 0,
+    documentConstructionTokenization: 0,
+    vectorLookup: 0,
+    embedding: 0,
+    sqliteReplacement: 0,
+  };
 
   let imported: Awaited<ReturnType<typeof readSessionConversationImport>>;
   try {
@@ -236,6 +260,21 @@ async function indexChangedRecallSessionFile(
       tokenizer: options.tokenizer,
       ...options.chunkPolicy,
       resolveProjectIdentity: resolveSessionProjectIdentity,
+      monotonicNow,
+      onImportPhaseMeasured(measurement) {
+        switch (measurement.phase) {
+          case 'read-parse':
+            phaseElapsedMilliseconds.readParse += measurement.elapsedMilliseconds;
+            break;
+          case 'graph-validation':
+            phaseElapsedMilliseconds.graphValidation += measurement.elapsedMilliseconds;
+            break;
+          case 'document-construction-tokenization':
+            phaseElapsedMilliseconds.documentConstructionTokenization +=
+              measurement.elapsedMilliseconds;
+            break;
+        }
+      },
     });
   } catch (error) {
     summary.failedSessions.push({
@@ -249,9 +288,14 @@ async function indexChangedRecallSessionFile(
     return;
   }
 
+  const attributionStartedAt = monotonicNow();
   const attributedChunks = await attributeRecallChunksToProjects(
     imported.chunks,
     resolveSessionProjectIdentity,
+  );
+  phaseElapsedMilliseconds.documentConstructionTokenization += Math.max(
+    0,
+    monotonicNow() - attributionStartedAt,
   );
   const denseChunks = attributedChunks.filter(
     (chunk): chunk is SessionConversationChunk & { isDenseSearchable: true } =>
@@ -266,22 +310,45 @@ async function indexChangedRecallSessionFile(
     options.embeddingProvider,
     options.vectorReuseReader,
     summary,
+    phaseElapsedMilliseconds,
+    monotonicNow,
     onBatchPrepared,
     options.signal,
   );
 
   throwIfIndexingAborted(options.signal);
-  database.replacePhysicalSession({
-    sessionPath,
-    size: plannedFile.size,
-    mtimeMs: plannedFile.mtimeMs,
-    documentIds: denseChunks.map((chunk) => chunk.id),
-    denseDocuments: denseChunks,
-    denseEmbeddings,
-    invocations: imported.invocations,
-  });
+  const sqliteReplacementStartedAt = monotonicNow();
+  try {
+    database.replacePhysicalSession({
+      sessionPath,
+      size: plannedFile.size,
+      mtimeMs: plannedFile.mtimeMs,
+      documentIds: denseChunks.map((chunk) => chunk.id),
+      denseDocuments: denseChunks,
+      denseEmbeddings,
+      invocations: imported.invocations,
+    });
+  } finally {
+    phaseElapsedMilliseconds.sqliteReplacement += Math.max(
+      0,
+      monotonicNow() - sqliteReplacementStartedAt,
+    );
+  }
   summary.deletedChunks += removedIds.length;
   summary.indexedSessions += 1;
+  options.onProgress?.({
+    kind: 'physical-session-file-profiled',
+    sessionPath,
+    change: plannedFile.change,
+    sourceBytesAtPlanning: plannedFile.size,
+    indexedSourceBytesBefore: previous?.size ?? null,
+    denseDocuments: denseChunks.length,
+    invocations: imported.invocations.length,
+    newlyEmbeddedDocuments: summary.newlyEmbeddedChunks - newlyEmbeddedChunksBefore,
+    reusedVectors: summary.reusedVectors - reusedVectorsBefore,
+    totalElapsedMilliseconds: Math.max(0, monotonicNow() - totalStartedAt),
+    phaseElapsedMilliseconds,
+  });
 }
 
 async function planMaintenanceWorkset(

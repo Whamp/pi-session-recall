@@ -33,12 +33,22 @@ export interface ConversationTextTokenizer {
   encodeConversationText(text: string): ConversationTextEncoding;
 }
 
+/** One measured phase while importing and reconstructing a Physical session file. */
+export interface SessionConversationImportPhaseMeasurement {
+  phase: 'read-parse' | 'graph-validation' | 'document-construction-tokenization';
+  elapsedMilliseconds: number;
+}
+
 /** Token limits for one atomic conversation chunk; production limits cannot be exceeded. */
 export interface SessionConversationChunkOptions {
   tokenizer: ConversationTextTokenizer;
   maxTokens?: number;
   overlapTokens?: number;
   resolveProjectIdentity?: (sessionOrigin: string) => Promise<ResolvedProjectIdentity | null>;
+  /** Monotonic milliseconds used only for Physical session import measurements. */
+  monotonicNow?: () => number;
+  /** Receives content-free timing for each complete or failed import phase. */
+  onImportPhaseMeasured?: (measurement: SessionConversationImportPhaseMeasurement) => void;
 }
 
 /** Stable graph identities and physical boundaries for one validated logical session. */
@@ -1573,45 +1583,77 @@ export async function readSessionConversationImport(
   const overlapTokens = options.overlapTokens ?? 128;
   assertRecallChunkPolicy({ maxTokens, overlapTokens });
 
-  const imported = await importSessionJsonl(sessionPath);
+  const monotonicNow = options.monotonicNow ?? (() => performance.now());
+  const measurePhase = <Result>(
+    phase: SessionConversationImportPhaseMeasurement['phase'],
+    operation: () => Result,
+  ): Result => {
+    const startedAt = monotonicNow();
+    try {
+      return operation();
+    } finally {
+      options.onImportPhaseMeasured?.({
+        phase,
+        elapsedMilliseconds: Math.max(0, monotonicNow() - startedAt),
+      });
+    }
+  };
+  const measureAsyncPhase = async <Result>(
+    phase: SessionConversationImportPhaseMeasurement['phase'],
+    operation: () => Promise<Result>,
+  ): Promise<Result> => {
+    const startedAt = monotonicNow();
+    try {
+      return await operation();
+    } finally {
+      options.onImportPhaseMeasured?.({
+        phase,
+        elapsedMilliseconds: Math.max(0, monotonicNow() - startedAt),
+      });
+    }
+  };
+
+  const imported = await measureAsyncPhase('read-parse', () => importSessionJsonl(sessionPath));
   const logicalSessions: SessionConversationLogicalSession[] = [];
   const chunks: SessionConversationChunk[] = [];
   const invocations: InvocationRecord[] = [];
   for (const session of imported.sessions) {
-    const graph = readValidatedSessionGraph(session);
-    logicalSessions.push(createLogicalSessionSummary(session, graph));
-    const projectAttribution = options.resolveProjectIdentity
-      ? await options.resolveProjectIdentity(graph.header.cwd)
-      : null;
-    invocations.push(
-      ...createSessionInvocationRecords(graph.entries, {
+    const graph = measurePhase('graph-validation', () => readValidatedSessionGraph(session));
+    await measureAsyncPhase('document-construction-tokenization', async () => {
+      logicalSessions.push(createLogicalSessionSummary(session, graph));
+      const projectAttribution = options.resolveProjectIdentity
+        ? await options.resolveProjectIdentity(graph.header.cwd)
+        : null;
+      invocations.push(
+        ...createSessionInvocationRecords(graph.entries, {
+          sessionPath,
+          sessionId: graph.header.id,
+          sessionOrigin: graph.header.cwd,
+          projectAttribution,
+        }),
+      );
+      const logicalSessionIdentity =
+        imported.format === SessionImportFormat.PI_SESSION_REUSE_HISTORY
+          ? `${graph.header.id}@${graph.header.lineIndex}`
+          : graph.header.id;
+      const context: SessionConversationChunkContext = {
+        graph,
         sessionPath,
-        sessionId: graph.header.id,
-        sessionOrigin: graph.header.cwd,
-        projectAttribution,
-      }),
-    );
-    const logicalSessionIdentity =
-      imported.format === SessionImportFormat.PI_SESSION_REUSE_HISTORY
-        ? `${graph.header.id}@${graph.header.lineIndex}`
-        : graph.header.id;
-    const context: SessionConversationChunkContext = {
-      graph,
-      sessionPath,
-      logicalSessionIdentity,
-      tokenizer: options.tokenizer,
-      maxTokens,
-      overlapTokens,
-      sessionId: { value: graph.header.id },
-      currentLeafId: graph.currentLeafId ? createPiSessionEntryId(graph.currentLeafId) : null,
-    };
-    chunks.push(
-      ...createPendingConversationDocuments(graph)
-        .flatMap((pending) =>
-          createTokenBoundedTurnContextDocuments(pending, context.tokenizer, context.maxTokens),
-        )
-        .flatMap((pending) => createSessionConversationChunks(context, pending)),
-    );
+        logicalSessionIdentity,
+        tokenizer: options.tokenizer,
+        maxTokens,
+        overlapTokens,
+        sessionId: { value: graph.header.id },
+        currentLeafId: graph.currentLeafId ? createPiSessionEntryId(graph.currentLeafId) : null,
+      };
+      chunks.push(
+        ...createPendingConversationDocuments(graph)
+          .flatMap((pending) =>
+            createTokenBoundedTurnContextDocuments(pending, context.tokenizer, context.maxTokens),
+          )
+          .flatMap((pending) => createSessionConversationChunks(context, pending)),
+      );
+    });
   }
   return { format: imported.format, logicalSessions, chunks, invocations };
 }

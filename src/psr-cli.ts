@@ -119,6 +119,28 @@ function formatDuration(durationMs: number): string {
   return `${seconds}s`;
 }
 
+function formatProfileDuration(durationMs: number): string {
+  if (durationMs < 1_000) {
+    return `${Math.max(0, Math.round(durationMs))}ms`;
+  }
+  if (durationMs < 10_000) {
+    return `${(durationMs / 1_000).toFixed(1)}s`;
+  }
+  return formatDuration(durationMs);
+}
+
+function formatPhysicalSessionSourceByteChange(
+  event: Extract<RecallIndexProgressEvent, { kind: 'physical-session-file-profiled' }>,
+): string {
+  if (event.indexedSourceBytesBefore === null) {
+    return `${ENGLISH_INTEGER_FORMAT.format(event.sourceBytesAtPlanning)} new source bytes at planning`;
+  }
+  const sourceByteDelta = event.sourceBytesAtPlanning - event.indexedSourceBytesBefore;
+  return sourceByteDelta >= 0
+    ? `${ENGLISH_INTEGER_FORMAT.format(sourceByteDelta)} additional source bytes at planning`
+    : `${ENGLISH_INTEGER_FORMAT.format(Math.abs(sourceByteDelta))} fewer source bytes at planning`;
+}
+
 function formatRemainingTime(
   event: Extract<RecallIndexProgressEvent, { kind: 'indexing-maintenance-workset' }>,
   indexingElapsedMs: number | undefined,
@@ -246,6 +268,10 @@ function formatRecallIndexProgress(
       return '\nIndexing maintenance workset...';
     case 'indexing-maintenance-workset':
       return `  ${event.completedFiles}/${event.totalFiles} files · ${formatDuration(timing.elapsedMs)} elapsed · ${formatRemainingTime(event, timing.indexingElapsedMs)} · ${ENGLISH_INTEGER_FORMAT.format(event.newlyEmbeddedDocuments)} embedded · ${ENGLISH_INTEGER_FORMAT.format(event.reusedVectors)} reused · ${ENGLISH_INTEGER_FORMAT.format(event.deletedDocuments)} deleted · ${ENGLISH_INTEGER_FORMAT.format(event.failedSessions)} failed`;
+    case 'physical-session-file-profiled': {
+      const phases = event.phaseElapsedMilliseconds;
+      return `  Profile: ${event.sessionPath} · ${formatPhysicalSessionSourceByteChange(event)} · ${ENGLISH_INTEGER_FORMAT.format(event.denseDocuments)} dense documents · ${ENGLISH_INTEGER_FORMAT.format(event.invocations)} Invocations · ${ENGLISH_INTEGER_FORMAT.format(event.newlyEmbeddedDocuments)} embedded · ${ENGLISH_INTEGER_FORMAT.format(event.reusedVectors)} reused · total ${formatProfileDuration(event.totalElapsedMilliseconds)} · read/parse ${formatProfileDuration(phases.readParse)} · graph validation ${formatProfileDuration(phases.graphValidation)} · documents/tokenization ${formatProfileDuration(phases.documentConstructionTokenization)} · vector lookup ${formatProfileDuration(phases.vectorLookup)} · embedding ${formatProfileDuration(phases.embedding)} · SQLite replacement ${formatProfileDuration(phases.sqliteReplacement)}`;
+    }
     case 'physical-session-file-failed':
       return `  Warning: physical session file failed: ${event.sessionPath}`;
     case 'optimizing-collection':

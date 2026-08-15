@@ -1,3 +1,13 @@
+/** Content-free elapsed milliseconds for the expensive phases of one changed Physical session file. */
+export interface PhysicalSessionIndexPhaseElapsedMilliseconds {
+  readParse: number;
+  graphValidation: number;
+  documentConstructionTokenization: number;
+  vectorLookup: number;
+  embedding: number;
+  sqliteReplacement: number;
+}
+
 /** Observable phases and cumulative facts from one standalone index maintenance operation. */
 export type RecallIndexProgressEvent =
   | { kind: 'preparing' }
@@ -29,6 +39,19 @@ export type RecallIndexProgressEvent =
       reusedVectors: number;
       deletedDocuments: number;
       failedSessions: number;
+    }
+  | {
+      kind: 'physical-session-file-profiled';
+      sessionPath: string;
+      change: 'new' | 'changed';
+      sourceBytesAtPlanning: number;
+      indexedSourceBytesBefore: number | null;
+      denseDocuments: number;
+      invocations: number;
+      newlyEmbeddedDocuments: number;
+      reusedVectors: number;
+      totalElapsedMilliseconds: number;
+      phaseElapsedMilliseconds: PhysicalSessionIndexPhaseElapsedMilliseconds;
     }
   | { kind: 'physical-session-file-failed'; sessionPath: string }
   | { kind: 'optimizing-collection' }

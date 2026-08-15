@@ -863,6 +863,68 @@ void test('manual index maintenance reports cumulative progress and continues af
   assert.equal(finalProgress.failedSessions, result.failedSessions.length);
 });
 
+void test('manual index maintenance profiles each changed physical session file by phase', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-indexer-profile-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const sessionsDirectory = join(root, 'sessions');
+  const databasePath = join(root, 'recall.sqlite');
+  const sessionPath = join(sessionsDirectory, 'profiled.jsonl');
+  await mkdir(sessionsDirectory, { recursive: true });
+  await writeSimplePhysicalSessionFile(sessionPath, 'profiled', 'initial profile evidence');
+  let monotonicTime = 0;
+  const options = {
+    ...createIndexerOptions({
+      sessionsDirectory,
+      databasePath,
+      embeddingProvider: createRecordingEmbeddingProvider([]),
+    }),
+    monotonicNow() {
+      monotonicTime += 5;
+      return monotonicTime;
+    },
+  };
+  await indexChangedConversationSessions(options);
+  const previousSourceBytes = (await stat(sessionPath)).size;
+
+  await writeSimplePhysicalSessionFile(
+    sessionPath,
+    'profiled',
+    'updated profile evidence with appended words',
+  );
+  const events: RecallIndexProgressEvent[] = [];
+  const result = await indexChangedConversationSessions({
+    ...options,
+    onProgress(event) {
+      events.push(event);
+    },
+  });
+
+  const profileEvents = events.filter((event) => event.kind === 'physical-session-file-profiled');
+  assert.equal(profileEvents.length, 1);
+  const profile = profileEvents[0];
+  assert.ok(profile?.kind === 'physical-session-file-profiled');
+  assert.equal(profile.sessionPath, sessionPath);
+  assert.equal(profile.change, 'changed');
+  assert.equal(profile.indexedSourceBytesBefore, previousSourceBytes);
+  assert.equal(profile.sourceBytesAtPlanning, (await stat(sessionPath)).size);
+  assert.equal(profile.newlyEmbeddedDocuments, result.newlyEmbeddedChunks);
+  assert.equal(profile.reusedVectors, result.reusedVectors);
+  assert.ok(profile.denseDocuments > 0);
+  assert.ok(profile.totalElapsedMilliseconds > 0);
+  assert.deepEqual(Object.keys(profile.phaseElapsedMilliseconds).sort(), [
+    'documentConstructionTokenization',
+    'embedding',
+    'graphValidation',
+    'readParse',
+    'sqliteReplacement',
+    'vectorLookup',
+  ]);
+  for (const elapsedMilliseconds of Object.values(profile.phaseElapsedMilliseconds)) {
+    assert.ok(elapsedMilliseconds > 0);
+  }
+  assert.doesNotMatch(JSON.stringify(profile), /updated profile evidence/iu);
+});
+
 void test('manual index maintenance reports multiple batches within one large physical session file', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'recall-indexer-batches-'));
   t.after(() => rm(root, { recursive: true, force: true }));

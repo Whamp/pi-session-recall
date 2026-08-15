@@ -1132,6 +1132,41 @@ void test('Pi session-file reuse history becomes independent logical sessions wi
   assert.equal(imported.chunks[1]?.parentSessionPath, '/parent/two.jsonl');
 });
 
+void test('session import measures graph and document phases for every reused logical session', async () => {
+  const sessionPath = join(
+    import.meta.dirname,
+    'fixtures/session-import/pi-session-reuse-history.jsonl',
+  );
+  let monotonicTime = 0;
+  const measurements: Array<{ phase: string; elapsedMilliseconds: number }> = [];
+
+  await readSessionConversationImport(sessionPath, {
+    tokenizer: createWhitespaceConversationTokenizer(),
+    monotonicNow() {
+      monotonicTime += 5;
+      return monotonicTime;
+    },
+    onImportPhaseMeasured(measurement) {
+      measurements.push(measurement);
+    },
+  });
+
+  assert.deepEqual(
+    measurements.map(({ phase }) => phase),
+    [
+      'read-parse',
+      'graph-validation',
+      'document-construction-tokenization',
+      'graph-validation',
+      'document-construction-tokenization',
+    ],
+  );
+  assert.deepEqual(
+    measurements.map(({ elapsedMilliseconds }) => elapsedMilliseconds),
+    [5, 5, 5, 5, 5],
+  );
+});
+
 void test('v1 compaction conversion validates edge indexes and maps compaction references directly', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'recall-v1-compaction-indexes-'));
   const options = { tokenizer: createWhitespaceConversationTokenizer() };

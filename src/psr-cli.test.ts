@@ -455,6 +455,45 @@ void test('psr index renders concise human progress with elapsed time and a roll
   assert.doesNotMatch(progress, new RegExp(sessionPath, 'u'));
 });
 
+void test('psr index logs content-free per-file phase measurements', async () => {
+  const sessionPath = '/sessions/large-active-session.jsonl';
+  const fixture = createPsrCliFixture([
+    {
+      kind: 'physical-session-file-profiled',
+      sessionPath,
+      change: 'changed',
+      sourceBytesAtPlanning: 120_000_000,
+      indexedSourceBytesBefore: 119_000_000,
+      denseDocuments: 11_352,
+      invocations: 6_760,
+      newlyEmbeddedDocuments: 21,
+      reusedVectors: 10_536,
+      totalElapsedMilliseconds: 144_700,
+      phaseElapsedMilliseconds: {
+        readParse: 12_300,
+        graphValidation: 8_400,
+        documentConstructionTokenization: 115_700,
+        vectorLookup: 5_200,
+        embedding: 1_100,
+        sqliteReplacement: 2_000,
+      },
+    },
+  ]);
+
+  await runPsrCli(['index'], fixture.dependencies);
+
+  const progress = fixture.progressOutput.join('');
+  assert.match(progress, new RegExp(sessionPath, 'u'));
+  assert.match(progress, /read\/parse 12s/iu);
+  assert.match(progress, /graph validation 8\.4s/iu);
+  assert.match(progress, /documents\/tokenization 1m 56s/iu);
+  assert.match(progress, /vector lookup 5\.2s/iu);
+  assert.match(progress, /embedding 1\.1s/iu);
+  assert.match(progress, /SQLite replacement 2\.0s/iu);
+  assert.match(progress, /1,000,000 additional source bytes at planning/iu);
+  assert.doesNotMatch(progress, /session content/iu);
+});
+
 void test('psr index waits for a healthy completed file before estimating remaining time', async () => {
   const fixture = createPsrCliFixture(
     [

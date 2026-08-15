@@ -80,6 +80,7 @@ psr ignore remove path/to/session.jsonl         # make one exact path eligible a
 - removes evidence for deleted or newly ignored indexed session files;
 - skips ignored files before parsing or embedding them;
 - reports malformed eligible session files and continues with healthy files;
+- reports one content-free per-file profile after a successful replacement, covering read/parse, graph validation, document construction/tokenization, vector lookup, embedding, and SQLite replacement;
 - shows elapsed time and estimates time remaining after a healthy file completes;
 - performs no corpus-wide compaction or optimization.
 

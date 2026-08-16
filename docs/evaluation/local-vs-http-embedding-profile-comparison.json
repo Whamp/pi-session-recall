@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "completedAt": "2026-08-16T15:32:39.011Z",
   "recallCommit": "8b41b282a8d8d45a423693a56a40206c4767a3d6",
   "nodeVersion": "v24.16.0",
@@ -999,7 +999,7 @@
       "sourceTargets": 8,
       "synthetic": true,
       "totalBytes": 44782,
-      "productionScaleReference": {
+      "maintainerSessionHistoryExample": {
         "capturedAt": "2026-08-16T16:21:36Z",
         "sessionFiles": 3803,
         "sourceBytes": 3731855729,
@@ -1008,7 +1008,9 @@
         "largestSessionMiB": 130.65963172912598,
         "fileCountRatioToEvaluation": 253.53333333333333,
         "sourceByteRatioToEvaluation": 83333.83343754186,
-        "includedInRawAgentBaseline": false
+        "includedInRawAgentBaseline": false,
+        "description": "One dated example from the project maintainer's personal session history.",
+        "representativeOfTypicalInstallations": false
       }
     },
     "policy": {

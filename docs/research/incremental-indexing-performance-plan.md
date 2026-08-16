@@ -190,4 +190,6 @@ Do not reserve unused checkpoint columns. A later schema change is cheap because
 
 After each change, run focused tests, the deterministic replay corpus, the representative disposable-clone profile, SQLite integrity checks, `npm test`, `npm run typecheck`, `npm run lint`, `npm run format:check`, and the TypeScript slop checks. Record the new profile beside the existing baseline.
 
-A phase is complete only when its optimized output equals a clean rebuild from the same JSONL. When in doubt, throw away the derived optimization state and run the full importer.
+Use deterministic and representative subsets during implementation. Start one full-corpus staged rebuild only after the code, complete diff, full test suite, and performance gates are final. Treat that rebuild as release evidence, not as the development feedback loop.
+
+A phase is complete only when its optimized output equals a clean rebuild from the same JSONL. When in doubt, throw away the derived optimization state and run the full importer on the bounded test corpus.

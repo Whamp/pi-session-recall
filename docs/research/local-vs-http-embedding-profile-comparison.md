@@ -31,7 +31,7 @@ Both profiles also ran the existing 16-case release gate five times. Both preser
 
 A separate baseline gave the same 32 queries to coding agents that could read only the 15 raw JSONL files in the synthetic evaluation corpus. Those files totaled 44,782 bytes. They could not use Recall, its database, repository documentation, evaluation answers, or prior session memory.
 
-The maintainer's personal session history was not part of this baseline. On 2026-08-16 it contained 3,803 session files totaling 3,731,855,729 bytes (3.476 GiB), and its largest file was 137,006,554 bytes (130.66 MiB). That is 254 times the evaluation file count and more than 83,000 times its bytes. Other users may have much smaller or larger histories. These measurements show one large, long-running repository—not a typical installation. Direct-agent search must repeatedly discover and narrow that larger corpus, so the benchmark below is a favorable small-corpus result rather than a measurement of the maintainer's full history.
+For context, the maintainer's session history contained 3,803 files totaling 3,731,855,729 bytes (3.476 GiB) on 2026-08-16. Its largest file was 137,006,554 bytes (130.66 MiB). Corpus sizes vary, but this example had 254 times as many files and more than 83,000 times as many bytes as the evaluation set. The raw-agent baseline did not search this larger corpus, so it remains a favorable small-corpus result.
 
 | Path                                      | Strict result | Measured time                   | Raw files examined |
 | ----------------------------------------- | ------------: | ------------------------------- | -----------------: |

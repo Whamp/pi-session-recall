@@ -1283,7 +1283,28 @@
     "comparisons": {
       "coldMedianToHttpIndexedMedianRatio": 588.4676700673608,
       "coldMedianToLocalIndexedMedianRatio": 479.44143532104323,
-      "coldSequentialSumToBatchTotalRatio": 19.209621486017856
+      "coldSequentialSumToBatchTotalRatio": 19.209621486017856,
+      "sameCorpusTotal": {
+        "queryCount": 32,
+        "rawFreshAgentSequentialSeconds": 520.696,
+        "http": {
+          "indexBuildSeconds": 4.423926234999999,
+          "querySeconds": 0.8545584160000435,
+          "totalSeconds": 5.278484651000042,
+          "savedSeconds": 515.417515349,
+          "savedFraction": 0.9898626364500592,
+          "speedup": 98.64497756971802
+        },
+        "local": {
+          "indexBuildSeconds": 11.245852497,
+          "querySeconds": 1.0488872320000082,
+          "totalSeconds": 12.294739729000007,
+          "savedSeconds": 508.401260271,
+          "savedFraction": 0.9763878736748506,
+          "speedup": 42.35112019263143
+        },
+        "scope": "Same 15-file synthetic corpus only; not a production rebuild break-even estimate."
+      }
     },
     "limitations": [
       "Indexed Recall timing measures retrieval and evidence loading; raw-agent timing also includes filesystem investigation and answer composition.",

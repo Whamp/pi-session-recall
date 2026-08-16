@@ -40,6 +40,16 @@ A separate baseline gave the same 32 queries to coding agents that could read on
 
 The cold baseline used 32 fresh GPT-5.6 Sol workers, one per query. Every worker independently discovered and opened all 15 files. Their measured search intervals totaled 520.696 seconds if run sequentially. All 32 answers and citations passed an independent grader using the same required-context and source-occurrence rules as Recall.
 
+For a fair same-corpus total, add one index build to all 32 indexed searches:
+
+| Path                 | One index build | 32 searches | Total time | Time saved versus fresh raw agents |
+| -------------------- | --------------: | ----------: | ---------: | ---------------------------------: |
+| Fresh raw agents     |             n/a |   520.696 s |  520.696 s |                                  — |
+| HTTP Octen 4B Recall |         4.424 s |     0.855 s |    5.278 s |         515.418 s (98.99%; 98.64×) |
+| Local Octen Recall   |        11.246 s |     1.049 s |   12.295 s |         508.401 s (97.64%; 42.35×) |
+
+Once the index exists, HTTP Recall avoids about 15.688 seconds of the measured raw-agent interval per median query. This is the fair total for the 15-file evaluation only. It is not a full-production setup break-even calculation: the production rebuild indexes thousands of files, and direct raw-agent search over that same corpus was not measured here.
+
 The one-worker batch is an amortized lower bound, not normal fresh-query behavior. That worker learned the corpus once and reused it for every question. Its output contract also allowed only one citation, making the four two-source duplicate checks impossible; four more answers omitted adjacent question context. The 24/32 score therefore measures that specific process and contract, not the model alone.
 
 These timings cover different boundaries. Recall latency measures retrieval and evidence loading, while the raw-agent interval includes filesystem investigation and answer composition but excludes model startup before its first tool call and response serialization after its last tool call. The 15-file synthetic corpus also favors raw search compared with a real history containing hundreds or thousands of files. The baseline shows that raw inspection can answer well without setup, but it repeatedly pays schema discovery and file-reading costs that an index pays once.

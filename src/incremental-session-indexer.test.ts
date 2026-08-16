@@ -944,6 +944,139 @@ void test('manual index maintenance profiles each changed physical session file 
   assert.doesNotMatch(JSON.stringify(profile), /updated profile evidence/iu);
 });
 
+void test('one physical session embeds identical chunk content once without removing occurrences or overlap', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-indexer-identical-embedding-inputs-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const sessionsDirectory = join(root, 'sessions');
+  const databasePath = join(root, 'recall.sqlite');
+  const sessionPath = join(sessionsDirectory, 'repeated-content.jsonl');
+  await mkdir(sessionsDirectory, { recursive: true });
+  const repeatedContent = Array.from({ length: 600 }, (_, index) => `token-${index}`).join(' ');
+  await writeFile(
+    sessionPath,
+    sessionLines([
+      {
+        type: 'session',
+        version: 3,
+        id: 'repeated-content',
+        timestamp: '2026-01-01',
+        cwd: '/p',
+      },
+      {
+        type: 'custom_message',
+        id: 'first-copy',
+        parentId: null,
+        timestamp: '2026-01-01',
+        role: 'custom',
+        content: repeatedContent,
+        display: true,
+      },
+      {
+        type: 'custom_message',
+        id: 'second-copy',
+        parentId: 'first-copy',
+        timestamp: '2026-01-01',
+        role: 'custom',
+        content: repeatedContent,
+        display: true,
+      },
+    ]),
+  );
+  const fullImport = await readSessionConversationImport(sessionPath, {
+    tokenizer,
+    maxTokens: 512,
+    overlapTokens: 64,
+  });
+  assert.equal(fullImport.chunks.length, 4);
+  assert.equal(new Set(fullImport.chunks.map((chunk) => chunk.content)).size, 2);
+  assert.equal(fullImport.chunks.filter((chunk) => chunk.overlapTokenCount > 0).length, 2);
+  const embeddedBatches: string[][] = [];
+
+  const summary = await indexChangedConversationSessions(
+    createIndexerOptions({
+      sessionsDirectory,
+      databasePath,
+      embeddingProvider: createRecordingEmbeddingProvider(embeddedBatches),
+    }),
+  );
+
+  const persistedDocuments = readSessionDenseDocuments(databasePath, sessionPath);
+  assert.equal(persistedDocuments.size, 4);
+  assert.deepEqual(
+    new Set(Array.from(persistedDocuments.values()).map((document) => document.id)),
+    new Set(fullImport.chunks.map((chunk) => chunk.id)),
+  );
+  assert.equal(
+    Array.from(persistedDocuments.values()).filter((document) => document.overlapTokenCount > 0)
+      .length,
+    2,
+  );
+  assert.equal(embeddedBatches.flat().length, 2);
+  assert.equal(new Set(embeddedBatches.flat()).size, 2);
+  assert.equal(summary.newlyEmbeddedChunks, 2);
+  assert.equal(summary.reusedVectors, 2);
+  const database = openSqliteRecallDatabase(databasePath, { readOnly: true });
+  t.after(() => database.close());
+  const persistedVectors = database.fetchDenseVectors(Array.from(persistedDocuments.keys()));
+  for (const documents of Map.groupBy(
+    persistedDocuments.values(),
+    (document) => document.content,
+  ).values()) {
+    assert.equal(documents.length, 2);
+    assert.deepEqual(
+      persistedVectors.get(documents[0]?.id ?? ''),
+      persistedVectors.get(documents[1]?.id ?? ''),
+    );
+  }
+});
+
+void test('identical embedding input reuse spans batches but remains scoped to one physical session', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'recall-indexer-bounded-embedding-inputs-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const sessionsDirectory = join(root, 'sessions');
+  const databasePath = join(root, 'recall.sqlite');
+  await mkdir(sessionsDirectory, { recursive: true });
+  const repeatedContent = 'repeated compaction-like evidence';
+  for (const sessionId of ['first-session', 'second-session']) {
+    const repeatedMessages = Array.from({ length: 130 }, (_, index) => ({
+      type: 'custom_message',
+      id: `${sessionId}-copy-${index}`,
+      parentId: index === 0 ? null : `${sessionId}-copy-${index - 1}`,
+      timestamp: '2026-01-01',
+      role: 'custom',
+      content: repeatedContent,
+      display: true,
+    }));
+    await writeFile(
+      join(sessionsDirectory, `${sessionId}.jsonl`),
+      sessionLines([
+        { type: 'session', version: 3, id: sessionId, timestamp: '2026-01-01', cwd: '/p' },
+        ...repeatedMessages,
+      ]),
+    );
+  }
+  const embeddedBatches: string[][] = [];
+
+  const summary = await indexChangedConversationSessions(
+    createIndexerOptions({
+      sessionsDirectory,
+      databasePath,
+      embeddingProvider: createRecordingEmbeddingProvider(embeddedBatches),
+    }),
+  );
+
+  assert.deepEqual(embeddedBatches, [[repeatedContent], [repeatedContent]]);
+  assert.equal(summary.indexedSessions, 2);
+  assert.equal(summary.newlyEmbeddedChunks, 2);
+  assert.equal(summary.reusedVectors, 258);
+  for (const sessionId of ['first-session', 'second-session']) {
+    assert.equal(
+      readSessionDenseDocuments(databasePath, join(sessionsDirectory, `${sessionId}.jsonl`)).size,
+      130,
+    );
+  }
+});
+
 void test('manual index maintenance reports multiple batches within one large physical session file', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'recall-indexer-batches-'));
   t.after(() => rm(root, { recursive: true, force: true }));

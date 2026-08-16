@@ -25,4 +25,4 @@ Reopen this decision only when measurements show a concrete problem:
 - global search exceeds its 500 ms p95 target and users notice the delay; or
 - corpus growth makes the planning scan material again.
 
-Full database rebuilds are the one known performance problem left: the schema 4 rebuild took 11 hours 23 minutes. Improve rebuild throughput before adding complexity to routine maintenance, and keep rebuild work isolated from the live read and update paths.
+Full database rebuilds are the one known performance problem left: the schema 4 rebuild took 11 hours 23 minutes. [ADR 0018](0018-reuse-identical-embedding-inputs-within-physical-sessions.md) removes exact repeated embedding inputs within each Physical session without changing routine maintenance state or recovery. Keep further rebuild work isolated from the live read and update paths.

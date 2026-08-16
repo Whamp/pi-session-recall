@@ -1,0 +1,109 @@
+{
+  "version": 1,
+  "measuredAt": "2026-08-16",
+  "purpose": "Measure exact embedding-input repetition and validate file-local vector reuse without a full-corpus rebuild.",
+  "historicalFullRebuild": {
+    "physicalSessionsIndexed": 3791,
+    "denseDocuments": 403687,
+    "elapsedSeconds": 41014.943,
+    "embeddingSeconds": 37125.653,
+    "nonEmbeddingSeconds": 3889.29,
+    "embeddingElapsedPercent": 90.519
+  },
+  "currentCorpusReadOnlyMeasurement": {
+    "denseDocuments": 406372,
+    "totalDocumentTokens": 119740141,
+    "distinctDocumentTexts": 266139,
+    "exactDuplicateTokens": 54721623,
+    "exactDuplicateTokenPercent": 45.7,
+    "withinPhysicalSessionDuplicateTokens": 43551880,
+    "withinPhysicalSessionDuplicateTokenPercent": 36.372,
+    "withinPhysicalSessionCompactionSummaryDuplicateTokens": 41559968,
+    "intentionalOverlapTokens": 10389335,
+    "intentionalOverlapTokenPercent": 8.677
+  },
+  "providerEquivalenceProbe": {
+    "endpointProfile": "Octen HTTP 4B, 2560 native dimensions, normalized 1024-dimensional FP32 stored prefix",
+    "syntheticInput": true,
+    "sampleCount": 5,
+    "batchPlacementsCompared": 4,
+    "minimumStoredVectorCosineSimilarity": 0.9996813786961056,
+    "maximumStoredVectorCosineDistance": 0.00031862130389437304,
+    "bitIdenticalAcrossAllPlacements": false,
+    "interpretation": "Identical text is semantically equivalent but not guaranteed to reproduce bit-for-bit across batch positions."
+  },
+  "representativeBenchmark": {
+    "method": "Alternating fresh disposable databases against the same immutable source snapshot, production tokenizer, HTTP embedding profile, and batch size 16.",
+    "physicalSession": {
+      "denseDocuments": 248,
+      "invocations": 267,
+      "totalTokens": 86763,
+      "exactDuplicateDocuments": 102,
+      "exactDuplicateTokens": 46082,
+      "exactDuplicateTokenPercent": 53.11
+    },
+    "baseSamples": [
+      {
+        "elapsedMilliseconds": 28772.386132,
+        "newlyEmbeddedDocuments": 248,
+        "reusedVectors": 0,
+        "providerBatchCalls": 2
+      },
+      {
+        "elapsedMilliseconds": 28812.810601,
+        "newlyEmbeddedDocuments": 248,
+        "reusedVectors": 0,
+        "providerBatchCalls": 2
+      }
+    ],
+    "optimizedSamples": [
+      {
+        "elapsedMilliseconds": 14910.270233,
+        "newlyEmbeddedDocuments": 146,
+        "reusedVectors": 102,
+        "providerBatchCalls": 2
+      },
+      {
+        "elapsedMilliseconds": 14966.509904,
+        "newlyEmbeddedDocuments": 146,
+        "reusedVectors": 102,
+        "providerBatchCalls": 2
+      }
+    ],
+    "baseMedianMilliseconds": 28792.5983665,
+    "optimizedMedianMilliseconds": 14938.3900685,
+    "wallTimeReductionPercent": 48.11725611440224,
+    "correctness": {
+      "denseDocumentsRetained": 248,
+      "invocationsRetained": 267,
+      "normalizedDenseMetadataMatched": true,
+      "normalizedInvocationsMatched": true,
+      "sqliteQuickCheck": "ok",
+      "foreignKeyViolations": 0,
+      "invocationFtsParity": true,
+      "projectionInputsMissingDenseDocument": 0,
+      "denseDocumentsMissingVector": 0,
+      "vectorsMissingDenseDocument": 0,
+      "projectMetadataMismatches": 0
+    }
+  },
+  "smallUniqueFileRegression": {
+    "method": "Separate base and optimized processes, five warmups and 30 measured fresh-database samples per revision, one unique Dense document, deterministic in-process embedding fake.",
+    "baseMedianMilliseconds": 10.5777395,
+    "optimizedMedianMilliseconds": 10.295671,
+    "medianChangePercent": -2.666623620292219,
+    "baseP95Milliseconds": 12.408633,
+    "optimizedP95Milliseconds": 11.584524,
+    "gate": "No more than 10% median regression.",
+    "passed": true
+  },
+  "fullRebuildEstimate": {
+    "assumption": "Historical embedding time scales with the measured 36.372% within-Physical-session duplicate-token fraction; non-embedding time remains unchanged.",
+    "estimatedEmbeddingSeconds": 23622.312,
+    "estimatedTotalSeconds": 27511.602,
+    "estimatedTotalDuration": "7h 38m 32s",
+    "estimatedSecondsSaved": 13503.341,
+    "estimatedFullRebuildReductionPercent": 32.923,
+    "falsifier": "A future representative or full rebuild does not materially reduce submitted tokens, or wall time fails to track the reduced embedding-token workload."
+  }
+}

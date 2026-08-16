@@ -30,7 +30,9 @@ export interface ConversationIndexSummary {
   scannedSessions: number;
   indexedSessions: number;
   removedSessions: number;
+  /** Dense document vectors reused from storage or identical text in the same Physical session. */
   reusedVectors: number;
+  /** Distinct Dense document texts submitted to the embedding provider. */
   newlyEmbeddedChunks: number;
   embeddingRequestCount: number;
   deletedChunks: number;
@@ -59,6 +61,15 @@ export interface IncrementalSessionIndexerOptions {
   monotonicNow?: () => number;
   onProgress?: (event: RecallIndexProgressEvent) => void;
 }
+
+type DenseSearchableSessionConversationChunk = SessionConversationChunk & {
+  isDenseSearchable: true;
+};
+
+type IdenticalEmbeddingInputChunkGroup = [
+  DenseSearchableSessionConversationChunk,
+  ...DenseSearchableSessionConversationChunk[],
+];
 
 interface PlannedPhysicalSessionFile {
   sessionPath: string;
@@ -166,7 +177,7 @@ async function attributeRecallChunksToProjects(
 }
 
 async function prepareChangedRecallEmbeddingMap(
-  chunks: readonly (SessionConversationChunk & { isDenseSearchable: true })[],
+  chunks: readonly DenseSearchableSessionConversationChunk[],
   database: SqliteRecallDatabase,
   embeddingProvider: RecallEmbeddingProvider,
   vectorReuseReader: RecallVectorReuseReader | undefined,
@@ -178,6 +189,8 @@ async function prepareChangedRecallEmbeddingMap(
   signal?: AbortSignal,
 ): Promise<Map<string, readonly number[]>> {
   const embeddingByDocumentId = new Map<string, readonly number[]>();
+  // Evidence occurrences stay distinct; only the exact text sent to the provider shares a vector.
+  const embeddingByInputText = new Map<string, readonly number[]>();
   for (let start = 0; start < chunks.length; start += 128) {
     throwIfIndexingAborted(signal);
     const batch = chunks.slice(start, start + 128);
@@ -192,6 +205,7 @@ async function prepareChangedRecallEmbeddingMap(
         return true;
       }
       embeddingByDocumentId.set(chunk.id, currentVector);
+      embeddingByInputText.set(chunk.content, currentVector);
       summary.reusedVectors += 1;
       return false;
     });
@@ -199,25 +213,42 @@ async function prepareChangedRecallEmbeddingMap(
     const legacyIds = chunksMissingCurrentVector.map((chunk) => chunk.id);
     const legacyDocuments = vectorReuseReader?.fetchDocuments(legacyIds);
     const legacyVectors = vectorReuseReader?.fetchVectors(legacyIds);
-    const chunksNeedingEmbedding = chunksMissingCurrentVector.filter((chunk) => {
-      const legacyVector = legacyVectors?.get(chunk.id);
-      if (legacyDocuments?.get(chunk.id)?.checksum !== chunk.checksum || !legacyVector) {
-        return true;
+    const chunksByEmbeddingInput = new Map<string, IdenticalEmbeddingInputChunkGroup>();
+    for (const chunk of chunksMissingCurrentVector) {
+      const memoizedEmbedding = embeddingByInputText.get(chunk.content);
+      if (memoizedEmbedding) {
+        embeddingByDocumentId.set(chunk.id, memoizedEmbedding);
+        summary.reusedVectors += 1;
+        continue;
       }
-      embeddingByDocumentId.set(chunk.id, legacyVector);
-      summary.reusedVectors += 1;
-      return false;
-    });
+      const legacyVector = legacyVectors?.get(chunk.id);
+      if (legacyDocuments?.get(chunk.id)?.checksum === chunk.checksum && legacyVector) {
+        embeddingByDocumentId.set(chunk.id, legacyVector);
+        embeddingByInputText.set(chunk.content, legacyVector);
+        summary.reusedVectors += 1;
+        continue;
+      }
+      const matchingChunks = chunksByEmbeddingInput.get(chunk.content);
+      if (matchingChunks) {
+        matchingChunks.push(chunk);
+      } else {
+        chunksByEmbeddingInput.set(chunk.content, [chunk]);
+      }
+    }
     if (measurePhaseElapsedMilliseconds) {
       phaseElapsedMilliseconds.vectorLookup += Math.max(0, monotonicNow() - vectorLookupStartedAt);
     }
 
+    const embeddingInputChunkGroups = Array.from(chunksByEmbeddingInput.values());
+    const distinctChunksNeedingEmbedding = embeddingInputChunkGroups.map(
+      ([distinctChunk]) => distinctChunk,
+    );
     let embeddings: readonly (readonly number[])[] = [];
-    if (chunksNeedingEmbedding.length > 0) {
+    if (distinctChunksNeedingEmbedding.length > 0) {
       const embeddingStartedAt = measurePhaseElapsedMilliseconds ? monotonicNow() : 0;
       try {
         embeddings = await embeddingProvider.embedDocuments(
-          chunksNeedingEmbedding.map((chunk) => chunk.content),
+          distinctChunksNeedingEmbedding.map((chunk) => chunk.content),
           signal,
         );
       } finally {
@@ -226,14 +257,19 @@ async function prepareChangedRecallEmbeddingMap(
         }
       }
       summary.embeddingRequestCount += 1;
-      summary.newlyEmbeddedChunks += chunksNeedingEmbedding.length;
+      summary.newlyEmbeddedChunks += distinctChunksNeedingEmbedding.length;
     }
-    for (const [index, chunk] of chunksNeedingEmbedding.entries()) {
+    for (const [index, matchingChunks] of embeddingInputChunkGroups.entries()) {
+      const distinctChunk = matchingChunks[0];
       const embedding = embeddings[index];
       if (!embedding) {
-        throw new Error(`Recall embedding missing for conversation chunk ${chunk.id}`);
+        throw new Error(`Recall embedding missing for conversation chunk ${distinctChunk.id}`);
       }
-      embeddingByDocumentId.set(chunk.id, embedding);
+      embeddingByInputText.set(distinctChunk.content, embedding);
+      for (const chunk of matchingChunks) {
+        embeddingByDocumentId.set(chunk.id, embedding);
+      }
+      summary.reusedVectors += matchingChunks.length - 1;
     }
     onBatchPrepared();
   }

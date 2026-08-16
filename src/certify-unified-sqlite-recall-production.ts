@@ -9,7 +9,6 @@ import {
   readFileSync,
   readlinkSync,
   rmSync,
-  statfsSync,
   statSync,
 } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
@@ -49,8 +48,6 @@ const MEBIBYTE = 1_024 ** 2;
 export const MAXIMUM_CERTIFIED_STORAGE_BYTES = 5 * GIBIBYTE;
 /** Maximum allocation permitted for one disposable certification clone. */
 export const MAXIMUM_SCRATCH_ALLOCATION_BYTES = 6 * GIBIBYTE;
-/** Minimum free bytes required before creating a disposable certification clone. */
-export const MINIMUM_SCRATCH_FREE_BYTES = 240 * GIBIBYTE;
 /** Maximum accepted warm project-scoped dense-search p95 in milliseconds. */
 export const MAXIMUM_PROJECT_P95_MILLISECONDS = 100;
 /** Maximum accepted warm global dense-search p95 in milliseconds. */
@@ -450,7 +447,12 @@ function snapshotPhysicalSessionProjection(
   });
 }
 
-/** Runs every mutation probe against a disposable candidate clone and removes it afterward. */
+/**
+ * Runs every mutation probe against a disposable candidate clone and removes it afterward.
+ *
+ * The clone remains bounded by {@link MAXIMUM_SCRATCH_ALLOCATION_BYTES}; ordinary filesystem
+ * errors report genuinely insufficient scratch space without imposing an unrelated free-space floor.
+ */
 export async function certifyDisposableUnifiedSqliteClone(options: {
   candidateDirectory: string;
   candidateDatabasePath: string;
@@ -462,8 +464,6 @@ export async function certifyDisposableUnifiedSqliteClone(options: {
     database: SqliteRecallDatabase,
     onProgress: (event: RecallIndexProgressEvent) => void,
   ) => Promise<ConversationIndexSummary>;
-  /** Test seam; production callers must use the 240 GiB default. */
-  minimumFreeBytes?: number;
   /** Test seam; production callers must read the named block device. */
   readDeviceWrittenBytes?: () => number | null;
   /** Test seam; production callers flush pending filesystem writes around device counters. */
@@ -475,11 +475,6 @@ export async function certifyDisposableUnifiedSqliteClone(options: {
   }
   assertCertificationScratchRoot(options.scratchRoot, options.dataRoot, options.candidateDirectory);
   mkdirSync(options.scratchRoot, { recursive: true });
-  const scratchStats = statfsSync(options.scratchRoot);
-  const freeBytes = scratchStats.bavail * scratchStats.bsize;
-  if (freeBytes < (options.minimumFreeBytes ?? MINIMUM_SCRATCH_FREE_BYTES)) {
-    throw new Error('Unified SQLite recall scratch free space is below the 240 GiB floor');
-  }
   const candidateBytes = readAllocatedBytes(options.candidateDirectory);
   if (candidateBytes > MAXIMUM_SCRATCH_ALLOCATION_BYTES) {
     throw new Error('Unified SQLite recall candidate exceeds the 6 GiB scratch allocation ceiling');

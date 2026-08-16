@@ -192,4 +192,6 @@ After each change, run focused tests, the deterministic replay corpus, the repre
 
 Use deterministic and representative subsets during implementation. Start one full-corpus staged rebuild only after the code, complete diff, full test suite, and performance gates are final. Treat that rebuild as release evidence, not as the development feedback loop.
 
+The schema 4 deployment rebuild indexed 3,791 of 3,793 discovered Physical session files and 403,687 Dense documents in 11 hours 23 minutes 34 seconds, with no failed sessions. That cost confirms that repeatable development gates must use bounded corpora.
+
 A phase is complete only when its optimized output equals a clean rebuild from the same JSONL. When in doubt, throw away the derived optimization state and run the full importer on the bounded test corpus.

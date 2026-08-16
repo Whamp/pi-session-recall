@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "completedAt": "2026-08-16T15:32:39.011Z",
   "recallCommit": "8b41b282a8d8d45a423693a56a40206c4767a3d6",
   "nodeVersion": "v24.16.0",
@@ -986,6 +986,312 @@
     "Two HTTP samples showed transient contention; weighted projections use per-band medians and retain observed ranges.",
     "The rebuild projection holds the API-tokenized embedding inputs fixed. A true local-profile rebuild can produce slightly different token counts and chunk boundaries.",
     "Projected full rebuild time adds the historical 3,889.29-second non-embedding remainder; only a real staged rebuild can validate the total.",
-    "Client max RSS is process-wide and is not comparable to remote server memory use."
-  ]
+    "Client max RSS is process-wide and is not comparable to remote server memory use.",
+    "Raw-agent timing covers a different execution boundary from Recall retrieval and excludes pre-tool and post-tool model overhead.",
+    "The raw-agent baseline uses only the 15-file synthetic evaluation corpus; it does not predict direct-search performance on a large private history."
+  ],
+  "rawJsonlAgentBaseline": {
+    "completedAt": "2026-08-16T16:05:03.222Z",
+    "corpus": {
+      "id": "embedding-profile-ranking-v1",
+      "sessionFiles": 15,
+      "queries": 32,
+      "sourceTargets": 8,
+      "synthetic": true
+    },
+    "policy": {
+      "allowedInput": "evaluation/corpus/*.jsonl only",
+      "forbiddenInputs": [
+        "Pi Session Recall and its database",
+        "observational or session memory",
+        "repository documentation and tests",
+        "evaluation specifications and answer keys",
+        "git history"
+      ],
+      "workerModel": "openai-codex/gpt-5.6-sol:high",
+      "independentGraderModel": "zai/glm-5.3:max",
+      "successRule": "Required answer and context may appear in answer prose or complete cited raw lines; minimum distinct source occurrences must be cited."
+    },
+    "coldFreshWorker": {
+      "label": "cold fresh-agent raw-JSONL baseline",
+      "workers": 32,
+      "queriesPerWorker": 1,
+      "passed": 32,
+      "total": 32,
+      "successRate": 1,
+      "validCitations": 32,
+      "citationValidityRate": 1,
+      "timingBoundary": "From each worker first tool timestamp through its final tool timestamp; excludes pre-tool model startup/planning and post-tool response serialization.",
+      "timingSeconds": {
+        "median": 15.715,
+        "p95NearestRank": 24.764,
+        "minimum": 9.723,
+        "maximum": 25.284,
+        "sequentialSum": 520.696
+      },
+      "filesExamined": {
+        "perQueryMedian": 15,
+        "perQueryMinimum": 15,
+        "perQueryMaximum": 15,
+        "total": 480
+      },
+      "measurements": [
+        {
+          "queryId": "q01",
+          "elapsedSeconds": 17.47,
+          "filesExamined": 15,
+          "passed": true
+        },
+        {
+          "queryId": "q02",
+          "elapsedSeconds": 16.184,
+          "filesExamined": 15,
+          "passed": true
+        },
+        {
+          "queryId": "q03",
+          "elapsedSeconds": 24.204,
+          "filesExamined": 15,
+          "passed": true
+        },
+        {
+          "queryId": "q04",
+          "elapsedSeconds": 21.386,
+          "filesExamined": 15,
+          "passed": true
+        },
+        {
+          "queryId": "q05",
+          "elapsedSeconds": 14.044,
+          "filesExamined": 15,
+          "passed": true
+        },
+        {
+          "queryId": "q06",
+          "elapsedSeconds": 16.097,
+          "filesExamined": 15,
+          "passed": true
+        },
+        {
+          "queryId": "q07",
+          "elapsedSeconds": 24.764,
+          "filesExamined": 15,
+          "passed": true
+        },
+        {
+          "queryId": "q08",
+          "elapsedSeconds": 13.045,
+          "filesExamined": 15,
+          "passed": true
+        },
+        {
+          "queryId": "q09",
+          "elapsedSeconds": 14.471,
+          "filesExamined": 15,
+          "passed": true
+        },
+        {
+          "queryId": "q10",
+          "elapsedSeconds": 14.929,
+          "filesExamined": 15,
+          "passed": true
+        },
+        {
+          "queryId": "q11",
+          "elapsedSeconds": 15.227,
+          "filesExamined": 15,
+          "passed": true
+        },
+        {
+          "queryId": "q12",
+          "elapsedSeconds": 25.284,
+          "filesExamined": 15,
+          "passed": true
+        },
+        {
+          "queryId": "q13",
+          "elapsedSeconds": 14.762,
+          "filesExamined": 15,
+          "passed": true
+        },
+        {
+          "queryId": "q14",
+          "elapsedSeconds": 14.932,
+          "filesExamined": 15,
+          "passed": true
+        },
+        {
+          "queryId": "q15",
+          "elapsedSeconds": 15.679,
+          "filesExamined": 15,
+          "passed": true
+        },
+        {
+          "queryId": "q16",
+          "elapsedSeconds": 17.959,
+          "filesExamined": 15,
+          "passed": true
+        },
+        {
+          "queryId": "q17",
+          "elapsedSeconds": 17.778,
+          "filesExamined": 15,
+          "passed": true
+        },
+        {
+          "queryId": "q18",
+          "elapsedSeconds": 16.085,
+          "filesExamined": 15,
+          "passed": true
+        },
+        {
+          "queryId": "q19",
+          "elapsedSeconds": 15.098,
+          "filesExamined": 15,
+          "passed": true
+        },
+        {
+          "queryId": "q20",
+          "elapsedSeconds": 9.723,
+          "filesExamined": 15,
+          "passed": true
+        },
+        {
+          "queryId": "q21",
+          "elapsedSeconds": 11.857,
+          "filesExamined": 15,
+          "passed": true
+        },
+        {
+          "queryId": "q22",
+          "elapsedSeconds": 17.608,
+          "filesExamined": 15,
+          "passed": true
+        },
+        {
+          "queryId": "q23",
+          "elapsedSeconds": 15.421,
+          "filesExamined": 15,
+          "passed": true
+        },
+        {
+          "queryId": "q24",
+          "elapsedSeconds": 15.751,
+          "filesExamined": 15,
+          "passed": true
+        },
+        {
+          "queryId": "q25",
+          "elapsedSeconds": 12.411,
+          "filesExamined": 15,
+          "passed": true
+        },
+        {
+          "queryId": "q26",
+          "elapsedSeconds": 15.446,
+          "filesExamined": 15,
+          "passed": true
+        },
+        {
+          "queryId": "q27",
+          "elapsedSeconds": 15.394,
+          "filesExamined": 15,
+          "passed": true
+        },
+        {
+          "queryId": "q28",
+          "elapsedSeconds": 15.787,
+          "filesExamined": 15,
+          "passed": true
+        },
+        {
+          "queryId": "q29",
+          "elapsedSeconds": 12.486,
+          "filesExamined": 15,
+          "passed": true
+        },
+        {
+          "queryId": "q30",
+          "elapsedSeconds": 16.001,
+          "filesExamined": 15,
+          "passed": true
+        },
+        {
+          "queryId": "q31",
+          "elapsedSeconds": 16.419,
+          "filesExamined": 15,
+          "passed": true
+        },
+        {
+          "queryId": "q32",
+          "elapsedSeconds": 16.994,
+          "filesExamined": 15,
+          "passed": true
+        }
+      ],
+      "workflow": {
+        "runId": "cold-raw-jsonl-agent-baseline-msvzk5ae-a4ncth",
+        "agentsIncludingGraderAndSynthesis": 34,
+        "concurrency": 4,
+        "workflowDurationSeconds": 609.711,
+        "tokenUsageIncludingGraderAndSynthesis": {
+          "input": 505967,
+          "output": 45164,
+          "total": 2232667,
+          "cost": 3.8760610000000004,
+          "cacheRead": 1681536,
+          "cacheWrite": 0
+        }
+      }
+    },
+    "amortizedBatchWorker": {
+      "label": "amortized batch single-worker baseline",
+      "workers": 1,
+      "queriesPerWorker": 32,
+      "passedAfterConsistentRegrade": 24,
+      "total": 32,
+      "successRateAfterConsistentRegrade": 0.75,
+      "validCitations": 32,
+      "citationValidityRate": 1,
+      "filesExamined": 15,
+      "timingBoundary": "From worker first tool timestamp through final tool timestamp; excludes pre-tool model startup/planning and post-tool response serialization.",
+      "timingSeconds": {
+        "completeBatch": 27.106,
+        "arithmeticAmortizedPerQuery": 0.8470625
+      },
+      "outputContractLimitation": "Allowed one citation per query, making the four cases that require two preserved source occurrences impossible to pass.",
+      "consistentRegradeDefects": {
+        "adjacentQuestionContextNotCited": 4,
+        "secondDuplicateOccurrenceCouldNotBeCited": 4
+      },
+      "workflow": {
+        "runId": "raw-jsonl-agent-baseline-msvz9ut9-k3i0wk",
+        "agentsIncludingGraderAndSynthesis": 3,
+        "concurrency": 1,
+        "workflowDurationSeconds": 413.419,
+        "tokenUsageIncludingGraderAndSynthesis": {
+          "input": 75195,
+          "output": 22643,
+          "total": 290030,
+          "cost": 0.439759,
+          "cacheRead": 192192,
+          "cacheWrite": 0
+        },
+        "consistentRegradeRunId": "regrade-batch-raw-baseline-msvzyazx-iks48a"
+      }
+    },
+    "comparisons": {
+      "coldMedianToHttpIndexedMedianRatio": 588.4676700673608,
+      "coldMedianToLocalIndexedMedianRatio": 479.44143532104323,
+      "coldSequentialSumToBatchTotalRatio": 19.209621486017856
+    },
+    "limitations": [
+      "Indexed Recall timing measures retrieval and evidence loading; raw-agent timing also includes filesystem investigation and answer composition.",
+      "Raw-agent timing excludes model startup/planning before the first tool and final response serialization after the last tool.",
+      "The cold workers ran concurrently for workflow throughput; workflow duration is not per-query latency. The sequential sum is the sum of independently measured intervals.",
+      "The synthetic corpus contains only 15 files and favors direct raw search compared with a large private history.",
+      "The amortized batch score includes an output-contract limitation and should not be interpreted as model quality.",
+      "Workflow token usage and cost include independent grading and synthesis, not only raw search."
+    ]
+  }
 }

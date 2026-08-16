@@ -54,7 +54,9 @@ psr index --rebuild
 | Local Octen 0.6B (default) | You want the simplest setup, offline search, and no conversation or query text sent to an embedding server. | Downloads 1.01 GiB and indexes on your CPU.                                     |
 | External HTTP              | You already run a compatible embedding server and want faster indexing.                                     | Sends conversation and query text to that server and adds a service dependency. |
 
-In one fixed 32-query comparison, both profiles found every expected source in the Dense top eight. HTTP Octen 4B kept all 32 in Recall's final five, versus 31 for local Octen 0.6B. On the measured CPU and GPU hosts, HTTP queries took 26.7 ms at the median versus 32.8 ms locally, and a full rebuild was projected at 8.0 hours versus 21.8 hours. These results depend on the corpus and hardware; see the [complete comparison](docs/research/local-vs-http-embedding-profile-comparison.md).
+In one fixed 32-query comparison, both profiles found every expected source in the Dense top eight. HTTP Octen 4B kept all 32 in Recall's final five, versus 31 for local Octen 0.6B. On the measured CPU and GPU hosts, HTTP queries took 26.7 ms at the median versus 32.8 ms locally, and a full rebuild was projected at 8.0 hours versus 21.8 hours.
+
+Skipping the index also worked on this small synthetic corpus: 32 fresh agents found and cited the expected evidence in all 32 queries. Each agent reopened all 15 raw files and took 15.7 seconds at the median. One agent answering all 32 questions took 27.1 seconds total because it learned the corpus once; that is an amortized best case, not normal fresh-query behavior. These measurements cover different execution boundaries and depend on the corpus and hardware; see the [complete comparison](docs/research/local-vs-http-embedding-profile-comparison.md).
 
 **Recommendation:** use the local default unless you already have a trusted embedding server. The HTTP profile is the better choice when rebuild speed matters.
 

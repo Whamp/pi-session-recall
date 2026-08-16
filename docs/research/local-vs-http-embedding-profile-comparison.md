@@ -27,6 +27,23 @@ The end-to-end Recall result favored HTTP. One local result ranked first in the 
 
 Both profiles also ran the existing 16-case release gate five times. Both preserved 100% candidate recall, final recall, context, source occurrences, and provenance. The local profile scored 0.875 dense MRR there, versus 0.84375 for HTTP; that smaller suite was not strong enough to drive the decision.
 
+## Indexed Recall versus raw JSONL agents
+
+A separate baseline gave the same 32 queries to coding agents that could read only the 15 raw JSONL files in the synthetic evaluation corpus. They could not use Recall, its database, repository documentation, evaluation answers, or prior session memory.
+
+| Path                                      | Strict result | Measured time                   | Raw files examined |
+| ----------------------------------------- | ------------: | ------------------------------- | -----------------: |
+| HTTP Octen 4B indexed Recall              |         32/32 | 26.70 ms median per query       |                  0 |
+| Local Octen 0.6B indexed Recall           |         31/32 | 32.78 ms median per query       |                  0 |
+| Fresh raw agent for every query           |         32/32 | 15.715 s median; 24.764 s p95   |       15 per query |
+| One raw agent answering all 32, best case |         24/32 | 27.106 s for the complete batch |           15 total |
+
+The cold baseline used 32 fresh GPT-5.6 Sol workers, one per query. Every worker independently discovered and opened all 15 files. Their measured search intervals totaled 520.696 seconds if run sequentially. All 32 answers and citations passed an independent grader using the same required-context and source-occurrence rules as Recall.
+
+The one-worker batch is an amortized lower bound, not normal fresh-query behavior. That worker learned the corpus once and reused it for every question. Its output contract also allowed only one citation, making the four two-source duplicate checks impossible; four more answers omitted adjacent question context. The 24/32 score therefore measures that specific process and contract, not the model alone.
+
+These timings cover different boundaries. Recall latency measures retrieval and evidence loading, while the raw-agent interval includes filesystem investigation and answer composition but excludes model startup before its first tool call and response serialization after its last tool call. The 15-file synthetic corpus also favors raw search compared with a real history containing hundreds or thousands of files. The baseline shows that raw inspection can answer well without setup, but it repeatedly pays schema discovery and file-reading costs that an index pays once.
+
 ## Full-rebuild embedding speed
 
 The throughput comparison read the active schema-4 database without writing it. It reduced 406,549 stored documents to the **306,736 distinct texts that the current per-Physical-session memoization would embed**, totaling 76,215,908 stored tokens.
@@ -74,6 +91,8 @@ HTTP measurements used the healthy `octen-embed` endpoint at `endurance`:
 ## Limits
 
 - The harder suite has 32 synthetic queries over eight source targets. It can expose ranking differences, but it cannot prove broad equivalence on Will's private real-world questions.
+- Raw-agent timing measures a different execution boundary from Recall retrieval. The cold workers ran concurrently for throughput, so only their individual intervals and sequential sum are reported as query-cost evidence.
+- The raw-agent corpus has only 15 files. Its success and latency do not predict performance over a large private session history.
 - HTTP speed includes LAN transport and the shared `endurance` service. Local speed measures this desktop CPU. This comparison answers the deployment decision, not hardware-normalized model efficiency.
 - The rebuild projection holds API-tokenized text inputs fixed. A true local-profile rebuild can produce slightly different token counts and chunk boundaries.
 - Client RSS does not include remote server memory.

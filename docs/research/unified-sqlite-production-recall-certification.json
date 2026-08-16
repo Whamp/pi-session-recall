@@ -1,19 +1,19 @@
 {
   "reportVersion": 1,
   "issue": 172,
-  "measuredAt": "2026-08-11T14:34:55.288Z",
-  "candidateTarget": "generations/generation-a2824fe3-0717-49c1-80ed-bff6d9c8a378",
-  "candidateDirectory": "$DATA_ROOT/generations/generation-a2824fe3-0717-49c1-80ed-bff6d9c8a378",
+  "measuredAt": "2026-08-16T05:00:38.819Z",
+  "candidateTarget": "generations/generation-40147987-0069-45d7-82f3-b4dc30e6acf4",
+  "candidateDirectory": "$DATA_ROOT/generations/generation-40147987-0069-45d7-82f3-b4dc30e6acf4",
   "safety": {
     "activeBefore": {
-      "exists": false,
-      "target": null,
-      "bytesSha256": null
+      "exists": true,
+      "target": "generations/generation-a2824fe3-0717-49c1-80ed-bff6d9c8a378",
+      "bytesSha256": "7833448393728acabbee1acfce7d1ab882f9cfdfc6a1598a22b3fd0c317bb3e5"
     },
     "activeAfter": {
-      "exists": false,
-      "target": null,
-      "bytesSha256": null
+      "exists": true,
+      "target": "generations/generation-a2824fe3-0717-49c1-80ed-bff6d9c8a378",
+      "bytesSha256": "7833448393728acabbee1acfce7d1ab882f9cfdfc6a1598a22b3fd0c317bb3e5"
     },
     "candidateInactive": true,
     "candidateOpenedReadOnly": true,
@@ -61,7 +61,7 @@
       "lineageDigest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
     },
     "sqliteRecallDatabase": {
-      "schemaVersion": 3,
+      "schemaVersion": 4,
       "storageLayout": "unified-sqlite-vec",
       "sqliteVecVersion": "0.1.9",
       "routing": {
@@ -78,7 +78,7 @@
     }
   },
   "sqliteIdentity": {
-    "schemaVersion": 3,
+    "schemaVersion": 4,
     "storageLayout": "unified-sqlite-vec",
     "embeddingDimensions": 1024,
     "vectorEncoding": "float32",
@@ -95,27 +95,28 @@
     "passed": true
   },
   "counts": {
-    "physicalSessions": 3732,
-    "sessionDocuments": 345907,
-    "invocations": 222145,
-    "denseDocuments": 345907,
-    "denseVectors": 345907,
-    "denseProjects": 131
+    "physicalSessions": 3791,
+    "sessionDocuments": 403687,
+    "invocations": 260188,
+    "denseDocuments": 403687,
+    "denseVectors": 403687,
+    "denseProjects": 133
   },
   "storage": {
-    "allocatedBytes": 3228901376,
+    "allocatedBytes": 4033425408,
     "maximumBytes": 5368709120
   },
   "integrity": {
     "sqliteIntegrity": ["ok"],
     "foreignKeyViolations": 0,
     "invocationFtsIntegrityChecked": false,
-    "invocationFtsDocuments": 222145,
+    "invocationFtsDocuments": 260188,
     "invocationsMissingFts": 0,
     "ftsDocumentsMissingInvocation": 0,
+    "projectionInputsMissingDenseDocument": 0,
     "vectorParity": {
-      "denseDocuments": 345907,
-      "vectors": 345907,
+      "denseDocuments": 403687,
+      "vectors": 403687,
       "denseDocumentsMissingVector": 0,
       "vectorsMissingDenseDocument": 0,
       "projectMetadataMismatches": 0,
@@ -128,43 +129,42 @@
       {
         "query": "Why have recent pi-session-recall optimization attempts failed?",
         "globalMilliseconds": [
-          365.951178, 361.25356399999987, 356.66896900000006, 363.8299300000001, 361.9412809999999
+          530.3262729999999, 525.0327419999999, 526.429474, 534.8691749999998, 525.2363220000002
         ],
         "projectMilliseconds": [
-          42.12407200000007, 41.162599999999884, 41.466081999999915, 41.10206799999969,
-          40.91092299999991
+          36.47100399999999, 37.388856999999916, 38.820834000000104, 36.718632999999954,
+          37.362658999999894
         ],
         "globalResultIds": [
           "3949ec80f97526c5871d36c75ff97173505a5da7",
+          "a92cd4b957fcba482a91990f637c6114d414f03c",
           "25c69aa5a08ddf30ccbdbf7e642e7963b596eef5",
           "d21a91e7c8335ae4be572280cfc1a123b17ae1fd",
           "d4cf32fc90b868892628231e8bc12043d3d0f2ee",
           "d6f240fee52f0ad1311f6ad6592f20fa04f56eea",
-          "50fb834b121b866d5dfcfb3a45559b8e8dbaf184",
-          "5dcd5a740e7d9a60bcf40b3810eb67e18f20cfb6",
-          "b8a6dd7feefc9941e6f4b533bb313d16956c622d"
+          "26586758fedeffcd2f352a4638815d4ef127c87a",
+          "807fdcbb03bfcf2a86f6723bc5f82a3749f66b73"
         ],
         "projectResultIds": [
           "25c69aa5a08ddf30ccbdbf7e642e7963b596eef5",
           "d21a91e7c8335ae4be572280cfc1a123b17ae1fd",
           "d4cf32fc90b868892628231e8bc12043d3d0f2ee",
-          "50fb834b121b866d5dfcfb3a45559b8e8dbaf184",
-          "5dcd5a740e7d9a60bcf40b3810eb67e18f20cfb6",
-          "b38836edf3f43b5c50b5ed085751fcababdf8718",
-          "b8a6dd7feefc9941e6f4b533bb313d16956c622d",
-          "f26e683f90f733c9f193dc390406105d36b73093"
+          "26586758fedeffcd2f352a4638815d4ef127c87a",
+          "807fdcbb03bfcf2a86f6723bc5f82a3749f66b73",
+          "0a19f8723c1a0777de14ccf23bc702de836c196a",
+          "a2c9b6351e3733b0d51432d1339fd1478a142392",
+          "aac6e8b7292074d854ebbcf22bb877ad29eb4989"
         ],
         "passed": true
       },
       {
         "query": "How is automatic recall indexing scheduled?",
         "globalMilliseconds": [
-          359.50912500000004, 360.5519169999998, 356.6326759999997, 360.52817499999946,
-          361.2740480000002
+          523.3445319999992, 526.085529, 521.3804399999999, 525.9460019999997, 524.5726839999998
         ],
         "projectMilliseconds": [
-          40.86559000000034, 41.7465229999998, 43.12244299999929, 40.77580300000045,
-          40.87868400000025
+          38.659826000000066, 39.96586899999966, 38.6175659999999, 38.38936300000023,
+          38.026168999999754
         ],
         "globalResultIds": [
           "9e83ceabe3c9e6a1951404910de1fe4b1e4861ee",
@@ -191,12 +191,11 @@
       {
         "query": "Which corrupted February session files are ignored?",
         "globalMilliseconds": [
-          364.00717500000064, 363.2884530000001, 356.26550000000043, 358.2621100000006,
-          361.76904000000013
+          526.464445999999, 530.7784620000002, 524.9753140000012, 526.4175009999999, 528.351831
         ],
         "projectMilliseconds": [
-          42.00543299999936, 41.599160000000666, 42.825864000000365, 40.86413799999991,
-          41.08830399999988
+          39.316523999999845, 35.190598000001046, 36.6423620000005, 36.26759700000002,
+          35.2257239999999
         ],
         "globalResultIds": [
           "1cf054e892fada56a9e8b3227bc8d13fdea3b698",
@@ -223,59 +222,59 @@
       {
         "query": "How large is the recall database?",
         "globalMilliseconds": [
-          356.15143100000023, 359.85591699999895, 357.7368409999999, 356.45543700000053,
-          361.48850400000083
+          526.791976999999, 529.0632020000012, 532.1004389999998, 532.7426109999997,
+          526.8762760000009
         ],
         "projectMilliseconds": [
-          40.146068000000014, 40.7641339999991, 41.77151100000083, 40.31437000000005,
-          40.473885999999766
+          39.31722599999921, 39.75601099999949, 39.123947000000044, 37.0989699999991,
+          36.51780099999996
         ],
         "globalResultIds": [
+          "e0715b9a7f445f3df04b296ba34a81e78bbf4fb4",
           "548d5b2a709c9d3e42ed973c2721dc3854f4847c",
           "8a2354cc401c2bd0c845106e96cf60ed63aaa5e6",
           "8db4af6a4bd72ed35f1190440ff7267109ca925e",
           "5cc1a73e5b0cda9de01d5aad624f6b9cd4161478",
           "f15455db99015bf8205085ffb75239d834cd4d18",
           "edd802c91d0aee79199be3d561a3b3083a0455d5",
-          "bf6e64f49e28cc3bee0847dcbe31c44e44829bff",
-          "0fbbb693054fe81b0a6627789b694f9d37caf3c9"
+          "bf6e64f49e28cc3bee0847dcbe31c44e44829bff"
         ],
         "projectResultIds": [
+          "e0715b9a7f445f3df04b296ba34a81e78bbf4fb4",
           "548d5b2a709c9d3e42ed973c2721dc3854f4847c",
           "8a2354cc401c2bd0c845106e96cf60ed63aaa5e6",
           "8db4af6a4bd72ed35f1190440ff7267109ca925e",
           "5cc1a73e5b0cda9de01d5aad624f6b9cd4161478",
           "f15455db99015bf8205085ffb75239d834cd4d18",
           "edd802c91d0aee79199be3d561a3b3083a0455d5",
-          "0fbbb693054fe81b0a6627789b694f9d37caf3c9",
-          "68fdc934544837daefdcfe9ad2e39616666d67b5"
+          "0fbbb693054fe81b0a6627789b694f9d37caf3c9"
         ],
         "passed": true
       },
       {
         "query": "Why would an agent use pi-session-recall instead of searching raw JSONL?",
         "globalMilliseconds": [
-          366.0401610000008, 364.60544200000004, 359.5110139999997, 356.04591100000107,
-          361.05462500000067
+          531.9920000000002, 532.2049559999996, 529.7062810000007, 526.0516189999998,
+          523.1222239999988
         ],
         "projectMilliseconds": [
-          41.831702000001314, 41.03628700000081, 42.09844699999849, 40.65522299999975,
-          40.6750690000008
+          35.04707299999973, 35.91497299999901, 39.13187199999993, 40.414732000001095,
+          38.57437800000116
         ],
         "globalResultIds": [
           "9df45341eece978decf7a7ebff26c458540c4edb",
           "e56eb75bb46533c551680a410ca4811a88118b54",
           "597761f3ef3e36adafd36a3e5d95ebb835dfe163",
-          "250492d179a630150c2b38eefb093871e9d863c4",
           "43eb1ef9d6b8c65019dd92b93112ae489a2d03b8",
+          "250492d179a630150c2b38eefb093871e9d863c4",
           "9204e840eca980408964d3611724f099d0565239",
           "9bcefebb208fbe5219dc005ca74f46ffb5354f3f",
           "a75601e04009c7905b8648bb35ee8f3f7027f1d4"
         ],
         "projectResultIds": [
           "9df45341eece978decf7a7ebff26c458540c4edb",
-          "250492d179a630150c2b38eefb093871e9d863c4",
           "43eb1ef9d6b8c65019dd92b93112ae489a2d03b8",
+          "250492d179a630150c2b38eefb093871e9d863c4",
           "9204e840eca980408964d3611724f099d0565239",
           "9bcefebb208fbe5219dc005ca74f46ffb5354f3f",
           "a75601e04009c7905b8648bb35ee8f3f7027f1d4",
@@ -285,8 +284,8 @@
         "passed": true
       }
     ],
-    "globalP95Milliseconds": 365.951178,
-    "projectP95Milliseconds": 42.825864000000365
+    "globalP95Milliseconds": 532.7426109999997,
+    "projectP95Milliseconds": 39.96586899999966
   },
   "invocationBenchmark": {
     "observations": [
@@ -295,8 +294,8 @@
         "query": "brain_query",
         "expectedToolName": "brain_query",
         "milliseconds": [
-          0.5866169999990234, 0.5275180000007822, 0.5086620000001858, 0.49376500000107626,
-          0.4841980000001058
+          0.5692359999993641, 0.8013570000002801, 0.5488279999990482, 0.5249640000001818,
+          0.544449999997596
         ],
         "resultCount": 20,
         "matchedExpectedToolName": true
@@ -305,8 +304,8 @@
         "kind": "path",
         "query": "$HOME/.pi/agent/TAILNET.md",
         "milliseconds": [
-          1.8576130000001285, 1.7379310000014812, 1.7491620000000694, 1.7807599999996455,
-          1.7833749999990687
+          2.878952000002755, 2.6479529999996885, 2.735726999999315, 3.0974980000028154,
+          3.2926899999984016
         ],
         "resultCount": 20,
         "matchedExpectedToolName": true
@@ -315,8 +314,8 @@
         "kind": "url",
         "query": "http://192.168.0.67:8090/v1",
         "milliseconds": [
-          0.6415290000004461, 0.6112219999995432, 0.6200989999997546, 0.6182360000002518,
-          0.6086279999999533
+          0.8580320000000938, 0.7795760000008158, 0.7447820000015781, 0.7163690000015777,
+          0.7284620000027644
         ],
         "resultCount": 20,
         "matchedExpectedToolName": true
@@ -325,8 +324,8 @@
         "kind": "command",
         "query": "psr optimize",
         "milliseconds": [
-          0.11414200000035635, 0.10786000000007334, 0.21842500000093423, 0.13132300000143005,
-          0.10577600000033271
+          0.18841999999858672, 0.15130000000135624, 0.16584700000021257, 0.12485200000082841,
+          0.123940000001312
         ],
         "resultCount": 5,
         "matchedExpectedToolName": true
@@ -335,8 +334,8 @@
         "kind": "issue-number",
         "query": "gh issue view 165",
         "milliseconds": [
-          0.3967849999989994, 0.4032970000007481, 0.3962339999998221, 0.393699000000197,
-          0.38720699999976205
+          0.4953989999994519, 0.6398479999988922, 0.6622490000008838, 0.5260359999992943,
+          0.4891070000012405
         ],
         "resultCount": 4,
         "matchedExpectedToolName": true
@@ -345,21 +344,21 @@
         "kind": "flag",
         "query": "--optimize-daily",
         "milliseconds": [
-          0.08029899999928602, 0.08202200000050652, 0.07842499999969732, 0.0846270000001823,
-          0.0805000000000291
+          0.09464500000103726, 0.09773100000165869, 0.0886449999998149, 0.08424599999852944,
+          0.08761200000299141
         ],
         "resultCount": 2,
         "matchedExpectedToolName": true
       }
     ],
-    "p95Milliseconds": 1.7833749999990687
+    "p95Milliseconds": 3.0974980000028154
   },
   "sourceSearch": {
     "observations": [
       {
         "kind": "result-only-error",
         "query": "FtsRocksdbReducer",
-        "filesScanned": 3733,
+        "filesScanned": 3798,
         "failures": 0,
         "exactLocation": {
           "sessionPath": "$HOME/.pi/agent/sessions/--home-will-projects-pi-session-recall--/2026-08-08T20-43-57-969Z_019fe31e-3e91-7df4-969a-8c8b1f1ec757.jsonl",
@@ -373,7 +372,7 @@
       {
         "kind": "hardware-identifier",
         "query": "CT1000P3PSSD8",
-        "filesScanned": 3733,
+        "filesScanned": 3798,
         "failures": 0,
         "exactLocation": {
           "sessionPath": "$HOME/.pi/agent/sessions/--home-will--/2026-01-08T21-15-34-355Z_1d4e2cfc-3f56-4c74-958a-78a36a55efd1.jsonl",
@@ -387,7 +386,7 @@
       {
         "kind": "filename",
         "query": "2026-02-02T18-31-25",
-        "filesScanned": 3733,
+        "filesScanned": 3798,
         "failures": 0,
         "exactLocation": {
           "sessionPath": "$HOME/.pi/agent/sessions/--home-will--/2026-02-10T15-22-22-670Z_b3772b85-c4ca-41bf-8e42-15e1debfd844.jsonl",
@@ -401,7 +400,7 @@
       {
         "kind": "command-output",
         "query": "pi - AI coding assistant with read, bash, edit, write tools",
-        "filesScanned": 3733,
+        "filesScanned": 3798,
         "failures": 0,
         "exactLocation": {
           "sessionPath": "$HOME/.pi/agent/sessions/--home-will--/2026-01-12T23-52-11-516Z_442dcec9-9f02-4ee2-a45e-862b6b5ec863.jsonl",
@@ -415,7 +414,7 @@
     ]
   },
   "cloneCertification": {
-    "cloneDirectory": "$SCRATCH_ROOT/certification-clone-2311343",
+    "cloneDirectory": "$SCRATCH_ROOT/certification-clone-1928843",
     "representativeSession": "2026-01-06T03-50-11-439Z_9f80bf5b-afc2-4f51-a8a7-b2e756ca5b9f.jsonl",
     "unrelatedPhysicalSession": "2025-12-17T19-09-41-940Z_aedb700a-f74b-4888-b5f3-0b649bda3853.jsonl",
     "concurrentReaderSawCommittedState": true,
@@ -437,62 +436,66 @@
       "failedSessions": []
     },
     "changedSessionIndexSummaryValid": true,
+    "changedSessionIndexMeasurementRuns": 5,
     "changedSessionIndexExpectedVectorReuseCount": 17,
     "changedSessionIndexReusedExpectedVectors": true,
-    "changedSessionIndexElapsedMilliseconds": 109.77105499999016,
-    "changedSessionIndexDeviceWrittenBytes": 7720960,
+    "changedSessionIndexElapsedMilliseconds": 244.3078680000035,
+    "changedSessionIndexDeviceWrittenByteSamples": [10174464, 9756672, 9822208, 8286208, 13041664],
+    "changedSessionIndexDeviceWrittenBytes": 9822208,
     "unrelatedPhysicalSessionUnchanged": true,
     "databaseCountsUnchanged": true,
     "countsBeforeChangedSessionIndex": {
-      "physicalSessions": 3732,
-      "sessionDocuments": 345907,
-      "invocations": 222145,
-      "denseDocuments": 345907,
-      "denseVectors": 345907,
-      "denseProjects": 131
+      "physicalSessions": 3791,
+      "sessionDocuments": 403687,
+      "invocations": 260188,
+      "denseDocuments": 403687,
+      "denseVectors": 403687,
+      "denseProjects": 133
     },
     "countsAfterChangedSessionIndex": {
-      "physicalSessions": 3732,
-      "sessionDocuments": 345907,
-      "invocations": 222145,
-      "denseDocuments": 345907,
-      "denseVectors": 345907,
-      "denseProjects": 131
+      "physicalSessions": 3791,
+      "sessionDocuments": 403687,
+      "invocations": 260188,
+      "denseDocuments": 403687,
+      "denseVectors": 403687,
+      "denseProjects": 133
     },
     "directDatabaseChurnProbe": true,
+    "directDatabaseChurnWarmupCycles": 200,
     "directDatabaseChurnCycles": 100,
-    "directDatabaseChurnElapsedMilliseconds": 4720.986877999996,
-    "directDatabaseChurnDeviceWrittenBytes": 35667968,
-    "directDatabaseChurnAverageDeviceWrittenBytesPerCycle": 356679.68,
+    "directDatabaseChurnElapsedMilliseconds": 6940.766184999986,
+    "directDatabaseChurnDeviceWrittenBytes": 56315904,
+    "directDatabaseChurnAverageDeviceWrittenBytesPerCycle": 563159.04,
     "deviceWriteMeasurement": "gross-block-device-writes",
     "allocatedGrowthBytes": 0,
-    "freePageGrowth": 0,
+    "freePageGrowth": -1,
     "beforeDirectDatabaseChurnStorage": {
-      "allocatedBytes": 3228917760,
+      "allocatedBytes": 4033454080,
       "storage": {
         "pageSizeBytes": 4096,
-        "pageCount": 788302,
-        "freePageCount": 1
+        "pageCount": 984722,
+        "freePageCount": 5
       }
     },
     "afterDirectDatabaseChurnStorage": {
-      "allocatedBytes": 3228917760,
+      "allocatedBytes": 4033454080,
       "storage": {
         "pageSizeBytes": 4096,
-        "pageCount": 788302,
-        "freePageCount": 1
+        "pageCount": 984722,
+        "freePageCount": 4
       }
     },
     "postChurnIntegrity": {
       "sqliteIntegrity": ["ok"],
       "foreignKeyViolations": 0,
       "invocationFtsIntegrityChecked": true,
-      "invocationFtsDocuments": 222145,
+      "invocationFtsDocuments": 260188,
       "invocationsMissingFts": 0,
       "ftsDocumentsMissingInvocation": 0,
+      "projectionInputsMissingDenseDocument": 0,
       "vectorParity": {
-        "denseDocuments": 345907,
-        "vectors": 345907,
+        "denseDocuments": 403687,
+        "vectors": 403687,
         "denseDocumentsMissingVector": 0,
         "vectorsMissingDenseDocument": 0,
         "projectMetadataMismatches": 0,
@@ -500,9 +503,9 @@
       },
       "healthy": true
     },
-    "postChurnGlobalP95Milliseconds": 348.32130999999936,
-    "postChurnProjectP95Milliseconds": 3.3249829999986105,
-    "postChurnInvocationP95Milliseconds": 0.3936099999991711,
+    "postChurnGlobalP95Milliseconds": 498.63410700001987,
+    "postChurnProjectP95Milliseconds": 11.757160000008298,
+    "postChurnInvocationP95Milliseconds": 0.5186220000032336,
     "passed": true
   },
   "gates": {

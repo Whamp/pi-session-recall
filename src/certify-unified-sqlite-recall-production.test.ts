@@ -249,7 +249,20 @@ void test('clone certification runs one real changed-session index and rejects d
   const certify = (
     overrides: Partial<Parameters<typeof certifyDisposableUnifiedSqliteClone>[0]> = {},
   ) => {
-    const deviceWriteSamples = [0, 1 * 1024 ** 2, 1 * 1024 ** 2, 101 * 1024 ** 2];
+    const deviceWriteSamples = [
+      0,
+      1 * 1024 ** 2,
+      1 * 1024 ** 2,
+      2 * 1024 ** 2,
+      2 * 1024 ** 2,
+      3 * 1024 ** 2,
+      3 * 1024 ** 2,
+      4 * 1024 ** 2,
+      4 * 1024 ** 2,
+      5 * 1024 ** 2,
+      5 * 1024 ** 2,
+      105 * 1024 ** 2,
+    ];
     return certifyDisposableUnifiedSqliteClone({
       candidateDirectory,
       candidateDatabasePath,
@@ -286,11 +299,21 @@ void test('clone certification runs one real changed-session index and rejects d
     failedSessions: [],
   });
   assert.equal(result.changedSessionIndexReusedExpectedVectors, true);
+  assert.equal(result.changedSessionIndexMeasurementRuns, 5);
+  assert.deepEqual(result.changedSessionIndexDeviceWrittenByteSamples, [
+    1 * 1024 ** 2,
+    1 * 1024 ** 2,
+    1 * 1024 ** 2,
+    1 * 1024 ** 2,
+    1 * 1024 ** 2,
+  ]);
+  assert.equal(result.changedSessionIndexDeviceWrittenBytes, 1 * 1024 ** 2);
   assert.equal(result.unrelatedPhysicalSessionUnchanged, true);
   assert.equal(result.databaseCountsUnchanged, true);
   assert.equal(result.concurrentReaderSawCommittedState, true);
   assert.equal(result.explicitRollbackRestoredState, true);
   assert.equal(result.forcedTerminationRestoredState, true);
+  assert.equal(result.directDatabaseChurnWarmupCycles, 200);
   assert.equal(result.directDatabaseChurnCycles, 100);
   assert.equal(result.allocatedGrowthBytes, 0);
   assert.equal(result.freePageGrowth, 0);

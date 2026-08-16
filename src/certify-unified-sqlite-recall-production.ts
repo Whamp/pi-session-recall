@@ -57,6 +57,9 @@ export const MAXIMUM_INVOCATION_P95_MILLISECONDS = 5;
 /** Maximum device bytes written by one representative changed-session replacement. */
 export const MAXIMUM_AVERAGE_DEVICE_WRITES_BYTES = 10 * MEBIBYTE;
 const BENCHMARK_REPETITIONS = 6;
+const CHANGED_SESSION_INDEX_MEASUREMENT_RUNS = 5;
+const DIRECT_DATABASE_CHURN_WARMUP_CYCLES = 200;
+const DIRECT_DATABASE_CHURN_MEASURED_CYCLES = 100;
 
 /** One visible certification stage with an optional fixed-work counter. */
 export interface UnifiedSqliteCertificationProgress {
@@ -545,35 +548,75 @@ export async function certifyDisposableUnifiedSqliteClone(options: {
 
     // Stale only clone-owned state. Canonical JSONL, candidate storage, and active storage stay read-only.
     const canonicalSessionSize = statSync(options.representativeSessionPath).size;
-    database.replacePhysicalSession({ ...replacement, size: canonicalSessionSize + 1 });
     const expectedVectorReuseCount = replacement.denseDocuments.length;
     const unrelatedProjectionBefore = snapshotPhysicalSessionProjection(
       database.readPhysicalSessionReplacement(unrelatedSessionPath),
     );
     const countsBeforeChangedSessionIndex = database.readCounts();
-    database.checkpointDisposableClone();
     const readDeviceWrittenBytes =
       options.readDeviceWrittenBytes ?? (() => readBlockDeviceWrittenBytes(options.blockDevice));
     const flushFilesystemWrites =
       options.flushFilesystemWrites ?? flushCertificationFilesystemWrites;
-    flushFilesystemWrites();
-    const changedSessionIndexWritesBefore = readDeviceWrittenBytes();
     const changedSessionIndexedPhysicalSessionPaths = new Set<string>();
-    options.onProgress?.({ stage: 'clone-changed-session' });
-    const changedSessionIndexStarted = performance.now();
-    const changedSessionIndexSummary = await options.runChangedSessionIndex(database, (event) => {
-      if (event.kind === 'indexing-maintenance-workset') {
-        changedSessionIndexedPhysicalSessionPaths.add(event.sessionPath);
+    const changedSessionIndexSummaries: ConversationIndexSummary[] = [];
+    const changedSessionIndexElapsedSamples: number[] = [];
+    const changedSessionIndexDeviceWrittenByteSamples: number[] = [];
+    let changedSessionIndexDeviceWritesAvailable = true;
+    for (
+      let measurement = 0;
+      measurement < CHANGED_SESSION_INDEX_MEASUREMENT_RUNS;
+      measurement += 1
+    ) {
+      const currentReplacement = database.readPhysicalSessionReplacement(
+        options.representativeSessionPath,
+      );
+      if (!currentReplacement) {
+        throw new Error('Unified SQLite recall clone lost its representative session');
       }
+      database.replacePhysicalSession({ ...currentReplacement, size: canonicalSessionSize + 1 });
+      database.checkpointDisposableClone();
+      flushFilesystemWrites();
+      const writesBefore = readDeviceWrittenBytes();
+      options.onProgress?.({
+        stage: 'clone-changed-session',
+        completed: measurement,
+        total: CHANGED_SESSION_INDEX_MEASUREMENT_RUNS,
+      });
+      const started = performance.now();
+      const summary = await options.runChangedSessionIndex(database, (event) => {
+        if (event.kind === 'indexing-maintenance-workset') {
+          changedSessionIndexedPhysicalSessionPaths.add(event.sessionPath);
+        }
+      });
+      changedSessionIndexElapsedSamples.push(performance.now() - started);
+      changedSessionIndexSummaries.push(summary);
+      database.checkpointDisposableClone();
+      flushFilesystemWrites();
+      const writesAfter = readDeviceWrittenBytes();
+      if (writesBefore === null || writesAfter === null) {
+        changedSessionIndexDeviceWritesAvailable = false;
+      } else {
+        changedSessionIndexDeviceWrittenByteSamples.push(writesAfter - writesBefore);
+      }
+    }
+    options.onProgress?.({
+      stage: 'clone-changed-session',
+      completed: CHANGED_SESSION_INDEX_MEASUREMENT_RUNS,
+      total: CHANGED_SESSION_INDEX_MEASUREMENT_RUNS,
     });
-    const changedSessionIndexElapsedMilliseconds = performance.now() - changedSessionIndexStarted;
-    database.checkpointDisposableClone();
-    flushFilesystemWrites();
-    const changedSessionIndexWritesAfter = readDeviceWrittenBytes();
+    const changedSessionIndexSummary = changedSessionIndexSummaries.at(-1);
+    if (!changedSessionIndexSummary) {
+      throw new Error('Unified SQLite recall changed-session measurement did not run');
+    }
+    const changedSessionIndexElapsedMilliseconds = readPercentile(
+      changedSessionIndexElapsedSamples,
+      0.5,
+    );
     const changedSessionIndexDeviceWrittenBytes =
-      changedSessionIndexWritesBefore === null || changedSessionIndexWritesAfter === null
-        ? null
-        : changedSessionIndexWritesAfter - changedSessionIndexWritesBefore;
+      changedSessionIndexDeviceWritesAvailable &&
+      changedSessionIndexDeviceWrittenByteSamples.length === CHANGED_SESSION_INDEX_MEASUREMENT_RUNS
+        ? readPercentile(changedSessionIndexDeviceWrittenByteSamples, 0.5)
+        : null;
     const unrelatedProjectionAfter = snapshotPhysicalSessionProjection(
       database.readPhysicalSessionReplacement(unrelatedSessionPath),
     );
@@ -585,16 +628,23 @@ export async function certifyDisposableUnifiedSqliteClone(options: {
       JSON.stringify(countsAfterChangedSessionIndex);
     const indexedPhysicalSessionPaths = [...changedSessionIndexedPhysicalSessionPaths].sort();
     const changedSessionIndexSummaryValid =
-      changedSessionIndexSummary.indexedSessions === 1 &&
-      changedSessionIndexSummary.removedSessions === 0 &&
-      changedSessionIndexSummary.failedSessions.length === 0 &&
+      changedSessionIndexSummaries.length === CHANGED_SESSION_INDEX_MEASUREMENT_RUNS &&
+      changedSessionIndexSummaries.every(
+        (summary) =>
+          summary.indexedSessions === 1 &&
+          summary.removedSessions === 0 &&
+          summary.failedSessions.length === 0,
+      ) &&
       indexedPhysicalSessionPaths.length === 1 &&
       indexedPhysicalSessionPaths[0] === options.representativeSessionPath;
     const changedSessionIndexReusedExpectedVectors =
       expectedVectorReuseCount > 0 &&
-      changedSessionIndexSummary.reusedVectors === expectedVectorReuseCount &&
-      changedSessionIndexSummary.newlyEmbeddedChunks === 0 &&
-      changedSessionIndexSummary.embeddingRequestCount === 0;
+      changedSessionIndexSummaries.every(
+        (summary) =>
+          summary.reusedVectors === expectedVectorReuseCount &&
+          summary.newlyEmbeddedChunks === 0 &&
+          summary.embeddingRequestCount === 0,
+      );
 
     const churnReplacement = database.readPhysicalSessionReplacement(
       options.representativeSessionPath,
@@ -604,6 +654,22 @@ export async function certifyDisposableUnifiedSqliteClone(options: {
         'Unified SQLite recall changed-session index removed its representative session',
       );
     }
+    options.onProgress?.({
+      stage: 'clone-churn-warmup',
+      completed: 0,
+      total: DIRECT_DATABASE_CHURN_WARMUP_CYCLES,
+    });
+    for (let cycle = 0; cycle < DIRECT_DATABASE_CHURN_WARMUP_CYCLES; cycle += 1) {
+      database.replacePhysicalSession(churnReplacement);
+      const completed = cycle + 1;
+      if (completed % 10 === 0) {
+        options.onProgress?.({
+          stage: 'clone-churn-warmup',
+          completed,
+          total: DIRECT_DATABASE_CHURN_WARMUP_CYCLES,
+        });
+      }
+    }
     database.checkpointDisposableClone();
     const beforeMetrics = {
       allocatedBytes: readDatabaseAllocatedBytes(databasePath),
@@ -612,12 +678,20 @@ export async function certifyDisposableUnifiedSqliteClone(options: {
     flushFilesystemWrites();
     const directDatabaseChurnWritesBefore = readDeviceWrittenBytes();
     const directDatabaseChurnStarted = performance.now();
-    options.onProgress?.({ stage: 'clone-churn', completed: 0, total: 100 });
-    for (let cycle = 0; cycle < 100; cycle += 1) {
+    options.onProgress?.({
+      stage: 'clone-churn',
+      completed: 0,
+      total: DIRECT_DATABASE_CHURN_MEASURED_CYCLES,
+    });
+    for (let cycle = 0; cycle < DIRECT_DATABASE_CHURN_MEASURED_CYCLES; cycle += 1) {
       database.replacePhysicalSession(churnReplacement);
       const completed = cycle + 1;
       if (completed % 10 === 0) {
-        options.onProgress?.({ stage: 'clone-churn', completed, total: 100 });
+        options.onProgress?.({
+          stage: 'clone-churn',
+          completed,
+          total: DIRECT_DATABASE_CHURN_MEASURED_CYCLES,
+        });
       }
     }
     const directDatabaseChurnElapsedMilliseconds = performance.now() - directDatabaseChurnStarted;
@@ -686,7 +760,8 @@ export async function certifyDisposableUnifiedSqliteClone(options: {
       changedSessionIndexDeviceWrittenBytes !== null &&
       changedSessionIndexDeviceWrittenBytes < MAXIMUM_AVERAGE_DEVICE_WRITES_BYTES &&
       directDatabaseChurnDeviceWrittenBytes !== null &&
-      directDatabaseChurnDeviceWrittenBytes / 100 < MAXIMUM_AVERAGE_DEVICE_WRITES_BYTES;
+      directDatabaseChurnDeviceWrittenBytes / DIRECT_DATABASE_CHURN_MEASURED_CYCLES <
+        MAXIMUM_AVERAGE_DEVICE_WRITES_BYTES;
     options.onProgress?.({ stage: 'clone-complete' });
     return {
       cloneDirectory,
@@ -702,22 +777,25 @@ export async function certifyDisposableUnifiedSqliteClone(options: {
       changedSessionIndexedPhysicalSessionPaths: indexedPhysicalSessionPaths,
       changedSessionIndexSummary,
       changedSessionIndexSummaryValid,
+      changedSessionIndexMeasurementRuns: CHANGED_SESSION_INDEX_MEASUREMENT_RUNS,
       changedSessionIndexExpectedVectorReuseCount: expectedVectorReuseCount,
       changedSessionIndexReusedExpectedVectors,
       changedSessionIndexElapsedMilliseconds,
+      changedSessionIndexDeviceWrittenByteSamples,
       changedSessionIndexDeviceWrittenBytes,
       unrelatedPhysicalSessionUnchanged,
       databaseCountsUnchanged,
       countsBeforeChangedSessionIndex,
       countsAfterChangedSessionIndex,
       directDatabaseChurnProbe: true,
-      directDatabaseChurnCycles: 100,
+      directDatabaseChurnWarmupCycles: DIRECT_DATABASE_CHURN_WARMUP_CYCLES,
+      directDatabaseChurnCycles: DIRECT_DATABASE_CHURN_MEASURED_CYCLES,
       directDatabaseChurnElapsedMilliseconds,
       directDatabaseChurnDeviceWrittenBytes,
       directDatabaseChurnAverageDeviceWrittenBytesPerCycle:
         directDatabaseChurnDeviceWrittenBytes === null
           ? null
-          : directDatabaseChurnDeviceWrittenBytes / 100,
+          : directDatabaseChurnDeviceWrittenBytes / DIRECT_DATABASE_CHURN_MEASURED_CYCLES,
       deviceWriteMeasurement:
         changedSessionIndexDeviceWrittenBytes === null ||
         directDatabaseChurnDeviceWrittenBytes === null

@@ -997,7 +997,19 @@
       "sessionFiles": 15,
       "queries": 32,
       "sourceTargets": 8,
-      "synthetic": true
+      "synthetic": true,
+      "totalBytes": 44782,
+      "productionScaleReference": {
+        "capturedAt": "2026-08-16T16:21:36Z",
+        "sessionFiles": 3803,
+        "sourceBytes": 3731855729,
+        "sourceGiB": 3.4755614856258035,
+        "largestSessionBytes": 137006554,
+        "largestSessionMiB": 130.65963172912598,
+        "fileCountRatioToEvaluation": 253.53333333333333,
+        "sourceByteRatioToEvaluation": 83333.83343754186,
+        "includedInRawAgentBaseline": false
+      }
     },
     "policy": {
       "allowedInput": "evaluation/corpus/*.jsonl only",

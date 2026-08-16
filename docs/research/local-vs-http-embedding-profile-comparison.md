@@ -29,7 +29,9 @@ Both profiles also ran the existing 16-case release gate five times. Both preser
 
 ## Indexed Recall versus raw JSONL agents
 
-A separate baseline gave the same 32 queries to coding agents that could read only the 15 raw JSONL files in the synthetic evaluation corpus. They could not use Recall, its database, repository documentation, evaluation answers, or prior session memory.
+A separate baseline gave the same 32 queries to coding agents that could read only the 15 raw JSONL files in the synthetic evaluation corpus. Those files totaled 44,782 bytes. They could not use Recall, its database, repository documentation, evaluation answers, or prior session memory.
+
+The production raw history was not part of this baseline. On 2026-08-16 it contained 3,803 session files totaling 3,731,855,729 bytes (3.476 GiB), and its largest file was 137,006,554 bytes (130.66 MiB). That is 254 times the evaluation file count and more than 83,000 times its bytes. Direct-agent search must repeatedly discover and narrow that larger corpus; the benchmark below is therefore a favorable small-corpus result, not a production-scale raw-search measurement.
 
 | Path                                      | Strict result | Measured time                   | Raw files examined |
 | ----------------------------------------- | ------------: | ------------------------------- | -----------------: |

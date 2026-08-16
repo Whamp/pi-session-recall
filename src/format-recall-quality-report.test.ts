@@ -154,6 +154,9 @@ void test('recall quality report records verdict, measured counts, sources, and 
         measurement: {
           caseCount: 1,
           candidatePoolRecall: 1,
+          hybridMeanReciprocalRank: 1,
+          denseCandidateRecall: 1,
+          denseMeanReciprocalRank: 1,
           candidatePoolDuplicateRate: 0.1,
           queryLatencyMilliseconds: { median: 500, p95: 800 },
           queryLatencyByScope: {
@@ -224,6 +227,7 @@ void test('recall quality report records verdict, measured counts, sources, and 
   assert.match(report, /512\/64/);
   assert.match(report, /8 candidates\/channel/);
   assert.match(report, /semantic-context\.jsonl#queue-answer/);
+  assert.match(report, /Hybrid rank \| Dense rank/);
   assert.match(report, /npm run evaluate:recall/);
   assert.match(report, /Full corpus backfill remains blocked pending human approval\./);
   assert.match(report, /no discriminating quality variance/);

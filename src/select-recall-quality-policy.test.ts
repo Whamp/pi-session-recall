@@ -25,6 +25,9 @@ function createMeasurement(
   return {
     caseCount: 10,
     candidatePoolRecall,
+    hybridMeanReciprocalRank: candidatePoolRecall,
+    denseCandidateRecall: candidatePoolRecall,
+    denseMeanReciprocalRank: candidatePoolRecall,
     candidatePoolDuplicateRate: 0.2,
     queryLatencyMilliseconds: { median: 700, p95: 900 },
     queryLatencyByScope: {

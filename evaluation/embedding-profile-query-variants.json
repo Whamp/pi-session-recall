@@ -1,0 +1,78 @@
+{
+  "version": 1,
+  "baseSpecificationSha256": "34540bbf2ebfef15e74c53ae4427b3d1da3d42d991d964fa1cb203857d106c0f",
+  "variants": [
+    {
+      "baseCaseId": "semantic-crash-safe-outbox",
+      "queries": [
+        "How did we make sure queued deliveries survive a worker crash?",
+        "What protected deliveries that had been queued when their processing worker died?",
+        "How were pending sends made crash-durable before the other side confirmed them?",
+        "What persistence and confirmation scheme prevented a crashed worker from losing outbound work?"
+      ]
+    },
+    {
+      "baseCaseId": "semantic-image-retry-budget",
+      "queries": [
+        "What backoff and attempt limit did we choose for failed picture ingestion?",
+        "How long could picture-import retries wait, and what stopped them after repeated failures?",
+        "Which retry schedule and ceiling governed broken image ingestion?",
+        "What was the retry budget for photos that would not ingest?"
+      ]
+    },
+    {
+      "baseCaseId": "context-europe-rollout-conditions",
+      "queries": [
+        "Under what conditions did we say yes to the rollout in Europe?",
+        "What had to be true before we approved the European launch?",
+        "Remind me of the queue and replica prerequisites for going live in Europe.",
+        "Why was the Europe rollout conditional rather than immediate?"
+      ]
+    },
+    {
+      "baseCaseId": "branch-abandoned-redis-group",
+      "queries": [
+        "What consumer group name belonged to the discarded Redis approach?",
+        "In the abandoned streaming design, which consumer group identifier had we picked?",
+        "What was the group label for the Redis option we did not ship?",
+        "Before choosing another queue, what consumer-group name did the Redis branch use?"
+      ]
+    },
+    {
+      "baseCaseId": "branch-active-offline-queue",
+      "queries": [
+        "Which queue backend did we finally choose for offline laptops?",
+        "What did we settle on for durable work queues on disconnected notebooks?",
+        "Which storage-backed queue won for clients that may be offline?",
+        "What was the final laptop queue design and how were uploads acknowledged?"
+      ]
+    },
+    {
+      "baseCaseId": "branch-summary-hosted-services",
+      "queries": [
+        "Why did the branch reject hosted queue services?",
+        "What made managed queue products unsuitable for this branch?",
+        "Why did we keep queueing local instead of relying on a hosted service?",
+        "What offline constraint ruled out cloud queue vendors?"
+      ]
+    },
+    {
+      "baseCaseId": "compaction-copper-finch",
+      "queries": [
+        "What recovery steps does Copper Finch stand for?",
+        "When someone says the recovery codename, what exact repair sequence should happen?",
+        "What snapshot and credential action comprised the named recovery procedure?",
+        "Decode the Copper Finch incident-recovery shorthand."
+      ]
+    },
+    {
+      "baseCaseId": "duplicate-meridian-release",
+      "queries": [
+        "Which checksum and rollback tag were approved for Release Meridian?",
+        "What artifact digest and safe fallback label did Meridian receive?",
+        "For the Meridian release, which verification value paired with which rollback marker?",
+        "How could I identify the approved Meridian build and revert it safely?"
+      ]
+    }
+  ]
+}

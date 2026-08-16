@@ -1,0 +1,991 @@
+{
+  "version": 1,
+  "completedAt": "2026-08-16T15:32:39.011Z",
+  "recallCommit": "8b41b282a8d8d45a423693a56a40206c4767a3d6",
+  "nodeVersion": "v24.16.0",
+  "localHost": {
+    "hostname": "desktop",
+    "cpu": "AMD Ryzen 7 8845HS",
+    "logicalCpus": 16,
+    "memoryGiB": 60,
+    "runtime": "onnxruntime-node 1.27.0 native",
+    "modelArtifact": "local-octen-embedding-0.6b-onnx-int8-v1"
+  },
+  "httpHost": {
+    "hostname": "endurance",
+    "endpoint": "http://192.168.0.67:8090/v1",
+    "documentedGpu": "RTX 3080 Ti 12 GB at 200 W cap",
+    "runtime": "llama.cpp CUDA",
+    "liveHealth": "ok",
+    "liveModelMetadata": {
+      "id": "octen-embed",
+      "parameters": 4021774336,
+      "nativeDimensions": 2560
+    }
+  },
+  "qualityMethod": {
+    "corpusId": "recall-quality-project-scoped-bounded-v3",
+    "specificationSha256": "34540bbf2ebfef15e74c53ae4427b3d1da3d42d991d964fa1cb203857d106c0f",
+    "sessionFiles": 15,
+    "evaluationCases": 16,
+    "runsPerProfile": 5,
+    "totalMeasuredQueriesPerProfile": 80,
+    "candidateLimitPerChannel": 8,
+    "finalResultLimit": 5,
+    "chunkPolicy": {
+      "maxTokens": 512,
+      "overlapTokens": 64
+    },
+    "notes": [
+      "Dense first-relevant rank isolates embedding retrieval within the normal candidate pool.",
+      "Hybrid first-relevant rank measures normal Recall ordering.",
+      "All expected sources and query labels were fixed before these profile runs."
+    ]
+  },
+  "quality": {
+    "http": {
+      "model": "Octen/Octen-Embedding-4B",
+      "runCount": 5,
+      "caseCount": 16,
+      "indexedChunks": 125,
+      "candidatePoolRecall": {
+        "minimum": 1,
+        "median": 1,
+        "maximum": 1
+      },
+      "finalRecall": {
+        "minimum": 1,
+        "median": 1,
+        "maximum": 1
+      },
+      "contextUsefulness": {
+        "minimum": 1,
+        "median": 1,
+        "maximum": 1
+      },
+      "sourceOccurrencePreservation": {
+        "minimum": 1,
+        "median": 1,
+        "maximum": 1
+      },
+      "hybridMeanReciprocalRank": {
+        "minimum": 0.84375,
+        "median": 0.84375,
+        "maximum": 0.84375
+      },
+      "denseCandidateRecall": {
+        "minimum": 1,
+        "median": 1,
+        "maximum": 1
+      },
+      "denseMeanReciprocalRank": {
+        "minimum": 0.84375,
+        "median": 0.84375,
+        "maximum": 0.84375
+      },
+      "indexLatencyMilliseconds": {
+        "minimum": 4351.800304999999,
+        "median": 4387.724495999999,
+        "maximum": 4554.596359
+      },
+      "pooledQueryLatencyMilliseconds": {
+        "sampleCount": 80,
+        "minimum": 19.775470000000496,
+        "median": 26.18573550000019,
+        "p95": 28.895062999999936,
+        "maximum": 29.42333399999916
+      }
+    },
+    "local": {
+      "model": "Octen/Octen-Embedding-0.6B",
+      "runCount": 5,
+      "caseCount": 16,
+      "indexedChunks": 125,
+      "candidatePoolRecall": {
+        "minimum": 1,
+        "median": 1,
+        "maximum": 1
+      },
+      "finalRecall": {
+        "minimum": 1,
+        "median": 1,
+        "maximum": 1
+      },
+      "contextUsefulness": {
+        "minimum": 1,
+        "median": 1,
+        "maximum": 1
+      },
+      "sourceOccurrencePreservation": {
+        "minimum": 1,
+        "median": 1,
+        "maximum": 1
+      },
+      "hybridMeanReciprocalRank": {
+        "minimum": 0.875,
+        "median": 0.875,
+        "maximum": 0.875
+      },
+      "denseCandidateRecall": {
+        "minimum": 1,
+        "median": 1,
+        "maximum": 1
+      },
+      "denseMeanReciprocalRank": {
+        "minimum": 0.875,
+        "median": 0.875,
+        "maximum": 0.875
+      },
+      "indexLatencyMilliseconds": {
+        "minimum": 10775.559779999996,
+        "median": 10883.657294000004,
+        "maximum": 11090.539103
+      },
+      "pooledQueryLatencyMilliseconds": {
+        "sampleCount": 80,
+        "minimum": 26.030508000003465,
+        "median": 29.668359000000237,
+        "p95": 33.304847999999765,
+        "maximum": 37.132300999997824
+      }
+    },
+    "caseComparison": [
+      {
+        "caseId": "semantic-crash-safe-outbox",
+        "category": "semantic_paraphrase",
+        "httpDenseRank": 2,
+        "localDenseRank": 1,
+        "winner": "local"
+      },
+      {
+        "caseId": "semantic-image-retry-budget",
+        "category": "semantic_paraphrase",
+        "httpDenseRank": 1,
+        "localDenseRank": 1,
+        "winner": "tie"
+      },
+      {
+        "caseId": "exact-read-node-error-code",
+        "category": "exact_identifier",
+        "httpDenseRank": 1,
+        "localDenseRank": 1,
+        "winner": "tie"
+      },
+      {
+        "caseId": "context-europe-rollout-conditions",
+        "category": "context_dependent_reply",
+        "httpDenseRank": 2,
+        "localDenseRank": 2,
+        "winner": "tie"
+      },
+      {
+        "caseId": "branch-abandoned-redis-group",
+        "category": "branch",
+        "httpDenseRank": 1,
+        "localDenseRank": 1,
+        "winner": "tie"
+      },
+      {
+        "caseId": "branch-active-offline-queue",
+        "category": "branch",
+        "httpDenseRank": 2,
+        "localDenseRank": 2,
+        "winner": "tie"
+      },
+      {
+        "caseId": "branch-summary-hosted-services",
+        "category": "summary",
+        "httpDenseRank": 1,
+        "localDenseRank": 1,
+        "winner": "tie"
+      },
+      {
+        "caseId": "compaction-copper-finch",
+        "category": "summary",
+        "httpDenseRank": 1,
+        "localDenseRank": 1,
+        "winner": "tie"
+      },
+      {
+        "caseId": "duplicate-meridian-release",
+        "category": "duplicate_content",
+        "httpDenseRank": 1,
+        "localDenseRank": 1,
+        "winner": "tie"
+      },
+      {
+        "caseId": "project-main-retrieves-worktree-before-limits",
+        "category": "project_scope",
+        "httpDenseRank": 1,
+        "localDenseRank": 1,
+        "winner": "tie"
+      },
+      {
+        "caseId": "project-worktree-retrieves-main",
+        "category": "project_scope",
+        "httpDenseRank": 2,
+        "localDenseRank": 2,
+        "winner": "tie"
+      },
+      {
+        "caseId": "project-equivalent-clone-origin",
+        "category": "project_scope",
+        "httpDenseRank": 1,
+        "localDenseRank": 2,
+        "winner": "http"
+      },
+      {
+        "caseId": "project-configured-lineage",
+        "category": "project_scope",
+        "httpDenseRank": 1,
+        "localDenseRank": 1,
+        "winner": "tie"
+      },
+      {
+        "caseId": "project-similar-name-remains-unrelated",
+        "category": "project_scope",
+        "httpDenseRank": 1,
+        "localDenseRank": 1,
+        "winner": "tie"
+      },
+      {
+        "caseId": "project-exact-non-git-origin",
+        "category": "project_scope",
+        "httpDenseRank": 2,
+        "localDenseRank": 1,
+        "winner": "local"
+      },
+      {
+        "caseId": "global-explicit-cross-project",
+        "category": "project_scope",
+        "httpDenseRank": 1,
+        "localDenseRank": 1,
+        "winner": "tie"
+      }
+    ],
+    "wins": {
+      "http": 1,
+      "local": 2,
+      "ties": 13
+    }
+  },
+  "rankingVariantMethod": {
+    "corpusId": "embedding-profile-ranking-v1",
+    "baseSpecificationSha256": "34540bbf2ebfef15e74c53ae4427b3d1da3d42d991d964fa1cb203857d106c0f",
+    "queryVariantsSha256": "3c3b88de76997235ce41f03a978364b853d7aa27343d414882b42f6fc87a825c",
+    "baseTargets": 8,
+    "queriesPerTarget": 4,
+    "evaluationCases": 32,
+    "runsPerProfile": 5,
+    "totalMeasuredQueriesPerProfile": 160,
+    "candidateLimitPerChannel": 8,
+    "finalResultLimit": 5,
+    "queriesFixedBeforeProfileRuns": true
+  },
+  "rankingVariantQuality": {
+    "http": {
+      "model": "Octen/Octen-Embedding-4B",
+      "runCount": 5,
+      "caseCount": 32,
+      "indexedChunks": 125,
+      "candidatePoolRecall": {
+        "minimum": 1,
+        "median": 1,
+        "maximum": 1
+      },
+      "finalRecall": {
+        "minimum": 1,
+        "median": 1,
+        "maximum": 1
+      },
+      "contextUsefulness": {
+        "minimum": 1,
+        "median": 1,
+        "maximum": 1
+      },
+      "sourceOccurrencePreservation": {
+        "minimum": 1,
+        "median": 1,
+        "maximum": 1
+      },
+      "hybridMeanReciprocalRank": {
+        "minimum": 0.8255208333333334,
+        "median": 0.8255208333333334,
+        "maximum": 0.8255208333333334
+      },
+      "denseCandidateRecall": {
+        "minimum": 1,
+        "median": 1,
+        "maximum": 1
+      },
+      "denseMeanReciprocalRank": {
+        "minimum": 0.8463541666666666,
+        "median": 0.8463541666666666,
+        "maximum": 0.8463541666666666
+      },
+      "indexLatencyMilliseconds": {
+        "minimum": 4389.681924,
+        "median": 4423.926234999999,
+        "maximum": 4633.429126999999
+      },
+      "pooledQueryLatencyMilliseconds": {
+        "sampleCount": 160,
+        "minimum": 19.741938999999547,
+        "median": 26.70495050000136,
+        "p95": 28.233346999999412,
+        "maximum": 30.11471900000015
+      }
+    },
+    "local": {
+      "model": "Octen/Octen-Embedding-0.6B",
+      "runCount": 5,
+      "caseCount": 32,
+      "indexedChunks": 125,
+      "candidatePoolRecall": {
+        "minimum": 1,
+        "median": 1,
+        "maximum": 1
+      },
+      "finalRecall": {
+        "minimum": 0.96875,
+        "median": 0.96875,
+        "maximum": 0.96875
+      },
+      "contextUsefulness": {
+        "minimum": 0.96875,
+        "median": 0.96875,
+        "maximum": 0.96875
+      },
+      "sourceOccurrencePreservation": {
+        "minimum": 0.96875,
+        "median": 0.96875,
+        "maximum": 0.96875
+      },
+      "hybridMeanReciprocalRank": {
+        "minimum": 0.7961309523809523,
+        "median": 0.7961309523809523,
+        "maximum": 0.7961309523809523
+      },
+      "denseCandidateRecall": {
+        "minimum": 1,
+        "median": 1,
+        "maximum": 1
+      },
+      "denseMeanReciprocalRank": {
+        "minimum": 0.84375,
+        "median": 0.84375,
+        "maximum": 0.84375
+      },
+      "indexLatencyMilliseconds": {
+        "minimum": 10904.216226000002,
+        "median": 11245.852497,
+        "maximum": 11458.198301999997
+      },
+      "pooledQueryLatencyMilliseconds": {
+        "sampleCount": 160,
+        "minimum": 26.896425999999337,
+        "median": 32.77772600000026,
+        "p95": 36.268269000000146,
+        "maximum": 42.30671599999914
+      }
+    },
+    "caseComparison": [
+      {
+        "caseId": "semantic-crash-safe-outbox-v1",
+        "category": "semantic_paraphrase",
+        "httpDenseRank": 2,
+        "localDenseRank": 1,
+        "httpHybridRank": 2,
+        "localHybridRank": 1,
+        "denseWinner": "local",
+        "hybridWinner": "local"
+      },
+      {
+        "caseId": "semantic-crash-safe-outbox-v2",
+        "category": "semantic_paraphrase",
+        "httpDenseRank": 2,
+        "localDenseRank": 2,
+        "httpHybridRank": 2,
+        "localHybridRank": 2,
+        "denseWinner": "tie",
+        "hybridWinner": "tie"
+      },
+      {
+        "caseId": "semantic-crash-safe-outbox-v3",
+        "category": "semantic_paraphrase",
+        "httpDenseRank": 1,
+        "localDenseRank": 1,
+        "httpHybridRank": 1,
+        "localHybridRank": 1,
+        "denseWinner": "tie",
+        "hybridWinner": "tie"
+      },
+      {
+        "caseId": "semantic-crash-safe-outbox-v4",
+        "category": "semantic_paraphrase",
+        "httpDenseRank": 1,
+        "localDenseRank": 2,
+        "httpHybridRank": 1,
+        "localHybridRank": 2,
+        "denseWinner": "http",
+        "hybridWinner": "http"
+      },
+      {
+        "caseId": "semantic-image-retry-budget-v1",
+        "category": "semantic_paraphrase",
+        "httpDenseRank": 1,
+        "localDenseRank": 1,
+        "httpHybridRank": 1,
+        "localHybridRank": 1,
+        "denseWinner": "tie",
+        "hybridWinner": "tie"
+      },
+      {
+        "caseId": "semantic-image-retry-budget-v2",
+        "category": "semantic_paraphrase",
+        "httpDenseRank": 1,
+        "localDenseRank": 1,
+        "httpHybridRank": 1,
+        "localHybridRank": 1,
+        "denseWinner": "tie",
+        "hybridWinner": "tie"
+      },
+      {
+        "caseId": "semantic-image-retry-budget-v3",
+        "category": "semantic_paraphrase",
+        "httpDenseRank": 1,
+        "localDenseRank": 1,
+        "httpHybridRank": 1,
+        "localHybridRank": 1,
+        "denseWinner": "tie",
+        "hybridWinner": "tie"
+      },
+      {
+        "caseId": "semantic-image-retry-budget-v4",
+        "category": "semantic_paraphrase",
+        "httpDenseRank": 1,
+        "localDenseRank": 1,
+        "httpHybridRank": 1,
+        "localHybridRank": 1,
+        "denseWinner": "tie",
+        "hybridWinner": "tie"
+      },
+      {
+        "caseId": "context-europe-rollout-conditions-v1",
+        "category": "context_dependent_reply",
+        "httpDenseRank": 2,
+        "localDenseRank": 2,
+        "httpHybridRank": 2,
+        "localHybridRank": 2,
+        "denseWinner": "tie",
+        "hybridWinner": "tie"
+      },
+      {
+        "caseId": "context-europe-rollout-conditions-v2",
+        "category": "context_dependent_reply",
+        "httpDenseRank": 2,
+        "localDenseRank": 2,
+        "httpHybridRank": 2,
+        "localHybridRank": 2,
+        "denseWinner": "tie",
+        "hybridWinner": "tie"
+      },
+      {
+        "caseId": "context-europe-rollout-conditions-v3",
+        "category": "context_dependent_reply",
+        "httpDenseRank": 1,
+        "localDenseRank": 1,
+        "httpHybridRank": 1,
+        "localHybridRank": 1,
+        "denseWinner": "tie",
+        "hybridWinner": "tie"
+      },
+      {
+        "caseId": "context-europe-rollout-conditions-v4",
+        "category": "context_dependent_reply",
+        "httpDenseRank": 2,
+        "localDenseRank": 2,
+        "httpHybridRank": 2,
+        "localHybridRank": 2,
+        "denseWinner": "tie",
+        "hybridWinner": "tie"
+      },
+      {
+        "caseId": "branch-abandoned-redis-group-v1",
+        "category": "branch",
+        "httpDenseRank": 1,
+        "localDenseRank": 1,
+        "httpHybridRank": 1,
+        "localHybridRank": 1,
+        "denseWinner": "tie",
+        "hybridWinner": "tie"
+      },
+      {
+        "caseId": "branch-abandoned-redis-group-v2",
+        "category": "branch",
+        "httpDenseRank": 1,
+        "localDenseRank": 1,
+        "httpHybridRank": 1,
+        "localHybridRank": 7,
+        "denseWinner": "tie",
+        "hybridWinner": "http"
+      },
+      {
+        "caseId": "branch-abandoned-redis-group-v3",
+        "category": "branch",
+        "httpDenseRank": 1,
+        "localDenseRank": 1,
+        "httpHybridRank": 2,
+        "localHybridRank": 1,
+        "denseWinner": "tie",
+        "hybridWinner": "local"
+      },
+      {
+        "caseId": "branch-abandoned-redis-group-v4",
+        "category": "branch",
+        "httpDenseRank": 1,
+        "localDenseRank": 1,
+        "httpHybridRank": 3,
+        "localHybridRank": 3,
+        "denseWinner": "tie",
+        "hybridWinner": "tie"
+      },
+      {
+        "caseId": "branch-active-offline-queue-v1",
+        "category": "branch",
+        "httpDenseRank": 2,
+        "localDenseRank": 2,
+        "httpHybridRank": 2,
+        "localHybridRank": 2,
+        "denseWinner": "tie",
+        "hybridWinner": "tie"
+      },
+      {
+        "caseId": "branch-active-offline-queue-v2",
+        "category": "branch",
+        "httpDenseRank": 1,
+        "localDenseRank": 2,
+        "httpHybridRank": 1,
+        "localHybridRank": 2,
+        "denseWinner": "http",
+        "hybridWinner": "http"
+      },
+      {
+        "caseId": "branch-active-offline-queue-v3",
+        "category": "branch",
+        "httpDenseRank": 2,
+        "localDenseRank": 2,
+        "httpHybridRank": 1,
+        "localHybridRank": 2,
+        "denseWinner": "tie",
+        "hybridWinner": "http"
+      },
+      {
+        "caseId": "branch-active-offline-queue-v4",
+        "category": "branch",
+        "httpDenseRank": 1,
+        "localDenseRank": 1,
+        "httpHybridRank": 1,
+        "localHybridRank": 1,
+        "denseWinner": "tie",
+        "hybridWinner": "tie"
+      },
+      {
+        "caseId": "branch-summary-hosted-services-v1",
+        "category": "summary",
+        "httpDenseRank": 1,
+        "localDenseRank": 1,
+        "httpHybridRank": 1,
+        "localHybridRank": 1,
+        "denseWinner": "tie",
+        "hybridWinner": "tie"
+      },
+      {
+        "caseId": "branch-summary-hosted-services-v2",
+        "category": "summary",
+        "httpDenseRank": 1,
+        "localDenseRank": 1,
+        "httpHybridRank": 1,
+        "localHybridRank": 1,
+        "denseWinner": "tie",
+        "hybridWinner": "tie"
+      },
+      {
+        "caseId": "branch-summary-hosted-services-v3",
+        "category": "summary",
+        "httpDenseRank": 1,
+        "localDenseRank": 1,
+        "httpHybridRank": 1,
+        "localHybridRank": 1,
+        "denseWinner": "tie",
+        "hybridWinner": "tie"
+      },
+      {
+        "caseId": "branch-summary-hosted-services-v4",
+        "category": "summary",
+        "httpDenseRank": 1,
+        "localDenseRank": 1,
+        "httpHybridRank": 1,
+        "localHybridRank": 1,
+        "denseWinner": "tie",
+        "hybridWinner": "tie"
+      },
+      {
+        "caseId": "compaction-copper-finch-v1",
+        "category": "summary",
+        "httpDenseRank": 1,
+        "localDenseRank": 1,
+        "httpHybridRank": 1,
+        "localHybridRank": 1,
+        "denseWinner": "tie",
+        "hybridWinner": "tie"
+      },
+      {
+        "caseId": "compaction-copper-finch-v2",
+        "category": "summary",
+        "httpDenseRank": 1,
+        "localDenseRank": 2,
+        "httpHybridRank": 1,
+        "localHybridRank": 2,
+        "denseWinner": "http",
+        "hybridWinner": "http"
+      },
+      {
+        "caseId": "compaction-copper-finch-v3",
+        "category": "summary",
+        "httpDenseRank": 3,
+        "localDenseRank": 2,
+        "httpHybridRank": 3,
+        "localHybridRank": 2,
+        "denseWinner": "local",
+        "hybridWinner": "local"
+      },
+      {
+        "caseId": "compaction-copper-finch-v4",
+        "category": "summary",
+        "httpDenseRank": 4,
+        "localDenseRank": 1,
+        "httpHybridRank": 4,
+        "localHybridRank": 1,
+        "denseWinner": "local",
+        "hybridWinner": "local"
+      },
+      {
+        "caseId": "duplicate-meridian-release-v1",
+        "category": "duplicate_content",
+        "httpDenseRank": 1,
+        "localDenseRank": 1,
+        "httpHybridRank": 1,
+        "localHybridRank": 1,
+        "denseWinner": "tie",
+        "hybridWinner": "tie"
+      },
+      {
+        "caseId": "duplicate-meridian-release-v2",
+        "category": "duplicate_content",
+        "httpDenseRank": 1,
+        "localDenseRank": 1,
+        "httpHybridRank": 1,
+        "localHybridRank": 1,
+        "denseWinner": "tie",
+        "hybridWinner": "tie"
+      },
+      {
+        "caseId": "duplicate-meridian-release-v3",
+        "category": "duplicate_content",
+        "httpDenseRank": 1,
+        "localDenseRank": 1,
+        "httpHybridRank": 1,
+        "localHybridRank": 1,
+        "denseWinner": "tie",
+        "hybridWinner": "tie"
+      },
+      {
+        "caseId": "duplicate-meridian-release-v4",
+        "category": "duplicate_content",
+        "httpDenseRank": 1,
+        "localDenseRank": 1,
+        "httpHybridRank": 1,
+        "localHybridRank": 1,
+        "denseWinner": "tie",
+        "hybridWinner": "tie"
+      }
+    ],
+    "denseWins": {
+      "http": 3,
+      "local": 3,
+      "ties": 26
+    },
+    "hybridWins": {
+      "http": 5,
+      "local": 4,
+      "ties": 23
+    }
+  },
+  "embeddingThroughputMethod": {
+    "activeGeneration": "generations/generation-40147987-0069-45d7-82f3-b4dc30e6acf4",
+    "databaseBytes": 4090003456,
+    "populationInputCount": 306736,
+    "populationTokenCount": 76215908,
+    "sampleInputCount": 640,
+    "sampleTokenCount": 143321,
+    "selection": "Lowest SHA-256(session path, content checksum) for 128 exact texts in each of five stored-token-count bands after deduplicating exact content within each Physical session.",
+    "privacy": "No sampled text or physical path is persisted in this artifact.",
+    "roundsPerBin": 3,
+    "productionCallShape": "128 documents submitted per indexer preparation batch; HTTP subdivides sequentially at 16, local runs four concurrent batch-one operations."
+  },
+  "embeddingThroughput": {
+    "http": {
+      "model": "Octen/Octen-Embedding-4B",
+      "requestModel": "octen-embed",
+      "nativeDimensions": 2560,
+      "storedDimensions": 1024,
+      "batchSize": 16,
+      "localParallelism": null,
+      "localIntraOperationThreads": null,
+      "coldStartMilliseconds": 61.29806399999998,
+      "clientMaxRssBytes": 304668672,
+      "roundsPerBin": 3,
+      "projectedEmbeddingSeconds": {
+        "minimum": 24785.47838603323,
+        "median": 24849.501819528465,
+        "maximum": 27184.80456018937
+      },
+      "bins": [
+        {
+          "id": "001-064",
+          "minimum": 1,
+          "maximum": 64,
+          "populationInputCount": 117475,
+          "populationTokenCount": 3237493,
+          "sampleInputCount": 128,
+          "sampleTokenCount": 3814,
+          "selectionSha256": "d2f1f8454f4335082822d09ec1d369ebb78630c3a63c467e73f8ec5bad75e454",
+          "observedDurationMilliseconds": {
+            "minimum": 2732.576294999977,
+            "median": 2741.9246890000068,
+            "maximum": 2772.362911
+          },
+          "projectedEmbeddingSeconds": {
+            "minimumSeconds": 2507.885939493143,
+            "medianSeconds": 2516.4656471896546,
+            "maximumSeconds": 2544.4010388259767
+          }
+        },
+        {
+          "id": "065-128",
+          "minimum": 65,
+          "maximum": 128,
+          "populationInputCount": 17696,
+          "populationTokenCount": 1583679,
+          "sampleInputCount": 128,
+          "sampleTokenCount": 11378,
+          "selectionSha256": "c77015dc3a86d64f57a157722a4eafdeba056c936c294aeac492878c1fcc0e91",
+          "observedDurationMilliseconds": {
+            "minimum": 4857.968221999996,
+            "median": 4865.459155,
+            "maximum": 4878.631508000006
+          },
+          "projectedEmbeddingSeconds": {
+            "minimumSeconds": 671.6141066914995,
+            "medianSeconds": 672.64972817875,
+            "maximumSeconds": 674.4708059810009
+          }
+        },
+        {
+          "id": "129-256",
+          "minimum": 129,
+          "maximum": 256,
+          "populationInputCount": 18952,
+          "populationTokenCount": 3648159,
+          "sampleInputCount": 128,
+          "sampleTokenCount": 25663,
+          "selectionSha256": "858a11575dc9f1483fea9cfdbedddf487fa42d0a87e5461878d85f7eccdabadf",
+          "observedDurationMilliseconds": {
+            "minimum": 8748.573437,
+            "median": 8756.958562,
+            "maximum": 16765.680080000006
+          },
+          "projectedEmbeddingSeconds": {
+            "minimumSeconds": 1295.3356545158124,
+            "medianSeconds": 1296.5771770861252,
+            "maximumSeconds": 2482.368506845001
+          }
+        },
+        {
+          "id": "257-384",
+          "minimum": 257,
+          "maximum": 384,
+          "populationInputCount": 29465,
+          "populationTokenCount": 9551910,
+          "sampleInputCount": 128,
+          "sampleTokenCount": 41654,
+          "selectionSha256": "5b5edbedab86ab4681d9ac7c8017bea4133953665a2a08883a3899410145c524",
+          "observedDurationMilliseconds": {
+            "minimum": 12994.7936,
+            "median": 13032.677484,
+            "maximum": 17585.847122000006
+          },
+          "projectedEmbeddingSeconds": {
+            "minimumSeconds": 2991.340573625,
+            "medianSeconds": 3000.0612661410937,
+            "maximumSeconds": 4048.179573826017
+          }
+        },
+        {
+          "id": "385-512",
+          "minimum": 385,
+          "maximum": 512,
+          "populationInputCount": 123148,
+          "populationTokenCount": 58194667,
+          "sampleInputCount": 128,
+          "sampleTokenCount": 60812,
+          "selectionSha256": "9cd91fceee7c4e3f20701c625d4523a4100aa16973aa5fe76da6c6326170c065",
+          "observedDurationMilliseconds": {
+            "minimum": 18001.678226999997,
+            "median": 18047.875272999998,
+            "maximum": 18122.334371999998
+          },
+          "projectedEmbeddingSeconds": {
+            "minimumSeconds": 17319.302111707777,
+            "medianSeconds": 17363.748000932843,
+            "maximumSeconds": 17435.384634711372
+          }
+        }
+      ]
+    },
+    "local": {
+      "model": "Octen/Octen-Embedding-0.6B",
+      "requestModel": "local-octen-embedding-0.6b-onnx-int8-v1",
+      "nativeDimensions": 1024,
+      "storedDimensions": 1024,
+      "batchSize": 1,
+      "localParallelism": 4,
+      "localIntraOperationThreads": 4,
+      "coldStartMilliseconds": 762.271584,
+      "clientMaxRssBytes": 1235615744,
+      "roundsPerBin": 3,
+      "projectedEmbeddingSeconds": {
+        "minimum": 74238.05249873134,
+        "median": 74589.43971150462,
+        "maximum": 76314.25638587339
+      },
+      "bins": [
+        {
+          "id": "001-064",
+          "minimum": 1,
+          "maximum": 64,
+          "populationInputCount": 117475,
+          "populationTokenCount": 3237493,
+          "sampleInputCount": 128,
+          "sampleTokenCount": 3814,
+          "selectionSha256": "d2f1f8454f4335082822d09ec1d369ebb78630c3a63c467e73f8ec5bad75e454",
+          "observedDurationMilliseconds": {
+            "minimum": 4676.712521000009,
+            "median": 4764.923556,
+            "maximum": 5091.523716000025
+          },
+          "projectedEmbeddingSeconds": {
+            "minimumSeconds": 4292.162526597469,
+            "medianSeconds": 4373.120271414843,
+            "maximumSeconds": 4672.865222946117
+          }
+        },
+        {
+          "id": "065-128",
+          "minimum": 65,
+          "maximum": 128,
+          "populationInputCount": 17696,
+          "populationTokenCount": 1583679,
+          "sampleInputCount": 128,
+          "sampleTokenCount": 11378,
+          "selectionSha256": "c77015dc3a86d64f57a157722a4eafdeba056c936c294aeac492878c1fcc0e91",
+          "observedDurationMilliseconds": {
+            "minimum": 9941.589779999998,
+            "median": 10045.995193999988,
+            "maximum": 10880.910971000034
+          },
+          "projectedEmbeddingSeconds": {
+            "minimumSeconds": 1374.424787085,
+            "medianSeconds": 1388.8588355704985,
+            "maximumSeconds": 1504.2859417407549
+          }
+        },
+        {
+          "id": "129-256",
+          "minimum": 129,
+          "maximum": 256,
+          "populationInputCount": 18952,
+          "populationTokenCount": 3648159,
+          "sampleInputCount": 128,
+          "sampleTokenCount": 25663,
+          "selectionSha256": "858a11575dc9f1483fea9cfdbedddf487fa42d0a87e5461878d85f7eccdabadf",
+          "observedDurationMilliseconds": {
+            "minimum": 21085.683289999997,
+            "median": 21185.48832599999,
+            "maximum": 21247.391051000013
+          },
+          "projectedEmbeddingSeconds": {
+            "minimumSeconds": 3121.998982125625,
+            "medianSeconds": 3136.776365268374,
+            "maximumSeconds": 3145.9418374886895
+          }
+        },
+        {
+          "id": "257-384",
+          "minimum": 257,
+          "maximum": 384,
+          "populationInputCount": 29465,
+          "populationTokenCount": 9551910,
+          "sampleInputCount": 128,
+          "sampleTokenCount": 41654,
+          "selectionSha256": "5b5edbedab86ab4681d9ac7c8017bea4133953665a2a08883a3899410145c524",
+          "observedDurationMilliseconds": {
+            "minimum": 36639.309544,
+            "median": 36755.68875000003,
+            "maximum": 36790.60861300002
+          },
+          "projectedEmbeddingSeconds": {
+            "minimumSeconds": 8434.197310265314,
+            "medianSeconds": 8460.987257958992,
+            "maximumSeconds": 8469.02564673473
+          }
+        },
+        {
+          "id": "385-512",
+          "minimum": 385,
+          "maximum": 512,
+          "populationInputCount": 123148,
+          "populationTokenCount": 58194667,
+          "sampleInputCount": 128,
+          "sampleTokenCount": 60812,
+          "selectionSha256": "9cd91fceee7c4e3f20701c625d4523a4100aa16973aa5fe76da6c6326170c065",
+          "observedDurationMilliseconds": {
+            "minimum": 59261.656042,
+            "median": 59484.53254300001,
+            "maximum": 60827.895137000014
+          },
+          "projectedEmbeddingSeconds": {
+            "minimumSeconds": 57015.268892657936,
+            "medianSeconds": 57229.69698129191,
+            "maximumSeconds": 58522.13773696311
+          }
+        }
+      ]
+    },
+    "localToHttpMedianEmbeddingTimeRatio": 3.0016472866625863,
+    "historicalNonEmbeddingSeconds": 3889.290000000001,
+    "estimatedCurrentFullRebuildSeconds": {
+      "http": 28738.791819528466,
+      "local": 78478.72971150462
+    }
+  },
+  "limitations": [
+    "The harder ranking suite has 32 queries over eight synthetic source targets. Its near-tied dense MRR does not prove broad model equivalence on private real-world questions.",
+    "HTTP speed includes LAN transport and the current shared endurance service; local speed uses this desktop CPU. They answer deployment speed, not model-only hardware-normalized efficiency.",
+    "Two HTTP samples showed transient contention; weighted projections use per-band medians and retain observed ranges.",
+    "The rebuild projection holds the API-tokenized embedding inputs fixed. A true local-profile rebuild can produce slightly different token counts and chunk boundaries.",
+    "Projected full rebuild time adds the historical 3,889.29-second non-embedding remainder; only a real staged rebuild can validate the total.",
+    "Client max RSS is process-wide and is not comparable to remote server memory use."
+  ]
+}

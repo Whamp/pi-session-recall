@@ -138,6 +138,9 @@ void test('recall quality measures candidate-pool and fused final source preserv
   );
 
   assert.equal(measurement.candidatePoolRecall, 1);
+  assert.equal(measurement.hybridMeanReciprocalRank, 1);
+  assert.equal(measurement.denseCandidateRecall, 1);
+  assert.equal(measurement.denseMeanReciprocalRank, 1);
   assert.equal(measurement.candidatePoolDuplicateRate, 0.5);
   assert.deepEqual(measurement.queryLatencyMilliseconds, { median: 120, p95: 120 });
   assert.deepEqual(measurement.caseMeasurements[0]?.finalCounts[0], {
@@ -204,6 +207,34 @@ void test('recall quality measures candidate-pool and fused final source preserv
   );
 
   assert.equal(unrelatedMeasurement.candidatePoolRecall, 0);
+  assert.equal(unrelatedMeasurement.hybridMeanReciprocalRank, 0);
+  assert.equal(unrelatedMeasurement.denseCandidateRecall, 0);
+  assert.equal(unrelatedMeasurement.denseMeanReciprocalRank, 0);
   assert.equal(unrelatedMeasurement.finalCounts[0]?.finalRecall, 0);
   assert.equal(unrelatedMeasurement.finalCounts[0]?.sourceOccurrencePreservation, 0);
+
+  const denseRankThreeResult = {
+    ...rerankedResult,
+    dense: { rank: 3, cosineDistance: 0.3 },
+    duplicateOccurrences: [],
+  };
+  const rankedMeasurement = measureRecallQuality(
+    [
+      {
+        evaluationCase,
+        results: [unrelatedSameEntry, denseRankThreeResult],
+        searchPolicy: {
+          scope: RecallSearchScope.GLOBAL,
+          invocationProjectIdentity: null,
+        },
+        queryLatencyMilliseconds: 10,
+      },
+    ],
+    [2],
+  );
+  assert.equal(rankedMeasurement.caseMeasurements[0]?.hybridFirstRelevantRank, 2);
+  assert.equal(rankedMeasurement.caseMeasurements[0]?.denseFirstRelevantRank, 3);
+  assert.equal(rankedMeasurement.hybridMeanReciprocalRank, 0.5);
+  assert.equal(rankedMeasurement.denseCandidateRecall, 1);
+  assert.equal(rankedMeasurement.denseMeanReciprocalRank, 1 / 3);
 });

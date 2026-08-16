@@ -62,6 +62,8 @@ export interface RecallQualityCaseMeasurement {
   preLimitChannelsVerified: boolean;
   preLimitChannelMeasurements: RecallChannelLimitMeasurement[];
   candidatePoolRecalled: boolean;
+  hybridFirstRelevantRank: number | null;
+  denseFirstRelevantRank: number | null;
   rawCandidateCount: number;
   groupedCandidateCount: number;
   candidatePoolDuplicateSlots: number;
@@ -95,6 +97,9 @@ export interface RecallQualityFinalCountMeasurement {
 export interface RecallQualityMeasurement {
   caseCount: number;
   candidatePoolRecall: number;
+  hybridMeanReciprocalRank: number;
+  denseCandidateRecall: number;
+  denseMeanReciprocalRank: number;
   candidatePoolDuplicateRate: number;
   queryLatencyMilliseconds: RecallQualityLatencySummary;
   queryLatencyByScope: {
@@ -401,6 +406,38 @@ function measurePreLimitChannels(
   });
 }
 
+function readHybridFirstRelevantRank(
+  results: readonly RecallConversationSearchResult[],
+  evaluationCase: RecallQualityEvaluationCase,
+): number | null {
+  const index = results.findIndex((result) =>
+    resultGroupMatchesEvaluationCase(result, evaluationCase),
+  );
+  return index < 0 ? null : index + 1;
+}
+
+function readDenseFirstRelevantRank(
+  results: readonly RecallConversationSearchResult[],
+  evaluationCase: RecallQualityEvaluationCase,
+): number | null {
+  const ranks = results
+    .flatMap(getRecallResultGroupMembers)
+    .filter((candidate) =>
+      evaluationCase.expectedSources.some((expectedSource) =>
+        matchesExpectedRecallSource(candidate, expectedSource),
+      ),
+    )
+    .flatMap((candidate) => (candidate.dense ? [candidate.dense.rank] : []));
+  return ranks.length === 0 ? null : Math.min(...ranks);
+}
+
+function calculateMeanReciprocalRank(ranks: readonly (number | null)[]): number {
+  return createRate(
+    ranks.reduce<number>((total, rank) => total + (rank === null ? 0 : 1 / rank), 0),
+    ranks.length,
+  );
+}
+
 function measureRecallQualityCase(
   observation: RecallQualitySearchObservation,
   finalCounts: readonly number[],
@@ -426,6 +463,14 @@ function measureRecallQualityCase(
       observation.evaluationCase.expectedSources.some((expectedSource) =>
         matchesExpectedRecallSource(candidate, expectedSource),
       ),
+    ),
+    hybridFirstRelevantRank: readHybridFirstRelevantRank(
+      observation.results,
+      observation.evaluationCase,
+    ),
+    denseFirstRelevantRank: readDenseFirstRelevantRank(
+      observation.results,
+      observation.evaluationCase,
     ),
     rawCandidateCount: rawCandidates.length,
     groupedCandidateCount: observation.results.length,
@@ -520,6 +565,17 @@ export function measureRecallQuality(
     candidatePoolRecall: createRate(
       caseMeasurements.length - missedCandidatePoolCaseIds.length,
       caseMeasurements.length,
+    ),
+    hybridMeanReciprocalRank: calculateMeanReciprocalRank(
+      caseMeasurements.map(({ hybridFirstRelevantRank }) => hybridFirstRelevantRank),
+    ),
+    denseCandidateRecall: createRate(
+      caseMeasurements.filter(({ denseFirstRelevantRank }) => denseFirstRelevantRank !== null)
+        .length,
+      caseMeasurements.length,
+    ),
+    denseMeanReciprocalRank: calculateMeanReciprocalRank(
+      caseMeasurements.map(({ denseFirstRelevantRank }) => denseFirstRelevantRank),
     ),
     candidatePoolDuplicateRate: createRate(candidatePoolDuplicateSlots, rawCandidateCount),
     queryLatencyMilliseconds: summarizeRecallLatency(

@@ -145,8 +145,8 @@ function formatCaseOutcomes(
   const lines = [
     `Shown for ${formatChunkPolicy(decision.chunkPolicy)}, ${decision.candidateCount} candidates/channel, and ${decision.finalCount} final results.`,
     '',
-    '| Case | Scope | Boundary | Pool | Final | Context | Sources | Origin | Relation | Contributors | Branch | Raw/grouped | Query |',
-    '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | ---: | ---: |',
+    '| Case | Scope | Boundary | Pool | Hybrid rank | Dense rank | Final | Context | Sources | Origin | Relation | Contributors | Branch | Raw/grouped | Query |',
+    '| --- | --- | --- | --- | --- | ---: | ---: | --- | --- | --- | --- | --- | --- | ---: | ---: |',
   ];
   for (const caseMeasurement of configuration.measurement.caseMeasurements) {
     const finalMeasurement = caseMeasurement.finalCounts.find(
@@ -156,7 +156,7 @@ function formatCaseOutcomes(
       continue;
     }
     lines.push(
-      `| ${escapeMarkdownTable(caseMeasurement.caseId)} | ${caseMeasurement.scope} | ${caseMeasurement.searchScopeVerified && caseMeasurement.invocationProjectIdentityVerified && caseMeasurement.excludedSessionFilesAbsent && caseMeasurement.preLimitChannelsVerified ? 'pass' : 'fail'} | ${caseMeasurement.candidatePoolRecalled ? 'hit' : 'miss'} | ${finalMeasurement.finalRecalled ? 'hit' : 'miss'} | ${finalMeasurement.contextUseful ? 'useful' : 'fail'} | ${finalMeasurement.sourceOccurrencesPreserved ? `${finalMeasurement.preservedSourceOccurrences} kept` : `${finalMeasurement.preservedSourceOccurrences} fail`} | ${finalMeasurement.sessionOriginsVerified ? 'pass' : 'fail'} | ${finalMeasurement.evidenceRelationsVerified ? 'pass' : 'fail'} | ${finalMeasurement.contributingEntriesVerified ? 'pass' : 'fail'} | ${finalMeasurement.branchesVerified ? 'pass' : 'fail'} | ${caseMeasurement.rawCandidateCount}/${caseMeasurement.groupedCandidateCount} | ${formatMilliseconds(caseMeasurement.queryLatencyMilliseconds)} |`,
+      `| ${escapeMarkdownTable(caseMeasurement.caseId)} | ${caseMeasurement.scope} | ${caseMeasurement.searchScopeVerified && caseMeasurement.invocationProjectIdentityVerified && caseMeasurement.excludedSessionFilesAbsent && caseMeasurement.preLimitChannelsVerified ? 'pass' : 'fail'} | ${caseMeasurement.candidatePoolRecalled ? 'hit' : 'miss'} | ${caseMeasurement.hybridFirstRelevantRank ?? '—'} | ${caseMeasurement.denseFirstRelevantRank ?? '—'} | ${finalMeasurement.finalRecalled ? 'hit' : 'miss'} | ${finalMeasurement.contextUseful ? 'useful' : 'fail'} | ${finalMeasurement.sourceOccurrencesPreserved ? `${finalMeasurement.preservedSourceOccurrences} kept` : `${finalMeasurement.preservedSourceOccurrences} fail`} | ${finalMeasurement.sessionOriginsVerified ? 'pass' : 'fail'} | ${finalMeasurement.evidenceRelationsVerified ? 'pass' : 'fail'} | ${finalMeasurement.contributingEntriesVerified ? 'pass' : 'fail'} | ${finalMeasurement.branchesVerified ? 'pass' : 'fail'} | ${caseMeasurement.rawCandidateCount}/${caseMeasurement.groupedCandidateCount} | ${formatMilliseconds(caseMeasurement.queryLatencyMilliseconds)} |`,
     );
   }
   if (configuration.measurement.caseMeasurements.length === 0) {

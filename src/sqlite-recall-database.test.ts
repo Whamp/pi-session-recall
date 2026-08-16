@@ -252,6 +252,19 @@ void test('SQLite Recall database losslessly round-trips dense metadata and vect
       ],
     ]),
   );
+  assert.deepEqual(
+    database.readPhysicalSessionPlanningStates(),
+    new Map([
+      [
+        sessionPath,
+        {
+          size: 12_345,
+          mtimeMs: 67_890.5,
+          requiresInvocationBackfill: false,
+        },
+      ],
+    ]),
+  );
   assert.deepEqual(database.listPhysicalSessionPaths(), [sessionPath]);
   assert.equal(database.requiresInvocationBackfill(sessionPath), false);
   assert.deepEqual(database.fetchDenseDocuments([document.id]), new Map([[document.id, document]]));

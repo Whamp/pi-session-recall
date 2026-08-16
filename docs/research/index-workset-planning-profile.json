@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "measuredAt": "2026-08-15T23:15:00-07:00",
+  "baseRevision": "37123009cb242ee9898fc90b20ee1a16d4323d1f",
+  "workload": {
+    "source": "active Recall corpus through a read-only database connection",
+    "discoveredPhysicalSessionFiles": 3800,
+    "indexedPhysicalSessions": 3798,
+    "denseDocuments": 405915
+  },
+  "method": {
+    "baseline": "List the corpus, stat each discovered file, call readPhysicalSessionState for every path, check Invocation backfill for every path, and list indexed paths.",
+    "optimized": "List the corpus, read all planning-only physical-session rows in one SQLite statement, stat and classify each discovered file, and classify missing paths from the planning-state keys.",
+    "mutationPolicy": "Read-only; no source or Recall database state changed.",
+    "clock": "Node.js performance.now() monotonic elapsed milliseconds"
+  },
+  "baselineMilliseconds": {
+    "listFiles": 32.882245,
+    "sequentialStats": 41.567603,
+    "fullPhysicalSessionStates": 230149.160919,
+    "invocationBackfillChecks": 12.703803,
+    "listIndexedPaths": 1.367418,
+    "total": 230237.682
+  },
+  "optimizedMilliseconds": {
+    "listFiles": 33.220076,
+    "planningStateRead": 4.839903,
+    "statAndClassify": 44.635022,
+    "missingClassification": 0.323591,
+    "total": 83.018592
+  },
+  "result": {
+    "planningTimeReductionPercent": 99.963928,
+    "completeDocumentMembershipRowsLoadedDuringPlanning": 0,
+    "worksetClassificationSemanticsChanged": false
+  }
+}

@@ -177,6 +177,13 @@ export interface SqliteRecallDatabaseIdentity {
   queryOnly: boolean;
 }
 
+/** Planning-only state that avoids loading one physical session's document membership. */
+export interface SqliteRecallPhysicalSessionPlanningState {
+  size: number;
+  mtimeMs: number;
+  requiresInvocationBackfill: boolean;
+}
+
 /** Incremental state retained for one physical session file. */
 export interface SqliteRecallPhysicalSessionState {
   size: number;
@@ -280,6 +287,7 @@ export interface SqliteRecallReplacementProbe {
 /** Deep persistence interface for one unified SQLite Recall database. */
 export interface SqliteRecallDatabase {
   readonly identity: Readonly<SqliteRecallDatabaseIdentity>;
+  readPhysicalSessionPlanningStates(): Map<string, SqliteRecallPhysicalSessionPlanningState>;
   readPhysicalSessionState(sessionPath: string): SqliteRecallPhysicalSessionState | null;
   readConversationProjectionInputs(
     sessionPath: string,
@@ -964,6 +972,11 @@ export function openSqliteRecallDatabase(
     const listSessions = database.prepare(
       'SELECT session_path FROM physical_sessions ORDER BY session_path',
     );
+    const listSessionPlanningStates = database.prepare(`
+      SELECT session_path, size, mtime_ms, invocations_indexed
+      FROM physical_sessions
+      ORDER BY session_path
+    `);
     const readInvocationBackfill = database.prepare(
       'SELECT invocations_indexed FROM physical_sessions WHERE session_path = ?',
     );
@@ -1246,6 +1259,26 @@ export function openSqliteRecallDatabase(
 
     return {
       identity,
+      readPhysicalSessionPlanningStates() {
+        return runSqliteRecallRead(database, () => {
+          const planningStates = new Map<string, SqliteRecallPhysicalSessionPlanningState>();
+          for (const row of listSessionPlanningStates.all()) {
+            const sessionPath = readRequiredString(row, 'session_path');
+            const invocationsIndexed = readRequiredInteger(row, 'invocations_indexed');
+            if (invocationsIndexed !== 0 && invocationsIndexed !== 1) {
+              throw new Error(
+                `SQLite Recall Invocation indexing state invalid for physical session ${sessionPath}`,
+              );
+            }
+            planningStates.set(sessionPath, {
+              size: readRequiredInteger(row, 'size'),
+              mtimeMs: readRequiredNumber(row, 'mtime_ms'),
+              requiresInvocationBackfill: invocationsIndexed === 0,
+            });
+          }
+          return planningStates;
+        });
+      },
       readPhysicalSessionState,
       readConversationProjectionInputs(sessionPath) {
         return runSqliteRecallRead(database, () => readConversationProjectionInputs(sessionPath));

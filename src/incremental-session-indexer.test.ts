@@ -1025,10 +1025,24 @@ void test('manual index maintenance skips an unchanged physical session without 
   assert.equal(disguisedStats.size, originalStats.size);
   assert.equal(disguisedStats.mtimeMs, originalStats.mtimeMs);
 
-  const skipped = await indexChangedConversationSessions(options);
+  const database = openSqliteRecallDatabase(databasePath);
+  t.after(() => database.close());
+  let completeStateReads = 0;
+  const planningDatabase = {
+    ...database,
+    readPhysicalSessionState(path: string) {
+      completeStateReads += 1;
+      return database.readPhysicalSessionState(path);
+    },
+  };
+  const skipped = await indexChangedConversationSessions({
+    ...options,
+    database: planningDatabase,
+  });
 
   assert.equal(skipped.indexedSessions, 0);
   assert.equal(skipped.failedSessions.length, 0);
+  assert.equal(completeStateReads, 0);
 });
 
 void test('metadata-only dirty detection skips parsing, tokenization, embedding, and replacement', async (t) => {

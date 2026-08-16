@@ -1,16 +1,18 @@
 # Plan: improve changed-session indexing without making Recall authoritative
 
-Status: Phase 1 implemented; Phase 2 not triggered
+Status: Phase 1 implemented; Phase 2 not triggered; workset planning optimized
 
 ## Outcome
 
 Reduce indexing time for large active Physical session files while keeping canonical session JSONL as the only source of truth.
 
-The Recall database is a disposable projection. When its schema, cache state, or checkpoint state is incompatible, rebuild it from JSONL instead of migrating or repairing it. Keep the hourly schedule, the standalone `psr index` writer, strict session validation, and one atomic Physical session replacement.
+The Recall database is a disposable projection. When its schema, cache state, or checkpoint state is incompatible, rebuild it from JSONL instead of migrating or repairing it. Keep the standalone `psr index` writer, strict session validation, and one atomic Physical session replacement.
 
 Use the existing full importer as both the fallback and the differential correctness oracle.
 
 Measured result: schema 4 projection reuse plus linear parent-cycle validation reduced the representative 18.8 KB tail update to 8.9 seconds and content-identical false-dirty work to 0.12 seconds. Both gates pass, so the plan stops before the coarse append checkpoint.
+
+A later freshness investigation found that workset planning loaded all 405,915 Dense document memberships even when no file needed indexing. One bulk planning-only SQLite read reduced the same 3,800-file corpus from 230.15 seconds to 83 milliseconds without changing classification behavior. See [`index-workset-planning-profile.json`](index-workset-planning-profile.json). This removes the fixed-cost reason to retain the one-hour schedule; the approved deployment cadence is 30 minutes.
 
 ## Evidence and first target
 
@@ -44,7 +46,7 @@ Do not add these without new measurements:
 - a block-hash tree;
 - in-place database migrations;
 - cache-repair machinery;
-- a daemon, watcher, second writer, or faster schedule;
+- a daemon, watcher, or second writer;
 - a property-testing dependency.
 
 ## Phase 0: make the dominant document work visible

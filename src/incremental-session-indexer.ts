@@ -448,12 +448,13 @@ async function planMaintenanceWorkset(
   pruneUnselectedSessions: boolean,
 ): Promise<MaintenanceWorksetPlan> {
   const filesToIndex: PlannedPhysicalSessionFile[] = [];
+  const indexedSessionPlanningStates = database.readPhysicalSessionPlanningStates();
   for (const sessionPath of sessionFiles) {
     if (ignoredPhysicalSessionPaths.has(sessionPath)) {
       continue;
     }
     const fileStats = await stat(sessionPath);
-    const previous = database.readPhysicalSessionState(sessionPath);
+    const previous = indexedSessionPlanningStates.get(sessionPath);
     if (!previous) {
       filesToIndex.push({
         sessionPath,
@@ -463,11 +464,10 @@ async function planMaintenanceWorkset(
         requiresInvocationBackfill: false,
       });
     } else {
-      const requiresInvocationBackfill = database.requiresInvocationBackfill(sessionPath);
       if (
         previous.size === fileStats.size &&
         previous.mtimeMs === fileStats.mtimeMs &&
-        !requiresInvocationBackfill
+        !previous.requiresInvocationBackfill
       ) {
         continue;
       }
@@ -476,12 +476,12 @@ async function planMaintenanceWorkset(
         size: fileStats.size,
         mtimeMs: fileStats.mtimeMs,
         change: 'changed',
-        requiresInvocationBackfill,
+        requiresInvocationBackfill: previous.requiresInvocationBackfill,
       });
     }
   }
   const liveSessionPaths = new Set(sessionFiles);
-  const indexedSessionPaths = database.listPhysicalSessionPaths();
+  const indexedSessionPaths = [...indexedSessionPlanningStates.keys()];
   return {
     discoveredFiles: sessionFiles.length,
     filesToIndex,

@@ -54,6 +54,9 @@
   "pi": {
     "extensions": [
       "./src/recall-extension.ts"
+    ],
+    "skills": [
+      "./skills"
     ]
   }
 }

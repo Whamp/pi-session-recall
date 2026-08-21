@@ -24,7 +24,7 @@ npm link
 pi install /path/to/pi-session-recall
 ```
 
-Reload Pi after installation. Fresh users should run guided setup. Local Octen is the default; it downloads and verifies a 1.01 GiB model before writing configuration.
+Reload Pi after installation. The package also installs the user-invoked `psr-agents-pointer` skill (`/skill:psr-agents-pointer`), which writes the canonical pi-session-recall pointer into a project's `AGENTS.md`. Its canonical source is `Whamp/skills` at `engineering/psr-agents-pointer`; the vendored copy in `skills/psr-agents-pointer/` must stay byte-identical to it. Fresh users should run guided setup. Local Octen is the default; it downloads and verifies a 1.01 GiB model before writing configuration.
 
 ```bash
 psr setup
